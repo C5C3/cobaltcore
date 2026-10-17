@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR for the token-validation HTTPChaos suite. Unique name
+# (glance-ks503) and database (glance_ks503). It is
+# ../glance-keystone-outage/01-glance-cr.yaml with keystoneEndpoint pointed at
+# the Keystone of 00-keystone-cr.yaml. The operator renders
+# delay_auth_decision = true into the paste pipeline, so a token Keystone
+# answers 503 for gets 401 from Glance where Placement answers 503.
+#
+# One replica: the suite asserts the answer to one request.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-ks503
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_ks503
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-chaos-ks503.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

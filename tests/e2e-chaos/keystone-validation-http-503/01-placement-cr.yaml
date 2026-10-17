@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Placement CR for the token-validation HTTPChaos suite. Unique name
+# (placement-ks503) and database (placement_ks503). It is
+# ../placement-keystone-outage/01-placement-cr.yaml with keystoneEndpoint
+# pointed at the Keystone of 00-keystone-cr.yaml, whose token validation the
+# fault answers with 503. keystonemiddleware turns that 503 into the same
+# HTTPServiceUnavailable it raises for a Keystone it cannot reach.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-ks503
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement_ks503
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-chaos-ks503.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

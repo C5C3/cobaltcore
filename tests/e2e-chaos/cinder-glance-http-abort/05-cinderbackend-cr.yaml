@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NFS backend img-nfs1 of the cinder-img CR on the kind NFS export /volumes.
+# The operator runs its volume service as Deployment cinder-img-volume-img-nfs1,
+# which downloads the image of a create-volume-from-image and which the suite
+# restarts once the HTTPChaos is in place.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: img-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-img
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

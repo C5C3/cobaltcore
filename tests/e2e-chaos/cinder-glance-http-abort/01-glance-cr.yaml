@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR for the Glance download abort chaos test. Unique name
+# (glance-cinder-img) and database (glance_cinder_img). It is
+# ../glance-keystone-outage/01-glance-cr.yaml with keystoneEndpoint pointed at
+# the Keystone of 00-keystone-cr.yaml. The HTTPChaos of 06-httpchaos.yaml
+# selects the API pods of this CR.
+#
+# One replica: the suite asserts the answer to one request.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-cinder-img
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_cinder_img
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-cinder-img.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

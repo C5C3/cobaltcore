@@ -18,7 +18,7 @@
 #      each input error exits 2, and the summary line carries the counts.
 #   3. workload.sh, against a stub kubectl: the pod start passes, each
 #      verb's failure paths, the budget line and the two out-of-band checks.
-#   4. The adoption: the forty-six suites that start a workload carry one
+#   4. The adoption: the fifty suites that start a workload carry one
 #      valid budget line, verify and stop it and time every call;
 #      deletion-stuck-finalizer and c5c3-operator-pod-kill say why they have
 #      none.
@@ -2068,17 +2068,21 @@ test_dump_and_stop_exit_0_without_a_pod() {
 CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
 ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-mariadb-outage \
 barbican-operator-pod-kill cert-manager-outage cinder-broker-pod-kill \
+cinder-glance-http-abort \
 cinder-keystone-outage cinder-mariadb-outage cinder-operator-pod-kill \
 cinder-volume-pod-kill controlplane-keystone-degraded \
 cronjob-rotation-failure envoy-gateway-outage envoy-proxy-pod-kill eso-down \
 eso-pod-kill glance-keystone-outage glance-mariadb-outage \
 glance-operator-pod-kill horizon-dashboard-pod-kill \
-horizon-memcached-pod-kill horizon-operator-pod-kill korc-network-partition \
+horizon-memcached-pod-kill horizon-operator-pod-kill \
+keystone-validation-http-503 korc-network-partition \
 korc-provisioning-outage mariadb-network-latency mariadb-network-partition \
 mariadb-operator-cascading-failure mariadb-pod-kill \
 memcached-network-partition memcached-pod-kill neutron-keystone-outage \
 neutron-metadata-agent-pod-kill neutron-operator-pod-kill \
-nova-keystone-outage nova-operator-pod-kill nova-placement-outage \
+nova-compute-neutron-http-delay \
+nova-keystone-outage nova-operator-pod-kill nova-placement-http-fault \
+nova-placement-outage \
 openbao-pod-kill openbao-sealed openbao-tenant-policy-narrowed \
 operator-pod-crash operator-pod-kill ovn-operator-pod-kill \
 placement-keystone-outage placement-mariadb-outage \
@@ -2119,7 +2123,7 @@ check_adopter() {
 
 # --- Test 22 --------------------------------------------------------------
 test_every_suite_adopts_the_harness_or_declines_it() {
-  echo "Test: the forty-six adopters keep the harness contract, deletion-stuck-finalizer and c5c3-operator-pod-kill decline it"
+  echo "Test: the fifty adopters keep the harness contract, deletion-stuck-finalizer and c5c3-operator-pod-kill decline it"
   local file suite found=""
   for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
     suite="$(basename "$(dirname "$file")")"
@@ -2129,7 +2133,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     fi
   done
   # shellcheck disable=SC2086 # word splitting builds the sorted list
-  assert_eq "exactly the forty-six suites call workload.sh start" "$(echo $ADOPTERS)" \
+  assert_eq "exactly the fifty suites call workload.sh start" "$(echo $ADOPTERS)" \
     "$(printf '%s\n' $found | sort | xargs)"
   local finalizer="$CHAOS_DIR/deletion-stuck-finalizer/chainsaw-test.yaml"
   assert_file_contains_fixed "deletion-stuck-finalizer says why it has no workload" "$finalizer" \

@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default S3 image store for the glance-cinder-img CR, as
+# ../glance-keystone-outage/02-glancebackend-cr.yaml: the in-cluster Garage on
+# the pre-created glance-images bucket. glance-api registers no store without
+# it, so it has to go Ready before the Glance CR can.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glance-cinder-img-s3
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-cinder-img
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.shared-services.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials

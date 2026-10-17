@@ -1969,6 +1969,7 @@ jobs:
               tests/e2e-chaos/cinder-volume-pod-kill
               tests/e2e-chaos/cinder-broker-pod-kill
               tests/e2e-chaos/memcached-network-partition
+              tests/e2e-chaos/cinder-glance-http-abort
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
@@ -1979,16 +1980,18 @@ jobs:
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/ovn-southbound-outage
-          # The six nova-stack suites bring up the heaviest stack in this job:
-          # a Keystone, a Placement, an OVNCentral, a Neutron, a Glance and a
-          # Nova with a fake compute behind it, and
-          # neutron-metadata-agent-pod-kill adds an OVNChassis and a metadata
-          # agent on the node. They get a leg of their own instead of widening
-          # the network leg, which carries the neutron, cinder and ovn suites.
+          # The eight nova-stack suites bring up the heaviest stack in this
+          # job: a Keystone, a Placement, an OVNCentral, a Neutron, a Glance and
+          # a Nova with a fake compute behind it, and
+          # neutron-metadata-agent-pod-kill and nova-compute-neutron-http-delay
+          # add an OVNChassis on the node, the first with a metadata agent
+          # beside it. They get a leg of their own instead of widening the
+          # network leg, which carries the neutron, cinder and ovn suites.
           # Like the ovn leg this one is non-blocking (see continue-on-error
           # below): three of its faults are NetworkChaos partitions on the
-          # sch_netem/ip_set dependency the network leg carries, and the
-          # metadata-agent suite needs the openvswitch and geneve modules.
+          # sch_netem/ip_set dependency the network leg carries, the two
+          # HTTPChaos suites need the chaos-tproxy modules, and the two
+          # chassis suites the openvswitch and geneve modules.
           - suite: nova
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
@@ -1998,6 +2001,8 @@ jobs:
               tests/e2e-chaos/nova-keystone-outage
               tests/e2e-chaos/nova-operator-pod-kill
               tests/e2e-chaos/neutron-metadata-agent-pod-kill
+              tests/e2e-chaos/nova-placement-http-fault
+              tests/e2e-chaos/nova-compute-neutron-http-delay
           # The suites of #1390 that bring up a ControlPlane of their own in a
           # namespace of their own: K-ORC, the c5c3-operator and a Keystone-only
           # plane per suite. They get an entry of their own so
@@ -2024,6 +2029,7 @@ jobs:
           - suite: faults
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
+              tests/e2e-chaos/keystone-validation-http-503
     runs-on: self-hosted
     # 190 minutes for the nova leg, 175 for network, 130 for faults, 120 for
     # pod, 100 for controlplane and 45 for ovn: 760 minutes for the six, which
@@ -2139,12 +2145,12 @@ jobs:
             # ovn-operator-pod-kill; the nova leg loads its own pair below.
             ${{ matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The seven cinder suites run on the network leg alone. Each
+            # The eight cinder suites run on the network leg alone. Each
             # deploys a Cinder, so each needs the service image beside the
             # operator one.
             ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The six nova-stack suites run on the nova leg alone. The OVN
+            # The eight nova-stack suites run on the nova leg alone. The OVN
             # pair above already covers that leg (!= 'pod'), and the keystone,
             # glance and tempest images arrive with the keystone stack on every
             # non-ovn leg, so six refs are left to name here.
@@ -2156,7 +2162,7 @@ jobs:
             ${{ matrix.suite == 'nova' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Neutron API and the metadata agent beside it.
             ${{ matrix.suite == 'nova' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The operator whose CRs the six suites drive.
+            # The operator whose CRs the eight suites drive.
             ${{ matrix.suite == 'nova' && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The five Nova workloads and the fake compute beside them.
             ${{ matrix.suite == 'nova' && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
@@ -2238,13 +2244,13 @@ jobs:
         env:
           WITH_CHAOS_MESH: "true"
           WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}
-          # The seven cinder suites attach an NFS backend, which the operator
-          # mounts as an inline CSI volume from the kind NFS export, and five
+          # The eight cinder suites attach an NFS backend, which the operator
+          # mounts as an inline CSI volume from the kind NFS export, and six
           # of them take a vhost on the shared broker; cinder-broker-outage and
           # cinder-broker-pod-kill bring a RabbitmqCluster of their own,
           # because their faults take the whole broker away and doing that to
-          # the shared one would take the rest of the leg down with it. Five
-          # of the six nova-stack suites take a vhost there too;
+          # the shared one would take the rest of the leg down with it. Seven
+          # of the eight nova-stack suites take a vhost there too;
           # nova-broker-outage brings its own broker for the same reason. The
           # NFS export stays on the network leg alone. Empty elsewhere, where deploy-infra.sh
           # keeps its default of installing neither.
@@ -2387,7 +2393,7 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
-      # The seven cinder suites run on the network leg alone, so the
+      # The eight cinder suites run on the network leg alone, so the
       # cinder-operator deploys there alone. Like the sibling operators it
       # lands in its own cinder-system namespace, not the script's
       # keystone-system default: that is where the Flux/deploy-infra path
@@ -2400,7 +2406,7 @@ jobs:
           OPERATOR: cinder
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
           NAMESPACE: cinder-system
-      # The six nova-stack suites run on the nova leg alone, so the three
+      # The eight nova-stack suites run on the nova leg alone, so the three
       # operators they need beyond the ovn one deploy there alone. The first two names carry a
       # "(nova leg)" suffix because tests/lib/ci_yaml.sh returns the first step
       # of an exact name and the placement and neutron steps above are pinned

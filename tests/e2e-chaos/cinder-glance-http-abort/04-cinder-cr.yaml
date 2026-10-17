@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the Glance download abort chaos test. It is
+# ../cinder-keystone-outage/01-cinder-cr.yaml with the Keystone of
+# 00-keystone-cr.yaml and spec.glanceEndpoint, which the operator renders as
+# [DEFAULT] glance_api_servers: the only way this Cinder reaches Glance, and
+# the path a create-volume-from-image downloads the image through. The
+# HTTPChaos of 06-httpchaos.yaml aborts that download on the Glance side.
+#
+# Managed mode otherwise: the schema cinder_img on the openstack-db MariaDB
+# cluster, the openstack-memcached cache and the ESO-synced cinder-db
+# credentials. The transport URL comes from the Secret
+# ../../e2e/cinder/broker-vhost.sh writes for this suite's own vhost on the
+# kind-only shared-rabbitmq broker.
+#
+# One API replica. The backup block is absent.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-img
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_img
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-img-messaging
+  keystoneEndpoint: http://keystone-cinder-img.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  glanceEndpoint: http://glance-cinder-img.openstack.svc.cluster.local:9292

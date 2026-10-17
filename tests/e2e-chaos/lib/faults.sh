@@ -323,6 +323,35 @@ wait_sentinel() {
   done
 }
 
+# job_run <file> <job> <seconds> [NAME=VALUE...]: delete a Job of that name
+# left by an earlier run (its pod template is immutable), apply the rendered
+# file in NAMESPACE, wait up to <seconds> for the Job to complete or fail,
+# and print its log. Returns 0 when it completed.
+job_run() {
+  local file="$1" job="$2" secs="$3" rendered state="" deadline
+  shift 3
+  rendered="$(fault_render "$file" "$@")" || return 1
+  kubectl delete job "$job" -n "$NAMESPACE" --ignore-not-found --wait=true --timeout=60s >/dev/null || return 1
+  kubectl apply -n "$NAMESPACE" -f - <<<"$rendered" || return 1
+  deadline=$(($(date +%s) + secs))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    state="$(kubectl get job "$job" -n "$NAMESPACE" \
+      -o jsonpath='{.status.conditions[?(@.status=="True")].type}' 2>/dev/null || true)"
+    case " ${state} " in
+      *" Complete "* | *" Failed "*) break ;;
+    esac
+    sleep 5
+  done
+  kubectl logs "job/${job}" -n "$NAMESPACE" 2>&1 || true
+  case " ${state} " in
+    *" Complete "*) return 0 ;;
+    *" Failed "*) echo "FAIL: job ${job} failed" ;;
+    *) echo "FAIL: job ${job} did not finish within ${secs}s" ;;
+  esac
+  kubectl get pods -n "$NAMESPACE" -l "job-name=${job}" -o wide 2>&1 || true
+  return 1
+}
+
 # admin_password: the bootstrap admin password of Secret keystone-admin in
 # NAMESPACE, which the probes take as OS_PASSWORD.
 admin_password() {

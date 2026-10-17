@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Boots one server without a NIC, waits for the status the step wants, prints
+# the step's sentinel and deletes the server again. The suite applies it with
+# ../lib/faults.sh job_run, which fills the placeholders:
+#   @NAME@      the server, and the suffix of the Job's name
+#   @WANT@      ACTIVE or ERROR, which the server must reach within 150 s
+#   @FAULT@     for ERROR, an extended regular expression the fault must match
+#   @SENTINEL@  the line printed once the server reached @WANT@
+#
+# 150 seconds is the bound ../nova-placement-outage/15-failclosed-job.yaml
+# measured for a build the scheduler cannot place. Under a 503 or an aborted
+# connection the scheduler's Placement call returns at once, so a build that
+# fails closed reaches ERROR well inside it.
+#
+# The fault is read by server id, as in that Job: nova's list path reads the
+# cell schema, and a build buried in cell0 carries its fault only in the
+# answer to GET /servers/<id>.
+#
+# The server is deleted inside the Job, so an ERROR server never reaches the
+# server check of the workload's verify. backoffLimit is 0 because the script
+# is not idempotent: a second attempt would find the server by its name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-plhttp-chaos-boot-@NAME@
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: boot
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-plhttp-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              SEED=4e0a0000-0000-4000-8000-00000000000b
+              NAME='@NAME@'
+              WANT='@WANT@'
+              FAULT='@FAULT@'
+
+              openstack server create --image "${SEED}" --flavor m1.nano --nic none "${NAME}" >/dev/null
+              SERVER_ID="$(openstack server show "${NAME}" -f value -c id)"
+              echo "OK: the API accepted the create of ${NAME} (${SERVER_ID})"
+
+              STATUS=""
+              DEADLINE=$(( $(date +%s) + 150 ))
+              while true; do
+                STATUS="$(openstack server show "${SERVER_ID}" -f value -c status 2>/dev/null || true)"
+                if [ "${STATUS}" = "${WANT}" ]; then
+                  break
+                fi
+                if [ "${STATUS}" = ERROR ] || [ "${STATUS}" = ACTIVE ] || [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+                  echo "FAIL: server ${NAME} is ${STATUS:-<none>}, want ${WANT} within 150s"
+                  openstack server show "${SERVER_ID}" 2>&1 || true
+                  exit 1
+                fi
+                sleep 5
+              done
+              echo "OK: server ${NAME} reached ${WANT}"
+
+              if [ -n "${FAULT}" ]; then
+                # Captured before it is matched: under pipefail an
+                # `openstack ... | grep -q` fails when grep matches and
+                # closes the pipe.
+                SHOWN="$(openstack server show "${SERVER_ID}" -f json)"
+                MESSAGE="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("fault")))' <<<"${SHOWN}")"
+                echo "fault of ${NAME}: ${MESSAGE}"
+                if ! grep -qE "${FAULT}" <<<"${MESSAGE}"; then
+                  echo "FAIL: the fault of ${NAME} does not match '${FAULT}'"
+                  exit 1
+                fi
+              fi
+              echo '@SENTINEL@'
+
+              openstack server delete --wait "${SERVER_ID}"
+              echo "OK: server ${NAME} deleted"

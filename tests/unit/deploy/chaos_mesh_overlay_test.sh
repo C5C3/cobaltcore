@@ -29,6 +29,9 @@
 #     its two expressions with the exact allowlist, and a binding with
 #     validationActions [Deny]; five documents in all, and the HelmRelease
 #     pins dnsServer.create: true.
+#   - every HTTPChaos fixture under tests/e2e-chaos selects by namespaces and
+#     labelSelectors alone and pins app.kubernetes.io/name to a name of the
+#     policy's allowlist, so the policy admits it.
 # Usage: bash tests/unit/deploy/chaos_mesh_overlay_test.sh
 
 set -uo pipefail
@@ -449,6 +452,35 @@ test_kustomize_build_kind_chaos_overlay_renders_the_httpchaos_policy() {
       'select(.kind == "HelmRelease" and .metadata.name == "chaos-mesh") | .spec.values.dnsServer.create' 2>/dev/null)"
 }
 
+# --- Test 10: every HTTPChaos fixture of the chaos suites passes the policy ---
+#
+# A fixture the policy denies fails only when its leg runs on a cluster. The
+# allowlist is read from the policy file, so the two cannot drift apart.
+test_httpchaos_fixtures_pass_the_policy() {
+  echo "Test: every HTTPChaos fixture under tests/e2e-chaos selects an allowlisted name by namespaces and labelSelectors only"
+
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (fixture checks skipped)"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local allow fixtures f keys name
+  allow="$(yq -r 'select(.kind == "ValidatingAdmissionPolicy") | .spec.validations[0].expression' \
+    "$KIND_CHAOS_DIR/httpchaos-policy.yaml" | sed -n "s/.* in \[\(.*\)\]$/\1/p" | tr -d "' ")"
+  assert_not_empty "the policy's allowlist is read" "$allow"
+  fixtures="$(grep -l '^kind: HTTPChaos$' "$PROJECT_ROOT"/tests/e2e-chaos/*/*.yaml || true)"
+  assert_gte "the suites carry HTTPChaos fixtures" "$(grep -c . <<<"$fixtures")" 1
+
+  for f in $fixtures; do
+    keys="$(yq -r '.spec.selector | keys | .[]' "$f" | grep -vxE 'namespaces|labelSelectors' | xargs)"
+    name="$(yq -r '.spec.selector.labelSelectors["app.kubernetes.io/name"] // ""' "$f")"
+    assert_eq "${f#"$PROJECT_ROOT"/} selects by namespaces and labelSelectors only" "" "$keys"
+    assert_contains "${f#"$PROJECT_ROOT"/} pins an allowlisted app.kubernetes.io/name (${name:-none})" \
+      ",${allow}," ",${name:-<none>},"
+  done
+}
+
 # --- Run ---
 test_flux_system_kustomization_drops_chaos_mesh_entries
 test_chaos_mesh_files_local_to_overlay
@@ -459,6 +491,7 @@ test_kustomize_build_flux_system_renders_no_chaos_mesh
 test_kustomize_build_kind_base_succeeds_without_chaos_mesh
 test_kustomize_build_kind_chaos_overlay_renders_full_bundle
 test_kustomize_build_kind_chaos_overlay_renders_the_httpchaos_policy
+test_httpchaos_fixtures_pass_the_policy
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

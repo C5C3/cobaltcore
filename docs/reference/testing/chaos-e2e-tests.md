@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 58 chaos test suites validate operator behavior during and after fault
+The 62 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -84,7 +84,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 58 test suites require the infrastructure stack to be deployed and healthy.
+All 62 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -531,6 +531,10 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [controlplane-keystone-degraded](#controlplane-keystone-degraded) | — | `cp-ks-degraded` | ControlPlane over a degraded Keystone | Within 300 s the Keystone CR `Ready=False`, the ControlPlane at `KeystoneReady=False/WaitingForKeystone` and `Ready=False/NotAllReady` with `status.services` keystone `ready: false`; `NO-MASK-OK`: 60 s without the ControlPlane at `Ready=True` over a Keystone that is not; `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 | [korc-network-partition](#korc-network-partition) | — | `korc-part` | K-ORC partitioned from a ControlPlane's Keystone (NetworkChaos) | `PARTITIONED-OK`: for 120 s the KeystoneService `korc-part` not `Ready=True` and its Project child `service-korc-part` without `Available=True`; `korc-part` at `Ready=True/AllReady` within 900 s of the lift and the ControlPlane at `Ready=True/AllReady`; `NO-DUPLICATE-OK`: one project, one service of type `korcpart` and two endpoints in Keystone, workload budget zero |
 | [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) | — | `cp-c5c3-kill` | c5c3-operator pod kill during provisioning | The kill before `DBCredentialsReady` with no Keystone CR yet, every pre-kill operator pod UID gone and `readyReplicas` back, the plane at `Ready=True/AllReady` after the database tenant is onboarded, `OWNED-ONCE-OK`: MariaDB and Memcached with their pre-kill UIDs and exactly one Keystone, MariaDB, Memcached and ApplicationCredential, each owned by `cp-c5c3-kill` |
+| [nova-placement-http-fault](#nova-placement-http-fault) | — | `nova-plhttp-chaos` | Placement answers the scheduler with 503, then aborts (HTTPChaos, fail-closed build) | `INJECTED-503-OK` and `INJECTED-ABORT-OK` from the canary; after each scheduler restart `s-503` and `s-abort` in `ERROR` within 150 s with a fault matching `No valid host` (`FAILCLOSED-503-OK`, `FAILCLOSED-ABORT-OK`); the Nova CR at `Ready=True`, `SchedulerReady=True` and `NovaAPIReady=True` under both; `s-recovered` `ACTIVE` after the lift (`RECOVERED-OK`); placement audit and OVN db-sync comparison after the workload |
+| [nova-compute-neutron-http-delay](#nova-compute-neutron-http-delay) | — | `nova-vifd-chaos` | Port binding held for 330 s (HTTPChaos, no stuck state) | `INJECTED-DELAY-OK`: a port `PUT` unanswered within 20 s while `GET /v2.0/networks` answers within 5 s; `vifd-slow` in `BUILD` 120 s after its create (`HELD-OK`) and settled within 570 s more, `SETTLED ACTIVE` with its port bound to the node or `SETTLED ERROR` with it gone or unbound; no server in `BUILD` (`NO-STUCK-BUILD-OK`); `vifd-recovered` `ACTIVE` after the lift (`RECOVERED-OK`); workload budget zero; no node label, `vifd-*` server or `vifd-net` left |
+| [cinder-glance-http-abort](#cinder-glance-http-abort) | — | `cinder-img` | Image download aborted (HTTPChaos, fail-closed create) | `INJECTED-ABORT-OK`; `img-abort`, created from the image, in `error` within 240 s and still 30 s later, never `available` (`FAILCLOSED-OK`); `VolumeServicesReady=True` and `Ready=True/AllReady` under the fault; `img-abort` gone within 120 s of its delete; `img-recovered` `available` after the lift (`RECOVERED-OK`); workload budget zero |
+| [keystone-validation-http-503](#keystone-validation-http-503) | — | `keystone-chaos-ks503` | Token validation answered with 503 (HTTPChaos, fail-closed validation) | `INJECTED-503-OK`: a token issued with 201 and its own validation answered 503; after Placement and Glance restart, a fresh token gets 503 from Placement and 401 from Glance, never a 2xx (`FAILCLOSED-OK`); the Keystone, Placement and Glance CRs `Ready=True/AllReady`, the Keystone at `DatabaseReady=True` and `GET /v3` 200 under the fault; 200 from both after the lift (`RECOVERY-OK`) |
 
 ---
 
@@ -3934,6 +3938,213 @@ in its own namespace, `chaos-c5c3-kill`.
   `failurePolicy: Fail`, so writes to those kinds are refused while no operator pod
   runs. The suite writes none in that window: the state it carries between steps
   goes into a ConfigMap.
+
+---
+
+### nova-placement-http-fault
+
+**File:** `tests/e2e-chaos/nova-placement-http-fault/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Two `HTTPChaos` objects on the API pods of
+`placement-nova-plhttp-chaos`, one after the other in one fault window, change the
+one request only the scheduler sends: `GET /allocation_candidates`. The first
+replaces the response with a 503, the second closes the connection before
+Placement sees the request. The suite pins that a build the scheduler cannot place
+ends in `ERROR` with `No valid host` under both, that the Nova keeps reporting
+itself healthy, and that a build is placed again after the lift. A build that
+reached `ACTIVE` under either fault would have been placed without a claim.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1-8 | Bring up the stack | as `nova-keystone-outage` | The vhost, Keystone, the catalog Job, OVNCentral, Neutron, Placement, Glance, the seed image `4e0a0000-0000-4000-8000-00000000000b`, the Nova, the fake compute with compute id `d13d13d1-0000-4000-8000-00000000000b` and the flavor, all under the name `nova-plhttp-chaos` |
+| 9 | Start the workload | `script` (6m) | `token`, `network`, `server` and `image` streams |
+| 10 | Baseline | `script` (6m) | Job `nova-plhttp-chaos-boot-s-base` boots `s-base` with `--nic none` to `ACTIVE` and deletes it (`BASELINE-OK`) |
+| 11 | Phase 503 | `script` (12m) + `assert` + `script` (4m) | `workload.sh mark fault-start`, applies `14-httpchaos-503.yaml` and waits for `AllInjected`. A probe issues a token and sends `GET /allocation_candidates?resources=VCPU:1` with `OpenStack-API-Version: placement 1.10`: 503, while `GET /` answers 200 (`INJECTED-503-OK`). The scheduler is restarted, then `s-503` must reach `ERROR` within 150 s with a fault matching `No valid host` (`FAILCLOSED-503-OK`). The assert reads `Ready`, `SchedulerReady` and `NovaAPIReady` `True` on the Nova CR; the object is deleted and its deletion awaited |
+| 12 | Phase abort | `script` (12m) + `assert` + `script` (4m) | The same with `15-httpchaos-abort.yaml`: the canary's `GET` gets no HTTP status (`INJECTED-ABORT-OK`), `s-abort` ends in `ERROR` (`FAILCLOSED-ABORT-OK`). After the delete, `workload.sh mark fault-end` |
+| 13 | Recovery | `script` (6m) | `s-recovered` reaches `ACTIVE` within 150 s (`RECOVERED-OK`) and is deleted |
+| 14 | Judge the workload | `script` (25m) | `workload.sh verify --placement-audit nova-plhttp-chaos --ovn-db-sync neutron-nova-plhttp-chaos` |
+| 15 | Tear the deployment down | `script` (10m) | As `nova-keystone-outage` step 14, with the boot Jobs |
+
+**Fixtures:** `01`-`13` are those of `nova-keystone-outage` renamed;
+`14-httpchaos-503.yaml` (`placement-candidates-503`, `target: Response`,
+`replace: {code: 503}`), `15-httpchaos-abort.yaml` (`placement-candidates-abort`,
+`target: Request`, `abort: true`), both `port: 8778`, `method: GET`,
+`path: /allocation_candidates`, `duration: "900s"`; `16-boot-job.yaml`, the boot
+Job template the steps fill with `@NAME@`, `@WANT@`, `@FAULT@` and `@SENTINEL@`.
+
+**Workload:** the `token`, `network`, `server` and `image` streams, judged against
+`failures=200 recovery=180s`, an estimate. The `server` stream fails from the first
+scheduler restart until the lift; the other three never ask for allocation
+candidates. The suite runs in the `nova` matrix entry.
+
+**Catch blocks:** every step shares one anchor that prints and deletes the chaos
+objects labelled `chaos.c5c3.io/suite=nova-placement-http-fault`, calls
+`../diagnostics.sh chaos nova-plhttp-chaos --cr-kind=nova`, dumps the sibling CRs,
+the fake compute, the Job logs and the six operators, and dumps the workload.
+
+**Design notes:**
+
+- The fake compute reports its inventory with `GET` and `PUT` on
+  `/resource_providers`, so the path filter keeps it outside the fault. chaos-tproxy
+  matches the path without the query string.
+- The scheduler restart moves its pooled Placement connection behind the proxy.
+  [Connections opened before injection](#connections-opened-before-injection)
+  gives the reason.
+
+---
+
+### nova-compute-neutron-http-delay
+
+**File:** `tests/e2e-chaos/nova-compute-neutron-http-delay/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** An `HTTPChaos` on the API pods of `neutron-nova-vifd-chaos` holds every
+`PUT /v2.0/ports/*` for 330 seconds. nova-compute binds the port of each server it
+builds with that request, so a build waits on Neutron with its port unbound. 330
+seconds is past the upstream `vif_plugging_timeout` default of 300. The suite takes
+the fake-driver form: the fake compute sets `vif_plugging_timeout = 0` and
+`vif_plugging_is_fatal = false`, and the fake driver waits for no
+`network-vif-plugged` event. The suite proves that a slow Neutron leaves no stuck
+state; the timeout path itself needs a guest that plugs a NIC.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Label the node, take a vhost | `script` (1m) + `script` (2m) | As `neutron-metadata-agent-pod-kill`; the cleanups remove the label and the vhost |
+| 2-8 | Bring up the stack | as `neutron-metadata-agent-pod-kill` | Seed image `4e0a0000-0000-4000-8000-00000000000c`, compute id `d13d13d1-0000-4000-8000-00000000000c`, the compute registered under the node's name |
+| 9 | The chassis | `apply` + `assert` | OVNChassis `nova-vifd-chaos-chassis` `Ready=True/AllReady` with one ready pod |
+| 10 | Start the workload | `script` (6m) | `token` and `network` streams |
+| 11 | Baseline | `script` (6m) | Job `nova-vifd-chaos-network` creates `vifd-net` and `10.98.0.0/24`, boots `vifd-base` on it to `ACTIVE` and deletes it (`BASE-OK`). The step cleanup runs `openstack_cleanup` of `probe-lib.sh` |
+| 12 | Inject | `script` (6m) | `workload.sh mark fault-start`, applies `15-httpchaos.yaml`, waits for `AllInjected`. A probe's `PUT /v2.0/ports/00000000-0000-4000-8000-000000000000` gets no answer within 20 s while `GET /v2.0/networks` answers 200 within 5 s (`INJECTED-DELAY-OK`). The fake compute is restarted |
+| 13 | Hold | `script` (15m) | Job `nova-vifd-chaos-hold` boots `vifd-slow` on `vifd-net`; 120 s after the create it reads `BUILD` (`HELD-OK`), then it polls every 10 s for up to 570 s and prints `SETTLED <status>`. The script records the status and the server id on the Job, deletes the `HTTPChaos` and runs `workload.sh mark fault-end` |
+| 14 | Assert | `script` (5m) | For `SETTLED ACTIVE` the server's port has `binding:host_id` equal to the node's name and a `binding:vif_type` other than `binding_failed` and `unbound`; for `SETTLED ERROR` its ports are gone or unbound. `openstack server list --all-projects --status BUILD` is empty (`NO-STUCK-BUILD-OK`) |
+| 15 | Recovery | `script` (10m) | `vifd-recovered` reaches `ACTIVE` within 150 s (`RECOVERED-OK`); `openstack_cleanup` deletes every `vifd-*` server and `vifd-net` and requires both gone (`OPENSTACK-CLEAN-OK`) |
+| 16 | Judge the workload | `script` (25m) | `workload.sh verify --placement-audit nova-vifd-chaos --ovn-db-sync neutron-nova-vifd-chaos` |
+| 17 | Tear the deployment down | `script` (10m) | As the metadata suite's step 17 |
+
+**Fixtures:** `01`-`14` are those of `neutron-metadata-agent-pod-kill` renamed,
+without the NeutronMetadataAgent and its probe ConfigMap;
+`15-httpchaos.yaml` (`neutron-port-update-delay`, `target: Request`, `port: 9696`,
+`method: PUT`, `path: /v2.0/ports/*`, `delay: "330s"`, `duration: "900s"`);
+`16-network-job.yaml`, `17-hold-job.yaml`, `18-recovery-job.yaml`; `probe-lib.sh`.
+
+**Workload:** the `token` and `network` streams against a zero budget. The network
+stream creates and deletes networks and ports and sends no port `PUT`, so a failed
+cycle is a defect to find. The suite runs in the `nova` matrix entry with
+`spec.concurrent: false`, because it labels the node and runs an OVNChassis on it.
+
+**Catch blocks:** one anchor that prints and deletes the suite's chaos objects,
+calls `../diagnostics.sh chaos nova-vifd-chaos --cr-kind=nova`, dumps the sibling
+CRs, the chassis pods, the fake compute, the Neutron API, the Job logs and three
+operators, and dumps the workload.
+
+**Design notes:**
+
+- nova renders `[neutron]` without a timeout, so the compute's `PUT` waits the delay
+  out, and `SETTLED ACTIVE` is the expected outcome. `SETTLED ERROR` passes as well
+  when the port it leaves behind is unbound.
+- A guest that plugs a NIC comes to the libvirt pool with #1396.
+
+---
+
+### cinder-glance-http-abort
+
+**File:** `tests/e2e-chaos/cinder-glance-http-abort/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** An `HTTPChaos` on the API pods of `glance-cinder-img` closes the
+connection of every `GET /v2/images/*/file` before Glance sees it. Cinder reaches
+Glance only through `[DEFAULT] glance_api_servers`, which the operator renders from
+`spec.glanceEndpoint`, and its volume service downloads the image through that
+request when it creates a volume from it. The suite pins that the volume ends in
+`error` and never turns `available`: a volume created from an aborted download
+would not hold the image.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone | `apply` + `assert` | `keystone-cinder-img` (database `keystone_cinder_img`) `Ready=True/AllReady` |
+| 2 | Glance and the image | `apply` + `assert` + `script` (6m) | `glance-cinder-img` with `glance-cinder-img-s3` `Ready=True/AllReady`; Job `cinder-img-image-seed` uploads 1 MiB of zeros as `4e0a0000-0000-4000-8000-00000000000d` |
+| 3 | Cinder, then the workload | `script` + `apply` + `assert` + `script` (6m) | Vhost `cinder-img`, Cinder `cinder-img` with `spec.glanceEndpoint` and CinderBackend `img-nfs1` `Ready=True/AllReady`, then `workload.sh start` |
+| 4 | Baseline | `script` (8m) | `img-base`, 1 GiB from the image, reaches `available` within 240 s and is deleted (`BASELINE-OK`) |
+| 5 | Inject | `script` (12m) + `assert` + `script` (4m) | `workload.sh mark fault-start`, applies `06-httpchaos.yaml`, waits for `AllInjected`. The canary's `GET /v2/images/<seed>/file` gets no HTTP status while `GET /v2/images/<seed>` answers 200 (`INJECTED-ABORT-OK`). `cinder-img-volume-img-nfs1` is restarted. `img-abort` must read `error` within 240 s and still 30 s later; `available` at any read fails with `image-to-volume succeeded through an aborted download` (`FAILCLOSED-OK`). The assert reads `VolumeServicesReady=True` and `Ready=True/AllReady`; `img-abort` is deleted and gone within 120 s |
+| 6 | Lift the fault | `script` (4m) | Deletes the `HTTPChaos`, awaits the deletion, `workload.sh mark fault-end` |
+| 7 | Recovery | `script` (8m) | `img-recovered` reaches `available` within 240 s (`RECOVERED-OK`) and is deleted |
+| 8 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-glance-cr.yaml`, `02-glancebackend-cr.yaml`,
+`03-image-seed-job.yaml`, `04-cinder-cr.yaml`, `05-cinderbackend-cr.yaml`,
+`06-httpchaos.yaml` (`glance-download-abort`, `target: Request`, `port: 9292`,
+`method: GET`, `path: /v2/images/*/file`, `abort: true`, `duration: "600s"`).
+
+**Workload:** the `token`, `volume` and `image` streams against a zero budget. The
+volume stream creates blank volumes, and the image stream uploads with `PUT` and
+reads the status, so no stream downloads an image. The suite runs in the `network`
+matrix entry, beside the other cinder suites.
+
+**Catch blocks:** from step 2 on, one anchor prints and deletes the suite's chaos
+objects, calls `../diagnostics.sh chaos cinder-img --cr-kind=cinder`, dumps the
+Glance CR, the Glance and cinder-operator logs and the seed Job, and dumps the
+workload.
+
+**Design notes:**
+
+- The probes create, wait for and delete the volumes with `lib/probe.py cinder`
+  and a Keystone token, the way an authenticated client does.
+
+---
+
+### keystone-validation-http-503
+
+**File:** `tests/e2e-chaos/keystone-validation-http-503/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** An `HTTPChaos` on the API pods of `keystone-chaos-ks503` answers every
+`GET /v3/auth/tokens` with a 503, the request Placement and Glance validate their
+callers' tokens with, while a `POST` that issues a token passes. `placement-keystone-outage`
+and `glance-keystone-outage` prove 503 and 401 for a Keystone that refuses the
+connection; keystonemiddleware turns an error from Keystone during validation into
+the same `ServiceError`, which this suite pins.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Keystone | `apply` + `assert` | `keystone-chaos-ks503` (database `keystone_chaos_ks503`) `Ready=True/AllReady` |
+| 2 | Placement and Glance | `apply` + `assert` + `script` (6m) | `placement-ks503`, `glance-ks503` and `glance-ks503-s3` `Ready=True/AllReady`, then `workload.sh start` |
+| 3 | Inject | `script` (10m) | `workload.sh mark fault-start`, applies `04-httpchaos.yaml`, waits for `AllInjected`. The canary issues a token T0 and validates it: 503 (`INJECTED-503-OK`). Placement and Glance are restarted. A fresh token T1 must get 503 on `GET /resource_providers` and 401 on `GET /v2/images`; a 2xx fails with `answered <code> with a token Keystone could not validate`, anything else is retried every 5 s for up to 120 s (`FAILCLOSED-OK`) |
+| 4 | Steady under the fault | `assert` x3 + `script` (4m) | The three CRs `Ready=True/AllReady`, the Keystone at `DatabaseReady=True`, `GET /v3` 200 |
+| 5 | Lift the fault | `script` (4m) | Deletes the `HTTPChaos`, awaits the deletion, `workload.sh mark fault-end` |
+| 6 | Recovery | `script` (5m) | A fresh token gets 200 from both within 180 s (`RECOVERY-OK`) |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-placement-cr.yaml`, `02-glance-cr.yaml`,
+`03-glancebackend-cr.yaml`, `04-httpchaos.yaml` (`keystone-validate-503`,
+`target: Response`, `port: 5000`, `method: GET`, `path: /v3/auth/tokens`,
+`replace: {code: 503}`, `duration: "600s"`).
+
+**Workload:** the `token`, `placement` and `image` streams, judged against
+`failures=1500 recovery=180s`, an estimate. The token stream's validation and both
+authenticated streams fail from the injection to the lift. The suite runs in the
+`faults` matrix entry.
+
+**Catch blocks:** from step 3 on every catch prints and deletes the suite's chaos
+objects first, then calls `../diagnostics.sh chaos keystone-chaos-ks503`, dumps the
+Placement and Glance logs and dumps the workload.
+
+**Design notes:**
+
+- Glance answers 401 where Placement answers 503 because the operator renders
+  `delay_auth_decision = true` into its paste pipeline.
 
 ---
 

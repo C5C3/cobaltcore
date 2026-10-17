@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# HTTPChaos keystone-validate-503: every response to GET /v3/auth/tokens on
+# port 5000 of the API pods of keystone-chaos-ks503 becomes a 503. Token
+# validation is a GET there, so Placement and Glance cannot validate a token,
+# while issuing one (POST) and GET /v3 pass unchanged.
+#
+# Server-side on the API pods, as every HTTPChaos of the chaos suites: the
+# admission policy chaos-mesh-httpchaos-api-workloads-only
+# (deploy/kind/chaos-mesh/httpchaos-policy.yaml) admits a selector that pins
+# app.kubernetes.io/name to an API workload and names no other selector. The
+# fault reaches only connections opened after the injection, so the suite
+# restarts Placement and Glance once it reads AllInjected.
+#
+# duration is a safety net above the suite's 10-minute fault step; the suite
+# deletes the object itself.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: keystone-validate-503
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: keystone-validation-http-503
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: keystone
+      app.kubernetes.io/instance: keystone-chaos-ks503
+      app.kubernetes.io/component: api
+  target: Response
+  port: 5000
+  method: GET
+  path: /v3/auth/tokens
+  replace:
+    code: 503
+  duration: "600s"

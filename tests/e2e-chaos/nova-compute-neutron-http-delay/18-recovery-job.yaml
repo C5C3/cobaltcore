@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Boots vifd-recovered with a port on vifd-net after the lift: ACTIVE within
+# 150 s says nova-compute binds ports through Neutron again (RECOVERED-OK).
+# The recovery step deletes it with the other vifd-* servers and vifd-net
+# (probe-lib.sh openstack_cleanup). backoffLimit is 0 because the boot is not
+# idempotent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-vifd-chaos-recovery
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: boot
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-vifd-chaos.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              SEED=4e0a0000-0000-4000-8000-00000000000c
+
+              # wait_settled <name> <seconds>: poll the server every 5 s until ACTIVE or
+              # ERROR and print the status; on the deadline print what it reads.
+              wait_settled() {
+                ws_deadline=$(( $(date +%s) + $2 ))
+                while true; do
+                  ws_status="$(openstack server show "$1" -f value -c status 2>/dev/null || true)"
+                  case "${ws_status}" in
+                    ACTIVE | ERROR) echo "${ws_status}"; return 0 ;;
+                  esac
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "${ws_status:-<none>}"
+                    return 0
+                  fi
+                  sleep 5
+                done
+              }
+
+              openstack server create --flavor m1.nano --image "${SEED}" --network vifd-net vifd-recovered -f value -c id
+              STATUS="$(wait_settled vifd-recovered 150)"
+              if [ "${STATUS}" != ACTIVE ]; then
+                echo "FAIL: vifd-recovered is ${STATUS}, not ACTIVE, after 150s"
+                openstack server show vifd-recovered 2>&1 || true
+                exit 1
+              fi
+              echo RECOVERED-OK

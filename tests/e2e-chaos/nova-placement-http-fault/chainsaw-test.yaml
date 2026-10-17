@@ -1,0 +1,551 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: Placement answers the scheduler's allocation
+# candidates request with a 503, then aborts it, under a Nova deployment.
+#
+# Fault: two HTTPChaos objects on the API pods of placement-nova-plhttp-chaos,
+# one after the other in one fault window. 14-httpchaos-503.yaml replaces the
+# response to GET /allocation_candidates with a 503; 15-httpchaos-abort.yaml
+# closes the connection of the same request before Placement sees it. Only
+# nova-scheduler sends that request: the fake compute reports its inventory
+# with GET and PUT on /resource_providers, which pass. The scheduler reaches
+# Placement through the catalog with [placement] timeout = 60
+# (operators/nova/internal/controller/reconcile_config.go).
+#
+# Claim, phase by phase:
+#   baseline  s-base boots to ACTIVE with --nic none and is deleted.
+#   503       A probe's GET /allocation_candidates?resources=VCPU:1 gets 503
+#             while GET / gets 200 (INJECTED-503-OK). The scheduler is
+#             restarted, because HTTPChaos reaches only connections opened
+#             after the injection and the scheduler keeps a pooled one. s-503
+#             reaches ERROR within 150 s with a fault matching No valid host
+#             (FAILCLOSED-503-OK), and the Nova CR keeps Ready=True,
+#             SchedulerReady=True and NovaAPIReady=True.
+#   abort     The same GET gets no HTTP status while GET / gets 200
+#             (INJECTED-ABORT-OK). After a second scheduler restart s-abort
+#             reaches ERROR the same way (FAILCLOSED-ABORT-OK), with the same
+#             conditions.
+#   recovered After the lift s-recovered reaches ACTIVE within 150 s
+#             (RECOVERED-OK). verify then audits Placement and compares the
+#             Neutron and OVN databases.
+#
+# A build that reached ACTIVE under either fault would have been placed
+# without a claim; one that stayed in BUILD would leave a stuck server for the
+# workload's server check to find.
+#
+# Blast radius: both objects select the API pods of this suite's Placement by
+# name, instance and component, and their method and path filters leave every
+# request but the scheduler's alone. The scheduler restarts are of this
+# suite's Nova.
+#
+# Leg: nova. HTTPChaos needs the chaos-tproxy kernel modules
+# hack/deploy-infra.sh loads on the kind host.
+#
+# Workload: the token, network, server and image streams of ../lib/workload.sh
+# against this suite's Keystone, Neutron, Nova and Glance. The server stream
+# fails from the first scheduler restart until the lift, every build ending in
+# ERROR; the other three never touch allocation candidates. The budget is an
+# estimate of that window: no run has measured it yet.
+# Chaos budget: failures=200 recovery=180s
+# Chaos budget measured: 2026-10-17, estimate, failures 100, recovery 150 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-placement-http-fault
+spec:
+  namespace: openstack
+  timeouts:
+    # The suite default. Every assert that waits out a service bring-up carries
+    # 8m of its own (../nova-placement-outage/ needs that for the same
+    # fixtures); the rest read a deployment that is already up.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost ──────────────────────────────────────
+  # One vhost per suite: nova's RPC topics are named after the service rather
+  # than after the CR, so two suites on one vhost would share the scheduler and
+  # conductor queues. See ../../e2e/cinder/broker-vhost.sh. The step cleanup
+  # runs at the end of the test, which is why the vhost is taken here rather
+  # than beside the Nova CR five steps down.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create nova-plhttp-chaos nova-plhttp-chaos-messaging openstack
+    catch: &nova-plhttp-dump
+    # The lift goes first: every step from the first injection to the lift
+    # must leave no HTTPChaos of this suite behind, and the objects are
+    # printed before they go.
+    - script:
+        timeout: 3m
+        shell: bash
+        content: . ../lib/faults.sh && fault_lift_suite nova-placement-http-fault
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos nova-plhttp-chaos --cr-kind=nova --dep-label=app.kubernetes.io/instance=placement-nova-plhttp-chaos --dep-ns=openstack --log-label=app.kubernetes.io/instance=nova-plhttp-chaos
+    - get:
+        apiVersion: keystone.openstack.c5c3.io/v1alpha1
+        kind: Keystone
+        name: keystone-nova-plhttp-chaos
+        namespace: openstack
+    - get:
+        apiVersion: ovn.openstack.c5c3.io/v1alpha1
+        kind: OVNCentral
+        name: nova-plhttp-chaos-ovn
+        namespace: openstack
+    - get:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-nova-plhttp-chaos
+        namespace: openstack
+    - get:
+        apiVersion: placement.openstack.c5c3.io/v1alpha1
+        kind: Placement
+        name: placement-nova-plhttp-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: Glance
+        name: glance-nova-plhttp-chaos
+        namespace: openstack
+    - get:
+        apiVersion: glance.openstack.c5c3.io/v1alpha1
+        kind: GlanceBackend
+        name: glance-nova-plhttp-chaos-s3
+        namespace: openstack
+    # The compute and the Jobs. diagnostics.sh reads the pods of the Nova
+    # itself; these are the ones outside that label.
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Fake compute ==="
+          kubectl logs -n "$NAMESPACE" deploy/nova-plhttp-chaos-fake-compute --tail=100 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-plhttp-chaos-catalog-setup nova-plhttp-chaos-image-seed nova-plhttp-chaos-flavor-seed \
+            nova-plhttp-chaos-boot-s-base nova-plhttp-chaos-boot-s-503 nova-plhttp-chaos-boot-s-abort \
+            nova-plhttp-chaos-boot-s-recovered; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/name=nova-operator
+        tail: 200
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/name=keystone-operator
+        tail: 200
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/name=ovn-operator
+        tail: 200
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/name=neutron-operator
+        tail: 200
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/name=placement-operator
+        tail: 200
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/name=glance-operator
+        tail: 200
+    - events:
+        namespace: openstack
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump nova-placement-http-fault
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete nova-plhttp-chaos || true
+  # ── Step 2: Bring up Keystone ─────────────────────────────────────────────
+  # It goes first because the catalog Job, the four sibling CRs and the Nova
+  # all authenticate against it.
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-nova-plhttp-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-plhttp-dump
+  # ── Step 3: Register the four services in the catalog ─────────────────────
+  # The Job is deleted first because a Job's pod template is immutable, so a
+  # re-run against a leftover object would fail on the update rather than on
+  # anything the suite is testing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 02-catalog-setup-job.yaml nova-plhttp-chaos-catalog-setup 300
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-plhttp-chaos-catalog-setup
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-plhttp-dump
+  # ── Step 4: Bring up the four services the boot path depends on ───────────
+  - try:
+    - apply:
+        file: 03-messaging-secret.yaml
+    - apply:
+        file: 04-ovncentral-cr.yaml
+    - apply:
+        file: 05-neutron-cr.yaml
+    - apply:
+        file: 06-placement-cr.yaml
+    - apply:
+        file: 07-glance-cr.yaml
+    - apply:
+        file: 08-glancebackend-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: nova-plhttp-chaos-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-nova-plhttp-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-nova-plhttp-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-nova-plhttp-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-nova-plhttp-chaos-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-plhttp-dump
+  # ── Step 5: Seed the image the servers boot from ──────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 09-image-seed-job.yaml nova-plhttp-chaos-image-seed 300
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-plhttp-chaos-image-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-plhttp-dump
+  # ── Step 6: Apply the Nova CR and assert its conditions ───────────────────
+  # 8m: two schema migrations, a cell mapping and five workloads.
+  - try:
+    - apply:
+        file: 10-metadata-secret.yaml
+    - apply:
+        file: 11-nova-cr.yaml
+    - assert:
+        timeout: 8m
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-plhttp-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'ComputeConfigReady']):
+            - status: "True"
+              reason: ComputeConfigPublished
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'ConductorReady']):
+            - status: "True"
+              reason: ConductorReady
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'MetadataReady']):
+            - status: "True"
+              reason: MetadataReady
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *nova-plhttp-dump
+  # ── Step 7: Start the fake compute and map it into cell1 ──────────────────
+  # The Deployment mounts the compute-contract Secret the step above has just
+  # asserted. Discovery runs by hand rather than waiting out the scheduler's
+  # 300-second periodic.
+  - try:
+    - apply:
+        file: 12-fake-compute.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-plhttp-chaos-fake-compute
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          ../../e2e/nova/discover-hosts.sh nova-plhttp-chaos "$NAMESPACE"
+    catch: *nova-plhttp-dump
+  # ── Step 8: Seed the flavor the server stream boots with ──────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 13-flavor-seed-job.yaml nova-plhttp-chaos-flavor-seed 300
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: nova-plhttp-chaos-flavor-seed
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch: *nova-plhttp-dump
+  # ── Step 9: Start the workload ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start nova-placement-http-fault --
+          --streams token,network,server,image
+          --keystone http://keystone-nova-plhttp-chaos.openstack.svc:5000/v3
+          --neutron http://neutron-nova-plhttp-chaos.openstack.svc:9696
+          --nova http://nova-plhttp-chaos.openstack.svc:8774/v2.1
+          --image-ref 4e0a0000-0000-4000-8000-00000000000b
+          --flavor m1.nano
+          --glance http://glance-nova-plhttp-chaos.openstack.svc:9292
+    catch: *nova-plhttp-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop nova-placement-http-fault
+  # ── Step 10: Boot a server before the fault ───────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 16-boot-job.yaml nova-plhttp-chaos-boot-s-base 300 \
+            NAME=s-base WANT=ACTIVE FAULT= SENTINEL=BASELINE-OK
+    catch: *nova-plhttp-dump
+  # ── Step 11: Phase 503 ────────────────────────────────────────────────────
+  # The fault window opens here and stays open through step 12: verify reads
+  # one fault-start and one fault-end mark, so the two phases share it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          PLACEMENT=http://placement-nova-plhttp-chaos.openstack.svc.cluster.local:8778
+          ../lib/workload.sh mark nova-placement-http-fault fault-start
+          fault_inject 14-httpchaos-503.yaml httpchaos/placement-candidates-503
+          probe_run nova-plhttp-canary-503 180 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" expect \
+            --keystone http://keystone-nova-plhttp-chaos.openstack.svc.cluster.local:5000/v3 \
+            --header "OpenStack-API-Version: placement 1.10" \
+            --canary httpchaos/placement-candidates-503 \
+            --check "GET ${PLACEMENT}/allocation_candidates?resources=VCPU:1 503" \
+            --check "GET ${PLACEMENT}/ 200" --ok INJECTED-503-OK
+          kubectl rollout restart deployment/nova-plhttp-chaos-scheduler -n "$NAMESPACE"
+          kubectl rollout status deployment/nova-plhttp-chaos-scheduler -n "$NAMESPACE" --timeout=5m
+          job_run 16-boot-job.yaml nova-plhttp-chaos-boot-s-503 300 \
+            NAME=s-503 WANT=ERROR 'FAULT=No valid host' SENTINEL=FAILCLOSED-503-OK
+    - assert:
+        resource: &nova-steady
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-plhttp-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+            (conditions[?type == 'NovaAPIReady']):
+            - status: "True"
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          fault_lift httpchaos/placement-candidates-503
+    catch: *nova-plhttp-dump
+  # ── Step 12: Phase abort ──────────────────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          PLACEMENT=http://placement-nova-plhttp-chaos.openstack.svc.cluster.local:8778
+          fault_inject 15-httpchaos-abort.yaml httpchaos/placement-candidates-abort
+          probe_run nova-plhttp-canary-abort 180 --env "OS_PASSWORD=$(admin_password)" -- \
+            python3 -u -c "$(cat ../lib/probe.py)" expect \
+            --keystone http://keystone-nova-plhttp-chaos.openstack.svc.cluster.local:5000/v3 \
+            --header "OpenStack-API-Version: placement 1.10" \
+            --canary httpchaos/placement-candidates-abort \
+            --check "GET ${PLACEMENT}/allocation_candidates?resources=VCPU:1 none" \
+            --check "GET ${PLACEMENT}/ 200" --ok INJECTED-ABORT-OK
+          kubectl rollout restart deployment/nova-plhttp-chaos-scheduler -n "$NAMESPACE"
+          kubectl rollout status deployment/nova-plhttp-chaos-scheduler -n "$NAMESPACE" --timeout=5m
+          job_run 16-boot-job.yaml nova-plhttp-chaos-boot-s-abort 300 \
+            NAME=s-abort WANT=ERROR 'FAULT=No valid host' SENTINEL=FAILCLOSED-ABORT-OK
+    - assert:
+        resource: *nova-steady
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          fault_lift httpchaos/placement-candidates-abort
+          ../lib/workload.sh mark nova-placement-http-fault fault-end
+    catch: *nova-plhttp-dump
+  # ── Step 13: A build is placed again ──────────────────────────────────────
+  # The scheduler's pooled connection went through the proxy, which the lift
+  # removed; urllib3 opens a new one on the first failure.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          . ../lib/faults.sh
+          job_run 16-boot-job.yaml nova-plhttp-chaos-boot-s-recovered 300 \
+            NAME=s-recovered WANT=ACTIVE FAULT= SENTINEL=RECOVERED-OK
+    catch: *nova-plhttp-dump
+  # ── Step 14: Judge the workload, audit Placement, compare OVN ─────────────
+  # 25 minutes: the observation and the DONE wait of verify, then the audit
+  # and a db-sync Job that may take its full 10 minutes.
+  - try:
+    - script:
+        timeout: 25m
+        content: >-
+          ../lib/workload.sh verify nova-placement-http-fault
+          --placement-audit nova-plhttp-chaos
+          --ovn-db-sync neutron-nova-plhttp-chaos
+    catch: *nova-plhttp-dump
+  # ── Step 15: Tear the deployment down ─────────────────────────────────────
+  # Chainsaw's own cleanup deletes what the suite applied, under the 120s the
+  # chaos config allows, and the vhost goes in step 1's cleanup. What it cannot
+  # do inside that budget is wait out five workloads, so the suite does that
+  # itself, from the bus consumers inward. The fake compute holds a broker
+  # connection of its own and is not part of the CR, so it goes before the
+  # Nova. The compute and the Jobs, which the suite applied with kubectl, are
+  # deleted best-effort: a suite that already failed must still reach the CR
+  # delete.
+  - try:
+    - script:
+        timeout: 10m
+        content: |
+          set -eu
+
+          kubectl delete -f 12-fake-compute.yaml --ignore-not-found \
+            --wait=true --timeout=120s || true
+          kubectl delete job -n "$NAMESPACE" --ignore-not-found \
+            nova-plhttp-chaos-catalog-setup nova-plhttp-chaos-image-seed nova-plhttp-chaos-flavor-seed \
+            nova-plhttp-chaos-boot-s-base nova-plhttp-chaos-boot-s-503 nova-plhttp-chaos-boot-s-abort \
+            nova-plhttp-chaos-boot-s-recovered || true
+
+          kubectl delete nova nova-plhttp-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=nova-plhttp-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a nova pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-plhttp-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Nova CR and its pods are gone"
+    catch: *nova-plhttp-dump

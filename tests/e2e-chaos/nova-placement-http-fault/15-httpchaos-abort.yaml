@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# HTTPChaos placement-candidates-abort: the proxy closes the connection of
+# every GET /allocation_candidates on port 8778 of the API pods of
+# placement-nova-plhttp-chaos before Placement sees it, so the scheduler gets
+# no HTTP status at all. The selector, the filter and the duration are those
+# of 14-httpchaos-503.yaml, which gives the reasons.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: HTTPChaos
+metadata:
+  name: placement-candidates-abort
+  namespace: openstack
+  labels:
+    chaos.c5c3.io/suite: nova-placement-http-fault
+spec:
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: placement
+      app.kubernetes.io/instance: placement-nova-plhttp-chaos
+      app.kubernetes.io/component: api
+  target: Request
+  port: 8778
+  method: GET
+  path: /allocation_candidates
+  abort: true
+  duration: "900s"

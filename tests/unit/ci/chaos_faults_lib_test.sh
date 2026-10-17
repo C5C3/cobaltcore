@@ -12,7 +12,8 @@
 #      timed beyond an empty exec, the resolver and cgroup canaries and the
 #      OOM evidence on their pass and
 #      fail paths; the probe pod's label, securityContext and verdict; the
-#      sentinel wait on a match, a FAIL line, an ended pod and the deadline.
+#      sentinel wait on a match, a FAIL line, an ended pod and the deadline;
+#      the Job run on a completed Job, a failed one and the deadline.
 #   2. tests/e2e-chaos/lib/probe.py, against a stub HTTP server: expect on a
 #      status, on no status and on no answer, its canary line, its refusal of
 #      a 2xx, its retry window, its headers and its token, issued after
@@ -55,7 +56,7 @@ mkdir -p "$TMP_DIR/bin" "$TMP_DIR/cg"
 # and cat reads cg/<file>. The restartCount and the last termination reason of
 # a container are STUB_RESTARTS and STUB_REASON, the phase of a pod is
 # STUB_PHASE and its log the file log, and a run writes its arguments to run.
-# STUB_APPLY_RC fails the apply.
+# The true conditions of a Job are STUB_JOB. STUB_APPLY_RC fails the apply.
 cat >"$TMP_DIR/bin/kubectl" <<'SH'
 #!/bin/bash
 D="$STUB_DIR"
@@ -100,6 +101,7 @@ case "$1" in
       *restartCount*) printf '%s' "${STUB_RESTARTS:-}" ;;
       *terminated.reason*) printf '%s' "${STUB_REASON:-}" ;;
       *"{.status.phase}"*) printf '%s' "${STUB_PHASE:-}" ;;
+      "get job "*) printf '%s' "${STUB_JOB:-}" ;;
     esac
     ;;
   logs)
@@ -407,6 +409,35 @@ test_wait_sentinel_paths() {
   run_lib STUB_PHASE=Running -- 'wait_sentinel probe "^AHEAD-OFFSET " 0'
   assert_eq "the deadline fails" "1" "$RC"
   assert_contains "and says so" "$OUT" "FAIL: no line matching ^AHEAD-OFFSET  from probe within 0s"
+}
+
+# --- Test 9b --------------------------------------------------------------
+test_job_run_waits_for_complete_or_failed() {
+  echo "Test: job_run replaces a leftover Job, applies the rendered one and returns its outcome"
+  new_stub
+  printf 'kind: Job\nmetadata:\n  name: boot-@NAME@\n' >"$TMP_DIR/job.yaml"
+  printf 'RECOVERED-OK\n' >"$TMP_DIR/log"
+  run_lib STUB_JOB=Complete -- 'job_run job.yaml boot-s1 10 NAME=s1'
+  assert_eq "a Job that completed passes" "0" "$RC"
+  assert_contains "its log is printed" "$OUT" "RECOVERED-OK"
+  assert_contains "a leftover Job is deleted first" "$(head -1 "$TMP_DIR/calls")" \
+    "delete job boot-s1 -n ns --ignore-not-found --wait=true"
+  assert_contains "the rendered Job is applied" "$(cat "$TMP_DIR/applied")" "name: boot-s1"
+
+  new_stub
+  run_lib STUB_JOB=Failed -- 'job_run job.yaml boot-s1 10 NAME=s1'
+  assert_eq "a Job that failed fails at once" "1" "$RC"
+  assert_contains "and says so" "$OUT" "FAIL: job boot-s1 failed"
+
+  new_stub
+  run_lib STUB_JOB= -- 'job_run job.yaml boot-s1 0 NAME=s1'
+  assert_eq "a Job still running at the deadline fails" "1" "$RC"
+  assert_contains "and says so" "$OUT" "FAIL: job boot-s1 did not finish within 0s"
+
+  new_stub
+  run_lib STUB_JOB=Complete -- 'job_run job.yaml boot-s1 10'
+  assert_eq "a placeholder without a value applies nothing" "1" "$RC"
+  assert_eq "no kubectl call was made" "" "$(calls)"
 }
 
 # ---------------------------------------------------------------------------
@@ -732,6 +763,7 @@ test_oom_seen_reads_the_counter_and_the_restart
 test_state_reads_the_suite_configmap
 test_probe_run_starts_a_confined_pod_and_reads_its_verdict
 test_wait_sentinel_paths
+test_job_run_waits_for_complete_or_failed
 if start_stub; then
   test_probe_expect
   test_probe_token
