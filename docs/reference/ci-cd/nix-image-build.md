@@ -44,7 +44,7 @@ on, the images input adds these outputs:
 
 | Output | Content |
 | --- | --- |
-| `packages.<system>.<name>-image` | a `dockerTools.streamLayeredImage`, a script that writes the image as a tar stream (`backup-shifter-image`, `ovn-image`, `openstack-hypervisor-operator-image`, `kvm-node-agent-image`, `libvirt-image`) |
+| `packages.<system>.<name>-image` | a `dockerTools.streamLayeredImage`, a script that writes the image as a tar stream (`backup-shifter-image`, `keystone-federation-proxy-image`, `ovn-image`, `openstack-hypervisor-operator-image`, `kvm-node-agent-image`, `libvirt-image`) |
 | `packages.<system>.<name>-<rel_>-image` | the image of a Python service or of tempest for one release, built from the lock `nix/locks/<release>/<name>/` (`keystone-2026_1-image`) |
 | `packages.<system>.nova-compute-<rel_>-image` | the compute image for each nova lock, built from that lock with its `nova-compute` dependency group ([Hypervisor images](#hypervisor-images)) |
 | `packages.<system>.<name>-<rel_>-test-run` | the unit tests of a service lock, a build that succeeds whenever the suite ran ([Unit tests](#unit-tests)) |
@@ -57,11 +57,14 @@ on, the images input adds these outputs:
 | `devShells.<system>.image-tools` | skopeo and vulnix at the versions of `flake.lock`, for the `build-nix-image` action |
 
 The package names are flat because `nix flake check` rejects a nested
-attribute set under `packages`. The three images built from an upstream commit
+attribute set under `packages`. The four images built from an upstream commit
 pass their inner build through `passthru`: `nix build .#ovn-image.ovn` builds
-OVS and OVN, and `nix build .#openstack-hypervisor-operator-image.manager` or
-`.#kvm-node-agent-image.manager` the manager binary
-([Source-built images](#source-built-images)). `.#libvirt-image.libvirt` and
+OVS and OVN, `nix build .#openstack-hypervisor-operator-image.manager` or
+`.#kvm-node-agent-image.manager` the manager binary, and
+`nix build .#keystone-federation-proxy-image.modAuthOpenidc` the
+mod_auth_openidc module ([Source-built images](#source-built-images)).
+`.#keystone-federation-proxy-image.modAuthMellon` is the stripped
+mod_auth_mellon of the same image. `.#libvirt-image.libvirt` and
 `.#libvirt-image.qemu` are the libvirt and the QEMU of the libvirt image. `<rel_>` is the release with its dot replaced
 by `_`, since an unquoted flake attribute cannot contain a dot. The
 directories under `nix/locks/` are the inventory of the Python images: one
@@ -89,10 +92,12 @@ sdist asks for before uv can read its metadata.
 | `nix/pkgs/libvirt.nix` | nixpkgs' libvirt with `--sysconfdir=/etc` and `-Dqemu_datadir=/usr/share/qemu`, the one libvirt of both hypervisor images |
 | `nix/base-requirements.txt` | the release-independent pins `hack/nix-lock.sh` adds to every service and tempest lock, `uwsgi` among them |
 | `nix/locks/<release>/<name>/` | the lock of one service or tempest release, written by `hack/nix-lock.sh` |
-| `images/<name>/image.nix` | the image; backup-shifter's and ovn's are functions of `pkgs` and `fhsLayout`, the hvo and kna images' of `pkgs` and `staticImage`, libvirt's of `pkgs` and `libvirt`, a Python image's of `serviceImage`, its environment `env` and what else it names (nova-compute's also `libvirt`) |
+| `images/<name>/image.nix` | the image; backup-shifter's, keystone-federation-proxy's and ovn's are functions of `pkgs` and `fhsLayout`, the hvo and kna images' of `pkgs` and `staticImage`, libvirt's of `pkgs` and `libvirt`, a Python image's of `serviceImage`, its environment `env` and what else it names (nova-compute's also `libvirt`) |
 | `images/libvirt/qemu.nix` | the QEMU of the libvirt image |
-| `images/<name>/source.json` | the pin of an image built from an upstream commit (ovn, openstack-hypervisor-operator, kvm-node-agent), written by `hack/nix-lock.sh` |
+| `images/<name>/source.json` | the pin of an image built from an upstream commit (ovn, keystone-federation-proxy, openstack-hypervisor-operator, kvm-node-agent), written by `hack/nix-lock.sh` |
 | `images/ovn/ovn.nix` | OVS and OVN compiled from the commits of `images/ovn/source.json` |
+| `images/keystone-federation-proxy/mod_auth_openidc.nix` | mod_auth_openidc compiled from the commit of `images/keystone-federation-proxy/source.json` |
+| `images/keystone-federation-proxy/httpd-base.conf` | the Apache scaffold of the federation proxy, whose `LoadModule` lines `image.nix` fills with store paths |
 | `images/<name>/manager.nix` | the manager binary of hvo or kna, built with `buildGo127Module` from the commit of its `source.json` with the patches under `images/<name>/patches/` |
 | `images/<name>/patch-checks.sh` | the checks of those patches, which the `checkPhase` of `manager.nix` runs |
 
@@ -139,13 +144,13 @@ hack/nix-lock.sh keystone 2026.1
 ```
 
 `--all` writes every lock the release files pin, writes the hash of the noVNC
-commit into `images/nova/novnc.json` and the hashes of the three image pins
+commit into `images/nova/novnc.json` and the hashes of the four image pins
 `images/<name>/source.json`, including the OVS commit the `ovs` gitlink names
 at the pinned OVN commit ([Source-built images](#source-built-images)), and
 deletes every directory under `nix/locks/` the release files do not name.
 `--check` runs `--all` and fails with `nix-lock.sh: the locks are stale; run
 make nix-lock and commit the result` when `git status` reports a change under
-`nix/locks/`, in `novnc.json` or in one of the three pins. The
+`nix/locks/`, in `novnc.json` or in one of the four pins. The
 `nix-lock-check` job of the build-images workflow runs it on every run.
 
 The committed `uv.lock` seeds `uv lock`, so uv keeps every locked version the
@@ -187,14 +192,15 @@ lists them per service. `docker load` names the image `<name>:<release>`.
 
 ## Source-built images
 
-Three images compile upstream code at a pinned commit: `ovn` (Open vSwitch and
-OVN), `openstack-hypervisor-operator` (hvo) and `kvm-node-agent` (kna). Each
-pin is `images/<name>/source.json`, and `make nix-lock` writes every hash in
-it:
+Four images compile upstream code at a pinned commit: `ovn` (Open vSwitch and
+OVN), `keystone-federation-proxy` (mod_auth_openidc),
+`openstack-hypervisor-operator` (hvo) and `kvm-node-agent` (kna). Each pin is
+`images/<name>/source.json`, and `make nix-lock` writes every hash in it:
 
 | Pin | Keys | Written by `make nix-lock` |
 | --- | --- | --- |
 | `images/ovn/source.json` | `version`, `rev`, `hash`, `ovs.rev`, `ovs.hash` | `hash`, `ovs.rev` and `ovs.hash` |
+| `images/keystone-federation-proxy/source.json` | `version`, `rev`, `hash` | `hash` |
 | `images/openstack-hypervisor-operator/source.json` | `rev`, `hash`, `vendorHash` | `hash` and `vendorHash` |
 | `images/kvm-node-agent/source.json` | `rev`, `hash`, `vendorHash` | `hash` and `vendorHash` |
 
@@ -231,6 +237,39 @@ ovn.nix: images/ovn/source.json names <version>, but the tree at <rev> builds ov
 The OVS and OVN testsuites do not run in the build; `verify_ovn.sh` is the
 contract of the image.
 
+`images/keystone-federation-proxy/mod_auth_openidc.nix` compiles
+mod_auth_openidc, which `nixpkgs-images` does not package, against nixpkgs'
+Apache with `--with-apxs` and `--with-hiredis`. The explicit `--with-hiredis`
+makes configure fail when hiredis is missing. Brotli and jq claim expressions
+stay off, as in the module the Docker image shipped. Upstream's `make check`
+runs in the build. The `installPhase` copies `src/.libs/mod_auth_openidc.so`
+to `$out/modules/`, because upstream's `make install` writes into the
+read-only store path of httpd. stdenv strips `lib/` and `bin/` but not
+`modules/`, and the debug information of an unstripped module keeps httpd's
+`dev` output, every `-dev` input and gcc in the closure. `stripDebugList = [
+"modules" ]` strips it, and `disallowedRequisites` fails the build when a
+later nixpkgs brings those references back. `image.nix` gives nixpkgs'
+mod_auth_mellon the same two attributes. When the `AC_INIT` line of
+`configure.ac` names another version than the pin, `postPatch` fails with this
+message:
+
+```text
+mod_auth_openidc.nix: images/keystone-federation-proxy/source.json names <version>, but configure.ac at <rev> declares AC_INIT([mod_auth_openidc],[<declared version>],[<address>])
+```
+
+The image is the FHS façade with coreutils and two root links.
+`/usr/sbin/apache2`, the command the keystone operator runs, is nixpkgs'
+`httpd`. `/etc/keystone-federation-proxy/httpd-base.conf` is the scaffold of
+the image directory, whose `LoadModule` lines `replaceVars` fills with the
+store paths of httpd and both modules; a placeholder it cannot fill fails the
+build. nixpkgs builds every httpd module shared, so the scaffold loads
+`mod_unixd`: without it `apache2 -t` passes and the server refuses to start
+with `AH00136`. `/etc/keystone-federation-proxy/` is a real directory with
+real `conf.d/` and `metadata/` mount points, so the container runtime can
+create the `mellon/` mount point inside it. `/var/www/html` exists because
+`apache2 -t` fails without the `DocumentRoot`, and `PATH` includes
+`/usr/sbin`.
+
 `images/<name>/manager.nix` builds the manager of hvo or kna with
 `buildGo127Module`, since both upstream `go.mod` files name Go 1.27. The
 patches under `images/<name>/patches/` apply to the module download and the
@@ -258,6 +297,9 @@ both verify scripts source, checks these files and the configuration.
 ```bash
 nix build .#ovn-image && ./result | docker load
 bash tests/container-images/verify_ovn.sh ovn:26.03.2
+
+nix build .#keystone-federation-proxy-image && ./result | docker load
+bash tests/container-images/verify_keystone_federation_proxy.sh keystone-federation-proxy:latest
 
 nix build .#openstack-hypervisor-operator-image && ./result | docker load
 bash tests/container-images/verify_hvo.sh openstack-hypervisor-operator:sha-<commit>
@@ -429,6 +471,13 @@ the `image_libvirt` filter matches (`images/libvirt/`,
 `nix/pkgs/libvirt.nix`, the flake inputs, `nix/lib/` and the build script);
 otherwise the map resolves `ghcr.io/c5c3/libvirt:latest` to the digest main
 published, and `e2e-nova-libvirt` loads that image into kind as `latest`.
+`keystone-federation-proxy-image` follows it through `changed-proxy`, set
+when the `image_proxy` filter matches (`images/keystone-federation-proxy/`,
+the flake inputs, `nix/lib/` and the build script), and the resolver passes
+`BUILD_PROXY=true`. The stream loads as `keystone-federation-proxy:latest`,
+and the `Tag federation proxy image` step tags it `:dev`, the tag the keystone
+federation suites and the push step address. Otherwise the map resolves the
+`:dev` reference to the digest behind `ghcr.io/c5c3/keystone-federation-proxy:latest`.
 A `BUILD_SERVICE_IMAGES` line with a third field (`nova 2026.1 nova-compute`)
 builds the attribute of that derived image, `nova-compute-2026_1-image`.
 
@@ -495,8 +544,8 @@ git checkout sees tracked or staged files only, so `git add` a new
 
 ## The build-nix-image action
 
-`.github/actions/build-nix-image/action.yaml` is the Nix counterpart of
-`build-push-image`.
+`.github/actions/build-nix-image/action.yaml` builds an image from a flake
+attribute.
 
 | Input | Default | Description |
 | --- | --- | --- |
@@ -554,10 +603,10 @@ Then the action takes one of two paths:
 
 skopeo pushes the image because a `streamLayeredImage` is a tar stream and
 there is no BuildKit build to push. Two pushes of one stream give one digest,
-so a re-run of the push path is safe. The merge jobs are the ones the
-Docker-built images use: `merge-manifest-and-attest` downloads the
-`digests-<image>-*` artifacts, joins the platform digests into a manifest
-list, and attests and signs it.
+so a re-run of the push path is safe. The merge jobs use
+`merge-manifest-and-attest`, which downloads the `digests-<image>-*`
+artifacts, joins the platform digests into a manifest list, and attests and
+signs it.
 
 ## Lint
 
@@ -605,9 +654,9 @@ attribute.
 
 Renovate's `nix` manager re-locks the five inputs of `flake.lock` through
 `lockFileMaintenance`. The `nix flake inputs` package rule opens the re-lock
-as one pull request on the Monday schedule of the ubuntu digest bump, never
+as one pull request on the Monday schedule of the golang and uv bumps, never
 automerged; the re-lock is not a version bump, so the three-day release age
-cannot gate it. A re-lock changes `flake.lock`, which the `base`, `ovn`,
+cannot gate it. A re-lock changes `flake.lock`, which the `base`, `ovn`, `proxy`,
 `shifter`, `libvirt`, `hvo` and `kna` filters of the build-images workflow
 cover, so its pull request rebuilds the images. Separate rules disable every update under
 `nix/spike/**` and under `nix/locks/**`: the locks are derived files that only
@@ -617,11 +666,13 @@ repository value replaces.
 
 A Renovate pull request that moves a pin the locks are derived from (under
 `releases/`, `overrides/`, `patches/` or `nix/base-requirements.txt`,
-the noVNC pin in `images/nova/novnc.json`, or one of the three
+the noVNC pin in `images/nova/novnc.json`, or one of the four
 `images/<name>/source.json` pins) fails `nix-lock-check` until someone runs
 `make nix-lock` on its branch and pushes the result. The OVN manager moves
 `version` and `rev` together; a rule disables its digest updates, so a tag
-moved upstream does not arrive as an ungrouped digest pull request. The hvo
+moved upstream does not arrive as an ungrouped digest pull request. The
+mod_auth_openidc manager of the federation proxy does the same, and its
+minor and patch bumps wait three days and are never automerged. The hvo
 and kna managers move `rev` as a digest of upstream main.
 [Dependency Management](../../contributing/dependency-management.md) has the
 details.

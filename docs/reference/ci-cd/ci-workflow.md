@@ -65,7 +65,8 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | --- | --- | --- |
 | `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
 | `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**` | that service's `e2e-operator` leg |
-| `image_ovn`, `image_proxy`, `image_tempest` | the OVN, federation-proxy and Tempest image sources (the Tempest locks included) | the `ovn` and `keystone` e2e legs; the Tempest image rebuild |
+| `image_ovn`, `image_tempest` | the OVN and Tempest image sources (the Tempest locks included) | the ovn `e2e-operator` job; the Tempest image rebuild |
+| `image_proxy` | `images/keystone-federation-proxy/**`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | the keystone `e2e-operator` job and the federation proxy image rebuild |
 | `image_libvirt` | `images/libvirt/**`, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | `e2e-nova-libvirt` and the libvirt image rebuild |
 | `go_common` | `internal/**`, `go.work*`, `operators/Dockerfile`, `.golangci.yml` | every operator's Go gates, every `e2e-operator` leg, `e2e-operator-upgrade` |
 | `images_base` | `flake.nix`, `flake.lock`, `nix/lib/**`, `nix/pkgs/**`, `releases/**`, `scripts/**`, `overrides/**`, `hack/ci-nix-build-e2e-images.sh`, `hack/ci-service-image-releases.sh` | every service image, every Tempest image (one per release), every service operator's e2e leg |
@@ -864,9 +865,9 @@ guard.
 | 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
 | 3 | `registry-login` composite action | Authenticates to GHCR with `GITHUB_TOKEN` |
 | 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy`, `changed-ovn` and `changed-libvirt`; writes the `BUILD_*` variables, `OVN_VERSION` and the `image-map` output |
-| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true and `libvirt-image` when `BUILD_LIBVIRT` is true in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt) |
+| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true, `libvirt-image` when `BUILD_LIBVIRT` is true and `keystone-federation-proxy-image` when `BUILD_PROXY` is true in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt, `keystone-federation-proxy-latest.tar` for the federation proxy) |
 | 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>`, then the tar is removed |
-| 7 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
+| 7 | Tag federation proxy image | Only when `BUILD_PROXY` is true. Tags `<IMAGE_PREFIX>/keystone-federation-proxy:latest`, which step 6 loaded, as `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, the tag the keystone federation suites and step 9 address |
 | 8 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
 | 9 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`; `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true, `<IMAGE_PREFIX>/libvirt:latest` only when `BUILD_LIBVIRT` is true |
 
@@ -1558,9 +1559,11 @@ It mirrors `e2e-controlplane`'s setup with `CONTROLPLANE_NAME: controlplane-sso`
 `keystone-federation-proxy:dev` into kind, because the suite's ControlPlane CR
 pins `services.keystone.federationProxyImage.tag: dev`. Without that override
 the suite would validate the sidecar already published on `main` rather than the
-one under review. The job takes the proxy from the image map: built in this run when
-`images/keystone-federation-proxy/**` changed (`image_proxy`), and otherwise the digest
-behind `ghcr.io/c5c3/keystone-federation-proxy:latest`.
+one under review. The job takes the proxy from the image map: built in this run by the
+`Build Nix images` step of `build-e2e-images` and tagged `:dev` when the `image_proxy`
+filter matched (`images/keystone-federation-proxy/**`, the flake inputs, `nix/lib/**`
+or the build script), and otherwise the digest behind
+`ghcr.io/c5c3/keystone-federation-proxy:latest`.
 
 | Step | Action | Details |
 | --- | --- | --- |

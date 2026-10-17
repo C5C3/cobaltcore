@@ -6,25 +6,23 @@ quadrant: infrastructure
 # Container Images
 
 Reference documentation for the container image build system. This covers
-the two Dockerfiles left, the contents of every service image, release
+the one Dockerfile left, the contents of every service image, release
 configuration file formats, constraint override tooling, and local build
 instructions. The eight Python service images (keystone, horizon, glance,
 placement, barbican, neutron, cinder, nova), `nova-compute`, the Tempest image
-and the release-independent `backup-shifter`, `ovn`, `libvirt`,
-`openstack-hypervisor-operator` and `kvm-node-agent` are built by the root
-flake from `images/<name>/image.nix`, as
+and the release-independent `ovn`, `keystone-federation-proxy`,
+`backup-shifter`, `libvirt`, `openstack-hypervisor-operator` and
+`kvm-node-agent` are built by the root flake from `images/<name>/image.nix`,
+as
 [Nix Image Build](./nix-image-build.md) describes; the sections below name
 what each of them carries.
 
 ## Dockerfile Hierarchy
 
-Two Dockerfiles are left: `images/keystone-federation-proxy/Dockerfile`, a
-single stage on `ubuntu:noble` with the distro's apache2, mod_auth_openidc
-and mod_auth_mellon ([#1408](https://github.com/C5C3/cobaltcore/issues/1408)
-moves it to Nix), and `operators/Dockerfile`, which builds every operator image
-([#1409](https://github.com/C5C3/cobaltcore/issues/1409)). Every other image
-has no Dockerfile: the root flake builds it from `images/<name>/image.nix`
-([Nix Image Build](./nix-image-build.md)).
+One Dockerfile is left: `operators/Dockerfile`, which builds every operator
+image ([#1409](https://github.com/C5C3/cobaltcore/issues/1409)). Every other
+image has no Dockerfile: the root flake builds it from
+`images/<name>/image.nix` ([Nix Image Build](./nix-image-build.md)).
 
 The figure shows the Docker lineage of the service images,
 `ubuntu:noble` to `python-base` to `venv-builder`, which #1407 retired with the
@@ -35,6 +33,7 @@ from the lock under `nix/locks/<release>/<name>/`
 ![The build of a service image, from the files of the repository to the image. Before the build, the job resolves the git ref of the service from releases/{release}/source-refs.yaml, checks out openstack/{service} at that ref into src/{service} and applies the patches under patches/{service}/{release}. It applies overrides/{release}/constraints.txt to releases/{release}/upper-constraints.txt, which rewrites that file in place, and it turns the block of the image in releases/{release}/extra-packages.yaml into three build args. docker build then runs images/{service}/Dockerfile in two stages. The build stage starts from the venv-builder image and installs the source tree into /var/lib/openstack, with the constraints file, the pip extras and the pip packages. The runtime stage starts from the python-base image, copies /var/lib/openstack from the build stage and installs the apt packages. venv-builder is built on python-base, and python-base on ubuntu:noble. The nova-compute image is a second build for nova: its own Dockerfile with the same two stages, on the same source tree, patches and constraints, with the block nova-compute of extra-packages.yaml.](../../diagrams/ci-service-image-build.svg)
 
 `ovn` compiles Open vSwitch and OVN from pinned upstream commits;
+`keystone-federation-proxy` compiles mod_auth_openidc from one;
 `openstack-hypervisor-operator` and `kvm-node-agent` compile a Go program from
 a pinned upstream commit with the patches under `images/<name>/patches/` and
 run it on the distroless-equivalent image of `nix/lib/static-image.nix`;
@@ -1251,13 +1250,61 @@ UID 42424 with writable state directories, and `modprobe`, `ip`, `ping`,
 
 ### keystone-federation-proxy
 
-**Location:** `images/keystone-federation-proxy/Dockerfile`
+**Location:** `images/keystone-federation-proxy/source.json` (the pin),
+`images/keystone-federation-proxy/mod_auth_openidc.nix` (the module build),
+`images/keystone-federation-proxy/httpd-base.conf` (the Apache scaffold),
+`images/keystone-federation-proxy/image.nix` (the image)
 
-The Apache reverse proxy that terminates OIDC and SAML in front of Keystone: a
-single stage on `ubuntu:noble` with the distro `apache2`,
-`libapache2-mod-auth-openidc` and `libapache2-mod-auth-mellon`. Every component
-comes from the Ubuntu archive, so the image has no version pin of its own and
-follows the `noble` package set. Its build, verification and tag scheme are
+The Apache reverse proxy that terminates OIDC and SAML in front of Keystone,
+built by Nix. The keystone operator projects it into the Keystone API pod when
+an OIDC or SAML `KeystoneIdentityBackend` is attached.
+
+- mod_auth_openidc is compiled from the upstream commit `source.json` pins,
+  with Redis support through hiredis and without brotli and jq, and upstream's
+  `make check` runs in the build.
+- Apache and mod_auth_mellon come from the `nixpkgs-images` revision
+  `flake.lock` pins.
+- Both modules are built with their `modules/` directory stripped, and a
+  closure guard fails the build when the debug references to httpd's `dev`
+  output or gcc come back.
+
+The image is the FHS façade of `nix/lib/fhs-layout.nix` without a Python
+environment, plus `coreutils`. `/usr/sbin/apache2` is nixpkgs' `httpd`, the
+command the operator runs, and `/etc/keystone-federation-proxy/httpd-base.conf`
+loads the modules by their store paths, `mod_unixd` and `mod_log_config`
+included. `/etc/keystone-federation-proxy/` with its `conf.d/` and `metadata/`
+mount points, `/var/www/html` and `/tmp` (mode 1777) are real directories. The
+image runs as UID 42424 and sets no `Cmd` and no `Entrypoint`; the operator
+renders the `apache2 -DFOREGROUND` command, and the scaffold listens on port
+5050.
+
+The move from the Docker image changed three versions:
+
+| Component | Docker image (Ubuntu noble) | Nix image |
+| --- | --- | --- |
+| Apache httpd | 2.4.58 | 2.4.69 |
+| mod_auth_mellon | 0.19.0 | 0.19.1 |
+| mod_auth_openidc | 2.4.15.1 | 2.4.20.3 |
+
+mod_auth_openidc 2.4.20 stretches `OIDCCryptoPassphrase` with PBKDF2, so the
+session and state cookies the Docker image issued fail to decrypt once on the
+Nix image. A browser in the middle of a login or with a websso session logs in
+again once; bearer-token CLI authentication is unaffected. A backend with
+OAuth 2.0 introspection logs upstream's startup warning that the OAuth 2.0
+Resource Server functionality is deprecated in favour of mod_oauth2. A
+ControlPlane on the default `ghcr.io/c5c3/keystone-federation-proxy:latest`
+picks the image up on the next pod start.
+
+```bash
+nix build .#keystone-federation-proxy-image
+./result | docker load
+
+# Run the full image contract check
+bash tests/container-images/verify_keystone_federation_proxy.sh keystone-federation-proxy:latest
+```
+
+[Nix Image Build](./nix-image-build.md#source-built-images) describes the
+module build and its guards. The build, verification and tag scheme are
 described in
 [build-keystone-federation-proxy / merge-keystone-federation-proxy-image](./build-images-workflow.md#build-keystone-federation-proxy-merge-keystone-federation-proxy-image).
 
@@ -2011,7 +2058,10 @@ façade: the
 distro packages would install separate `openvswitch` and `ovn` users, and the
 source build carries no such packaging. The `backup-shifter` image states the
 same decision in the header comment of `images/backup-shifter/image.nix`, also
-through the façade, because rclone brings no service account at all. One identity across all non-root images keeps the pod
+through the façade, because rclone brings no service account at all. The
+`keystone-federation-proxy` image states it in
+`images/keystone-federation-proxy/image.nix`: the sidecar runs as the same
+user as the keystone container it fronts. One identity across all non-root images keeps the pod
 security contexts uniform, and in the `OVNCentral` backup CronJob it lets the
 `backup` init container and the `shifter` container share a single pod
 security context.
