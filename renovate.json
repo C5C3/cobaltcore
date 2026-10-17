@@ -1050,14 +1050,13 @@
     {
       "matchDatasources": ["docker", "go"],
       "matchPackageNames": [
-        "golang",
         "ghcr.io/astral-sh/uv",
         "github.com/external-secrets/external-secrets/apis"
       ],
       "schedule": ["before 6am on monday"]
     },
     {
-      "description": "flake.lock has five inputs: nixpkgs (nixos-unstable) feeds the dev shell, nixpkgs-images (nixos-26.05) feeds the Nix-built container images, and pyproject-nix, uv2nix and pyproject-build-systems build the Python environments of those images from nix/locks/. All five are re-locked on the Monday schedule of the golang and uv bumps, grouped in one pull request and never automerged: the two nixpkgs inputs are rolling channel branches and the other three follow their default branches, so minimumReleaseAge cannot gate the re-lock and a reviewer confirms it",
+      "description": "flake.lock has five inputs: nixpkgs (nixos-unstable) feeds the dev shell, nixpkgs-images (nixos-26.05) feeds the Nix-built container images, and pyproject-nix, uv2nix and pyproject-build-systems build the Python environments of those images from nix/locks/. All five are re-locked on the Monday schedule of the uv bump, grouped in one pull request and never automerged: the two nixpkgs inputs are rolling channel branches and the other three follow their default branches, so minimumReleaseAge cannot gate the re-lock and a reviewer confirms it",
       "matchManagers": ["nix"],
       "groupName": "nix flake inputs",
       "automerge": false,
