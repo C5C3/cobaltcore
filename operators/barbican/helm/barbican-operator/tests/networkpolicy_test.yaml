@@ -1,11 +1,17 @@
 # NetworkPolicy unit tests for the barbican-operator additions.
 # The shared NetworkPolicy is pinned by the operator-library testbed suite;
-# this suite covers the OpenBao egress rule the chart adds through the
-# operator-library.chart.networkPolicyEgress hook.
+# this suite covers the two egress rules the chart adds through the
+# operator-library.chart.networkPolicyEgress hook: the ports-only OpenBao rule
+# and the API health-check rule.
 suite: NetworkPolicy
 templates:
   - templates/networkpolicy.yaml
 tests:
+  - it: should not render a NetworkPolicy by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
   # ---------------------------------------------------------------------------
   # OpenBao egress — ports-only TCP 8200, on by default. The rule carries no
   # `to` peer because a brownfield BarbicanSecretStore names a user-supplied
@@ -19,10 +25,10 @@ tests:
           cidrs: ["10.96.0.1/32"]
           ports: [6443]
     asserts:
-      # DNS, kube-apiserver, OpenBao — the OpenBao rule comes last.
+      # DNS, kube-apiserver, OpenBao, Barbican API — the API rule comes last.
       - lengthEqual:
           path: spec.egress
-          count: 3
+          count: 4
       - equal:
           path: spec.egress[2].ports
           value:
@@ -30,6 +36,18 @@ tests:
               port: 8200
       - isNull:
           path: spec.egress[2].to
+      - equal:
+          path: spec.egress[3]
+          value:
+            to:
+              - namespaceSelector: {}
+                podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: barbican
+                    app.kubernetes.io/managed-by: barbican-operator
+            ports:
+              - protocol: TCP
+                port: 9311
 
   - it: should drop the OpenBao egress rule when networkPolicy.openBao.enabled is false
     set:
@@ -43,10 +61,52 @@ tests:
     asserts:
       - lengthEqual:
           path: spec.egress
-          count: 2
+          count: 3
+      - equal:
+          path: spec.egress[2]
+          value:
+            to:
+              - namespaceSelector: {}
+                podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: barbican
+                    app.kubernetes.io/managed-by: barbican-operator
+            ports:
+              - protocol: TCP
+                port: 9311
       - notContains:
           path: spec.egress
           content:
             ports:
               - protocol: TCP
                 port: 8200
+
+  - it: should keep the API rule when DNS egress is disabled
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["172.18.0.2/32"]
+          ports: [6443]
+        dns:
+          enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.egress
+          count: 3
+      - equal:
+          path: spec.egress[2].ports
+          value:
+            - protocol: TCP
+              port: 9311
+
+  - it: should still fail the render when kubeApiServer.cidrs is empty
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: []
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "cidrs"
