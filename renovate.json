@@ -568,6 +568,20 @@
     },
     {
       "customType": "regex",
+      "description": "mod_auth_openidc of the keystone-federation-proxy image, pinned in images/keystone-federation-proxy/source.json: the tag and the commit it names move together, and make nix-lock then writes the hash of the new commit into the same file",
+      "managerFilePatterns": [
+        "/images/keystone-federation-proxy/source\\.json$/"
+      ],
+      "matchStrings": [
+        "\"version\":\\s*\"(?<currentValue>v\\d+\\.\\d+\\.\\d+(?:\\.\\d+)?)\",\\s*\"rev\":\\s*\"(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "depNameTemplate": "OpenIDC/mod_auth_openidc",
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "OpenIDC/mod_auth_openidc",
+      "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)(?:\\.(?<build>\\d+))?$"
+    },
+    {
+      "customType": "regex",
       "description": "Ceph image of the lab Ceph: the CephCluster and the toolbox run the same tag and digest",
       "managerFilePatterns": [
         "/deploy/lab/metal-stack/ceph/cluster/cluster\\.yaml$/",
@@ -1037,14 +1051,13 @@
       "matchDatasources": ["docker", "go"],
       "matchPackageNames": [
         "golang",
-        "ubuntu",
         "ghcr.io/astral-sh/uv",
         "github.com/external-secrets/external-secrets/apis"
       ],
       "schedule": ["before 6am on monday"]
     },
     {
-      "description": "flake.lock has five inputs: nixpkgs (nixos-unstable) feeds the dev shell, nixpkgs-images (nixos-26.05) feeds the Nix-built container images, and pyproject-nix, uv2nix and pyproject-build-systems build the Python environments of those images from nix/locks/. All five are re-locked in the Monday window of the ubuntu digest bump, grouped in one pull request and never automerged: the two nixpkgs inputs are rolling channel branches and the other three follow their default branches, so minimumReleaseAge cannot gate the re-lock and a reviewer confirms it",
+      "description": "flake.lock has five inputs: nixpkgs (nixos-unstable) feeds the dev shell, nixpkgs-images (nixos-26.05) feeds the Nix-built container images, and pyproject-nix, uv2nix and pyproject-build-systems build the Python environments of those images from nix/locks/. All five are re-locked on the Monday schedule of the golang and uv bumps, grouped in one pull request and never automerged: the two nixpkgs inputs are rolling channel branches and the other three follow their default branches, so minimumReleaseAge cannot gate the re-lock and a reviewer confirms it",
       "matchManagers": ["nix"],
       "groupName": "nix flake inputs",
       "automerge": false,
@@ -1139,6 +1152,29 @@
       "matchManagers": ["custom.regex"],
       "matchFileNames": ["images/nova/novnc.json"],
       "matchPackageNames": ["novnc/noVNC"],
+      "matchUpdateTypes": ["digest"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/keystone-federation-proxy/source.json"],
+      "matchPackageNames": ["OpenIDC/mod_auth_openidc"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/keystone-federation-proxy/source.json"],
+      "matchPackageNames": ["OpenIDC/mod_auth_openidc"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "mod_auth_openidc releases"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/keystone-federation-proxy/source.json"],
+      "matchPackageNames": ["OpenIDC/mod_auth_openidc"],
       "matchUpdateTypes": ["digest"],
       "enabled": false
     },
