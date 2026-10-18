@@ -611,6 +611,9 @@ func TestReconcileDatabase_SyncJobCommandAndEnv(t *testing.T) {
 	}
 	g.Expect(connEnv).NotTo(BeNil(), "the db-sync Job overrides [database].connection via env")
 	g.Expect(connEnv.ValueFrom.SecretKeyRef.Name).To(Equal(database.ConnectionSecretName(glance.Name)))
+	// The per-read cap would cut a long migration: only the API container
+	// carries the socket timeouts.
+	g.Expect(container.Env).NotTo(ContainElement(HaveField("Name", HaveSuffix("__CONNECTION_PARAMETERS"))))
 }
 
 func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {

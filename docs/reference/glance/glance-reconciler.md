@@ -241,7 +241,12 @@ across a planned upgrade to avoid the noise.
   restart is required for a rotation to take effect. The Secrets and
   DBConnectionSecret steps digest each value into a pod-template annotation —
   `glance.c5c3.io/authtoken-hash` and `glance.c5c3.io/db-connection-hash` — so a
-  changed digest rolls the Deployment.
+  changed digest rolls the Deployment. The API container also carries
+  `OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`, which
+  bounds every database socket read and write. It is a plain value with no
+  digest annotation, and the operator omits it while
+  `spec.extraConfig.database.connection_parameters` is set; see
+  [Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
 - **Deletion** runs the `glance.openstack.c5c3.io/finalizer`: it issues Delete
   on the MariaDB `Database`/`User`/`Grant` CRs before the owner-ref chain
   disappears, emitting `FinalizingDatabase` while cleanup remains and

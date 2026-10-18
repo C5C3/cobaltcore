@@ -368,10 +368,10 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 			Image:           glance.Spec.Image.Reference(),
 			ImagePullPolicy: glance.Spec.Image.EffectivePullPolicy(),
 			Command:         glanceUWSGICommand(glance.Spec.APIServer),
-			Env: []corev1.EnvVar{
+			Env: append([]corev1.EnvVar{
 				database.ConnectionEnvVar(glance.Name),
 				keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
-			},
+			}, database.SocketTimeoutEnvVars(glance.Spec.ExtraConfig, "database")...),
 			Ports: []corev1.ContainerPort{{
 				Name:          "glance-api",
 				ContainerPort: glanceAPIPort,

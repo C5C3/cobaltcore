@@ -463,6 +463,44 @@ func TestReconcileConfig_InvalidProjectionStillUpsertsExtraConfigHealthy(t *test
 	g.Expect(cond.Message).To(ContainSubstring("[DEFAULT] enabled_backends"))
 }
 
+// TestReconcileConfig_UserConnectionParametersRenderIntoTheFile pins the opt-out
+// of the API container's socket-timeout override: the file carries no
+// connection_parameters by default, and a user value is merged under [database]
+// as a free option (the key is not operator-owned), which is what drops the env
+// variable.
+func TestReconcileConfig_UserConnectionParametersRenderIntoTheFile(t *testing.T) {
+	t.Run("the default renders no connection_parameters", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		r := newGlanceTestReconciler(glance)
+
+		_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
+		g.Expect(err).NotTo(HaveOccurred())
+
+		g.Expect(renderedConfig(t, r, art)).NotTo(ContainSubstring("connection_parameters"))
+	})
+
+	t.Run("a user value lands under [database]", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		glance.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+		r := newGlanceTestReconciler(glance)
+
+		_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
+		g.Expect(err).NotTo(HaveOccurred())
+
+		// Every line between the [database] header and the option is a key of
+		// that section: no other section header starts in between.
+		g.Expect(renderedConfig(t, r, art)).To(MatchRegexp(
+			`(?m)^\[database\]$(?:\n[^\[\n].*|\n)*\nconnection_parameters = read_timeout=60&write_timeout=60$`))
+		cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+	})
+}
+
 // TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults verifies that a CR whose
 // spec.extraConfig overrides no operator-owned key sets ExtraConfigHealthy=True
 // with reason NoOwnedKeysOverridden and emits no event.
