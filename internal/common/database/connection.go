@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -88,6 +89,92 @@ func ConnectionEnvVarForSection(instanceName, section string) corev1.EnvVar {
 			},
 		},
 	}
+}
+
+// socketTimeoutParameters bounds every socket read and write of an API front
+// end's database connections (pymysql read_timeout and write_timeout).
+const socketTimeoutParameters = "read_timeout=10&write_timeout=10"
+
+// connectionParametersOption is the oslo.db option the socket timeouts set.
+// The opt-out key and the variable name both derive from it.
+const connectionParametersOption = "connection_parameters"
+
+// SocketTimeoutEnvVars returns one OS_<SECTION>__CONNECTION_PARAMETERS
+// variable per section, valued socketTimeoutParameters, for every section of
+// sections that no extraConfig block gives a connection_parameters key. A nil
+// or empty extraConfig yields one variable per section, in the order given; no
+// sections yield an empty slice.
+//
+// oslo.db appends the value to the DSN query string, so a request on a
+// connection a database outage killed fails after the timeout instead of
+// pinning its worker for the TCP retransmit window. Only API containers carry
+// the variable: the per-read cap would cut a long migration or bulk delete,
+// and the db-sync Jobs read the same config file as the API. oslo.config reads
+// the environment before the config files, so a variable would beat a user's
+// extraConfig value; a present key, the empty string included, therefore
+// leaves the section to the user.
+func SocketTimeoutEnvVars(extraConfig map[string]map[string]string, sections ...string) []corev1.EnvVar {
+	env := make([]corev1.EnvVar, 0, len(sections))
+	for _, section := range sections {
+		if userSetsConnectionParameters(extraConfig, section) {
+			continue
+		}
+		env = append(env, corev1.EnvVar{
+			Name:  "OS_" + strings.ToUpper(section) + "__" + strings.ToUpper(connectionParametersOption),
+			Value: socketTimeoutParameters,
+		})
+	}
+	return env
+}
+
+// userSetsConnectionParameters reports whether any extraConfig block that
+// oslo.config reads as section carries connection_parameters. oslo.config
+// lower-cases every group name but DEFAULT, so a [Database] block is read as
+// [database]. Each key counts by the option name iniOptionName reads from it.
+func userSetsConnectionParameters(extraConfig map[string]map[string]string, section string) bool {
+	for name, keys := range extraConfig {
+		if lowerASCII(name) != lowerASCII(section) {
+			continue
+		}
+		for key := range keys {
+			if iniOptionName(key) == connectionParametersOption {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// iniOptionName returns the option name oslo.config's iniparser reads from the
+// rendered "key = value" line of key. A line that starts with a space or a tab
+// continues the previous value and names no option. On any other line the name
+// ends at the first ':' or '=', and Python's str.strip() drops the whitespace
+// around it, U+001C-U+001F included, which unicode.IsSpace keeps.
+func iniOptionName(key string) string {
+	if strings.HasPrefix(key, " ") || strings.HasPrefix(key, "\t") {
+		return ""
+	}
+	if i := strings.IndexAny(key, ":="); i >= 0 {
+		key = key[:i]
+	}
+	return strings.TrimFunc(key, func(r rune) bool {
+		return unicode.IsSpace(r) || ('\x1c' <= r && r <= '\x1f')
+	})
+}
+
+// lowerASCII maps A-Z to a-z and keeps every other rune. For the section names
+// the operators pass it gives the same match as Python's str.lower(), which
+// oslo.config applies to group names: the only non-ASCII rune str.lower() maps
+// into ASCII is the Kelvin sign U+212A (to k), and none of the names has a k.
+// strings.EqualFold also pairs U+017F (ſ) with s, so it would take a
+// [databaſe] block, a group of its own for oslo.config, for [database].
+func lowerASCII(s string) string {
+	return strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+		return r
+	}, s)
 }
 
 // TLSFilePaths returns the in-pod file paths consumed by the ssl_ca/ssl_cert/
