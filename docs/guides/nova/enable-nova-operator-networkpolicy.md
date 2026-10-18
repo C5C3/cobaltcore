@@ -47,15 +47,14 @@ examples below is one that devstack produces.
    real enforcement).** Confirm with your platform team (Calico, Cilium, and
    Antrea enforce).
 
-   ::: warning Enforcement cannot be verified on the default devstack CNI
-   The ControlPlane Quick Start kind devstack uses the default `kindnet` CNI,
-   which **silently ignores** NetworkPolicy objects, and kind fixes the CNI at
-   cluster creation so it cannot be swapped in afterwards. The policy object is
-   still created and the operator keeps reconciling, so Step 2 below confirms
-   only the policy's **shape** and that enabling it does **not break**
-   reconciliation. It does **not** prove that packets outside the allow-list are
-   dropped. Real enforcement requires a cluster whose CNI enforces
-   NetworkPolicy, typically your production platform.
+   ::: warning The devstack enforces this policy
+   The ControlPlane Quick Start kind devstack runs kind's default `kindnet`
+   CNI. On kind v0.32 and later, kindnet enforces NetworkPolicy and evaluates a
+   connection to a Service after the Service DNAT, so a `kubeApiServer` rule
+   that misses the API server's endpoint address cuts the operator off on the
+   devstack too. Step 2 below confirms the policy's **shape** and that the
+   operator still reconciles under it. It sends no traffic outside the
+   allow-list, so it does **not** prove that such traffic is dropped.
    :::
 2. A running `nova-operator` Helm release (namespace `nova-system`).
 3. The ControlPlane declares `spec.services.nova`. Without it no
@@ -69,9 +68,10 @@ The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 template refuses to render. Gather the API server CIDRs and ports from the
 `kubernetes` **Endpoints**, which carry the real API server addresses. The
 `10.96.0.1` Service VIP that `kubectl get service kubernetes` reports is the
-wrong source: an enforcing CNI (Calico, Cilium) DNATs a packet aimed at the VIP
-to one of those endpoint IPs before it evaluates policy, so a rule naming the
-VIP never matches:
+wrong source: an enforcing CNI
+(Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
+Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
+IPs, so a rule naming the VIP never matches:
 
 ```bash
 kubectl get endpoints kubernetes -n default -o json \
@@ -159,9 +159,24 @@ kubectl delete networkpolicy nova-operator-api-probe -n nova-system \
 
 ## Step 2: Verify
 
-On the kind devstack this verifies the policy's **shape** and that enabling it
-does **not break** reconciliation, not traffic enforcement, which the default
-`kindnet` CNI does not apply (see the prerequisite above).
+On the kind devstack this verifies the policy's **shape** and that the operator
+still reconciles under the enforced policy. It sends no traffic outside the
+allow-list (see the prerequisite above).
+
+Restart the operator first. NetworkPolicy enforcement is stateful: a connection
+opened before the policy existed stays open, so a wrong `kubeApiServer` rule
+shows only after the next restart:
+
+```bash
+kubectl -n nova-system rollout restart deploy/nova-operator
+kubectl -n nova-system rollout status deploy/nova-operator --timeout=5m
+```
+
+A rollout that does not finish within the timeout, with the new pod never
+`Ready`, means the egress rule does not admit the API server.
+See [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
+
+Then check the policy:
 
 ```bash
 kubectl -n nova-system get networkpolicy

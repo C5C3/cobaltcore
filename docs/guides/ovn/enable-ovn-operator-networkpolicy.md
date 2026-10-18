@@ -43,15 +43,14 @@ Step 7, so the ovn-operator is running (namespace `ovn-system`) alongside the
    real enforcement).** Confirm with your platform team (Calico, Cilium, and
    Antrea enforce).
 
-   ::: warning Enforcement cannot be verified on the default devstack CNI
-   The ControlPlane Quick Start kind devstack uses the default `kindnet` CNI,
-   which **silently ignores** NetworkPolicy objects, and kind fixes the CNI at
-   cluster creation so it cannot be swapped in afterwards. The policy object is
-   still created and the operator keeps reconciling, so Step 2 below confirms
-   only the policy's **shape** and that enabling it does **not break**
-   reconciliation. It does **not** prove that packets outside the allow-list are
-   dropped. Real enforcement requires a cluster whose CNI enforces
-   NetworkPolicy, typically your production platform.
+   ::: warning The devstack enforces this policy
+   The ControlPlane Quick Start kind devstack runs kind's default `kindnet`
+   CNI. On kind v0.32 and later, kindnet enforces NetworkPolicy and evaluates a
+   connection to a Service after the Service DNAT, so a `kubeApiServer` rule
+   that misses the API server's endpoint address cuts the operator off on the
+   devstack too. Step 2 below confirms the policy's **shape** and that the
+   operator still reconciles under it. It sends no traffic outside the
+   allow-list, so it does **not** prove that such traffic is dropped.
    :::
 2. A running `ovn-operator` Helm release (namespace `ovn-system`).
 3. The `OVNCentral` `controlplane-ovn`, which the quick start applies in its
@@ -64,9 +63,10 @@ The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 template refuses to render. Gather the API server CIDRs and ports from the
 `kubernetes` **Endpoints**, which carry the real API server addresses. The
 `10.96.0.1` Service VIP that `kubectl get service kubernetes` reports is the
-wrong source: an enforcing CNI (Calico, Cilium) DNATs a packet aimed at the VIP
-to one of those endpoint IPs before it evaluates policy, so a rule naming the
-VIP never matches:
+wrong source: an enforcing CNI
+(Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
+Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
+IPs, so a rule naming the VIP never matches:
 
 ```bash
 kubectl get endpoints kubernetes -n default -o json \
@@ -122,9 +122,24 @@ narrows it further to the Prometheus pods.
 
 ## Step 2 — Verify
 
-On the kind devstack this verifies the policy's **shape** and that enabling it
-does **not break** reconciliation, not traffic enforcement, which the default
-`kindnet` CNI does not apply (see the prerequisite above).
+On the kind devstack this verifies the policy's **shape** and that the operator
+still reconciles under the enforced policy. It sends no traffic outside the
+allow-list (see the prerequisite above).
+
+Restart the operator first. NetworkPolicy enforcement is stateful: a connection
+opened before the policy existed stays open, so a wrong `kubeApiServer` rule
+shows only after the next restart:
+
+```bash
+kubectl -n ovn-system rollout restart deploy/ovn-operator
+kubectl -n ovn-system rollout status deploy/ovn-operator --timeout=5m
+```
+
+A rollout that does not finish within the timeout, with the new pod never
+`Ready`, means the egress rule does not admit the API server.
+See [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
+
+Then check the policy:
 
 ```bash
 kubectl -n ovn-system get networkpolicy
@@ -134,19 +149,70 @@ kubectl -n ovn-system describe networkpolicy ovn-operator
 Then confirm reconciliation still works end-to-end by driving a change through
 the `OVNCentral` and watching northd roll out. The central is a CR you own on
 this devstack: the ControlPlane references it and projects nothing onto it, so
-the edit stands until you revert it yourself:
+the edit stands until you revert it yourself. The block records the central's
+current northd count, scales northd one replica above the size it runs at, and
+puts the count back.
+
+The patch passes through the ovn-operator's own admission webhooks. In the
+first seconds after the restart, the webhook Service can still route a request
+to the old pod, which no longer serves, and the patch fails with
+`failed calling webhook`. That happens with the policy disabled too, so the
+block tries the patch up to ten times, two seconds apart. A refused call fails
+at once and the ten tries take about 20 seconds. A call the CNI drops, as
+kindnet does when the webhook ingress rule misses the API server, fails only
+after the API server's 10-second webhook timeout (the chart sets no
+`timeoutSeconds`) with `context deadline exceeded`, and the ten tries take about
+two minutes. When every try fails, the block prints a message and skips the
+wait and the revert. That failure is the one under
+[Every OVNCentral and OVNChassis write is rejected](#every-ovncentral-and-ovnchassis-write-is-rejected):
 
 ```bash
-kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
-  -p '{"spec":{"northd":{"deployment":{"replicas":2}}}}'
-kubectl rollout status deploy/controlplane-ovn-northd -n openstack
+if CUR=$(kubectl get ovncentral controlplane-ovn -n openstack \
+     -o jsonpath='{.spec.northd.deployment.replicas}') &&
+   RUN=$(kubectl get deploy/controlplane-ovn-northd -n openstack \
+     -o jsonpath='{.spec.replicas}'); then
+  NEW=$((RUN + 1))
 
-# revert
-kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
-  -p '{"spec":{"northd":{"deployment":{"replicas":1}}}}'
+  patched=
+  for _ in $(seq 10); do
+    if kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
+         -p "{\"spec\":{\"northd\":{\"deployment\":{\"replicas\":$NEW}}}}"; then
+      patched=1
+      break
+    fi
+    sleep 2
+  done
+
+  if [ -n "$patched" ]; then
+    kubectl wait deploy/controlplane-ovn-northd -n openstack --timeout=5m \
+      --for=jsonpath='{.spec.replicas}'="$NEW"
+    kubectl rollout status deploy/controlplane-ovn-northd -n openstack --timeout=5m
+
+    # revert to the recorded count; null drops the field again
+    kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
+      -p "{\"spec\":{\"northd\":{\"deployment\":{\"replicas\":${CUR:-null}}}}}"
+  else
+    echo "every OVNCentral patch was rejected; nothing was changed" >&2
+  fi
+else
+  echo "could not read the replica counts; nothing was patched" >&2
+fi
 ```
 
-The second replica is idle by design: one northd holds the Southbound lock and
+The outer `if` stops the block before the first patch when either read fails.
+A failed read prints the same empty string as a central that leaves the count
+unset, so without the guard the revert would drop a count the central carries,
+and a failed Deployment read would set `NEW` to 1 and shrink northd instead of
+growing it.
+
+The `kubectl wait` is the check that proves the operator still reconciles. The
+restarted operator writes nothing until it holds the leader lease, and until it
+writes the new count the northd Deployment is still fully rolled out at its old
+size, so a `rollout status` alone would pass at once. The new count is always
+one above the running one, so the patch changes the Deployment whatever size
+northd already runs at.
+
+The extra replica is idle by design: one northd holds the Southbound lock and
 the rest wait on it, so the rollout proves the write path without changing what
 the control plane computes.
 
@@ -173,7 +239,10 @@ every port.
 ### Every OVNCentral and OVNChassis write is rejected
 
 **Symptom:** `kubectl apply` on either kind fails with `failed calling webhook`
-plus `connection refused` or `no route to host`.
+plus `connection refused` or `no route to host`. A CNI that drops the packets
+instead of refusing them, such as kindnet, makes the call fail with
+`context deadline exceeded` once the API server's 10-second webhook timeout
+expires.
 
 **Diagnosis:** webhook ingress (9443) is blocked. The chart registers a mutating
 and a validating webhook for each of the two kinds, all four with
