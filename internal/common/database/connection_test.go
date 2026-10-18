@@ -97,6 +97,126 @@ func TestConnectionEnvVarForSection(t *testing.T) {
 	g.Expect(ConnectionEnvVar(connInstance)).To(Equal(ConnectionEnvVarForSection(connInstance, "database")))
 }
 
+func TestSocketTimeoutEnvVars(t *testing.T) {
+	const value = "read_timeout=10&write_timeout=10"
+	databaseVar := corev1.EnvVar{Name: "OS_DATABASE__CONNECTION_PARAMETERS", Value: value}
+	apiDatabaseVar := corev1.EnvVar{Name: "OS_API_DATABASE__CONNECTION_PARAMETERS", Value: value}
+
+	tests := []struct {
+		name        string
+		extraConfig map[string]map[string]string
+		sections    []string
+		want        []corev1.EnvVar
+	}{
+		{
+			name:     "nil extraConfig yields one plain variable per section in order",
+			sections: []string{"database", "api_database"},
+			want:     []corev1.EnvVar{databaseVar, apiDatabaseVar},
+		},
+		{
+			name:        "empty extraConfig behaves like nil",
+			extraConfig: map[string]map[string]string{},
+			sections:    []string{"database", "api_database"},
+			want:        []corev1.EnvVar{databaseVar, apiDatabaseVar},
+		},
+		{
+			name: "a user value disables only its own section",
+			extraConfig: map[string]map[string]string{
+				"database":     {"connection_parameters": "read_timeout=60&write_timeout=60"},
+				"api_database": {},
+			},
+			sections: []string{"database", "api_database"},
+			want:     []corev1.EnvVar{apiDatabaseVar},
+		},
+		{
+			name:        "an empty user value disables the section too",
+			extraConfig: map[string]map[string]string{"database": {"connection_parameters": ""}},
+			sections:    []string{"database"},
+			want:        []corev1.EnvVar{},
+		},
+		{
+			// oslo.config lower-cases every group name but DEFAULT, so the
+			// rendered [Database] block is the [database] section.
+			name:        "a mixed-case section block disables its section too",
+			extraConfig: map[string]map[string]string{"Database": {"connection_parameters": "read_timeout=60&write_timeout=60"}},
+			sections:    []string{"database", "api_database"},
+			want:        []corev1.EnvVar{apiDatabaseVar},
+		},
+		{
+			// str.lower() keeps U+017F, so oslo.config reads this block as the
+			// group "databaſe", which oslo.db never consults.
+			name:        "a block that only Unicode-folds to the section keeps the variable",
+			extraConfig: map[string]map[string]string{"databaſe": {"connection_parameters": "read_timeout=60&write_timeout=60"}},
+			sections:    []string{"database"},
+			want:        []corev1.EnvVar{databaseVar},
+		},
+		{
+			// oslo.config's iniparser strips the key, so it still sets
+			// [database] connection_parameters.
+			name:        "a key with trailing whitespace disables its section too",
+			extraConfig: map[string]map[string]string{"database": {"connection_parameters ": "read_timeout=60&write_timeout=60"}},
+			sections:    []string{"database"},
+			want:        []corev1.EnvVar{},
+		},
+		{
+			// Python's str.strip() also drops U+001C-U+001F, so oslo.config
+			// reads this key as connection_parameters.
+			name:        "a key padded with an information separator disables its section too",
+			extraConfig: map[string]map[string]string{"database": {"connection_parameters\x1f": "read_timeout=60&write_timeout=60"}},
+			sections:    []string{"database"},
+			want:        []corev1.EnvVar{},
+		},
+		{
+			// The iniparser ends the name at the first ':' or '=', so this line
+			// sets connection_parameters to "x = read_timeout=60&write_timeout=60".
+			name:        "a key with a colon after the option name disables its section too",
+			extraConfig: map[string]map[string]string{"database": {"connection_parameters:x": "read_timeout=60&write_timeout=60"}},
+			sections:    []string{"database"},
+			want:        []corev1.EnvVar{},
+		},
+		{
+			// A rendered line that starts with a space continues the previous
+			// value, so oslo.config never sets connection_parameters from it.
+			name:        "a key with a leading space keeps the variable",
+			extraConfig: map[string]map[string]string{"database": {" connection_parameters": "read_timeout=60&write_timeout=60"}},
+			sections:    []string{"database"},
+			want:        []corev1.EnvVar{databaseVar},
+		},
+		{
+			name:        "a key with a leading tab keeps the variable",
+			extraConfig: map[string]map[string]string{"database": {"\tconnection_parameters": "read_timeout=60&write_timeout=60"}},
+			sections:    []string{"database"},
+			want:        []corev1.EnvVar{databaseVar},
+		},
+		{
+			name:        "a section block without the key keeps the variable",
+			extraConfig: map[string]map[string]string{"database": {"max_pool_size": "10"}},
+			sections:    []string{"database"},
+			want:        []corev1.EnvVar{databaseVar},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewWithT(t)
+			// Equal on the whole slice pins the order, the names, the literal
+			// value and the nil ValueFrom of every entry.
+			g.Expect(SocketTimeoutEnvVars(tt.extraConfig, tt.sections...)).To(Equal(tt.want))
+		})
+	}
+
+	t.Run("no sections yield an empty slice", func(t *testing.T) {
+		g := NewWithT(t)
+		g.Expect(SocketTimeoutEnvVars(nil)).To(HaveLen(0))
+	})
+
+	t.Run("the section name is upper-cased like the connection override", func(t *testing.T) {
+		g := NewWithT(t)
+		g.Expect(SocketTimeoutEnvVars(nil, "placement_database")).To(Equal([]corev1.EnvVar{
+			{Name: "OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS", Value: value},
+		}))
+	})
+}
+
 func TestTLSFilePaths(t *testing.T) {
 	g := NewWithT(t)
 	p := TLSFilePaths("/etc/keystone/db-tls/")
