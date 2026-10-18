@@ -13,8 +13,7 @@
 # the path of a stream script that writes "stream", or fails like nix when
 # NIX_STUB_FAIL is set; docker logs what `docker load` reads.
 #
-# Lives under tests/unit/hack/ rather than tests/unit/Makefile/ because that is
-# where the `make test-shell` glob picks tests up.
+# Lives under tests/unit/hack/ beside the other tests of Makefile targets.
 #
 # Usage: bash tests/unit/hack/make_image_test.sh
 

@@ -17,8 +17,7 @@
 # recording hack/gen-option-catalog.sh stub, so no docker, no network and no
 # service image is involved.
 #
-# Lives under tests/unit/hack/ rather than tests/unit/Makefile/ because that is
-# where the `make test-shell` glob picks tests up.
+# Lives under tests/unit/hack/ beside the other tests of Makefile targets.
 #
 # Usage: bash tests/unit/hack/gen_option_catalog_make_targets_test.sh
 
