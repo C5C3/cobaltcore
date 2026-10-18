@@ -33,8 +33,8 @@
 # Workload, on the network leg: the noauth volume stream of ../lib/workload.sh
 # against cinder-db-chaos. The streams through the partitioned API fail while
 # it lasts, one record about every 16 s, because a request that reaches the
-# database waits until the workload's 15 s timeout or the socket timeouts of
-# 00-cinder-cr.yaml, whichever ends first. The budget is an estimate of that
+# database waits until the workload's 15 s timeout or the operator's default
+# socket timeouts, whichever ends first. The budget is an estimate of that
 # window: no run has measured it yet.
 # Chaos budget: failures=40 recovery=90s
 # Chaos budget measured: 2026-10-15, estimate, failures 20, recovery 60 s
@@ -73,6 +73,20 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
+    # The operator's default socket timeouts are what this suite proves under
+    # the partition, so a Deployment without them fails here, by name, and not
+    # later as a hang in the fail-closed or recovery step.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-db-chaos
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION_PARAMETERS'].value | [0]): read_timeout=10&write_timeout=10
     - script:
         timeout: 6m
         content: >-
