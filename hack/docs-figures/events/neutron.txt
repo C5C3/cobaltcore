@@ -1,0 +1,42 @@
+NeutronReconciler.Reconcile()
+  │
+  ├── reconcileDelete() (deletionTimestamp set)
+  │     ├─ MariaDB CRs still live      → Normal  FinalizingDatabase
+  │     ├─ MariaDB cleanup done        → Normal  DatabaseFinalized
+  │     └─ target cluster unresolvable → Warning RemoteChildrenAbandoned
+  │
+  ├── reconcileConfig()
+  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
+  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
+  │
+  ├── reconcileDatabase()
+  │     ├─ tag/release mismatch  → (condition only, no event)
+  │     ├─ release gate refuses  → Warning VersionParseError / DowngradeNotSupported /
+  │     │                                  UpgradePathInvalid / ImageReleaseMismatch
+  │     ├─ upgrade accepted      → Normal  UpgradeInitiated
+  │     ├─ expand / migrate / contract Job succeeded
+  │     │                        → Normal  ExpandComplete / MigrateComplete / UpgradeComplete
+  │     ├─ phase Job failed      → Warning ExpandFailed / MigrateFailed / ContractFailed
+  │     ├─ spec release moved    → Warning UpgradeTargetChanged
+  │     ├─ spec release reverted → Normal  UpgradeAborted
+  │     ├─ db_sync fails         → Warning DBSyncFailed
+  │     ├─ db_sync succeeds      → Normal  DatabaseSynced
+  │     └─ Job-UID patch fails   → Warning DBSyncMetricEmissionDeferred
+  │
+  ├── reconcileDeployment()
+  │     └─ rollout done in the RollingUpdate phase → Normal DeploymentRolloutComplete
+  │
+  └── reconcileOVNDBSync()
+        ├─ newest terminal sync Job failed → Warning OVNDBSyncJobFailed
+        └─ Job-UID patch failed            → Warning OVNDBSyncMetricEmissionDeferred
+
+NeutronMetadataAgentReconciler.Reconcile()
+  │
+  ├── deletion, target cluster unresolvable past the abandon window
+  │     └─ Warning RemoteChildrenAbandoned  (finalizer released, children left behind)
+  │
+  ├── deletion of a placed agent, reapMetadataSharedSecretMirrors()
+  │     └─ labelled copy no other agent there names → Normal MetadataSharedSecretMirrorReaped
+  │
+  └── reconcileAgentConfig()
+        └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride

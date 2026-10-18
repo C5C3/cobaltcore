@@ -1,0 +1,56 @@
+NovaReconciler.Reconcile()
+  │
+  ├── reconcileDelete() (deletionTimestamp set)
+  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
+  │     ├─ MariaDB cleanup done    → Normal  DatabaseFinalized
+  │     └─ target cluster gone     → Warning RemoteChildrenAbandoned
+  │
+  ├── reconcileConfig()
+  │     └─ extraConfig overrides an operator-owned key
+  │                                    → Warning ExtraConfigOwnedKeyOverride
+  │
+  ├── reconcileDatabase()
+  │     ├─ db_sync fails               → Warning DBSyncFailed
+  │     ├─ db_sync succeeds            → Normal  DatabaseSynced
+  │     ├─ cell map unreadable         → Normal  CellsReportUnavailable
+  │     ├─ Job-UID patch fails         → Warning DBSyncMetricEmissionDeferred /
+  │     │                                        CellsReportEmissionDeferred
+  │     ├─ expand phase terminal       → Normal  UpgradeCheckCompleted /
+  │     │                                Warning UpgradeCheckWarnings
+  │     └─ release upgrade             → Normal  UpgradeInitiated / ExpandComplete /
+  │                                              MigrateComplete / UpgradeComplete /
+  │                                              UpgradeAborted
+  │                                      Warning VersionParseError / DowngradeNotSupported /
+  │                                              UpgradePathInvalid / UpgradeTargetChanged /
+  │                                              ExpandFailed / MigrateFailed / ContractFailed
+  │
+  ├── reconcileDeployment()
+  │     └─ every role rolled out mid-upgrade
+  │                                    → Normal  DeploymentRolloutComplete
+  │
+  └── reconcileDBArchive()
+        ├─ newest run failed           → Warning DBArchiveJobFailed
+        └─ Job-UID patch fails         → Warning DBArchiveMetricEmissionDeferred
+
+NovaComputeReconciler.Reconcile()
+  │
+  ├── reconcileDelete() (deletionTimestamp set)
+  │     ├─ last pool on the cluster    → Normal  ComputeConfigMirrorReaped (one per mirror)
+  │     └─ target cluster gone         → Warning RemoteChildrenAbandoned
+  │
+  ├── reconcileNovaComputeNodes()
+  │     └─ new conflict                → Warning NodeConflict
+  │
+  ├── reconcileNovaComputeConfig()
+  │     └─ extraConfig overrides a [libvirt] key
+  │                                    → Warning ExtraConfigOwnedKeyOverride
+  │
+  ├── reconcileNovaComputeAggregates()
+  │     ├─ aggregate created           → Normal  AggregateCreated
+  │     ├─ unneeded aggregate deleted  → Normal  AggregateDeleted
+  │     └─ unneeded aggregate with foreign metadata
+  │                                    → Warning AggregateKept
+  │
+  └── reconcileNovaComputeServices()
+        ├─ leaving node disabled       → Normal  ComputeServiceDisabled
+        └─ released node deleted       → Normal  ComputeServiceDeleted
