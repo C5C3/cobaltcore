@@ -33,12 +33,13 @@
 # Entrypoint and no Cmd and no component switch: every workload names the
 # daemon it runs.
 #
-# DEVIATION from the original build-pipeline design: the image derives from
-# no python-base, so it carries the generic 'openstack' user and group
-# (UID/GID 42424) itself, through the fakeNss entry of the façade. The distro
-# packages would install per-daemon 'openvswitch' and 'ovn' users, but the
-# source build carries no such packaging, and one identity across all
-# service images keeps the pod security contexts uniform.
+# DEVIATION from the original build-pipeline design: the image is built
+# without nix/lib/service-image.nix, so it carries the generic 'openstack'
+# user and group (UID/GID 42424) itself, through the fakeNss entry of the
+# façade. The distro packages would install per-daemon 'openvswitch' and
+# 'ovn' users, but the source build carries no such packaging, and one
+# identity across all service images keeps the pod security contexts
+# uniform.
 { pkgs, fhsLayout, ... }:
 let
   inherit (pkgs) lib;

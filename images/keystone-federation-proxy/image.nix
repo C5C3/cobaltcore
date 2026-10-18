@@ -32,11 +32,11 @@
 # variable: nixpkgs' curl falls back to OpenSSL's default CA file,
 # /etc/ssl/certs/ca-certificates.crt, which the façade provides.
 #
-# DEVIATION from the original build-pipeline design: the image derives from
-# no python-base, so it carries the generic 'openstack' user and group
-# (UID/GID 42424) itself, through the fakeNss entry of the façade. The
-# sidecar runs under the same identity as the keystone container it fronts,
-# so the pod keeps one security context.
+# DEVIATION from the original build-pipeline design: the image is built
+# without nix/lib/service-image.nix, so it carries the generic 'openstack'
+# user and group (UID/GID 42424) itself, through the fakeNss entry of the
+# façade. The sidecar runs under the same identity as the keystone container
+# it fronts, so the pod keeps one security context.
 { pkgs, fhsLayout, ... }:
 let
   defaults = import ../../nix/lib/image-defaults.nix;
