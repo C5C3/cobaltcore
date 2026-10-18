@@ -7,7 +7,7 @@
 # onboarded OpenStack service against the keystone reference implementation.
 # Verifies, per service (services = keys of releases/<latest>/source-refs.yaml;
 # c5c3 is the ControlPlane operator, not a service):
-#   P1  image layer: images/<svc>/Dockerfile, tests/container-images/
+#   P1  image layer: images/<svc>/image.nix, tests/container-images/
 #       verify_<svc>.sh, and per-release config (source-refs.yaml key,
 #       extra-packages.yaml block) in EVERY release; a missing
 #       test-excludes/<svc>.txt is [INFO] (the file is optional)
@@ -17,7 +17,7 @@
 #       parity with the keystone reference chart
 #   P4  observability: dashboards/<svc>-operator.json + dashboard_test.go
 #   P5  CI wiring: paths-filter, ALL_OPERATORS, FILTER_<svc>, unit-test
-#       matrices, helm-validate chart loop, build-images coverage, and the
+#       matrices, helm-validate chart loop, and the
 #       derived GHCR cleanup package lists (exact item match)
 #   P6  e2e coverage: canonical chainsaw suite set under tests/e2e/<svc>/
 #       (incl. latest-release variant) plus at least one chaos suite
@@ -154,13 +154,12 @@ REFERENCE_HELM_TESTS="$(find operators/keystone/helm/keystone-operator/tests \
 # ---------------------------------------------------------------------------
 # P1 — image layer
 # ---------------------------------------------------------------------------
-hdr "P1: image layer (image.nix or Dockerfile, verify script, per-release config)"
+hdr "P1: image layer (image.nix, verify script, per-release config)"
 for svc in ${SERVICES}; do
-  # A service image is built by Nix from images/<svc>/image.nix, or from a
-  # Dockerfile; either one is the image layer.
-  t=0; [[ -f "images/${svc}/image.nix" || -f "images/${svc}/Dockerfile" ]] || t=1
+  # A service image is built by Nix from images/<svc>/image.nix.
+  t=0; [[ -f "images/${svc}/image.nix" ]] || t=1
   check "${svc}" P1 "images/${svc}/image.nix" "${t}" \
-    "images/${svc}/image.nix (or a Dockerfile) present"
+    "images/${svc}/image.nix present"
 
   t=0; [[ -f "tests/container-images/verify_${svc}.sh" ]] || t=1
   check "${svc}" P1 "verify_${svc}.sh" "${t}" \
@@ -250,7 +249,7 @@ done
 # ---------------------------------------------------------------------------
 # P5 — CI wiring
 # ---------------------------------------------------------------------------
-hdr "P5: CI wiring (ci.yaml, build-images.yaml, cleanup-images.yaml)"
+hdr "P5: CI wiring (ci.yaml, cleanup-images.yaml)"
 CI=".github/workflows/ci.yaml"
 for svc in ${SERVICES}; do
   t=0; grep -qF "'operators/${svc}/**'" "${CI}" || t=1
@@ -275,18 +274,6 @@ for svc in ${SERVICES}; do
     || grep -qF "operators/${svc}/helm/${svc}-operator" "${CI}" || t=1
   check "${svc}" P5 "helm-validate" "${t}" \
     "ci.yaml helm-validate loop covers the ${svc} chart"
-
-  # A Nix-built image has no lint-dockerfiles entry: build-service-images
-  # builds every service of the matrix from its flake attribute.
-  if [[ -f "images/${svc}/image.nix" ]]; then
-    t=0; ! grep -qF "images/${svc}/Dockerfile" .github/workflows/build-images.yaml || t=1
-    check "${svc}" P5 "build-images" "${t}" \
-      "build-images.yaml lints no images/${svc}/Dockerfile (built from images/${svc}/image.nix)"
-  else
-    t=0; grep -qF "images/${svc}/Dockerfile" .github/workflows/build-images.yaml || t=1
-    check "${svc}" P5 "build-images" "${t}" \
-      "build-images.yaml lints/builds images/${svc}/Dockerfile"
-  fi
 
   # Both lists are checked on their own, with exact list-item matches: a bare
   # service name must not "match" its <svc>-operator sibling across the hyphen.

@@ -30,7 +30,7 @@ statement:
 
 | Mechanism | Where it applies | Source of truth |
 |---|---|---|
-| Inline header | Every hand-authored `*.go`, `*.sh`, `*.py`, `*.nix`, `Dockerfile`, `Makefile`, and `*.yaml` outside Helm charts and controller-gen output | Two comment lines: `SPDX-FileCopyrightText: …` and `SPDX-License-Identifier: …` |
+| Inline header | Every hand-authored `*.go`, `*.sh`, `*.py`, `*.nix`, `Makefile`, and `*.yaml` outside Helm charts and controller-gen output | Two comment lines: `SPDX-FileCopyrightText: …` and `SPDX-License-Identifier: …` |
 | Licence text inventory | Every licence identifier used anywhere | A matching file under `LICENSES/` (only `Apache-2.0.txt` today) |
 
 Three file classes carry no inline header by convention, and the script
