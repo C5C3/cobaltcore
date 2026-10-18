@@ -178,9 +178,23 @@ chainsaw-lint:
 # Each test is a self-contained bash script that uses tests/lib/assertions.sh.
 test-shell:
 	@echo "Running shell unit tests..."
-	@status=0; \
-	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh tests/unit/ci/*_test.sh tests/unit/images/*_test.sh; do \
-		[ -f "$$t" ] || continue; \
+	@broken="$$(find -L tests/unit -type l)" || { echo 'test-shell: find could not walk tests/unit' >&2; exit 1; }; \
+	broken="$$(printf '%s\n' "$$broken" | LC_ALL=C sort)"; \
+	if [ -n "$$broken" ]; then \
+		echo "$$broken" | sed 's|^|test-shell: |; s|$$| is a symlink whose target does not exist, so nothing behind it would run|' >&2; \
+		exit 1; \
+	fi; \
+	stray="$$(find -L tests/unit ! -type d -name '*.sh' ! -name '*_test.sh')" || { echo 'test-shell: find could not walk tests/unit' >&2; exit 1; }; \
+	stray="$$(printf '%s\n' "$$stray" | LC_ALL=C sort)"; \
+	if [ -n "$$stray" ]; then \
+		echo "$$stray" | sed 's|^|test-shell: |; s|$$| does not end in _test.sh and would never run; rename it, or move a helper under tests/lib/|' >&2; \
+		exit 1; \
+	fi; \
+	tests="$$(find -L tests/unit ! -type d -name '*_test.sh')" || { echo 'test-shell: find could not walk tests/unit' >&2; exit 1; }; \
+	tests="$$(printf '%s\n' "$$tests" | LC_ALL=C sort)"; \
+	[ -n "$$tests" ] || { echo 'test-shell: no *_test.sh found under tests/unit' >&2; exit 1; }; \
+	status=0; \
+	for t in $$tests; do \
 		echo "=== $$t ==="; \
 		bash "$$t" || status=1; \
 	done; \
