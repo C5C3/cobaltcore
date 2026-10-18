@@ -168,6 +168,9 @@ func TestReconcileDatabase_SyncJobCommandAndEnv(t *testing.T) {
 	g.Expect(connEnv).NotTo(BeNil(),
 		"the db-sync Job overrides [placement_database] connection via env, not via the ConfigMap")
 	g.Expect(connEnv.ValueFrom.SecretKeyRef.Name).To(Equal(database.ConnectionSecretName(placement.Name)))
+	// The per-read cap would cut a long migration: only the API container
+	// carries the socket timeouts.
+	g.Expect(container.Env).NotTo(ContainElement(HaveField("Name", HaveSuffix("__CONNECTION_PARAMETERS"))))
 }
 
 // TestReconcileDatabase_SyncJobProjectsDBTLSKeypair pins the db-sync Job against

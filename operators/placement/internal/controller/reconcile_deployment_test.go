@@ -167,11 +167,12 @@ func TestPlacementUWSGICommand_KeepAliveDisabledDropsTimeout(t *testing.T) {
 	g.Expect(procs).To(Equal("2"))
 }
 
-// TestBuildPlacementDeployment_EnvVars pins the three env vars the container
+// TestBuildPlacementDeployment_EnvVars pins the four env vars the container
 // carries and nothing else. The config directory, the DSN, and the service-user
 // password are all oslo.config env overrides, so a missing one leaves placement
 // reading the image's empty /etc/placement or the DSN placeholder in the
-// rendered config.
+// rendered config. The fourth bounds the database sockets (see
+// TestAPIContainer_SocketTimeoutEnv).
 func TestBuildPlacementDeployment_EnvVars(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -188,6 +189,7 @@ func TestBuildPlacementDeployment_EnvVars(t *testing.T) {
 		"OS_PLACEMENT_CONFIG_DIR",
 		"OS_PLACEMENT_DATABASE__CONNECTION",
 		keystoneauth.PasswordEnvVarName,
+		"OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS",
 	}))
 
 	// The config dir must be the mount point, with no trailing slash and no
@@ -208,6 +210,50 @@ func TestBuildPlacementDeployment_EnvVars(t *testing.T) {
 	g.Expect(pw.ValueFrom).NotTo(BeNil())
 	g.Expect(pw.ValueFrom.SecretKeyRef.Name).To(Equal("placement-service-user"))
 	g.Expect(pw.ValueFrom.SecretKeyRef.Key).To(Equal("password"))
+}
+
+// A request on a connection a MariaDB outage killed pins its worker for the TCP
+// retransmit window unless pymysql bounds the socket, so the API container
+// carries the bound by default, named after the [placement_database] section. A
+// user's own connection_parameters stays authoritative: oslo.config reads the
+// environment before the file.
+func TestAPIContainer_SocketTimeoutEnv(t *testing.T) {
+	t.Run("the default bounds the API database sockets", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		env := buildPlacementDeployment(testPlacement(), testConfigMapName, "", "").
+			Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(env).NotTo(BeEmpty())
+		g.Expect(env[len(env)-1]).To(Equal(corev1.EnvVar{
+			Name:  "OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS",
+			Value: "read_timeout=10&write_timeout=10",
+		}))
+	})
+
+	t.Run("a user-set connection_parameters disables the variable", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		placement := testPlacement()
+		placement.Spec.ExtraConfig = map[string]map[string]string{
+			"placement_database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+
+		env := buildPlacementDeployment(placement, testConfigMapName, "", "").Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(env).NotTo(ContainElement(HaveField("Name", "OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS")))
+	})
+
+	t.Run("a [database] key does not reach the placement_database variable", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		placement := testPlacement()
+		placement.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+
+		env := buildPlacementDeployment(placement, testConfigMapName, "", "").Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(env).To(ContainElement(HaveField("Name", "OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS")))
+	})
 }
 
 // TestBuildPlacementDeployment_CustomServiceUserKey covers the CR that names a

@@ -80,6 +80,8 @@ spec:
             secretKeyRef:
               key: password
               name: placement-service-user
+        - name: OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/placement:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -219,6 +221,8 @@ spec:
             secretKeyRef:
               key: password
               name: placement-service-user
+        - name: OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/placement:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -359,6 +363,8 @@ spec:
             secretKeyRef:
               key: password
               name: placement-service-user
+        - name: OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/placement:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -521,6 +527,8 @@ spec:
             secretKeyRef:
               key: password
               name: placement-service-user
+        - name: OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/placement:2026.1
         imagePullPolicy: Always
         lifecycle:

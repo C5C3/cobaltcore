@@ -242,14 +242,14 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 			Image:           placement.Spec.Image.Reference(),
 			ImagePullPolicy: placement.Spec.Image.EffectivePullPolicy(),
 			Command:         placementUWSGICommand(placement.Spec.APIServer),
-			Env: []corev1.EnvVar{
+			Env: append([]corev1.EnvVar{
 				// The WSGI entry's init_application() resolves its config as
 				// $OS_PLACEMENT_CONFIG_DIR/placement.conf, so this is what points
 				// placement at the mounted ConfigMap.
 				{Name: "OS_PLACEMENT_CONFIG_DIR", Value: placementConfigMountPath},
 				database.ConnectionEnvVarForSection(placement.Name, "placement_database"),
 				keystoneauth.PasswordEnvVar(placement.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(placement)),
-			},
+			}, database.SocketTimeoutEnvVars(placement.Spec.ExtraConfig, "placement_database")...),
 			Ports: []corev1.ContainerPort{{
 				Name:          "placement-api",
 				ContainerPort: placementAPIPort,

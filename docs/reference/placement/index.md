@@ -73,7 +73,12 @@ The v1 operator resolves the onboarding decisions as follows:
   upstream moved the option away from the deprecated `[DEFAULT]` spelling. Both
   spellings of `auth_strategy` are registered as operator-owned and refused in
   `spec.extraConfig`, because `extraConfig` has the last word in the merge and
-  `noauth2` would put the API on the no-auth middleware.
+  `noauth2` would put the API on the no-auth middleware. The database socket
+  timeouts follow the section too: the API container carries
+  `OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`
+  unless `spec.extraConfig.placement_database.connection_parameters` is set, and
+  a ControlPlane rejects a `spec.globalExtraConfig.database` key while Placement
+  is declared, because the Placement option catalog has no `[database]` section.
 
 ## Owned resources
 
