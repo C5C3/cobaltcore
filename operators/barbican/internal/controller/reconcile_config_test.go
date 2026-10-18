@@ -204,6 +204,34 @@ func TestReconcileConfig_ExtraConfigOverlay(t *testing.T) {
 	)
 }
 
+// TestReconcileConfig_UserConnectionParametersRenderIntoTheFile pins the opt-out
+// of the API container's socket-timeout override: the file carries no
+// connection_parameters by default, and a user value is merged as a free option
+// (the key is not operator-owned), which is what drops the env variable.
+func TestReconcileConfig_UserConnectionParametersRenderIntoTheFile(t *testing.T) {
+	t.Run("the default renders no connection_parameters", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, secret := renderConfig(t, testBarbican(), validProjection())
+
+		g.Expect(string(secret.Data[barbicanConfDataKey])).NotTo(ContainSubstring("connection_parameters"))
+	})
+
+	t.Run("a user value lands under [database]", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		barbican := testBarbican()
+		barbican.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+		_, secret := renderConfig(t, barbican, validProjection())
+
+		g.Expect(sectionOf(t, string(secret.Data[barbicanConfDataKey]), "database")).
+			To(ContainElement("connection_parameters = read_timeout=60&write_timeout=60"))
+		cond := barbicanCondition(barbican, config.ConditionTypeExtraConfigHealthy)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+	})
+}
+
 // TestReconcileConfig_PolicyDefaultsOverrideIsReported pins the Reported
 // treatment of [oslo_policy] enforce_new_defaults: an extraConfig override of it
 // wins in the rendered file and is surfaced through ExtraConfigHealthy and a

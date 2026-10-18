@@ -207,6 +207,13 @@ Every other owned key is honored and reported. The registry covers `[DEFAULT]`
 `[oslo_policy]` (`enforce_new_defaults`, `policy_file`).
 Conditionally rendered keys are registered unconditionally: the registry
 records that a key is not the user's to set, not that it is currently rendered.
+`[database] connection_parameters` is not in the registry and stays the user's.
+While `spec.extraConfig.database` carries no `connection_parameters` key, the
+API container carries `OS_DATABASE__CONNECTION_PARAMETERS` with the literal
+value `read_timeout=10&write_timeout=10`, a plain environment value with no
+Secret behind it. With the key set, to any value including the empty string,
+the operator renders that value into `barbican.conf` and sets no variable. See
+[Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
 
 `spec.policyOverrides` rules sit on top of the secure-RBAC defaults that
 `[oslo_policy] enforce_new_defaults = true` turns on (see
