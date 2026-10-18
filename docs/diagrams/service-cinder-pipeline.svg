@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1953" viewBox="0 0 1808 1953" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Sub-reconciler pipeline of the Cinder operator">
+<title>Sub-reconciler pipeline of the Cinder operator</title>
+<rect width="1808" height="1953" fill="#F6F5F1"/>
+<rect x="100" y="40" width="1290" height="1639" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="119" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Pipeline</text>
+<text x="119" y="111.2" font-size="20" font-weight="400" fill="#55606E">one entry after another; the first that returns a requeue or an error ends the pass</text>
+<circle cx="50" cy="178" r="10" fill="#17202B"/>
+<polyline points="60,178 229.5,178" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="240,178 225,185.2 225,170.8" fill="#3A4452"/>
+<rect x="240" y="150" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="186.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Secrets</text>
+<text x="530" y="172.2" font-size="20" font-weight="400" fill="#55606E">sets SecretsReady</text>
+<text x="530" y="198.2" font-size="20" font-weight="400" fill="#55606E">hands on authTokenDigest</text>
+<polyline points="375,206 375,231.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,242 367.8,227 382.2,227" fill="#3A4452"/>
+<rect x="240" y="242" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="278.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DBConnectionSecret</text>
+<text x="530" y="264.2" font-size="20" font-weight="400" fill="#55606E">reports through SecretsReady</text>
+<text x="530" y="290.2" font-size="20" font-weight="400" fill="#55606E">hands on dsnDigest</text>
+<polyline points="375,298 375,323.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,334 367.8,319 382.2,319" fill="#3A4452"/>
+<rect x="240" y="334" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="370.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">TransportURLSecret</text>
+<text x="530" y="356.2" font-size="20" font-weight="400" fill="#55606E">reports through SecretsReady</text>
+<text x="530" y="382.2" font-size="20" font-weight="400" fill="#55606E">hands on transportDigest and egressPort</text>
+<polyline points="375,390 375,426.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,437 367.8,422 382.2,422" fill="#3A4452"/>
+<rect x="240" y="437" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="473.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Backends</text>
+<text x="530" y="446.2" font-size="20" font-weight="400" fill="#55606E">sets BackendsReady</text>
+<text x="530" y="472.2" font-size="20" font-weight="400" fill="#55606E">hands on the backends and shareHosts</text>
+<text x="530" y="498.2" font-size="20" font-weight="400" fill="#55606E">never ends the pass</text>
+<polyline points="375,493 375,540.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,551 367.8,536 382.2,536" fill="#3A4452"/>
+<rect x="240" y="551" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="587.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">BackupBackend</text>
+<text x="530" y="560.2" font-size="20" font-weight="400" fill="#55606E">sets BackupBackendReady</text>
+<text x="530" y="586.2" font-size="20" font-weight="400" fill="#55606E">hands on the backup backend</text>
+<text x="530" y="612.2" font-size="20" font-weight="400" fill="#55606E">never ends the pass</text>
+<polyline points="375,607 375,643.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,654 367.8,639 382.2,639" fill="#3A4452"/>
+<rect x="240" y="654" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="690.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Config</text>
+<text x="530" y="676.2" font-size="20" font-weight="400" fill="#55606E">reports through SecretsReady</text>
+<text x="530" y="702.2" font-size="20" font-weight="400" fill="#55606E">hands on configMapName</text>
+<polyline points="375,710 375,735.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,746 367.8,731 382.2,731" fill="#3A4452"/>
+<rect x="240" y="746" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="782.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Database</text>
+<text x="530" y="768.2" font-size="20" font-weight="400" fill="#55606E">sets DatabaseReady</text>
+<text x="530" y="794.2" font-size="20" font-weight="400" fill="#55606E">reads configMapName and the backend count</text>
+<polyline points="375,802 375,827.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,838 367.8,823 382.2,823" fill="#3A4452"/>
+<rect x="240" y="838" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="874.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Scheduler</text>
+<text x="530" y="860.2" font-size="20" font-weight="400" fill="#55606E">sets SchedulerReady</text>
+<text x="530" y="886.2" font-size="20" font-weight="400" fill="#55606E">reads the digests and egressPort</text>
+<polyline points="375,894 375,919.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,930 367.8,915 382.2,915" fill="#3A4452"/>
+<rect x="240" y="930" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="966.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">VolumeServices</text>
+<text x="530" y="952.2" font-size="20" font-weight="400" fill="#55606E">sets VolumeServicesReady</text>
+<text x="530" y="978.2" font-size="20" font-weight="400" fill="#55606E">one Deployment per projected backend</text>
+<polyline points="375,986 375,1011.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,1022 367.8,1007 382.2,1007" fill="#3A4452"/>
+<rect x="240" y="1022" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="1058.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">BackupService</text>
+<text x="530" y="1044.2" font-size="20" font-weight="400" fill="#55606E">sets BackupServiceReady</text>
+<text x="530" y="1070.2" font-size="20" font-weight="400" fill="#55606E">reads the backup backend and the backends</text>
+<polyline points="375,1078 375,1114.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,1125 367.8,1110 382.2,1110" fill="#3A4452"/>
+<rect x="240" y="1125" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="1161.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Deployment</text>
+<text x="530" y="1134.2" font-size="20" font-weight="400" fill="#55606E">sets DeploymentReady</text>
+<text x="530" y="1160.2" font-size="20" font-weight="400" fill="#55606E">reads the digests</text>
+<text x="530" y="1186.2" font-size="20" font-weight="400" fill="#55606E">sets status.endpoint</text>
+<polyline points="375,1181 375,1217.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,1228 367.8,1213 382.2,1213" fill="#3A4452"/>
+<rect x="240" y="1228" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="1264.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DBPurge</text>
+<text x="530" y="1250.2" font-size="20" font-weight="400" fill="#55606E">sets DBPurgeReady</text>
+<text x="530" y="1276.2" font-size="20" font-weight="400" fill="#55606E">reads configMapName</text>
+<polyline points="375,1284 375,1309.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,1320 367.8,1305 382.2,1305" fill="#3A4452"/>
+<rect x="120" y="1320" width="840" height="335" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="139" y="1359.36" font-size="26" font-weight="700" fill="#2B3440">Parallel group</text>
+<text x="139" y="1391.2" font-size="20" font-weight="400" fill="#55606E">every member starts; the shortest requeue is returned</text>
+<rect x="140" y="1413" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="1449.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HTTPRoute</text>
+<text x="140" y="1496.2" font-size="20" font-weight="400" fill="#55606E">sets HTTPRouteReady</text>
+<rect x="420" y="1413" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="525" y="1449.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HealthCheck</text>
+<text x="420" y="1496.2" font-size="20" font-weight="400" fill="#55606E">sets CinderAPIReady</text>
+<rect x="700" y="1413" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="805" y="1449.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HPA</text>
+<text x="700" y="1496.2" font-size="20" font-weight="400" fill="#55606E">sets HPAReady</text>
+<rect x="140" y="1547" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="1583.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">VPA</text>
+<text x="140" y="1630.2" font-size="20" font-weight="400" fill="#55606E">sets VPAReady</text>
+<rect x="420" y="1547" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="525" y="1583.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NetworkPolicy</text>
+<text x="420" y="1630.2" font-size="20" font-weight="400" fill="#55606E">sets NetworkPolicyReady</text>
+<rect x="1330" y="1719" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1440" y="1755.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">updateStatus</text>
+<text x="1330" y="1804.2" font-size="20" font-weight="400" fill="#55606E">aggregates Ready from the sub-conditions</text>
+<text x="1330" y="1830.2" font-size="20" font-weight="400" fill="#55606E">writes the status only when it changed</text>
+<polyline points="375,1655 375,1747 1319.5,1747" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1330,1747 1315,1754.2 1315,1739.8" fill="#3A4452"/>
+<text x="820" y="1730.2" font-size="20" font-weight="400" fill="#2B3440">every entry returned zero</text>
+<polyline points="1390,178 1440,178 1440,1708.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1440,1719 1432.8,1704 1447.2,1704" fill="#3A4452"/>
+<text x="1456" y="237.2" font-size="20" font-weight="400" fill="#2B3440">first requeue or error</text>
+<text x="40" y="1880.2" font-size="20" font-weight="400" fill="#55606E">A step label is the sub_reconciler value of the operator's metrics.</text>
+<text x="40" y="1906.2" font-size="20" font-weight="400" fill="#55606E">The Keystone operator draws the same pattern with two parallel groups in service-reconciler-pipeline.</text>
+</svg>

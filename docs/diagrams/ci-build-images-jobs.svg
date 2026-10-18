@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1960" height="1254" viewBox="0 0 1960 1254" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The jobs of the build-images workflow and what each needs">
+<title>The jobs of the build-images workflow and what each needs</title>
+<rect width="1960" height="1254" fill="#F6F5F1"/>
+<text x="60" y="61.2" font-size="20" font-weight="400" fill="#55606E">needs: every job to the left of an arrow</text>
+<rect x="40" y="90" width="1880" height="308" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="129.36" font-size="26" font-weight="700" fill="#2B3440">Release-independent images</text>
+<rect x="80" y="150" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="175.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">changes</text>
+<rect x="80" y="196" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="221.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">nix-flake-check</text>
+<rect x="80" y="242" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="267.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">prepare</text>
+<polyline points="320,168 360,168" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,214 360,214" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,260 360,260" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="560" y="150" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="179.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-keystone-federation-proxy</text>
+<polyline points="360,172 549.5,172" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,172 545,179.2 545,164.8" fill="#3A4452"/>
+<polyline points="920,172 989.5,172" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,172 985,179.2 985,164.8" fill="#3A4452"/>
+<rect x="1000" y="150" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="179.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-keystone-federation-proxy-image</text>
+<text x="560" y="216.48" font-size="18" font-weight="400" fill="#55606E">matrix: amd64 and arm64; merge on push only</text>
+<rect x="560" y="232" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="261.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-backup-shifter</text>
+<polyline points="360,254 549.5,254" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,254 545,261.2 545,246.8" fill="#3A4452"/>
+<polyline points="920,254 989.5,254" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,254 985,261.2 985,246.8" fill="#3A4452"/>
+<rect x="1000" y="232" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="261.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-backup-shifter-image</text>
+<text x="560" y="298.48" font-size="18" font-weight="400" fill="#55606E">matrix: amd64 and arm64; merge on push only</text>
+<rect x="560" y="314" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="343.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-libvirt</text>
+<polyline points="360,336 549.5,336" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,336 545,343.2 545,328.8" fill="#3A4452"/>
+<polyline points="920,336 989.5,336" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,336 985,343.2 985,328.8" fill="#3A4452"/>
+<rect x="1000" y="314" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="343.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-libvirt-image</text>
+<text x="560" y="380.48" font-size="18" font-weight="400" fill="#55606E">matrix: amd64 and arm64; merge on push only</text>
+<polyline points="360,168 360,336" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="40" y="428" width="1880" height="308" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="467.36" font-size="26" font-weight="700" fill="#2B3440">Nix-locked images</text>
+<rect x="80" y="488" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="513.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">changes</text>
+<rect x="80" y="534" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="559.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">nix-flake-check</text>
+<rect x="80" y="580" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="605.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">nix-lock-check</text>
+<rect x="80" y="626" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="651.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">prepare</text>
+<polyline points="320,506 360,506" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,552 360,552" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,598 360,598" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,644 360,644" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="560" y="488" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="517.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-ovn</text>
+<polyline points="360,510 549.5,510" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,510 545,517.2 545,502.8" fill="#3A4452"/>
+<polyline points="920,510 989.5,510" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,510 985,517.2 985,502.8" fill="#3A4452"/>
+<rect x="1000" y="488" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="517.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-ovn-image</text>
+<polyline points="1440,510 1489.5,510" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1500,510 1485,517.2 1485,502.8" fill="#3A4452"/>
+<rect x="1500" y="488" width="380" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1690" y="517.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">verify-ovn-image</text>
+<text x="560" y="554.48" font-size="18" font-weight="400" fill="#55606E">matrix: amd64 and arm64; merge and verify on push only</text>
+<rect x="560" y="570" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="599.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-hvo</text>
+<polyline points="360,592 549.5,592" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,592 545,599.2 545,584.8" fill="#3A4452"/>
+<polyline points="920,592 989.5,592" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,592 985,599.2 985,584.8" fill="#3A4452"/>
+<rect x="1000" y="570" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="599.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-hvo-image</text>
+<polyline points="1440,592 1489.5,592" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1500,592 1485,599.2 1485,584.8" fill="#3A4452"/>
+<rect x="1500" y="570" width="380" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1690" y="599.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">verify-hvo-image</text>
+<text x="560" y="636.48" font-size="18" font-weight="400" fill="#55606E">matrix: amd64 and arm64; merge and verify on push only</text>
+<rect x="560" y="652" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="681.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-kna</text>
+<polyline points="360,674 549.5,674" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,674 545,681.2 545,666.8" fill="#3A4452"/>
+<polyline points="920,674 989.5,674" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,674 985,681.2 985,666.8" fill="#3A4452"/>
+<rect x="1000" y="652" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="681.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-kna-image</text>
+<polyline points="1440,674 1489.5,674" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1500,674 1485,681.2 1485,666.8" fill="#3A4452"/>
+<rect x="1500" y="652" width="380" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1690" y="681.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">verify-kna-image</text>
+<text x="560" y="718.48" font-size="18" font-weight="400" fill="#55606E">matrix: amd64 and arm64; merge and verify on push only</text>
+<polyline points="360,506 360,674" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="40" y="766" width="1880" height="398" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="59" y="805.36" font-size="26" font-weight="700" fill="#2B3440">Release-matrix images</text>
+<rect x="80" y="826" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="851.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">changes</text>
+<rect x="80" y="872" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="897.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">generate-matrix</text>
+<rect x="80" y="918" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="943.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">nix-flake-check</text>
+<rect x="80" y="964" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="989.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">nix-lock-check</text>
+<rect x="80" y="1010" width="240" height="36" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1035.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">prepare</text>
+<polyline points="320,844 360,844" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,890 360,890" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,936 360,936" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,982 360,982" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="320,1028 360,1028" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="560" y="826" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="855.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-tempest</text>
+<polyline points="360,848 549.5,848" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,848 545,855.2 545,840.8" fill="#3A4452"/>
+<polyline points="920,848 989.5,848" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,848 985,855.2 985,840.8" fill="#3A4452"/>
+<rect x="1000" y="826" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="855.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-tempest-image</text>
+<text x="560" y="892.48" font-size="18" font-weight="400" fill="#55606E">matrix: release and platform; merge on push only</text>
+<rect x="560" y="908" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="937.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-service-images</text>
+<polyline points="360,930 549.5,930" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,930 545,937.2 545,922.8" fill="#3A4452"/>
+<polyline points="920,930 989.5,930" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,930 985,937.2 985,922.8" fill="#3A4452"/>
+<rect x="1000" y="908" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="937.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-service-images</text>
+<polyline points="1440,930 1489.5,930" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1500,930 1485,937.2 1485,922.8" fill="#3A4452"/>
+<rect x="1500" y="908" width="380" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1690" y="937.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">verify-service-images</text>
+<text x="560" y="974.48" font-size="18" font-weight="400" fill="#55606E">matrix: service, release and platform; verify also needs test-service-images</text>
+<rect x="560" y="990" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="1019.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-nova-compute-image</text>
+<polyline points="360,1012 549.5,1012" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,1012 545,1019.2 545,1004.8" fill="#3A4452"/>
+<polyline points="920,1012 989.5,1012" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1000,1012 985,1019.2 985,1004.8" fill="#3A4452"/>
+<rect x="1000" y="990" width="440" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1220" y="1019.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-nova-compute-image</text>
+<polyline points="1440,1012 1489.5,1012" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1500,1012 1485,1019.2 1485,1004.8" fill="#3A4452"/>
+<rect x="1500" y="990" width="380" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1690" y="1019.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">verify-nova-compute-image</text>
+<text x="560" y="1056.48" font-size="18" font-weight="400" fill="#55606E">matrix: release and platform; merge and verify on push only</text>
+<polyline points="360,844 360,1028" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="560" y="1082" width="360" height="44" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="740" y="1111.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">test-service-images</text>
+<text x="560" y="1148.48" font-size="18" font-weight="400" fill="#55606E">nix build .#&lt;service&gt;-&lt;rel_&gt;-test-run; needs changes, generate-matrix and nix-lock-check</text>
+<polyline points="920,1104 1690,1104 1690,962.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1690,952 1697.2,967 1682.8,967" fill="#3A4452"/>
+<text x="60" y="1215.2" font-size="20" font-weight="400" fill="#55606E">generate-matrix itself needs only changes. The merge and verify jobs also need prepare or generate-matrix, which the frame's gates cover.</text>
+</svg>

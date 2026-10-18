@@ -932,27 +932,7 @@ The Keystone reconciler sets conditions in this order during a successful reconc
 > from the order of `subConditionTypes`, the list of every sub-condition type that
 > decides how conditions appear in status output.
 
-```text
-SecretsReady=True (SecretsAvailable)
-    │
-    ▼
-reconcileConfig (no condition — returns configMapName)
-    │
-    ▼
-FernetKeysReady=True (FernetKeysAvailable)
-    │
-    ▼
-DatabaseReady=True (DatabaseSynced)
-    │
-    ▼
-DeploymentReady=True (DeploymentReady)
-    │
-    ▼
-BootstrapReady=True (BootstrapComplete)
-    │
-    ▼
-Ready=True (AllReady) — aggregate of every sub-condition; the suite asserts these five
-```
+![The order the Keystone reconciler sets its conditions in, as the basic-deployment suite asserts them: SecretsReady=True with reason SecretsAvailable, then reconcileConfig, which sets no condition and returns configMapName, FernetKeysReady=True with reason FernetKeysAvailable, DatabaseReady=True with reason DatabaseSynced, DeploymentReady=True with reason DeploymentReady, BootstrapReady=True with reason BootstrapComplete, and Ready=True with reason AllReady, the aggregate of every sub-condition. The suite asserts the five sub-conditions and Ready in one step.](../../diagrams/test-keystone-condition-progression.svg)
 
 The `basic-deployment` test asserts all 6 conditions (5 sub-conditions + Ready) in a
 single assert step, validating the full progression.

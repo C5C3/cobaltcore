@@ -153,21 +153,7 @@ standalone instance has to materialise the Secret itself.
 The bootstrap scripts **must** be executed in the following order. Each script depends
 on the successful completion of the previous step:
 
-```text
-1. init-unseal.sh           Initialize Shamir keys, unseal all replicas
-       │
-       ▼
-2. setup-secret-engines.sh  Enable KV v2 and PKI engines
-       │
-       ▼
-3. setup-auth.sh            Configure Kubernetes auth + AppRole
-       │
-       ▼
-4. setup-policies.sh        Apply 12 HCL least-privilege policies
-       │
-       ▼
-5. write-bootstrap-secrets.sh  Generate and seed initial passwords
-```
+![The order the five OpenBao bootstrap scripts run in, each needing what the one before it wrote: init-unseal.sh initializes the Shamir keys and unseals every replica, setup-secret-engines.sh enables the KV v2 and PKI engines, setup-auth.sh configures the Kubernetes auth method and AppRole, setup-policies.sh applies the 12 least-privilege HCL policies, and write-bootstrap-secrets.sh generates and seeds the initial passwords.](../../diagrams/secrets-openbao-bootstrap-order.svg)
 
 **Dependency rationale:**
 

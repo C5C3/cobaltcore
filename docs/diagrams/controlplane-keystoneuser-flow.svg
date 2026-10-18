@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1528" height="904" viewBox="0 0 1528 904" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Reconciliation flow of the KeystoneUser controller">
+<title>Reconciliation flow of the KeystoneUser controller</title>
+<rect width="1528" height="904" fill="#F6F5F1"/>
+<rect x="60" y="40" width="260" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="190" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Reconcile</text>
+<polyline points="90,131 118,131" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="138.2" font-size="20" font-weight="400" fill="#2B3440">the order's cluster does not resolve</text>
+<polyline points="499,131 522.5,131" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="533,131 518,138.2 518,123.8" fill="#3A4452"/>
+<text x="545" y="138.2" font-size="20" font-weight="700" fill="#2B3440">log and end the pass</text>
+<text x="775" y="138.2" font-size="20" font-weight="400" fill="#55606E">no requeue</text>
+<polyline points="90,165 118,165" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="172.2" font-size="20" font-weight="400" fill="#2B3440">deleting?</text>
+<polyline points="499,165 522.5,165" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="533,165 518,172.2 518,157.8" fill="#3A4452"/>
+<text x="545" y="172.2" font-size="20" font-weight="700" fill="#2B3440">reconcileDelete</text>
+<text x="722" y="172.2" font-size="20" font-weight="400" fill="#55606E">see Deletion and Teardown</text>
+<rect x="130" y="194" width="224" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="242" y="225.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNormal</text>
+<polyline points="90,218 130,218" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="200" y="260" width="220" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="310" y="291.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">orderAdmission</text>
+<polyline points="160,284 200,284" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="230,343 258,343" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="270" y="350.2" font-size="20" font-weight="400" fill="#2B3440">cluster name longer than 63</text>
+<rect x="567" y="329" width="224" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="679" y="349.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">ClusterNameTooLong</text>
+<text x="805" y="350.2" font-size="20" font-weight="400" fill="#55606E">no requeue</text>
+<polyline points="230,377 258,377" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="270" y="384.2" font-size="20" font-weight="400" fill="#2B3440">ControlPlane read fails</text>
+<rect x="567" y="363" width="232" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="683" y="383.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">ControlPlaneNotFound</text>
+<text x="813" y="384.2" font-size="20" font-weight="400" fill="#55606E">10s; on a target cluster NamespaceNotAssigned, 1m</text>
+<polyline points="230,411 258,411" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="270" y="418.2" font-size="20" font-weight="400" fill="#2B3440">no namespace assignment</text>
+<rect x="567" y="397" width="249" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="691.5" y="417.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">NamespaceNotAssigned</text>
+<text x="830" y="418.2" font-size="20" font-weight="400" fill="#55606E">1m, the freeze</text>
+<polyline points="230,308 230,411" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="200" y="442" width="221" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="310.5" y="473.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">EnsureFinalizer</text>
+<polyline points="160,466 200,466" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="437" y="473.2" font-size="20" font-weight="400" fill="#55606E">c5c3.io/keystoneuser-teardown</text>
+<polyline points="160,525 188,525" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="532.2" font-size="20" font-weight="400" fill="#2B3440">AdminCredentialReady not met</text>
+<rect x="525" y="511" width="275" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="662.5" y="531.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">WaitingForAdminCredential</text>
+<text x="814" y="532.2" font-size="20" font-weight="400" fill="#55606E">10s</text>
+<rect x="200" y="554" width="220" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="310" y="585.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">provisionUser</text>
+<polyline points="160,578 200,578" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="436" y="585.2" font-size="20" font-weight="400" fill="#55606E">instrumented: KeystoneUserProvision</text>
+<polyline points="230,637 258,637" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="270" y="644.2" font-size="20" font-weight="700" fill="#2B3440">schedule due: next password generation</text>
+<text x="698" y="644.2" font-size="20" font-weight="400" fill="#55606E">held 1m while a KeystoneApplicationCredential naming the user is being deleted</text>
+<polyline points="230,671 258,671" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="270" y="678.2" font-size="20" font-weight="700" fill="#2B3440">converged: timer at status.nextPasswordRotation</text>
+<polyline points="230,602 230,671" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="200" y="702" width="247" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="323.5" y="733.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">deliverCredentials</text>
+<polyline points="160,726 200,726" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="463" y="733.2" font-size="20" font-weight="400" fill="#55606E">instrumented: KeystoneUserDelivery</text>
+<polyline points="160,242 160,726" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,218" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="833.2" font-size="20" font-weight="400" fill="#55606E">A chip is the reason both sub-conditions carry when the pass ends there; the note is the requeue.</text>
+<text x="40" y="859.2" font-size="20" font-weight="400" fill="#55606E">A bold name after an arrow is the function the pass continues in.</text>
+</svg>

@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1151" viewBox="0 0 1808 1151" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Sub-reconciler pipeline of the OVNCentral controller">
+<title>Sub-reconciler pipeline of the OVNCentral controller</title>
+<rect width="1808" height="1151" fill="#F6F5F1"/>
+<rect x="100" y="40" width="1290" height="837" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="119" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Pipeline</text>
+<text x="119" y="111.2" font-size="20" font-weight="400" fill="#55606E">one entry after another; the first that returns a requeue or an error ends the pass</text>
+<circle cx="50" cy="178" r="10" fill="#17202B"/>
+<polyline points="60,178 229.5,178" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="240,178 225,185.2 225,170.8" fill="#3A4452"/>
+<rect x="240" y="150" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="186.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">TLS</text>
+<text x="530" y="172.2" font-size="20" font-weight="400" fill="#55606E">sets TLSReady</text>
+<text x="530" y="198.2" font-size="20" font-weight="400" fill="#55606E">publishes status.clientSecretName</text>
+<polyline points="375,206 375,231.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,242 367.8,227 382.2,227" fill="#3A4452"/>
+<rect x="240" y="242" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="278.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Northbound</text>
+<text x="530" y="277.2" font-size="20" font-weight="400" fill="#55606E">sets NorthboundReady</text>
+<polyline points="375,298 375,323.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,334 367.8,319 382.2,319" fill="#3A4452"/>
+<rect x="240" y="334" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="370.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Southbound</text>
+<text x="530" y="369.2" font-size="20" font-weight="400" fill="#55606E">sets SouthboundReady</text>
+<polyline points="375,390 375,415.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,426 367.8,411 382.2,411" fill="#3A4452"/>
+<rect x="240" y="426" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="462.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Endpoints</text>
+<text x="530" y="448.2" font-size="20" font-weight="400" fill="#55606E">sets EndpointsReady</text>
+<text x="530" y="474.2" font-size="20" font-weight="400" fill="#55606E">stamps internalDbAddress and dbAddress</text>
+<polyline points="375,482 375,507.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,518 367.8,503 382.2,503" fill="#3A4452"/>
+<rect x="120" y="518" width="840" height="335" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="139" y="557.36" font-size="26" font-weight="700" fill="#2B3440">Parallel group</text>
+<text x="139" y="589.2" font-size="20" font-weight="400" fill="#55606E">every member starts; the shortest requeue is returned</text>
+<rect x="140" y="611" width="350" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="315" y="647.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Northd</text>
+<text x="140" y="694.2" font-size="20" font-weight="400" fill="#55606E">sets NorthdReady</text>
+<text x="140" y="720.2" font-size="20" font-weight="400" fill="#55606E">copies status.installedImage back</text>
+<rect x="560" y="611" width="350" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="735" y="647.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Relay</text>
+<text x="560" y="694.2" font-size="20" font-weight="400" fill="#55606E">sets RelayReady</text>
+<text x="560" y="720.2" font-size="20" font-weight="400" fill="#55606E">copies the relay addresses back</text>
+<rect x="140" y="745" width="350" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="315" y="781.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Backup</text>
+<text x="140" y="828.2" font-size="20" font-weight="400" fill="#55606E">sets BackupReady</text>
+<rect x="560" y="745" width="350" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="735" y="781.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">VPA</text>
+<text x="560" y="828.2" font-size="20" font-weight="400" fill="#55606E">sets VPAReady</text>
+<rect x="1330" y="917" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1440" y="953.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">updateStatus</text>
+<text x="1330" y="1002.2" font-size="20" font-weight="400" fill="#55606E">aggregates Ready from the sub-conditions</text>
+<text x="1330" y="1028.2" font-size="20" font-weight="400" fill="#55606E">writes the status only when it changed</text>
+<polyline points="375,853 375,945 1319.5,945" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1330,945 1315,952.2 1315,937.8" fill="#3A4452"/>
+<text x="820" y="928.2" font-size="20" font-weight="400" fill="#2B3440">every entry returned zero</text>
+<polyline points="1390,178 1440,178 1440,906.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1440,917 1432.8,902 1447.2,902" fill="#3A4452"/>
+<text x="1456" y="237.2" font-size="20" font-weight="400" fill="#2B3440">first requeue or error</text>
+<text x="40" y="1078.2" font-size="20" font-weight="400" fill="#55606E">A step label is the sub_reconciler value of the operator's metrics.</text>
+<text x="40" y="1104.2" font-size="20" font-weight="400" fill="#55606E">The Keystone operator draws the same pattern with two parallel groups in service-reconciler-pipeline.</text>
+</svg>

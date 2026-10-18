@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="520" viewBox="0 0 1720 520" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="How the Keystone reconciler branches on the deletion timestamp">
+<title>How the Keystone reconciler branches on the deletion timestamp</title>
+<rect width="1720" height="520" fill="#F6F5F1"/>
+<circle cx="50" cy="108" r="10" fill="#17202B"/>
+<polyline points="60,108 109.5,108" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="120,108 105,115.2 105,100.8" fill="#3A4452"/>
+<rect x="120" y="80" width="300" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="270" y="116.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Fetch the Keystone</text>
+<text x="120" y="165.2" font-size="20" font-weight="400" fill="#55606E">NotFound ends the pass</text>
+<polyline points="420,108 480,108 480,68 749.5,68" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="760,68 745,75.2 745,60.8" fill="#3A4452"/>
+<text x="500" y="55.2" font-size="20" font-weight="400" fill="#2B3440">deletionTimestamp set</text>
+<rect x="760" y="40" width="320" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="920" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDelete</text>
+<text x="1095" y="75.2" font-size="20" font-weight="400" fill="#55606E">the MariaDB finalizer</text>
+<polyline points="920,96 920,119.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="920,130 912.8,115 927.2,115" fill="#3A4452"/>
+<rect x="760" y="130" width="320" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="920" y="166.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeleteOpenBao</text>
+<text x="1095" y="165.2" font-size="20" font-weight="400" fill="#55606E">the OpenBao finalizer</text>
+<text x="760" y="221.2" font-size="20" font-weight="400" fill="#55606E">no sub-reconciler runs against a terminating resource</text>
+<polyline points="420,108 480,108 480,338 749.5,338" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="760,338 745,345.2 745,330.8" fill="#3A4452"/>
+<text x="500" y="325.2" font-size="20" font-weight="400" fill="#2B3440">deletionTimestamp unset</text>
+<rect x="760" y="310" width="320" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="920" y="346.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">AddFinalizer</text>
+<text x="1095" y="318.2" font-size="20" font-weight="400" fill="#55606E">keystone.openstack.c5c3.io/finalizer and</text>
+<text x="1095" y="344.2" font-size="20" font-weight="400" fill="#55606E">keystone.openstack.c5c3.io/openbao-finalizer, each if missing;</text>
+<text x="1095" y="370.2" font-size="20" font-weight="400" fill="#55606E">a pass that installs one ends with a requeue after 1s</text>
+<polyline points="920,366 920,399.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="920,410 912.8,395 927.2,395" fill="#3A4452"/>
+<rect x="760" y="410" width="320" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="920" y="446.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">the sub-reconcilers</text>
+<text x="1095" y="445.2" font-size="20" font-weight="400" fill="#55606E">the pipeline, see Reconciliation Flow</text>
+</svg>

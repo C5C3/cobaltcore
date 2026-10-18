@@ -216,34 +216,7 @@ groups:
 
 ## Event Flow
 
-```text
-GlanceReconciler.Reconcile()
-  │
-  ├── reconcileDelete() (deletionTimestamp set)
-  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
-  │     └─ MariaDB cleanup done    → Normal  DatabaseFinalized
-  │
-  ├── reconcileBackends()
-  │     └─ per-backend fault (missing Secret / control char) → Warning GlanceBackendSkipped
-  │
-  ├── reconcileConfig()
-  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
-  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
-  │
-  ├── reconcileDatabase()
-  │     ├─ db_sync fails              → Warning DBSyncFailed
-  │     ├─ db_sync succeeds           → Normal  DatabaseSynced
-  │     ├─ Job-UID patch fails        → Warning DBSyncMetricEmissionDeferred
-  │     └─ release upgrade            → Normal  UpgradeInitiated / ExpandComplete /
-  │                                             MigrateComplete / UpgradeComplete / UpgradeAborted
-  │                                      Warning VersionParseError / DowngradeNotSupported /
-  │                                             UpgradePathInvalid / UpgradeTargetChanged /
-  │                                             ExpandFailed / MigrateFailed / ContractFailed
-  │
-  ├── reconcileDeployment()
-  │     └─ rollout ready mid-upgrade  → Normal  DeploymentRolloutComplete
-  │
-  └── reconcileDBPurge()
-        ├─ newest run failed          → Warning DBPurgeJobFailed
-        └─ Job-UID patch fails        → Warning DBPurgeMetricEmissionDeferred
-```
+![The event flow of the Glance operator: the sub-reconcilers that emit events, and for each the condition and the event it emits. GlanceReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; reconcileBackends() emits Warning GlanceBackendSkipped when per-backend fault (missing Secret / control char); reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileDatabase() emits Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; Normal UpgradeInitiated or ExpandComplete or MigrateComplete or UpgradeComplete or UpgradeAborted and Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or UpgradeTargetChanged or ExpandFailed or MigrateFailed or ContractFailed when release upgrade; reconcileDeployment() emits Normal DeploymentRolloutComplete when rollout ready mid-upgrade; reconcileDBPurge() emits Warning DBPurgeJobFailed when newest run failed; Warning DBPurgeMetricEmissionDeferred when Job-UID patch fails;](../../diagrams/service-glance-events.svg)
+
+The figure draws which sub-reconciler emits which event, and on what. The
+[Event Reasons Reference](#event-reasons-reference) describes every reason.

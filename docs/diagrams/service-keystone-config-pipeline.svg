@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1560" height="348" viewBox="0 0 1560 348" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The eight stages reconcileConfig renders keystone.conf through">
+<title>The eight stages reconcileConfig renders keystone.conf through</title>
+<rect width="1560" height="348" fill="#F6F5F1"/>
+<text x="40" y="66.36" font-size="26" font-weight="700" fill="#2B3440">Configuration pipeline</text>
+<text x="40" y="97.2" font-size="20" font-weight="400" fill="#55606E">each stage reads what the stage before it produced</text>
+<rect x="60" y="116" width="167" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="143.5" y="151.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">Spec fields</text>
+<circle cx="76" cy="116" r="14" fill="#17202B"/>
+<text x="76" y="121.76" font-size="16" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<rect x="277" y="116" width="229" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="391.5" y="151.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">Operator defaults</text>
+<circle cx="293" cy="116" r="14" fill="#17202B"/>
+<text x="293" y="121.76" font-size="16" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<polyline points="227,144 266.5,144" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="277,144 262,151.2 262,136.8" fill="#3A4452"/>
+<rect x="556" y="116" width="216" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="664" y="151.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">Secret injection</text>
+<circle cx="572" cy="116" r="14" fill="#17202B"/>
+<text x="572" y="121.76" font-size="16" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<polyline points="506,144 545.5,144" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="556,144 541,151.2 541,136.8" fill="#3A4452"/>
+<rect x="822" y="116" width="262" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="953" y="151.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">Plugin config merge</text>
+<circle cx="838" cy="116" r="14" fill="#17202B"/>
+<text x="838" y="121.76" font-size="16" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<polyline points="772,144 811.5,144" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="822,144 807,151.2 807,136.8" fill="#3A4452"/>
+<rect x="1134" y="116" width="244" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1256" y="151.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">ExtraConfig merge</text>
+<circle cx="1150" cy="116" r="14" fill="#17202B"/>
+<text x="1150" y="121.76" font-size="16" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<polyline points="1084,144 1123.5,144" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1134,144 1119,151.2 1119,136.8" fill="#3A4452"/>
+<polyline points="1378,144 1408,144 1408,192 30,192 30,240 49.5,240" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="60,240 45,247.2 45,232.8" fill="#3A4452"/>
+<rect x="60" y="212" width="209" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="164.5" y="247.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">Policy override</text>
+<circle cx="76" cy="212" r="14" fill="#17202B"/>
+<text x="76" y="217.76" font-size="16" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<rect x="319" y="212" width="182" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="410" y="247.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">INI rendering</text>
+<circle cx="335" cy="212" r="14" fill="#17202B"/>
+<text x="335" y="217.76" font-size="16" font-weight="700" fill="#FDFCF9" text-anchor="middle">7</text>
+<polyline points="269,240 308.5,240" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="319,240 304,247.2 304,232.8" fill="#3A4452"/>
+<rect x="551" y="212" width="280" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="691" y="247.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">Immutable ConfigMap</text>
+<circle cx="567" cy="212" r="14" fill="#17202B"/>
+<text x="567" y="217.76" font-size="16" font-weight="700" fill="#FDFCF9" text-anchor="middle">8</text>
+<polyline points="501,240 540.5,240" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="551,240 536,247.2 536,232.8" fill="#3A4452"/>
+</svg>

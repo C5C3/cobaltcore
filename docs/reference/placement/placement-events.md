@@ -168,22 +168,7 @@ groups:
 
 ## Event Flow
 
-```text
-PlacementReconciler.Reconcile()
-  │
-  ├── reconcileDelete() (deletionTimestamp set)
-  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
-  │     └─ MariaDB cleanup done    → Normal  DatabaseFinalized
-  │
-  ├── reconcileConfig()
-  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
-  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
-  │
-  └── reconcileDatabase()
-        ├─ tag/release mismatch      → (condition only, no event)
-        ├─ release gate refuses      → Warning VersionParseError / DowngradeNotSupported /
-        │                                      UpgradePathInvalid / ImageReleaseMismatch
-        ├─ db_sync fails             → Warning DBSyncFailed
-        ├─ db_sync succeeds          → Normal  DatabaseSynced
-        └─ Job-UID patch fails       → Warning DBSyncMetricEmissionDeferred
-```
+![The event flow of the Placement operator: the sub-reconcilers that emit events, and for each the condition and the event it emits. PlacementReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileDatabase() emits nothing when tag/release mismatch (condition only); Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or ImageReleaseMismatch when release gate refuses; Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails;](../../diagrams/service-placement-events.svg)
+
+The figure draws which sub-reconciler emits which event, and on what. The
+[Event Reasons Reference](#event-reasons-reference) describes every reason.

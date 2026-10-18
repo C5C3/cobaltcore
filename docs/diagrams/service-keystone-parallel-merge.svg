@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="760" viewBox="0 0 1500 760" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="How parallel group 1 of the Keystone operator merges its conditions">
+<title>How parallel group 1 of the Keystone operator merges its conditions</title>
+<rect width="1500" height="760" fill="#F6F5F1"/>
+<rect x="60" y="172" width="340" height="72" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="230" y="216.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Keystone CR (original)</text>
+<text x="60" y="273.2" font-size="20" font-weight="400" fill="#55606E">SecretsReady already set</text>
+<polyline points="400,208 470,208 470,88 549.5,88" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,88 545,95.2 545,80.8" fill="#3A4452"/>
+<rect x="560" y="60" width="240" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="680" y="96.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ksCopyFernet</text>
+<text x="560" y="143.2" font-size="20" font-weight="400" fill="#55606E">goroutine 1</text>
+<text x="560" y="169.2" font-size="20" font-weight="400" fill="#55606E">sets FernetKeysReady on the copy</text>
+<polyline points="800,88 1080,88" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polyline points="400,208 470,208 470,208 549.5,208" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,208 545,215.2 545,200.8" fill="#3A4452"/>
+<rect x="560" y="180" width="240" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="680" y="216.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ksCopyCred</text>
+<text x="560" y="263.2" font-size="20" font-weight="400" fill="#55606E">goroutine 2</text>
+<text x="560" y="289.2" font-size="20" font-weight="400" fill="#55606E">sets CredentialKeysReady on the copy</text>
+<polyline points="800,208 1080,208" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polyline points="400,208 470,208 470,328 549.5,328" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="560,328 545,335.2 545,320.8" fill="#3A4452"/>
+<rect x="560" y="300" width="240" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="680" y="336.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ksCopyNetpol</text>
+<text x="560" y="383.2" font-size="20" font-weight="400" fill="#55606E">goroutine 3</text>
+<text x="560" y="409.2" font-size="20" font-weight="400" fill="#55606E">sets NetworkPolicyReady on the copy</text>
+<polyline points="800,328 1080,328 1080,429.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1080,440 1072.8,425 1087.2,425" fill="#3A4452"/>
+<text x="482" y="259.2" font-size="20" font-weight="400" fill="#2B3440">DeepCopy</text>
+<polyline points="1080,88 1080,328" fill="none" stroke="#3A4452" stroke-width="3"/>
+<rect x="960" y="440" width="240" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1080" y="476.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">errgroup.Wait()</text>
+<polyline points="1080,496 1080,539.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1080,550 1072.8,535 1087.2,535" fill="#3A4452"/>
+<rect x="880" y="550" width="400" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1080" y="586.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">mergeParallelConditions</text>
+<text x="880" y="637.2" font-size="20" font-weight="400" fill="#55606E">sequential, one condition type per copy:</text>
+<text x="880" y="663.2" font-size="20" font-weight="400" fill="#55606E">copy 1 FernetKeysReady, copy 2 CredentialKeysReady,</text>
+<text x="880" y="689.2" font-size="20" font-weight="400" fill="#55606E">copy 3 NetworkPolicyReady, each into the original</text>
+<polyline points="880,578 230,578 230,254.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="230,244 237.2,259 222.8,259" fill="#3A4452"/>
+<text x="250" y="571.2" font-size="20" font-weight="400" fill="#55606E">conditions written back; no mutex, no shared state</text>
+</svg>

@@ -3939,15 +3939,15 @@ in its own namespace, `chaos-c5c3-kill`.
 
 ## Test Patterns
 
+![The six step patterns of the chaos suites, each a numbered chain. Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003), where a critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, assert the sub-condition is False, delete the PodChaos, assert the sub-condition is True and Ready=True. No-Regression (SC-CHAOS-002), where a non-critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, poll readyReplicas below the desired count, poll readyReplicas back at the desired count, assert all conditions True, delete the PodChaos, assert Ready=True. Operator Self-Recovery (SC-CHAOS-004), where one operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos, wait until one pre-chaos UID is gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert Ready=True. Workload Fault Tolerance (SC-CHAOS-005), where a Job of the operator fails: apply the CR, assert Ready=True, inject a pod-failure PodChaos, trigger the Job, assert the conditions are maintained, delete the PodChaos, assert Ready=True. PDB Availability Guarantee (SC-CHAOS-008), where one API pod of three is killed: apply the CR with three replicas, assert Ready=True, assert the PDB has minAvailable 1, inject the PodChaos, verify availableReplicas is at least 1, assert DeploymentReady=True and Ready=True, delete the PodChaos, assert Ready=True. Operator Pod Kill All with Failover Reconciliation (SC-CHAOS-009), where every operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos with mode all, wait until all pre-chaos UIDs are gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert all 6 conditions True, patch the replicas from 1 to 2, assert the Deployment has 2 replicas and Ready=True.](../../diagrams/test-chaos-patterns.svg)
+
+The figure draws the six patterns as numbered chains. Each section below
+names the suites that use a pattern and lists its steps.
+
 ### Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003)
 
 Used when the killed dependency is critical and the operator must detect the outage via a
 sub-condition transition.
-
-```text
-Apply CR → Assert Ready=True → Inject PodChaos → Assert SubCondition=False
-         → Delete PodChaos → Assert SubCondition=True + Ready=True
-```
 
 1. Apply Keystone CR and assert `Ready=True` (baseline)
 2. Apply PodChaos to kill a critical dependency pod
@@ -3959,11 +3959,6 @@ Apply CR → Assert Ready=True → Inject PodChaos → Assert SubCondition=False
 
 Used when the killed dependency is non-critical and the operator must maintain `Ready=True`
 despite the outage.
-
-```text
-Apply CR → Assert Ready=True → Inject PodChaos → Poll readyReplicas < desired → Poll readyReplicas = desired
-         → Assert ALL conditions=True → Delete PodChaos → Assert Ready=True
-```
 
 1. Apply Keystone CR and assert `Ready=True` (baseline)
 2. Apply PodChaos to kill a non-critical dependency pod
@@ -3979,12 +3974,6 @@ The CR conditions should remain stable because the operator crash is invisible t
 Keystone CR — the Deployment controller handles pod restart, and controller-runtime
 re-registers watches and resumes reconciliation.
 
-```text
-Apply CR → Assert Ready=True → Snapshot operator pod UIDs → Inject PodChaos
-         → Wait one pre-chaos UID gone → Wait readyReplicas = desired
-         → Delete PodChaos → Assert Ready=True
-```
-
 1. Apply Keystone CR and assert `Ready=True` (baseline)
 2. Snapshot the operator pod UIDs and apply PodChaos to kill one operator pod
 3. Wait until at least one pre-chaos UID is gone (confirms kill took effect)
@@ -3995,11 +3984,6 @@ Apply CR → Assert Ready=True → Snapshot operator pod UIDs → Inject PodChao
 
 Used when a workload spawned by the operator (CronJob/Job) fails but the operator should
 remain healthy because it checks resource existence and ignores Job run outcomes.
-
-```text
-Apply CR → Assert Ready=True → Inject PodChaos (pod-failure) → Trigger Job
-         → Assert conditions maintained → Delete PodChaos → Assert Ready=True
-```
 
 1. Apply Keystone CR and assert `Ready=True` (baseline)
 2. Apply PodChaos with `pod-failure` action **before** creating the Job
@@ -4012,12 +3996,6 @@ Apply CR → Assert Ready=True → Inject PodChaos (pod-failure) → Trigger Job
 Used when the operator creates a PodDisruptionBudget and the test verifies that minimum
 availability is maintained during a pod kill. Requires `replicas > 1` to trigger PDB
 creation.
-
-```text
-Apply CR (replicas: 3) → Assert Ready=True → Assert PDB minAvailable=1
-         → Inject PodChaos → Verify availableReplicas >= 1
-         → Assert DeploymentReady=True + Ready=True → Delete PodChaos → Assert Ready=True
-```
 
 1. Apply Keystone CR with `replicas: 3` and assert `Ready=True` (baseline)
 2. Assert PDB exists with `minAvailable: 1`
@@ -4032,13 +4010,6 @@ Used when ALL operator pods are killed simultaneously (`mode: all`), forcing the
 controller to restart all pods and trigger leader re-election. After recovery, a spec change
 (replica patch) verifies the new leader can actively reconcile — proving operational
 capability beyond just running.
-
-```text
-Apply CR → Assert Ready=True → Snapshot operator pod UIDs → Inject PodChaos (mode: all)
-         → Wait all pre-chaos UIDs gone → Wait readyReplicas = desired
-         → Delete PodChaos → Assert all 6 conditions=True → Patch replicas 1→2
-         → Assert Deployment replicas=2 + Ready=True
-```
 
 1. Apply Keystone CR and assert `Ready=True` (baseline)
 2. Snapshot the operator pod UIDs and apply PodChaos with `mode: all` to kill every operator pod

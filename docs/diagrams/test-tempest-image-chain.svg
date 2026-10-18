@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1050" viewBox="0 0 1800 1050" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="From the Tempest version pins to the JUnit report">
+<title>From the Tempest version pins to the JUnit report</title>
+<rect width="1800" height="1050" fill="#F6F5F1"/>
+<rect x="60" y="60" width="420" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="270" y="96.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">releases/&lt;release&gt;/test-refs.yaml</text>
+<text x="500" y="82.2" font-size="20" font-weight="400" fill="#55606E">the version pins: tempest and the barbican, keystone,</text>
+<text x="500" y="108.2" font-size="20" font-weight="400" fill="#55606E">neutron and cinder Tempest plugins</text>
+<rect x="60" y="170" width="420" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="270" y="206.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">nix/locks/&lt;release&gt;/tempest/</text>
+<text x="500" y="192.2" font-size="20" font-weight="400" fill="#55606E">the uv lock of the five pins and the clients</text>
+<text x="500" y="218.2" font-size="20" font-weight="400" fill="#55606E">written by hack/nix-lock.sh (make nix-lock)</text>
+<polyline points="270,116 270,159.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="270,170 262.8,155 277.2,155" fill="#3A4452"/>
+<rect x="60" y="280" width="420" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="270" y="316.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">images/tempest/image.nix</text>
+<text x="500" y="302.2" font-size="20" font-weight="400" fill="#55606E">the Nix build over nix/lib/service-image.nix</text>
+<polyline points="270,226 270,269.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="270,280 262.8,265 277.2,265" fill="#3A4452"/>
+<polyline points="270,336 270,400 270,400" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polyline points="270,400 270,430" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polyline points="270,430 300,430 300,449.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="300,460 292.8,445 307.2,445" fill="#3A4452"/>
+<polyline points="270,430 980,430 980,449.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="980,460 972.8,445 987.2,445" fill="#3A4452"/>
+<rect x="80" y="460" width="640" height="250" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="99" y="499.36" font-size="26" font-weight="700" fill="#2B3440">build-images.yaml</text>
+<text x="99" y="531.2" font-size="20" font-weight="400" fill="#55606E">builds, scans, signs and pushes to GHCR</text>
+<rect x="100" y="550" width="240" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="220" y="577.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">generate-matrix</text>
+<text x="355" y="576.48" font-size="18" font-weight="400" fill="#55606E">discovers the releases from releases/*/</text>
+<rect x="100" y="600" width="240" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="220" y="627.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-tempest</text>
+<text x="355" y="626.48" font-size="18" font-weight="400" fill="#55606E">per release and platform: amd64, arm64</text>
+<rect x="100" y="650" width="240" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="220" y="677.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">merge-tempest-image</text>
+<text x="355" y="676.48" font-size="18" font-weight="400" fill="#55606E">multi-arch manifest, SBOM, Grype, cosign</text>
+<rect x="780" y="460" width="960" height="250" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="799" y="499.36" font-size="26" font-weight="700" fill="#2B3440">ci.yaml</text>
+<text x="799" y="531.2" font-size="20" font-weight="400" fill="#55606E">builds the image and runs Tempest per service and release</text>
+<rect x="800" y="550" width="240" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="920" y="577.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">build-e2e-images</text>
+<text x="1055" y="576.48" font-size="18" font-weight="400" fill="#55606E">per release: hack/ci-nix-build-e2e-images.sh builds the image</text>
+<rect x="800" y="600" width="240" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="920" y="627.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">tempest (matrix)</text>
+<text x="1055" y="626.48" font-size="18" font-weight="400" fill="#55606E">per leg: load the image, deploy the services, run Tempest, upload the JUnit</text>
+<rect x="60" y="760" width="420" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="270" y="796.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">tests/tempest/&lt;config-dir&gt;/</text>
+<text x="60" y="847.2" font-size="20" font-weight="400" fill="#55606E">tempest.conf: rendered with the localhost URI and the admin password</text>
+<text x="60" y="873.2" font-size="20" font-weight="400" fill="#55606E">include-tests.txt: split into phases/phase-1-core.txt and phases/phase-2-plugin.txt</text>
+<text x="60" y="899.2" font-size="20" font-weight="400" fill="#55606E">exclude-tests.txt: copied</text>
+<polyline points="480,788 980,788 980,720.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="980,710 987.2,725 972.8,725" fill="#3A4452"/>
+<text x="1000" y="777.2" font-size="20" font-weight="400" fill="#2B3440">prepared in _output/tempest/config,</text>
+<text x="1000" y="803.2" font-size="20" font-weight="400" fill="#2B3440">mounted at /etc/tempest</text>
+<polyline points="1260,710 1260,919.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1260,930 1252.8,915 1267.2,915" fill="#3A4452"/>
+<rect x="1080" y="930" width="360" height="56" rx="6" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="1260" y="966.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">tempest-results.xml</text>
+<text x="1080" y="1017.2" font-size="20" font-weight="400" fill="#55606E">_output/tempest/, uploaded as the JUnit artifact</text>
+</svg>

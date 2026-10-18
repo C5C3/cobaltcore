@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1558" height="874" viewBox="0 0 1558 874" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="How the two sub-reconcilers of the Keystone operator share a release upgrade">
+<title>How the two sub-reconcilers of the Keystone operator share a release upgrade</title>
+<rect width="1558" height="874" fill="#F6F5F1"/>
+<rect x="60" y="40" width="274" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="197" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase</text>
+<text x="350" y="75.2" font-size="20" font-weight="400" fill="#55606E">called first in the reconciler chain</text>
+<rect x="130" y="114" width="444" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="352" y="145.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">active upgrade? (upgradePhase set)</text>
+<polyline points="90,138 130,138" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,197 188,197" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="204.2" font-size="20" font-weight="400" fill="#2B3440">tag reverted to installedRelease</text>
+<polyline points="536,197 559.5,197" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="570,197 555,204.2 555,189.8" fill="#3A4452"/>
+<text x="582" y="204.2" font-size="20" font-weight="700" fill="#2B3440">abort</text>
+<text x="650" y="204.2" font-size="20" font-weight="400" fill="#55606E">deletes the phase Jobs, clears the state, requeues</text>
+<polyline points="160,231 188,231" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="238.2" font-size="20" font-weight="400" fill="#2B3440">tag changed to another value</text>
+<rect x="536" y="217" width="239" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="655.5" y="237.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">UpgradeTargetChanged</text>
+<text x="789" y="238.2" font-size="20" font-weight="400" fill="#55606E">blocks</text>
+<polyline points="160,265 188,265" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="272.2" font-size="20" font-weight="400" fill="#2B3440">otherwise</text>
+<polyline points="536,265 559.5,265" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="570,265 555,272.2 555,257.8" fill="#3A4452"/>
+<text x="582" y="272.2" font-size="20" font-weight="700" fill="#2B3440">reconcileUpgrade</text>
+<text x="776" y="272.2" font-size="20" font-weight="400" fill="#55606E">dispatches by phase</text>
+<polyline points="160,162 160,265" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="296" width="220" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="240" y="327.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">isUpgrade()?</text>
+<polyline points="90,320 130,320" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="366" y="327.2" font-size="20" font-weight="400" fill="#55606E">installedRelease set, tag differs, not patch-only</text>
+<polyline points="160,379 188,379" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="386.2" font-size="20" font-weight="700" fill="#2B3440">no: simple db_sync</text>
+<text x="416" y="386.2" font-size="20" font-weight="400" fill="#55606E">on completion sets installedRelease to the tag</text>
+<polyline points="160,413 188,413" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="420.2" font-size="20" font-weight="400" fill="#2B3440">yes</text>
+<polyline points="268,413 291.5,413" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="302,413 287,420.2 287,405.8" fill="#3A4452"/>
+<text x="314" y="420.2" font-size="20" font-weight="700" fill="#2B3440">initiateUpgrade</text>
+<text x="485" y="420.2" font-size="20" font-weight="400" fill="#55606E">validates the path, sets targetRelease and Expanding, requeues</text>
+<polyline points="160,344 160,413" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="444" width="237" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="248.5" y="475.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">zero-value result</text>
+<polyline points="90,468 130,468" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,468" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="60" y="570" width="303" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="211.5" y="606.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment</text>
+<rect x="130" y="644" width="437" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="348.5" y="675.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">EnsureDeployment(spec.image.tag)</text>
+<polyline points="90,668 130,668" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,727 118,727" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="734.2" font-size="20" font-weight="700" fill="#2B3440">upgradePhase RollingUpdate and the Deployment fully rolled out</text>
+<text x="801" y="734.2" font-size="20" font-weight="400" fill="#55606E">sets upgradePhase Contracting and requeues, back to reconcileDatabase</text>
+<polyline points="90,761 118,761" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="768.2" font-size="20" font-weight="700" fill="#2B3440">otherwise: sets DeploymentReady and Endpoint</text>
+<polyline points="90,626 90,761" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="367,468 427,468 427,598 373.5,598" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="363,598 378,590.8 378,605.2" fill="#3A4452"/>
+<text x="443" y="501.2" font-size="20" font-weight="400" fill="#2B3440">only then the pass continues to reconcileDeployment</text>
+<text x="40" y="829.2" font-size="20" font-weight="400" fill="#55606E">A chip is the condition reason the step sets when it ends the pass there.</text>
+</svg>

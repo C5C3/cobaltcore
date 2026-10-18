@@ -106,25 +106,7 @@ registration. See [Assigned namespaces](../target-clusters.md#assigned-namespace
 
 ## Reconciliation Flow
 
-```
-Reconcile
-  ├─ resolve the order's cluster ──→ unresolvable: log, no requeue
-  ├─ deleting? ───────────────────→ reconcileDelete  (see Deletion and Teardown)
-  └─ reconcileNormal
-       ├─ orderAdmission
-       │    ├─ cluster name ≤ 63   → ClusterNameTooLong, no requeue
-       │    ├─ ControlPlane read   → ControlPlaneNotFound (10s); on a target
-       │    │                        cluster NamespaceNotAssigned (1m)
-       │    └─ namespace assignment → NamespaceNotAssigned (1m), frozen
-       ├─ EnsureFinalizer          c5c3.io/keystoneuser-teardown
-       ├─ AdminCredentialReady     → WaitingForAdminCredential (10s)
-       ├─ provisionUser   (instrumented: KeystoneUserProvision)
-       │    ├─ schedule due        → next password generation, held (1m) while
-       │    │                        a KeystoneApplicationCredential naming the
-       │    │                        user is being deleted
-       │    └─ converged           → timer at status.nextPasswordRotation
-       └─ deliverCredentials (instrumented: KeystoneUserDelivery)
-```
+![The reconciliation flow of the KeystoneUser controller. A pass whose cluster does not resolve logs and ends without a requeue; a deleting order goes to reconcileDelete. reconcileNormal runs orderAdmission, which exits with ClusterNameTooLong and no requeue when the cluster name is longer than 63, with ControlPlaneNotFound and a 10s requeue when the ControlPlane cannot be read (on a target cluster NamespaceNotAssigned after 1m), and with NamespaceNotAssigned and a 1m requeue, the freeze, when the namespace has no assignment; then installs the finalizer c5c3.io/keystoneuser-teardown, exits with WaitingForAdminCredential and a 10s requeue while the admin credential is not ready, runs provisionUser (instrumented as KeystoneUserProvision), where a due schedule generates the next password, held for 1m while a KeystoneApplicationCredential naming the user is being deleted, and a converged user sets the timer at status.nextPasswordRotation, and deliverCredentials (instrumented as KeystoneUserDelivery).](../../diagrams/controlplane-keystoneuser-flow.svg)
 
 A request whose cluster does not resolve names a cluster deregistered between
 the event and the pass. Nothing can be read there, so the pass logs the cluster

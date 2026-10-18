@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1078" viewBox="0 0 1808 1078" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Pipeline of the OVNChassis controller">
+<title>Pipeline of the OVNChassis controller</title>
+<rect width="1808" height="1078" fill="#F6F5F1"/>
+<rect x="100" y="40" width="1290" height="764" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="119" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Pipeline</text>
+<text x="119" y="111.2" font-size="20" font-weight="400" fill="#55606E">one entry after another; the first that returns a requeue or an error ends the pass</text>
+<circle cx="50" cy="178" r="10" fill="#17202B"/>
+<polyline points="60,178 229.5,178" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="240,178 225,185.2 225,170.8" fill="#3A4452"/>
+<rect x="240" y="150" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="186.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Central</text>
+<text x="530" y="172.2" font-size="20" font-weight="400" fill="#55606E">sets CentralReady</text>
+<text x="530" y="198.2" font-size="20" font-weight="400" fill="#55606E">hands on the resolved central</text>
+<polyline points="375,206 375,231.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,242 367.8,227 382.2,227" fill="#3A4452"/>
+<rect x="240" y="242" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="278.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ClientSecret</text>
+<text x="530" y="264.2" font-size="20" font-weight="400" fill="#55606E">reports through CentralReady</text>
+<text x="530" y="290.2" font-size="20" font-weight="400" fill="#55606E">hands on clientSecretName</text>
+<polyline points="375,298 375,323.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,334 367.8,319 382.2,319" fill="#3A4452"/>
+<rect x="240" y="334" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="370.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Nodes</text>
+<text x="530" y="356.2" font-size="20" font-weight="400" fill="#55606E">sets NodesReady</text>
+<text x="530" y="382.2" font-size="20" font-weight="400" fill="#55606E">hands on the rendered nodes</text>
+<polyline points="375,390 375,415.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,426 367.8,411 382.2,411" fill="#3A4452"/>
+<rect x="240" y="426" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="462.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">OVS</text>
+<text x="530" y="461.2" font-size="20" font-weight="400" fill="#55606E">sets OVSReady</text>
+<polyline points="375,482 375,518.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,529 367.8,514 382.2,514" fill="#3A4452"/>
+<rect x="240" y="529" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="565.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Controller</text>
+<text x="530" y="538.2" font-size="20" font-weight="400" fill="#55606E">sets ControllerReady</text>
+<text x="530" y="564.2" font-size="20" font-weight="400" fill="#55606E">reads the central</text>
+<text x="530" y="590.2" font-size="20" font-weight="400" fill="#55606E">sets status.installedImage</text>
+<polyline points="375,585 375,621.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,632 367.8,617 382.2,617" fill="#3A4452"/>
+<rect x="240" y="632" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="668.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ChassisVPA</text>
+<text x="530" y="667.2" font-size="20" font-weight="400" fill="#55606E">sets VPAReady</text>
+<polyline points="375,688 375,713.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,724 367.8,709 382.2,709" fill="#3A4452"/>
+<rect x="240" y="724" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="760.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Maintenance</text>
+<text x="530" y="746.2" font-size="20" font-weight="400" fill="#55606E">sets MaintenanceReady</text>
+<text x="530" y="772.2" font-size="20" font-weight="400" fill="#55606E">reads the central and the nodes</text>
+<rect x="1330" y="844" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1440" y="880.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">updateStatus</text>
+<text x="1330" y="929.2" font-size="20" font-weight="400" fill="#55606E">aggregates Ready from the sub-conditions</text>
+<text x="1330" y="955.2" font-size="20" font-weight="400" fill="#55606E">writes the status only when it changed</text>
+<polyline points="375,780 375,872 1319.5,872" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1330,872 1315,879.2 1315,864.8" fill="#3A4452"/>
+<text x="820" y="855.2" font-size="20" font-weight="400" fill="#2B3440">every entry returned zero</text>
+<polyline points="1390,178 1440,178 1440,833.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1440,844 1432.8,829 1447.2,829" fill="#3A4452"/>
+<text x="1456" y="237.2" font-size="20" font-weight="400" fill="#2B3440">first requeue or error</text>
+<text x="40" y="1005.2" font-size="20" font-weight="400" fill="#55606E">A step label is the sub_reconciler value of the operator's metrics.</text>
+<text x="40" y="1031.2" font-size="20" font-weight="400" fill="#55606E">There is no parallel group: every step runs in order.</text>
+</svg>

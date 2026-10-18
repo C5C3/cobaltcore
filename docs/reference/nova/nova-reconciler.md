@@ -30,21 +30,12 @@ instrumenter and the metric vectors with it.
 
 ## Pipeline
 
-```text
-Secrets ──► DBConnectionSecrets ──► TransportURLSecret ──► Config ──► ComputeConfig ──►
-Database ──► Conductor ──► Scheduler ──► Metadata ──► ConsoleProxy ──► Deployment ──► DBArchive ──► ┬─ HTTPRoute
-                                                                                                    ├─ MetadataHTTPRoute
-                                                                                                    ├─ ConsoleHTTPRoute
-                                                                                                    ├─ HealthCheck
-                                                                                                    ├─ HPA
-                                                                                                    ├─ VPA
-                                                                                                    └─ NetworkPolicy  (parallel)
-```
+![The sub-reconciler pipeline of the Nova operator. A pass runs its entries one after another and ends at the first that returns a requeue or an error: Secrets, DBConnectionSecrets, TransportURLSecret, Config, ComputeConfig, Database, Conductor, Scheduler, Metadata, ConsoleProxy, Deployment, DBArchive, then a parallel group of HTTPRoute, MetadataHTTPRoute, ConsoleHTTPRoute, HealthCheck, HPA, VPA and NetworkPolicy. Every member of the group starts, and the group returns the shortest requeue. Each step sets one condition; DBConnectionSecrets, TransportURLSecret and Config report through SecretsReady. Secrets hands on the credential values and two digests, DBConnectionSecrets the two DSN digests, TransportURLSecret the transport URL, its digest and the broker egress port, and Config the name of the ConfigMap. ComputeConfig reads the transport URL and the values, Database and DBArchive the ConfigMap name, the five workload steps the digests, and Deployment sets status.endpoint. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-nova-pipeline.svg)
 
-The pipeline follows the pattern of the Keystone operator: a lane of steps that
+The figure draws the pattern the Keystone operator set: a lane of steps that
 ends the pass at the first requeue or error, and a group whose members all run.
 [Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
-draws that pattern with every step of the Keystone operator.
+describes that pattern in full. The table lists what each step does.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -405,9 +396,9 @@ owns one condition, and the aggregate `Ready` is True only when all eight are.
 
 ### NovaCompute pipeline
 
-```text
-NovaRef ──► Nodes ──► PoolConfig ──► DaemonSet ──► ComputeVPA ──► Aggregates ──► Services ──► Traits
-```
+![The pipeline of the NovaCompute controller. A pass runs its eight steps one after another and ends at the first that returns a requeue or an error: NovaRef, Nodes, PoolConfig, DaemonSet, ComputeVPA, Aggregates, Services and Traits. There is no parallel group. Each step sets one condition. Services hands its periodic poll of Nova to Traits and never ends the pass; Traits returns the shorter of its own requeue and that poll. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-novacompute-pipeline.svg)
+
+The figure draws the steps in call order. The table lists what each one does.
 
 | Step | Function | Condition |
 | --- | --- | --- |

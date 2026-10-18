@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1029" height="780" viewBox="0 0 1029 780" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The order the Keystone reconciler sets its conditions in, as the basic-deployment suite asserts them">
+<title>The order the Keystone reconciler sets its conditions in, as the basic-deployment suite asserts them</title>
+<rect width="1029" height="780" fill="#F6F5F1"/>
+<rect x="100" y="60" width="271" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="235.5" y="96.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">SecretsReady</text>
+<circle cx="60" cy="88" r="16" fill="#17202B"/>
+<text x="60" y="95.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<text x="391" y="95.2" font-size="20" font-weight="400" fill="#55606E">True, reason SecretsAvailable</text>
+<rect x="100" y="152" width="271" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="235.5" y="188.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig</text>
+<circle cx="60" cy="180" r="16" fill="#17202B"/>
+<text x="60" y="187.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<polyline points="235.5,116 235.5,141.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="235.5,152 228.3,137 242.7,137" fill="#3A4452"/>
+<text x="391" y="187.2" font-size="20" font-weight="400" fill="#55606E">sets no condition; returns configMapName</text>
+<rect x="100" y="244" width="271" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="235.5" y="280.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">FernetKeysReady</text>
+<circle cx="60" cy="272" r="16" fill="#17202B"/>
+<text x="60" y="279.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<polyline points="235.5,208 235.5,233.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="235.5,244 228.3,229 242.7,229" fill="#3A4452"/>
+<text x="391" y="279.2" font-size="20" font-weight="400" fill="#55606E">True, reason FernetKeysAvailable</text>
+<rect x="100" y="336" width="271" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="235.5" y="372.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DatabaseReady</text>
+<circle cx="60" cy="364" r="16" fill="#17202B"/>
+<text x="60" y="371.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<polyline points="235.5,300 235.5,325.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="235.5,336 228.3,321 242.7,321" fill="#3A4452"/>
+<text x="391" y="371.2" font-size="20" font-weight="400" fill="#55606E">True, reason DatabaseSynced</text>
+<rect x="100" y="428" width="271" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="235.5" y="464.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DeploymentReady</text>
+<circle cx="60" cy="456" r="16" fill="#17202B"/>
+<text x="60" y="463.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<polyline points="235.5,392 235.5,417.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="235.5,428 228.3,413 242.7,413" fill="#3A4452"/>
+<text x="391" y="463.2" font-size="20" font-weight="400" fill="#55606E">True, reason DeploymentReady</text>
+<rect x="100" y="520" width="271" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="235.5" y="556.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">BootstrapReady</text>
+<circle cx="60" cy="548" r="16" fill="#17202B"/>
+<text x="60" y="555.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<polyline points="235.5,484 235.5,509.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="235.5,520 228.3,505 242.7,505" fill="#3A4452"/>
+<text x="391" y="555.2" font-size="20" font-weight="400" fill="#55606E">True, reason BootstrapComplete</text>
+<rect x="100" y="612" width="271" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="235.5" y="648.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Ready</text>
+<circle cx="60" cy="640" r="16" fill="#17202B"/>
+<text x="60" y="647.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">7</text>
+<polyline points="235.5,576 235.5,601.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="235.5,612 228.3,597 242.7,597" fill="#3A4452"/>
+<text x="391" y="647.2" font-size="20" font-weight="400" fill="#55606E">True, reason AllReady: the aggregate of every sub-condition</text>
+<text x="40" y="719.2" font-size="20" font-weight="400" fill="#55606E">The suite asserts the five sub-conditions and Ready in one step; the order is the execution order</text>
+<text x="40" y="745.2" font-size="20" font-weight="400" fill="#55606E">within Reconcile, not the order of subConditionTypes.</text>
+</svg>
