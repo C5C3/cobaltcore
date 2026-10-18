@@ -260,7 +260,11 @@ while the credential in the pods is still valid.
   `barbican.c5c3.io/secret-store-credentials-hash`, so a changed digest rolls the
   Deployment. Each annotation is omitted while its digest is empty, which is what
   the requeue and error paths upstream produce, so a short-circuited pass causes
-  no spurious rollout.
+  no spurious rollout. The API container also carries
+  `OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`, which
+  bounds every database socket read and write. It is a plain value with no
+  digest annotation, and the operator omits it while
+  `spec.extraConfig.database.connection_parameters` is set.
 - **Deletion** runs the `barbican.openstack.c5c3.io/finalizer`. It issues Delete
   on the MariaDB `Database`/`User`/`Grant` CRs before the owner-ref chain
   disappears, emitting `FinalizingDatabase` while cleanup remains and

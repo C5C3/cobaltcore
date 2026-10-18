@@ -282,11 +282,11 @@ func buildBarbicanDeployment(
 			Image:           barbican.Spec.Image.Reference(),
 			ImagePullPolicy: barbican.Spec.Image.EffectivePullPolicy(),
 			Command:         barbicanUWSGICommand(barbican.Spec.APIServer),
-			Env: []corev1.EnvVar{
+			Env: append([]corev1.EnvVar{
 				database.ConnectionEnvVar(barbican.Name),
 				keystoneauth.PasswordEnvVar(barbican.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(barbican)),
 				secretStoreSecretIDEnvVar(projection),
-			},
+			}, database.SocketTimeoutEnvVars(barbican.Spec.ExtraConfig, "database")...),
 			Ports: []corev1.ContainerPort{{
 				Name:          "barbican-api",
 				ContainerPort: barbicanAPIPort,
