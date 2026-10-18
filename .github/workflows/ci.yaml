@@ -676,12 +676,13 @@ jobs:
       - name: Check no new unresolved reviewer markers were introduced
         run: make check-review-markers
 
-  # Run every shell unit test under tests/unit/ (hack/, deploy/, docs/,
-  # renovate/). Repo files only — adds no injection surface. ubuntu-latest
-  # preinstalls bash, jq, mikefarah/yq, perl, npx; kustomize is installed
-  # explicitly so deploy/ overlay tests run the full assertion set instead
-  # of skipping their kustomize-build checks. The renovate/ tests pull
-  # renovate-config-validator via npx, taking ~30s on a cold runner.
+  # Run every shell unit test under tests/unit/ (every *_test.sh,
+  # found by discovery). Repo files only — adds no injection surface.
+  # ubuntu-latest preinstalls bash, jq, mikefarah/yq, perl, npx; kustomize
+  # is installed explicitly so deploy/ overlay tests run the full assertion
+  # set instead of skipping their kustomize-build checks. The renovate/
+  # tests pull renovate-config-validator via npx, taking ~30s on a cold
+  # runner.
   test-shell:
     runs-on: ubuntu-latest
     timeout-minutes: 8

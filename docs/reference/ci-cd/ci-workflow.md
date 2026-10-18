@@ -541,8 +541,9 @@ Timeout: 8 minutes.
 
 ### test-shell
 
-Runs every shell unit test under `tests/unit/` (hack/, deploy/, renovate/, docs/, ci/,
-images/). The job carries no event guard, so it runs on pull requests and on the push
+Runs every `*_test.sh` under `tests/unit/`, found by discovery, and fails on a `.sh`
+file there whose name would make the discovery skip it. The job carries no event
+guard, so it runs on pull requests and on the push
 runs for `main` and `v*` tags: a breakage that lands on `main` fails main's own run.
 Tests read repo files only (no cluster, no untrusted input) and the job finishes in
 about a minute on a cold runner. Tests that depend on `yq` or `kustomize` are written to
