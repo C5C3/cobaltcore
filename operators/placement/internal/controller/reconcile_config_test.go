@@ -284,6 +284,44 @@ func TestReconcileConfig_ExtraConfigHealthyTrueOnUnownedKey(t *testing.T) {
 	g.Expect(renderedConfig(t, r, name)).To(ContainSubstring("max_pool_size = 10"))
 }
 
+// TestReconcileConfig_UserConnectionParametersRenderIntoTheFile pins the opt-out
+// of the API container's socket-timeout override: the file carries no
+// connection_parameters by default, and a user value is merged under
+// [placement_database] as a free option (the key is not operator-owned), which
+// is what drops the env variable.
+func TestReconcileConfig_UserConnectionParametersRenderIntoTheFile(t *testing.T) {
+	t.Run("the default renders no connection_parameters", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		placement := placementForConfig()
+		r := newPlacementTestReconciler(placement)
+
+		_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		g.Expect(renderedConfig(t, r, name)).NotTo(ContainSubstring("connection_parameters"))
+	})
+
+	t.Run("a user value lands under [placement_database]", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		placement := placementForConfig()
+		placement.Spec.ExtraConfig = map[string]map[string]string{
+			"placement_database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+		r := newPlacementTestReconciler(placement)
+
+		_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
+		g.Expect(err).NotTo(HaveOccurred())
+
+		// Every line between the section header and the option is a key of that
+		// section: no other section header starts in between.
+		g.Expect(renderedConfig(t, r, name)).To(MatchRegexp(
+			`(?m)^\[placement_database\]$(?:\n[^\[\n].*|\n)*\nconnection_parameters = read_timeout=60&write_timeout=60$`))
+		cond := meta.FindStatusCondition(placement.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+	})
+}
+
 // TestReconcileConfig_ApplyFailureMarksSecretsReady covers the write path: a
 // ConfigMap Create the API server refuses must surface as SecretsReady=False
 // with reason ConfigError, so the aggregate Ready cannot stay stale-True at the

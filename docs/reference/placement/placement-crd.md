@@ -159,6 +159,14 @@ Every other owned key is honored and reported. The full registry covers
 `keystoneauth.Section` renders, and `[oslo_policy] policy_file`. Conditionally
 rendered keys are registered unconditionally: the registry records that a key is
 not the user's to set, not that it is currently rendered.
+`[placement_database] connection_parameters` is not in the registry and stays
+the user's. While `spec.extraConfig.placement_database` carries no
+`connection_parameters` key, the API container carries
+`OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS` with the literal value
+`read_timeout=10&write_timeout=10`, a plain environment value with no Secret
+behind it. With the key set, to any value including the empty string, the
+operator renders that value into `placement.conf` and sets no variable. See
+[Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
 
 The catalog check re-runs on update only when one of its inputs changed
 (`spec.extraConfig` or `spec.openStackRelease`), so an unrelated edit such as a
