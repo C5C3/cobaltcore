@@ -353,6 +353,46 @@ func TestReconcileConfig_ExtraConfigOverridesDefaults(t *testing.T) {
 	g.Expect(keystoneConf).To(ContainSubstring("expiration = 3600"))
 }
 
+// TestReconcileConfig_UserConnectionParametersRenderIntoTheFile pins the opt-out
+// of the API container's socket-timeout override: the file carries no
+// connection_parameters by default, and a user value is merged under [database]
+// as a free option (the key is not operator-owned), which is what drops the env
+// variable.
+func TestReconcileConfig_UserConnectionParametersRenderIntoTheFile(t *testing.T) {
+	render := func(g *WithT, ks *keystonev1alpha1.Keystone) string {
+		secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+		r := newConfigTestReconciler(configTestScheme(), ks, secret)
+
+		configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
+		g.Expect(err).NotTo(HaveOccurred())
+		cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
+		g.Expect(err).NotTo(HaveOccurred())
+		return cm.Data["keystone.conf"]
+	}
+
+	t.Run("the default renders no connection_parameters", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		g.Expect(render(g, configTestKeystone())).NotTo(ContainSubstring("connection_parameters"))
+	})
+
+	t.Run("a user value lands under [database]", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ks := configTestKeystone()
+		ks.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+
+		// Every line between the [database] header and the option is a key of
+		// that section: no other section header starts in between.
+		g.Expect(render(g, ks)).To(MatchRegexp(
+			`(?m)^\[database\]$(?:\n[^\[\n].*|\n)*\nconnection_parameters = read_timeout=60&write_timeout=60$`))
+		cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+	})
+}
+
 func TestReconcileConfig_PolicyOverridesInlineRules(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := configTestScheme()

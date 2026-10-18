@@ -525,6 +525,9 @@ func TestTrustFlushCronJob_DBConnectionEnv(t *testing.T) {
 	g.Expect(container).NotTo(BeNil())
 	g.Expect(container.Env).To(ContainElement(buildDBConnectionEnvVar(ks)),
 		"trust-flush must consume DB connection via OS_DATABASE__CONNECTION")
+	// The per-read cap would cut a long flush: only the API container carries
+	// the socket timeouts.
+	g.Expect(container.Env).NotTo(ContainElement(HaveField("Name", HaveSuffix("__CONNECTION_PARAMETERS"))))
 }
 
 // TestTrustFlushCronJob_PriorityClassNameSet verifies that when spec.PriorityClassName

@@ -939,6 +939,40 @@ func TestBuildKeystoneDeployment_DBConnectionEnv(t *testing.T) {
 	g.Expect(volumeNames).To(ConsistOf("config", "fernet-keys", "credential-keys"))
 }
 
+// A request on a connection a MariaDB outage killed pins its worker for the TCP
+// retransmit window unless pymysql bounds the socket, so the keystone container
+// carries the bound by default. A user's own connection_parameters stays
+// authoritative: oslo.config reads the environment before the file.
+func TestAPIContainer_SocketTimeoutEnv(t *testing.T) {
+	t.Run("the default bounds the API database sockets", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		deploy := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "", "", nil)
+		container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+
+		g.Expect(container).NotTo(BeNil())
+		g.Expect(container.Env).NotTo(BeEmpty())
+		g.Expect(container.Env[len(container.Env)-1]).To(Equal(corev1.EnvVar{
+			Name:  "OS_DATABASE__CONNECTION_PARAMETERS",
+			Value: "read_timeout=10&write_timeout=10",
+		}))
+	})
+
+	t.Run("a user-set connection_parameters disables the variable", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ks := deployTestKeystone()
+		ks.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+
+		deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil)
+		container := findContainerByName(deploy.Spec.Template.Spec.Containers, "keystone")
+
+		g.Expect(container).NotTo(BeNil())
+		g.Expect(container.Env).NotTo(ContainElement(HaveField("Name", "OS_DATABASE__CONNECTION_PARAMETERS")))
+	})
+}
+
 // TestReconcileDeployment_NoSecretReadRequired verifies that reconcileDeployment
 // succeeds and creates a Deployment even when fernet-keys and credential-keys
 // Secrets do not exist.

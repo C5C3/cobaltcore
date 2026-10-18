@@ -75,6 +75,8 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
+        - name: OS_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -228,6 +230,8 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
+        - name: OS_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -379,6 +383,8 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
+        - name: OS_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -558,6 +564,8 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
+        - name: OS_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -799,6 +807,8 @@ spec:
             secretKeyRef:
               key: connection
               name: test-keystone-db-connection
+        - name: OS_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/keystone:2026.1
         imagePullPolicy: Always
         lifecycle:
