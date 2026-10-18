@@ -160,6 +160,8 @@ if [ "$MODE" != check-operators ]; then
 fi
 
 # PEP 503 normalisation, for comparing a requirement name with a constraint.
+# .claude/skills/check-nix-lock-drift/scripts/audit-nix-lock-drift.sh keeps a
+# copy.
 normalize() {
   local name="${1,,}"
   name="${name//_/-}"
@@ -195,6 +197,8 @@ prefetch() {
 # CLI with its placement and barbican plugins runs in the e2e verify Jobs;
 # python-subunit, junitxml and defusedxml turn a run into the JUnit report
 # hack/tempest/run-tests.sh writes.
+# .claude/skills/check-nix-lock-drift/scripts/audit-nix-lock-drift.sh keeps a
+# copy of the five pins (TEMPEST_PINS).
 collect_tempest_inputs() {
   local TEST_REFS="releases/${RELEASE}/test-refs.yaml" pkg pin
   for pkg in tempest barbican-tempest-plugin keystone-tempest-plugin \
@@ -338,6 +342,8 @@ PYEOF
 # normalised names. The merge rules are those of the Docker path: the script
 # edits releases/<release>/upper-constraints.txt relative to its working
 # directory, here a copy of the two files.
+# .claude/skills/check-nix-lock-drift/scripts/audit-nix-lock-drift.sh keeps a
+# copy (merge).
 merge_constraints() {
   local line
   mkdir -p "${TMP}/releases/${RELEASE}"
@@ -358,6 +364,8 @@ merge_constraints() {
 # add_base_pins appends the base pins to lock's DEPENDENCIES. A package the
 # constraints pin is listed by name only: the constraints re-pin it, as the
 # comment in nix/base-requirements.txt describes.
+# .claude/skills/check-nix-lock-drift/scripts/audit-nix-lock-drift.sh keeps a
+# copy (L3).
 add_base_pins() {
   local line name
   while IFS= read -r line; do
