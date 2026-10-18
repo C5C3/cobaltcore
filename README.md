@@ -75,7 +75,7 @@ Flux, cert-manager, OpenBao, the MariaDB and Memcached operators, External Secre
 | --- | --- |
 | [`operators/`](operators/) | One Go module per operator, each with its API types, controllers, webhooks, and Helm chart, plus the shared `operator-library` chart |
 | [`internal/common/`](internal/common/) | The shared library: common types, conditions, config rendering, Kubernetes helpers |
-| [`images/`](images/) | The Nix expressions of the OpenStack service images, nova-compute, libvirt and Tempest, and the Dockerfile of the federation proxy |
+| [`images/`](images/) | The Nix expressions of the OpenStack service images, nova-compute, libvirt, Tempest, the federation proxy, ovn, the backup shifter and the two upstream Go agents |
 | [`releases/`](releases/) | Per-release source refs, upper constraints, extra packages, and Tempest excludes |
 | [`patches/`](patches/) | Patches applied to the upstream OpenStack sources at image build time |
 | [`deploy/`](deploy/) | FluxCD HelmReleases and kind overlays for the infrastructure stack and the operators |

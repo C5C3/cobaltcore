@@ -12,14 +12,14 @@ SPDX-License-Identifier: Apache-2.0
 
 # Nix Image Build
 
-Reference documentation for the container images the root flake builds. A
-Nix-built image keeps the name, the tags, the verify script and the merge and
-attestation jobs of a Docker-built image; the build step differs. The images
-move off their Dockerfiles one phase at a time
-([#1401](https://github.com/C5C3/cobaltcore/issues/1401)), and the
-[migration status](#migration-status) table lists the build of every image.
-The [Build Images Workflow](./build-images-workflow.md) page describes the
-jobs around the build, and [Container Images](./container-images.md) the
+Reference documentation for the container images the root flake builds. The
+images moved to the flake under the Meta Issue
+[#1401](https://github.com/C5C3/cobaltcore/issues/1401), and since
+[#1409](https://github.com/C5C3/cobaltcore/issues/1409) closed its Phase 6
+every image is an output of the flake. The build step changed; the name, the
+tags, the verify script and the merge and attestation jobs of each image
+stayed. The [Build Images Workflow](./build-images-workflow.md) page describes
+the jobs around the build, and [Container Images](./container-images.md) the
 contents of every image.
 
 ## Flake layout
@@ -796,42 +796,5 @@ minor and patch bumps wait three days and are never automerged. The hvo
 and kna managers move `rev` as a digest of upstream main.
 [Dependency Management](../../contributing/dependency-management.md) has the
 details.
-
-## Migration status
-
-`tests/unit/docs/nix_image_build_status_table_test.sh` checks the table
-against the tree: one row per `images/<name>/` directory and per operator
-image, and a Build value that matches the files. For an image directory that
-is `image.nix` for Nix and a `Dockerfile` for Docker, for an operator image
-`operators/<op>/vendor.json` for Nix.
-
-| Image | Build | Phase | Issue |
-| --- | --- | --- | --- |
-| `backup-shifter` | Nix | Phase 1 | [#1404](https://github.com/C5C3/cobaltcore/issues/1404) |
-| `keystone` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `horizon` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `glance` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `placement` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `barbican` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `neutron` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `cinder` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `nova` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `tempest` | Nix | Phase 2 | [#1405](https://github.com/C5C3/cobaltcore/issues/1405) |
-| `ovn` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
-| `openstack-hypervisor-operator` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
-| `kvm-node-agent` | Nix | Phase 3 | [#1406](https://github.com/C5C3/cobaltcore/issues/1406) |
-| `nova-compute` | Nix | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
-| `libvirt` | Nix | Phase 4 | [#1407](https://github.com/C5C3/cobaltcore/issues/1407) |
-| `keystone-federation-proxy` | Nix | Phase 5 | [#1408](https://github.com/C5C3/cobaltcore/issues/1408) |
-| `barbican-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `c5c3-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `cinder-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `glance-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `horizon-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `keystone-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `neutron-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `nova-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `ovn-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
-| `placement-operator` | Nix | Phase 6 | [#1409](https://github.com/C5C3/cobaltcore/issues/1409) |
 
 :::
