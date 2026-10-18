@@ -106,20 +106,7 @@ the deduplicated union.
 
 ## Reconciliation Flow
 
-```
-Reconcile
-  ├─ deleting? ─────────────────→ reconcileDelete  (see Deletion and Teardown)
-  ├─ EnsureFinalizer            c5c3.io/keystoneservice-teardown, before any projection
-  └─ reconcileNormal
-       ├─ setUndeclaredBlockConditions   stamp NotDeclared on absent blocks
-       ├─ resolveControlPlane            → ControlPlaneNotFound
-       ├─ namespace consent              → NamespaceNotAllowed
-       ├─ AdminCredentialReady gate      → WaitingForAdminCredential
-       ├─ role allowlist (account only)  → RoleNotAllowed, after the sweep
-       ├─ ensureCatalog    (instrumented: KeystoneServiceCatalog)
-       ├─ ensureAccount    (instrumented: KeystoneServiceAccount), skipped when a role is refused
-       └─ sweepChildren                  prune what the spec stopped declaring
-```
+![The reconciliation flow of the KeystoneService controller. A pass hands a deleting order to reconcileDelete, installs the finalizer c5c3.io/keystoneservice-teardown before any projection, and runs reconcileNormal: it stamps NotDeclared on the absent blocks, exits with ControlPlaneNotFound when the ControlPlane does not resolve, with NamespaceNotAllowed when the namespace is not consented, with WaitingForAdminCredential while the admin credential is not ready, and with RoleNotAllowed after the sweep when an account's role is not on the allowlist; then ensureCatalog (instrumented as KeystoneServiceCatalog), ensureAccount (instrumented as KeystoneServiceAccount, skipped when a role is refused) and sweepChildren, which prunes what the spec stopped declaring.](../../diagrams/controlplane-keystoneservice-flow.svg)
 
 The finalizer is installed **before** any projection, so a deletion issued
 between that write and the next pass funnels through `reconcileDelete` and

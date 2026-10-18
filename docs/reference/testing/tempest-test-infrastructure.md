@@ -46,31 +46,7 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 
 ## Architecture
 
-```text
-releases/<release>/test-refs.yaml       Version pins (tempest and the barbican, keystone, neutron and
-        │                               cinder Tempest plugins)
-        ▼ (hack/nix-lock.sh, make nix-lock)
-nix/locks/<release>/tempest/            uv lock of the five pins and the clients
-        │
-        ▼
-images/tempest/image.nix                Nix build over nix/lib/service-image.nix
-        │
-        ├──▶ build-images.yaml          Build, scan, sign, push to GHCR
-        │       generate-matrix job      Discovers releases from releases/*/
-        │       build-tempest job        Per-release × per-platform builds (amd64, arm64)
-        │       merge-tempest-image job  Per-release multi-arch manifest + SBOM + Grype + cosign
-        │
-        └──▶ ci.yaml                    build-e2e-images job builds, tempest job runs per service and release
-                build-e2e-images job      Per-release: hack/ci-nix-build-e2e-images.sh builds the image
-                tempest job (matrix)      Per leg: load image → deploy services → run Tempest → upload JUnit
-                                         │
-tests/tempest/<config-dir>/              │ prepared in _output/tempest/config, mounted at /etc/tempest
-  tempest.conf                    ──────▶│ rendered copy (localhost URI, admin password)
-  include-tests.txt               ──────▶│ split into phases/phase-1-core.txt and phases/phase-2-plugin.txt
-  exclude-tests.txt               ──────▶│ copied
-                                         ▼
-                              _output/tempest/tempest-results.xml (JUnit XML artifact)
-```
+![From the Tempest version pins to the JUnit report. releases/<release>/test-refs.yaml holds the version pins of tempest and the barbican, keystone, neutron and cinder Tempest plugins; hack/nix-lock.sh writes them into nix/locks/<release>/tempest/, the uv lock of the five pins and the clients; images/tempest/image.nix builds the image from that lock over nix/lib/service-image.nix. Two workflows consume the expression: build-images.yaml, where generate-matrix discovers the releases from releases/*/, build-tempest builds per release and platform and merge-tempest-image writes the multi-arch manifest, the SBOM, the Grype scan and the cosign signature; and ci.yaml, where build-e2e-images builds the image per release through hack/ci-nix-build-e2e-images.sh and the tempest matrix job loads the image, deploys the services, runs Tempest and uploads the JUnit per leg. The tempest job takes tests/tempest/<config-dir>/, prepared in _output/tempest/config and mounted at /etc/tempest: tempest.conf rendered with the localhost URI and the admin password, include-tests.txt split into phases/phase-1-core.txt and phases/phase-2-plugin.txt, and exclude-tests.txt copied. The result is tempest-results.xml in _output/tempest/, uploaded as the JUnit artifact.](../../diagrams/test-tempest-image-chain.svg)
 
 ## Version Management
 
@@ -829,59 +805,12 @@ builds (nixfmt, statix and deadnix), and `build-tempest` needs that job and
 
 The figure shows where the parts of one job run: the Tempest container on the
 runner host, the port-forwards and host aliases that take it to the Services,
-and the seed Jobs inside the cluster. The block below lists the commands in the
-order the job runs them.
+and the seed Jobs inside the cluster. The second figure lists the commands in
+the order the job runs them.
 
 ![The test bed of one tempest job in CI. On the runner host, the step Run Tempest API tests runs hack/ci-run-tempest.sh. The script reads the admin password from the Secret keystone-admin in the namespace openstack of the kind cluster, starts one kubectl port-forward per Service on localhost and, once every port answers, starts the Tempest container with docker run on the host network. The container mounts the directory with the rendered tempest.conf and the test lists at /etc/tempest and the output directory at /output. It calls the APIs over plain http: --add-host points the cluster DNS names of the Services at 127.0.0.1, where the forwards listen. Every job forwards the Keystone Service on port 5000. Depending on the service under test, further forwards reach Glance on 9292, Barbican on 9311, Neutron on 9696, Cinder on 8776, Nova on 8774, the noVNC proxy on 6080 and Placement on 8778. Inside the cluster, seed Jobs run the same Tempest image and call the APIs by their cluster DNS names: a catalog set-up Job, an image seed Job, a flavor seed Job and, for Barbican, a policy check Job.](../../diagrams/test-tempest-bed.svg)
 
-```text
-releases/<release>/test-refs.yaml ──hack/nix-lock.sh──▶ nix/locks/<release>/tempest/
-                         │                (tempest and the four plugin pins, committed)
-                         ▼ (build-e2e-images job, per release: hack/ci-nix-build-e2e-images.sh)
-         nix build .#tempest-<rel_>-image   (in the nixos/nix container)
-         docker load < .nix-e2e/tempest-<release>.tar
-                         │
-                         ▼ (tempest job, per matrix.service and matrix.release)
-         hack/ci-run-tempest.sh, in this order:
-           1. kubectl get secret keystone-admin -n openstack (admin password)
-           2. kubectl port-forward svc/<service-k8s-name> -n openstack 5000:5000, plus one forward per
-              <SERVICE>_K8S_NAME the leg sets (9292, 9311, 9696, 8776, 8774, 6080, 8778); each forward
-              is polled on localhost, up to 10 attempts
-           3. sed renders tempest.conf (localhost:5000 URI + admin password) into
-              _output/tempest/config; exclude-tests.txt and the runner scripts are copied there
-           4. include-tests.txt is split into phases/phase-1-core.txt and phases/phase-2-plugin.txt
-                         │
-                         ▼
-         docker run --rm --network host \
-           --add-host <service-k8s-name>.openstack.svc.cluster.local:127.0.0.1 \
-           --add-host <service-k8s-name>.openstack.svc:127.0.0.1 \
-           (the same two --add-host flags for every other forwarded Service) \
-           -v <workspace>/_output/tempest/config:/etc/tempest:ro \
-           -v <workspace>/_output/tempest:/output \
-           -e TEMPEST_CONCURRENCY=... \
-           -e TEMPEST_GROUP_START=::group:: \
-           -e TEMPEST_GROUP_END=::endgroup:: \
-           -e TEMPEST_ERROR_PREFIX=::error:: \
-           ghcr.io/c5c3/tempest:<release> bash /etc/tempest/run-tests.sh
-         #
-         # Internal logic of run-tests.sh (kept here for reference; the runner
-         # scripts never invoke these steps inline — they always `bash
-         # /etc/tempest/run-tests.sh` so CI and local runs share one code path):
-         #
-         #   tempest init . && cp tempest.conf etc/
-         #   stestr run --include-list phases/phase-1-core.txt   --subunit → /output/phase-1-core.subunit
-         #   stestr run --include-list phases/phase-2-plugin.txt --subunit → /output/phase-2-plugin.subunit
-         #   cat phase-1-core.subunit phase-2-plugin.subunit > tempest.subunit
-         #   subunit2junitxml < tempest.subunit > tempest-results.xml
-         #   # retry any failed tests once serially, then rewrite the JUnit:
-         #   python3 /etc/tempest/extract-failed.py tempest-results.xml > retry-list.txt
-         #   stestr run --include-list retry-list.txt --concurrency 1 --subunit → /output/retry.subunit
-         #   cat phase-1-core.subunit phase-2-plugin.subunit retry.subunit > tempest.subunit
-         #   python3 /etc/tempest/merge-retry-junit.py tempest-results.xml retry.subunit
-                         │
-                         ▼
-         actions/upload-artifact ──▶ tempest-<service>-<release>-results (14-day retention)
-```
+![The commands of one tempest job in CI, in six steps. hack/nix-lock.sh locks releases/<release>/test-refs.yaml into nix/locks/<release>/tempest/, the committed pins of tempest and the four plugins. The build-e2e-images job runs hack/ci-nix-build-e2e-images.sh per release, which runs nix build .#tempest-<rel_>-image in the nixos/nix container and docker load of .nix-e2e/tempest-<release>.tar. hack/ci-run-tempest.sh runs per matrix.service and matrix.release: it reads the admin password from the keystone-admin Secret, port-forwards svc/<service-k8s-name> to 5000 plus one forward per <SERVICE>_K8S_NAME the leg sets, each polled on localhost for up to 10 attempts, renders tempest.conf with the localhost URI and the password into _output/tempest/config next to the copied exclude-tests.txt and runner scripts, and splits include-tests.txt into phases/phase-1-core.txt and phases/phase-2-plugin.txt. docker run starts ghcr.io/c5c3/tempest:<release> with --rm, --network host, one --add-host pair per forwarded Service mapping <name>.openstack.svc.cluster.local and <name>.openstack.svc to 127.0.0.1, the config directory mounted read-only at /etc/tempest, _output/tempest mounted at /output and the TEMPEST_CONCURRENCY, TEMPEST_GROUP_START, TEMPEST_GROUP_END and TEMPEST_ERROR_PREFIX variables, and runs bash /etc/tempest/run-tests.sh. run-tests.sh runs tempest init, copies tempest.conf, runs stestr for the core phase and the plugin phase with subunit output, concatenates the streams and converts them with subunit2junitxml, retries the failed tests once serially from the list extract-failed.py prints, and merge-retry-junit.py rewrites the resolved failures in tempest-results.xml. actions/upload-artifact uploads tempest-<service>-<release>-results with a 14-day retention. The runner scripts never inline the steps of run-tests.sh, so CI and local runs share one code path.](../../diagrams/test-tempest-job-steps.svg)
 
 ## Dependencies on Prior Features
 

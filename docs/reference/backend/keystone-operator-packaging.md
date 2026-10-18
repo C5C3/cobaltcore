@@ -613,17 +613,10 @@ All other values use chart defaults.
 The Keystone operator depends on four infrastructure operators that must be running
 before it starts. FluxCD enforces this ordering via `spec.dependsOn`:
 
-```text
-cert-manager (cert-manager namespace)
-├── mariadb-operator (mariadb-system namespace)
-├── memcached-operator (memcached-system namespace)
-├── external-secrets (external-secrets namespace)
-└── keystone-operator (keystone-system namespace)
-    ├── dependsOn: cert-manager/cert-manager
-    ├── dependsOn: mariadb-operator/mariadb-system
-    ├── dependsOn: memcached-operator/memcached-system
-    └── dependsOn: external-secrets/external-secrets
-```
+![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
+
+The keystone-operator HelmRelease sits in layer 3 of the figure: it waits for
+`cert-manager`, `mariadb-operator`, `memcached-operator` and `external-secrets`.
 
 ### Why Each Dependency Is Required
 
@@ -699,28 +692,4 @@ upgrade:
 
 End-to-end deployment flow from FluxCD reconciliation to operator startup:
 
-```text
-FluxCD helm-controller
-  │
-  ├─ 1. Reconciles HelmRelease (keystone-operator)
-  │     Checks dependsOn: cert-manager ✓, mariadb-operator ✓, memcached-operator ✓
-  │
-  ├─ 2. Fetches chart from c5c3-charts OCI HelmRepository
-  │
-  ├─ 3. Installs CRDs from crds/ directory
-  │     → keystone.openstack.c5c3.io_keystones.yaml applied to cluster
-  │
-  ├─ 4. Renders templates with merged values (chart defaults + HelmRelease values)
-  │     → ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service,
-  │       PodDisruptionBudget, Issuer, Certificate,
-  │       MutatingWebhookConfiguration, ValidatingWebhookConfiguration
-  │       (+ opt-in NetworkPolicy / ServiceMonitor when enabled)
-  │
-  ├─ 5. Applies rendered resources to keystone-system namespace
-  │
-  ├─ 6. cert-manager detects inject-ca-from annotation on webhook configurations
-  │     → Injects CA bundle from Certificate resource into caBundle field
-  │
-  └─ 7. Operator pods start, leader election determines active replica
-        → Active replica begins reconciling Keystone CRs
-```
+![How the Flux helm-controller installs the keystone-operator HelmRelease, in seven steps. It reconciles the HelmRelease, checking that cert-manager, mariadb-operator, memcached-operator and external-secrets are ready; fetches the chart from the c5c3-charts OCI HelmRepository; installs the CRDs from crds/, keystone.openstack.c5c3.io_keystones.yaml; renders the templates with the chart defaults merged with the HelmRelease values, which yields the ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service, PodDisruptionBudget, Issuer, Certificate, the two webhook configurations, and the NetworkPolicy and ServiceMonitor when opted in; and applies them into the keystone-system namespace. Then cert-manager fills caBundle of the webhook configurations from the Certificate through the inject-ca-from annotation, and the operator pods start, where leader election picks the active replica that begins reconciling Keystone resources.](../../diagrams/deploy-keystone-operator-helmrelease.svg)

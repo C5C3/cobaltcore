@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1195" viewBox="0 0 1808 1195" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Sub-reconciler pipeline of the Horizon operator">
+<title>Sub-reconciler pipeline of the Horizon operator</title>
+<rect width="1808" height="1195" fill="#F6F5F1"/>
+<rect x="100" y="40" width="1290" height="881" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="119" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Pipeline</text>
+<text x="119" y="111.2" font-size="20" font-weight="400" fill="#55606E">one entry after another; the first that returns a requeue or an error ends the pass</text>
+<circle cx="50" cy="178" r="10" fill="#17202B"/>
+<polyline points="60,178 229.5,178" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="240,178 225,185.2 225,170.8" fill="#3A4452"/>
+<rect x="240" y="150" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="186.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Secrets</text>
+<text x="530" y="172.2" font-size="20" font-weight="400" fill="#55606E">sets SecretsReady</text>
+<text x="530" y="198.2" font-size="20" font-weight="400" fill="#55606E">hands on secretKeyHash</text>
+<polyline points="375,206 375,242.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,253 367.8,238 382.2,238" fill="#3A4452"/>
+<rect x="240" y="253" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="289.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Config</text>
+<text x="530" y="262.2" font-size="20" font-weight="400" fill="#55606E">sets ConfigReady</text>
+<text x="530" y="288.2" font-size="20" font-weight="400" fill="#55606E">hands on configMapName</text>
+<text x="530" y="314.2" font-size="20" font-weight="400" fill="#55606E">never requeues</text>
+<polyline points="375,309 375,356.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,367 367.8,352 382.2,352" fill="#3A4452"/>
+<rect x="240" y="367" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="403.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Deployment</text>
+<text x="530" y="376.2" font-size="20" font-weight="400" fill="#55606E">sets DeploymentReady</text>
+<text x="530" y="402.2" font-size="20" font-weight="400" fill="#55606E">reads configMapName and secretKeyHash</text>
+<text x="530" y="428.2" font-size="20" font-weight="400" fill="#55606E">sets status.endpoint</text>
+<polyline points="375,423 375,459.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,470 367.8,455 382.2,455" fill="#3A4452"/>
+<rect x="240" y="470" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="506.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">(prune)</text>
+<text x="530" y="492.2" font-size="20" font-weight="400" fill="#55606E">no name and no condition of its own</text>
+<text x="530" y="518.2" font-size="20" font-weight="400" fill="#55606E">drops old ConfigMaps; a failure flips ConfigReady</text>
+<polyline points="375,526 375,551.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,562 367.8,547 382.2,547" fill="#3A4452"/>
+<rect x="120" y="562" width="840" height="335" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="139" y="601.36" font-size="26" font-weight="700" fill="#2B3440">Parallel group</text>
+<text x="139" y="633.2" font-size="20" font-weight="400" fill="#55606E">every member starts; the shortest requeue is returned</text>
+<rect x="140" y="655" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="691.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HTTPRoute</text>
+<text x="140" y="738.2" font-size="20" font-weight="400" fill="#55606E">sets HTTPRouteReady</text>
+<rect x="420" y="655" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="525" y="691.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HealthCheck</text>
+<text x="420" y="738.2" font-size="20" font-weight="400" fill="#55606E">sets HorizonAPIReady</text>
+<rect x="700" y="655" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="805" y="691.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">HPA</text>
+<text x="700" y="738.2" font-size="20" font-weight="400" fill="#55606E">sets HPAReady</text>
+<rect x="140" y="789" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="825.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">VPA</text>
+<text x="140" y="872.2" font-size="20" font-weight="400" fill="#55606E">sets VPAReady</text>
+<rect x="420" y="789" width="210" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="525" y="825.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NetworkPolicy</text>
+<text x="420" y="872.2" font-size="20" font-weight="400" fill="#55606E">sets NetworkPolicyReady</text>
+<rect x="1330" y="961" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1440" y="997.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">updateStatus</text>
+<text x="1330" y="1046.2" font-size="20" font-weight="400" fill="#55606E">aggregates Ready from the sub-conditions</text>
+<text x="1330" y="1072.2" font-size="20" font-weight="400" fill="#55606E">writes the status only when it changed</text>
+<polyline points="375,897 375,989 1319.5,989" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1330,989 1315,996.2 1315,981.8" fill="#3A4452"/>
+<text x="820" y="972.2" font-size="20" font-weight="400" fill="#2B3440">every entry returned zero</text>
+<polyline points="1390,178 1440,178 1440,950.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1440,961 1432.8,946 1447.2,946" fill="#3A4452"/>
+<text x="1456" y="237.2" font-size="20" font-weight="400" fill="#2B3440">first requeue or error</text>
+<text x="40" y="1122.2" font-size="20" font-weight="400" fill="#55606E">A step label is the sub_reconciler value of the operator's metrics. (prune) has none.</text>
+<text x="40" y="1148.2" font-size="20" font-weight="400" fill="#55606E">The Keystone operator draws the same pattern with two parallel groups in service-reconciler-pipeline.</text>
+</svg>

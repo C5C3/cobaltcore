@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="1170" viewBox="0 0 1808 1170" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Pipeline of the NovaCompute controller">
+<title>Pipeline of the NovaCompute controller</title>
+<rect width="1808" height="1170" fill="#F6F5F1"/>
+<rect x="100" y="40" width="1290" height="856" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="119" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Pipeline</text>
+<text x="119" y="111.2" font-size="20" font-weight="400" fill="#55606E">one entry after another; the first that returns a requeue or an error ends the pass</text>
+<circle cx="50" cy="178" r="10" fill="#17202B"/>
+<polyline points="60,178 229.5,178" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="240,178 225,185.2 225,170.8" fill="#3A4452"/>
+<rect x="240" y="150" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="186.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NovaRef</text>
+<text x="530" y="185.2" font-size="20" font-weight="400" fill="#55606E">sets NovaReady</text>
+<polyline points="375,206 375,231.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,242 367.8,227 382.2,227" fill="#3A4452"/>
+<rect x="240" y="242" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="278.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Nodes</text>
+<text x="530" y="277.2" font-size="20" font-weight="400" fill="#55606E">sets NodesReady</text>
+<polyline points="375,298 375,323.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,334 367.8,319 382.2,319" fill="#3A4452"/>
+<rect x="240" y="334" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="370.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">PoolConfig</text>
+<text x="530" y="369.2" font-size="20" font-weight="400" fill="#55606E">sets ConfigReady</text>
+<polyline points="375,390 375,415.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,426 367.8,411 382.2,411" fill="#3A4452"/>
+<rect x="240" y="426" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="462.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">DaemonSet</text>
+<text x="530" y="461.2" font-size="20" font-weight="400" fill="#55606E">sets DaemonSetReady</text>
+<polyline points="375,482 375,507.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,518 367.8,503 382.2,503" fill="#3A4452"/>
+<rect x="240" y="518" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="554.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">ComputeVPA</text>
+<text x="530" y="553.2" font-size="20" font-weight="400" fill="#55606E">sets VPAReady</text>
+<polyline points="375,574 375,599.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,610 367.8,595 382.2,595" fill="#3A4452"/>
+<rect x="240" y="610" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="646.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Aggregates</text>
+<text x="530" y="645.2" font-size="20" font-weight="400" fill="#55606E">sets AggregatesReady</text>
+<polyline points="375,666 375,702.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,713 367.8,698 382.2,698" fill="#3A4452"/>
+<rect x="240" y="713" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="749.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Services</text>
+<text x="530" y="722.2" font-size="20" font-weight="400" fill="#55606E">sets ServicesReady</text>
+<text x="530" y="748.2" font-size="20" font-weight="400" fill="#55606E">hands its poll of Nova to Traits</text>
+<text x="530" y="774.2" font-size="20" font-weight="400" fill="#55606E">never ends the pass</text>
+<polyline points="375,769 375,805.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="375,816 367.8,801 382.2,801" fill="#3A4452"/>
+<rect x="240" y="816" width="270" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="375" y="852.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Traits</text>
+<text x="530" y="838.2" font-size="20" font-weight="400" fill="#55606E">sets TraitsReady</text>
+<text x="530" y="864.2" font-size="20" font-weight="400" fill="#55606E">returns the shorter of its requeue and the poll</text>
+<rect x="1330" y="936" width="220" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1440" y="972.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">updateStatus</text>
+<text x="1330" y="1021.2" font-size="20" font-weight="400" fill="#55606E">aggregates Ready from the sub-conditions</text>
+<text x="1330" y="1047.2" font-size="20" font-weight="400" fill="#55606E">writes the status only when it changed</text>
+<polyline points="375,872 375,964 1319.5,964" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1330,964 1315,971.2 1315,956.8" fill="#3A4452"/>
+<text x="820" y="947.2" font-size="20" font-weight="400" fill="#2B3440">every entry returned zero</text>
+<polyline points="1390,178 1440,178 1440,925.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1440,936 1432.8,921 1447.2,921" fill="#3A4452"/>
+<text x="1456" y="237.2" font-size="20" font-weight="400" fill="#2B3440">first requeue or error</text>
+<text x="40" y="1097.2" font-size="20" font-weight="400" fill="#55606E">A step label is the sub_reconciler value of the operator's metrics.</text>
+<text x="40" y="1123.2" font-size="20" font-weight="400" fill="#55606E">There is no parallel group: every step runs in order.</text>
+</svg>

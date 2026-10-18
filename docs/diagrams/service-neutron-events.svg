@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="1780" viewBox="0 0 1540 1780" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Neutron operator">
+<title>Event flow of the Neutron operator</title>
+<rect width="1540" height="1780" fill="#F6F5F1"/>
+<rect x="60" y="40" width="417" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="268.5" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NeutronReconciler.Reconcile()</text>
+<rect x="130" y="114" width="511" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="385.5" y="145.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDelete() (deletionTimestamp set)</text>
+<polyline points="90,138 130,138" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,196 188,196" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="203.2" font-size="20" font-weight="400" fill="#2B3440">MariaDB CRs still live</text>
+<rect x="487" y="182" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="530" y="202.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="587" y="203.2" font-size="20" font-weight="700" fill="#2B3440">FinalizingDatabase</text>
+<polyline points="160,228 188,228" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="235.2" font-size="20" font-weight="400" fill="#2B3440">MariaDB cleanup done</text>
+<rect x="487" y="214" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="530" y="234.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="587" y="235.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseFinalized</text>
+<polyline points="160,260 188,260" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="267.2" font-size="20" font-weight="400" fill="#2B3440">target cluster unresolvable</text>
+<rect x="487" y="246" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="536" y="266.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="599" y="267.2" font-size="20" font-weight="700" fill="#2B3440">RemoteChildrenAbandoned</text>
+<polyline points="160,162 160,260" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="290" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="246.5" y="321.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
+<polyline points="90,314 130,314" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,372 188,372" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="379.2" font-size="20" font-weight="400" fill="#2B3440">spec.extraConfig overrides operator-owned keys</text>
+<rect x="696" y="358" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="745" y="378.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="808" y="379.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<text x="696" y="411.2" font-size="20" font-weight="400" fill="#55606E">gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden</text>
+<polyline points="160,338 160,372" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="434" width="266" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="263" y="465.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase()</text>
+<polyline points="90,458 130,458" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,516 188,516" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="523.2" font-size="20" font-weight="400" fill="#2B3440">tag/release mismatch</text>
+<text x="649" y="523.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
+<text x="649" y="555.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
+<polyline points="160,580 188,580" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="587.2" font-size="20" font-weight="400" fill="#2B3440">release gate refuses</text>
+<rect x="649" y="566" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="698" y="586.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="761" y="587.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError / DowngradeNotSupported /</text>
+<text x="761" y="619.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid / ImageReleaseMismatch</text>
+<polyline points="160,644 188,644" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="651.2" font-size="20" font-weight="400" fill="#2B3440">upgrade accepted</text>
+<rect x="649" y="630" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="692" y="650.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="749" y="651.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeInitiated</text>
+<polyline points="160,676 188,676" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="683.2" font-size="20" font-weight="400" fill="#2B3440">expand / migrate / contract Job succeeded</text>
+<rect x="649" y="662" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="692" y="682.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="749" y="683.2" font-size="20" font-weight="700" fill="#2B3440">ExpandComplete / MigrateComplete /</text>
+<text x="749" y="715.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeComplete</text>
+<polyline points="160,740 188,740" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="747.2" font-size="20" font-weight="400" fill="#2B3440">phase Job failed</text>
+<rect x="649" y="726" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="698" y="746.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="761" y="747.2" font-size="20" font-weight="700" fill="#2B3440">ExpandFailed / MigrateFailed / ContractFailed</text>
+<polyline points="160,772 188,772" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="779.2" font-size="20" font-weight="400" fill="#2B3440">spec release moved</text>
+<rect x="649" y="758" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="698" y="778.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="761" y="779.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeTargetChanged</text>
+<polyline points="160,804 188,804" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="811.2" font-size="20" font-weight="400" fill="#2B3440">spec release reverted</text>
+<rect x="649" y="790" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="692" y="810.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="749" y="811.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeAborted</text>
+<polyline points="160,836 188,836" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="843.2" font-size="20" font-weight="400" fill="#2B3440">db_sync fails</text>
+<rect x="649" y="822" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="698" y="842.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="761" y="843.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncFailed</text>
+<polyline points="160,868 188,868" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="875.2" font-size="20" font-weight="400" fill="#2B3440">db_sync succeeds</text>
+<rect x="649" y="854" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="692" y="874.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="749" y="875.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
+<polyline points="160,900 188,900" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="907.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
+<rect x="649" y="886" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="698" y="906.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="761" y="907.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred</text>
+<polyline points="160,482 160,900" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="930" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="276.5" y="961.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
+<polyline points="90,954 130,954" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1012 188,1012" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1019.2" font-size="20" font-weight="400" fill="#2B3440">rollout done in the RollingUpdate phase</text>
+<rect x="608" y="998" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="651" y="1018.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="708" y="1019.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
+<polyline points="160,978 160,1012" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1042" width="298" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="279" y="1073.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileOVNDBSync()</text>
+<polyline points="90,1066 130,1066" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1124 188,1124" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1131.2" font-size="20" font-weight="400" fill="#2B3440">newest terminal sync Job failed</text>
+<rect x="540" y="1110" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="589" y="1130.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="652" y="1131.2" font-size="20" font-weight="700" fill="#2B3440">OVNDBSyncJobFailed</text>
+<polyline points="160,1156 188,1156" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1163.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch failed</text>
+<rect x="540" y="1142" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="589" y="1162.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="652" y="1163.2" font-size="20" font-weight="700" fill="#2B3440">OVNDBSyncMetricEmissionDeferred</text>
+<polyline points="160,1090 160,1156" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,1066" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="60" y="1236" width="597" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="358.5" y="1272.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NeutronMetadataAgentReconciler.Reconcile()</text>
+<rect x="130" y="1310" width="739" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="499.5" y="1341.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">deletion, target cluster unresolvable past the abandon window</text>
+<polyline points="90,1334 130,1334" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1392 188,1392" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="200" y="1378" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="249" y="1398.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="312" y="1399.2" font-size="20" font-weight="700" fill="#2B3440">RemoteChildrenAbandoned</text>
+<text x="200" y="1431.2" font-size="20" font-weight="400" fill="#55606E">finalizer released, children left behind</text>
+<polyline points="160,1358 160,1392" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1454" width="738" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="499" y="1485.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">deletion of a placed agent, reapMetadataSharedSecretMirrors()</text>
+<polyline points="90,1478 130,1478" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1536 188,1536" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1543.2" font-size="20" font-weight="400" fill="#2B3440">labelled copy no other agent there names</text>
+<rect x="625" y="1522" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="668" y="1542.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="725" y="1543.2" font-size="20" font-weight="700" fill="#2B3440">MetadataSharedSecretMirrorReaped</text>
+<polyline points="160,1502 160,1536" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1566" width="297" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="278.5" y="1597.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileAgentConfig()</text>
+<polyline points="90,1590 130,1590" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1648 188,1648" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1655.2" font-size="20" font-weight="400" fill="#2B3440">spec.extraConfig overrides operator-owned keys</text>
+<rect x="696" y="1634" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="745" y="1654.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="808" y="1655.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<polyline points="160,1614 160,1648" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,1292 90,1590" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="1723.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
+<text x="40" y="1749.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
+</svg>

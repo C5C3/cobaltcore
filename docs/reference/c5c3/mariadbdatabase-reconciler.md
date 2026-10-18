@@ -99,23 +99,7 @@ placed namespace. A placed Keystone's namespace already grants `databases`. See
 
 ## Reconciliation Flow
 
-```
-Reconcile
-  ├─ resolve the order's cluster ──→ unresolvable: log, no requeue
-  ├─ deleting? ───────────────────→ reconcileDelete  (see Deletion and Teardown)
-  └─ reconcileNormal
-       ├─ orderAdmission
-       │    ├─ cluster name ≤ 63   → ClusterNameTooLong, no requeue
-       │    ├─ ControlPlane read   → ControlPlaneNotFound (10s); on a target
-       │    │                        cluster NamespaceNotAssigned (1m)
-       │    └─ namespace assignment → NamespaceNotAssigned (1m), frozen
-       ├─ EnsureFinalizer          c5c3.io/mariadbdatabase-teardown
-       ├─ mariaDBDatabaseDynamicGate
-       │    ├─ not Dynamic         → DynamicCredentialsUnavailable (10m)
-       │    └─ DBCredentialsReady  → WaitingForDBCredentials (10s)
-       ├─ provisionDatabase  (instrumented: MariaDBDatabaseProvision)
-       └─ deliverCredentials (instrumented: MariaDBDatabaseDelivery)
-```
+![The reconciliation flow of the MariaDBDatabase controller. A pass whose cluster does not resolve logs and ends without a requeue; a deleting order goes to reconcileDelete. reconcileNormal runs orderAdmission, which exits with ClusterNameTooLong and no requeue when the cluster name is longer than 63, with ControlPlaneNotFound and a 10s requeue when the ControlPlane cannot be read (on a target cluster NamespaceNotAssigned after 1m), and with NamespaceNotAssigned and a 1m requeue, the freeze, when the namespace has no assignment; then installs the finalizer c5c3.io/mariadbdatabase-teardown, runs mariaDBDatabaseDynamicGate, which exits with DynamicCredentialsUnavailable and a 10m requeue when the credentials mode is not Dynamic and with WaitingForDBCredentials and a 10s requeue while DBCredentialsReady is not met, then provisionDatabase (instrumented as MariaDBDatabaseProvision) and deliverCredentials (instrumented as MariaDBDatabaseDelivery).](../../diagrams/controlplane-mariadbdatabase-flow.svg)
 
 The assignment gate is the freeze: without an entry for the order's namespace
 on its cluster, both conditions read `NamespaceNotAssigned` and the pass

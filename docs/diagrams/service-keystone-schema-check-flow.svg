@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1090" height="754" viewBox="0 0 1090 754" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The database step of the Keystone operator with the schema check">
+<title>The database step of the Keystone operator with the schema check</title>
+<rect width="1090" height="754" fill="#F6F5F1"/>
+<rect x="60" y="40" width="274" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="197" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase</text>
+<rect x="130" y="114" width="272" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="266" y="145.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">MariaDB CRs ready?</text>
+<polyline points="90,138 130,138" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="418" y="145.2" font-size="20" font-weight="400" fill="#55606E">managed mode only</text>
+<polyline points="90,197 118,197" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="204.2" font-size="20" font-weight="400" fill="#2B3440">upgrade path?</text>
+<polyline points="297,197 320.5,197" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="331,197 316,204.2 316,189.8" fill="#3A4452"/>
+<text x="343" y="204.2" font-size="20" font-weight="700" fill="#2B3440">reconcileUpgrade</text>
+<rect x="130" y="226" width="220" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="240" y="257.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">db_sync Job</text>
+<polyline points="90,250 130,250" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="366" y="257.2" font-size="20" font-weight="400" fill="#55606E">existing</text>
+<polyline points="160,309 188,309" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="316.2" font-size="20" font-weight="400" fill="#2B3440">failed</text>
+<rect x="304" y="295" width="375" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="491.5" y="315.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">DatabaseReady=False/DBSyncFailed</text>
+<text x="693" y="316.2" font-size="20" font-weight="400" fill="#55606E">returns the error</text>
+<polyline points="160,343 188,343" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="350.2" font-size="20" font-weight="400" fill="#2B3440">running</text>
+<rect x="304" y="329" width="414" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="511" y="349.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">DatabaseReady=False/DBSyncInProgress</text>
+<text x="732" y="350.2" font-size="20" font-weight="400" fill="#55606E">requeue 30s</text>
+<polyline points="160,377 188,377" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="384.2" font-size="20" font-weight="700" fill="#2B3440">done: proceed to the schema check</text>
+<polyline points="160,274 160,377" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="408" width="261" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="260.5" y="439.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">schema-check Job</text>
+<polyline points="90,432 130,432" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,491 188,491" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="498.2" font-size="20" font-weight="400" fill="#2B3440">failed</text>
+<rect x="304" y="477" width="435" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="521.5" y="497.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">DatabaseReady=False/SchemaDriftDetected</text>
+<text x="753" y="498.2" font-size="20" font-weight="400" fill="#55606E">returns the error</text>
+<polyline points="160,525 188,525" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="532.2" font-size="20" font-weight="400" fill="#2B3440">running</text>
+<rect x="304" y="511" width="472" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="540" y="531.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">DatabaseReady=False/SchemaCheckInProgress</text>
+<text x="790" y="532.2" font-size="20" font-weight="400" fill="#55606E">requeue 30s</text>
+<polyline points="160,559 188,559" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="566.2" font-size="20" font-weight="700" fill="#2B3440">done: proceed to DatabaseReady=True</text>
+<polyline points="160,456 160,559" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,607 118,607" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="614.2" font-size="20" font-weight="700" fill="#2B3440">status.installedRelease = spec.image.tag</text>
+<polyline points="90,641 118,641" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="648.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseReady=True/DatabaseSynced</text>
+<text x="546" y="648.2" font-size="20" font-weight="400" fill="#55606E">the message includes "revision verified"</text>
+<polyline points="90,96 90,641" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="709.2" font-size="20" font-weight="400" fill="#55606E">A chip is the condition and reason the step sets when it ends the pass there; the note is what it returns.</text>
+</svg>

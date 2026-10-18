@@ -544,20 +544,7 @@ Each parallel sub-reconciler receives its own `DeepCopy` of the Keystone CR. Thi
 eliminates shared mutable state by construction — `conditions.SetCondition` writes to
 the copy's `Status.Conditions` slice, not the original. No `sync.Mutex` is needed.
 
-```text
-Keystone CR (original, with SecretsReady set)
-    │
-    ├─ DeepCopy → ksCopyFernet ──[goroutine 1]──→ FernetKeysReady on copy
-    ├─ DeepCopy → ksCopyCred   ──[goroutine 2]──→ CredentialKeysReady on copy
-    └─ DeepCopy → ksCopyNetpol ──[goroutine 3]──→ NetworkPolicyReady on copy
-                                                     │
-                                          errgroup.Wait()
-                                                     │
-                                    mergeParallelConditions (sequential):
-                                      copy1 → FernetKeysReady     → original
-                                      copy2 → CredentialKeysReady → original
-                                      copy3 → NetworkPolicyReady  → original
-```
+![How parallel group 1 of the Keystone operator merges its conditions. The original Keystone, with SecretsReady already set, is deep-copied three times: ksCopyFernet for goroutine 1, which sets FernetKeysReady on its copy, ksCopyCred for goroutine 2, which sets CredentialKeysReady, and ksCopyNetpol for goroutine 3, which sets NetworkPolicyReady. The three goroutines join in errgroup.Wait(), then mergeParallelConditions copies one condition type per copy back into the original, one after another: no mutex, no shared state.](../../diagrams/service-keystone-parallel-merge.svg)
 
 After `g.Wait()` returns, conditions from each copy are merged sequentially into the
 original via `mergeParallelConditions(dst, src, conditionType)`:
@@ -667,13 +654,7 @@ See [Owned Resources](#owned-resources) for the full owner-reference list.
 `Reconcile` inspects `metadata.deletionTimestamp` immediately after the CR
 `Get` and before any sub-reconciler executes:
 
-```text
-Fetch Keystone CR
-    │
-    ├─ DeletionTimestamp != zero ──► reconcileDelete ──► (no sub-reconcilers)
-    │
-    └─ DeletionTimestamp == zero ──► AddFinalizer if missing ──► sub-reconcilers
-```
+![How the Keystone reconciler branches on the deletion timestamp. After the fetch of the Keystone, where NotFound ends the pass, a set deletionTimestamp leads to reconcileDelete, the MariaDB finalizer, then reconcileDeleteOpenBao, the OpenBao finalizer, and no sub-reconciler runs against a terminating resource. An unset deletionTimestamp leads to AddFinalizer, which installs keystone.openstack.c5c3.io/finalizer and keystone.openstack.c5c3.io/openbao-finalizer when they are missing and ends such a pass with a requeue after 1s, and then to the sub-reconcilers of the pipeline.](../../diagrams/service-keystone-deletion-branch.svg)
 
 Running sub-reconcilers against a Terminating CR is not safe: sub-reconcilers
 such as `reconcileDatabase` would re-create the very MariaDB CRs the finalizer
@@ -1038,17 +1019,7 @@ happens **before** the Keystone CR leaves etcd.
 `Reconcile` dispatches terminating CRs to both finalizer handlers
 immediately after the CR `Get` and before any sub-reconciler executes:
 
-```text
-Fetch Keystone CR
-    │
-    ├─ DeletionTimestamp != zero ──► reconcileDelete (MariaDB finalizer)
-    │                                reconcileDeleteOpenBao (OpenBao finalizer)
-    │                                (no sub-reconcilers)
-    │
-    └─ DeletionTimestamp == zero ──► AddFinalizer(keystoneFinalizer) if missing
-                                     AddFinalizer(keystoneOpenBaoFinalizer) if missing
-                                     sub-reconcilers
-```
+![How the Keystone reconciler branches on the deletion timestamp. After the fetch of the Keystone, where NotFound ends the pass, a set deletionTimestamp leads to reconcileDelete, the MariaDB finalizer, then reconcileDeleteOpenBao, the OpenBao finalizer, and no sub-reconciler runs against a terminating resource. An unset deletionTimestamp leads to AddFinalizer, which installs keystone.openstack.c5c3.io/finalizer and keystone.openstack.c5c3.io/openbao-finalizer when they are missing and ends such a pass with a requeue after 1s, and then to the sub-reconcilers of the pipeline.](../../diagrams/service-keystone-deletion-branch.svg)
 
 Running sub-reconcilers against a Terminating CR would be unsafe:
 `reconcileFernetKeys` and `reconcileCredentialKeys` build the live `Secret`
@@ -1993,10 +1964,7 @@ ConfigMap with a content-hash suffix. Returns the ConfigMap name for use by
 
 **Configuration Pipeline:**
 
-```text
-Spec fields → Operator defaults → Secret injection → Plugin config merge
-  → ExtraConfig merge → Policy override → INI rendering → Immutable ConfigMap
-```
+![The eight stages reconcileConfig renders keystone.conf through, each reading what the stage before it produced: spec fields, operator defaults, Secret injection, plugin config merge, ExtraConfig merge, policy override, INI rendering, and the immutable ConfigMap.](../../diagrams/service-keystone-config-pipeline.svg)
 
 **Step 1: Build operator defaults**
 
@@ -2224,10 +2192,7 @@ fernet/credential key Secrets, so those Secret changes do not trigger rolling
 restarts. This preserves Keystone availability, PDB budget, and uWSGI/Memcached
 connections during routine key rotation.
 
-```text
-CronJob stages keys → operator commits them → kubelet projects new keys
-  → running pods see updated key files (no rollout)
-```
+![How a rotated key reaches the running pods without a rollout: the CronJob stages the keys, the operator commits them, the kubelet projects the new keys, and the running pods see the new key files. The pod template carries no hash of the key Secrets, so nothing rolls.](../../diagrams/secrets-rotation-key-projection.svg)
 
 The database connection string is the deliberate exception. It is consumed via
 the `OS_DATABASE__CONNECTION` environment variable (not a mounted volume), so a

@@ -279,47 +279,7 @@ alert on where the event stream is not collected.
 
 ## Event Flow
 
-```text
-NeutronReconciler.Reconcile()
-  │
-  ├── reconcileDelete() (deletionTimestamp set)
-  │     ├─ MariaDB CRs still live      → Normal  FinalizingDatabase
-  │     ├─ MariaDB cleanup done        → Normal  DatabaseFinalized
-  │     └─ target cluster unresolvable → Warning RemoteChildrenAbandoned
-  │
-  ├── reconcileConfig()
-  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
-  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
-  │
-  ├── reconcileDatabase()
-  │     ├─ tag/release mismatch  → (condition only, no event)
-  │     ├─ release gate refuses  → Warning VersionParseError / DowngradeNotSupported /
-  │     │                                  UpgradePathInvalid / ImageReleaseMismatch
-  │     ├─ upgrade accepted      → Normal  UpgradeInitiated
-  │     ├─ expand / migrate / contract Job succeeded
-  │     │                        → Normal  ExpandComplete / MigrateComplete / UpgradeComplete
-  │     ├─ phase Job failed      → Warning ExpandFailed / MigrateFailed / ContractFailed
-  │     ├─ spec release moved    → Warning UpgradeTargetChanged
-  │     ├─ spec release reverted → Normal  UpgradeAborted
-  │     ├─ db_sync fails         → Warning DBSyncFailed
-  │     ├─ db_sync succeeds      → Normal  DatabaseSynced
-  │     └─ Job-UID patch fails   → Warning DBSyncMetricEmissionDeferred
-  │
-  ├── reconcileDeployment()
-  │     └─ rollout done in the RollingUpdate phase → Normal DeploymentRolloutComplete
-  │
-  └── reconcileOVNDBSync()
-        ├─ newest terminal sync Job failed → Warning OVNDBSyncJobFailed
-        └─ Job-UID patch failed            → Warning OVNDBSyncMetricEmissionDeferred
+![The event flow of the Neutron operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. NeutronReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; Warning RemoteChildrenAbandoned when target cluster unresolvable; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileDatabase() emits nothing when tag/release mismatch (condition only); Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or ImageReleaseMismatch when release gate refuses; Normal UpgradeInitiated when upgrade accepted; Normal ExpandComplete or MigrateComplete or UpgradeComplete when expand / migrate / contract Job succeeded; Warning ExpandFailed or MigrateFailed or ContractFailed when phase Job failed; Warning UpgradeTargetChanged when spec release moved; Normal UpgradeAborted when spec release reverted; Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; reconcileDeployment() emits Normal DeploymentRolloutComplete when rollout done in the RollingUpdate phase; reconcileOVNDBSync() emits Warning OVNDBSyncJobFailed when newest terminal sync Job failed; Warning OVNDBSyncMetricEmissionDeferred when Job-UID patch failed; NeutronMetadataAgentReconciler.Reconcile(): deletion, target cluster unresolvable past the abandon window emits Warning RemoteChildrenAbandoned (finalizer released, children left behind); deletion of a placed agent, reapMetadataSharedSecretMirrors() emits Normal MetadataSharedSecretMirrorReaped when labelled copy no other agent there names; reconcileAgentConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys;](../../diagrams/service-neutron-events.svg)
 
-NeutronMetadataAgentReconciler.Reconcile()
-  │
-  ├── deletion, target cluster unresolvable past the abandon window
-  │     └─ Warning RemoteChildrenAbandoned  (finalizer released, children left behind)
-  │
-  ├── deletion of a placed agent, reapMetadataSharedSecretMirrors()
-  │     └─ labelled copy no other agent there names → Normal MetadataSharedSecretMirrorReaped
-  │
-  └── reconcileAgentConfig()
-        └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
-```
+The figure draws which sub-reconciler emits which event, and on what. The
+[Event Reasons Reference](#event-reasons-reference) describes every reason.

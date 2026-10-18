@@ -121,22 +121,7 @@ which is the signal to alert on when the event stream is not collected.
 
 ## Event Flow
 
-```text
-OVNCentralReconciler.Reconcile()
-  │
-  ├── deletion, target cluster unresolvable past the abandon window
-  │     └─ Warning RemoteChildrenAbandoned  (finalizer released, children left behind)
-  │
-  └── reconcileBackup()
-        ├─ newest terminal backup Job failed → Warning BackupJobFailed
-        └─ Job-UID patch failed              → Warning BackupMetricEmissionDeferred
+![The event flow of the OVN operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. OVNCentralReconciler.Reconcile(): deletion, target cluster unresolvable past the abandon window emits Warning RemoteChildrenAbandoned (finalizer released, children left behind); reconcileBackup() emits Warning BackupJobFailed when newest terminal backup Job failed; Warning BackupMetricEmissionDeferred when Job-UID patch failed; OVNChassisReconciler.Reconcile(): deletion, target cluster unresolvable past the abandon window emits Warning RemoteChildrenAbandoned; reconcileMaintenance() emits Warning ChassisMaintenanceJobFailed when apply / evacuate / chassis-del Job failed; Warning ChassisMaintenanceMetricEmissionDeferred when Job-UID patch failed;](../../diagrams/compute-ovn-events.svg)
 
-OVNChassisReconciler.Reconcile()
-  │
-  ├── deletion, target cluster unresolvable past the abandon window
-  │     └─ Warning RemoteChildrenAbandoned
-  │
-  └── reconcileMaintenance()
-        ├─ apply / evacuate / chassis-del Job failed → Warning ChassisMaintenanceJobFailed
-        └─ Job-UID patch failed                      → Warning ChassisMaintenanceMetricEmissionDeferred
-```
+The figure draws which sub-reconciler emits which event, and on what. The
+[Event Reasons Reference](#event-reasons-reference) describes every reason.

@@ -28,17 +28,12 @@ pipeline vectors carry no CR name.
 
 ### OVNCentral
 
-```text
-TLS ──► Northbound ──► Southbound ──► Endpoints ──► ┬─ Northd
-                                                    ├─ Relay
-                                                    ├─ Backup
-                                                    └─ VPA      (parallel)
-```
+![The sub-reconciler pipeline of the OVNCentral controller. A pass runs its entries one after another and ends at the first that returns a requeue or an error: TLS, Northbound, Southbound, Endpoints, then a parallel group of Northd, Relay, Backup and VPA. Every member of the group starts, and the group returns the shortest requeue. Each step sets one condition. TLS publishes status.clientSecretName, Endpoints stamps the internal and the external database address, Northd copies status.installedImage back onto the primary resource and Relay the relay addresses. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-ovncentral-pipeline.svg)
 
-The pipeline follows the pattern of the Keystone operator: a lane of steps that
+The figure draws the pattern the Keystone operator set: a lane of steps that
 ends the pass at the first requeue or error, and a group whose members all run.
 [Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
-draws that pattern with every step of the Keystone operator.
+describes that pattern in full. The table lists what each step does.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -67,9 +62,9 @@ primary CR by hand in `parallelSteps`: `status.installedImage` from Northd, and
 
 ### OVNChassis
 
-```text
-Central ──► ClientSecret ──► Nodes ──► OVS ──► Controller ──► ChassisVPA ──► Maintenance
-```
+![The pipeline of the OVNChassis controller. A pass runs its seven steps one after another and ends at the first that returns a requeue or an error: Central, ClientSecret, Nodes, OVS, Controller, ChassisVPA and Maintenance. There is no parallel group. Each step sets one condition; ClientSecret reports through CentralReady. Central hands on the resolved central, ClientSecret the name of the client Secret, and Nodes the rendered nodes. Controller reads the central and sets status.installedImage, and Maintenance reads the central and the nodes. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-ovnchassis-pipeline.svg)
+
+The figure draws the steps in call order. The table lists what each one does.
 
 | Step | What it does | Condition |
 | --- | --- | --- |

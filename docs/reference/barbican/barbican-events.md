@@ -244,41 +244,7 @@ groups:
 
 ## Event Flow
 
-```text
-BarbicanReconciler.Reconcile()
-  │
-  ├── reconcileDelete() (deletionTimestamp set)
-  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
-  │     └─ MariaDB cleanup done    → Normal  DatabaseFinalized
-  │
-  ├── reconcileSecretStores()
-  │     ├─ credentials unreadable  → Warning BarbicanSecretStoreSkipped
-  │     ├─ store de-projected      → Warning SecretStoreDetached
-  │     └─ no/several defaults     → (condition only, no event)
-  │
-  ├── reconcileConfig()
-  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
-  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
-  │
-  ├── reconcileDBClean()
-  │     ├─ newest terminal run failed → Warning DBCleanJobFailed
-  │     └─ Job-UID patch fails        → Warning DBCleanMetricEmissionDeferred
-  │
-  └── reconcileDatabase()
-        ├─ tag/release mismatch      → (condition only, no event)
-        ├─ release gate refuses      → Warning VersionParseError / DowngradeNotSupported /
-        │                                      UpgradePathInvalid / ImageReleaseMismatch
-        ├─ db_sync fails             → Warning DBSyncFailed
-        ├─ db_sync succeeds          → Normal  DatabaseSynced
-        └─ Job-UID patch fails       → Warning DBSyncMetricEmissionDeferred
+![The event flow of the Barbican operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. BarbicanReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; reconcileSecretStores() emits Warning BarbicanSecretStoreSkipped when credentials unreadable; Warning SecretStoreDetached when store de-projected; nothing when no/several defaults (condition only); reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileDBClean() emits Warning DBCleanJobFailed when newest terminal run failed; Warning DBCleanMetricEmissionDeferred when Job-UID patch fails; reconcileDatabase() emits nothing when tag/release mismatch (condition only); Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or ImageReleaseMismatch when release gate refuses; Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; BarbicanSecretStoreReconciler.Reconcile(): Warning InstanceNotFound or WaitingForInstance or WaitingForInstanceTLS or InstanceNotProvisioned or ProvisioningDenied or OpenBaoUnreachable or InvalidCredentials when reconcileManaged(); Warning WaitingForCredentials or InvalidCredentials or InsufficientCapabilities or OpenBaoUnreachable when reconcileBrownfield(); nothing when config projection observed (condition only);](../../diagrams/service-barbican-events.svg)
 
-BarbicanSecretStoreReconciler.Reconcile()
-  │
-  ├── reconcileManaged()     → Warning InstanceNotFound / WaitingForInstance /
-  │                                    WaitingForInstanceTLS / InstanceNotProvisioned /
-  │                                    ProvisioningDenied / OpenBaoUnreachable /
-  │                                    InvalidCredentials
-  ├── reconcileBrownfield()  → Warning WaitingForCredentials / InvalidCredentials /
-  │                                    InsufficientCapabilities / OpenBaoUnreachable
-  └── config projection observed → (condition only, no event)
-```
+The figure draws which sub-reconciler emits which event, and on what. The
+[Event Reasons Reference](#event-reasons-reference) describes every reason.

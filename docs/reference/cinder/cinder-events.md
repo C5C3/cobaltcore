@@ -261,55 +261,7 @@ groups:
 
 ## Event Flow
 
-```text
-CinderReconciler.Reconcile()
-  │
-  ├── reconcileDelete() (deletionTimestamp set)
-  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
-  │     ├─ MariaDB cleanup done    → Normal  DatabaseFinalized
-  │     └─ target cluster gone     → Warning RemoteChildrenAbandoned
-  │
-  ├── reconcileBackends()
-  │     └─ per-backend fault           → Warning CinderBackendSkipped
-  │
-  ├── reconcileBackupBackend()
-  │     └─ backup-target fault         → Warning CinderBackupBackendSkipped
-  │
-  ├── reconcileConfig()
-  │     └─ extraConfig overrides an operator-owned key
-  │                                    → Warning ExtraConfigOwnedKeyOverride
-  │
-  ├── reconcileDatabase()
-  │     ├─ db_sync fails               → Warning DBSyncFailed
-  │     ├─ db_sync succeeds            → Normal  DatabaseSynced
-  │     ├─ Job-UID patch fails         → Warning DBSyncMetricEmissionDeferred
-  │     ├─ migrate phase terminal      → Normal  UpgradeCheckCompleted /
-  │     │                                Warning UpgradeCheckWarnings
-  │     └─ release upgrade             → Normal  UpgradeInitiated / ExpandComplete /
-  │                                              MigrateComplete / UpgradeComplete /
-  │                                              UpgradeAborted
-  │                                      Warning VersionParseError / DowngradeNotSupported /
-  │                                              UpgradePathInvalid / UpgradeTargetChanged /
-  │                                              ExpandFailed / MigrateFailed / ContractFailed
-  │
-  ├── reconcileVolumeServices()
-  │     ├─ detach completed            → Normal  ServiceRemoved
-  │     ├─ service-remove Job failed   → Warning ServiceRemoveJobFailed
-  │     └─ Job-UID patch fails         → Warning ServiceRemoveMetricEmissionDeferred
-  │
-  ├── reconcileBackupService()
-  │     ├─ shared export, divergent mountOptions
-  │     │                              → Warning SharedExportMountOptionsIgnored
-  │     └─ one keyring file, two keys  → Warning CephKeyringConflict
-  │
-  ├── reconcileDeployment()
-  │     └─ rollout ready mid-upgrade   → Normal  DeploymentRolloutComplete
-  │
-  └── reconcileDBPurge()
-        ├─ newest run failed           → Warning DBPurgeJobFailed
-        └─ Job-UID patch fails         → Warning DBPurgeMetricEmissionDeferred
+![The event flow of the Cinder operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. CinderReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; Warning RemoteChildrenAbandoned when target cluster gone; reconcileBackends() emits Warning CinderBackendSkipped when per-backend fault; reconcileBackupBackend() emits Warning CinderBackupBackendSkipped when backup-target fault; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides an operator-owned key; reconcileDatabase() emits Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; Normal UpgradeCheckCompleted and Warning UpgradeCheckWarnings when migrate phase terminal; Normal UpgradeInitiated or ExpandComplete or MigrateComplete or UpgradeComplete or UpgradeAborted and Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or UpgradeTargetChanged or ExpandFailed or MigrateFailed or ContractFailed when release upgrade; reconcileVolumeServices() emits Normal ServiceRemoved when detach completed; Warning ServiceRemoveJobFailed when service-remove Job failed; Warning ServiceRemoveMetricEmissionDeferred when Job-UID patch fails; reconcileBackupService() emits Warning SharedExportMountOptionsIgnored when shared export, divergent mountOptions; Warning CephKeyringConflict when one keyring file, two keys; reconcileDeployment() emits Normal DeploymentRolloutComplete when rollout ready mid-upgrade; reconcileDBPurge() emits Warning DBPurgeJobFailed when newest run failed; Warning DBPurgeMetricEmissionDeferred when Job-UID patch fails; CinderBackendReconciler.Reconcile(): reconcileDeleting() (parent Cinder already gone) emits Normal ServiceRemoveSkipped when finalizer released;](../../diagrams/service-cinder-events.svg)
 
-CinderBackendReconciler.Reconcile()
-  └── reconcileDeleting() (parent Cinder already gone)
-        └─ finalizer released          → Normal  ServiceRemoveSkipped
-```
+The figure draws which sub-reconciler emits which event, and on what. The
+[Event Reasons Reference](#event-reasons-reference) describes every reason.

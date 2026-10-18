@@ -37,19 +37,12 @@ sync CronJob, and the two pipeline vectors carry no CR name.
 
 ### Neutron
 
-```text
-Secrets ──► DBConnectionSecret ──► TransportURLSecret ──► OVNEndpoints ──► OVNClientSecret
-  ──► Config ──► OVNDBSync ──► Database ──► Deployment ──► Workers ──► ┬─ HTTPRoute
-                                                                       ├─ HealthCheck
-                                                                       ├─ HPA
-                                                                       ├─ VPA
-                                                                       └─ NetworkPolicy   (parallel)
-```
+![The sub-reconciler pipeline of the Neutron operator. A pass runs its entries one after another and ends at the first that returns a requeue or an error: Secrets, DBConnectionSecret, TransportURLSecret, OVNEndpoints, OVNClientSecret, Config, OVNDBSync, Database, Deployment, Workers, then a parallel group of HTTPRoute, HealthCheck, HPA, VPA and NetworkPolicy. Every member of the group starts, and the group returns the shortest requeue. Each step sets one condition; DBConnectionSecret, TransportURLSecret and Config report through SecretsReady, and OVNClientSecret through OVNEndpointsReady. Secrets hands on the service-user and Nova notifier digests, DBConnectionSecret the DSN digest, TransportURLSecret its digest and the broker egress port, OVNEndpoints the resolved OVN endpoints, which OVNClientSecret and Config read, OVNClientSecret the client digest, and Config the name of the ConfigMap. OVNDBSync and Database read the ConfigMap name, Deployment and Workers read it with the five digests, and Deployment sets status.endpoint. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/service-neutron-pipeline.svg)
 
-The pipeline follows the pattern of the Keystone operator: a lane of steps that
+The figure draws the pattern the Keystone operator set: a lane of steps that
 ends the pass at the first requeue or error, and a group whose members all run.
 [Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
-draws that pattern with every step of the Keystone operator.
+describes that pattern in full. The table lists what each step does.
 
 | Step | What it does | Condition |
 | --- | --- | --- |
@@ -102,9 +95,9 @@ other status field, so there is nothing to copy back by hand.
 
 ### NeutronMetadataAgent
 
-```text
-Chassis ──► Secrets ──► Config ──► DaemonSet ──► AgentVPA
-```
+![The pipeline of the NeutronMetadataAgent controller. A pass runs its five steps one after another and ends at the first that returns a requeue or an error: Chassis, Secrets, Config, DaemonSet and AgentVPA. There is no parallel group. Each step sets one condition; Config reports through SecretsReady. Chassis hands on the resolved chassis, Secrets the transport and shared-secret digests, and Config the name of the ConfigMap. DaemonSet reads the chassis, the ConfigMap name and the digests, and sets status.installedImage. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/compute-neutronmetadataagent-pipeline.svg)
+
+The figure draws the steps in call order. The table lists what each one does.
 
 | Step | What it does | Condition |
 | --- | --- | --- |

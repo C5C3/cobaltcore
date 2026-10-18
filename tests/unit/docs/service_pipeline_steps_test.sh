@@ -13,18 +13,18 @@
 # parallel-group member also holds `ConditionType:`. File order is call order.
 # The reconciler pages under docs/reference/ restate that order per pipeline:
 # each section holds a step table, whose header row starts with `| Step |` and
-# whose first column names the step, and most of them also a fenced block that
-# draws the pipeline. The Keystone pipeline has no block; its figure replaced
-# it. A row whose first cell starts with `(`, such as `(prune)`, is a step
-# without a name, and text in parentheses inside a block, such as
-# `(parallel)`, is a note.
+# whose first column names the step, and shows a figure under docs/diagrams/
+# that draws the pipeline. A row whose first cell starts with `(`, such as
+# `(prune)`, is a step without a name, and text in parentheses inside a
+# fenced pipeline block, such as `(parallel)`, is a note.
 #
-# check_pipeline prints one problem per line and nothing when the table and
-# the block follow the controller. check_count does the same for a sentence
-# that counts the steps or the sub-conditions of a pipeline, and
-# check_pipeline_figure for a figure that draws one. The fixture tests prove
-# each check on a scratch tree before the repository tests at the end run them
-# on every pipeline, count and figure their tables list.
+# check_pipeline prints one problem per line and nothing when the table and,
+# where a page still draws one, the fenced block follow the controller.
+# check_count does the same for a sentence that counts the steps or the
+# sub-conditions of a pipeline, and check_pipeline_figure for a figure that
+# draws one. The fixture tests prove each check on a scratch tree before the
+# repository tests at the end run them on every pipeline, count and figure
+# their tables list.
 #
 # REFERENCE_DOCS overrides the directory the pages are read from (default:
 # docs/reference), so a check can run on a scratch copy of the pages.
@@ -730,17 +730,17 @@ test_repository_pipelines_follow_their_controllers() {
       "$(check_pipeline "$PROJECT_ROOT/operators/$controller" "$REFERENCE_DOCS/$page" "$heading" "$block")"
   done <<'EOF'
 keystone/internal/controller/keystone_controller.go|keystone/keystone-reconciler.md|## Reconciliation Flow|no
-glance/internal/controller/glance_controller.go|glance/glance-reconciler.md|## Pipeline|yes
-barbican/internal/controller/barbican_controller.go|barbican/barbican-reconciler.md|## Pipeline|yes
-placement/internal/controller/placement_controller.go|placement/placement-reconciler.md|## Pipeline|yes
-horizon/internal/controller/horizon_controller.go|horizon/horizon-reconciler.md|## Pipeline|yes
-cinder/internal/controller/cinder_controller.go|cinder/cinder-reconciler.md|## Pipeline|yes
-nova/internal/controller/nova_controller.go|nova/nova-reconciler.md|## Pipeline|yes
-nova/internal/controller/novacompute_controller.go|nova/nova-reconciler.md|### NovaCompute pipeline|yes
-neutron/internal/controller/neutron_controller.go|neutron/neutron-reconciler.md|### Neutron|yes
-neutron/internal/controller/neutronmetadataagent_controller.go|neutron/neutron-reconciler.md|### NeutronMetadataAgent|yes
-ovn/internal/controller/ovncentral_controller.go|ovn/ovn-reconciler.md|### OVNCentral|yes
-ovn/internal/controller/ovnchassis_controller.go|ovn/ovn-reconciler.md|### OVNChassis|yes
+glance/internal/controller/glance_controller.go|glance/glance-reconciler.md|## Pipeline|no
+barbican/internal/controller/barbican_controller.go|barbican/barbican-reconciler.md|## Pipeline|no
+placement/internal/controller/placement_controller.go|placement/placement-reconciler.md|## Pipeline|no
+horizon/internal/controller/horizon_controller.go|horizon/horizon-reconciler.md|## Pipeline|no
+cinder/internal/controller/cinder_controller.go|cinder/cinder-reconciler.md|## Pipeline|no
+nova/internal/controller/nova_controller.go|nova/nova-reconciler.md|## Pipeline|no
+nova/internal/controller/novacompute_controller.go|nova/nova-reconciler.md|### NovaCompute pipeline|no
+neutron/internal/controller/neutron_controller.go|neutron/neutron-reconciler.md|### Neutron|no
+neutron/internal/controller/neutronmetadataagent_controller.go|neutron/neutron-reconciler.md|### NeutronMetadataAgent|no
+ovn/internal/controller/ovncentral_controller.go|ovn/ovn-reconciler.md|### OVNCentral|no
+ovn/internal/controller/ovnchassis_controller.go|ovn/ovn-reconciler.md|### OVNChassis|no
 EOF
 }
 
@@ -783,12 +783,28 @@ ovn/internal/controller/ovnchassis_controller.go|ovn/ovn-reconciler.md|an `OVNCh
 EOF
 }
 
-test_repository_figure_follows_its_controller() {
-  echo "Test: the reconciler pipeline figure follows the Keystone controller"
+test_repository_figures_follow_their_controllers() {
+  echo "Test: every reconciler pipeline figure follows its controller"
 
-  assert_eq "service-reconciler-pipeline names every Keystone step" "" \
-    "$(check_pipeline_figure "$PROJECT_ROOT/operators/keystone/internal/controller/keystone_controller.go" \
-      "$PROJECT_ROOT/docs/diagrams/service-reconciler-pipeline" "$REFERENCE_DOCS/keystone/keystone-reconciler.md")"
+  local controller figure page
+  while IFS='|' read -r controller figure page; do
+    assert_eq "$figure names every step of $controller" "" \
+      "$(check_pipeline_figure "$PROJECT_ROOT/operators/$controller" \
+        "$PROJECT_ROOT/docs/diagrams/$figure" "$REFERENCE_DOCS/$page")"
+  done <<'EOF'
+keystone/internal/controller/keystone_controller.go|service-reconciler-pipeline|keystone/keystone-reconciler.md
+glance/internal/controller/glance_controller.go|service-glance-pipeline|glance/glance-reconciler.md
+barbican/internal/controller/barbican_controller.go|service-barbican-pipeline|barbican/barbican-reconciler.md
+placement/internal/controller/placement_controller.go|service-placement-pipeline|placement/placement-reconciler.md
+horizon/internal/controller/horizon_controller.go|service-horizon-pipeline|horizon/horizon-reconciler.md
+cinder/internal/controller/cinder_controller.go|service-cinder-pipeline|cinder/cinder-reconciler.md
+nova/internal/controller/nova_controller.go|compute-nova-pipeline|nova/nova-reconciler.md
+nova/internal/controller/novacompute_controller.go|compute-novacompute-pipeline|nova/nova-reconciler.md
+neutron/internal/controller/neutron_controller.go|service-neutron-pipeline|neutron/neutron-reconciler.md
+neutron/internal/controller/neutronmetadataagent_controller.go|compute-neutronmetadataagent-pipeline|neutron/neutron-reconciler.md
+ovn/internal/controller/ovncentral_controller.go|compute-ovncentral-pipeline|ovn/ovn-reconciler.md
+ovn/internal/controller/ovnchassis_controller.go|compute-ovnchassis-pipeline|ovn/ovn-reconciler.md
+EOF
 }
 
 # ---------------------------------------------------------------------------
@@ -810,7 +826,7 @@ test_figure_drift_is_reported_where_it_is
 test_missing_figure_file_or_image_is_reported
 test_repository_pipelines_follow_their_controllers
 test_repository_counts_follow_their_controllers
-test_repository_figure_follows_its_controller
+test_repository_figures_follow_their_controllers
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

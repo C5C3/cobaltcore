@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1287" height="884" viewBox="0 0 1287 884" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the OVN operator">
+<title>Event flow of the OVN operator</title>
+<rect width="1287" height="884" fill="#F6F5F1"/>
+<rect x="60" y="40" width="463" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="291.5" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">OVNCentralReconciler.Reconcile()</text>
+<rect x="130" y="114" width="739" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="499.5" y="145.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">deletion, target cluster unresolvable past the abandon window</text>
+<polyline points="90,138 130,138" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,196 188,196" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="200" y="182" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="249" y="202.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="312" y="203.2" font-size="20" font-weight="700" fill="#2B3440">RemoteChildrenAbandoned</text>
+<text x="200" y="235.2" font-size="20" font-weight="400" fill="#55606E">finalizer released, children left behind</text>
+<polyline points="160,162 160,196" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="258" width="245" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="252.5" y="289.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileBackup()</text>
+<polyline points="90,282 130,282" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,340 188,340" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="347.2" font-size="20" font-weight="400" fill="#2B3440">newest terminal backup Job failed</text>
+<rect x="562" y="326" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="611" y="346.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="674" y="347.2" font-size="20" font-weight="700" fill="#2B3440">BackupJobFailed</text>
+<polyline points="160,372 188,372" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="379.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch failed</text>
+<rect x="562" y="358" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="611" y="378.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="674" y="379.2" font-size="20" font-weight="700" fill="#2B3440">BackupMetricEmissionDeferred</text>
+<polyline points="160,306 160,372" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,282" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="60" y="452" width="476" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="298" y="488.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">OVNChassisReconciler.Reconcile()</text>
+<rect x="130" y="526" width="739" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="499.5" y="557.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">deletion, target cluster unresolvable past the abandon window</text>
+<polyline points="90,550 130,550" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,608 188,608" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="200" y="594" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="249" y="614.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="312" y="615.2" font-size="20" font-weight="700" fill="#2B3440">RemoteChildrenAbandoned</text>
+<polyline points="160,574 160,608" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="638" width="304" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="282" y="669.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileMaintenance()</text>
+<polyline points="90,662 130,662" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,720 188,720" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="727.2" font-size="20" font-weight="400" fill="#2B3440">apply / evacuate / chassis-del Job failed</text>
+<rect x="639" y="706" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="688" y="726.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="751" y="727.2" font-size="20" font-weight="700" fill="#2B3440">ChassisMaintenanceJobFailed</text>
+<polyline points="160,752 188,752" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="759.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch failed</text>
+<rect x="639" y="738" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="688" y="758.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="751" y="759.2" font-size="20" font-weight="700" fill="#2B3440">ChassisMaintenanceMetricEmissionDeferred</text>
+<polyline points="160,686 160,752" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,508 90,662" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="827.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
+<text x="40" y="853.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
+</svg>

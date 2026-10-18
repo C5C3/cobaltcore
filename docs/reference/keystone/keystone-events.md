@@ -281,67 +281,7 @@ groups:
 
 ## Event Flow
 
-```text
-KeystoneReconciler.Reconcile()
-  │
-  ├── finalizers (deletionTimestamp set)
-  │     ├─ MariaDB CRs still live         → Normal  FinalizingDatabase
-  │     ├─ MariaDB cleanup done           → Normal  DatabaseFinalized
-  │     ├─ Backup PushSecrets still live  → Normal  FinalizingOpenBaoSecrets
-  │     ├─ ESO adoption wait exceeded     → Warning ESOAdoptionTimedOut
-  │     ├─ ESO purge gone-wait exceeded   → Warning OpenBaoCleanupStalled
-  │     └─ PushSecrets deleted            → Normal  OpenBaoSecretsFinalized
-  │
-  ├── reconcileBootstrap()
-  │     ├─ Admin Secret missing/invalid → Warning AdminSecretInvalid
-  │     ├─ Job succeeds  → Normal  BootstrapComplete
-  │     └─ Job fails     → Warning BootstrapFailed
-  │
-  ├── reconcileDatabase()
-  │     ├─ Non-upgrade path:
-  │     │     ├─ db_sync fails      → Warning DBSyncFailed
-  │     │     ├─ schema-check fails → Warning SchemaDriftDetected
-  │     │     ├─ Both succeed       → Normal  DatabaseSynced
-  │     │     └─ Job-UID patch fails → Warning DBSyncMetricEmissionDeferred
-  │     │
-  │     └─ Upgrade path:
-  │           ├─ Tag changed mid-upgrade → Warning UpgradeTargetChanged
-  │           ├─ Tag reverted mid-upgrade → Normal UpgradeAborted
-  │           ├─ Version parse error     → Warning VersionParseError
-  │           ├─ Downgrade attempted     → Warning DowngradeNotSupported
-  │           ├─ Non-sequential upgrade  → Warning UpgradePathInvalid
-  │           ├─ Upgrade validated       → Normal  UpgradeInitiated
-  │           ├─ Expand succeeds         → Normal  ExpandComplete
-  │           ├─ Expand fails            → Warning ExpandFailed
-  │           ├─ Migrate succeeds        → Normal  MigrateComplete
-  │           ├─ Migrate fails           → Warning MigrateFailed
-  │           ├─ Contract succeeds       → Normal  UpgradeComplete
-  │           └─ Contract fails          → Warning ContractFailed
-  │
-  ├── reconcileFernetKeys()
-  │     ├─ Initial Secret created → Normal FernetKeysGenerated
-  │     ├─ Staged rotation applied → Normal FernetKeysRotated
-  │     ├─ Malformed completion annotation → Warning RotationAnnotationInvalid
-  │     └─ Staged key set rejected → Warning RotationRejected
-  │
-  ├── reconcileCredentialKeys()
-  │     ├─ Initial Secret created → Normal CredentialKeysGenerated
-  │     ├─ Staged rotation applied → Normal CredentialKeysRotated
-  │     ├─ Malformed completion annotation → Warning RotationAnnotationInvalid
-  │     └─ Staged key set rejected → Warning RotationRejected
-  │
-  ├── reconcilePasswordRotation()
-  │     ├─ Staged rotation applied → Normal AdminPasswordRotated
-  │     ├─ Malformed completion annotation → Warning AdminPasswordRotationAnnotationInvalid
-  │     └─ Staged password rejected → Warning AdminPasswordRotationRejected
-  │
-  ├── reconcileConfig()
-  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
-  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
-  │
-  ├── reconcileTrustFlush()
-  │     └─ Legacy nil spec.trustFlush bypass → Warning TrustFlushBypass
-  │
-  └── reconcileDeployment()
-        └─ Ready during upgrade rollout → Normal DeploymentRolloutComplete
-```
+![The event flow of the Keystone operator: the sub-reconcilers that emit events, and for each the condition and the event it emits. KeystoneReconciler.Reconcile(): finalizers (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; Normal FinalizingOpenBaoSecrets when Backup PushSecrets still live; Warning ESOAdoptionTimedOut when ESO adoption wait exceeded; Warning OpenBaoCleanupStalled when ESO purge gone-wait exceeded; Normal OpenBaoSecretsFinalized when PushSecrets deleted; reconcileBootstrap() emits Warning AdminSecretInvalid when Admin Secret missing/invalid; Normal BootstrapComplete when Job succeeds; Warning BootstrapFailed when Job fails; reconcileDatabase(): Non-upgrade path emits Warning DBSyncFailed when db_sync fails; Warning SchemaDriftDetected when schema-check fails; Normal DatabaseSynced when Both succeed; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; Upgrade path emits Warning UpgradeTargetChanged when Tag changed mid-upgrade; Normal UpgradeAborted when Tag reverted mid-upgrade; Warning VersionParseError when Version parse error; Warning DowngradeNotSupported when Downgrade attempted; Warning UpgradePathInvalid when Non-sequential upgrade; Normal UpgradeInitiated when Upgrade validated; Normal ExpandComplete when Expand succeeds; Warning ExpandFailed when Expand fails; Normal MigrateComplete when Migrate succeeds; Warning MigrateFailed when Migrate fails; Normal UpgradeComplete when Contract succeeds; Warning ContractFailed when Contract fails; reconcileFernetKeys() emits Normal FernetKeysGenerated when Initial Secret created; Normal FernetKeysRotated when Staged rotation applied; Warning RotationAnnotationInvalid when Malformed completion annotation; Warning RotationRejected when Staged key set rejected; reconcileCredentialKeys() emits Normal CredentialKeysGenerated when Initial Secret created; Normal CredentialKeysRotated when Staged rotation applied; Warning RotationAnnotationInvalid when Malformed completion annotation; Warning RotationRejected when Staged key set rejected; reconcilePasswordRotation() emits Normal AdminPasswordRotated when Staged rotation applied; Warning AdminPasswordRotationAnnotationInvalid when Malformed completion annotation; Warning AdminPasswordRotationRejected when Staged password rejected; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileTrustFlush() emits Warning TrustFlushBypass when Legacy nil spec.trustFlush bypass; reconcileDeployment() emits Normal DeploymentRolloutComplete when Ready during upgrade rollout;](../../diagrams/service-keystone-events.svg)
+
+The figure draws which sub-reconciler emits which event, and on what. The
+[Event Reasons Reference](#event-reasons-reference) describes every reason.

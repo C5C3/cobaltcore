@@ -108,25 +108,7 @@ in each placed namespace. See
 
 ## Reconciliation Flow
 
-```
-Reconcile
-  ├─ resolve the order's cluster ──→ unresolvable: log, no requeue
-  ├─ deleting? ───────────────────→ reconcileDelete  (see Deletion and Teardown)
-  └─ reconcileNormal
-       ├─ orderAdmission
-       │    ├─ cluster name ≤ 63   → ClusterNameTooLong
-       │    ├─ ControlPlane read   → ControlPlaneNotFound (10s); on a target
-       │    │                        cluster NamespaceNotAssigned (1m)
-       │    └─ namespace assignment → NamespaceNotAssigned (1m), frozen
-       ├─ EnsureFinalizer          c5c3.io/rabbitmqvhost-teardown
-       ├─ rabbitMQVhostMessagingGate
-       │    ├─ no messaging block   → MessagingNotDeclared
-       │    ├─ brownfield secretRef → MessagingNotManaged
-       │    ├─ default user missing → WaitingForMessagingCredentials (10s)
-       │    └─ not AllReplicasReady → WaitingForMessaging (10s)
-       ├─ provisionVhost      (instrumented: RabbitMQVhostProvision)
-       └─ deliverCredentials  (instrumented: RabbitMQVhostDelivery)
-```
+![The reconciliation flow of the RabbitMQVhost controller. A pass whose cluster does not resolve logs and ends without a requeue; a deleting order goes to reconcileDelete. reconcileNormal runs orderAdmission, which exits with ClusterNameTooLong when the cluster name is longer than 63, with ControlPlaneNotFound and a 10s requeue when the ControlPlane cannot be read (on a target cluster NamespaceNotAssigned after 1m), and with NamespaceNotAssigned and a 1m requeue, the freeze, when the namespace has no assignment; then installs the finalizer c5c3.io/rabbitmqvhost-teardown, runs rabbitMQVhostMessagingGate, which exits with MessagingNotDeclared without a messaging block, with MessagingNotManaged on a brownfield secretRef, with WaitingForMessagingCredentials and a 10s requeue while the default-user Secret is missing and with WaitingForMessaging and a 10s requeue while the broker is not AllReplicasReady, then provisionVhost (instrumented as RabbitMQVhostProvision) and deliverCredentials (instrumented as RabbitMQVhostDelivery).](../../diagrams/controlplane-rabbitmqvhost-flow.svg)
 
 The admission gates and the freeze are the scaffold's, as for every order
 kind. The messaging gate writes both sub-conditions. A refusal only a

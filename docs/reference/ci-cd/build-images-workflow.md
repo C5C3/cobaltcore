@@ -410,44 +410,15 @@ unknown service exits 1 before either is written.
 
 The workflow's jobs form this dependency graph:
 
-```text
-changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
-nix-flake-check ──┤      └──> merge-keystone-federation-proxy-image (push only)
-prepare ──────────┤
-                  ├──> build-backup-shifter (matrix: amd64 + arm64)
-                  │      └──> merge-backup-shifter-image (push only)
-                  │
-                  └──> build-libvirt (matrix: amd64 + arm64)
-                         └──> merge-libvirt-image (push only)
+![The jobs of the build-images workflow in three families, with an arrow from every job a job needs. The release-independent images need changes, nix-flake-check and prepare: build-keystone-federation-proxy, build-backup-shifter and build-libvirt, each a matrix of amd64 and arm64, each followed by its merge job on push only. The Nix-locked images need nix-lock-check as well: build-ovn, build-hvo and build-kna, each followed by a merge job and a verify job on push only. The release-matrix images need generate-matrix as well, which itself needs only changes: build-tempest over release and platform with merge-tempest-image on push only, build-service-images over service, release and platform with merge-service-images and verify-service-images, which also needs test-service-images, the nix build of each service's test run, and build-nova-compute-image over release and platform with merge-nova-compute-image and verify-nova-compute-image on push only. The merge and verify jobs also need prepare or generate-matrix.](../../diagrams/ci-build-images-jobs.svg)
 
-changes ──────────┬──> build-ovn (matrix: amd64 + arm64)
-nix-flake-check ──┤      └──> merge-ovn-image (push only) ──> verify-ovn-image (push only)
-nix-lock-check ───┤
-prepare ──────────┼──> build-hvo (matrix: amd64 + arm64)
-                  │      └──> merge-hvo-image (push only) ──> verify-hvo-image (push only)
-                  │
-                  └──> build-kna (matrix: amd64 + arm64)
-                         └──> merge-kna-image (push only) ──> verify-kna-image (push only)
-
-changes ──> generate-matrix ──┬──> build-tempest (matrix: release × platform)
-nix-flake-check ──────────────┤      └──> merge-tempest-image (push only)
-nix-lock-check ───────────────┤
-prepare ──────────────────────┼──> build-service-images (matrix: service × release × platform)
-                              │      └──> merge-service-images (push only) ──┐
-                              │                                              ├──> verify-service-images (push only)
-                              ├──> test-service-images ──────────────────────┘
-                              │      └── nix build .#<service>-<rel_>-test-run
-                              └──> build-nova-compute-image (matrix: release × platform)
-                                     └──> merge-nova-compute-image (push only) ──> verify-nova-compute-image (push only)
-```
-
-The graph leaves out the `needs` entries that a drawn path already implies (`prepare` on
-every merge job except `merge-nova-compute-image`) and `changes` on `build-tempest`,
-`build-service-images`, `test-service-images` and `build-nova-compute-image`:
-`changes` supplies the service list the matrix is built from and the flags the other
-jobs gate on. `test-service-images` needs `nix-lock-check` and `generate-matrix` but
-not `nix-flake-check` or `prepare`. `build-libvirt` needs no `nix-lock-check`, since
-no lock pin feeds the libvirt image.
+The figure leaves out the `needs` entries that a drawn path already implies:
+`prepare` on every merge job except `merge-nova-compute-image`, and
+`generate-matrix` on the merge and verify jobs of the release-matrix family.
+`changes` supplies the service list the matrix is built from and the flags the
+other jobs gate on. `test-service-images` needs `nix-lock-check` and
+`generate-matrix` but not `nix-flake-check` or `prepare`. `build-libvirt` needs
+no `nix-lock-check`, since no lock pin feeds the libvirt image.
 
 Each platform (linux/amd64 on `ubuntu-latest`, linux/arm64 on `ubuntu-24.04-arm`) is
 built on a native runner and pushed by digest. The merge job of the image then

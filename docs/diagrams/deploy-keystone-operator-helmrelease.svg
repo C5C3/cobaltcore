@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="806" viewBox="0 0 1280 806" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="How the Flux helm-controller installs the keystone-operator HelmRelease">
+<title>How the Flux helm-controller installs the keystone-operator HelmRelease</title>
+<rect width="1280" height="806" fill="#F6F5F1"/>
+<rect x="100" y="60" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="297.5" y="96.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Reconcile the HelmRelease</text>
+<circle cx="60" cy="88" r="16" fill="#17202B"/>
+<text x="60" y="95.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<text x="515" y="82.2" font-size="20" font-weight="400" fill="#55606E">checks dependsOn: cert-manager, mariadb-operator,</text>
+<text x="515" y="108.2" font-size="20" font-weight="400" fill="#55606E">memcached-operator and external-secrets are ready</text>
+<rect x="100" y="152" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="297.5" y="188.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Fetch the chart</text>
+<circle cx="60" cy="180" r="16" fill="#17202B"/>
+<text x="60" y="187.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<polyline points="297.5,116 297.5,141.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="297.5,152 290.3,137 304.7,137" fill="#3A4452"/>
+<text x="515" y="187.2" font-size="20" font-weight="400" fill="#55606E">from the c5c3-charts OCI HelmRepository</text>
+<rect x="100" y="244" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="297.5" y="280.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Install the CRDs</text>
+<circle cx="60" cy="272" r="16" fill="#17202B"/>
+<text x="60" y="279.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<polyline points="297.5,208 297.5,233.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="297.5,244 290.3,229 304.7,229" fill="#3A4452"/>
+<text x="515" y="279.2" font-size="20" font-weight="400" fill="#55606E">from crds/: keystone.openstack.c5c3.io_keystones.yaml</text>
+<rect x="100" y="362" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="297.5" y="398.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Render the templates</text>
+<circle cx="60" cy="390" r="16" fill="#17202B"/>
+<text x="60" y="397.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<polyline points="297.5,300 297.5,351.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="297.5,362 290.3,347 304.7,347" fill="#3A4452"/>
+<text x="515" y="358.2" font-size="20" font-weight="400" fill="#55606E">chart defaults merged with the HelmRelease values:</text>
+<text x="515" y="384.2" font-size="20" font-weight="400" fill="#55606E">ServiceAccount, ClusterRole, ClusterRoleBinding, Deployment, Service,</text>
+<text x="515" y="410.2" font-size="20" font-weight="400" fill="#55606E">PodDisruptionBudget, Issuer, Certificate, the two webhook configurations,</text>
+<text x="515" y="436.2" font-size="20" font-weight="400" fill="#55606E">and NetworkPolicy and ServiceMonitor when opted in</text>
+<rect x="100" y="480" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="297.5" y="516.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Apply the resources</text>
+<circle cx="60" cy="508" r="16" fill="#17202B"/>
+<text x="60" y="515.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<polyline points="297.5,418 297.5,469.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="297.5,480 290.3,465 304.7,465" fill="#3A4452"/>
+<text x="515" y="515.2" font-size="20" font-weight="400" fill="#55606E">into the keystone-system namespace</text>
+<rect x="100" y="572" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="297.5" y="608.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">cert-manager injects the CA</text>
+<circle cx="60" cy="600" r="16" fill="#17202B"/>
+<text x="60" y="607.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<polyline points="297.5,536 297.5,561.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="297.5,572 290.3,557 304.7,557" fill="#3A4452"/>
+<text x="515" y="594.2" font-size="20" font-weight="400" fill="#55606E">the inject-ca-from annotation on the webhook configurations</text>
+<text x="515" y="620.2" font-size="20" font-weight="400" fill="#55606E">fills caBundle from the Certificate</text>
+<rect x="100" y="664" width="395" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="297.5" y="700.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">The operator pods start</text>
+<circle cx="60" cy="692" r="16" fill="#17202B"/>
+<text x="60" y="699.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">7</text>
+<polyline points="297.5,628 297.5,653.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="297.5,664 290.3,649 304.7,649" fill="#3A4452"/>
+<text x="515" y="686.2" font-size="20" font-weight="400" fill="#55606E">leader election picks the active replica,</text>
+<text x="515" y="712.2" font-size="20" font-weight="400" fill="#55606E">which begins reconciling Keystone resources</text>
+<text x="40" y="771.2" font-size="20" font-weight="400" fill="#55606E">Steps 1 to 5 are the helm-controller's; step 6 is cert-manager's; step 7 is the operator's.</text>
+</svg>

@@ -255,61 +255,7 @@ Job the terminal state was read off.
 
 ## Event flow
 
-```text
-NovaReconciler.Reconcile()
-  │
-  ├── reconcileDelete() (deletionTimestamp set)
-  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
-  │     ├─ MariaDB cleanup done    → Normal  DatabaseFinalized
-  │     └─ target cluster gone     → Warning RemoteChildrenAbandoned
-  │
-  ├── reconcileConfig()
-  │     └─ extraConfig overrides an operator-owned key
-  │                                    → Warning ExtraConfigOwnedKeyOverride
-  │
-  ├── reconcileDatabase()
-  │     ├─ db_sync fails               → Warning DBSyncFailed
-  │     ├─ db_sync succeeds            → Normal  DatabaseSynced
-  │     ├─ cell map unreadable         → Normal  CellsReportUnavailable
-  │     ├─ Job-UID patch fails         → Warning DBSyncMetricEmissionDeferred /
-  │     │                                        CellsReportEmissionDeferred
-  │     ├─ expand phase terminal       → Normal  UpgradeCheckCompleted /
-  │     │                                Warning UpgradeCheckWarnings
-  │     └─ release upgrade             → Normal  UpgradeInitiated / ExpandComplete /
-  │                                              MigrateComplete / UpgradeComplete /
-  │                                              UpgradeAborted
-  │                                      Warning VersionParseError / DowngradeNotSupported /
-  │                                              UpgradePathInvalid / UpgradeTargetChanged /
-  │                                              ExpandFailed / MigrateFailed / ContractFailed
-  │
-  ├── reconcileDeployment()
-  │     └─ every role rolled out mid-upgrade
-  │                                    → Normal  DeploymentRolloutComplete
-  │
-  └── reconcileDBArchive()
-        ├─ newest run failed           → Warning DBArchiveJobFailed
-        └─ Job-UID patch fails         → Warning DBArchiveMetricEmissionDeferred
+![The event flow of the Nova operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. NovaReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; Warning RemoteChildrenAbandoned when target cluster gone; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides an operator-owned key; reconcileDatabase() emits Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Normal CellsReportUnavailable when cell map unreadable; Warning DBSyncMetricEmissionDeferred or CellsReportEmissionDeferred when Job-UID patch fails; Normal UpgradeCheckCompleted and Warning UpgradeCheckWarnings when expand phase terminal; Normal UpgradeInitiated or ExpandComplete or MigrateComplete or UpgradeComplete or UpgradeAborted and Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or UpgradeTargetChanged or ExpandFailed or MigrateFailed or ContractFailed when release upgrade; reconcileDeployment() emits Normal DeploymentRolloutComplete when every role rolled out mid-upgrade; reconcileDBArchive() emits Warning DBArchiveJobFailed when newest run failed; Warning DBArchiveMetricEmissionDeferred when Job-UID patch fails; NovaComputeReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal ComputeConfigMirrorReaped when last pool on the cluster (one per mirror); Warning RemoteChildrenAbandoned when target cluster gone; reconcileNovaComputeNodes() emits Warning NodeConflict when new conflict; reconcileNovaComputeConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides a [libvirt] key; reconcileNovaComputeAggregates() emits Normal AggregateCreated when aggregate created; Normal AggregateDeleted when unneeded aggregate deleted; Warning AggregateKept when unneeded aggregate with foreign metadata; reconcileNovaComputeServices() emits Normal ComputeServiceDisabled when leaving node disabled; Normal ComputeServiceDeleted when released node deleted;](../../diagrams/compute-nova-events.svg)
 
-NovaComputeReconciler.Reconcile()
-  │
-  ├── reconcileDelete() (deletionTimestamp set)
-  │     ├─ last pool on the cluster    → Normal  ComputeConfigMirrorReaped (one per mirror)
-  │     └─ target cluster gone         → Warning RemoteChildrenAbandoned
-  │
-  ├── reconcileNovaComputeNodes()
-  │     └─ new conflict                → Warning NodeConflict
-  │
-  ├── reconcileNovaComputeConfig()
-  │     └─ extraConfig overrides a [libvirt] key
-  │                                    → Warning ExtraConfigOwnedKeyOverride
-  │
-  ├── reconcileNovaComputeAggregates()
-  │     ├─ aggregate created           → Normal  AggregateCreated
-  │     ├─ unneeded aggregate deleted  → Normal  AggregateDeleted
-  │     └─ unneeded aggregate with foreign metadata
-  │                                    → Warning AggregateKept
-  │
-  └── reconcileNovaComputeServices()
-        ├─ leaving node disabled       → Normal  ComputeServiceDisabled
-        └─ released node deleted       → Normal  ComputeServiceDeleted
-```
+The figure draws which sub-reconciler emits which event, and on what. The
+[Event Reasons Reference](#event-reasons) describes every reason.

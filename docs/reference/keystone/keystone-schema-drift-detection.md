@@ -44,28 +44,7 @@ upgrade flow (expand-migrate-contract) has its own validation via Alembic's
 
 ## Data Flow
 
-```text
-reconcileDatabase()
-  |
-  +-- MariaDB CRs ready? (managed mode only)
-  |
-  +-- Upgrade path? --> delegate to reconcileUpgrade
-  |
-  +-- db_sync Job (existing)
-  |     |
-  |     +-- failed  --> DatabaseReady=False/DBSyncFailed, return error
-  |     +-- running --> DatabaseReady=False/DBSyncInProgress, requeue 30s
-  |     +-- done    --> proceed to schema check
-  |
-  +-- schema-check Job
-  |     |
-  |     +-- failed  --> DatabaseReady=False/SchemaDriftDetected, return error
-  |     +-- running --> DatabaseReady=False/SchemaCheckInProgress, requeue 30s
-  |     +-- done    --> proceed to set DatabaseReady=True
-  |
-  +-- status.installedRelease = spec.image.tag
-  +-- DatabaseReady=True/DatabaseSynced (message includes "revision verified")
-```
+![The database step of the Keystone operator with the schema check. reconcileDatabase first waits for the MariaDB resources in managed mode and hands an upgrade path to reconcileUpgrade. The existing db_sync Job sets DatabaseReady=False/DBSyncFailed and returns the error when it failed, DatabaseReady=False/DBSyncInProgress with a 30s requeue while it runs, and proceeds to the schema check when it is done. The schema-check Job sets DatabaseReady=False/SchemaDriftDetected and returns the error when it failed, DatabaseReady=False/SchemaCheckInProgress with a 30s requeue while it runs, and proceeds when it is done. Then status.installedRelease is set to spec.image.tag and DatabaseReady=True/DatabaseSynced is set, with a message that includes revision verified.](../../diagrams/service-keystone-schema-check-flow.svg)
 
 ---
 

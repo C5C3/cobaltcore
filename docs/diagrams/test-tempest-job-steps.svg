@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1608" height="1000" viewBox="0 0 1608 1000" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="The commands of one tempest job in CI, in the order they run">
+<title>The commands of one tempest job in CI, in the order they run</title>
+<rect width="1608" height="1000" fill="#F6F5F1"/>
+<rect x="100" y="60" width="348" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="274" y="96.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">hack/nix-lock.sh</text>
+<circle cx="60" cy="88" r="16" fill="#17202B"/>
+<text x="60" y="95.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<text x="468" y="82.2" font-size="20" font-weight="400" fill="#55606E">locks releases/&lt;release&gt;/test-refs.yaml into nix/locks/&lt;release&gt;/tempest/</text>
+<text x="468" y="108.2" font-size="20" font-weight="400" fill="#55606E">(tempest and the four plugin pins, committed)</text>
+<rect x="100" y="165" width="348" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="274" y="201.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">build-e2e-images job</text>
+<circle cx="60" cy="193" r="16" fill="#17202B"/>
+<text x="60" y="200.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<polyline points="274,116 274,154.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="274,165 266.8,150 281.2,150" fill="#3A4452"/>
+<text x="468" y="174.2" font-size="20" font-weight="400" fill="#55606E">per release: hack/ci-nix-build-e2e-images.sh runs</text>
+<text x="468" y="200.2" font-size="20" font-weight="400" fill="#55606E">nix build .#tempest-&lt;rel_&gt;-image in the nixos/nix container, then</text>
+<text x="468" y="226.2" font-size="20" font-weight="400" fill="#55606E">docker load &lt; .nix-e2e/tempest-&lt;release&gt;.tar</text>
+<rect x="100" y="335" width="348" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="274" y="371.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">hack/ci-run-tempest.sh</text>
+<circle cx="60" cy="363" r="16" fill="#17202B"/>
+<text x="60" y="370.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<polyline points="274,221 274,324.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="274,335 266.8,320 281.2,320" fill="#3A4452"/>
+<text x="468" y="292.2" font-size="20" font-weight="400" fill="#55606E">per matrix.service and matrix.release:</text>
+<text x="468" y="318.2" font-size="20" font-weight="400" fill="#55606E">1. kubectl get secret keystone-admin -n openstack (the admin password)</text>
+<text x="468" y="344.2" font-size="20" font-weight="400" fill="#55606E">2. kubectl port-forward svc/&lt;service-k8s-name&gt; -n openstack 5000:5000, plus one</text>
+<text x="468" y="370.2" font-size="20" font-weight="400" fill="#55606E">   forward per &lt;SERVICE&gt;_K8S_NAME the leg sets; each polled on localhost, 10 attempts</text>
+<text x="468" y="396.2" font-size="20" font-weight="400" fill="#55606E">3. sed renders tempest.conf (localhost:5000 and the password) into _output/tempest/config;</text>
+<text x="468" y="422.2" font-size="20" font-weight="400" fill="#55606E">   exclude-tests.txt and the runner scripts are copied there</text>
+<text x="468" y="448.2" font-size="20" font-weight="400" fill="#55606E">4. include-tests.txt is split into phases/phase-1-core.txt and phases/phase-2-plugin.txt</text>
+<rect x="100" y="531" width="348" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="274" y="567.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">docker run</text>
+<circle cx="60" cy="559" r="16" fill="#17202B"/>
+<text x="60" y="566.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<polyline points="274,391 274,520.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="274,531 266.8,516 281.2,516" fill="#3A4452"/>
+<text x="468" y="514.2" font-size="20" font-weight="400" fill="#55606E">--rm --network host, one --add-host pair per forwarded Service</text>
+<text x="468" y="540.2" font-size="20" font-weight="400" fill="#55606E">(&lt;name&gt;.openstack.svc.cluster.local and &lt;name&gt;.openstack.svc to 127.0.0.1),</text>
+<text x="468" y="566.2" font-size="20" font-weight="400" fill="#55606E">-v _output/tempest/config:/etc/tempest:ro, -v _output/tempest:/output,</text>
+<text x="468" y="592.2" font-size="20" font-weight="400" fill="#55606E">-e TEMPEST_CONCURRENCY, TEMPEST_GROUP_START, TEMPEST_GROUP_END, TEMPEST_ERROR_PREFIX</text>
+<text x="468" y="618.2" font-size="20" font-weight="400" fill="#55606E">ghcr.io/c5c3/tempest:&lt;release&gt; bash /etc/tempest/run-tests.sh</text>
+<rect x="100" y="714" width="348" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="274" y="750.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">run-tests.sh</text>
+<circle cx="60" cy="742" r="16" fill="#17202B"/>
+<text x="60" y="749.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<polyline points="274,587 274,703.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="274,714 266.8,699 281.2,699" fill="#3A4452"/>
+<text x="468" y="684.2" font-size="20" font-weight="400" fill="#55606E">tempest init . and cp tempest.conf etc/</text>
+<text x="468" y="710.2" font-size="20" font-weight="400" fill="#55606E">stestr run --include-list phases/phase-1-core.txt --subunit &gt; /output/phase-1-core.subunit</text>
+<text x="468" y="736.2" font-size="20" font-weight="400" fill="#55606E">stestr run --include-list phases/phase-2-plugin.txt --subunit &gt; /output/phase-2-plugin.subunit</text>
+<text x="468" y="762.2" font-size="20" font-weight="400" fill="#55606E">cat both &gt; tempest.subunit; subunit2junitxml &lt; tempest.subunit &gt; tempest-results.xml</text>
+<text x="468" y="788.2" font-size="20" font-weight="400" fill="#55606E">extract-failed.py lists the failed tests; stestr run --include-list retry-list.txt --concurrency 1</text>
+<text x="468" y="814.2" font-size="20" font-weight="400" fill="#55606E">merge-retry-junit.py rewrites the resolved failures in tempest-results.xml</text>
+<rect x="100" y="858" width="348" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="274" y="894.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">actions/upload-artifact</text>
+<circle cx="60" cy="886" r="16" fill="#17202B"/>
+<text x="60" y="893.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<polyline points="274,770 274,847.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="274,858 266.8,843 281.2,843" fill="#3A4452"/>
+<text x="468" y="893.2" font-size="20" font-weight="400" fill="#55606E">tempest-&lt;service&gt;-&lt;release&gt;-results, 14-day retention</text>
+<text x="40" y="965.2" font-size="20" font-weight="400" fill="#55606E">The runner scripts never inline the steps of run-tests.sh: CI and local runs share that one code path.</text>
+</svg>

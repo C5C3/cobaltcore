@@ -22,19 +22,12 @@ collectors cover the recurring purge (`glance_operator_db_purge_total`,
 
 ## Pipeline
 
-```text
-Secrets ──► DBConnectionSecret ──► Backends ──► Config ──► Database ──► Deployment ──► ┬─ HTTPRoute
-                                                                                       ├─ HealthCheck
-                                                                                       ├─ HPA
-                                                                                       ├─ VPA
-                                                                                       ├─ NetworkPolicy
-                                                                                       └─ DBPurge        (parallel)
-```
+![The sub-reconciler pipeline of the Glance operator. A pass runs its entries one after another and ends at the first that returns a requeue or an error: Secrets, DBConnectionSecret, Backends, Config, Database, Deployment, then a parallel group of HTTPRoute, HealthCheck, HPA, VPA, NetworkPolicy and DBPurge. Every member of the group starts, and the group returns the shortest requeue. Each step sets one condition; DBConnectionSecret and Config report through SecretsReady. Secrets hands on the digest of the service-user password, DBConnectionSecret the digest of the DSN, Backends the backend projection, which Config reads, and Config the name of the ConfigMap, which Database reads. Deployment reads the two digests and sets status.endpoint. Backends never ends the pass. The early exit and the full pass both end in updateStatus, which aggregates Ready from the sub-conditions and writes the status only when it changed.](../../diagrams/service-glance-pipeline.svg)
 
-The pipeline follows the pattern of the Keystone operator: a lane of steps that
+The figure draws the pattern the Keystone operator set: a lane of steps that
 ends the pass at the first requeue or error, and a group whose members all run.
 [Reconciliation Flow](../keystone/keystone-reconciler.md#reconciliation-flow)
-draws that pattern with every step of the Keystone operator.
+describes that pattern in full. The table lists what each step does.
 
 | Step | What it does | Condition |
 | --- | --- | --- |

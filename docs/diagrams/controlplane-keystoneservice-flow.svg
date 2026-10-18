@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1177" height="840" viewBox="0 0 1177 840" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Reconciliation flow of the KeystoneService controller">
+<title>Reconciliation flow of the KeystoneService controller</title>
+<rect width="1177" height="840" fill="#F6F5F1"/>
+<rect x="60" y="40" width="260" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="190" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Reconcile</text>
+<polyline points="90,131 118,131" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="138.2" font-size="20" font-weight="400" fill="#2B3440">deleting?</text>
+<polyline points="252,131 275.5,131" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="286,131 271,138.2 271,123.8" fill="#3A4452"/>
+<text x="298" y="138.2" font-size="20" font-weight="700" fill="#2B3440">reconcileDelete</text>
+<text x="475" y="138.2" font-size="20" font-weight="400" fill="#55606E">see Deletion and Teardown</text>
+<rect x="130" y="160" width="221" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="240.5" y="191.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">EnsureFinalizer</text>
+<polyline points="90,184 130,184" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="367" y="191.2" font-size="20" font-weight="400" fill="#55606E">c5c3.io/keystoneservice-teardown, before any projection</text>
+<rect x="130" y="226" width="224" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="242" y="257.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNormal</text>
+<polyline points="90,250 130,250" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="200" y="292" width="386" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="393" y="323.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">setUndeclaredBlockConditions</text>
+<polyline points="160,316 200,316" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="602" y="323.2" font-size="20" font-weight="400" fill="#55606E">stamps NotDeclared on absent blocks</text>
+<polyline points="160,375 188,375" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="382.2" font-size="20" font-weight="400" fill="#2B3440">resolveControlPlane fails</text>
+<rect x="600" y="361" width="232" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="716" y="381.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">ControlPlaneNotFound</text>
+<polyline points="160,409 188,409" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="416.2" font-size="20" font-weight="400" fill="#2B3440">namespace not consented</text>
+<rect x="600" y="395" width="238" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="719" y="415.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">NamespaceNotAllowed</text>
+<polyline points="160,443 188,443" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="450.2" font-size="20" font-weight="400" fill="#2B3440">AdminCredentialReady not met</text>
+<rect x="600" y="429" width="275" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="737.5" y="449.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">WaitingForAdminCredential</text>
+<polyline points="160,477 188,477" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="484.2" font-size="20" font-weight="400" fill="#2B3440">role not on the allowlist (account only)</text>
+<rect x="600" y="463" width="174" height="28" rx="25" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
+<text x="687" y="483.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">RoleNotAllowed</text>
+<text x="788" y="484.2" font-size="20" font-weight="400" fill="#55606E">after the sweep</text>
+<rect x="200" y="506" width="220" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="310" y="537.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">ensureCatalog</text>
+<polyline points="160,530 200,530" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="436" y="537.2" font-size="20" font-weight="400" fill="#55606E">instrumented: KeystoneServiceCatalog</text>
+<rect x="200" y="572" width="220" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="310" y="603.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">ensureAccount</text>
+<polyline points="160,596 200,596" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="436" y="603.2" font-size="20" font-weight="400" fill="#55606E">instrumented: KeystoneServiceAccount; skipped when a role is refused</text>
+<rect x="200" y="638" width="220" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="310" y="669.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">sweepChildren</text>
+<polyline points="160,662 200,662" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="436" y="669.2" font-size="20" font-weight="400" fill="#55606E">prunes what the spec stopped declaring</text>
+<polyline points="160,274 160,662" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,250" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="769.2" font-size="20" font-weight="400" fill="#55606E">A chip is the reason both sub-conditions carry when the pass ends there; the note is the requeue.</text>
+<text x="40" y="795.2" font-size="20" font-weight="400" fill="#55606E">A bold name after an arrow is the function the pass continues in.</text>
+</svg>

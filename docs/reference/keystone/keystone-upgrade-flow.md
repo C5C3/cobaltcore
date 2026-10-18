@@ -218,27 +218,7 @@ operator visibility (e.g., `"Expand phase running: 2026.1 -> 2026.2"`).
 The upgrade logic is distributed across two sub-reconcilers that execute sequentially
 in the main reconcile loop:
 
-```text
-reconcileDatabase (called first in reconciler chain)
-  |
-  +- Active upgrade? (upgradePhase != "")
-  |  +- Tag reverted to installedRelease? -> abort: delete phase Jobs, clear state, requeue
-  |  +- Tag changed to another value? -> block with UpgradeTargetChanged
-  |  +- Delegate to reconcileUpgrade() -> dispatch by phase
-  |
-  +- isUpgrade()? (installedRelease != "" && tag != installedRelease && !patchOnly)
-  |  +- No: simple db_sync -> on completion: set installedRelease to the tag
-  |  +- Yes: initiateUpgrade() -> validate path -> set targetRelease + Expanding -> requeue
-  |
-  +--- continues to reconcileDeployment (only if result is zero-value) ---+
-                                                                          |
-reconcileDeployment                                                       |
-  |                                                                       |
-  +- EnsureDeployment(spec.image.tag)  <----------------------------------+
-  +- If upgradePhase == RollingUpdate && Deployment fully rolled out:
-  |    -> upgradePhase = Contracting -> requeue (back to reconcileDatabase)
-  +- Normal: set DeploymentReady, Endpoint
-```
+![How the two sub-reconcilers of the Keystone operator share a release upgrade. reconcileDatabase, called first in the reconciler chain, checks for an active upgrade, where upgradePhase is set: a tag reverted to installedRelease aborts, deleting the phase Jobs, clearing the state and requeuing; a tag changed to another value blocks with UpgradeTargetChanged; otherwise reconcileUpgrade dispatches by phase. It then asks isUpgrade(), true when installedRelease is set, the tag differs and the upgrade is not patch-only: no runs a simple db_sync that sets installedRelease to the tag on completion, yes runs initiateUpgrade, which validates the path, sets targetRelease and Expanding and requeues. Only a zero-value result continues the pass to reconcileDeployment, which ensures the Deployment at spec.image.tag; when upgradePhase is RollingUpdate and the Deployment has fully rolled out it sets upgradePhase to Contracting and requeues back to reconcileDatabase, otherwise it sets DeploymentReady and Endpoint.](../../diagrams/service-keystone-upgrade-dispatch.svg)
 
 The sequential sub-reconciler pattern (return early on non-zero result) naturally
 prevents `reconcileDeployment` from running during expand, migrate, and contract
