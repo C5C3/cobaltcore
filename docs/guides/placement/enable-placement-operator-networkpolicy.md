@@ -45,15 +45,14 @@ is running (namespace `placement-system`) alongside the projected
    real enforcement).** Confirm with your platform team (Calico, Cilium, and
    Antrea enforce).
 
-   ::: warning Enforcement cannot be verified on the default devstack CNI
-   The ControlPlane Quick Start kind devstack uses the default `kindnet` CNI,
-   which **silently ignores** NetworkPolicy objects, and kind fixes the CNI at
-   cluster creation so it cannot be swapped in afterwards. The policy object
-   is still created and the operator keeps reconciling, so Step 2 below
-   confirms only the policy's **shape** and that enabling it does **not
-   break** reconciliation. It does **not** prove that packets outside the
-   allow-list are dropped. Real enforcement requires a cluster whose CNI
-   enforces NetworkPolicy, typically your production platform.
+   ::: warning The devstack enforces this policy
+   The ControlPlane Quick Start kind devstack runs kind's default `kindnet`
+   CNI. On kind v0.32 and later, kindnet enforces NetworkPolicy and evaluates a
+   connection to a Service after the Service DNAT, so a `kubeApiServer` rule
+   that misses the API server's endpoint address cuts the operator off on the
+   devstack too. Step 2 below confirms the policy's **shape** and that the
+   operator still reconciles under it. It sends no traffic outside the
+   allow-list, so it does **not** prove that such traffic is dropped.
    :::
 2. A running `placement-operator` Helm release (namespace `placement-system`).
 3. The ControlPlane declares `spec.services.placement`. Without it no
@@ -65,11 +64,11 @@ is running (namespace `placement-system`) alongside the projected
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
 template refuses to render. Gather the API server CIDRs and ports from the
-`kubernetes` **Endpoints** — the real API server addresses, not the
-`10.96.0.1` Service VIP that `kubectl get service kubernetes` reports. An
-enforcing CNI (Calico, Cilium) DNATs a packet aimed at the VIP to one of those
-endpoint IPs *before* it evaluates policy, so a rule naming the VIP never
-matches:
+`kubernetes` **Endpoints** — the real API server addresses, not the `10.96.0.1`
+Service VIP that `kubectl get service kubernetes` reports. An enforcing CNI
+(Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
+Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
+IPs, so a rule naming the VIP never matches:
 
 ```bash
 kubectl get endpoints kubernetes -n default -o json \
@@ -152,9 +151,24 @@ reconcile. Use the HelmRelease patch above instead.
 
 ## Step 2 — Verify
 
-On the kind devstack this verifies the policy's **shape** and that enabling it
-does **not break** reconciliation, not traffic enforcement, which the default
-`kindnet` CNI does not apply (see the prerequisite above).
+On the kind devstack this verifies the policy's **shape** and that the operator
+still reconciles under the enforced policy. It sends no traffic outside the
+allow-list (see the prerequisite above).
+
+Restart the operator first. NetworkPolicy enforcement is stateful: a connection
+opened before the policy existed stays open, so a wrong `kubeApiServer` rule
+shows only after the next restart:
+
+```bash
+kubectl -n placement-system rollout restart deploy/placement-operator
+kubectl -n placement-system rollout status deploy/placement-operator --timeout=5m
+```
+
+A rollout that does not finish within the timeout, with the new pod never
+`Ready`, means the egress rule does not admit the API server.
+See [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
+
+Then check the policy:
 
 ```bash
 kubectl -n placement-system get networkpolicy
@@ -163,17 +177,44 @@ kubectl -n placement-system describe networkpolicy placement-operator
 
 Then confirm reconciliation still works end-to-end by driving a change
 through the `ControlPlane` CR and watching the projected resource-tracking
-service roll out:
+service roll out. The block records the ControlPlane's current count, which is
+empty while the ControlPlane leaves it at the default, scales the API one
+replica above the size it runs at, and puts the count back:
 
 ```bash
-kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"sizing":{"placement":{"api":{"replicas":2}}}}}'
-kubectl rollout status deploy/controlplane-placement -n openstack
+if CUR=$(kubectl get controlplane controlplane -n openstack \
+     -o jsonpath='{.spec.sizing.placement.api.replicas}') &&
+   RUN=$(kubectl get deploy/controlplane-placement -n openstack \
+     -o jsonpath='{.spec.replicas}'); then
+  NEW=$((RUN + 1))
 
-# revert
-kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"sizing":{"placement":{"api":{"replicas":1}}}}}'
+  kubectl patch controlplane controlplane -n openstack --type merge \
+    -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":$NEW}}}}}"
+  kubectl wait deploy/controlplane-placement -n openstack --timeout=5m \
+    --for=jsonpath='{.spec.replicas}'="$NEW"
+  kubectl rollout status deploy/controlplane-placement -n openstack --timeout=5m
+
+  # revert to the recorded count; null drops the override again
+  kubectl patch controlplane controlplane -n openstack --type merge \
+    -p "{\"spec\":{\"sizing\":{\"placement\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+else
+  echo "could not read the replica counts; nothing was patched" >&2
+fi
 ```
+
+The `if` stops the block before the first patch when either read fails. A
+failed read prints the same empty string as a ControlPlane without an override,
+so without the guard the revert would drop an override the ControlPlane
+carries, and a failed Deployment read would set `NEW` to 1 and shrink the API
+instead of growing it.
+
+The `kubectl wait` is the check that proves the operator still reconciles: the
+patch travels from the ControlPlane to the `Placement` CR to the Deployment,
+and the restarted operator writes nothing until it holds the leader lease.
+Until the placement operator writes the new count the Deployment is still fully
+rolled out at its old size, so a `rollout status` alone would pass at once. The
+new count is always one above the running one, so the patch changes the
+Deployment whatever size the API already runs at.
 
 Set the replica count on the `ControlPlane` CR, not on the projected
 `controlplane-placement` child: the c5c3-operator re-asserts the child's
