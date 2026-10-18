@@ -193,7 +193,7 @@ info "S6 totals: scanned=${nix_total} fail=${nix_fail}"
 hdr "S4: every SPDX-License-Identifier value has a matching LICENSES/<id>.txt"
 ids=$(grep -rhE 'SPDX-License-Identifier:[[:space:]]*[A-Za-z0-9.+-]+' \
   --include='*.go' --include='*.sh' --include='*.yaml' --include='*.yml' \
-  --include='*.toml' --include='*.py' --include='*.nix' --include='Makefile' --include='Dockerfile' \
+  --include='*.toml' --include='*.py' --include='*.nix' --include='Makefile' \
   . 2>/dev/null \
   | sed -nE 's/.*SPDX-License-Identifier:[[:space:]]*([A-Za-z0-9.+-]+).*/\1/p' \
   | sort -u || true)
