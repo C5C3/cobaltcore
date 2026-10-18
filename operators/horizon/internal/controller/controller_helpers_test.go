@@ -14,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	vpav1 "k8s.io/autoscaler/vertical-pod-autoscaler/pkg/apis/autoscaling.k8s.io/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
@@ -21,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
@@ -64,6 +66,40 @@ func testHorizon() *horizonv1alpha1.Horizon {
 			KeystoneEndpoint: "http://keystone.default.svc.cluster.local:5000/v3",
 			SecretKeyRef:     commonv1.SecretRefSpec{Name: "horizon-secret-key", Key: "secret-key"},
 		},
+	}
+}
+
+// horizonRequest is the reconcile request for the shared test-horizon fixture.
+var horizonRequest = reconcile.Request{
+	NamespacedName: types.NamespacedName{Namespace: "default", Name: "test-horizon"},
+}
+
+// horizonMapperClientBuilder returns a fake client builder with the horizon
+// scheme, the Horizon field index the Secret mapper resolves against, and the
+// status subresource the controller writes.
+func horizonMapperClientBuilder(objs ...client.Object) *fake.ClientBuilder {
+	return fake.NewClientBuilder().
+		WithScheme(testScheme()).
+		WithObjects(objs...).
+		WithStatusSubresource(&horizonv1alpha1.Horizon{}).
+		WithIndex(&horizonv1alpha1.Horizon{}, HorizonSecretNameIndexKey, horizonSecretNameExtractor)
+}
+
+// newMapperFakeClient is the common-case shortcut for the watch-mapper tests:
+// a pre-indexed fake client with the given objects seeded.
+func newMapperFakeClient(objs ...client.Object) client.Client {
+	return horizonMapperClientBuilder(objs...).Build()
+}
+
+// horizonOwnerRef returns a well-formed OwnerReference pointing at the given
+// Horizon CR. Kind and APIVersion are set so secretToHorizonMapper's owner-ref
+// path recognises the reference.
+func horizonOwnerRef(h *horizonv1alpha1.Horizon) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: horizonv1alpha1.GroupVersion.String(),
+		Kind:       "Horizon",
+		Name:       h.Name,
+		UID:        h.UID,
 	}
 }
 
