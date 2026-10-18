@@ -73,8 +73,8 @@ The controller watches the primary Keystone CR and all owned resources:
 | `NetworkPolicy` | `Owns()` | Triggers reconciliation when the owned NetworkPolicy changes |
 | `VerticalPodAutoscaler` | `Owns()` (optional) | Registered only when the cluster serves the VerticalPodAutoscaler kind; reacts to changes of its spec |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
-| `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. That detection gates the local watch leg and answers for Keystone CRs whose children stay on the management cluster; a CR naming a target cluster is probed against that cluster's `RESTMapper` on every pass. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
-| `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. As with the HTTPRoute leg, that detection gates the local watch and answers for CRs without a target cluster, while a CR that names one is probed against its target per pass. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
+| `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. A probe the API server does not answer (anything but a no-match) fails the operator's start after three attempts, so the operator never starts without the watch for a kind its cluster serves at that moment. That detection gates the local watch leg and answers for Keystone CRs whose children stay on the management cluster; a CR naming a target cluster is probed against that cluster's `RESTMapper` on every pass. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
+| `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. A probe the API server does not answer (anything but a no-match) fails the operator's start after three attempts, so the operator never starts without the watch for a kind its cluster serves at that moment. As with the HTTPRoute leg, that detection gates the local watch and answers for CRs without a target cluster, while a CR that names one is probed against its target per pass. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
 | `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` |
 | `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady`; per-ref fan-out via `storeToKeystoneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind) enqueues only the Keystone CRs whose effective `spec.secretStoreRef` resolves to the changed cluster store. Not registered when the operator runs with `--namespace`: a `Role` cannot grant the cluster-scoped kind, and the Secrets step refuses a cluster store with `ClusterSecretStoreUnsupported` instead |
@@ -2507,9 +2507,10 @@ route that attaches the Keystone Service to it. Four lifecycle paths:
      latch `SetupWithManager` probed against the management cluster's
      `RESTMapper`. It found no mapping for
      `HTTPRoute.gateway.networking.k8s.io/v1`, so the `Owns(HTTPRoute)` watch
-     was skipped too. Installing the CRD at runtime requires an operator
-     restart for the probe and the watch to pick it up, and the message says
-     so.
+     was skipped too. A probe without an answer never reaches this latch: it
+     fails `SetupWithManager`, and the pod restarts. Installing the CRD at
+     runtime requires an operator restart for the probe and the watch to pick
+     it up, and the message says so.
    - **With `spec.targetClusterRef`:** from the target cluster's own
      `RESTMapper`, probed on every pass with nothing memoized, so a CRD
      installed on the target is seen on the next reconcile. The drift watch is

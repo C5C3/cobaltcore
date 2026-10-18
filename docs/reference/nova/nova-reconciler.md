@@ -316,7 +316,10 @@ spawned run starts and finishes, which is what wakes the reconcile that
 refreshes `DBArchiveReady`. The HTTPRoute joins the set only when the Gateway
 API CRD is installed on the management cluster; otherwise a gateway block
 surfaces `HTTPRouteReady=False / GatewayAPINotInstalled` instead of crashing the
-controller. The CR's own watch filters status-only updates, so a status write
+controller. A probe the API server does not answer (anything but a no-match)
+fails the operator's start after three attempts, so the operator never starts
+without the watch for a kind its cluster serves at that moment. The CR's own
+watch filters status-only updates, so a status write
 does not re-wake the controller. A CR that names a target cluster has the same
 children watched once more on the clusters it can project onto, by ownership
 label rather than by owner reference, because an owner reference does not cross

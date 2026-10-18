@@ -237,7 +237,10 @@ migration, Job. The HTTPRoute is added to the `Owns` set only when the Gateway
 API CRD is installed on the management cluster, probed at setup through the
 RESTMapper; without it `spec.gateway` surfaces
 `HTTPRouteReady=False / GatewayAPINotInstalled` instead of failing the
-controller at start with an unknown kind. That setup probe answers for CRs
+controller at start with an unknown kind. A probe the API server does not
+answer (anything but a no-match) fails the operator's start after three
+attempts, so the operator never starts without the watch for a kind its
+cluster serves at that moment. That setup probe answers for CRs
 without a `spec.targetClusterRef`; a CR that names a target cluster has the
 kind probed against that cluster's RESTMapper on every pass, so the verdict
 follows the cluster its children land on. The CR's own

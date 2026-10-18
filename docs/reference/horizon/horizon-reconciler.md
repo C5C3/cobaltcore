@@ -91,7 +91,10 @@ a periodic requeue. The `ClusterSecretStore` leg is not registered when the
 operator runs with `--namespace`. The HTTPRoute watch is registered only when the Gateway
 API CRD is installed on the management cluster; without it, `spec.gateway`
 surfaces `HTTPRouteReady=False` with reason `GatewayAPINotInstalled` instead
-of crashing the controller. That setup probe answers for CRs without a
+of crashing the controller. A probe the API server does not answer (anything
+but a no-match) fails the operator's start after three attempts, so the
+operator never starts without the watch for a kind its cluster serves at that
+moment. That setup probe answers for CRs without a
 `spec.targetClusterRef`; a CR that names a target cluster has the kind probed
 against that cluster's RESTMapper on every pass, so the verdict follows the
 cluster its children land on.

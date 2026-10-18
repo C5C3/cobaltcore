@@ -302,7 +302,10 @@ spawned run starts and finishes, which is what wakes the reconcile that
 refreshes `DBPurgeReady`. The HTTPRoute joins the set only when the Gateway API
 CRD is installed on the management cluster; otherwise `spec.gateway` surfaces
 `HTTPRouteReady=False / GatewayAPINotInstalled` instead of crashing the
-controller. A CR that names a target cluster has the kind probed against that
+controller. A probe the API server does not answer (anything but a no-match)
+fails the operator's start after three attempts, so the operator never starts
+without the watch for a kind its cluster serves at that moment. A CR that
+names a target cluster has the kind probed against that
 cluster's RESTMapper on every pass, and the same children are watched once more
 on the clusters a CR can project onto, by ownership label rather than by owner
 reference.

@@ -269,7 +269,10 @@ reconcile that refreshes `DBPurgeReady`. The HTTPRoute is added to the `Owns`
 set only when the Gateway API CRD is installed on the management cluster
 (otherwise `spec.gateway` surfaces
 `HTTPRouteReady=False / GatewayAPINotInstalled` instead of crashing the
-controller). That setup probe answers for CRs without a
+controller). A probe the API server does not answer (anything but a no-match)
+fails the operator's start after three attempts, so the operator never starts
+without the watch for a kind its cluster serves at that moment. That setup
+probe answers for CRs without a
 `spec.targetClusterRef`; a CR that names a target cluster has the kind probed
 against that cluster's RESTMapper on every pass. Beyond the owned set it
 watches:
