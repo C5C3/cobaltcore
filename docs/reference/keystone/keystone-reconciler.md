@@ -3635,6 +3635,22 @@ operator. Containers that use the env var include:
 | `CronJob` `{name}-fernet-rotate` | `fernetRotationCronJob` (`reconcile_fernet.go`) | Fernet key rotation — appended alongside the pre-existing `OS_fernet_tokens__max_active_keys` override |
 | `CronJob` `{name}-credential-rotate` | `credentialRotationCronJob` (`reconcile_credential.go`) | Credential key rotation |
 
+The `keystone` container of the API Deployment also carries a second override
+with a plain value, built by `database.SocketTimeoutEnvVars`. No Job or CronJob
+in the table carries it:
+
+```yaml
+env:
+  - name: OS_DATABASE__CONNECTION_PARAMETERS
+    value: read_timeout=10&write_timeout=10
+```
+
+oslo.db appends the value to the DSN, and pymysql then bounds every socket read
+and write of the API's database connections to 10 seconds. The operator omits
+the variable while `spec.extraConfig.database.connection_parameters` is set and
+renders the user's value into `keystone.conf`; see
+[Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
+
 At process start, oslo.config loads `keystone.conf` (seeing the placeholder),
 then walks its option registry for environment overrides. The
 `OS_DATABASE__CONNECTION` value replaces the placeholder before any option

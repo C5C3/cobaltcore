@@ -712,6 +712,10 @@ func TestBuildDBJobVariants_DBConnectionEnv(t *testing.T) {
 			g.Expect(container.Env).To(ContainElement(expectedEnv),
 				"%s container must source [database].connection from the derived Secret",
 				tc.containerName)
+			// The per-read cap would cut a long migration: only the API
+			// container carries the socket timeouts.
+			g.Expect(container.Env).NotTo(ContainElement(HaveField("Name", HaveSuffix("__CONNECTION_PARAMETERS"))),
+				"%s container must not carry the socket timeouts", tc.containerName)
 		})
 	}
 }
