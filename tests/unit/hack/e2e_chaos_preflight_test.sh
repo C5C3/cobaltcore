@@ -14,7 +14,7 @@
 # zero .bats files and no bats binary on CI, so introducing one would add an
 # undeclared dependency.
 #
-# Usage: bash tests/unit/Makefile/test_e2e_chaos_preflight.sh
+# Usage: bash tests/unit/hack/e2e_chaos_preflight_test.sh
 
 set -uo pipefail
 
