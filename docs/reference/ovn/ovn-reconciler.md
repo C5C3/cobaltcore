@@ -636,7 +636,10 @@ requeued, where the wrapper would swallow it as a successful reconcile.
 The `OVNCentral` controller `Owns` its StatefulSet, Deployment, Service,
 ConfigMap, PersistentVolumeClaim, CronJob, Job and PodDisruptionBudget. The cert-manager Certificate
 joins that set only when the kind is present on the management cluster, probed at
-setup through the RESTMapper. An unconditional `Owns(Certificate)` would fail at
+setup through the RESTMapper. A probe the API server does not answer (anything
+but a no-match) fails the operator's start after three attempts, so the
+operator never starts without the watch for a kind its cluster serves at that
+moment. An unconditional `Owns(Certificate)` would fail at
 start with "no matches for kind Certificate", which takes down every controller
 in the binary. `reconcileTLS` reports the missing kind on the CR as
 `CertManagerUnavailable`.

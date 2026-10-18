@@ -928,7 +928,10 @@ the engagement of every target cluster.
 It `Owns` its Deployment, Service, ConfigMap, Secret, Job, CronJob,
 PodDisruptionBudget, HorizontalPodAutoscaler and NetworkPolicy. The HTTPRoute
 joins that set only when the Gateway API kind is present on the management
-cluster, probed at setup through the RESTMapper. Beyond the owned set it watches:
+cluster, probed at setup through the RESTMapper. A probe the API server does
+not answer (anything but a no-match) fails the operator's start after three
+attempts, so the operator never starts without the watch for a kind its
+cluster serves at that moment. Beyond the owned set it watches:
 
 - **Secrets**, over three legs. The CRs that reference the Secret by name,
   resolved through the `spec.secretRefs.name` index; the CRs that own it through

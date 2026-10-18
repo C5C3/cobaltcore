@@ -199,13 +199,21 @@ lists when `enabled=true`, but schema validation can be bypassed with
 `helm --skip-schema-validation`. The template guard is the
 defense-in-depth backstop that catches that case.
 
+A rendered policy that still blocks the API server, for example one naming a
+stale endpoint address, does not start a degraded operator. The setup probes
+for the optional kinds (HTTPRoute, VerticalPodAutoscaler, Certificate) get no
+answer. Setup then fails with
+`unable to set up controllers: probing the RESTMapper for ...`, unless the
+liveness probe kills the container first: the health endpoint listens only
+after setup. Either way the pod restarts until the rule admits the endpoint.
+
 ## Testing
 
 | File | Scope |
 | --- | --- |
 | `operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml` | helm-unittest suite: default-off, the Keystone API health-check egress rule (TCP 5000 and 5050) the chart adds through the hook, its position with DNS egress off, the `cidrs` fail-closed guard; the shared rules are pinned by `operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml` |
 | `operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml` | Schema tests for `networkPolicy` (invalid CIDR, out-of-range port, non-boolean `enabled`) |
-| `tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml` | Chainsaw E2E: operator installed with `networkPolicy.enabled=true` on kind still reconciles a minimal Keystone CR to `Ready=True`, and a probe pod the policy selects is dropped on the MariaDB port and reaches the Keystone API through its Service |
+| `tests/e2e/keystone-operator/network-policy-egress/chainsaw-test.yaml` | Chainsaw E2E: operator installed with `networkPolicy.enabled=true` on kind still reconciles a minimal Keystone CR to `Ready=True`, the operator's setup log reports the Gateway API as detected under the policy, and a probe pod the policy selects is dropped on the MariaDB port and reaches the Keystone API through its Service |
 
 Run the helm-unittest suite locally with:
 
