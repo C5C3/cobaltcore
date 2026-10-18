@@ -145,6 +145,8 @@ spec:
         - mountPath: /etc/glance/backends.conf.d/
           name: backends
           readOnly: true
+        - mountPath: /var/lib/glance
+          name: state
         - mountPath: /var/lib/glance/staging
           name: staging
         - mountPath: /var/lib/glance/tasks-work
@@ -174,6 +176,8 @@ spec:
       - name: backends
         secret:
           secretName: test-glance-backends-abc
+      - emptyDir: {}
+        name: state
       - emptyDir:
           sizeLimit: 10Gi
         name: staging
@@ -307,6 +311,8 @@ spec:
         - mountPath: /etc/glance/backends.conf.d/
           name: backends
           readOnly: true
+        - mountPath: /var/lib/glance
+          name: state
         - mountPath: /var/lib/glance/staging
           name: staging
         - mountPath: /var/lib/glance/tasks-work
@@ -401,6 +407,8 @@ spec:
       - name: backends
         secret:
           secretName: test-glance-backends-abc
+      - emptyDir: {}
+        name: state
       - emptyDir:
           sizeLimit: 10Gi
         name: staging
@@ -537,6 +545,8 @@ spec:
         - mountPath: /etc/glance/backends.conf.d/
           name: backends
           readOnly: true
+        - mountPath: /var/lib/glance
+          name: state
         - mountPath: /var/lib/glance/staging
           name: staging
         - mountPath: /var/lib/glance/tasks-work
@@ -569,6 +579,8 @@ spec:
       - name: backends
         secret:
           secretName: test-glance-backends-abc
+      - emptyDir: {}
+        name: state
       - emptyDir:
           sizeLimit: 10Gi
         name: staging
@@ -720,6 +732,8 @@ spec:
         - mountPath: /etc/glance/backends.conf.d/
           name: backends
           readOnly: true
+        - mountPath: /var/lib/glance
+          name: state
         - mountPath: /var/lib/glance/staging
           name: staging
         - mountPath: /var/lib/glance/tasks-work
@@ -749,6 +763,8 @@ spec:
       - name: backends
         secret:
           secretName: test-glance-backends-abc
+      - emptyDir: {}
+        name: state
       - emptyDir:
           sizeLimit: 10Gi
         name: staging
@@ -882,6 +898,8 @@ spec:
         - mountPath: /etc/glance/backends.conf.d/
           name: backends
           readOnly: true
+        - mountPath: /var/lib/glance
+          name: state
         - mountPath: /var/lib/glance/staging
           name: staging
         - mountPath: /var/lib/glance/tasks-work
@@ -911,6 +929,8 @@ spec:
       - name: backends
         secret:
           secretName: test-glance-backends-abc
+      - emptyDir: {}
+        name: state
       - emptyDir: {}
         name: staging
       - emptyDir: {}

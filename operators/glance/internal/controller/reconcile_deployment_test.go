@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"maps"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +230,42 @@ func TestBuildGlanceDeployment_Volumes(t *testing.T) {
 	g.Expect(mountsByName[backendsVolumeName].MountPath).To(Equal(glanceBackendsConfigDir))
 	g.Expect(mountsByName[stagingVolumeName].MountPath).To(Equal(glanceStagingStorePath))
 	g.Expect(mountsByName[tasksVolumeName].MountPath).To(Equal(glanceTasksStorePath))
+}
+
+// TestBuildGlanceDeployment_StateDirIsAMount pins that /var/lib/glance, the
+// parent of the staging, tasks-work and image-cache mount points, is itself a
+// writable emptyDir of the API container. The container's root filesystem is
+// read-only (deployment.RestrictedSecurityContext), so a tool that moves one of
+// those mounts aside has to create its directory in a writable parent: Chaos
+// Mesh's IOChaos moves the volume to a sibling `__chaosfs__<name>__` and failed
+// with EROFS while the parent was the image's own directory
+// (tests/e2e-chaos/glance-staging-io-fault).
+func TestBuildGlanceDeployment_StateDirIsAMount(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	podSpec := buildGlanceDeployment(deployGlance("2026.1"), testArtifacts(), "", "").Spec.Template.Spec
+	volumesByName := map[string]corev1.Volume{}
+	for _, v := range podSpec.Volumes {
+		volumesByName[v.Name] = v
+	}
+	g.Expect(volumesByName).To(HaveKey(stateVolumeName))
+	g.Expect(volumesByName[stateVolumeName].EmptyDir).NotTo(BeNil())
+	g.Expect(volumesByName[stateVolumeName].EmptyDir.SizeLimit).To(BeNil(),
+		"nothing but mount points lands in the parent, so it carries no bound")
+
+	mountsByName := map[string]corev1.VolumeMount{}
+	for _, m := range podSpec.Containers[0].VolumeMounts {
+		mountsByName[m.Name] = m
+	}
+	g.Expect(mountsByName).To(HaveKey(stateVolumeName))
+	g.Expect(mountsByName[stateVolumeName].MountPath).To(Equal(glanceStateDir))
+	g.Expect(mountsByName[stateVolumeName].ReadOnly).To(BeFalse())
+
+	// The three store paths stay direct children of the parent mount; a path
+	// moved elsewhere would leave the parent on the read-only image again.
+	for _, p := range []string{glanceStagingStorePath, glanceTasksStorePath, glanceImageCachePath} {
+		g.Expect(path.Dir(p)).To(Equal(glanceStateDir), p)
+	}
 }
 
 // TestEffectiveStagingSizeLimit pins the three ways of saying "use the operator
@@ -624,7 +661,7 @@ func TestBuildGlanceDeployment_ImageCacheDisabledUnchanged(t *testing.T) {
 		volumeNames = append(volumeNames, v.Name)
 	}
 	g.Expect(volumeNames).To(Equal([]string{
-		configVolumeName, backendsVolumeName, stagingVolumeName, tasksVolumeName,
+		configVolumeName, backendsVolumeName, stateVolumeName, stagingVolumeName, tasksVolumeName,
 	}), "the disabled-cache pod template must carry exactly the pre-feature volumes")
 
 	for _, m := range podSpec.Containers[0].VolumeMounts {

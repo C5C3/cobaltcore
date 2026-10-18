@@ -4479,6 +4479,14 @@ ConfigMap, dumps the glance-operator log and the workload.
   emptyDir of one replica. The suite runs one replica and turns it on through
   `spec.extraConfig`, which the CR reports as `ExtraConfigHealthy=False` without
   gating `Ready`.
+- `IOChaos` moves the volume it targets to a sibling directory
+  `__chaosfs__staging__` and mounts its FUSE file system in its place, so the
+  parent of `volumePath` must be writable. The `glance-api` container runs on a
+  read-only root filesystem, and the operator mounts a writable emptyDir at
+  `/var/lib/glance`, the parent of its three store volumes, for that reason
+  (`operators/glance/internal/controller/reconcile_deployment.go`). With the
+  parent on the image, the injection failed with
+  `toda startup takes too long or an error occurs: Read-only file system`.
 
 ---
 

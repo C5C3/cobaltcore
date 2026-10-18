@@ -74,6 +74,10 @@ const (
 // the live Deployment) and reconcileConfig (which recovers the last-good
 // artefact names off the live Deployment's config/backends volumes).
 const (
+	// stateVolumeName backs the emptyDir at glanceStateDir, the parent of the
+	// staging, tasks-work and image-cache mount points. It holds nothing but
+	// those mount points; see buildGlanceDeployment for why it is a mount.
+	stateVolumeName = "state"
 	// stagingVolumeName backs the reserved import-staging store emptyDir.
 	stagingVolumeName = "staging"
 	// tasksVolumeName backs the reserved async-task-work store emptyDir.
@@ -336,6 +340,14 @@ func effectiveStagingSizeLimit(glance *glancev1alpha1.Glance) *resource.Quantity
 // when database TLS is enabled. The database URL and the service-user password
 // are injected via env vars so no credential material enters the ConfigMap.
 //
+// Their parent, glanceStateDir, is an unbounded emptyDir of its own. The
+// container's root filesystem is read-only, and with the parent on the image
+// nothing can create a directory beside a store mount: Chaos Mesh's IOChaos
+// moves the volume it targets to a sibling `__chaosfs__<name>__` and failed
+// with EROFS on the staging store (tests/e2e-chaos/glance-staging-io-fault).
+// The parent holds only the mount points, so no import or cache write lands
+// in it and it needs no sizeLimit.
+//
 // spec.imageCache adds two more pieces, and only then: an emptyDir bounded by
 // its resolved sizeLimit mounted read-write into the API container at
 // glanceImageCachePath, and the cacheMaintenanceContainer sidecar that prunes
@@ -419,6 +431,10 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 					ReadOnly:  true,
 				},
 				{
+					Name:      stateVolumeName,
+					MountPath: glanceStateDir,
+				},
+				{
 					Name:      stagingVolumeName,
 					MountPath: glanceStagingStorePath,
 				},
@@ -445,6 +461,12 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 					Secret: &corev1.SecretVolumeSource{
 						SecretName: art.backendsSecretName,
 					},
+				},
+			},
+			{
+				Name: stateVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
 			},
 			{

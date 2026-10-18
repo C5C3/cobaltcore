@@ -64,6 +64,12 @@ const (
 // task work land on local disk regardless of the image store. The deployment
 // step (next commit) mounts an emptyDir at each path.
 const (
+	// glanceStateDir is the parent of the three store paths below. The
+	// deployment step mounts a writable emptyDir there too, because the
+	// container's root filesystem is read-only and a mount whose parent is on
+	// the image cannot be moved aside (buildGlanceDeployment). The paths stay
+	// literals: tests/unit/docs/figure_constants_test.sh reads them as such.
+	glanceStateDir         = "/var/lib/glance"
 	glanceStagingStorePath = "/var/lib/glance/staging"
 	glanceTasksStorePath   = "/var/lib/glance/tasks-work"
 	// glanceImageCachePath is the in-pod image-cache directory. The deployment

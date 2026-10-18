@@ -36,7 +36,9 @@ The v1 operator resolves the onboarding decisions as follows:
   one: import staging and async task work land on local disk regardless of the
   image store. Both are `emptyDir`s bounded by a default `sizeLimit` of 10Gi
   (`spec.staging.sizeLimit`), so an oversized import gets the glance-api pod
-  evicted rather than running until the node's disk is full; see
+  evicted rather than running until the node's disk is full; their parent
+  `/var/lib/glance` is a writable `emptyDir` too, because the container's root
+  filesystem is read-only. See
   [StagingSpec](./glance-crd.md#stagingspec) for what that bound does and does
   not guarantee.
   `enabled_import_methods` is rendered as `[web-download,copy-image]`
