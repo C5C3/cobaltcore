@@ -2644,7 +2644,7 @@ requests fail.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-placement-db-chaos` (database `keystone_placement_db_chaos`) reaches `Ready=True/AllReady`; the probes and the workload authenticate against it |
-| 2 | Apply Placement | `apply` + `assert` (5m) + `script` (6m) | `placement-db-chaos` (database `placement_db_chaos`, `extraConfig` with `connection_parameters: read_timeout=10&write_timeout=10` under `placement_database`) reaches `Ready=True/AllReady`; `workload.sh start` waits for `READY` |
+| 2 | Apply Placement | `apply` + `assert` (5m) + `assert` (5m) + `script` (6m) | `placement-db-chaos` (database `placement_db_chaos`) reaches `Ready=True/AllReady`, and its API Deployment carries `OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`; `workload.sh start` waits for `READY` |
 | 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `02-networkchaos.yaml`: `partition-mariadb-placement` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `placement-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
 | 4 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `placement-db-chaos-failclosed-probe`: `GET /` answers 200, a token is still obtainable from `keystone-placement-db-chaos`, and one `POST /resource_providers` with `{"name": "db-outage-failclosed"}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /` answers 200 (`FAILCLOSED-OK`). The assert reads `Ready=True/AllReady` on the CR |
 | 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-placement`, then `workload.sh mark fault-end` |
@@ -2658,9 +2658,9 @@ requests fail.
 and judged at the end against `failures=40 recovery=90s`, an estimate no run has
 measured yet. The suite runs in the `network` matrix entry. The streams through the
 partitioned API fail about once every 16 seconds while it lasts, because a request
-that reaches the database waits until the workload's 15-second timeout or the socket
-timeouts of the CR, whichever ends first. Every step from the workload start to
-`verify` dumps the workload in its catch block.
+that reaches the database waits until the workload's 15-second timeout or the
+operator's default socket timeouts, whichever ends first. Every step from the
+workload start to `verify` dumps the workload in its catch block.
 
 **Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
 placement-db-chaos` with `--cr-kind=placement`,
@@ -2675,11 +2675,12 @@ NetworkChaos and the operator logs, and dumps the workload.
 - The 4xx rule, the single bounded write, the listing by name and the narrowed
   target follow `glance-mariadb-outage`, which gives the reasons.
 - The bound on a request that reaches the dead database is not `harakiri` but the
-  socket timeouts `barbican-mariadb-outage` uses, set in
-  `[placement_database] connection_parameters`. Placement reads the database while
-  it loads (it syncs the traits and resource classes), so a worker `harakiri` killed
-  hangs the same way a Barbican worker does, and the liveness probe restarts the
-  container until the partition ends.
+  operator's default socket timeouts on the API container,
+  `OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`.
+  The CR sets no `extraConfig`, so this suite proves that default under a partition.
+  Placement reads the database while it loads (it syncs the traits and resource
+  classes), so a worker `harakiri` killed hangs the same way a Barbican worker does,
+  and the liveness probe restarts the container until the partition ends.
 
 ---
 
@@ -2703,7 +2704,7 @@ database-backed requests fail.
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-barbican-db-chaos` (database `keystone_barbican_db_chaos`) reaches `Ready=True/AllReady`; the probes and the workload authenticate against it |
-| 2 | Apply Barbican and its store | `apply` + `assert` (5m) + `script` (6m) | `barbican-db-chaos` (database `barbican_db_chaos`, `extraConfig` with `connection_parameters: read_timeout=10&write_timeout=10` under `database`) and `barbican-db-chaos-store` reach `Ready=True/AllReady`, the CR with `SecretStoresReady=True/AllStoresProjected`; `workload.sh start` waits for `READY` |
+| 2 | Apply Barbican and its store | `apply` + `assert` (5m) + `assert` (5m) + `script` (6m) | `barbican-db-chaos` (database `barbican_db_chaos`) and `barbican-db-chaos-store` reach `Ready=True/AllReady`, the CR with `SecretStoresReady=True/AllStoresProjected`, and the API Deployment carries `OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`; `workload.sh start` waits for `READY` |
 | 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `03-networkchaos.yaml`: `partition-mariadb-barbican` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `barbican-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
 | 4 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `barbican-db-chaos-failclosed-probe`: `GET /healthcheck` answers 200, a token is still obtainable from `keystone-barbican-db-chaos`, and one `POST /v1/secrets` with `{"name": "db-outage-failclosed", "payload": "x", "payload_content_type": "text/plain"}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /healthcheck` answers 200 (`FAILCLOSED-OK`). The assert reads `BarbicanAPIReady=True/APIHealthy` on the CR |
 | 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-barbican`, then `workload.sh mark fault-end` |
@@ -2718,9 +2719,9 @@ and `barbican-db-chaos`, started before the partition and judged at the end agai
 `failures=40 recovery=90s`, an estimate no run has measured yet. The suite runs in
 the `network` matrix entry. The streams through the partitioned API fail about once
 every 16 seconds while it lasts, because a request that reaches the database waits
-until the workload's 15-second timeout or the socket timeouts of the CR, whichever
-ends first. Every step from the workload start to `verify` dumps the workload in its
-catch block.
+until the workload's 15-second timeout or the operator's default socket timeouts,
+whichever ends first. Every step from the workload start to `verify` dumps the
+workload in its catch block.
 
 **Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
 barbican-db-chaos` with `--cr-kind=barbican`,
@@ -2736,8 +2737,11 @@ and the operator logs, and dumps the workload.
 - The 4xx rule, the single bounded write, the listing by name and the narrowed
   target follow `glance-mariadb-outage`, which gives the reasons.
 - The bound on a request that reaches the dead database is not `harakiri` but
-  pymysql's `read_timeout` and `write_timeout`, which oslo.db appends to the DSN from
-  `[database] connection_parameters`. uWSGI respawns a worker `harakiri` killed, the
+  pymysql's `read_timeout` and `write_timeout`, which the operator sets on the API
+  container by default
+  (`OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`) and
+  oslo.db appends to the DSN. The CR sets no `extraConfig`, so this suite proves
+  that default under a partition. uWSGI respawns a worker `harakiri` killed, the
   worker loads the application again (`--lazy-apps`), and barbican connects to the
   database while it loads, with the operator's `max_retries = -1`. Under the
   partition that worker never comes back, the liveness probe restarts the container,
@@ -2766,7 +2770,7 @@ database-backed requests fail.
 
 | # | Action | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` + `assert` (5m) + `script` (6m) | `../../e2e/cinder/broker-vhost.sh create cinder-db-chaos cinder-db-chaos-messaging openstack`, then `cinder-db-chaos` (database `cinder_db_chaos`, noauth, `extraConfig` with `connection_parameters: read_timeout=10&write_timeout=10` under `database`) and the NFS backend `db-chaos-nfs1` reach `Ready=True/AllReady`; `workload.sh start` waits for `READY`. The step cleanup deletes the vhost |
+| 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` + `assert` (5m) + `assert` (5m) + `script` (6m) | `../../e2e/cinder/broker-vhost.sh create cinder-db-chaos cinder-db-chaos-messaging openstack`, then `cinder-db-chaos` (database `cinder_db_chaos`, noauth) and the NFS backend `db-chaos-nfs1` reach `Ready=True/AllReady`, and the API Deployment carries `OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`; `workload.sh start` waits for `READY`. The step cleanup deletes the vhost |
 | 2 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `02-networkchaos.yaml`: `partition-mariadb-cinder` (`direction: both`, `duration: "600s"`) between the MariaDB pods and the API pods of `cinder-db-chaos`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
 | 3 | Assert fail-closed | `script` (5m) + `assert` (5m) | Pod `cinder-db-chaos-failclosed-probe`: `GET /healthcheck` answers 200, and one `POST /v3/volumes` with `{"volume": {"name": "db-outage-failclosed", "size": 1}}`, bounded at 90 s, answers 5xx or times out. A 2xx or a 4xx fails the probe. A second `GET /healthcheck` answers 200 (`FAILCLOSED-OK`). The assert reads `Ready=True/AllReady` on the CR |
 | 4 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-mariadb-cinder`, then `workload.sh mark fault-end` |
@@ -2781,8 +2785,8 @@ the partition and judged at the end against `failures=40 recovery=90s`, an estim
 no run has measured yet. The suite runs in the `network` matrix entry. The streams
 through the partitioned API fail about once every 16 seconds while it lasts, because
 a request that reaches the database waits until the workload's 15-second timeout or
-the socket timeouts of the CR, whichever ends first. Every step from the workload
-start to `verify` dumps the workload in its catch block.
+the operator's default socket timeouts, whichever ends first. Every step from the
+workload start to `verify` dumps the workload in its catch block.
 
 **Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos
 cinder-db-chaos` with `--cr-kind=cinder`,
@@ -2800,11 +2804,13 @@ and the operator logs, and dumps the workload.
 - The 4xx rule, the single bounded write, the listing by name and the narrowed
   target follow `glance-mariadb-outage`, which gives the reasons.
 - The bound on a request that reaches the dead database is not `harakiri` but the
-  socket timeouts `barbican-mariadb-outage` uses, set in
-  `[database] connection_parameters`. Cinder reads the database while it loads (the
-  RPC clients of its volume API read the minimum service versions), so a worker
-  `harakiri` killed hangs the same way a Barbican worker does, and the liveness probe
-  restarts the container until the partition ends.
+  operator's default socket timeouts on the API container, the ones
+  `barbican-mariadb-outage` proves for Barbican. The CR sets no `extraConfig`, so
+  this suite proves the same default for Cinder under a partition. Cinder reads the
+  database while it loads (the RPC clients of its volume API read the minimum
+  service versions), so a worker `harakiri` killed hangs the same way a Barbican
+  worker does, and the liveness probe restarts the container until the partition
+  ends.
 
 ---
 
@@ -4193,7 +4199,7 @@ tests/e2e-chaos/
 │   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, then 200 after the outage
 ├── barbican-mariadb-outage/          Database partition under the Barbican API
 │   ├── 00-keystone-cr.yaml           Keystone keystone-barbican-db-chaos
-│   ├── 01-barbican-cr.yaml           Barbican barbican-db-chaos with database socket timeouts
+│   ├── 01-barbican-cr.yaml           Barbican barbican-db-chaos, proves the operator's database socket timeouts
 │   ├── 02-barbican-secretstore.yaml  BarbicanSecretStore barbican-db-chaos-store
 │   ├── 03-networkchaos.yaml          NetworkChaos severing barbican-api↔MariaDB traffic (server-side)
 │   └── chainsaw-test.yaml            Test: the write fails closed, the API stays up
@@ -4237,7 +4243,7 @@ tests/e2e-chaos/
 │   ├── 03-podchaos.yaml              PodChaos pod-failure on the Keystone API pods
 │   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, then 200 after the outage
 ├── cinder-mariadb-outage/            Database partition under the Cinder API
-│   ├── 00-cinder-cr.yaml             Cinder cinder-db-chaos, noauth, database socket timeouts
+│   ├── 00-cinder-cr.yaml             Cinder cinder-db-chaos, noauth, proves the operator's database socket timeouts
 │   ├── 01-cinderbackend-cr.yaml      NFS backend db-chaos-nfs1
 │   ├── 02-networkchaos.yaml          NetworkChaos severing cinder-api↔MariaDB traffic (server-side)
 │   └── chainsaw-test.yaml            Test: the write fails closed, the API stays up
@@ -4511,7 +4517,7 @@ tests/e2e-chaos/
 │   └── chainsaw-test.yaml            Test: an unvalidated token gets 503, then 200 after the outage
 ├── placement-mariadb-outage/         Database partition under the Placement API
 │   ├── 00-keystone-cr.yaml           Keystone keystone-placement-db-chaos
-│   ├── 01-placement-cr.yaml          Placement placement-db-chaos with database socket timeouts
+│   ├── 01-placement-cr.yaml          Placement placement-db-chaos, proves the operator's database socket timeouts
 │   ├── 02-networkchaos.yaml          NetworkChaos severing placement-api↔MariaDB traffic (server-side)
 │   └── chainsaw-test.yaml            Test: the write fails closed, the API stays up
 ├── placement-operator-pod-kill/      placement-operator pod kill
