@@ -1059,6 +1059,8 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 	r.apiReader = local.GetAPIReader()
 	setupLog := ctrl.Log.WithName("keystone-setup")
 	if r.gatewayAPIAvailable {
+		// tests/e2e/keystone-operator/network-policy-egress greps this exact
+		// message to prove the setup probe was answered under the policy.
 		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")
 	} else {
 		setupLog.Info("Gateway API not installed; HTTPRoute watch disabled, spec.gateway will be rejected via HTTPRouteReady condition")
