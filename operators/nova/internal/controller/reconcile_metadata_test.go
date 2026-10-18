@@ -73,6 +73,38 @@ func TestBuildMetadataDeployment(t *testing.T) {
 		"the metadata API reads one config directory, its overlay included")
 }
 
+// The metadata API is the second HTTP front end, and a request pinned on a dead
+// database connection hangs it the same way, so it carries the API's socket
+// timeouts by default and drops one per section a user sets.
+func TestMetadataContainer_SocketTimeoutEnv(t *testing.T) {
+	t.Run("the default bounds both database connections", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		env := buildMetadataDeployment(validNova(), workloadArtifacts(), workloadTestDigests()).
+			Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(len(env)).To(BeNumerically(">=", 2))
+		g.Expect(env[len(env)-2:]).To(Equal([]corev1.EnvVar{
+			{Name: "OS_DATABASE__CONNECTION_PARAMETERS", Value: "read_timeout=10&write_timeout=10"},
+			{Name: "OS_API_DATABASE__CONNECTION_PARAMETERS", Value: "read_timeout=10&write_timeout=10"},
+		}))
+	})
+
+	t.Run("a user-set connection_parameters in [database] disables that variable alone", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		nova := validNova()
+		nova.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+
+		names := envNames(buildMetadataDeployment(nova, workloadArtifacts(), workloadTestDigests()).
+			Spec.Template.Spec.Containers[0].Env)
+
+		g.Expect(names).NotTo(ContainElement("OS_DATABASE__CONNECTION_PARAMETERS"))
+		g.Expect(names).To(ContainElement("OS_API_DATABASE__CONNECTION_PARAMETERS"))
+	})
+}
+
 // TestBuildMetadataService covers the address the Neutron metadata agent of
 // every compute node dials: the metadata port, and a selector that keeps the
 // other four workloads out of its endpoints.

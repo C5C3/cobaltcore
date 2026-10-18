@@ -706,6 +706,65 @@ func TestUWSGIFrontEndsCarryALivenessTimeout(t *testing.T) {
 	}
 }
 
+// A request on a connection a MariaDB outage killed pins its worker for the TCP
+// retransmit window unless pymysql bounds the socket, so the API container
+// bounds both of its database connections by default. A user's own
+// connection_parameters stays authoritative per section: oslo.config reads the
+// environment before the file.
+func TestAPIContainer_SocketTimeoutEnv(t *testing.T) {
+	const (
+		cellParameters = "OS_DATABASE__CONNECTION_PARAMETERS"
+		apiParameters  = "OS_API_DATABASE__CONNECTION_PARAMETERS"
+	)
+
+	t.Run("the default bounds both database connections", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		env := buildAPIDeployment(validNova(), workloadArtifacts(), workloadTestDigests()).
+			Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(len(env)).To(BeNumerically(">=", 2))
+		g.Expect(env[len(env)-2:]).To(Equal([]corev1.EnvVar{
+			{Name: cellParameters, Value: "read_timeout=10&write_timeout=10"},
+			{Name: apiParameters, Value: "read_timeout=10&write_timeout=10"},
+		}))
+	})
+
+	for _, tc := range []struct {
+		section string
+		dropped string
+		kept    string
+	}{
+		{section: "database", dropped: cellParameters, kept: apiParameters},
+		{section: apiDatabaseSection, dropped: apiParameters, kept: cellParameters},
+	} {
+		t.Run("a user-set connection_parameters in ["+tc.section+"] disables that variable alone", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			nova := validNova()
+			nova.Spec.ExtraConfig = map[string]map[string]string{
+				tc.section: {"connection_parameters": "read_timeout=60&write_timeout=60"},
+			}
+
+			names := envNames(buildAPIDeployment(nova, workloadArtifacts(), workloadTestDigests()).
+				Spec.Template.Spec.Containers[0].Env)
+
+			g.Expect(names).NotTo(ContainElement(tc.dropped))
+			g.Expect(names).To(ContainElement(tc.kept))
+		})
+	}
+
+	// The four non-HTTP roles stay unbounded: the conductor and the manage Jobs
+	// run long statements a per-read cap would cut.
+	for _, role := range []workloadRole{roleConductor, roleScheduler, roleConsoleProxy, roleManage} {
+		t.Run(string(role)+" stays bare", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			g.Expect(envNames(novaWorkloadEnv(validNova(), role))).
+				NotTo(ContainElement(HaveSuffix("__CONNECTION_PARAMETERS")))
+		})
+	}
+}
+
 // TestBuildAPIService_And_PDB covers the selectors: one Nova owns five kinds of
 // Deployment, so the API Service and its budget must reach the API pods and
 // nothing else.

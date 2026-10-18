@@ -113,6 +113,10 @@ spec:
           value: /etc/nova/nova.conf.d
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
+        - name: OS_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
+        - name: OS_API_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/nova:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -307,6 +311,10 @@ spec:
           value: /etc/nova/nova.conf.d
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
+        - name: OS_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
+        - name: OS_API_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/nova:2026.1
         imagePullPolicy: Always
         lifecycle:
@@ -497,6 +505,10 @@ spec:
           value: /etc/nova/nova.conf.d
         - name: OS_NOVA_CONFIG_FILES
           value: /var/lib/openstack/etc/nova/api-paste.ini;nova.conf
+        - name: OS_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
+        - name: OS_API_DATABASE__CONNECTION_PARAMETERS
+          value: read_timeout=10&write_timeout=10
         image: ghcr.io/c5c3/nova:2026.1
         imagePullPolicy: Always
         lifecycle:

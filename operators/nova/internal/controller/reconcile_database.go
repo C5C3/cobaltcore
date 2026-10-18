@@ -514,13 +514,16 @@ func checkImageReleaseMismatch(nova *novav1alpha1.Nova) (ctrl.Result, bool) {
 //     signature with;
 //   - the two HTTP front ends get the config directory and the document list
 //     their WSGI application loads, the metadata API with its own overlay behind
-//     the shared document.
+//     the shared document, and the socket timeouts that bound both database
+//     connections, one per section whose spec.extraConfig block sets no
+//     connection_parameters.
 //
-// All of them are oslo.config OS_<GROUP>__<OPTION> overrides sourced from
-// Secrets, which is what keeps the credentials out of the rendered config the
-// pods mount. The order is fixed (bus, databases, passwords, role extras) so a
-// rebuilt pod template is byte-identical to the live one and no workload rolls
-// on a reordered slice.
+// The credentials are oslo.config OS_<GROUP>__<OPTION> overrides sourced from
+// Secrets, which is what keeps them out of the rendered config the pods mount;
+// the socket timeouts are plain values with no Secret behind them. The order is
+// fixed (bus, databases, passwords, role extras and, for the two HTTP roles,
+// socket timeouts) so a rebuilt pod template is byte-identical to the live one
+// and no workload rolls on a reordered slice.
 func novaWorkloadEnv(nova *novav1alpha1.Nova, role workloadRole) []corev1.EnvVar {
 	secretName := nova.Spec.ServiceUser.SecretRef.Name
 	key := effectiveServiceUserKey(nova)
@@ -547,14 +550,23 @@ func novaWorkloadEnv(nova *novav1alpha1.Nova, role workloadRole) []corev1.EnvVar
 	switch role {
 	case roleAPI:
 		env = append(env, novaConfigDirEnvVar(), novaConfigFilesEnvVar(novaConfDataKey))
+		env = append(env, novaSocketTimeoutEnvVars(nova)...)
 	case roleMetadata:
 		env = append(env, metadataSharedSecretEnvVar(nova),
 			novaConfigDirEnvVar(), novaConfigFilesEnvVar(novaConfDataKey, metadataConfDataKey))
+		env = append(env, novaSocketTimeoutEnvVars(nova)...)
 	case roleScheduler, roleConductor, roleConsoleProxy, roleManage:
 		// The four non-HTTP roles read the whole config directory through
 		// --config-dir and have no paste pipeline to load.
 	}
 	return env
+}
+
+// novaSocketTimeoutEnvVars bounds both database connections of an HTTP front
+// end, one variable per section whose spec.extraConfig block sets no
+// connection_parameters.
+func novaSocketTimeoutEnvVars(nova *novav1alpha1.Nova) []corev1.EnvVar {
+	return database.SocketTimeoutEnvVars(nova.Spec.ExtraConfig, "database", apiDatabaseSection)
 }
 
 // novaConfigDirEnvVar points the WSGI application at the mounted config
