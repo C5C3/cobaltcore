@@ -17,7 +17,8 @@
 #   This test validates that:
 #     1. The chart renders the NetworkPolicy (Helm install + Step 2 assert).
 #     2. The operator pod starts and turns Ready under the enforced policy,
-#        so its DNS and API server rules admit the traffic it starts with.
+#        so its DNS and API server rules admit the traffic it starts with,
+#        and its setup probes read the Gateway API as installed (Step 2b).
 #     3. A Keystone CR reconciles to Ready=True while the policy is present.
 #     4. A pod the policy selects is dropped on a port no rule admits and
 #        reaches the Keystone API through its Service (Step 5).
@@ -41,6 +42,8 @@
 # Verifies:
 #   - NetworkPolicy is emitted in the release namespace
 #   - Operator pod starts and stays Ready under the policy
+#   - The netpol operator's setup log reports the Gateway API as detected, so
+#     a probe the policy blocks is not read as a missing CRD
 #   - A Keystone CR reconciles to Ready=True under the policy
 #   - The policy drops a pod it selects on the MariaDB port and admits it to
 #     the Keystone API
@@ -118,6 +121,33 @@ spec:
             policyTypes:
             - Ingress
             - Egress
+  # ── Step 2b: Assert the setup probes answered under the policy ──────────
+  # The e2e cluster serves HTTPRoute (hack/deploy-infra.sh installs the
+  # Gateway API CRDs), so the setup probe must read it as installed. A probe
+  # the policy blocks fails the operator's setup and restarts the pod, which
+  # Step 1's --wait reports; this step catches a blocked probe read as a
+  # missing CRD instead. The setup log is written before leader election, so
+  # the line is there whichever release leads. kubectl logs reads the running
+  # container, whose setup decided the watches it runs with.
+  - try:
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          PODS="$(kubectl get pods -n keystone-system -l app.kubernetes.io/instance=keystone-operator-netpol -o name)"
+          if [ -z "${PODS}" ]; then
+            echo "ERROR: no keystone-operator-netpol pod found"
+            exit 1
+          fi
+          for pod in ${PODS}; do
+            LOGS="$(kubectl logs -n keystone-system "${pod}" --all-containers)"
+            if ! printf '%s\n' "${LOGS}" | grep -qF 'Gateway API detected; enabling HTTPRoute watch and reconciliation'; then
+              echo "ERROR: ${pod} did not log the Gateway API as detected under the policy; first 40 log lines:"
+              printf '%s\n' "${LOGS}" | head -40
+              exit 1
+            fi
+            echo "${pod} logged the Gateway API as detected"
+          done
   # ── Step 3: Apply minimal Keystone CR ──────────────────────────
   - try:
     - apply:
