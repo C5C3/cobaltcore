@@ -322,9 +322,12 @@ password read above, and the domain `Default`, as in the Quick Start.
 
 ::: tip Production environments may require NetworkPolicies
 The operator creates no NetworkPolicies. With services in separate namespaces,
-you can write policies that separate them. The kind devstack's default CNI does
-not enforce NetworkPolicy, so this guide needs none. For a default-deny
-production setup, the
+you can write policies that separate them. The kind devstack's `kindnet` CNI
+enforces NetworkPolicy. This guide creates none, so nothing restricts the
+traffic between Keystone and Horizon. The proving OpenBao instance in
+`openstack` carries a deny-by-default policy of its own, though, and drops the
+packets of every client it does not name.
+For a default-deny production setup, the
 [cross-namespace traffic matrix](../reference/c5c3/controlplane-crd.md#network-policies)
 lists the flows to allow.
 :::
