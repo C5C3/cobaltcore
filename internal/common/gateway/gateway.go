@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/apply"
@@ -39,20 +41,46 @@ var httpRouteGVK = schema.GroupVersionKind{
 	Kind:    "HTTPRoute",
 }
 
-// IsGVKAvailable probes the given RESTMapper for the GVK. It returns false
-// when the mapper has no mapping (CRD not installed) and true when the
-// mapping exists. Other mapper errors are treated as "unknown"; returning
-// false in that case is conservative — the operator starts without the watch
-// on the kind and a clear status condition replaces the cryptic
-// controller-runtime "no matches for kind" startup error.
-func IsGVKAvailable(mapper meta.RESTMapper, gvk schema.GroupVersionKind) bool {
+// probeAttempts is how many times IsGVKAvailable asks the RESTMapper before it
+// gives up on an error that is not a no-match. The reconciler reference pages
+// under docs/reference/*/ quote this count ("after three attempts"); change
+// them with it.
+const probeAttempts = 3
+
+// probeBackoff is the pause between attempts. It is a var so tests can zero it
+// and run the retry path without real sleeps.
+var probeBackoff = 500 * time.Millisecond
+
+// IsGVKAvailable probes the given RESTMapper for the GVK and gives one of three
+// answers. A mapping means the cluster serves the kind: (true, nil). A no-match
+// (meta.IsNoMatchError: the CRD is not installed) means it does not: (false,
+// nil). That is the one answer on which a caller skips an optional watch. Any
+// other error means the API server did not answer (a timeout, a refused
+// connection, a 5xx, a 403). The probe then asks again, up to probeAttempts
+// times with probeBackoff between attempts, logs each attempt it retries, and
+// returns the last error wrapped with the GVK. A nil mapper is an error as
+// well. A caller at setup treats an error as fatal, so the operator restarts
+// and probes again instead of running without the watch for a kind its cluster
+// serves.
+func IsGVKAvailable(mapper meta.RESTMapper, gvk schema.GroupVersionKind) (bool, error) {
 	if mapper == nil {
-		return false
+		return false, fmt.Errorf("no RESTMapper to probe for %s/%s", gvk.GroupKind(), gvk.Version)
 	}
-	if _, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version); err != nil {
-		return false
+	for attempt := 1; ; attempt++ {
+		_, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		if err == nil {
+			return true, nil
+		}
+		if meta.IsNoMatchError(err) {
+			return false, nil
+		}
+		if attempt >= probeAttempts {
+			return false, fmt.Errorf("probing the RESTMapper for %s/%s: %w", gvk.GroupKind(), gvk.Version, err)
+		}
+		log.Log.WithName("gvk-probe").Error(err, "probing the RESTMapper failed; retrying",
+			"gvk", gvk, "attempt", attempt, "attempts", probeAttempts)
+		time.Sleep(probeBackoff)
 	}
-	return true
 }
 
 // RouteParams carries the per-operator inputs of BuildHTTPRoute: the route's

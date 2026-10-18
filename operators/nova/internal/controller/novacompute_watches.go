@@ -193,7 +193,11 @@ func (r *NovaComputeReconciler) setupWithOptions(mgr mcmanager.Manager, opts crc
 	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
 	// so the operator must run on clusters without the VPA, where an
 	// unconditional Owns would fail the controller at Start.
-	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	var err error
+	r.vpaAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	if err != nil {
+		return err
+	}
 	setupLog := ctrl.Log.WithName("novacompute-setup")
 	if r.vpaAvailable {
 		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
@@ -224,7 +228,7 @@ func (r *NovaComputeReconciler) setupWithOptions(mgr mcmanager.Manager, opts crc
 			engageLocal, engageNoProviders)
 	}
 
-	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &novav1alpha1.NovaCompute{},
+	b, err = commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &novav1alpha1.NovaCompute{},
 		targets, NovaComputeRemoteChildKinds, map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
 			deployment.VPAGVK: {mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})},
 		})

@@ -2960,40 +2960,52 @@ func (f *fakeRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*
 	return nil, &meta.NoKindMatchError{GroupKind: gk, SearchedVersions: versions}
 }
 
-func TestIsGatewayAPIAvailable_NilMapper_ReturnsFalse(t *testing.T) {
+func TestIsGatewayAPIAvailable_NilMapper_ReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
-	g.Expect(gateway.IsGVKAvailable(nil, httpRouteGVK)).To(BeFalse())
+	ok, err := gateway.IsGVKAvailable(nil, httpRouteGVK)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(ok).To(BeFalse())
 }
 
 func TestIsGatewayAPIAvailable_CRDPresent_ReturnsTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{"HTTPRoute.gateway.networking.k8s.io": true}}
-	g.Expect(gateway.IsGVKAvailable(m, httpRouteGVK)).To(BeTrue())
+	ok, err := gateway.IsGVKAvailable(m, httpRouteGVK)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeTrue())
 }
 
 func TestIsGatewayAPIAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{}}
-	g.Expect(gateway.IsGVKAvailable(m, httpRouteGVK)).To(BeFalse())
+	ok, err := gateway.IsGVKAvailable(m, httpRouteGVK)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeFalse())
 }
 
 // --- cert-manager availability probe (issue #475, DB-TLS Certificate lifecycle) ---
 
-func TestIsCertManagerAvailable_NilMapper_ReturnsFalse(t *testing.T) {
+func TestIsCertManagerAvailable_NilMapper_ReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
-	g.Expect(gateway.IsGVKAvailable(nil, certificateGVK)).To(BeFalse())
+	ok, err := gateway.IsGVKAvailable(nil, certificateGVK)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(ok).To(BeFalse())
 }
 
 func TestIsCertManagerAvailable_CRDPresent_ReturnsTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{"Certificate.cert-manager.io": true}}
-	g.Expect(gateway.IsGVKAvailable(m, certificateGVK)).To(BeTrue())
+	ok, err := gateway.IsGVKAvailable(m, certificateGVK)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeTrue())
 }
 
 func TestIsCertManagerAvailable_CRDMissing_ReturnsFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
 	m := &fakeRESTMapper{available: map[string]bool{}}
-	g.Expect(gateway.IsGVKAvailable(m, certificateGVK)).To(BeFalse())
+	ok, err := gateway.IsGVKAvailable(m, certificateGVK)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ok).To(BeFalse())
 }
 
 // ---------------------------------------------------------------------------
