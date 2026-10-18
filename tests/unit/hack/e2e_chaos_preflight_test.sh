@@ -87,7 +87,7 @@ run_make_e2e_chaos() {
   (
     PATH="$stub_dir:/usr/bin:/bin"
     export PATH
-    cd "$PROJECT_ROOT"
+    cd "$PROJECT_ROOT" || exit 1
     make -f "$MAKEFILE" e2e-chaos
   ) >"$stdout_file" 2>"$stderr_file"
 }
