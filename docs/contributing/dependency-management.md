@@ -32,7 +32,7 @@ regex managers and package rules. The high-level split is:
 | Maintains Docker image digests (`@sha256:…`) alongside floating tags.            | Reviewing anything touching coupled stacks (k8s).             |
 | Pins GitHub Actions to commit SHAs (annotated with a `# vX.Y` tag).              | Updating the Go workspace / `go.mod` directives; triaging CVEs. |
 
-Renovate combines the `config:recommended` native managers (Go modules, Dockerfiles,
+Renovate combines the `config:recommended` native managers (Go modules,
 GitHub Actions, npm), the native `flux` manager over the Flux manifests, and the
 custom regex managers (`jq '.customManagers | length' renovate.json` counts them) that
 track pins those native managers cannot see. Auto-merge (patch/minor, 3-day cooldown)
@@ -579,7 +579,7 @@ markers). Treat this as a major-style review:
 3. Confirm no CRD field is silently removed (would break running clusters
    on upgrade).
 
-### Docker base image digests
+### Container image digests
 
 No Dockerfile is left in the repository; the flake builds every image. An image
 reference Renovate maintains keeps the floating tag and the SHA digest together, as

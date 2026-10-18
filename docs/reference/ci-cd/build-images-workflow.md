@@ -10,7 +10,7 @@ quadrant: infrastructure
 Reference documentation for the GitHub Actions build-images workflow and the verify-container-images workflow. The build-images workflow builds, tags, and publishes container images for
 OpenStack services to GHCR (GitHub Container Registry). Each pushed image receives OCI
 Image Spec annotations, a CycloneDX SBOM, a Sigstore-signed attestation, and a Grype vulnerability scan with SARIF upload to the GitHub Security tab. The verify-container-images workflow runs static verification tests against
-container infrastructure files (Dockerfiles, workflows, release configs) without requiring
+container infrastructure files (Nix expressions, locks, workflows, release configs) without requiring
 Docker.
 
 Repeated inline step sequences are extracted into reusable composite GitHub Actions
@@ -1241,8 +1241,9 @@ assembled by the merge job, the `supply-chain-attest` composite action runs in t
 merge job and performs:
 
 1. **SBOM generation** (`anchore/sbom-action`) — Syft scans the merged manifest
-   (referenced by digest) and produces a CycloneDX JSON file covering both OS packages
-   (dpkg) and Python packages (dist-info).
+   (referenced by digest) and produces a CycloneDX JSON file covering the Nix store paths
+   of the image (`pkg:nix` components) and its Python packages (`pkg:pypi`, from the
+   dist-info directories).
 
 2. **SBOM attestation** (`actions/attest`) — The CycloneDX file is signed via
    Sigstore keyless OIDC (using the GitHub Actions workflow identity) and pushed to GHCR
@@ -1598,12 +1599,6 @@ strategy is involved. nova-compute gets nova's ref the same way, from the nova l
 The federation proxy carries no version label, like the backup shifter: it bundles
 several upstream components, and no single version names the image.
 
-> **Note:** The `tags` input on `docker/metadata-action` controls the
-> `org.opencontainers.image.version` label, not the image tags passed to
-> `docker/build-push-action`. Image tags continue to be computed by the "Derive tags"
-> step (see [Tag Schema](#tag-schema)). The metadata-action's tag strategies only
-> influence the OCI version annotation.
-
 ### Test Coverage
 
 `verify_build_images_workflow.sh` checks no label: every image of this workflow sets
@@ -1824,7 +1819,7 @@ add a corresponding matrix entry to the `tempest` job in `ci.yaml` (see
 ## Verify Container Images Workflow
 
 A separate workflow (`.github/workflows/verify-container-images.yaml`) runs static
-verification tests against container infrastructure files without requiring Docker. This workflow validates Dockerfiles, workflow structure, SPDX compliance,
+verification tests against container infrastructure files without requiring Docker. This workflow validates the Nix expressions and locks, workflow structure, SPDX compliance,
 release configuration, and constraint override scripts.
 
 ### Trigger Events
@@ -1870,7 +1865,7 @@ non-zero, the job fails.
 | Script | Validates |
 | --- | --- |
 | `verify_build_images_workflow.sh` | Workflow structure: job names, dependency chain, trigger events, permissions, action pinning, concurrency, matrix strategy, SBOM/attestation configuration, cosign signing configuration, OCI annotation configuration, vulnerability scanning configuration, test-service-images job structure and steps |
-| `verify_deviation_comments.sh` | DEVIATION comments in Dockerfiles cross-reference architecture docs |
+| `verify_deviation_comments.sh` | `# DEVIATION` paragraphs in `images/<name>/image.nix` and `nix/lib/service-image.nix` cross-reference the Design Deviations section |
 | `verify_release_config.sh` | `source-refs.yaml`, `extra-packages.yaml` structure and content validity, test-excludes file format and directory structure |
 | `verify_spdx_headers.sh` | SPDX Apache-2.0 license headers present on all infrastructure files |
 | `test_apply_constraint_overrides.sh` | `scripts/apply-constraint-overrides.sh` correctly applies constraint overrides |
@@ -1885,9 +1880,9 @@ updates than snap).
 The verify-container-images workflow is intentionally separate from `build-images.yaml`
 because it tests container _infrastructure_ (file structure, conventions, configs) rather
 than the container _images_ themselves. Separate workflows provide clear, independent
-signals in GitHub's check status UI. The Docker-based image verification tests
-(`verify_<service>.sh`, `verify_libvirt.sh` and the other per-image scripts) run
-inside `build-images.yaml` where the images are actually built.
+signals in GitHub's check status UI. The image verification tests, which load or pull a
+built image (`verify_<service>.sh`, `verify_libvirt.sh` and the other per-image scripts),
+run inside `build-images.yaml` where the images are actually built.
 
 ## Verification Coverage Summary
 
