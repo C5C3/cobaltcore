@@ -695,6 +695,35 @@ func TestReconcileConfig_ExtraConfigOverlay(t *testing.T) {
 	})
 }
 
+// TestReconcileConfig_UserConnectionParametersRenderIntoTheFile pins the opt-out
+// of the front ends' socket-timeout overrides: the file carries no
+// connection_parameters by default, and a user value is merged under the section
+// it names as a free option (the key is not operator-owned), which is what drops
+// that section's env variable.
+func TestReconcileConfig_UserConnectionParametersRenderIntoTheFile(t *testing.T) {
+	t.Run("the default renders no connection_parameters", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		g.Expect(renderNovaConf(t, validNova())).NotTo(ContainSubstring("connection_parameters"))
+	})
+
+	for _, section := range []string{"database", apiDatabaseSection} {
+		t.Run("a user value lands under ["+section+"]", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			nova := validNova()
+			nova.Spec.ExtraConfig = map[string]map[string]string{
+				section: {"connection_parameters": "read_timeout=60&write_timeout=60"},
+			}
+
+			g.Expect(sectionOf(t, renderNovaConf(t, nova), section)).
+				To(ContainSubstring("connection_parameters = read_timeout=60&write_timeout=60\n"))
+			cond := novaCondition(nova, "ExtraConfigHealthy")
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+		})
+	}
+}
+
 // TestReconcileConfig_PrunesToRetainCount pins the rollback depth: three
 // historical ConfigMaps survive beside the current one.
 func TestReconcileConfig_PrunesToRetainCount(t *testing.T) {

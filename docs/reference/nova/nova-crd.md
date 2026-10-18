@@ -531,8 +531,10 @@ not read.
 
 Every credential reaches the processes as an oslo.config `OS_<GROUP>__<OPTION>`
 environment override sourced from a Secret, so none of them is written into the
-ConfigMap the pods mount. The order is fixed, so a rebuilt pod template is
-byte-identical to the live one and no workload rolls on a reordered slice.
+ConfigMap the pods mount. The two `*__CONNECTION_PARAMETERS` rows are no
+credentials and carry a plain value. The order is fixed, so a rebuilt pod
+template is byte-identical to the live one and no workload rolls on a reordered
+slice.
 
 | Variable | Source | Overrides | Carried by |
 | --- | --- | --- | --- |
@@ -545,6 +547,8 @@ byte-identical to the live one and no workload rolls on a reordered slice.
 | `OS_NEUTRON__PASSWORD` | `spec.serviceUser.secretRef` | `[neutron] password` | Every role |
 | `OS_CINDER__PASSWORD` | `spec.serviceUser.secretRef` | `[cinder] password` | Every role, only while `spec.endpoints.cinder.enabled` |
 | `OS_NEUTRON__METADATA_PROXY_SHARED_SECRET` | `spec.metadata.sharedSecretRef` | `[neutron] metadata_proxy_shared_secret` | The metadata API alone |
+| `OS_DATABASE__CONNECTION_PARAMETERS` | plain value `read_timeout=10&write_timeout=10` | `[database] connection_parameters` | API and metadata roles |
+| `OS_API_DATABASE__CONNECTION_PARAMETERS` | plain value `read_timeout=10&write_timeout=10` | `[api_database] connection_parameters` | API and metadata roles |
 | `NOVA_AMQP_PORT` | the resolved transport URL | nothing; the readiness probe reads it | The scheduler and the conductor |
 
 "Every role" includes the migration Jobs and the archive CronJob. They connect
@@ -555,6 +559,15 @@ Job from migrating a different database than the API serves. The console proxy
 is the one exception: it reads console tokens out of the cell schema and opens
 no `nova_api` connection, so an override for a section it does not configure
 would only be an unused Secret reference.
+
+The two `*__CONNECTION_PARAMETERS` variables bound every socket read and write
+of the two HTTP front ends' database connections to 10 seconds. Each section
+opts out on its own: while `spec.extraConfig.database.connection_parameters` or
+`spec.extraConfig.api_database.connection_parameters` is set, the operator
+renders that value into `nova.conf` and omits the variable of that section. The
+scheduler, the conductor, the console proxy, the migration Jobs and the archive
+CronJob never carry either; see
+[Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
 
 `NOVA_AMQP_PORT` is a plain shell variable rather than an oslo.config override.
 The `nova-amqp-ready` probe reads it, and the port travels in the environment so
