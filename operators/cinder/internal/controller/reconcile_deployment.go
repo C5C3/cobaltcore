@@ -293,7 +293,11 @@ func buildCinderDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts,
 			Image:           cinder.Spec.Image.Reference(),
 			ImagePullPolicy: cinder.Spec.Image.EffectivePullPolicy(),
 			Command:         cinderUWSGICommand(cinder),
-			Env:             cinderWorkloadEnv(cinder),
+			// The socket timeouts go on the API container alone: cinderWorkloadEnv
+			// is shared with the Jobs, the purge CronJob and the RPC services,
+			// whose long statements a per-read cap would cut.
+			Env: append(cinderWorkloadEnv(cinder),
+				database.SocketTimeoutEnvVars(cinder.Spec.ExtraConfig, "database")...),
 			Ports: []corev1.ContainerPort{{
 				Name:          "cinder-api",
 				ContainerPort: cinderAPIPort,
