@@ -340,21 +340,27 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 }
 
 // neutronAPIEnv returns the environment of the API container: where the
-// configuration is, and the three credentials that never enter it.
+// configuration is, the three credentials that never enter it, and the socket
+// timeouts that bound its database connections.
 //
 // The two OS_NEUTRON_* variables are how a uWSGI-imported application finds its
 // configuration. There is no argv to carry --config-file, so the directory and
 // the file list travel in the environment instead, naming the same two files, in
 // the same order, that the migration Jobs and the workers pass on their command
 // line.
+//
+// The socket timeouts are the API's alone: neutronWorkloadEnv is shared with the
+// workers and the OVN database sync CronJob, and the migration Jobs build their
+// own environment, so none of their long statements meets a per-read cap.
 func neutronAPIEnv(neutron *neutronv1alpha1.Neutron) []corev1.EnvVar {
 	env := []corev1.EnvVar{
 		{Name: "OS_NEUTRON_CONFIG_DIR", Value: neutronConfigMountPath},
 		{Name: "OS_NEUTRON_CONFIG_FILES", Value: neutronConfDataKey + ";" + ml2ConfDataKey},
 	}
 	env = append(env, neutronWorkloadEnv(neutron)...)
-	return append(env, keystoneauth.PasswordEnvVar(
+	env = append(env, keystoneauth.PasswordEnvVar(
 		neutron.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(neutron)))
+	return append(env, database.SocketTimeoutEnvVars(neutron.Spec.ExtraConfig, "database")...)
 }
 
 // neutronUWSGICommand constructs the uWSGI container command for the Neutron API

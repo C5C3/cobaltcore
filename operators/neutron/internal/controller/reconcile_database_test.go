@@ -222,6 +222,9 @@ func TestReconcileDatabase_SyncJobCommandEnvAndMounts(t *testing.T) {
 	}
 	g.Expect(envNames).To(HaveKeyWithValue(database.ConnectionEnvVarName, database.ConnectionSecretName(neutron.Name)))
 	g.Expect(envNames).To(HaveKeyWithValue(messaging.TransportURLEnvVarName, messaging.TransportURLSecretName(neutron.Name)))
+	// The per-read cap would cut a long migration: only the API container
+	// carries the socket timeouts.
+	g.Expect(container.Env).NotTo(ContainElement(HaveField("Name", HaveSuffix("__CONNECTION_PARAMETERS"))))
 
 	g.Expect(container.VolumeMounts).To(ContainElement(corev1.VolumeMount{
 		Name: ovnTLSVolumeName, MountPath: ovnTLSMountPath, ReadOnly: true,

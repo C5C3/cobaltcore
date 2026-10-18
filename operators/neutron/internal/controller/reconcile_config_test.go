@@ -334,6 +334,39 @@ func TestReconcileConfig_ExtraConfigHealthyTrueOnUnownedKey(t *testing.T) {
 	g.Expect(renderedConfigMap(t, r, name).Data[neutronConfDataKey]).To(ContainSubstring("quota_port = 100"))
 }
 
+// TestReconcileConfig_UserConnectionParametersRenderIntoTheFile pins the opt-out
+// of the API container's socket-timeout override: neither file carries
+// connection_parameters by default, and a user value is merged under [database]
+// of neutron.conf as a free option (the key is not operator-owned), which is
+// what drops the env variable.
+func TestReconcileConfig_UserConnectionParametersRenderIntoTheFile(t *testing.T) {
+	t.Run("the default renders no connection_parameters", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		r, name := renderConfig(t, neutronForConfig())
+
+		for key, rendered := range renderedConfigMap(t, r, name).Data {
+			g.Expect(rendered).NotTo(ContainSubstring("connection_parameters"), key)
+		}
+	})
+
+	t.Run("a user value lands under [database]", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		neutron := neutronForConfig()
+		neutron.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+		r, name := renderConfig(t, neutron)
+
+		// Every line between the [database] header and the option is a key of
+		// that section: no other section header starts in between.
+		g.Expect(renderedConfigMap(t, r, name).Data[neutronConfDataKey]).To(MatchRegexp(
+			`(?m)^\[database\]$(?:\n[^\[\n].*|\n)*\nconnection_parameters = read_timeout=60&write_timeout=60$`))
+		cond := meta.FindStatusCondition(neutron.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
+	})
+}
+
 // TestReconcileConfig_SpecChangeRotatesConfigMap verifies the content-hashed
 // name reaches the running pods: a changed OVN address must produce a new
 // ConfigMap name for the deployment step to roll.

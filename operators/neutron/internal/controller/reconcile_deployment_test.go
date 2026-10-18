@@ -211,7 +211,7 @@ func TestBuildNeutronDeployment_WSGIMarkerFilesByRelease(t *testing.T) {
 	}
 }
 
-// TestBuildNeutronDeployment_EnvAndProbes pins the five variables the API
+// TestBuildNeutronDeployment_EnvAndProbes pins the six variables the API
 // container runs with and the probe target. The two OS_NEUTRON_* variables are
 // how a uWSGI-imported application finds its configuration: there is no argv to
 // carry --config-file, so the file list travels in the environment and has to
@@ -233,6 +233,7 @@ func TestBuildNeutronDeployment_EnvAndProbes(t *testing.T) {
 		database.ConnectionEnvVarName,
 		messaging.TransportURLEnvVarName,
 		keystoneauth.PasswordEnvVarName,
+		"OS_DATABASE__CONNECTION_PARAMETERS",
 	}))
 	g.Expect(container.Env[0].Value).To(Equal("/etc/neutron"))
 	g.Expect(container.Env[1].Value).To(Equal("neutron.conf;ml2_conf.ini"))
@@ -252,6 +253,47 @@ func TestBuildNeutronDeployment_EnvAndProbes(t *testing.T) {
 	}
 	g.Expect(container.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)),
 		"liveness timeout: one slow request on a single-worker API must not restart it")
+}
+
+// A request on a connection a MariaDB outage killed pins its worker for the TCP
+// retransmit window unless pymysql bounds the socket, so the API container
+// carries the bound by default. A user's own connection_parameters stays
+// authoritative: oslo.config reads the environment before the file.
+func TestAPIContainer_SocketTimeoutEnv(t *testing.T) {
+	t.Run("the default bounds the API database sockets", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		env := buildNeutronDeployment(validNeutron(), deploymentConfigMapName, "", "", "", "", "").
+			Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(env).NotTo(BeEmpty())
+		g.Expect(env[len(env)-1]).To(Equal(corev1.EnvVar{
+			Name:  "OS_DATABASE__CONNECTION_PARAMETERS",
+			Value: "read_timeout=10&write_timeout=10",
+		}))
+	})
+
+	t.Run("a user-set connection_parameters disables the variable", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		neutron := validNeutron()
+		neutron.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+
+		env := buildNeutronDeployment(neutron, deploymentConfigMapName, "", "", "", "", "").
+			Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(env).NotTo(ContainElement(HaveField("Name", "OS_DATABASE__CONNECTION_PARAMETERS")))
+	})
+
+	// The RPC and maintenance workers and the OVN database sync CronJob run
+	// neutronWorkloadEnv, and their statements stay unbounded.
+	t.Run("the shared workload environment stays bare", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		g.Expect(neutronWorkloadEnv(validNeutron())).
+			NotTo(ContainElement(HaveField("Name", HaveSuffix("__CONNECTION_PARAMETERS"))))
+	})
 }
 
 // TestNeutronPodAnnotations covers the rollout trigger: every digest is stamped
