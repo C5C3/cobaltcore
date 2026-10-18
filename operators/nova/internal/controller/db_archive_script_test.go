@@ -60,9 +60,9 @@ func dbArchiveEnv(dir string, extra ...string) []string {
 	}, extra...)
 }
 
-// skipWithoutGNUDate skips a case that needs "date -d", the GNU coreutils
-// arithmetic the python-base Debian image ships and the BSD date on macOS does
-// not have.
+// skipWithoutGNUDate skips a case that needs "date -d", the date arithmetic
+// the GNU coreutils of the Nix-built nova image ship and the BSD date on macOS
+// does not have.
 func skipWithoutGNUDate(t *testing.T) {
 	t.Helper()
 	if err := exec.CommandContext(t.Context(), "date", "-u", "-d", "-1 days", "+%Y-%m-%d").Run(); err != nil {

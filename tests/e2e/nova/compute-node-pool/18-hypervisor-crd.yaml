@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Stand-in for the Hypervisor CRD of openstack-hypervisor-operator at a2baf3f,
-# the commit images/openstack-hypervisor-operator/Dockerfile pins. The kind
+# the commit images/openstack-hypervisor-operator/source.json pins. The kind
 # cluster runs no hypervisor operator, so this minimal CRD lets the pool's
 # Traits step read and patch the kind node's Hypervisor, and lets the suite
 # write the status that operator would. The Traits step writes
