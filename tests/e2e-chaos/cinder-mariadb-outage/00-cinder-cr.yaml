@@ -34,14 +34,17 @@
 # Under the partition the respawned workers spend minutes in connect
 # attempts, the liveness probe restarts the container, and the new one hangs
 # the same way until the partition ends (network leg of CI run 38864239649).
-# The bound is put on the connection instead: pymysql's read_timeout and
-# write_timeout, which oslo.db appends to the DSN from connection_parameters.
-# A request on a dead connection ends in a 500 within about 20 s (the 10 s
-# read timeout, then the 10 s connect timeout of the fresh connection the
-# pool tries), and the worker lives on. The bound also ends the fail-closed
-# write before the partition is lifted, so it cannot complete afterwards and
-# pass the recovery listing as a record that should not exist. A healthy
-# request of this suite takes well under a second.
+# The bound is on the connection instead: pymysql's read_timeout and
+# write_timeout. The operator sets both on the API container by default
+# (OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10, which
+# oslo.db appends to the DSN), and this CR sets nothing, so this suite is
+# where that default is proven under a partition. A request on a dead
+# connection ends in a 500 within about 20 s (the 10 s read timeout, then the
+# 10 s connect timeout of the fresh connection the pool tries), and the worker
+# lives on. The bound also ends the fail-closed write before the partition is
+# lifted, so it cannot complete afterwards and pass the recovery listing as a
+# record that should not exist. A healthy request of this suite takes well
+# under a second.
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: Cinder
 metadata:
@@ -55,9 +58,6 @@ spec:
   api:
     deployment:
       replicas: 1
-  extraConfig:
-    database:
-      connection_parameters: read_timeout=10&write_timeout=10
   database:
     clusterRef:
       name: openstack-db

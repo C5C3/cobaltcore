@@ -19,9 +19,12 @@
 # loads (barbican/api/app.py, setup_database_engine_and_factory) with the
 # operator's max_retries = -1. Under the partition the respawned worker never
 # comes back, the liveness probe restarts the container, and the new one hangs
-# the same way until the partition ends (CI run 38770151068). The bound is put
-# on the connection instead: pymysql's read_timeout and write_timeout, which
-# oslo.db appends to the DSN from connection_parameters. A request on a dead
+# the same way until the partition ends (CI run 38770151068). The bound is on
+# the connection instead: pymysql's read_timeout and write_timeout. The
+# operator sets both on the API container by default
+# (OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10, which
+# oslo.db appends to the DSN), and this CR sets nothing, so this suite is
+# where that default is proven under a partition. A request on a dead
 # connection ends in a 500 within about 20 s (the 10 s read timeout, then the
 # 10 s connect timeout of the fresh connection the pool tries), and the worker
 # lives on. The bound also ends the fail-closed write before the partition is
@@ -37,9 +40,6 @@ spec:
   openStackRelease: "2026.1"
   deployment:
     replicas: 1
-  extraConfig:
-    database:
-      connection_parameters: read_timeout=10&write_timeout=10
   image:
     repository: ghcr.io/c5c3/barbican
     tag: "2026.1"
