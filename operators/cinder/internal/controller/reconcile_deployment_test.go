@@ -463,6 +463,48 @@ func TestAPIContainerCarriesALivenessTimeout(t *testing.T) {
 		"liveness timeout below its period")
 }
 
+// A request on a connection a MariaDB outage killed pins its worker for the TCP
+// retransmit window unless pymysql bounds the socket, so the API container
+// carries the bound by default. A user's own connection_parameters stays
+// authoritative: oslo.config reads the environment before the file.
+func TestAPIContainer_SocketTimeoutEnv(t *testing.T) {
+	t.Run("the default bounds the API database sockets", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		env := buildCinderDeployment(workloadCinder(), workloadArtifacts(), workloadDigests{}).
+			Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(env).NotTo(BeEmpty())
+		g.Expect(env[len(env)-1]).To(Equal(corev1.EnvVar{
+			Name:  "OS_DATABASE__CONNECTION_PARAMETERS",
+			Value: "read_timeout=10&write_timeout=10",
+		}))
+	})
+
+	t.Run("a user-set connection_parameters disables the variable", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cinder := workloadCinder()
+		cinder.Spec.ExtraConfig = map[string]map[string]string{
+			"database": {"connection_parameters": "read_timeout=60&write_timeout=60"},
+		}
+
+		env := buildCinderDeployment(cinder, workloadArtifacts(), workloadDigests{}).
+			Spec.Template.Spec.Containers[0].Env
+
+		g.Expect(env).NotTo(ContainElement(HaveField("Name", "OS_DATABASE__CONNECTION_PARAMETERS")))
+	})
+
+	// The migration and service-remove Jobs, the purge CronJob and the
+	// scheduler, volume and backup services build on cinderWorkloadEnv, and their
+	// statements stay unbounded.
+	t.Run("the shared workload environment stays bare", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		g.Expect(cinderWorkloadEnv(workloadCinder())).
+			NotTo(ContainElement(HaveField("Name", HaveSuffix("__CONNECTION_PARAMETERS"))))
+	})
+}
+
 // TestBuildCinderService_And_PDB covers the selectors: one Cinder owns four
 // kinds of Deployment, so the API Service and its budget must reach the API pods
 // and nothing else.

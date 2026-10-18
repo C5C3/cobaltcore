@@ -443,7 +443,8 @@ config directory travels in `--pyargv`.
 
 Every credential reaches the processes as an oslo.config `OS_<GROUP>__<OPTION>`
 environment override sourced from a Secret, so none of them is written into the
-ConfigMap the pods mount.
+ConfigMap the pods mount. The last row is no credential: it is a plain value
+that only the API container carries.
 
 | Variable | Source | Overrides |
 | --- | --- | --- |
@@ -452,12 +453,21 @@ ConfigMap the pods mount.
 | `OS_KEYSTONE_AUTHTOKEN__PASSWORD` | `spec.serviceUser.secretRef` | `[keystone_authtoken] password` |
 | `OS_SERVICE_USER__PASSWORD` | `spec.serviceUser.secretRef` | `[service_user] password` |
 | `OS_NOVA__PASSWORD` | `spec.serviceUser.secretRef` | `[nova] password` |
+| `OS_DATABASE__CONNECTION_PARAMETERS` | plain value `read_timeout=10&write_timeout=10` | `[database] connection_parameters` |
 
-The migration Jobs carry the same five. They read neither the bus nor Keystone,
+The migration Jobs carry the first five. They read neither the bus nor Keystone,
 but an override is inert without the section that consumes it, and one
 environment for every process is what keeps a Job from migrating a different
 database than the API serves. The three bus processes also carry
 `CINDER_AMQP_PORT`, the broker port their readiness probe checks.
+
+`OS_DATABASE__CONNECTION_PARAMETERS` bounds every database socket read and
+write of the API to 10 seconds. It has no digest annotation, and the operator
+omits it while `spec.extraConfig.database.connection_parameters` is set and
+renders the user's value into `cinder.conf` instead. The migration and
+service-remove Jobs, the purge CronJob and the scheduler, volume and backup
+services never carry it; see
+[Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
 
 Each value is digested into a pod-template annotation, so a rotation at the
 OpenBao source rolls the pods that consume it:
