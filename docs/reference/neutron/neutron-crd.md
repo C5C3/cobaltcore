@@ -313,6 +313,14 @@ value in the rendered file is a placeholder URL: oslo.config parses the file
 before the override is applied, so the placeholder has to be syntactically
 valid.
 
+The API container alone carries a fifth override with a plain value,
+`OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`, which
+bounds every socket read and write of its database connections to 10 seconds.
+The operator omits it while `spec.extraConfig.database.connection_parameters` is
+set and renders the user's value into `neutron.conf`. The RPC and maintenance
+workers, the OVN database sync CronJob and the migration Jobs carry nothing; see
+[Database socket timeouts](../../guides/advanced-configuration.md#database-socket-timeouts).
+
 ## Defaulting and validation
 
 The mutating webhook applies the shared `DeploymentSpec` default to both
