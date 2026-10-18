@@ -1370,6 +1370,12 @@ STUB
     printf '#!/bin/bash\necho "%s $*" >>"$CALL_LOG"\nexit 0\n' "$tool" >"$dir/$tool"
     chmod +x "$dir/$tool"
   done
+
+  # The script's wait loops poll every 5 s. Against stubs that answer at once
+  # the wait is dead time, so sleep returns at once and a loop that has to
+  # run out does so on its SECONDS deadline.
+  printf '#!/bin/bash\nexit 0\n' >"$dir/sleep"
+  chmod +x "$dir/sleep"
 }
 
 # run_teardown <stub_dir> [env_var=value...]
