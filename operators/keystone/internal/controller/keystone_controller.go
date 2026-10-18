@@ -1051,7 +1051,11 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 	// controller to fail at Start with "no matches for kind HTTPRoute"
 	// when the CRD is missing, preventing every Keystone CR from being
 	// reconciled — including those that do not use spec.gateway.
-	r.gatewayAPIAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), httpRouteGVK)
+	var err error
+	r.gatewayAPIAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), httpRouteGVK)
+	if err != nil {
+		return err
+	}
 	r.apiReader = local.GetAPIReader()
 	setupLog := ctrl.Log.WithName("keystone-setup")
 	if r.gatewayAPIAvailable {
@@ -1063,7 +1067,10 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
 	// so the operator must run on clusters without the VPA, where an
 	// unconditional Owns would fail the controller at Start.
-	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	r.vpaAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	if err != nil {
+		return err
+	}
 	if r.vpaAvailable {
 		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
 	} else {
@@ -1075,7 +1082,10 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 	// so reconcileDatabaseTLS knows whether a managed Certificate can exist on
 	// the TLS-disable path. spec.database.tls is optional, so the operator must
 	// run on clusters without cert-manager (issue #475).
-	r.certManagerAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), certificateGVK)
+	r.certManagerAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), certificateGVK)
+	if err != nil {
+		return err
+	}
 	if r.certManagerAvailable {
 		setupLog.Info("cert-manager detected; enabling Certificate watch for DatabaseTLSReady")
 	} else {
@@ -1155,7 +1165,7 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 	// The PushSecret and VerticalPodAutoscaler predicates keep status-only
 	// ticks on the target from waking the CR, exactly as they do locally; the
 	// other remote legs carry no predicate, mirroring what Owns admits locally.
-	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &keystonev1alpha1.Keystone{},
+	b, err = commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &keystonev1alpha1.Keystone{},
 		targets, KeystoneRemoteChildKinds,
 		map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
 			esov1alpha1.SchemeGroupVersion.WithKind("PushSecret"): {mcbuilder.WithPredicates(pushSecretRelevantChangePredicate)},

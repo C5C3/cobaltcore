@@ -717,7 +717,11 @@ func (r *GlanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// so the operator must run on clusters without Gateway API. Adding
 	// Owns(HTTPRoute) unconditionally would fail at Start with "no matches for
 	// kind HTTPRoute" when the CRD is missing, blocking every Glance CR.
-	r.gatewayAPIAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), httpRouteGVK)
+	var err error
+	r.gatewayAPIAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), httpRouteGVK)
+	if err != nil {
+		return err
+	}
 	r.apiReader = local.GetAPIReader()
 	setupLog := ctrl.Log.WithName("glance-setup")
 	if r.gatewayAPIAvailable {
@@ -729,7 +733,10 @@ func (r *GlanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
 	// so the operator must run on clusters without the VPA, where an
 	// unconditional Owns would fail the controller at Start.
-	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	r.vpaAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	if err != nil {
+		return err
+	}
 	if r.vpaAvailable {
 		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
 	} else {
@@ -808,7 +815,7 @@ func (r *GlanceReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// the ownership labels are what maps a child back to its CR. The VPA leg
 	// carries the same predicate as its local Owns; no other leg carries one,
 	// mirroring what Owns admits locally.
-	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &glancev1alpha1.Glance{},
+	b, err = commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &glancev1alpha1.Glance{},
 		targets, GlanceRemoteChildKinds, map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
 			deployment.VPAGVK: {mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})},
 		})

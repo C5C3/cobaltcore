@@ -493,7 +493,11 @@ func (r *OVNCentralReconciler) setupWithOptions(mgr mcmanager.Manager, opts crco
 	// it: an unconditional Owns(Certificate) would fail at Start with "no matches
 	// for kind Certificate", which takes down every controller in the binary
 	// instead of reporting the missing CRD on the CR.
-	r.certManagerAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), certificateGVK)
+	var err error
+	r.certManagerAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), certificateGVK)
+	if err != nil {
+		return err
+	}
 	setupLog := ctrl.Log.WithName("ovncentral-setup")
 	if r.certManagerAvailable {
 		setupLog.Info("cert-manager detected; enabling Certificate watch and reconciliation")
@@ -504,7 +508,10 @@ func (r *OVNCentralReconciler) setupWithOptions(mgr mcmanager.Manager, opts crco
 	// Detect the VerticalPodAutoscaler CRD: verticalAutoscaling is an opt-in,
 	// so the operator must run on clusters without the VPA, where an
 	// unconditional Owns would fail the controller at Start.
-	r.vpaAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	r.vpaAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), deployment.VPAGVK)
+	if err != nil {
+		return err
+	}
 	if r.vpaAvailable {
 		setupLog.Info("VerticalPodAutoscaler CRD detected; enabling VPA watch and reconciliation")
 	} else {
@@ -570,7 +577,7 @@ func (r *OVNCentralReconciler) setupWithOptions(mgr mcmanager.Manager, opts crco
 	// the ownership labels are what maps a child back to its CR. The VPA leg
 	// carries the same predicate as its local Owns; no other leg carries one,
 	// mirroring what Owns admits locally.
-	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &ovnv1alpha1.OVNCentral{},
+	b, err = commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &ovnv1alpha1.OVNCentral{},
 		targets, OVNCentralRemoteChildKinds, map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
 			deployment.VPAGVK: {mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})},
 		})

@@ -13,6 +13,10 @@
 // internal/common/multicluster, and a copy per operator drifts the moment the
 // resolution changes. The package internal/common/multicluster tests itself
 // with its own fixtures, since importing this one back would be a cycle.
+//
+// UnprobeableManager is the setup-time counterpart: a manager whose local
+// cluster cannot answer the probe for one optional kind, which drives a
+// reconciler's SetupWithManager into the error it must fail its start on.
 package multicluster
 
 import (
