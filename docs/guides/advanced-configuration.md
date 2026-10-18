@@ -178,6 +178,67 @@ for every declared INI service. A Keystone-only option in
 `spec.globalExtraConfig` can fail validation against another declared service.
 Put that key in `spec.services.keystone.extraConfig` instead.
 
+### Database socket timeouts
+
+Every API front end bounds its database sockets by default. The API containers
+of Keystone, Glance, Placement, Barbican, Cinder and Neutron, and the API and
+metadata containers of Nova, carry an `OS_<SECTION>__CONNECTION_PARAMETERS`
+environment variable with the value `read_timeout=10&write_timeout=10`. oslo.db
+appends the value to the database URL, and pymysql applies it to every socket
+read and write. A request on a connection that a MariaDB outage killed ends in a
+500 after about 20 seconds: the 10-second read timeout, then the 10-second
+connect timeout of the fresh connection the pool tries. The worker stays up, and
+the API recovers on its own when the database returns.
+
+Without the bound such a request waits as long as TCP retransmits, about 15
+minutes. Once every worker of a pod waits, the liveness probe restarts the
+container, and Barbican, Placement, Cinder and the Nova API then hang in their
+startup database read until the outage ends. The
+[`barbican-mariadb-outage`](../reference/testing/chaos-e2e-tests.md#barbican-mariadb-outage),
+[`placement-mariadb-outage`](../reference/testing/chaos-e2e-tests.md#placement-mariadb-outage)
+and
+[`cinder-mariadb-outage`](../reference/testing/chaos-e2e-tests.md#cinder-mariadb-outage)
+chaos suites prove the default under a partition.
+
+The operator sets the variable only while the service's `extraConfig` block for
+that section carries no `connection_parameters` key. oslo.config reads the
+environment before the config files, so the variable would otherwise beat the
+value you set. Set the key to give a slow database more time. The operator then
+renders your value into the config file, and the variable disappears from the
+API container. On a `ControlPlane` the key goes into each service's block:
+
+```yaml
+spec:
+  services:
+    barbican:
+      extraConfig:
+        database:
+          connection_parameters: read_timeout=60&write_timeout=60
+    placement:
+      extraConfig:
+        placement_database:           # Placement keeps its connection here
+          connection_parameters: read_timeout=60&write_timeout=60
+```
+
+A standalone service CR takes the same block under `spec.extraConfig`. The empty
+string, `connection_parameters: ""`, disables the bound: the key is present, so
+the variable disappears, and oslo.db applies nothing for an empty value. Nova
+bounds its `[database]` and `[api_database]` connections with one variable each,
+and each section opts out on its own. Set the key per service, not in
+`spec.globalExtraConfig.database`: the option catalog checks the merged result
+for every declared INI service, and the Placement catalog has no `[database]`
+section, so a ControlPlane that declares Placement rejects any global
+`[database]` key. Placement reads its connection from `[placement_database]` and
+keeps its default until
+`spec.services.placement.extraConfig.placement_database` sets the key.
+
+Only the API front ends carry the bound. The db-sync Jobs, the CronJobs (purge
+and archive among them) and the RPC services (the Cinder scheduler, volume and
+backup services, the Nova conductor, scheduler and console proxy, and the
+Neutron RPC and maintenance workers) run their statements unbounded. pymysql's
+`read_timeout` caps the wait for a statement's first result packet, so a
+10-second bound would cut a long migration or bulk delete.
+
 ### Horizon settings are flat, not INI
 
 The dashboard renders `local_settings.py`, so `spec.services.horizon.extraConfig`
