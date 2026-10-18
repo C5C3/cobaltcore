@@ -1,0 +1,62 @@
+KeystoneReconciler.Reconcile()
+  │
+  ├── finalizers (deletionTimestamp set)
+  │     ├─ MariaDB CRs still live         → Normal  FinalizingDatabase
+  │     ├─ MariaDB cleanup done           → Normal  DatabaseFinalized
+  │     ├─ Backup PushSecrets still live  → Normal  FinalizingOpenBaoSecrets
+  │     ├─ ESO adoption wait exceeded     → Warning ESOAdoptionTimedOut
+  │     ├─ ESO purge gone-wait exceeded   → Warning OpenBaoCleanupStalled
+  │     └─ PushSecrets deleted            → Normal  OpenBaoSecretsFinalized
+  │
+  ├── reconcileBootstrap()
+  │     ├─ Admin Secret missing/invalid → Warning AdminSecretInvalid
+  │     ├─ Job succeeds  → Normal  BootstrapComplete
+  │     └─ Job fails     → Warning BootstrapFailed
+  │
+  ├── reconcileDatabase()
+  │     ├─ Non-upgrade path:
+  │     │     ├─ db_sync fails      → Warning DBSyncFailed
+  │     │     ├─ schema-check fails → Warning SchemaDriftDetected
+  │     │     ├─ Both succeed       → Normal  DatabaseSynced
+  │     │     └─ Job-UID patch fails → Warning DBSyncMetricEmissionDeferred
+  │     │
+  │     └─ Upgrade path:
+  │           ├─ Tag changed mid-upgrade → Warning UpgradeTargetChanged
+  │           ├─ Tag reverted mid-upgrade → Normal UpgradeAborted
+  │           ├─ Version parse error     → Warning VersionParseError
+  │           ├─ Downgrade attempted     → Warning DowngradeNotSupported
+  │           ├─ Non-sequential upgrade  → Warning UpgradePathInvalid
+  │           ├─ Upgrade validated       → Normal  UpgradeInitiated
+  │           ├─ Expand succeeds         → Normal  ExpandComplete
+  │           ├─ Expand fails            → Warning ExpandFailed
+  │           ├─ Migrate succeeds        → Normal  MigrateComplete
+  │           ├─ Migrate fails           → Warning MigrateFailed
+  │           ├─ Contract succeeds       → Normal  UpgradeComplete
+  │           └─ Contract fails          → Warning ContractFailed
+  │
+  ├── reconcileFernetKeys()
+  │     ├─ Initial Secret created → Normal FernetKeysGenerated
+  │     ├─ Staged rotation applied → Normal FernetKeysRotated
+  │     ├─ Malformed completion annotation → Warning RotationAnnotationInvalid
+  │     └─ Staged key set rejected → Warning RotationRejected
+  │
+  ├── reconcileCredentialKeys()
+  │     ├─ Initial Secret created → Normal CredentialKeysGenerated
+  │     ├─ Staged rotation applied → Normal CredentialKeysRotated
+  │     ├─ Malformed completion annotation → Warning RotationAnnotationInvalid
+  │     └─ Staged key set rejected → Warning RotationRejected
+  │
+  ├── reconcilePasswordRotation()
+  │     ├─ Staged rotation applied → Normal AdminPasswordRotated
+  │     ├─ Malformed completion annotation → Warning AdminPasswordRotationAnnotationInvalid
+  │     └─ Staged password rejected → Warning AdminPasswordRotationRejected
+  │
+  ├── reconcileConfig()
+  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
+  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
+  │
+  ├── reconcileTrustFlush()
+  │     └─ Legacy nil spec.trustFlush bypass → Warning TrustFlushBypass
+  │
+  └── reconcileDeployment()
+        └─ Ready during upgrade rollout → Normal DeploymentRolloutComplete

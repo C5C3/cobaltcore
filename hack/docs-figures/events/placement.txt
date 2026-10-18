@@ -1,0 +1,17 @@
+PlacementReconciler.Reconcile()
+  │
+  ├── reconcileDelete() (deletionTimestamp set)
+  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
+  │     └─ MariaDB cleanup done    → Normal  DatabaseFinalized
+  │
+  ├── reconcileConfig()
+  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
+  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
+  │
+  └── reconcileDatabase()
+        ├─ tag/release mismatch      → (condition only, no event)
+        ├─ release gate refuses      → Warning VersionParseError / DowngradeNotSupported /
+        │                                      UpgradePathInvalid / ImageReleaseMismatch
+        ├─ db_sync fails             → Warning DBSyncFailed
+        ├─ db_sync succeeds          → Normal  DatabaseSynced
+        └─ Job-UID patch fails       → Warning DBSyncMetricEmissionDeferred

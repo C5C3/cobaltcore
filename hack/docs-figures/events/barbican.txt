@@ -1,0 +1,36 @@
+BarbicanReconciler.Reconcile()
+  │
+  ├── reconcileDelete() (deletionTimestamp set)
+  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
+  │     └─ MariaDB cleanup done    → Normal  DatabaseFinalized
+  │
+  ├── reconcileSecretStores()
+  │     ├─ credentials unreadable  → Warning BarbicanSecretStoreSkipped
+  │     ├─ store de-projected      → Warning SecretStoreDetached
+  │     └─ no/several defaults     → (condition only, no event)
+  │
+  ├── reconcileConfig()
+  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
+  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
+  │
+  ├── reconcileDBClean()
+  │     ├─ newest terminal run failed → Warning DBCleanJobFailed
+  │     └─ Job-UID patch fails        → Warning DBCleanMetricEmissionDeferred
+  │
+  └── reconcileDatabase()
+        ├─ tag/release mismatch      → (condition only, no event)
+        ├─ release gate refuses      → Warning VersionParseError / DowngradeNotSupported /
+        │                                      UpgradePathInvalid / ImageReleaseMismatch
+        ├─ db_sync fails             → Warning DBSyncFailed
+        ├─ db_sync succeeds          → Normal  DatabaseSynced
+        └─ Job-UID patch fails       → Warning DBSyncMetricEmissionDeferred
+
+BarbicanSecretStoreReconciler.Reconcile()
+  │
+  ├── reconcileManaged()     → Warning InstanceNotFound / WaitingForInstance /
+  │                                    WaitingForInstanceTLS / InstanceNotProvisioned /
+  │                                    ProvisioningDenied / OpenBaoUnreachable /
+  │                                    InvalidCredentials
+  ├── reconcileBrownfield()  → Warning WaitingForCredentials / InvalidCredentials /
+  │                                    InsufficientCapabilities / OpenBaoUnreachable
+  └── config projection observed → (condition only, no event)

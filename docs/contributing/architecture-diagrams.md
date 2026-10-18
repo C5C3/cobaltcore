@@ -117,6 +117,13 @@ the page embeds. A change to a diagram updates both files in the same commit.
    it in the light and the dark theme.
 5. Commit the `.drawio` and the `.svg` together.
 
+The figures that `hack/docs-figures/` lists are generated: the pipeline,
+event-flow, order-flow and chain figures of the reference pages. A change to
+one of them is a change to its entry in the script that draws it
+(`pipelines.py`, `events.py` with the trees under `events/`, `gate_trees.py`
+or `rest_figs.py`), followed by a run of that script, which rewrites both files
+of every pair it owns. A hand edit to a generated pair is lost on the next run.
+
 A new diagram follows the same pattern. Put the pair into `docs/diagrams/`
 under a name from [File names](#file-names). On a page directly under `docs/`
 the path is `./diagrams/<name>.svg`. A page further down puts one `../` per

@@ -1,0 +1,29 @@
+GlanceReconciler.Reconcile()
+  │
+  ├── reconcileDelete() (deletionTimestamp set)
+  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
+  │     └─ MariaDB cleanup done    → Normal  DatabaseFinalized
+  │
+  ├── reconcileBackends()
+  │     └─ per-backend fault (missing Secret / control char) → Warning GlanceBackendSkipped
+  │
+  ├── reconcileConfig()
+  │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
+  │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
+  │
+  ├── reconcileDatabase()
+  │     ├─ db_sync fails              → Warning DBSyncFailed
+  │     ├─ db_sync succeeds           → Normal  DatabaseSynced
+  │     ├─ Job-UID patch fails        → Warning DBSyncMetricEmissionDeferred
+  │     └─ release upgrade            → Normal  UpgradeInitiated / ExpandComplete /
+  │                                             MigrateComplete / UpgradeComplete / UpgradeAborted
+  │                                      Warning VersionParseError / DowngradeNotSupported /
+  │                                             UpgradePathInvalid / UpgradeTargetChanged /
+  │                                             ExpandFailed / MigrateFailed / ContractFailed
+  │
+  ├── reconcileDeployment()
+  │     └─ rollout ready mid-upgrade  → Normal  DeploymentRolloutComplete
+  │
+  └── reconcileDBPurge()
+        ├─ newest run failed          → Warning DBPurgeJobFailed
+        └─ Job-UID patch fails        → Warning DBPurgeMetricEmissionDeferred

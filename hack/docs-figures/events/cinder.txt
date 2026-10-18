@@ -1,0 +1,50 @@
+CinderReconciler.Reconcile()
+  │
+  ├── reconcileDelete() (deletionTimestamp set)
+  │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
+  │     ├─ MariaDB cleanup done    → Normal  DatabaseFinalized
+  │     └─ target cluster gone     → Warning RemoteChildrenAbandoned
+  │
+  ├── reconcileBackends()
+  │     └─ per-backend fault           → Warning CinderBackendSkipped
+  │
+  ├── reconcileBackupBackend()
+  │     └─ backup-target fault         → Warning CinderBackupBackendSkipped
+  │
+  ├── reconcileConfig()
+  │     └─ extraConfig overrides an operator-owned key
+  │                                    → Warning ExtraConfigOwnedKeyOverride
+  │
+  ├── reconcileDatabase()
+  │     ├─ db_sync fails               → Warning DBSyncFailed
+  │     ├─ db_sync succeeds            → Normal  DatabaseSynced
+  │     ├─ Job-UID patch fails         → Warning DBSyncMetricEmissionDeferred
+  │     ├─ migrate phase terminal      → Normal  UpgradeCheckCompleted /
+  │     │                                Warning UpgradeCheckWarnings
+  │     └─ release upgrade             → Normal  UpgradeInitiated / ExpandComplete /
+  │                                              MigrateComplete / UpgradeComplete /
+  │                                              UpgradeAborted
+  │                                      Warning VersionParseError / DowngradeNotSupported /
+  │                                              UpgradePathInvalid / UpgradeTargetChanged /
+  │                                              ExpandFailed / MigrateFailed / ContractFailed
+  │
+  ├── reconcileVolumeServices()
+  │     ├─ detach completed            → Normal  ServiceRemoved
+  │     ├─ service-remove Job failed   → Warning ServiceRemoveJobFailed
+  │     └─ Job-UID patch fails         → Warning ServiceRemoveMetricEmissionDeferred
+  │
+  ├── reconcileBackupService()
+  │     ├─ shared export, divergent mountOptions
+  │     │                              → Warning SharedExportMountOptionsIgnored
+  │     └─ one keyring file, two keys  → Warning CephKeyringConflict
+  │
+  ├── reconcileDeployment()
+  │     └─ rollout ready mid-upgrade   → Normal  DeploymentRolloutComplete
+  │
+  └── reconcileDBPurge()
+        ├─ newest run failed           → Warning DBPurgeJobFailed
+        └─ Job-UID patch fails         → Warning DBPurgeMetricEmissionDeferred
+
+CinderBackendReconciler.Reconcile()
+  └── reconcileDeleting() (parent Cinder already gone)
+        └─ finalizer released          → Normal  ServiceRemoveSkipped

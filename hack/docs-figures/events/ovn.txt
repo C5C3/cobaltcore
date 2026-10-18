@@ -1,0 +1,17 @@
+OVNCentralReconciler.Reconcile()
+  │
+  ├── deletion, target cluster unresolvable past the abandon window
+  │     └─ Warning RemoteChildrenAbandoned  (finalizer released, children left behind)
+  │
+  └── reconcileBackup()
+        ├─ newest terminal backup Job failed → Warning BackupJobFailed
+        └─ Job-UID patch failed              → Warning BackupMetricEmissionDeferred
+
+OVNChassisReconciler.Reconcile()
+  │
+  ├── deletion, target cluster unresolvable past the abandon window
+  │     └─ Warning RemoteChildrenAbandoned
+  │
+  └── reconcileMaintenance()
+        ├─ apply / evacuate / chassis-del Job failed → Warning ChassisMaintenanceJobFailed
+        └─ Job-UID patch failed                      → Warning ChassisMaintenanceMetricEmissionDeferred
