@@ -226,6 +226,54 @@ another.
 
 ![One OpenStack Control Plane with attached Ceph Storage clusters, OpenStack Compute clusters running KVM or Cloud Hypervisor, and OpenStack Network clusters running OVN, two of each and more.](../diagrams/cobaltcore-attached-clusters.svg)
 
+### Teams per region and site
+
+The clusters of the picture follow the lines along which an operator divides
+the work. At every site a compute team, a storage team, and a network team run
+the clusters of their function. A control plane team runs the control plane of
+the region, a platform team provides the bare metal and the Kubernetes
+clusters, and service teams run services of their own on the cloud. Most
+changes of one team reach into the work of another: the servers of a
+hypervisor in maintenance have to move, and a rotated credential has to reach
+every compute node.
+
+CobaltCore turns the coordination between these teams into interfaces that
+operators act on. Each team changes its own resources, and an operator carries
+the change to the other side. A hypervisor goes into maintenance without a
+ticket to the control plane team, and a new credential reaches every compute
+cluster without a hand-over between teams.
+
+![One region with its teams and the interfaces between them. The control plane team runs the OpenStack Control Plane cluster with the ControlPlane, the OpenStack services, OpenBao, and the OVN databases; an ExternalSecret carries secrets from OpenBao to the services. A service team orders resources from the control plane and receives Secrets. At site A a compute team, a storage team, and a network team each run a cluster: Compute with the Hypervisor resource, hvo, nova-compute, and libvirt; Storage with Ceph and a PushSecret; Network with Open vSwitch and ovn-controller. Four interfaces cross between the site and the control plane: the ControlPlane delivers the compute contract to the compute cluster, hvo calls the Nova API for maintenance, eviction, and aggregates, the PushSecret writes the Ceph keys into OpenBao, and ovn-controller joins the Southbound database. Site B and more repeat the compute, storage, and network clusters, each run by a team of its own. A platform team provides the bare metal with IronCore or metal-stack and every Kubernetes cluster with Gardener. Three examples: the compute team labels a node, the pool registers it in Nova, and hvo adds it to the aggregate of its zone; the compute team sets spec.maintenance on the node's Hypervisor, and hvo disables the host in Nova and live-migrates its servers; the ControlPlane rewrites the compute contract on every compute cluster in place.](../diagrams/cobaltcore-team-interfaces.svg)
+
+| Change | Team | What the team changes | What carries the change to the other side |
+| --- | --- | --- | --- |
+| Add a hypervisor | Compute | A label on a Node of its cluster, and once per pool a `NovaCompute` with `targetClusterRef` beside the ControlPlane | `nova-compute` registers the host, and the pool maps it into its cell within about a minute. openstack-hypervisor-operator (hvo) onboards the host and keeps it in the aggregate of its zone ([The aggregates](../reference/nova/novacompute-crd.md#the-aggregates)) |
+| Take a hypervisor into maintenance, or remove it | Compute | `spec.maintenance` on the node's `Hypervisor`, then the pool label of the Node | hvo disables the compute service and live-migrates the servers through an `Eviction`. The pool deletes the compute service once the host is empty ([The drain](../reference/nova/novacompute-crd.md#the-drain)) |
+| Rotate a credential, or change what the compute nodes read | Control plane | The ControlPlane, or a rotation it runs | The ControlPlane rewrites the compute contract and hvo's auth Secret in place on every compute cluster ([Rotation](../guides/nova/connect-a-compute-cluster.md#rotation)) |
+| Hand over a Ceph client key | Storage | A `PushSecret` that writes the key into OpenBao | An `ExternalSecret` on the control plane reads the key, and both refresh every minute, as on the metal-stack lab ([Lab Ceph](../reference/infrastructure/infrastructure-manifests.md#lab-ceph)) |
+| Add network or gateway nodes | Network | A label on a Node of its cluster, and once per class of nodes an `OVNChassis` beside the ControlPlane | The ovn-operator copies the OVN client certificate onto the cluster, and the chassis registers its nodes with the Southbound database of the control plane ([Label a Node as a Compute or Network Node](../guides/ovn/label-a-chassis-node.md)) |
+| Give a service a database, a vhost, or credentials | Service | An order in the namespace the ControlPlane assigned to the team | The c5c3-operator creates the resource and delivers its credentials as a Secret beside the order ([Order Resources from a ControlPlane](../guides/order-resources-from-a-controlplane.md)) |
+
+The control plane team grants each team its place once. It registers the
+cluster of a site as a target cluster with a kubeconfig Secret
+([Registering a target cluster](../reference/target-clusters.md#registering-a-target-cluster)),
+and it assigns a namespace to a service team in `spec.namespaceAssignments`,
+with the Keystone roles the orders of that team may request
+([NamespaceAssignmentSpec](../reference/c5c3/controlplane-crd.md#namespaceassignmentspec)).
+From then on each team changes its own resources, and the operators keep both
+sides in step.
+
+The statements about hvo are as read at the commit
+`images/openstack-hypervisor-operator/source.json` pins. hvo and
+kvm-node-agent run on the metal-stack lab, applied by hand, and no suite crosses
+a cluster boundary with Nova yet
+([What this repository tests](../guides/nova/connect-a-compute-cluster.md#what-this-repository-tests)).
+Upstream, hvo also keeps a PodDisruptionBudget per node, so that a drain of the
+Kubernetes node, such as a rolling update of the platform team starts, waits
+until the hypervisor is offboarded. On the lab the pods behind that budget never
+start, so the budget allows no disruption at all
+([#1066](https://github.com/c5c3/cobaltcore/issues/1066)).
+
 ### State in this repository
 
 The picture extends the four clusters of the original C5C3 document with a
