@@ -22,7 +22,7 @@ runs:
     # cache hit makes install-test-deps a no-op. Key on the script hash so the
     # cache auto-invalidates when any pinned version changes.
     - name: Cache test dependency binaries
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: $HOME/.local/bin
         key: ${{ runner.os }}-testdeps-${{ hashFiles('hack/install-test-deps.sh') }}
