@@ -291,6 +291,16 @@ generate-common:
 	@echo "Generating deepcopy for internal/common/types..."
 	@cd internal/common && $(CONTROLLER_GEN) object:headerFile=../../hack/boilerplate.go.txt paths=./types/...
 
+.PHONY: manifests-common
+# manifests-common runs controller-gen crd over the envtest-only CELHost kind of
+# internal/common/types/celhost, whose CRD installs the CEL rules of the shared
+# types into the CRD-only envtest of internal/common. It is a prerequisite of
+# manifests, so verify-codegen regenerates and diffs the CRD; verify-crd-sync
+# iterates operators only and ignores it, because no chart ships it.
+manifests-common:
+	@echo "Generating the CELHost CRD for internal/common/types/celhost..."
+	@cd internal/common && $(CONTROLLER_GEN) crd paths=./types/celhost/... output:crd:artifacts:config=types/celhost/crd
+
 .PHONY: manifests
 # manifests runs controller-gen crd and webhook to produce CRD YAML and webhook
 # configuration for each operator that has an api/ directory, plus the RBAC
@@ -298,7 +308,7 @@ generate-common:
 # Output is written to operators/<op>/config/crd/bases/, operators/<op>/config/webhook/
 # and operators/<op>/config/rbac/role.yaml (the source of the chart's RBAC rules,
 # see sync-helm-rbac).
-manifests:
+manifests: manifests-common
 	@for op in $(OPERATORS); do \
 		if [ -d "operators/$$op/api" ]; then \
 			echo "Generating CRD, webhook and RBAC manifests for operators/$$op..."; \
