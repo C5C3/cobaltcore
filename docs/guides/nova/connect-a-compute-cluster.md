@@ -23,7 +23,7 @@ The [multi-cluster target picture](../../architecture/index.md#attached-clusters
 shows where such a cluster sits: one of several compute clusters attached to
 one control plane.
 
-![One OpenStack Control Plane with attached Ceph Storage clusters, OpenStack Compute clusters running KVM or Cloud Hypervisor, and OpenStack Network clusters running OVN, two of each and more.](../../diagrams/cobaltcore-attached-clusters.svg)
+![One OpenStack Control Plane with attached Ceph Storage clusters, OpenStack Compute clusters running KVM or, for VS-NfD workloads, Cloud Hypervisor, and OpenStack Network clusters running OVN, two of each and more.](../../diagrams/cobaltcore-attached-clusters.svg)
 
 ## Prerequisites
 

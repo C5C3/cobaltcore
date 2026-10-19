@@ -48,7 +48,7 @@
 <text x="686" y="504.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
 <text x="738" y="506.08" font-size="28" font-weight="700" fill="#A3262E">Compute 2</text>
 <rect x="649" y="531" width="430" height="34" rx="17" fill="#F8E8E9" stroke="#C6343C" stroke-width="2"/>
-<text x="864" y="556.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">Cloud Hypervisor</text>
+<text x="864" y="556.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">Cloud Hypervisor for VS-NfD</text>
 <rect x="629" y="601" width="470" height="54" rx="13" fill="none" stroke="#C6343C" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="864" y="636.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">+ more</text>
 <rect x="1169.5" y="241.5" width="517" height="441" rx="18.5" fill="#FAF3DA" stroke="#B38A00" stroke-width="3"/>
