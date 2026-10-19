@@ -25,6 +25,15 @@
 CI_RESOLVE_DEFAULT_SERVICE_OPERATORS="keystone horizon glance placement barbican neutron cinder nova"
 CI_RESOLVE_DEFAULT_CANARY_OPERATOR="keystone"
 
+# ci_all_operators
+#
+# Echo the ALL_OPERATORS value the ci.yaml resolve step passes, in file order,
+# so a scenario runs the resolver over the operator set CI hands it rather than
+# a copy that drifts.
+ci_all_operators() {
+  sed -n 's/^          ALL_OPERATORS: //p' "$CI_YAML" | head -1
+}
+
 # resolve_output <output-key> <ref> <all-operators> [ENV=value ...]
 #
 # Runs hack/ci-resolve-changes.sh for real with the given ref and env, and
