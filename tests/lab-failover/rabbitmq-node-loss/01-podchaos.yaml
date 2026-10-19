@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos of rabbitmq-node-loss: server-0 of RabbitmqCluster
+# openstack-rabbitmq is down for 180 s. The pod name is fixed, so the
+# manifest carries no placeholder.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lf-rabbitmq-node-loss
+  namespace: openstack-ha
+spec:
+  action: pod-failure
+  mode: all
+  duration: "180s"
+  selector:
+    pods:
+      openstack-ha:
+        - openstack-rabbitmq-server-0
