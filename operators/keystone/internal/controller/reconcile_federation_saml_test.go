@@ -155,6 +155,108 @@ func TestRenderSAMLBackend_EntityIDMismatchSkips(t *testing.T) {
 	g.Expect(err.Error()).NotTo(ContainSubstring("evil.example.com"), "must not echo the fetched entityID")
 }
 
+// TestLastKnownGoodSAMLMetadata covers the lookup the SAML fallback reads: nil
+// without a federation Secret, without the backend's key, or with an empty
+// value, and the stored document otherwise.
+func TestLastKnownGoodSAMLMetadata(t *testing.T) {
+	ks := testFederationKeystone()
+	backend := testProjectableSAMLBackend("corp-saml")
+	doc := []byte(testSAMLIdPMetadataXML(testSAMLIdPEntityID))
+	cases := []struct {
+		name string
+		// data is the federation Secret's content; nil means no Secret.
+		data map[string][]byte
+		want []byte
+	}{
+		{name: "no federation Secret"},
+		{name: "Secret without the backend's key", data: map[string][]byte{"other-saml.idp-metadata.xml": doc}},
+		{name: "empty value", data: map[string][]byte{"corp-saml.idp-metadata.xml": {}}},
+		{name: "stored document", data: map[string][]byte{"corp-saml.idp-metadata.xml": doc}, want: doc},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			r := newTestReconciler(ks)
+			if tc.data != nil {
+				r = newTestReconciler(ks, testLastKnownGoodSecret(ks, tc.data))
+			}
+
+			got := r.lastKnownGoodSAMLMetadata(context.Background(), r.Client, ks, backend)
+			g.Expect(got).To(Equal(tc.want))
+		})
+	}
+}
+
+// testURLSAMLBackend returns the corp-saml backend with a URL metadata source,
+// so rendering it fetches the IdP metadata.
+func testURLSAMLBackend() *keystonev1alpha1.KeystoneIdentityBackend {
+	backend := testProjectableSAMLBackend("corp-saml")
+	backend.Spec.SAML.IdPMetadata = keystonev1alpha1.SAMLIdPMetadataSpec{
+		URL: "https://idp.example.com/realms/cobaltcore/descriptor",
+	}
+	return backend
+}
+
+// On a metadata outage with a cold cache, the renderer reuses the persisted
+// IdP metadata whose entityID matches the spec, warns, and seeds the cache so
+// the next render does not hit the failing IdP.
+func TestRenderSAMLBackend_LastKnownGoodHit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	ks := testFederationKeystone()
+	backend := testURLSAMLBackend()
+	doc := []byte(testSAMLIdPMetadataXML(testSAMLIdPEntityID))
+	doer := &metadataDoer{fail: true}
+	r := newTestReconciler(ks, backend, testLastKnownGoodSecret(ks, map[string][]byte{"corp-saml.idp-metadata.xml": doc}))
+	r.HTTPClient = doer
+
+	rd, err := r.renderSAMLBackend(ctx, r.Client, ks, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rd.idpMetadata).To(Equal(doc))
+	expectEvent(g, r, "Warning FederationMetadataStale")
+	g.Expect(doer.calls).To(Equal(1), "the cold cache tried the IdP once")
+
+	cached, err := r.renderSAMLBackend(ctx, r.Client, ks, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cached.idpMetadata).To(Equal(doc), "the fallback seeded the cache with the persisted document")
+	g.Expect(doer.calls).To(Equal(1), "the seeded cache answers without a fetch")
+	expectNoEvent(g, r)
+}
+
+// Without a persisted copy, the metadata outage stays a per-backend fault.
+func TestRenderSAMLBackend_LastKnownGoodMiss(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testFederationKeystone()
+	backend := testURLSAMLBackend()
+	doer := &metadataDoer{fail: true}
+	r := newTestReconciler(ks, backend)
+	r.HTTPClient = doer
+
+	_, err := r.renderSAMLBackend(context.Background(), r.Client, ks, backend)
+	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
+	expectNoEvent(g, r)
+	g.Expect(doer.calls).To(Equal(1))
+}
+
+// Persisted metadata for another entityID is never reused, and the error does
+// not echo the stored entityID.
+func TestRenderSAMLBackend_LastKnownGoodEntityIDMismatchIsNotReused(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testFederationKeystone()
+	backend := testURLSAMLBackend()
+	doer := &metadataDoer{fail: true}
+	r := newTestReconciler(ks, backend, testLastKnownGoodSecret(ks, map[string][]byte{
+		"corp-saml.idp-metadata.xml": []byte(testSAMLIdPMetadataXML("https://other.example.com/idp")),
+	}))
+	r.HTTPClient = doer
+
+	_, err := r.renderSAMLBackend(context.Background(), r.Client, ks, backend)
+	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
+	g.Expect(err.Error()).NotTo(ContainSubstring("other.example.com"))
+	expectNoEvent(g, r)
+	g.Expect(doer.calls).To(Equal(1))
+}
+
 // An inline aggregate (EntitiesDescriptor) or non-EntityDescriptor document is
 // rejected before it can bind the login flow.
 func TestRenderSAMLBackend_RejectsAggregateMetadata(t *testing.T) {
