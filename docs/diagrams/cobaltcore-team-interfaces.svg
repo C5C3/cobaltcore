@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="1190" viewBox="0 0 1840 1190" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Teams per region and site, and the interfaces between them">
+<title>Teams per region and site, and the interfaces between them</title>
+<rect width="1840" height="1190" fill="#F6F5F1"/>
+<text x="40" y="63.92" font-size="22" font-weight="700" fill="#55606E" letter-spacing="2">REGION</text>
+<text x="157" y="63.92" font-size="22" font-weight="400" fill="#55606E">one ControlPlane, named in spec.region; every further region repeats the picture</text>
+<rect x="40" y="88" width="1340" height="232" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<g transform="translate(64,100) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="106" y="129.36" font-size="26" font-weight="700" fill="#17202B">Control plane team</text>
+<text x="354" y="128.92" font-size="22" font-weight="400" fill="#55606E">runs the control plane of the region</text>
+<rect x="64" y="156" width="1292" height="140" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="84" y="172" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="121.5" y="198.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="174" y="200.08" font-size="28" font-weight="700" fill="#1D47A6">OpenStack Control Plane</text>
+<rect x="100" y="232" width="230" height="44" rx="20" fill="#1E6B40"/>
+<text x="215.5" y="262.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane</text>
+<rect x="400" y="232" width="280" height="44" rx="17" fill="#FDFCF9" stroke="#2457C5" stroke-width="2"/>
+<text x="540" y="262.64" font-size="24" font-weight="700" fill="#1D47A6" text-anchor="middle">OpenStack services</text>
+<rect x="840" y="232" width="160" height="44" rx="17" fill="#FDFCF9" stroke="#B0387F" stroke-width="2"/>
+<text x="920" y="262.64" font-size="24" font-weight="700" fill="#8A2B63" text-anchor="middle">OpenBao</text>
+<rect x="1100" y="232" width="230" height="44" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1215" y="262.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">OVN databases</text>
+<polyline points="840,254 690.5,254" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="680,254 695,246.8 695,261.2" fill="#B0387F"/>
+<text x="760" y="224.2" font-size="20" font-weight="400" fill="#8A2B63" text-anchor="middle">ExternalSecret</text>
+<rect x="1540" y="156" width="260" height="140" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<g transform="translate(1560,170) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="1602" y="199.36" font-size="26" font-weight="700" fill="#17202B">Service team</text>
+<text x="1560" y="242.2" font-size="20" font-weight="400" fill="#55606E">runs a service of its own</text>
+<text x="1560" y="268.2" font-size="20" font-weight="400" fill="#55606E">on the cloud</text>
+<polyline points="1540,206 1366.5,206" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1356,206 1371,198.8 1371,213.2" fill="#3A4452"/>
+<text x="1448" y="196.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">orders</text>
+<polyline points="1356,262 1529.5,262" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="1540,262 1525,269.2 1525,254.8" fill="#B0387F"/>
+<text x="1447.5" y="252.2" font-size="20" font-weight="400" fill="#8A2B63" text-anchor="middle">Secrets</text>
+<rect x="40" y="464" width="1340" height="348" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="64" y="503.92" font-size="22" font-weight="700" fill="#55606E" letter-spacing="2">SITE A</text>
+<rect x="64" y="520" width="424" height="268" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="84" y="536" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="121.5" y="562.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="174" y="564.08" font-size="28" font-weight="700" fill="#A3262E">Compute</text>
+<rect x="88" y="596" width="163" height="44" rx="20" fill="#A3262E"/>
+<text x="169.5" y="626.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">Hypervisor</text>
+<rect x="267" y="596" width="100" height="44" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="317" y="626.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">hvo</text>
+<rect x="88" y="656" width="203" height="44" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="189.5" y="686.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">nova-compute</text>
+<rect x="307" y="656" width="107" height="44" rx="17" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="360.5" y="686.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">libvirt</text>
+<g transform="translate(88,730) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="130" y="759.36" font-size="26" font-weight="700" fill="#17202B">Compute team</text>
+<rect x="512" y="520" width="420" height="268" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="532" y="536" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="569.5" y="562.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="622" y="564.08" font-size="28" font-weight="700" fill="#0B5F69">Storage</text>
+<rect x="536" y="596" width="120" height="44" rx="17" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2"/>
+<text x="596" y="626.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">Ceph</text>
+<rect x="536" y="656" width="170" height="44" rx="20" fill="#8A2B63"/>
+<text x="620.5" y="686.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">PushSecret</text>
+<g transform="translate(536,730) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="578" y="759.36" font-size="26" font-weight="700" fill="#17202B">Storage team</text>
+<rect x="956" y="520" width="400" height="268" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="976" y="536" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="1013.5" y="562.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="1066" y="564.08" font-size="28" font-weight="700" fill="#6F5600">Network</text>
+<rect x="980" y="596" width="196" height="44" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1078" y="626.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">Open vSwitch</text>
+<rect x="980" y="656" width="201" height="44" rx="17" fill="#FDFCF9" stroke="#B38A00" stroke-width="2"/>
+<text x="1080" y="686.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">ovn-controller</text>
+<g transform="translate(980,730) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="1022" y="759.36" font-size="26" font-weight="700" fill="#17202B">Network team</text>
+<rect x="1420" y="464" width="380" height="348" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1444" y="503.92" font-size="22" font-weight="700" fill="#55606E" letter-spacing="2">SITE B AND MORE</text>
+<rect x="1444" y="524" width="332" height="68" rx="12" fill="#FDFCF9" stroke="#C6343C" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1468" y="567.36" font-size="26" font-weight="700" fill="#A3262E">Compute</text>
+<g transform="translate(1640,538) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="1680" y="565.92" font-size="22" font-weight="400" fill="#55606E">team</text>
+<rect x="1444" y="608" width="332" height="68" rx="12" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1468" y="651.36" font-size="26" font-weight="700" fill="#0B5F69">Storage</text>
+<g transform="translate(1640,622) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="1680" y="649.92" font-size="22" font-weight="400" fill="#55606E">team</text>
+<rect x="1444" y="692" width="332" height="68" rx="12" fill="#FDFCF9" stroke="#B38A00" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1468" y="735.36" font-size="26" font-weight="700" fill="#6F5600">Network</text>
+<g transform="translate(1640,706) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="1680" y="733.92" font-size="22" font-weight="400" fill="#55606E">team</text>
+<text x="1444" y="800.2" font-size="20" font-weight="400" fill="#55606E">each run by a team of its own</text>
+<polyline points="300,276 300,509.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="300,520 292.8,505 307.2,505" fill="#B0387F"/>
+<text x="288" y="380.2" font-size="20" font-weight="400" fill="#8A2B63" text-anchor="end">compute contract</text>
+<polyline points="440,520 440,286.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="440,276 447.2,291 432.8,291" fill="#2457C5"/>
+<text x="452" y="366.2" font-size="20" font-weight="700" fill="#1D47A6">hvo calls the Nova API:</text>
+<text x="452" y="394.2" font-size="20" font-weight="400" fill="#1D47A6">maintenance, eviction, aggregates</text>
+<polyline points="900,520 900,286.5" fill="none" stroke="#B0387F" stroke-width="3"/>
+<polygon points="900,276 907.2,291 892.8,291" fill="#B0387F"/>
+<text x="912" y="380.2" font-size="20" font-weight="400" fill="#8A2B63">PushSecret</text>
+<polyline points="1290,520 1290,286.5" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1290,276 1297.2,291 1282.8,291" fill="#2457C5"/>
+<text x="1302" y="366.2" font-size="20" font-weight="700" fill="#1D47A6">ovn-controller joins</text>
+<text x="1302" y="394.2" font-size="20" font-weight="400" fill="#1D47A6">the Southbound database</text>
+<rect x="40" y="852" width="1760" height="96" rx="12" fill="#FBEFE3" stroke="#C9620F" stroke-width="2"/>
+<g transform="translate(64,880) scale(0.5357)"><circle cx="28" cy="13" r="10" fill="none" stroke="#17202B" stroke-width="4.67"/><path d="M28 23 L28 49 M10 34 L46 34 M28 49 L13 72 M28 49 L43 72" fill="none" stroke="#17202B" stroke-width="4.67" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="106" y="909.36" font-size="26" font-weight="700" fill="#17202B">Platform team</text>
+<text x="330" y="909.64" font-size="24" font-weight="400" fill="#2B3440">bare metal with IronCore or metal-stack, and every Kubernetes cluster above with Gardener</text>
+<rect x="40" y="988" width="1760" height="2" rx="0" fill="#D5D9DE"/>
+<text x="40" y="1039.36" font-size="26" font-weight="700" fill="#17202B">Add a hypervisor</text>
+<text x="40" y="1078.24" font-size="24" font-weight="400" fill="#55606E">The compute team labels a node. The pool registers</text>
+<text x="40" y="1109.44" font-size="24" font-weight="400" fill="#55606E">it in Nova, and hvo adds it to the aggregate of its</text>
+<text x="40" y="1140.64" font-size="24" font-weight="400" fill="#55606E">zone.</text>
+<text x="640" y="1039.36" font-size="26" font-weight="700" fill="#17202B">Maintain a hypervisor</text>
+<text x="640" y="1078.24" font-size="24" font-weight="400" fill="#55606E">The compute team sets spec.maintenance on the</text>
+<text x="640" y="1109.44" font-size="24" font-weight="400" fill="#55606E">node's Hypervisor. hvo disables the host in Nova</text>
+<text x="640" y="1140.64" font-size="24" font-weight="400" fill="#55606E">and live-migrates its servers.</text>
+<text x="1240" y="1039.36" font-size="26" font-weight="700" fill="#17202B">Rotate a credential</text>
+<text x="1240" y="1078.24" font-size="24" font-weight="400" fill="#55606E">The ControlPlane rewrites the compute contract on</text>
+<text x="1240" y="1109.44" font-size="24" font-weight="400" fill="#55606E">every compute cluster in place. Nobody hands the</text>
+<text x="1240" y="1140.64" font-size="24" font-weight="400" fill="#55606E">new values over.</text>
+</svg>
