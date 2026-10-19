@@ -7,6 +7,7 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,6 +108,92 @@ func TestAuthenticate_UnexpectedStatusIncludesBoundedBodySnippet(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("no route: auth-tokens"))
 	// The 4KB body must be truncated to the snippet limit, not embedded whole.
 	g.Expect(len(err.Error())).To(BeNumerically("<", 512))
+}
+
+// matchesSentinel reports whether err matches one of the identity sentinel
+// errors callers branch on.
+func matchesSentinel(err error) bool {
+	for _, sentinel := range identity.Sentinels {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return false
+}
+
+// A 5xx from an API call is no sentinel: the error carries the status and a
+// snippet of the body, and the faulted request is recorded once.
+func TestGetDomainByName_ServerErrorIsNotASentinel(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClient(t)
+	srv.InjectFault(fake.Fault{
+		Method: http.MethodGet,
+		Path:   "/v3/domains",
+		Status: http.StatusServiceUnavailable,
+		Body:   `{"error":{"code":503}}`,
+	})
+
+	_, err := c.GetDomainByName(context.Background(), "corp")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(matchesSentinel(err)).To(BeFalse(), "a 5xx must not read as a recoverable class")
+	g.Expect(err.Error()).To(ContainSubstring("unexpected HTTP 503"))
+	// The snippet is %q-quoted, so the body's quotes arrive escaped.
+	g.Expect(err.Error()).To(ContainSubstring(`(body: "{\"error\":{\"code\":503}}")`))
+	g.Expect(srv.Requests()).To(Equal([]string{"POST /v3/auth/tokens", "GET /v3/domains"}))
+}
+
+// A 5xx at the token endpoint fails the call before any API request is sent.
+func TestAuthenticate_ServerErrorIsNotASentinel(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClient(t)
+	srv.InjectFault(fake.Fault{Method: http.MethodPost, Path: "/v3/auth/tokens", Status: http.StatusServiceUnavailable})
+
+	_, err := c.GetDomainByName(context.Background(), "corp")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(matchesSentinel(err)).To(BeFalse())
+	g.Expect(err.Error()).To(ContainSubstring("authenticating against"))
+	g.Expect(err.Error()).To(ContainSubstring("unexpected HTTP 503"))
+	g.Expect(srv.Requests()).To(HaveLen(1))
+}
+
+// A connection the server drops on the token request surfaces as io.EOF. The
+// token POST is not replayable, so net/http reports the failure instead of
+// retrying it on a new connection.
+func TestAuthenticate_ClosedConnectionSurfacesEOF(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClient(t)
+	srv.SeedDomain("corp", "", true)
+	ctx := context.Background()
+	srv.InjectFault(fake.Fault{Method: http.MethodPost, Path: "/v3/auth/tokens", CloseConnection: true, Times: 1})
+
+	_, err := c.GetDomainByName(ctx, "corp")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, io.EOF)).To(BeTrue(), "got %v", err)
+	g.Expect(err.Error()).To(ContainSubstring("authenticating against"))
+	g.Expect(matchesSentinel(err)).To(BeFalse())
+
+	d, err := c.GetDomainByName(ctx, "corp")
+	g.Expect(err).NotTo(HaveOccurred(), "the spent fault no longer fires")
+	g.Expect(d.Name).To(Equal("corp"))
+	g.Expect(srv.Requests()).To(Equal([]string{"POST /v3/auth/tokens", "POST /v3/auth/tokens", "GET /v3/domains"}),
+		"the dropped token request reached the server once")
+}
+
+// A connection the server drops on an authenticated API request surfaces as
+// io.EOF behind the method and path. The PATCH is not replayable, so net/http
+// reports the failure instead of retrying it.
+func TestUpdateDomain_ClosedConnectionSurfacesEOF(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClient(t)
+	id := srv.SeedDomain("corp", "", true)
+	srv.InjectFault(fake.Fault{Method: http.MethodPatch, Path: "/v3/domains/" + id, CloseConnection: true, Times: 1})
+
+	err := c.UpdateDomain(context.Background(), id, ptr.To(false), nil)
+	g.Expect(errors.Is(err, io.EOF)).To(BeTrue(), "got %v", err)
+	g.Expect(err.Error()).To(HavePrefix("PATCH /domains/" + id))
+	g.Expect(err.Error()).NotTo(ContainSubstring("authenticating against"))
+	g.Expect(matchesSentinel(err)).To(BeFalse())
+	g.Expect(srv.GetDomain(id).Enabled).To(BeTrue(), "the dropped PATCH wrote nothing")
 }
 
 func TestUpdateDomain_PatchesEnabledAndDescription(t *testing.T) {
