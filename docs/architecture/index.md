@@ -26,6 +26,70 @@ target clusters.
 
 ![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../diagrams/cobaltcore-management-cluster.svg)
 
+## A composable control plane
+
+CobaltCore does not run OpenStack as one deployment that carries every service
+and every backend. Each service is a custom resource of its own, reconciled by
+an operator of its own, and each backend a service uses is a custom resource as
+well. A control plane is the set of resources that exist, so adding, removing,
+or replacing one part is a change to one resource.
+
+![A ControlPlane and the parts it is assembled from. Through spec.services the ControlPlane creates one service resource per block: Keystone for identity, Barbican for secrets, Glance for images, Cinder for block storage, Nova for compute, and Neutron for the network, and a further service when one is added. Each service carries the backend resources that name it: KeystoneIdentityBackend for an LDAP domain, an OIDC provider or a SAML provider; BarbicanSecretStore for a dedicated or an external OpenBao; GlanceBackend for S3 stores, one of them the default; CinderBackend for NFS and RBD, and CinderBackupBackend for NFS or RBD; NovaCompute for a pool on labelled nodes or a pool on a compute cluster. Neutron names an OVNCentral with the OVN databases, and OVNChassis resources name that central for compute and gateway nodes. Dashed slots mark where more backends of a kind attach. Horizon and Placement attach no backends. Attach: apply a CR that names the service, or add an entry to the ControlPlane, and the service projects it into its config. Detach: delete the CR or drop the entry. Scale: spec.sizing sets replicas and resources per component and can autoscale the APIs, and more pools, backends, and ControlPlanes add capacity.](../diagrams/cobaltcore-building-blocks.svg)
+
+The `ControlPlane` creates one service resource per block under
+`spec.services`, and every block is optional. A ControlPlane without
+`services.cinder` runs no block storage, and `CinderReady` reports the service
+as not managed instead of holding back `Ready`. A block can also give its
+service a namespace, a target cluster, or a database and cache of its own; see
+[Multi-cluster placement](#multi-cluster-placement) and
+[DedicatedBackingServices](../reference/c5c3/controlplane-crd.md#dedicatedbackingservices).
+
+A backend attaches to its service by reference. The backend resource names the
+service in a `spec.*Ref` field. The service collects every backend that names
+it and renders them into its configuration, and the backend reports
+`ConfigProjected` once the service's pods run with that configuration
+([the handshake](../reference/backend/kubernetes-packages.md#satellite-handshake)).
+Deleting the resource detaches the backend the same way. Compute and network
+nodes join through pool resources. A `NovaCompute` or an `OVNChassis` selects
+nodes by label and puts the agents of its service onto them.
+
+| Domain | Resource | Names | Adds | Guides |
+| --- | --- | --- | --- | --- |
+| Identity | `KeystoneIdentityBackend` | a `Keystone` (`spec.keystoneRef`) | One LDAP domain, or one OIDC or SAML identity provider | [LDAP](../guides/keystone/ldap-domain-backend.md), [OIDC](../guides/keystone/oidc-federation.md), [SAML](../guides/keystone/saml-federation.md) |
+| Secrets | `BarbicanSecretStore` | a `Barbican` (`spec.barbicanRef`) | The OpenBao that holds the secrets, dedicated or external | [Dedicated OpenBao](../guides/barbican/barbican-dedicated-openbao.md), [External OpenBao](../guides/barbican/attach-external-openbao.md) |
+| Images | `GlanceBackend` | a `Glance` (`spec.glanceRef`) | One S3 store; the one marked `isDefault` is the default store | [S3 multi-store](../guides/glance/glance-s3-multistore.md) |
+| Block storage | `CinderBackend` | a `Cinder` (`spec.cinderRef`) | One NFS or RBD backend with a `cinder-volume` Deployment of its own | [NFS](../guides/cinder/attach-an-nfs-backend.md), [RBD](../guides/cinder/attach-an-rbd-backend.md) |
+| Backup | `CinderBackupBackend` | a `Cinder` (`spec.cinderRef`) | The NFS or RBD target of `cinder-backup` | [NFS](../guides/cinder/configure-nfs-backups.md), [RBD](../guides/cinder/configure-rbd-backups.md) |
+| Compute | `NovaCompute` | a `Nova` (`spec.novaRef`) | One pool of hypervisor nodes, on this cluster or on a compute cluster | [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) |
+| Network | `OVNChassis` | an `OVNCentral` (`spec.centralRef`) | Open vSwitch and `ovn-controller` on one class of nodes | [Label a Node as a Compute or Network Node](../guides/ovn/label-a-chassis-node.md) |
+| Metadata | `NeutronMetadataAgent` | an `OVNChassis` (`spec.chassisRef`) | The metadata agent on the nodes of that chassis | [NeutronMetadataAgent CRD](../reference/neutron/neutron-metadata-agent-crd.md) |
+
+The ControlPlane projects the Glance, Barbican, and Cinder backends from
+entries in its own spec (`glance.backends`, `barbican.secretStore`,
+`cinder.backends`, `cinder.backupBackend`) and deletes a projected backend once
+its entry is gone. Identity backends, compute pools, chassis, and metadata
+agents are applied beside the ControlPlane. It watches three of them: an
+identity backend that turns `Ready` updates the login choices of Horizon, a
+compute pool on a compute cluster receives the compute contract there, and a
+metadata agent there receives a copy of the metadata shared secret. The OVN
+databases are an
+`OVNCentral` of their own, which the Neutron service reads through
+`services.neutron.ovn.centralRef`.
+
+The stack scales by the same means. `spec.sizing` sets the replicas and
+resources of every component and can autoscale the API Deployments
+([SizingSpec](../reference/c5c3/controlplane-crd.md#sizingspec)). Capacity
+grows by adding parts: another `CinderBackend` runs a `cinder-volume`
+Deployment of its own, another `NovaCompute` pool or another labelled node adds
+hypervisors, and another `ControlPlane` in another namespace adds a whole
+control plane ([Several control planes](#several-control-planes)). A new
+service is an operator of its own and one more block in `spec.services`
+([Adding a New Operator](../contributing/adding-a-new-operator.md)). A service
+that CobaltCore does not operate registers with a `KeystoneService` and orders
+its database, bus, and credentials from the ControlPlane
+([Register a Service the ControlPlane Does Not Manage](../guides/register-a-foreign-service.md),
+[Order Resources from a ControlPlane](../guides/order-resources-from-a-controlplane.md)).
+
 ## Layering
 
 The stack is built in three declarative layers.
