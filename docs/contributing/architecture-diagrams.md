@@ -20,8 +20,8 @@ the page embeds. A change to a diagram updates both files in the same commit.
 | `brownfield-keystone-adoption-phases` | The four adoption phases: implemented identity-only management, followed by sketches for infrastructure attach, Keystone takeover, and steady state | [Brownfield Keystone Adoption phase model](../future/brownfield-keystone-adoption.md#phase-model) |
 | `cobaltcore-overview` | What CobaltCore does, as a layer stack from bare metal to the OpenStack clouds, and why it matters | [Overview](../index.md) |
 | `cobaltcore-management-cluster` | The implemented management cluster, from one `ControlPlane` CR to the running OpenStack services, with optional target clusters | [Implemented topology](../architecture/index.md#implemented-topology), [Quick Start (ControlPlane)](../quick-start-controlplane.md), [Core Components](../architecture/core-components.md), [ControlPlane Reconciler Architecture](../reference/c5c3/controlplane-reconciler.md), [ControlPlane CRD API Reference](../reference/c5c3/controlplane-crd.md), [Target Clusters](../reference/target-clusters.md), [Architecture Overview](../reference/infrastructure/e2e-deployment.md#architecture-overview) |
-| `cobaltcore-stack` | The stack layer by layer, with the project behind each layer (IronCore, Garden Linux, Gardener, CobaltCore, OpenStack) | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture) |
-| `cobaltcore-architecture` | The five clusters (Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, OpenStack Network) on Garden Linux, managed by Gardener, on bare metal managed by IronCore | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture), [Hypervisor Cluster](../future/hypervisor-cluster.md), [Storage Cluster](../future/storage-cluster.md), [Management Cluster](../future/management-cluster.md) |
+| `cobaltcore-stack` | The stack layer by layer, with the project behind each layer (IronCore or metal-stack, Garden Linux, Gardener, CobaltCore, OpenStack) | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture) |
+| `cobaltcore-architecture` | The five clusters (Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, OpenStack Network) on Garden Linux, managed by Gardener, on bare metal managed by IronCore or metal-stack | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture), [Hypervisor Cluster](../future/hypervisor-cluster.md), [Storage Cluster](../future/storage-cluster.md), [Management Cluster](../future/management-cluster.md) |
 | `cobaltcore-control-planes` | One Operation and Monitoring cluster that creates and manages several OpenStack control planes | [Several control planes](../architecture/index.md#several-control-planes) |
 | `cobaltcore-attached-clusters` | One control plane with several storage, compute, and network clusters attached | [Attached clusters](../architecture/index.md#attached-clusters), [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) |
 | `quickstart-map` | The five quick starts as a map: what each deploys and ends with, and the four ways they relate | [Start here](../index.md#start-here), [Quick Start](../quick-start.md), [Quick Start (Extended)](../quick-start-extended.md), [Quick Start (ControlPlane)](../quick-start-controlplane.md), [Quick Start (metal-stack)](../quick-start-metal-stack.md), [Quick Start (Orders)](../quick-start-orders.md), [One devstack per guide](./guide-conventions.md#one-devstack-per-guide) |
@@ -160,7 +160,7 @@ installed falls back to Arial.
 
 | Element | Stroke | Text | Fill |
 | --- | --- | --- | --- |
-| IronCore / bare-metal node | `#C9620F` | `#A44E07` | `#FBEFE3` (node: `#FFF8F1`) |
+| IronCore or metal-stack / bare-metal node | `#C9620F` | `#A44E07` | `#FBEFE3` (node: `#FFF8F1`) |
 | Gardener | `#5E43A8` | `#4B3592` | `#EEEAF7` |
 | CobaltCore / Operation and Monitoring / c5c3-operator | `#2F8A57` | `#1E6B40` | `#E6F1EA` |
 | OpenStack Control Plane / API / services | `#2457C5` | `#1D47A6` | `#E7EDF9` |
@@ -174,12 +174,13 @@ installed falls back to Arial.
 
 The shapes and arrows carry a fixed meaning:
 
-- Orange node frames: bare-metal servers that IronCore provisions and
-  manages.
-- Solid orange arrows: IronCore manages the nodes out of band. Where a
-  Gardener arrow crosses one, the orange line has a small gap.
+- Orange node frames: bare-metal servers that IronCore or metal-stack
+  provisions and manages.
+- Solid orange arrows: IronCore or metal-stack manages the nodes out of band.
+  Where a Gardener arrow crosses one, the orange line has a small gap.
 - A violet **K8s** chip and violet arrows mark a Kubernetes cluster that
-  Gardener creates and manages through its IronCore provider extension.
+  Gardener creates and manages through its IronCore or metal-stack provider
+  extension.
 - A grey **K8s** chip marks a Kubernetes cluster whose management the diagram
   leaves open.
 - Blue arrows: OpenStack API and control-plane connections.

@@ -118,20 +118,24 @@ spread its services across clusters. See
 The implemented topology is the starting point for a picture in which every
 role runs in a Kubernetes cluster of its own. Each layer of that picture comes
 from an open-source project of its own. IronCore provisions the servers,
-manages their lifecycle, and manages the switches. Garden Linux is the
-operating system on every node, and Gardener creates and manages the
-Kubernetes clusters through its IronCore provider extension. CobaltCore runs
-the OpenStack control planes on those clusters, with one `ControlPlane`
-resource per control plane, and OpenStack provides the VMs, the storage, and
-the network.
+manages their lifecycle, and manages the switches, and metal-stack can take
+its place for the same three tasks. Garden Linux is the operating system on
+every node, and Gardener creates and manages the Kubernetes clusters through
+its provider extension for IronCore or for metal-stack. CobaltCore runs the
+OpenStack control planes on those clusters, with one `ControlPlane` resource
+per control plane, and OpenStack provides the VMs, the storage, and the
+network. On metal-stack, the nodes run one of the operating system images
+metal-stack builds, such as Debian or Ubuntu. The
+[Quick Start (metal-stack)](../quick-start-metal-stack.md) runs CobaltCore on
+such a Gardener shoot today.
 
-![The stack layer by layer, with the project behind each layer: IronCore for server provisioning, server lifecycle, and switch management; Garden Linux as the operating system on every node; Gardener for the Kubernetes clusters, created and managed via the IronCore provider extension; CobaltCore for the OpenStack control planes, Kubernetes operators with one ControlPlane resource per control plane; OpenStack for VMs (Nova on KVM or Cloud Hypervisor), storage (Cinder on Ceph), and network (Neutron on OVN).](../diagrams/cobaltcore-stack.svg)
+![The stack layer by layer, with the project behind each layer: IronCore or metal-stack for server provisioning, server lifecycle, and switch management; Garden Linux as the operating system on every node; Gardener for the Kubernetes clusters, created and managed via the IronCore or metal-stack provider extension; CobaltCore for the OpenStack control planes, Kubernetes operators with one ControlPlane resource per control plane; OpenStack for VMs (Nova on KVM or Cloud Hypervisor), storage (Cinder on Ceph), and network (Neutron on OVN).](../diagrams/cobaltcore-stack.svg)
 
-Laid out as clusters, the stack becomes five Kubernetes clusters. IronCore
-provisions every bare-metal node and manages it out of band (OOB), and Gardener
-creates and manages every cluster.
+Laid out as clusters, the stack becomes five Kubernetes clusters. IronCore or
+metal-stack provisions every bare-metal node and manages it out of band (OOB),
+and Gardener creates and manages every cluster.
 
-![Five Kubernetes clusters on Garden Linux nodes: CobaltCore Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, and OpenStack Network. Gardener manages the clusters, IronCore provisions the bare-metal nodes and manages them out of band. API users call the OpenStack API on the control plane; end users reach the VMs through the network cluster.](../diagrams/cobaltcore-architecture.svg)
+![Five Kubernetes clusters on Garden Linux nodes: CobaltCore Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, and OpenStack Network. Gardener manages the clusters, IronCore or metal-stack provisions the bare-metal nodes and manages them out of band. API users call the OpenStack API on the control plane; end users reach the VMs through the network cluster.](../diagrams/cobaltcore-architecture.svg)
 
 The OpenStack Control Plane cluster serves the OpenStack API, which API users
 call to launch VMs, and connects to the storage, compute, and network clusters.
