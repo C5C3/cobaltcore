@@ -20,6 +20,7 @@ the page embeds. A change to a diagram updates both files in the same commit.
 | `brownfield-keystone-adoption-phases` | The four adoption phases: implemented identity-only management, followed by sketches for infrastructure attach, Keystone takeover, and steady state | [Brownfield Keystone Adoption phase model](../future/brownfield-keystone-adoption.md#phase-model) |
 | `cobaltcore-overview` | What CobaltCore does, as a layer stack from bare metal to the OpenStack clouds, and why it matters | [Overview](../index.md) |
 | `cobaltcore-management-cluster` | The implemented management cluster, from one `ControlPlane` CR to the running OpenStack services, with optional target clusters | [Implemented topology](../architecture/index.md#implemented-topology), [Quick Start (ControlPlane)](../quick-start-controlplane.md), [Core Components](../architecture/core-components.md), [ControlPlane Reconciler Architecture](../reference/c5c3/controlplane-reconciler.md), [ControlPlane CRD API Reference](../reference/c5c3/controlplane-crd.md), [Target Clusters](../reference/target-clusters.md), [Architecture Overview](../reference/infrastructure/e2e-deployment.md#architecture-overview) |
+| `cobaltcore-building-blocks` | The ControlPlane assembled from parts: the service resources it creates, the backend and pool resources that attach to each by reference, and how parts attach, detach and scale | [A composable control plane](../architecture/index.md#a-composable-control-plane) |
 | `cobaltcore-stack` | The stack layer by layer, with the project behind each layer (IronCore or metal-stack, Garden Linux, Gardener, CobaltCore, OpenStack) | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture) |
 | `cobaltcore-architecture` | The five clusters (Operation and Monitoring, OpenStack Control Plane, Ceph Storage, OpenStack Compute, OpenStack Network) on Garden Linux, managed by Gardener, on bare metal managed by IronCore or metal-stack | [The multi-cluster target picture](../architecture/index.md#the-multi-cluster-target-picture), [Hypervisor Cluster](../future/hypervisor-cluster.md), [Storage Cluster](../future/storage-cluster.md), [Management Cluster](../future/management-cluster.md) |
 | `cobaltcore-control-planes` | One Operation and Monitoring cluster that creates and manages several OpenStack control planes | [Several control planes](../architecture/index.md#several-control-planes) |
@@ -142,7 +143,7 @@ A file is named `<prefix><subject>`, lower case, words joined by hyphens.
 
 | Prefix | Figures |
 | --- | --- |
-| `cobaltcore-` | The product architecture: the six figures of the start page and the Architecture page |
+| `cobaltcore-` | The product architecture: the seven figures of the start page and the Architecture page |
 | `quickstart-` | Entry pages: the quick-start map and the request path |
 | `secrets-` | Secret and credential paths between OpenBao, ESO, the operators and the services |
 | `controlplane-` | ControlPlane orchestration, placement, target clusters and the orders |

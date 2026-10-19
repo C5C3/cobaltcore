@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="1150" viewBox="0 0 1840 1150" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="One control plane, assembled from parts">
+<title>One control plane, assembled from parts</title>
+<rect width="1840" height="1150" fill="#F6F5F1"/>
+<rect x="40" y="40" width="220" height="848" rx="20" fill="#1E6B40"/>
+<text x="150" y="454.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane</text>
+<text x="150.5" y="491.92" font-size="22" font-weight="400" fill="#DCEFE3" text-anchor="middle">spec.services</text>
+<rect x="540" y="40" width="809.67" height="104" rx="12" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="584" y="75.64" font-size="24" font-weight="700" fill="#2B3440">KeystoneIdentityBackend</text>
+<text x="893" y="75.92" font-size="22" font-weight="400" fill="#55606E">spec.keystoneRef</text>
+<rect x="584" y="90" width="187.7" height="42" rx="20" fill="#2B3440"/>
+<text x="677.5" y="119.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">LDAP domain</text>
+<rect x="785.7" y="90" width="196.9" height="42" rx="20" fill="#2B3440"/>
+<text x="884" y="119.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">OIDC provider</text>
+<rect x="996.6" y="90" width="200.83" height="42" rx="20" fill="#2B3440"/>
+<text x="1097" y="119.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">SAML provider</text>
+<rect x="1211.43" y="90" width="114.24" height="42" rx="20" fill="#FDFCF9" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1269" y="119.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">+ more</text>
+<rect x="320" y="52" width="240" height="80" rx="20" fill="#1D47A6"/>
+<text x="439.5" y="89.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Keystone</text>
+<text x="440" y="117.92" font-size="22" font-weight="400" fill="#E7EDF9" text-anchor="middle">identity</text>
+<polyline points="260,92 309.5,92" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="320,92 305,99.2 305,84.8" fill="#2F8A57"/>
+<rect x="540" y="164" width="614.42" height="104" rx="12" fill="#F7E8F0" stroke="#B0387F" stroke-width="2"/>
+<text x="584" y="199.64" font-size="24" font-weight="700" fill="#8A2B63">BarbicanSecretStore</text>
+<text x="833" y="199.92" font-size="22" font-weight="400" fill="#55606E">spec.barbicanRef</text>
+<rect x="584" y="214" width="257.26" height="42" rx="20" fill="#8A2B63"/>
+<text x="712.5" y="243.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">dedicated OpenBao</text>
+<text x="855" y="243.64" font-size="24" font-weight="400" fill="#55606E">or</text>
+<rect x="891.5" y="214" width="238.92" height="42" rx="20" fill="#8A2B63"/>
+<text x="1011" y="243.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">external OpenBao</text>
+<rect x="320" y="176" width="240" height="80" rx="20" fill="#1D47A6"/>
+<text x="440" y="213.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Barbican</text>
+<text x="440" y="241.92" font-size="22" font-weight="400" fill="#E7EDF9" text-anchor="middle">secrets</text>
+<polyline points="260,216 309.5,216" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="320,216 305,223.2 305,208.8" fill="#2F8A57"/>
+<rect x="540" y="288" width="435.26" height="104" rx="12" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="584" y="323.64" font-size="24" font-weight="700" fill="#0B5F69">GlanceBackend</text>
+<text x="775" y="323.92" font-size="22" font-weight="400" fill="#55606E">spec.glanceRef</text>
+<rect x="584" y="338" width="159.65" height="42" rx="20" fill="#0B5F69"/>
+<text x="663.5" y="367.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">S3, default</text>
+<rect x="757.65" y="338" width="65.38" height="42" rx="20" fill="#0B5F69"/>
+<text x="790.5" y="367.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">S3</text>
+<rect x="837.02" y="338" width="114.24" height="42" rx="20" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="894" y="367.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">+ more</text>
+<rect x="320" y="300" width="240" height="80" rx="20" fill="#1D47A6"/>
+<text x="439.5" y="337.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Glance</text>
+<text x="440" y="365.92" font-size="22" font-weight="400" fill="#E7EDF9" text-anchor="middle">images</text>
+<polyline points="260,340 309.5,340" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="320,340 305,347.2 305,332.8" fill="#2F8A57"/>
+<rect x="540" y="412" width="402.73" height="104" rx="12" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="584" y="447.64" font-size="24" font-weight="700" fill="#0B5F69">CinderBackend</text>
+<text x="771" y="447.92" font-size="22" font-weight="400" fill="#55606E">spec.cinderRef</text>
+<rect x="584" y="462" width="82.39" height="42" rx="20" fill="#0B5F69"/>
+<text x="625" y="491.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NFS</text>
+<rect x="680.39" y="462" width="84.91" height="42" rx="20" fill="#0B5F69"/>
+<text x="723" y="491.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">RBD</text>
+<rect x="779.3" y="462" width="114.24" height="42" rx="20" fill="#FDFCF9" stroke="#0E7D89" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="836" y="491.64" font-size="24" font-weight="700" fill="#0B5F69" text-anchor="middle">+ more</text>
+<rect x="958.73" y="412" width="467.55" height="104" rx="12" fill="#E3F1F2" stroke="#0E7D89" stroke-width="2"/>
+<text x="983" y="447.64" font-size="24" font-weight="700" fill="#0B5F69">CinderBackupBackend</text>
+<text x="1254" y="447.92" font-size="22" font-weight="400" fill="#55606E">spec.cinderRef</text>
+<rect x="982.73" y="462" width="165.86" height="42" rx="20" fill="#0B5F69"/>
+<text x="1065.5" y="491.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">NFS or RBD</text>
+<rect x="320" y="424" width="240" height="80" rx="20" fill="#1D47A6"/>
+<text x="440" y="461.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Cinder</text>
+<text x="440.5" y="489.92" font-size="22" font-weight="400" fill="#E7EDF9" text-anchor="middle">block storage</text>
+<polyline points="260,464 309.5,464" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="320,464 305,471.2 305,456.8" fill="#2F8A57"/>
+<rect x="540" y="536" width="826.18" height="104" rx="12" fill="#F8E8E9" stroke="#C6343C" stroke-width="2"/>
+<text x="584" y="571.64" font-size="24" font-weight="700" fill="#A3262E">NovaCompute</text>
+<text x="758" y="571.92" font-size="22" font-weight="400" fill="#55606E">spec.novaRef</text>
+<rect x="584" y="586" width="289.42" height="42" rx="20" fill="#A3262E"/>
+<text x="728.5" y="615.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">pool on labelled nodes</text>
+<rect x="887.42" y="586" width="326.52" height="42" rx="20" fill="#A3262E"/>
+<text x="1051" y="615.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">pool on a compute cluster</text>
+<rect x="1227.94" y="586" width="114.24" height="42" rx="20" fill="#FDFCF9" stroke="#C6343C" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1285" y="615.64" font-size="24" font-weight="700" fill="#A3262E" text-anchor="middle">+ more</text>
+<rect x="320" y="548" width="240" height="80" rx="20" fill="#1D47A6"/>
+<text x="439.5" y="585.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Nova</text>
+<text x="439.5" y="613.92" font-size="22" font-weight="400" fill="#E7EDF9" text-anchor="middle">compute</text>
+<polyline points="260,588 309.5,588" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="320,588 305,595.2 305,580.8" fill="#2F8A57"/>
+<rect x="540" y="660" width="461.83" height="104" rx="12" fill="#FAF3DA" stroke="#B38A00" stroke-width="2"/>
+<text x="584" y="695.64" font-size="24" font-weight="700" fill="#6F5600">OVNCentral</text>
+<text x="731" y="695.92" font-size="22" font-weight="400" fill="#55606E">named by ovn.centralRef</text>
+<rect x="584" y="710" width="208.8" height="42" rx="20" fill="#6F5600"/>
+<text x="688" y="739.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">OVN databases</text>
+<rect x="1017.83" y="660" width="604.82" height="104" rx="12" fill="#FAF3DA" stroke="#B38A00" stroke-width="2"/>
+<text x="1042" y="695.64" font-size="24" font-weight="700" fill="#6F5600">OVNChassis</text>
+<text x="1193" y="695.92" font-size="22" font-weight="400" fill="#55606E">spec.centralRef</text>
+<rect x="1041.83" y="710" width="208.66" height="42" rx="20" fill="#6F5600"/>
+<text x="1146" y="739.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">compute nodes</text>
+<rect x="1264.49" y="710" width="205.92" height="42" rx="20" fill="#6F5600"/>
+<text x="1367.5" y="739.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">gateway nodes</text>
+<rect x="1484.41" y="710" width="114.24" height="42" rx="20" fill="#FDFCF9" stroke="#B38A00" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="1542" y="739.64" font-size="24" font-weight="700" fill="#6F5600" text-anchor="middle">+ more</text>
+<rect x="320" y="672" width="240" height="80" rx="20" fill="#1D47A6"/>
+<text x="439.5" y="709.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Neutron</text>
+<text x="440.5" y="737.92" font-size="22" font-weight="400" fill="#E7EDF9" text-anchor="middle">network</text>
+<polyline points="260,712 309.5,712" fill="none" stroke="#2F8A57" stroke-width="3"/>
+<polygon points="320,712 305,719.2 305,704.8" fill="#2F8A57"/>
+<rect x="320" y="796" width="240" height="80" rx="20" fill="#FDFCF9" stroke="#2457C5" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="440.5" y="846.08" font-size="28" font-weight="700" fill="#1D47A6" text-anchor="middle">+ service</text>
+<polyline points="260,836 309.5,836" fill="none" stroke="#2F8A57" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="320,836 305,843.2 305,828.8" fill="#2F8A57"/>
+<text x="584" y="820.24" font-size="24" font-weight="400" fill="#55606E">Horizon and Placement attach no backends. A new service brings an operator of its own and one more block in</text>
+<text x="584" y="851.44" font-size="24" font-weight="400" fill="#55606E">spec.services; a service from outside registers with a KeystoneService.</text>
+<rect x="40" y="932" width="1760" height="2" rx="0" fill="#D5D9DE"/>
+<text x="40" y="983.36" font-size="26" font-weight="700" fill="#17202B">Attach</text>
+<text x="40" y="1022.24" font-size="24" font-weight="400" fill="#55606E">Apply a CR that names the service, or add an entry</text>
+<text x="40" y="1053.44" font-size="24" font-weight="400" fill="#55606E">to the ControlPlane. The service projects it into its</text>
+<text x="40" y="1084.64" font-size="24" font-weight="400" fill="#55606E">config.</text>
+<text x="640" y="983.36" font-size="26" font-weight="700" fill="#17202B">Detach</text>
+<text x="640" y="1022.24" font-size="24" font-weight="400" fill="#55606E">Delete the CR, or drop the entry. The service</text>
+<text x="640" y="1053.44" font-size="24" font-weight="400" fill="#55606E">renders its config without it.</text>
+<text x="1240" y="983.36" font-size="26" font-weight="700" fill="#17202B">Scale</text>
+<text x="1240" y="1022.24" font-size="24" font-weight="400" fill="#55606E">spec.sizing sets replicas and resources per</text>
+<text x="1240" y="1053.44" font-size="24" font-weight="400" fill="#55606E">component and can autoscale the APIs. More pools,</text>
+<text x="1240" y="1084.64" font-size="24" font-weight="400" fill="#55606E">backends and ControlPlanes add capacity.</text>
+</svg>
