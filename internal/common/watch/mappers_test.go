@@ -347,20 +347,26 @@ func satelliteClient(objs ...client.Object) client.WithWatch {
 		Build()
 }
 
+// errIndexerBoom is what failingIndexer rejects with, so a wrap can be
+// asserted with errors.Is.
+var errIndexerBoom = errors.New("boom")
+
 // failingIndexer rejects every registration so the error wrapping is testable.
 type failingIndexer struct{}
 
 func (failingIndexer) IndexField(context.Context, client.Object, string, client.IndexerFunc) error {
-	return errors.New("boom")
+	return errIndexerBoom
 }
 
 // recordingIndexer accepts the registration and keeps what it was given.
 type recordingIndexer struct {
+	obj     client.Object
 	key     string
 	extract client.IndexerFunc
 }
 
-func (r *recordingIndexer) IndexField(_ context.Context, _ client.Object, field string, extract client.IndexerFunc) error {
+func (r *recordingIndexer) IndexField(_ context.Context, obj client.Object, field string, extract client.IndexerFunc) error {
+	r.obj = obj
 	r.key = field
 	r.extract = extract
 	return nil
@@ -393,6 +399,7 @@ func TestRegisterParentRefIndex_WrapsError(t *testing.T) {
 			&corev1.ConfigMap{}, testParentIndexKey, parentOfConfigMap)
 
 		g.Expect(err).To(gomega.MatchError(`registering field indexer "spec.parentRef.name": boom`))
+		g.Expect(errors.Is(err, errIndexerBoom)).To(gomega.BeTrue())
 	})
 
 	t.Run("an accepted registration passes the parent-ref indexer through", func(t *testing.T) {
@@ -406,6 +413,32 @@ func TestRegisterParentRefIndex_WrapsError(t *testing.T) {
 		g.Expect(indexer.key).To(gomega.Equal(testParentIndexKey))
 		g.Expect(indexer.extract).NotTo(gomega.BeNil())
 		g.Expect(indexer.extract(cmSatellite("backend", "ns1", "glance", ""))).To(gomega.Equal([]string{"glance"}))
+	})
+}
+
+func TestRegisterSecretNameIndex_WrapsError(t *testing.T) {
+	t.Run("a rejected registration is wrapped with the index key", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		err := RegisterSecretNameIndex(context.Background(), failingIndexer{},
+			&corev1.ConfigMap{}, testIndexKey, indexByRefAnnotation)
+
+		g.Expect(err).To(gomega.MatchError(`registering field indexer "spec.secretRefs.name": boom`))
+		g.Expect(errors.Is(err, errIndexerBoom)).To(gomega.BeTrue())
+	})
+
+	t.Run("an accepted registration passes the object and extractor through", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		indexer := &recordingIndexer{}
+		obj := &corev1.ConfigMap{}
+
+		err := RegisterSecretNameIndex(context.Background(), indexer, obj, testIndexKey, indexByRefAnnotation)
+
+		g.Expect(err).To(gomega.Succeed())
+		g.Expect(indexer.obj).To(gomega.BeIdenticalTo(obj))
+		g.Expect(indexer.key).To(gomega.Equal(testIndexKey))
+		g.Expect(indexer.extract).NotTo(gomega.BeNil())
+		g.Expect(indexer.extract(testCM("cm", "ns1", "db-secret"))).To(gomega.Equal([]string{"db-secret"}))
 	})
 }
 
