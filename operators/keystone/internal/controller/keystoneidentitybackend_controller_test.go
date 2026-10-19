@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -553,6 +554,67 @@ func TestBackendDelete_DeletePolicyDisablesThenDeletes(t *testing.T) {
 	expectBackendEvent(g, r, "Normal DomainDeleted")
 }
 
+// TestBackendDelete_DomainDeleteFaultRetriesOnBoundedPoll covers a failed
+// disable or delete under deletionPolicy Delete: the teardown warns, keeps the
+// finalizer and the domain, and retries on the bounded poll instead of failing
+// the reconcile or releasing the backend.
+func TestBackendDelete_DomainDeleteFaultRetriesOnBoundedPoll(t *testing.T) {
+	cases := []struct {
+		name        string
+		method      string
+		wantEnabled bool
+		// events are the expected events in emission order.
+		events []string
+	}{
+		{
+			name:        "disable fails",
+			method:      http.MethodPatch,
+			wantEnabled: true,
+			events:      []string{`Warning DomainDeleteFailed Disabling domain "corp" failed`},
+		},
+		{
+			name:        "delete fails",
+			method:      http.MethodDelete,
+			wantEnabled: false,
+			events:      []string{"Normal DomainDisabled", `Warning DomainDeleteFailed Deleting domain "corp" failed`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			srv := identityfake.NewServer(testAdminPassword)
+			t.Cleanup(srv.Close)
+			id := srv.SeedDomain("corp", "", true)
+
+			ks := testKeystoneWithReadyAPI()
+			backend := deletingBackend(id, keystonev1alpha1.DomainDeletionPolicyDelete, keystonev1alpha1.DomainModeManage)
+			r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+			srv.InjectFault(identityfake.Fault{Method: tc.method, Path: "/v3/domains/" + id, Status: http.StatusInternalServerError})
+
+			result, err := r.Reconcile(ctx, backendRequest(backend))
+			g.Expect(err).NotTo(HaveOccurred(), "a failed teardown step retries on the poll, not through the error path")
+			g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
+			g.Expect(backendHasFinalizer(t, r.Client, "corp-ldap")).To(BeTrue())
+			domain := srv.GetDomain(id)
+			g.Expect(domain).NotTo(BeNil())
+			g.Expect(domain.Enabled).To(Equal(tc.wantEnabled))
+			for _, ev := range tc.events {
+				expectBackendEvent(g, r, ev)
+			}
+
+			srv.ClearFaults()
+			result, err = r.Reconcile(ctx, backendRequest(backend))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(result.IsZero()).To(BeTrue())
+			g.Expect(srv.GetDomain(id)).To(BeNil())
+			var gone keystonev1alpha1.KeystoneIdentityBackend
+			err = r.Get(ctx, client.ObjectKey{Namespace: "default", Name: "corp-ldap"}, &gone)
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "finalizer released, backend gone")
+		})
+	}
+}
+
 func TestBackendDelete_AdoptedDomainAlwaysRetained(t *testing.T) {
 	g := NewGomegaWithT(t)
 	srv := identityfake.NewServer(testAdminPassword)
@@ -726,6 +788,121 @@ func TestBackendReconcile_ProvisionedDomainSurvivesIdentityAPIOutage(t *testing.
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "an unreachable API says nothing about the provisioned domain")
 	g.Expect(cond.Reason).To(Equal(conditionReasonDomainProvisioned))
 	g.Expect(updated.Status.DomainID).NotTo(BeEmpty())
+}
+
+// TestBackendReconcile_IdentityAPIFaultReportsIdentityAPIError covers an
+// identity-API failure before the first successful provisioning, where no
+// provisioned True guards the condition: DomainReady reports IdentityAPIError,
+// the error goes to the workqueue, nothing is half-created, and the first pass
+// after the fault provisions the domain.
+func TestBackendReconcile_IdentityAPIFaultReportsIdentityAPIError(t *testing.T) {
+	cases := []struct {
+		name     string
+		fault    identityfake.Fault
+		messages []string
+		// mutating is the request log's mutating subset after the faulted pass.
+		mutating []string
+	}{
+		{
+			name:     "domain lookup fails",
+			fault:    identityfake.Fault{Method: http.MethodGet, Path: "/v3/domains", Status: http.StatusServiceUnavailable},
+			messages: []string{`looking up domain "corp"`, "503"},
+		},
+		{
+			name:     "domain create fails",
+			fault:    identityfake.Fault{Method: http.MethodPost, Path: "/v3/domains", Status: http.StatusInternalServerError},
+			messages: []string{`creating domain "corp"`, "500"},
+			mutating: []string{"POST /v3/domains"},
+		},
+		{
+			name:     "token request fails",
+			fault:    identityfake.Fault{Method: http.MethodPost, Path: "/v3/auth/tokens", Status: http.StatusServiceUnavailable},
+			messages: []string{"looking up domain", "authenticating against", "unexpected HTTP 503"},
+		},
+		{
+			name:     "token connection drops",
+			fault:    identityfake.Fault{Method: http.MethodPost, Path: "/v3/auth/tokens", CloseConnection: true},
+			messages: []string{"looking up domain", "EOF"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			srv := identityfake.NewServer(testAdminPassword)
+			t.Cleanup(srv.Close)
+
+			ks := testKeystoneWithReadyAPI()
+			backend := testIdentityBackend("corp-ldap", "corp")
+			backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+			r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+			srv.InjectFault(tc.fault)
+
+			result, err := reconcileBackendTwice(t, r, backend)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(errors.Is(err, identity.ErrNotFound)).To(BeFalse())
+			g.Expect(result.IsZero()).To(BeTrue())
+
+			failed := getBackend(t, r.Client, "corp-ldap")
+			cond := commonconditions.GetCondition(failed.Status.Conditions, conditionTypeDomainReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(conditionReasonIdentityAPIError))
+			for _, m := range tc.messages {
+				g.Expect(cond.Message).To(ContainSubstring(m))
+			}
+			g.Expect(failed.Status.DomainID).To(BeEmpty())
+			g.Expect(srv.MutatingRequests()).To(Equal(tc.mutating))
+			g.Expect(srv.GetDomainByName("corp")).To(BeNil())
+
+			srv.ClearFaults()
+			_, err = r.Reconcile(context.Background(), backendRequest(backend))
+			g.Expect(err).NotTo(HaveOccurred())
+
+			provisioned := getBackend(t, r.Client, "corp-ldap")
+			cond = commonconditions.GetCondition(provisioned.Status.Conditions, conditionTypeDomainReady)
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(cond.Reason).To(Equal(conditionReasonDomainProvisioned))
+			domain := srv.GetDomainByName("corp")
+			g.Expect(domain).NotTo(BeNil())
+			g.Expect(provisioned.Status.DomainID).To(Equal(domain.ID))
+			expectBackendEvent(g, r, "Normal DomainCreated")
+		})
+	}
+}
+
+// A failed drift write on a provisioned domain surfaces as a reconcile error
+// while DomainReady stays True: the IdentityAPIError demotion is transient and
+// dropped. The write goes through on the first pass after the fault.
+func TestBackendReconcile_UpdateFaultPreservesProvisionedDomain(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	live := getBackend(t, r.Client, "corp-ldap")
+	live.Spec.Domain.Description = "renamed"
+	g.Expect(r.Update(ctx, live)).To(Succeed())
+	srv.InjectFault(identityfake.Fault{Method: http.MethodPatch, Path: "/v3/domains/", Status: http.StatusInternalServerError})
+
+	_, err = r.Reconcile(ctx, backendRequest(backend))
+	g.Expect(err).To(MatchError(ContainSubstring(`updating domain "corp"`)))
+	cond := commonconditions.GetCondition(getBackend(t, r.Client, "corp-ldap").Status.Conditions, conditionTypeDomainReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDomainProvisioned))
+	g.Expect(srv.GetDomainByName("corp").Description).To(BeEmpty(), "the failed PATCH wrote nothing")
+
+	srv.ClearFaults()
+	_, err = r.Reconcile(ctx, backendRequest(backend))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(srv.GetDomainByName("corp").Description).To(Equal("renamed"))
 }
 
 // A provisioned DomainReady must equally ride out a KeystoneAPIReady=False
