@@ -1,0 +1,123 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Lab failover test: API eviction drain.
+#
+# Fault: no chaos object. lf_evict_drain evicts the three API pods of
+# keystone, horizon, glance, placement, barbican, neutron, cinder and
+# nova, one service after the other, through the pods/eviction
+# subresource, so PDB cp-ha-<svc> (minAvailable 1) sets the pace; a
+# refused eviction is retried every 5 s. It is no node drain: hvo's
+# maint-<node> PDBs block every node drain on the lab.
+#
+# Claim, phase by phase:
+#   fault     For each service, the PDB answers at least one eviction with
+#             TooManyRequests, and the ready endpoints of Service
+#             cp-ha-<svc> never drop to 0.
+#   recovery  For each service, three new Ready pods replace the three
+#             originals within 300 s (DRAIN-OK). After the last service the
+#             ControlPlane reads Ready/AllReady within 300 s.
+#
+# Blast radius: the 24 API pods of openstack-ha, the three of one service
+# at a time; no hostNetwork pod, no chaos object, no node.
+#
+# Leg: lab only, through `hack/lab-failover.sh run` after the go-ahead;
+# neither nightly nor gating (D2 of #1386). The plane is the Standard
+# ControlPlane openstack-ha/cp-ha that `hack/lab-failover.sh up` brings up.
+#
+# Workload: the token, network, server, volume, image, placement, secret and
+# http streams of ../../e2e-chaos/lib/workload.sh run against the plane's
+# in-cluster endpoints through the fault, as the plane's admin; verify adds
+# the Placement audit of cp-ha-nova and the OVN database comparison of
+# cp-ha-neutron. The budget is an estimate until a lab run measures it.
+# Chaos budget: failures=10 recovery=120s
+# Chaos budget measured: 2026-10-19, estimate, failures 10, recovery 120 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: api-eviction-drain
+spec:
+  namespace: openstack-ha
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: The plane and its three clusters are healthy ───────────────
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          lf_baseline
+    catch:
+    - &lf-dump
+      script:
+        timeout: 5m
+        shell: bash
+        content: |
+          . ../lib/failover.sh
+          lf_dump
+  # ── Step 2: Start the workload ─────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          lf_workload_start api-eviction-drain token,network,server,volume,image,placement,secret,http
+    catch:
+    - *lf-dump
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../../e2e-chaos/lib/workload.sh dump api-eviction-drain
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../../e2e-chaos/lib/workload.sh stop api-eviction-drain
+  # ── Step 3: Drain the eight APIs ───────────────────────────────────────
+  # A drain that fails is recorded and the next service is drained all the
+  # same, so the run shows every service; the step fails at its end.
+  - try:
+    - script:
+        timeout: 45m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          ../../e2e-chaos/lib/workload.sh mark api-eviction-drain fault-start
+          failed=""
+          for svc in $LF_APIS; do
+            lf_evict_drain "$svc" 300 || failed="${failed} ${svc}"
+          done
+          ../../e2e-chaos/lib/workload.sh mark api-eviction-drain fault-end
+          if [ -n "$failed" ]; then
+            echo "FAIL: the drain of${failed} failed"
+            exit 1
+          fi
+    catch:
+    - *lf-dump
+    - *workload-dump
+  # ── Step 4: Recovery ─────────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 7m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          lf_wait_cp_ready 300
+    catch:
+    - *lf-dump
+    - *workload-dump
+  # ── Step 5: Judge the workload against the budget ─────────────────────
+  - try:
+    - script:
+        timeout: 17m
+        content: ../../e2e-chaos/lib/workload.sh verify api-eviction-drain --placement-audit cp-ha-nova --ovn-db-sync cp-ha-neutron
+    catch:
+    - *lf-dump
+    - *workload-dump
