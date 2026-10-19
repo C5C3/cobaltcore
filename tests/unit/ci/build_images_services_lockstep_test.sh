@@ -21,6 +21,12 @@
 # re-derives, and a name dropped from any of them merges a drifted catalog
 # with every suite green.
 #
+# The pull_request trigger lists each component the workflow reaches by name,
+# where the push trigger keeps the catch-alls .github/actions/** and hack/ci-*.
+# A composite action or a hack script the workflow reaches, directly or through
+# another composite action, but the list leaves out is changed by a pull
+# request that never starts this workflow, and the change merges unbuilt.
+#
 # Usage: bash tests/unit/ci/build_images_services_lockstep_test.sh
 
 set -uo pipefail
@@ -57,6 +63,63 @@ release_services() {
     [ -f "$file" ] || continue
     yq -r 'keys | .[]' "$file"
   done | sort -u
+}
+
+# trigger_paths <trigger> — the entries of the trigger's paths: list, one per
+# line, quotes stripped.
+trigger_paths() {
+  awk -v trigger="  $1:" '
+    $0 == trigger { in_trigger = 1; next }
+    in_trigger && (/^  [a-z_]+:$/ || /^[^ #]/) { exit }
+    in_trigger && /^    paths:$/ { in_paths = 1; next }
+    in_trigger && /^    [a-z]/ { in_paths = 0 }
+    in_paths && /^      - / { sub(/^      - /, ""); gsub(/"/, ""); print }
+  ' "$WORKFLOW"
+}
+
+# workflow_jobs — the workflow from its jobs: key on, so the trigger lists do
+# not count as something the workflow reaches.
+workflow_jobs() {
+  sed -n '/^jobs:$/,$p' "$WORKFLOW"
+}
+
+# local_action_names — the names of the ./.github/actions/<name> references on
+# stdin, one per line, sorted.
+local_action_names() {
+  grep -oE 'uses: \./\.github/actions/[a-z0-9-]+' | sed 's|.*/||' | LC_ALL=C sort -u
+}
+
+# reached_actions — every local composite action the workflow uses, directly
+# or through another composite action, one per line, sorted.
+reached_actions() {
+  local reached frontier next name
+  reached=$(workflow_jobs | local_action_names)
+  frontier="$reached"
+  while [ -n "$frontier" ]; do
+    next=$(for name in $frontier; do
+      local_action_names <"$PROJECT_ROOT/.github/actions/$name/action.yaml"
+    done | LC_ALL=C sort -u | LC_ALL=C comm -13 <(printf '%s\n' "$reached") -)
+    reached=$(printf '%s\n%s\n' "$reached" "$next" | grep -v '^$' | LC_ALL=C sort -u)
+    frontier="$next"
+  done
+  printf '%s\n' "$reached"
+}
+
+# reached_scripts — every hack/*.sh the workflow or a reached action names,
+# one per line, sorted.
+reached_scripts() {
+  local name
+  {
+    workflow_jobs
+    for name in $(reached_actions); do
+      cat "$PROJECT_ROOT/.github/actions/$name/action.yaml"
+    done
+  } | grep -oE 'hack/[a-z0-9-]+\.sh' | LC_ALL=C sort -u
+}
+
+# listed <list> <entry> — yes when the list carries the entry as a whole line.
+listed() {
+  grep -qxF -- "$2" <<<"$1" && echo yes || echo no
 }
 
 # ---------------------------------------------------------------------------
@@ -155,6 +218,41 @@ test_catalog_check_is_wired() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 5: the pull_request trigger names what the workflow reaches
+# ---------------------------------------------------------------------------
+test_pull_request_trigger_names_what_the_workflow_reaches() {
+  echo "Test: the pull_request trigger names every action and script the workflow reaches"
+
+  local pr push actions scripts name
+  pr=$(trigger_paths pull_request)
+  push=$(trigger_paths push)
+  actions=$(reached_actions)
+  scripts=$(reached_scripts)
+  assert_not_empty "the pull_request trigger lists paths" "$pr"
+  assert_not_empty "the push trigger lists paths" "$push"
+  assert_not_empty "the workflow reaches at least one composite action" "$actions"
+  assert_not_empty "the workflow runs at least one hack script" "$scripts"
+
+  for name in $actions; do
+    assert_eq "pull_request.paths names the reached action ${name}" "yes" \
+      "$(listed "$pr" ".github/actions/${name}/**")"
+  done
+  for name in $scripts; do
+    assert_eq "pull_request.paths names the reached script ${name}" "yes" \
+      "$(listed "$pr" "$name")"
+  done
+
+  assert_eq "push.paths keeps the composite-action catch-all" "yes" \
+    "$(listed "$push" ".github/actions/**")"
+  assert_eq "push.paths keeps the ci script catch-all" "yes" \
+    "$(listed "$push" "hack/ci-*")"
+  assert_eq "pull_request.paths names the workflow itself" "yes" \
+    "$(listed "$pr" ".github/workflows/build-images.yaml")"
+  assert_eq "push.paths names the workflow itself" "yes" \
+    "$(listed "$push" ".github/workflows/build-images.yaml")"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_all_services_matches_the_releases
@@ -163,6 +261,7 @@ test_no_orphan_service_filter
 for service in cinder nova; do
   test_catalog_check_is_wired "$service"
 done
+test_pull_request_trigger_names_what_the_workflow_reaches
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
