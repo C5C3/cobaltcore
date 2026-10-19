@@ -600,6 +600,15 @@ flags: unit-${{ matrix.target }}
 The `if: always()` condition ensures coverage is uploaded even when tests fail, so partial
 coverage data is not lost.
 
+Fuzz targets. The Go fuzz targets (`func Fuzz*` in any `*_fuzz_test.go` file under
+`internal/` or `operators/`) run in seed-only mode in this job, in
+`test-race` and under `make test`: `go test` without `-fuzz` runs each target once per
+seed, so the targets stay compiled and green on every pull request. `make fuzz FUZZ_TIME=10m`
+runs each target for the budget instead, one `go test -fuzz` invocation per target, and
+stops at the first failure. No workflow schedules such a long run. `go test` writes a crasher
+to `testdata/fuzz/<FuzzName>/` beside the package; fix the cause and commit that file as a
+regression seed.
+
 ### test-integration
 
 Runs envtest-based integration tests with a matrix strategy resolved per pull
