@@ -1082,8 +1082,11 @@ cover already. The placed Neutron runs against a broker address that resolves
 nowhere (`rabbitmq.openstack.invalid`), which a Nova cannot do: membership
 would mean a real broker on the target cluster, a seventh operator on the
 management cluster and an eighth image inside a 90-minute job. The operator's
-envtest keeps Nova's remote teardown covered, and #1013 covers it against a
-real second cluster when compute clusters arrive. #1019 does not reopen it.
+envtest keeps Nova's remote teardown covered. Compute clusters attach since
+#1013 ([Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md));
+no suite runs Nova against a real second cluster yet
+([What this repository tests](../../guides/nova/connect-a-compute-cluster.md#what-this-repository-tests)).
+#1019 does not reopen it.
 
 ### e2e-operator-upgrade
 
