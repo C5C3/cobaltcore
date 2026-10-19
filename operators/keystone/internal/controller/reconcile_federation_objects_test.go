@@ -122,26 +122,50 @@ func TestOIDCBackend_ProvisionsFederationObjects(t *testing.T) {
 	expectBackendEventContaining(g, r, "Normal IdentityProviderCreated")
 }
 
+// TestOIDCBackend_SteadyStateIssuesNoMutatingRequests covers each mapping
+// shape whose converged pass must see no drift against the rules the identity
+// API returns.
 func TestOIDCBackend_SteadyStateIssuesNoMutatingRequests(t *testing.T) {
-	g := NewGomegaWithT(t)
-	srv := identityfake.NewServer(testAdminPassword)
-	t.Cleanup(srv.Close)
-	srv.SeedRole("member")
+	cases := []struct {
+		name   string
+		mutate func(*keystonev1alpha1.KeystoneIdentityBackend)
+	}{
+		{
+			name:   "default mapping",
+			mutate: func(*keystonev1alpha1.KeystoneIdentityBackend) {},
+		},
+		{
+			// The converted rules omit the empty roles list on the wire.
+			name: "project without roles",
+			mutate: func(b *keystonev1alpha1.KeystoneIdentityBackend) {
+				b.Spec.Mappings[0].Local[0].Projects = []keystonev1alpha1.MappingProjectSpec{{Name: "demo"}}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			srv := identityfake.NewServer(testAdminPassword)
+			t.Cleanup(srv.Close)
+			srv.SeedRole("member")
 
-	ks := testKeystoneWithReadyAPI()
-	backend := testOIDCBackend("corp-oidc", "corp")
-	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+			ks := testKeystoneWithReadyAPI()
+			backend := testOIDCBackend("corp-oidc", "corp")
+			tc.mutate(backend)
+			r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
 
-	_, err := reconcileBackendTwice(t, r, backend)
-	g.Expect(err).NotTo(HaveOccurred())
-	converged := len(srv.MutatingRequests())
-	g.Expect(converged).To(BeNumerically(">", 0), "the first pass must have provisioned objects")
+			_, err := reconcileBackendTwice(t, r, backend)
+			g.Expect(err).NotTo(HaveOccurred())
+			converged := len(srv.MutatingRequests())
+			g.Expect(converged).To(BeNumerically(">", 0), "the first pass must have provisioned objects")
 
-	// A steady-state pass must be read-only against the identity API.
-	_, err = r.Reconcile(context.Background(), backendRequest(backend))
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(srv.MutatingRequests()).To(HaveLen(converged),
-		"a converged pass must not issue mutating federation requests")
+			// A steady-state pass must be read-only against the identity API.
+			_, err = r.Reconcile(context.Background(), backendRequest(backend))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(srv.MutatingRequests()).To(HaveLen(converged),
+				"a converged pass must not issue mutating federation requests")
+		})
+	}
 }
 
 func TestOIDCBackend_RulesDriftTriggersSingleMappingUpdate(t *testing.T) {

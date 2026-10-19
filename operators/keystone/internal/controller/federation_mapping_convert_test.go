@@ -6,6 +6,7 @@ package controller
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/federation"
@@ -19,6 +20,41 @@ func TestToGophercloudMappingRules_EmptyAndNil(t *testing.T) {
 	g := NewGomegaWithT(t)
 	g.Expect(toGophercloudMappingRules(nil)).To(BeNil())
 	g.Expect(toGophercloudMappingRules([]keystonev1alpha1.MappingRuleSpec{})).To(BeNil())
+}
+
+// TestToGophercloudMappingRules_EmptyListsSurviveWireRoundTrip guards the
+// drift compare in ensureMappingAndGroups: keystone returns the rules as
+// stored, so the converted rules must equal what json.Unmarshal makes of
+// their own wire JSON. A project without roles and an empty remote matcher
+// list all marshal to an omitted key and come back nil.
+func TestToGophercloudMappingRules_EmptyListsSurviveWireRoundTrip(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	out := toGophercloudMappingRules([]keystonev1alpha1.MappingRuleSpec{{
+		Local: []keystonev1alpha1.MappingLocalRuleSpec{
+			{Projects: []keystonev1alpha1.MappingProjectSpec{{Name: "demo"}}},
+			{Groups: "{0}"},
+		},
+		Remote: []keystonev1alpha1.MappingRemoteRuleSpec{
+			{Type: "HTTP_OIDC_ISS", AnyOneOf: []string{}},
+			{Type: "HTTP_OIDC_GROUPS", NotAnyOf: []string{}, Blacklist: []string{}},
+			{Type: "HTTP_OIDC_EMAIL", Whitelist: []string{}},
+		},
+	}})
+
+	payload, err := json.Marshal(federation.CreateMappingOpts{Rules: out})
+	g.Expect(err).NotTo(HaveOccurred())
+	var back federation.CreateMappingOpts
+	g.Expect(json.Unmarshal(payload, &back)).To(Succeed())
+	g.Expect(reflect.DeepEqual(back.Rules, out)).To(BeTrue(),
+		"rules read back from the wire JSON must deep-equal the converted rules: got %#v, want %#v", back.Rules, out)
+
+	g.Expect(out[0].Local[0].Projects[0].Roles).To(BeNil())
+	g.Expect(out[0].Local[1].Projects).To(BeNil())
+	g.Expect(out[0].Remote[0].AnyOneOf).To(BeNil())
+	g.Expect(out[0].Remote[1].NotAnyOf).To(BeNil())
+	g.Expect(out[0].Remote[1].Blacklist).To(BeNil())
+	g.Expect(out[0].Remote[2].Whitelist).To(BeNil())
 }
 
 // TestToGophercloudMappingRules_FullShape converts a rule exercising every
