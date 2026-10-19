@@ -6,6 +6,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -224,4 +225,63 @@ func TestDeleteOrphanedChildFunc_HonorsThePredicate(t *testing.T) {
 	// Absent object is a no-op.
 	g.Expect(DeleteOrphanedChildFunc(context.Background(), c,
 		&skelCR{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: "elsewhere"}}, ours)).To(gomega.Succeed())
+}
+
+// controlsAll claims every child, so the cleanup always reaches the delete.
+func controlsAll(client.Object) bool { return true }
+
+// orphanRef is the key-only child the cleanup is asked to remove.
+func orphanRef() *skelCR {
+	return &skelCR{ObjectMeta: metav1.ObjectMeta{Name: "x", Namespace: "elsewhere"}}
+}
+
+func TestDeleteOrphanedChildFunc_WrapsAReadError(t *testing.T) {
+	g := gomega.NewWithT(t)
+	boom := apierrors.NewInternalError(errors.New("boom"))
+	c := fake.NewClientBuilder().WithScheme(skelScheme(t)).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return boom
+		},
+	}).Build()
+
+	err := DeleteOrphanedChildFunc(context.Background(), c, orphanRef(), controlsAll)
+	g.Expect(err).To(gomega.MatchError(
+		"getting *reconcile.skelCR elsewhere/x for orphan cleanup: Internal error occurred: boom"))
+	g.Expect(errors.Is(err, boom)).To(gomega.BeTrue())
+}
+
+func TestDeleteOrphanedChildFunc_WrapsADeleteError(t *testing.T) {
+	g := gomega.NewWithT(t)
+	live := newSkelCR()
+	live.Name = "x"
+	live.Namespace = "elsewhere"
+	boom := apierrors.NewInternalError(errors.New("boom"))
+	c := fake.NewClientBuilder().WithScheme(skelScheme(t)).WithObjects(live).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+			return boom
+		},
+	}).Build()
+
+	err := DeleteOrphanedChildFunc(context.Background(), c, orphanRef(), controlsAll)
+	g.Expect(err).To(gomega.MatchError(
+		"deleting orphaned *reconcile.skelCR elsewhere/x: Internal error occurred: boom"))
+	g.Expect(errors.Is(err, boom)).To(gomega.BeTrue())
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Namespace: "elsewhere", Name: "x"}, &skelCR{})).
+		To(gomega.Succeed(), "a refused delete must leave the child in place")
+}
+
+// The child vanished between the read and the delete: the cleanup it asked
+// for has happened, so the race is not an error.
+func TestDeleteOrphanedChildFunc_ToleratesNotFoundOnDelete(t *testing.T) {
+	g := gomega.NewWithT(t)
+	live := newSkelCR()
+	live.Name = "x"
+	live.Namespace = "elsewhere"
+	c := fake.NewClientBuilder().WithScheme(skelScheme(t)).WithObjects(live).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+			return apierrors.NewNotFound(skelGVK.WithResource("skelcrs").GroupResource(), "x")
+		},
+	}).Build()
+
+	g.Expect(DeleteOrphanedChildFunc(context.Background(), c, orphanRef(), controlsAll)).To(gomega.Succeed())
 }
