@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Seeds the flavor and the image the server stream of the lab failover suites
+# boots from: flavor m1.nano and the public raw image
+# 4e0a0000-0000-4000-8000-000000001393 (LF_SEED_FLAVOR and LF_SEED_IMAGE of
+# ../lib/failover.sh), each only when it is absent, so a retry converges.
+# `hack/lab-failover.sh up` applies it once ControlPlane cp-ha reads
+# NovaReady=True.
+#
+# The image must end active. A failed upload leaves its record queued, and
+# Glance never takes the id again, so an image that is present but not active
+# fails the Job instead of passing it on to the suites.
+#
+# The image id is lab-specific: the lab's own Glance and the one of cp-ha both
+# write into the Garage bucket glance-images and key their objects by image
+# id. Glance refuses to store an id whose object exists, so `down` deletes the
+# image through cp-ha's Glance (06-purge-job.yaml) before the plane's database
+# goes. The payload is 1 MiB of zeros, as in
+# tests/e2e-chaos/nova-placement-outage/09-image-seed-job.yaml; the fake
+# driver of 05-fake-compute.yaml never reads it.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cp-ha-seed
+  namespace: openstack-ha
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      # The seed calls the OpenStack APIs only, so the pod gets no token. The
+      # image runs as UID 42424; the context is the one the workload pod of
+      # tests/e2e-chaos/lib/workload.sh runs on the same image with.
+      automountServiceAccountToken: false
+      containers:
+        - name: seed
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 42424
+            runAsGroup: 42424
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: OS_AUTH_URL
+              value: http://cp-ha-keystone.openstack-ha.svc:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cp-ha-keystone-admin-credentials
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              if openstack flavor show m1.nano >/dev/null 2>&1; then
+                echo "OK: flavor m1.nano already present"
+              else
+                openstack flavor create --vcpus 1 --ram 64 --disk 0 --public m1.nano
+                echo "OK: flavor m1.nano created"
+              fi
+
+              SEED_ID="4e0a0000-0000-4000-8000-000000001393"
+              if STATUS="$(openstack image show "${SEED_ID}" -f value -c status 2>/dev/null)"; then
+                if [ "${STATUS}" = active ]; then
+                  echo "OK: seed image ${SEED_ID} already present"
+                  exit 0
+                fi
+                echo "ERROR: seed image ${SEED_ID} is ${STATUS}, not active; make lab-failover-down deletes it" >&2
+                exit 1
+              fi
+              dd if=/dev/zero of=/tmp/seed.img bs=1M count=1
+              openstack image create --id "${SEED_ID}" \
+                --disk-format raw --container-format bare \
+                --public --file /tmp/seed.img lab-failover-seed
+              STATUS="$(openstack image show "${SEED_ID}" -f value -c status)"
+              if [ "${STATUS}" != active ]; then
+                echo "ERROR: seed image ${SEED_ID} is ${STATUS} after its upload, not active" >&2
+                exit 1
+              fi
+              echo "OK: seed image ${SEED_ID} registered and active"

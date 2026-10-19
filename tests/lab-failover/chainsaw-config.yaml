@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw configuration of the lab failover suites (#1393), which
+# hack/lab-failover.sh run hands to chainsaw. The values are those of
+# tests/e2e-chaos/chainsaw-config.yaml, apart from two:
+#   - cleanup.skipDelete: true. Every suite runs in the namespace openstack-ha,
+#     which `hack/lab-failover.sh up` creates and `down` deletes, and which
+#     holds the plane under test. Chainsaw never owns or deletes it, and every
+#     object a suite creates (chaos objects, the workload pod) is deleted by
+#     that suite's own scripts.
+#   - the report name, chainsaw-lab-failover-report. `run` passes the report
+#     path of each scenario on the command line.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cobaltcore-lab-failover
+spec:
+  timeouts:
+    apply: 30s
+    assert: 300s
+    cleanup: 120s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  cleanup:
+    skipDelete: true
+
+  execution:
+    failFast: true
+    parallel: 1
+
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-lab-failover-report
+    path: _output/lab-failover

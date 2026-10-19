@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OpenBao tenant of the namespace openstack-ha, which
+# `hack/lab-failover.sh up` applies before the ControlPlane cp-ha.
+#
+# The dedicated Barbican store of cp-ha makes the c5c3-operator admit the
+# namespace with an OpenBaoTenant of its own, which carries no quota, so the
+# openbao-operator applies its default ResourceQuota of 50 pods
+# (reconcile_barbican_openbao.go). The eight-service Standard plane runs about
+# 56 pods. The operator skips its own tenant when any tenant already targets
+# the namespace, so this one, with twice the default quota, admits openstack-ha
+# instead.
+#
+# It lives in openbao-operator-system, as deploy/kind/infrastructure/
+# openbao-tenant.yaml does: the lab's admission policy
+# openbao-operator-openbao-validate-openbao-tenant admits a tenant that targets
+# another namespace only from the operator namespace. spec.limitRange stays
+# unset, so the default LimitRange applies: 500m and 512Mi default limits,
+# 100m and 128Mi default requests. Standard sets no MariaDB or Memcached
+# resources, and `up` writes what the LimitRange admitted to topology.txt.
+#
+# `hack/lab-failover.sh down` deletes the tenant, which holds a finalizer over
+# the namespace, before the namespace.
+apiVersion: openbao.org/v1alpha1
+kind: OpenBaoTenant
+metadata:
+  name: openstack-ha
+  namespace: openbao-operator-system
+spec:
+  targetNamespace: openstack-ha
+  quota:
+    hard:
+      pods: "100"
+      requests.cpu: "40"
+      requests.memory: 128Gi
+      limits.cpu: "80"
+      limits.memory: 256Gi

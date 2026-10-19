@@ -1,0 +1,122 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Deletes what ControlPlane cp-ha stored in the lab's shared storage, through
+# its own APIs: every volume of its Cinder, RBD images in the lab's Ceph pool
+# volumes, and every image of its Glance, objects in the lab's Garage bucket
+# glance-images keyed by image id. Once the plane's databases are gone nothing
+# names these objects, and the next `up` could not store the seed image
+# (04-seed-job.yaml) under its fixed id again. `hack/lab-failover.sh down`
+# applies it before it deletes the ControlPlane, also after a suite that
+# failed before the workload's own sweep ran.
+#
+# A volume with an attachment refuses its delete even with --force, so the
+# attachments go first; the workload's name no instance, so Cinder deletes
+# them without asking Nova. Servers stay: the fake driver stores nothing, and
+# with the fake compute gone their delete would wait for a compute that never
+# answers. A volume that reads anything but deleting after its delete fails
+# the Job, and so does one still deleting after three attempts, so `down`
+# stops while the plane's APIs are still there for another try.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cp-ha-purge
+  namespace: openstack-ha
+spec:
+  backoffLimit: 2
+  # The backstop for an attempt that hangs in an API call. The Job controller
+  # deletes a pod still running at the deadline; bash as PID 1 ignores the
+  # SIGTERM, so the pod runs out the default 30 s termination grace. Deadline
+  # and grace end before down stops waiting for the Job (LF_WAIT_PURGE=600).
+  activeDeadlineSeconds: 560
+  template:
+    spec:
+      restartPolicy: Never
+      # The pod spec of the seed Job.
+      automountServiceAccountToken: false
+      containers:
+        - name: purge
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 42424
+            runAsGroup: 42424
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: OS_AUTH_URL
+              value: http://cp-ha-keystone.openstack-ha.svc:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cp-ha-keystone-admin-credentials
+                  key: password
+            # The attachments API needs volume 3.27.
+            - name: OS_VOLUME_API_VERSION
+              value: "3.27"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Each list is read on its own line, so a failed read stops
+              # the Job under set -e; inside a for list it would not.
+              IDS="$(openstack volume attachment list --all-projects -f value -c ID)"
+              for id in ${IDS}; do
+                openstack volume attachment delete "${id}"
+              done
+              IDS="$(openstack volume list --all-projects -f value -c ID)"
+              for id in ${IDS}; do
+                openstack volume delete --force "${id}"
+              done
+              # Cinder's API sets deleting before it casts the delete, so any
+              # other status is a delete that failed or that the driver undid
+              # (ImageBusy puts a volume back to available). Each poll prints
+              # what is left, so the log of every attempt names the volume.
+              # An attempt gives up at 150 s: three attempts and the 10 s and
+              # 20 s backoffs end inside activeDeadlineSeconds, which deletes
+              # a pod still polling and its log with it, while a pod that
+              # exits stays Failed with its log for down.
+              while true; do
+                LEFT="$(openstack volume list --all-projects -f value -c ID -c Status)"
+                if [ -z "${LEFT}" ]; then
+                  break
+                fi
+                echo "volumes of cp-ha left:"
+                echo "${LEFT}"
+                if grep -qv ' deleting$' <<<"${LEFT}"; then
+                  echo "ERROR: a volume of cp-ha did not delete" >&2
+                  exit 1
+                fi
+                if [ "${SECONDS}" -ge 150 ]; then
+                  echo "ERROR: a volume of cp-ha is still deleting after ${SECONDS}s" >&2
+                  exit 1
+                fi
+                sleep 5
+              done
+              echo "OK: no volume of cp-ha left"
+              IDS="$(openstack image list --all -f value -c ID)"
+              for id in ${IDS}; do
+                openstack image delete "${id}"
+              done
+              echo "OK: no image of cp-ha left"

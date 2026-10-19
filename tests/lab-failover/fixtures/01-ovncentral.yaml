@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OVN central of the ControlPlane cp-ha, referenced by
+# spec.services.neutron.ovn.centralRef of 03-controlplane.yaml. The ControlPlane
+# reads it and never sizes it (reconcile_ovn.go), and replicas is immutable
+# after creation, so the lab's controlplane-ovn at one member cannot serve.
+#
+# The spec names the lab's CA issuer and nothing else: without replicas,
+# northd or storage keys the Northbound and Southbound databases each come up
+# as a 3-member Raft cluster, with a PodDisruptionBudget of maxUnavailable 1,
+# and northd runs 3 replicas. Each database is the StatefulSet
+# cp-ha-ovn-<nb|sb>, whose pods cp-ha-ovn-<nb|sb>-<i> the OVN suites fault.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: cp-ha-ovn
+  namespace: openstack-ha
+spec:
+  tls:
+    issuerRef:
+      # The cluster-scoped CA issuer the lab's controlplane-ovn uses as well.
+      name: openstack-ovn-ca-issuer
