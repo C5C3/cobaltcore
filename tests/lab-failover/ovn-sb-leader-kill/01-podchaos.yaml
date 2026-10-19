@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos of ovn-sb-leader-kill: the Southbound leader, which step 3 renders in for
+# @POD@, is killed once; @UID@ is its UID before the kill.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lf-ovn-sb-leader-kill
+  namespace: openstack-ha
+  annotations:
+    # The killed pod's UID, so step 4 can tell its replacement apart.
+    lab-failover.c5c3.io/target-uid: "@UID@"
+spec:
+  action: pod-kill
+  mode: all
+  gracePeriod: 0
+  selector:
+    pods:
+      openstack-ha:
+        - "@POD@"

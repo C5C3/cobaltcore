@@ -1,0 +1,161 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Lab failover test: OVN Northbound Raft quorum loss.
+#
+# Fault: one PodChaos pod-failure holds down the Northbound leader of
+# OVNCentral cp-ha-ovn and one follower, the lowest-index member that is
+# no leader, for 180 s. The third member is left without a quorum.
+#
+# Claim, phase by phase:
+#   fault     Within 60 s of AllInjected neither target answers, and the
+#             remaining member reports no Role: leader, at every 5 s sample
+#             until the PodChaos ran out.
+#   recovery  Once the PodChaos is gone, the three members are in the
+#             cluster with one leader within 300 s (RAFT-OK), and
+#             ovn-nbctl --wait=sb sync returns within 60 s
+#             (NORTHD-SYNC-OK).
+#
+# Blast radius: pods of openstack-ha only, selected by name; none runs on
+# hostNetwork. The PodChaos ends itself after its duration, and the catch of
+# step 3 and the finally of step 4 delete it.
+#
+# Leg: lab only, through `hack/lab-failover.sh run` after the go-ahead;
+# neither nightly nor gating (D2 of #1386). The plane is the Standard
+# ControlPlane openstack-ha/cp-ha that `hack/lab-failover.sh up` brings up.
+#
+# Workload: the token and network streams of ../../e2e-chaos/lib/workload.sh
+# run against the plane's in-cluster endpoints through the fault, as the
+# plane's admin; verify adds the Placement audit of cp-ha-nova and the OVN
+# database comparison of cp-ha-neutron. The budget is an estimate until a
+# lab run measures it.
+# Chaos budget: failures=300 recovery=300s
+# Chaos budget measured: 2026-10-19, estimate, failures 300, recovery 300 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-nb-quorum-loss
+spec:
+  namespace: openstack-ha
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: The plane and its three clusters are healthy ───────────────
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          lf_baseline
+    catch:
+    - &lf-dump
+      script:
+        timeout: 5m
+        shell: bash
+        content: |
+          . ../lib/failover.sh
+          lf_dump
+  # ── Step 2: Start the workload ─────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          lf_workload_start ovn-nb-quorum-loss token,network
+    catch:
+    - *lf-dump
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../../e2e-chaos/lib/workload.sh dump ovn-nb-quorum-loss
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../../e2e-chaos/lib/workload.sh stop ovn-nb-quorum-loss
+  # ── Step 3: Inject the fault ───────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          leader="$(ovn_leader nb)"
+          follower="$(ovn_follower nb "$leader")"
+          echo "targets: ${leader}, the leader, and ${follower}, a follower"
+          ../../e2e-chaos/lib/workload.sh mark ovn-nb-quorum-loss fault-start
+          lf_render 01-podchaos.yaml POD_A="$leader" POD_B="$follower" | kubectl apply -n "$NAMESPACE" -f -
+          kubectl wait podchaos/lf-ovn-nb-quorum-loss -n "$NAMESPACE" --for=condition=AllInjected --timeout=60s
+    catch:
+    - &lift
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/failover.sh
+          lf_delete_chaos podchaos lf-ovn-nb-quorum-loss
+    - *lf-dump
+    - *workload-dump
+  # ── Step 4: The fault check, then lift the fault ───────────────────────
+  - try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          targets=" $(kubectl get podchaos lf-ovn-nb-quorum-loss -n "$NAMESPACE" -o json | jq -r --arg ns "$NAMESPACE" '.spec.selector.pods[$ns] | join(" ")') "
+          for i in $LF_MEMBERS; do
+            case "$targets" in *" ${LF_OVN}-nb-${i} "*) ;; *) remaining="$i" ;; esac
+          done
+          echo "the remaining member: ${LF_OVN}-nb-${remaining}"
+          # The remaining member reports a role, and it is not leader.
+          no_leader() {
+            local role
+            role="$(ovn_role nb "$remaining")" || return 1
+            echo "${LF_OVN}-nb-${remaining}: Role ${role:-<none>}"
+            [ "$role" != "leader" ]
+          }
+          # Both targets are down, and the remaining member is no leader.
+          lost() {
+            local pod
+            for pod in $targets; do
+              if ovn_role nb "${pod##*-}" >/dev/null 2>&1; then return 1; fi
+            done
+            no_leader
+          }
+          lf_until 60 "both targets are down and ${LF_OVN}-nb-${remaining} is no leader" lost
+          lf_wait_expired podchaos lf-ovn-nb-quorum-loss 240 no_leader
+          lf_delete_chaos podchaos lf-ovn-nb-quorum-loss
+          ../../e2e-chaos/lib/workload.sh mark ovn-nb-quorum-loss fault-end
+    catch:
+    - *lf-dump
+    - *workload-dump
+    finally:
+    - *lift
+  # ── Step 5: Recovery ─────────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          ovn_wait_healthy nb 300
+          ovn_wait_northd_sync 60
+    catch:
+    - *lf-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ─────────────────────
+  - try:
+    - script:
+        timeout: 20m
+        content: ../../e2e-chaos/lib/workload.sh verify ovn-nb-quorum-loss --placement-audit cp-ha-nova --ovn-db-sync cp-ha-neutron
+    catch:
+    - *lf-dump
+    - *workload-dump

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos of ovn-nb-quorum-loss: the Northbound leader and a follower,
+# which step 3 renders in for @POD_A@ and @POD_B@, are down for 180 s.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: lf-ovn-nb-quorum-loss
+  namespace: openstack-ha
+spec:
+  action: pod-failure
+  mode: all
+  duration: "180s"
+  selector:
+    pods:
+      openstack-ha:
+        - "@POD_A@"
+        - "@POD_B@"
