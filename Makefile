@@ -109,6 +109,41 @@ test-race:
 	done
 
 # ============================================================================
+# Fuzz Targets
+# ============================================================================
+
+# fuzz runs every Go fuzz target (a func Fuzz* in a *_fuzz_test.go file under
+# internal/ or operators/) for FUZZ_TIME each. Without -fuzz the same targets
+# run in seed-only mode under test, test-common, test-operator and test-race;
+# this target is the long local session. go test accepts one -fuzz target and
+# one package per invocation, so the loop runs them one at a time and stops at
+# the first failure. A crasher is written to <package>/testdata/fuzz/<Fuzz
+# name>/ by go test; fix the cause and commit that file as a regression seed.
+# Finding no fuzz target, or a directory grep cannot search, fails the target.
+# So does a target go test -list does not print: go test -fuzz exits 0 without
+# fuzzing when a build constraint excludes the file or no target matches. The
+# target then prints the go test -list output, which carries a compile error or
+# a panic in TestMain. Like go test, the recipe takes a Fuzz name followed by a
+# lower-case letter (Fuzzy, FuzzerSeeds) for a helper, not a target.
+# Usage: make fuzz [FUZZ_TIME=10m]
+FUZZ_TIME ?= 30s
+.PHONY: fuzz
+fuzz:
+	@re='^func \(Fuzz\([A-Z0-9_][A-Za-z0-9_]*\)\{0,1\}\)('; \
+	files="$$(grep -rl --include='*_fuzz_test.go' "$$re" internal operators)"; \
+	if [ $$? -gt 1 ]; then echo 'fuzz: grep could not search internal/ and operators/' >&2; exit 1; fi; \
+	[ -n "$$files" ] || { echo 'fuzz: no func Fuzz* found in a *_fuzz_test.go file under internal/ or operators/' >&2; exit 1; }; \
+	for file in $$(printf '%s\n' "$$files" | sort); do \
+		dir=$$(dirname "$$file"); \
+		for fn in $$(sed -n "s/$$re.*/\1/p" "$$file"); do \
+			listed=$$(go test -list="^$$fn\$$" "./$$dir" 2>&1); \
+			printf '%s\n' "$$listed" | grep -qx "$$fn" || { printf '%s\n' "$$listed" >&2; echo "fuzz: go test does not list $$fn in $$dir (a build constraint excludes it, it does not compile, or its test binary failed)" >&2; exit 1; }; \
+			echo "Fuzzing $$fn in $$dir for $(FUZZ_TIME)..."; \
+			go test -run='^$$' -fuzz="^$$fn\$$" -fuzztime=$(FUZZ_TIME) "./$$dir" || exit 1; \
+		done; \
+	done
+
+# ============================================================================
 # Lint Targets
 # ============================================================================
 
