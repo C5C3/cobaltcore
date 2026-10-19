@@ -292,7 +292,7 @@ from `mariaDBDatabaseSubConditionTypes`, and
 | Credential delivery | `operators/c5c3/internal/controller/mariadbdatabase_delivery_test.go` |
 | The OpenBao client | `internal/common/openbao/client_test.go` |
 | The bootstrap roles, policies and `allowed_roles` | `tests/unit/deploy/order_db_openbao_bootstrap_test.sh` |
-| CRD schema | `TestIntegration_MariaDBDatabase_SchemaValidation` in `integration_test.go` |
+| CRD schema | `TestIntegration_CRD_CELOnly_MariaDBDatabase` in `operators/c5c3/api/v1alpha1/integration_test.go` |
 | An order on a target cluster | `TestIntegration_Multicluster_ControlPlanePlacement` in `multicluster_integration_test.go` |
 | End to end | `tests/e2e/c5c3/keystone-user/` |
 | Admission rejection corpus | `tests/e2e/c5c3/invalid-mariadbdatabase-cr/` |
