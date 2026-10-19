@@ -7,7 +7,10 @@
 package v1alpha1
 
 import (
+	"cmp"
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +19,9 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -754,6 +760,808 @@ func TestIntegration_CRD_CELOnly_KeystoneService(t *testing.T) {
 	} {
 		t.Run("update-"+tc.name, func(t *testing.T) {
 			expectUpdate(t, ctx, c, base(newNamespace(t, ctx, c, "celonly-ks-")), tc.mutate, tc.wantSub)
+		})
+	}
+}
+
+// --- Order kinds (no webhook on any cluster) ---
+
+// orderObject returns an order of kind as an unstructured object, so a case
+// can send the shapes a typed client never would: an empty userName, a zero
+// passwordGeneration, a controlPlaneRef without a name.
+func orderObject(kind, name, namespace string, spec map[string]any) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
+	u.SetGroupVersionKind(GroupVersion.WithKind(kind))
+	u.SetName(name)
+	u.SetNamespace(namespace)
+	return u
+}
+
+// specWith returns a deep copy of base with field set to value.
+func specWith(base map[string]any, field string, value any) map[string]any {
+	spec := runtime.DeepCopyJSON(base)
+	spec[field] = value
+	return spec
+}
+
+// specWithout returns a deep copy of base without field.
+func specWithout(base map[string]any, field string) map[string]any {
+	spec := runtime.DeepCopyJSON(base)
+	delete(spec, field)
+	return spec
+}
+
+// TestIntegration_CRD_CELOnly_KeystoneUser pins every admission rule of the
+// KeystoneUser CRD against the real envtest API server. The kind has no webhook,
+// because a target cluster runs none, so these rules are all there is; the
+// substrings are the ones the invalid-keystoneuser-cr chainsaw corpus asserts on.
+//
+// Rules: keystoneuser_types.go:18, 19, 96, 97, 121, 140, 141
+func TestIntegration_CRD_CELOnly_KeystoneUser(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	const kind = "KeystoneUser"
+	ref := map[string]any{"name": "cp"}
+	createCases := []struct {
+		name       string
+		objName    string
+		spec       map[string]any
+		wantErrSub string
+	}{
+		{name: "a comma in userName", spec: map[string]any{"controlPlaneRef": ref, "userName": "a,b"}, wantErrSub: "should match"},
+		{name: "an empty userName", spec: map[string]any{"controlPlaneRef": ref, "userName": ""}, wantErrSub: "should be at least 1 chars"},
+		{name: "a 256-byte userName", spec: map[string]any{"controlPlaneRef": ref, "userName": strings.Repeat("a", 256)}, wantErrSub: "Too long"},
+		{
+			name: "a zero passwordGeneration", spec: map[string]any{"controlPlaneRef": ref, "passwordGeneration": int64(0)},
+			wantErrSub: "should be greater than or equal to 1",
+		},
+		{
+			name: "a 64-byte metadata.name", objName: strings.Repeat("a", 64), spec: map[string]any{"controlPlaneRef": ref},
+			wantErrSub: "metadata.name must be at most 63 bytes",
+		},
+		{name: "a controlPlaneRef without a name", spec: map[string]any{"controlPlaneRef": map[string]any{}}, wantErrSub: "Required value"},
+		{
+			name: "a controlPlaneRef namespace outside the label shape",
+			spec: map[string]any{"controlPlaneRef": map[string]any{"name": "cp", "namespace": "Bad_NS"}}, wantErrSub: "should match",
+		},
+		{
+			name: "a 30s rotation.interval", spec: map[string]any{"controlPlaneRef": ref, "rotation": map[string]any{"interval": "30s"}},
+			wantErrSub: "rotation.interval is 0s or at least 1m",
+		},
+		{
+			name: "an 87601h rotation.interval", spec: map[string]any{"controlPlaneRef": ref, "rotation": map[string]any{"interval": "87601h"}},
+			wantErrSub: "rotation.interval is at most 87600h",
+		},
+	}
+	for i, tc := range createCases {
+		t.Run("create rejects "+tc.name, func(t *testing.T) {
+			if tc.wantErrSub == "" {
+				t.Fatalf("create case %q needs a wantErrSub: a create case is always a rejection", tc.name)
+			}
+			ns := newNamespace(t, ctx, c, "test-ku-cel-")
+			err := c.Create(ctx, orderObject(kind, cmp.Or(tc.objName, fmt.Sprintf("ku-%d", i)), ns, tc.spec))
+			expectAdmission(t, err, tc.wantErrSub)
+		})
+	}
+
+	t.Run("a minimal order is admitted with passwordGeneration 1", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "test-ku-cel-")
+
+		g.Expect(c.Create(ctx, orderObject(kind, strings.Repeat("a", 63), ns,
+			map[string]any{"controlPlaneRef": ref}))).To(Succeed(), "a 63-byte name is admitted")
+		stored := &KeystoneUser{}
+		g.Expect(c.Get(ctx, types.NamespacedName{Namespace: ns, Name: strings.Repeat("a", 63)}, stored)).To(Succeed())
+		g.Expect(stored.Spec.PasswordGeneration).To(Equal(int64(1)))
+		g.Expect(stored.Spec.UserName).To(BeEmpty(), "the userName default is the reconciler's, not the schema's")
+
+		raw := &unstructured.Unstructured{}
+		raw.SetGroupVersionKind(GroupVersion.WithKind(kind))
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(stored), raw)).To(Succeed())
+		g.Expect(raw.Object["spec"].(map[string]any)["rotation"]).To(Equal(map[string]any{"interval": "720h"}),
+			"an order without the block stores the interval default")
+	})
+
+	t.Run("the interval bounds are admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "test-ku-cel-")
+
+		for i, interval := range []string{"0s", "1m", "87600h"} {
+			g.Expect(c.Create(ctx, orderObject(kind, fmt.Sprintf("bound-%d", i), ns, map[string]any{
+				"controlPlaneRef": ref, "rotation": map[string]any{"interval": interval},
+			}))).To(Succeed(), "rotation.interval %s is admitted", interval)
+		}
+	})
+
+	t.Run("a typed order with the block left zero stores the default", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "test-ku-cel-")
+		order := &KeystoneUser{
+			ObjectMeta: metav1.ObjectMeta{Name: "zero", Namespace: ns},
+			Spec:       KeystoneUserSpec{ControlPlaneRef: ControlPlaneRefSpec{Name: "cp"}},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+
+		stored := &KeystoneUser{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), stored)).To(Succeed())
+		g.Expect(stored.Spec.Rotation.Interval).To(Equal(&metav1.Duration{Duration: 720 * time.Hour}))
+	})
+
+	updateCases := []struct {
+		name       string
+		mutate     func(*KeystoneUser)
+		wantErrSub string
+	}{
+		{
+			name:       "a changed controlPlaneRef.name",
+			mutate:     func(o *KeystoneUser) { o.Spec.ControlPlaneRef.Name = "other" },
+			wantErrSub: "controlPlaneRef.name is immutable; delete and re-create the KeystoneUser to move it to another ControlPlane",
+		},
+		{
+			name:       "a changed controlPlaneRef.namespace",
+			mutate:     func(o *KeystoneUser) { o.Spec.ControlPlaneRef.Namespace = "other" },
+			wantErrSub: "controlPlaneRef.namespace is immutable; delete and re-create the KeystoneUser to move it to another ControlPlane",
+		},
+		{
+			name:       "a removed controlPlaneRef.namespace",
+			mutate:     func(o *KeystoneUser) { o.Spec.ControlPlaneRef.Namespace = "" },
+			wantErrSub: "controlPlaneRef.namespace is immutable",
+		},
+		{
+			name:       "a changed explicit userName",
+			mutate:     func(o *KeystoneUser) { o.Spec.UserName = "other-user" },
+			wantErrSub: "userName is immutable; delete and re-create the KeystoneUser to rename its user",
+		},
+		{
+			name:       "a lowered passwordGeneration",
+			mutate:     func(o *KeystoneUser) { o.Spec.PasswordGeneration = 1 },
+			wantErrSub: "passwordGeneration may only increase",
+		},
+	}
+	for i, tc := range updateCases {
+		t.Run("update rejects "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "test-ku-cel-")
+			order := &KeystoneUser{
+				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("base-%d", i), Namespace: ns},
+				Spec: KeystoneUserSpec{
+					ControlPlaneRef:    ControlPlaneRefSpec{Name: "cp", Namespace: "cp-ns"},
+					UserName:           "svc-user",
+					PasswordGeneration: 2,
+				},
+			}
+			g.Expect(c.Create(ctx, order)).To(Succeed())
+
+			tc.mutate(order)
+			expectAdmission(t, c.Update(ctx, order), tc.wantErrSub)
+		})
+	}
+
+	// The userName rule compares the EFFECTIVE name, so spelling out the
+	// metadata.name default is not a rename, and naming anything else is.
+	t.Run("update compares the effective userName", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "test-ku-cel-")
+		order := &KeystoneUser{
+			ObjectMeta: metav1.ObjectMeta{Name: "workflow", Namespace: ns},
+			Spec:       KeystoneUserSpec{ControlPlaneRef: ControlPlaneRefSpec{Name: "cp"}},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+
+		order.Spec.UserName = "other-user"
+		err := c.Update(ctx, order)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("userName is immutable"))
+
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), order)).To(Succeed())
+		order.Spec.UserName = "workflow"
+		order.Spec.PasswordGeneration = 3
+		g.Expect(c.Update(ctx, order)).To(Succeed(), "the default spelled out and a raised generation are admitted")
+	})
+}
+
+// orderSchemaCase is one admission case of an order kind's schema test: a
+// create from spec, or an update of the stored base object through mutate.
+type orderSchemaCase struct {
+	name       string
+	objName    string
+	spec       map[string]any
+	mutate     func(spec map[string]any)
+	wantErrSub string
+}
+
+// runOrderSchemaCases creates each create case as an unstructured object of
+// kind and expects it rejected with wantErrSub, admits minimal under a 63-byte
+// name, then creates base once per update case, applies mutate to its spec and
+// expects the update rejected the same way, or admitted when wantErrSub is
+// empty. The order kinds have no webhook, so these schema rules are all there
+// is.
+func runOrderSchemaCases(
+	t *testing.T, ctx context.Context, c client.Client, kind string,
+	createCases []orderSchemaCase, minimal, base map[string]any, updateCases []orderSchemaCase,
+) {
+	t.Helper()
+	for i, tc := range createCases {
+		t.Run("create rejects "+tc.name, func(t *testing.T) {
+			if tc.wantErrSub == "" {
+				t.Fatalf("create case %q needs a wantErrSub: a create case is always a rejection", tc.name)
+			}
+			ns := newNamespace(t, ctx, c, "test-order-cel-")
+			err := c.Create(ctx, orderObject(kind, cmp.Or(tc.objName, fmt.Sprintf("order-%d", i)), ns, tc.spec))
+			expectAdmission(t, err, tc.wantErrSub)
+		})
+	}
+	t.Run("a minimal order with a 63-byte name is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "test-order-cel-")
+		g.Expect(c.Create(ctx, orderObject(kind, strings.Repeat("a", 63), ns, minimal))).To(Succeed())
+	})
+	for i, tc := range updateCases {
+		verb := "update rejects "
+		if tc.wantErrSub == "" {
+			verb = "update admits "
+		}
+		t.Run(verb+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := newNamespace(t, ctx, c, "test-order-cel-")
+			stored := orderObject(kind, fmt.Sprintf("base-%d", i), ns, runtime.DeepCopyJSON(base))
+			g.Expect(c.Create(ctx, stored)).To(Succeed())
+
+			tc.mutate(stored.Object["spec"].(map[string]any))
+			expectAdmission(t, c.Update(ctx, stored), tc.wantErrSub)
+		})
+	}
+}
+
+// orderControlPlaneRefCases are the create rejections and update rejections of
+// the controlPlaneRef every order kind carries, with its messages naming kind.
+func orderControlPlaneRefCases(kind string, base map[string]any) (create, update []orderSchemaCase) {
+	create = []orderSchemaCase{
+		{
+			name: "a 64-byte metadata.name", objName: strings.Repeat("a", 64), spec: runtime.DeepCopyJSON(base),
+			wantErrSub: "metadata.name must be at most 63 bytes",
+		},
+		{name: "a controlPlaneRef without a name", spec: specWith(base, "controlPlaneRef", map[string]any{}), wantErrSub: "Required value"},
+		{
+			name:       "a controlPlaneRef namespace outside the label shape",
+			spec:       specWith(base, "controlPlaneRef", map[string]any{"name": "cp", "namespace": "Bad_NS"}),
+			wantErrSub: "should match",
+		},
+	}
+	update = []orderSchemaCase{
+		{
+			name: "a changed controlPlaneRef.name",
+			mutate: func(spec map[string]any) {
+				spec["controlPlaneRef"].(map[string]any)["name"] = "other"
+			},
+			wantErrSub: "controlPlaneRef.name is immutable; delete and re-create the " + kind +
+				" to move it to another ControlPlane",
+		},
+		{
+			name: "a changed controlPlaneRef.namespace",
+			mutate: func(spec map[string]any) {
+				spec["controlPlaneRef"].(map[string]any)["namespace"] = "other"
+			},
+			wantErrSub: "controlPlaneRef.namespace is immutable; delete and re-create the " + kind +
+				" to move it to another ControlPlane",
+		},
+	}
+	return create, update
+}
+
+// TestIntegration_CRD_CELOnly_KeystoneProject pins every admission rule of the
+// KeystoneProject CRD against the real envtest API server; the substrings are
+// the ones the invalid-keystoneproject-cr chainsaw corpus asserts on.
+//
+// Rules: keystoneproject_types.go:17, 18, 80, 81
+func TestIntegration_CRD_CELOnly_KeystoneProject(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	const kind = "KeystoneProject"
+	ref := map[string]any{"name": "cp", "namespace": "cp-ns"}
+	base := map[string]any{"controlPlaneRef": ref, "projectName": "svc-project"}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a comma in projectName", spec: map[string]any{"controlPlaneRef": ref, "projectName": "a,b"}, wantErrSub: "should match"},
+		orderSchemaCase{name: "an empty projectName", spec: map[string]any{"controlPlaneRef": ref, "projectName": ""}, wantErrSub: "should be at least 1 chars"},
+		orderSchemaCase{
+			name: "a 256-byte projectName", spec: map[string]any{"controlPlaneRef": ref, "projectName": strings.Repeat("a", 256)},
+			wantErrSub: "Too long",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed explicit projectName",
+			mutate:     func(spec map[string]any) { spec["projectName"] = "other-project" },
+			wantErrSub: "projectName is immutable; delete and re-create the KeystoneProject to rename its project",
+		},
+	)
+	runOrderSchemaCases(t, ctx, c, kind, create, map[string]any{"controlPlaneRef": map[string]any{"name": "cp"}},
+		base, update)
+}
+
+// TestIntegration_CRD_CELOnly_KeystoneRoleAssignment pins every admission rule
+// of the KeystoneRoleAssignment CRD; the substrings are the ones the
+// invalid-keystoneroleassignment-cr chainsaw corpus asserts on.
+//
+// Rules: keystoneroleassignment_types.go:19, 89, 90, 95, 100, 109
+func TestIntegration_CRD_CELOnly_KeystoneRoleAssignment(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	const kind = "KeystoneRoleAssignment"
+	base := map[string]any{
+		"controlPlaneRef": map[string]any{"name": "cp", "namespace": "cp-ns"},
+		"userRef":         map[string]any{"name": "workflow"},
+		"projectRef":      map[string]any{"name": "workflow-project"},
+		"role":            "member",
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a missing role", spec: specWithout(base, "role"), wantErrSub: "Required value"},
+		orderSchemaCase{name: "a missing userRef", spec: specWithout(base, "userRef"), wantErrSub: "Required value"},
+		orderSchemaCase{name: "a missing projectRef", spec: specWithout(base, "projectRef"), wantErrSub: "Required value"},
+		orderSchemaCase{
+			name: "an empty userRef.name", spec: specWith(base, "userRef", map[string]any{"name": ""}),
+			wantErrSub: "should be at least 1 chars",
+		},
+		orderSchemaCase{name: "a comma in role", spec: specWith(base, "role", "a,b"), wantErrSub: "should match"},
+		orderSchemaCase{name: "an empty role", spec: specWith(base, "role", ""), wantErrSub: "should be at least 1 chars"},
+		orderSchemaCase{name: "a 256-byte role", spec: specWith(base, "role", strings.Repeat("r", 256)), wantErrSub: "Too long"},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed userRef",
+			mutate:     func(spec map[string]any) { spec["userRef"] = map[string]any{"name": "other"} },
+			wantErrSub: "userRef is immutable; delete and re-create the KeystoneRoleAssignment to bind another user",
+		},
+		orderSchemaCase{
+			name:       "a changed projectRef",
+			mutate:     func(spec map[string]any) { spec["projectRef"] = map[string]any{"name": "other"} },
+			wantErrSub: "projectRef is immutable; delete and re-create the KeystoneRoleAssignment to bind another project",
+		},
+		orderSchemaCase{
+			name:       "a changed role",
+			mutate:     func(spec map[string]any) { spec["role"] = "reader" },
+			wantErrSub: "role is immutable; delete and re-create the KeystoneRoleAssignment to assign another role",
+		},
+	)
+	minimal := specWith(base, "controlPlaneRef", map[string]any{"name": "cp"})
+	runOrderSchemaCases(t, ctx, c, kind, create, minimal, base, update)
+}
+
+// TestIntegration_CRD_CELOnly_KeystoneCatalogEntry pins every admission rule of
+// the KeystoneCatalogEntry CRD; the substrings are the ones the
+// invalid-keystonecatalogentry-cr chainsaw corpus asserts on.
+//
+// Rules: keystonecatalogentry_types.go:17, 18, 82, 83, 92, 93
+func TestIntegration_CRD_CELOnly_KeystoneCatalogEntry(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	const kind = "KeystoneCatalogEntry"
+	public := map[string]any{"interface": "public", "url": "https://dns.example.test/v2"}
+	base := map[string]any{
+		"controlPlaneRef": map[string]any{"name": "cp", "namespace": "cp-ns"},
+		"serviceType":     "dns",
+		"serviceName":     "svc-dns",
+		"endpoints":       []any{public},
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a missing serviceType", spec: specWithout(base, "serviceType"), wantErrSub: "Required value"},
+		orderSchemaCase{name: "serviceType identity", spec: specWith(base, "serviceType", "identity"), wantErrSub: "ControlPlane-owned"},
+		orderSchemaCase{name: "an uppercase serviceType", spec: specWith(base, "serviceType", "DNS"), wantErrSub: "should match"},
+		orderSchemaCase{name: "a comma in serviceName", spec: specWith(base, "serviceName", "a,b"), wantErrSub: "should match"},
+		orderSchemaCase{name: "an empty serviceName", spec: specWith(base, "serviceName", ""), wantErrSub: "should be at least 1 chars"},
+		orderSchemaCase{
+			name: "an ftp endpoint URL", spec: specWith(base, "endpoints", []any{map[string]any{"interface": "public", "url": "ftp://x"}}),
+			wantErrSub: "should match",
+		},
+		orderSchemaCase{
+			name: "an unknown interface", spec: specWith(base, "endpoints", []any{map[string]any{"interface": "private", "url": "https://x"}}),
+			wantErrSub: "Unsupported value",
+		},
+		orderSchemaCase{
+			name: "two public endpoints", spec: specWith(base, "endpoints", []any{public, public}), wantErrSub: "Duplicate value",
+		},
+		orderSchemaCase{
+			name: "a 1025-byte endpoint URL",
+			spec: specWith(base, "endpoints", []any{map[string]any{
+				"interface": "public", "url": "https://" + strings.Repeat("a", 1025-len("https://")),
+			}}),
+			wantErrSub: "Too long",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed serviceType",
+			mutate:     func(spec map[string]any) { spec["serviceType"] = "image" },
+			wantErrSub: "serviceType is immutable; delete and re-create the KeystoneCatalogEntry to register a different service type",
+		},
+		orderSchemaCase{
+			name:       "a changed explicit serviceName",
+			mutate:     func(spec map[string]any) { spec["serviceName"] = "other-dns" },
+			wantErrSub: "serviceName is immutable; delete and re-create the KeystoneCatalogEntry to rename its catalog entry",
+		},
+		orderSchemaCase{
+			name: "a changed endpoints list",
+			mutate: func(spec map[string]any) {
+				spec["endpoints"] = []any{
+					map[string]any{"interface": "public", "url": "https://dns.example.test/v3"},
+					map[string]any{"interface": "internal", "url": "http://designate-api.tenant.svc:9001/v2"},
+				}
+			},
+		},
+	)
+	minimal := map[string]any{"controlPlaneRef": map[string]any{"name": "cp"}, "serviceType": "dns"}
+	runOrderSchemaCases(t, ctx, c, kind, create, minimal, base, update)
+}
+
+// TestIntegration_CRD_CELOnly_KeystoneApplicationCredential pins every
+// admission rule of the KeystoneApplicationCredential CRD, the CEL duration
+// rules of spec.rotation included, and the defaults the server stores; the
+// substrings are the ones the invalid-keystoneapplicationcredential-cr chainsaw
+// corpus asserts on.
+//
+// Rules: keystoneapplicationcredential_types.go:20, 89, 90, 95, 100, 110, 121, 135, 136, 143
+func TestIntegration_CRD_CELOnly_KeystoneApplicationCredential(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	const kind = "KeystoneApplicationCredential"
+	base := map[string]any{
+		"controlPlaneRef":      map[string]any{"name": "cp", "namespace": "cp-ns"},
+		"userRef":              map[string]any{"name": "workflow"},
+		"projectRef":           map[string]any{"name": "workflow-project"},
+		"credentialGeneration": int64(2),
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a missing userRef", spec: specWithout(base, "userRef"), wantErrSub: "Required value"},
+		orderSchemaCase{name: "a missing projectRef", spec: specWithout(base, "projectRef"), wantErrSub: "Required value"},
+		orderSchemaCase{
+			name: "an empty userRef.name", spec: specWith(base, "userRef", map[string]any{"name": ""}),
+			wantErrSub: "should be at least 1 chars",
+		},
+		orderSchemaCase{
+			name: "a zero credentialGeneration", spec: specWith(base, "credentialGeneration", int64(0)),
+			wantErrSub: "should be greater than or equal to 1",
+		},
+		orderSchemaCase{
+			name: "a 30s rotation.interval", spec: specWith(base, "rotation", map[string]any{"interval": "30s"}),
+			wantErrSub: "rotation.interval is 0s or at least 1m",
+		},
+		orderSchemaCase{
+			name: "an 87601h rotation.interval", spec: specWith(base, "rotation", map[string]any{"interval": "87601h"}),
+			wantErrSub: "rotation.interval is at most 87600h",
+		},
+		orderSchemaCase{
+			name:       "a gracePeriod as long as the interval",
+			spec:       specWith(base, "rotation", map[string]any{"interval": "1h", "gracePeriod": "1h"}),
+			wantErrSub: "rotation.gracePeriod must be shorter than rotation.interval",
+		},
+		orderSchemaCase{
+			name: "a negative gracePeriod", spec: specWith(base, "rotation", map[string]any{"gracePeriod": "-1h"}),
+			wantErrSub: "rotation.gracePeriod is not negative",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed userRef",
+			mutate:     func(spec map[string]any) { spec["userRef"] = map[string]any{"name": "other"} },
+			wantErrSub: "userRef is immutable; delete and re-create the KeystoneApplicationCredential to bind another user",
+		},
+		orderSchemaCase{
+			name:       "a changed projectRef",
+			mutate:     func(spec map[string]any) { spec["projectRef"] = map[string]any{"name": "other"} },
+			wantErrSub: "projectRef is immutable; delete and re-create the KeystoneApplicationCredential to bind another project",
+		},
+		orderSchemaCase{
+			name:       "a lowered credentialGeneration",
+			mutate:     func(spec map[string]any) { spec["credentialGeneration"] = int64(1) },
+			wantErrSub: "credentialGeneration may only increase",
+		},
+		orderSchemaCase{
+			name:   "a raised credentialGeneration",
+			mutate: func(spec map[string]any) { spec["credentialGeneration"] = int64(5) },
+		},
+		orderSchemaCase{
+			name: "a 0s interval with any non-negative gracePeriod",
+			mutate: func(spec map[string]any) {
+				spec["rotation"] = map[string]any{"interval": "0s", "gracePeriod": "2160h"}
+			},
+		},
+		orderSchemaCase{
+			name:   "a 0s interval with a 0s gracePeriod",
+			mutate: func(spec map[string]any) { spec["rotation"] = map[string]any{"interval": "0s", "gracePeriod": "0s"} },
+		},
+		orderSchemaCase{
+			name:   "the longest interval",
+			mutate: func(spec map[string]any) { spec["rotation"] = map[string]any{"interval": "87600h"} },
+		},
+	)
+	minimal := specWith(base, "controlPlaneRef", map[string]any{"name": "cp"})
+	delete(minimal, "credentialGeneration")
+	runOrderSchemaCases(t, ctx, c, kind, create, minimal, base, update)
+
+	refs := KeystoneApplicationCredentialSpec{
+		ControlPlaneRef: ControlPlaneRefSpec{Name: "cp"},
+		UserRef:         KeystoneOrderRef{Name: "workflow"},
+		ProjectRef:      KeystoneOrderRef{Name: "workflow-project"},
+	}
+
+	t.Run("an order without the optional fields stores the default literals", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		u := orderObject(kind, "minimal", newNamespace(t, ctx, c, "test-kac-default-"), runtime.DeepCopyJSON(minimal))
+		g.Expect(c.Create(ctx, u)).To(Succeed())
+
+		stored := &unstructured.Unstructured{}
+		stored.SetGroupVersionKind(GroupVersion.WithKind(kind))
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(u), stored)).To(Succeed())
+		spec := stored.Object["spec"].(map[string]any)
+		g.Expect(spec["credentialGeneration"]).To(BeEquivalentTo(1))
+		g.Expect(spec["rotation"]).To(Equal(map[string]any{"interval": "720h", "gracePeriod": "24h"}))
+	})
+
+	t.Run("a typed order stores the Go serialization of the durations", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		order := &KeystoneApplicationCredential{
+			ObjectMeta: metav1.ObjectMeta{Name: "typed", Namespace: newNamespace(t, ctx, c, "test-kac-default-")},
+			Spec:       *refs.DeepCopy(),
+		}
+		order.Spec.Rotation = KeystoneApplicationCredentialRotationSpec{
+			Interval:    &metav1.Duration{Duration: 720 * time.Hour},
+			GracePeriod: &metav1.Duration{Duration: 24 * time.Hour},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed(), "the CEL rules accept 720h0m0s and 24h0m0s")
+
+		stored := &unstructured.Unstructured{}
+		stored.SetGroupVersionKind(GroupVersion.WithKind(kind))
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), stored)).To(Succeed())
+		g.Expect(stored.Object["spec"].(map[string]any)["rotation"]).
+			To(Equal(map[string]any{"interval": "720h0m0s", "gracePeriod": "24h0m0s"}))
+	})
+
+	t.Run("a typed order with the block left zero stores the defaults", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		order := &KeystoneApplicationCredential{
+			ObjectMeta: metav1.ObjectMeta{Name: "zero", Namespace: newNamespace(t, ctx, c, "test-kac-default-")},
+			Spec:       *refs.DeepCopy(),
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+
+		stored := &KeystoneApplicationCredential{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), stored)).To(Succeed())
+		g.Expect(stored.Spec.CredentialGeneration).To(Equal(int64(1)))
+		g.Expect(stored.Spec.Rotation.Interval).To(Equal(&metav1.Duration{Duration: 720 * time.Hour}))
+		g.Expect(stored.Spec.Rotation.GracePeriod).To(Equal(&metav1.Duration{Duration: 24 * time.Hour}))
+	})
+}
+
+// TestIntegration_CRD_CELOnly_MariaDBDatabase pins every admission rule of the
+// MariaDBDatabase CRD against the real envtest API server, and the pattern of
+// the ControlPlane's spec.infrastructure.publishedDatabaseEndpoint the kind
+// reads. The kind has no webhook, so these schema rules are all there is; the
+// substrings are the ones the invalid-mariadbdatabase-cr chainsaw corpus
+// asserts on.
+//
+// Rules: mariadbdatabase_types.go:28, 29, 30, 117, 118
+func TestIntegration_CRD_CELOnly_MariaDBDatabase(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	const kind = "MariaDBDatabase"
+	ref := map[string]any{"name": "cp", "namespace": "cp-ns"}
+	base := map[string]any{"controlPlaneRef": ref, "databaseName": "svc_db", "deletionPolicy": "Retain"}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{name: "a dash in databaseName", spec: specWith(base, "databaseName", "my-db"), wantErrSub: "should match"},
+		orderSchemaCase{name: "an empty databaseName", spec: specWith(base, "databaseName", ""), wantErrSub: "should be at least 1 chars"},
+		orderSchemaCase{
+			name: "a 65-byte databaseName", spec: specWith(base, "databaseName", strings.Repeat("a", 65)),
+			wantErrSub: "Too long",
+		},
+		orderSchemaCase{name: "an unknown deletionPolicy", spec: specWith(base, "deletionPolicy", "Drop"), wantErrSub: "Unsupported value"},
+		orderSchemaCase{
+			name: "a name that is no MySQL identifier without databaseName", objName: "app.v1",
+			spec:       map[string]any{"controlPlaneRef": ref},
+			wantErrSub: "metadata.name is not a MySQL identifier once its dashes are underscores; set spec.databaseName",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a changed explicit databaseName",
+			mutate:     func(spec map[string]any) { spec["databaseName"] = "other_db" },
+			wantErrSub: "databaseName is immutable; delete and re-create the MariaDBDatabase to order another database",
+		},
+		orderSchemaCase{
+			name:   "a flipped deletionPolicy",
+			mutate: func(spec map[string]any) { spec["deletionPolicy"] = "Delete" },
+		},
+	)
+	minimal := map[string]any{"controlPlaneRef": map[string]any{"name": "cp"}}
+	runOrderSchemaCases(t, ctx, c, kind, create, minimal, base, update)
+
+	t.Run("the schema defaults deletionPolicy to Retain and admits a dotted name with databaseName", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := newNamespace(t, ctx, c, "test-mdb-default-")
+		order := &MariaDBDatabase{
+			ObjectMeta: metav1.ObjectMeta{Name: "app.v1", Namespace: ns},
+			Spec: MariaDBDatabaseSpec{
+				ControlPlaneRef: ControlPlaneRefSpec{Name: "cp"},
+				DatabaseName:    "app_v1",
+			},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+		stored := &MariaDBDatabase{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), stored)).To(Succeed())
+		g.Expect(stored.Spec.DeletionPolicy).To(Equal("Retain"))
+	})
+
+	// The databaseName rule compares the EFFECTIVE name, so spelling out the
+	// metadata.name default is not a change, and naming anything else is.
+	t.Run("update compares the effective databaseName", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		order := &MariaDBDatabase{
+			ObjectMeta: metav1.ObjectMeta{Name: "workflow-db", Namespace: newNamespace(t, ctx, c, "test-mdb-default-")},
+			Spec:       MariaDBDatabaseSpec{ControlPlaneRef: ControlPlaneRefSpec{Name: "cp"}},
+		}
+		g.Expect(c.Create(ctx, order)).To(Succeed())
+
+		order.Spec.DatabaseName = "other_db"
+		err := c.Update(ctx, order)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("databaseName is immutable"))
+
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(order), order)).To(Succeed())
+		order.Spec.DatabaseName = "workflow_db"
+		g.Expect(c.Update(ctx, order)).To(Succeed(), "the default spelled out is admitted")
+	})
+
+	endpointCases := []struct {
+		endpoint string
+		admitted bool
+	}{
+		{endpoint: "db.example.com:3306", admitted: true},
+		{endpoint: "[::1]:3306", admitted: true},
+		{endpoint: "db.example.com:65535", admitted: true},
+		{endpoint: "db.example.com"},
+		{endpoint: "https://db:3306"},
+		{endpoint: "db.example.com:0"},
+		{endpoint: "db.example.com:65536"},
+		{endpoint: "db.example.com:99999"},
+	}
+	for _, tc := range endpointCases {
+		t.Run("publishedDatabaseEndpoint "+tc.endpoint, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := stamp(validControlPlane(), "cp-published", newNamespace(t, ctx, c, "test-mdb-default-"))
+			cp.Spec.Infrastructure.PublishedDatabaseEndpoint = tc.endpoint
+
+			err := c.Create(ctx, cp, client.DryRunAll)
+			if tc.admitted {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			expectAdmission(t, err, "should match")
+			g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.publishedDatabaseEndpoint"))
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_RabbitMQVhost pins every admission rule of the
+// RabbitMQVhost CRD, and the pattern of the ControlPlane field its orders on a
+// target cluster read, against the real envtest API server. The kind has no
+// webhook, so these rules are all there is; the substrings are the ones the
+// invalid-rabbitmqvhost-cr chainsaw corpus asserts on.
+//
+// Rules: rabbitmqvhost_types.go:29, 108, 109, 119, 130, 153, 154, 161
+func TestIntegration_CRD_CELOnly_RabbitMQVhost(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	const kind = "RabbitMQVhost"
+	base := map[string]any{
+		"controlPlaneRef":    map[string]any{"name": "cp", "namespace": "cp-ns"},
+		"passwordGeneration": int64(2),
+	}
+	create, update := orderControlPlaneRefCases(kind, base)
+	create = append(create,
+		orderSchemaCase{
+			name: "a zero passwordGeneration", spec: specWith(base, "passwordGeneration", int64(0)),
+			wantErrSub: "should be greater than or equal to 1",
+		},
+		orderSchemaCase{
+			name: "a deletionPolicy outside the enum", spec: specWith(base, "deletionPolicy", "Drop"),
+			wantErrSub: "Unsupported value",
+		},
+		orderSchemaCase{
+			name: "a 30s rotation.interval", spec: specWith(base, "rotation", map[string]any{"interval": "30s"}),
+			wantErrSub: "rotation.interval is 0s or at least 1m",
+		},
+		orderSchemaCase{
+			name: "an 87601h rotation.interval", spec: specWith(base, "rotation", map[string]any{"interval": "87601h"}),
+			wantErrSub: "rotation.interval is at most 87600h",
+		},
+		orderSchemaCase{
+			name:       "a gracePeriod longer than the interval",
+			spec:       specWith(base, "rotation", map[string]any{"interval": "24h", "gracePeriod": "48h"}),
+			wantErrSub: "rotation.gracePeriod must be shorter than rotation.interval",
+		},
+		orderSchemaCase{
+			name: "a negative gracePeriod", spec: specWith(base, "rotation", map[string]any{"gracePeriod": "-1h"}),
+			wantErrSub: "rotation.gracePeriod is not negative",
+		},
+	)
+	update = append(update,
+		orderSchemaCase{
+			name:       "a lowered passwordGeneration",
+			mutate:     func(spec map[string]any) { spec["passwordGeneration"] = int64(1) },
+			wantErrSub: "passwordGeneration may only increase",
+		},
+		orderSchemaCase{
+			name:   "a raised passwordGeneration",
+			mutate: func(spec map[string]any) { spec["passwordGeneration"] = int64(5) },
+		},
+		orderSchemaCase{
+			name:   "a changed deletionPolicy",
+			mutate: func(spec map[string]any) { spec["deletionPolicy"] = "Delete" },
+		},
+		orderSchemaCase{
+			name:   "a 0s interval with a 0s gracePeriod",
+			mutate: func(spec map[string]any) { spec["rotation"] = map[string]any{"interval": "0s", "gracePeriod": "0s"} },
+		},
+	)
+	minimal := map[string]any{"controlPlaneRef": map[string]any{"name": "cp"}}
+	runOrderSchemaCases(t, ctx, c, kind, create, minimal, base, update)
+
+	t.Run("an order without the optional fields stores the default literals", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		u := orderObject(kind, "minimal", newNamespace(t, ctx, c, "test-rmv-default-"), runtime.DeepCopyJSON(minimal))
+		g.Expect(c.Create(ctx, u)).To(Succeed())
+
+		stored := &RabbitMQVhost{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(u), stored)).To(Succeed())
+		g.Expect(stored.Spec.PasswordGeneration).To(Equal(int64(1)))
+		g.Expect(stored.Spec.Rotation.Interval).To(Equal(&metav1.Duration{Duration: 720 * time.Hour}))
+		g.Expect(stored.Spec.Rotation.GracePeriod).To(Equal(&metav1.Duration{Duration: 24 * time.Hour}))
+		g.Expect(stored.Spec.DeletionPolicy).To(Equal(RabbitMQVhostDeletionPolicyRetain))
+	})
+
+	endpoints := []struct {
+		endpoint   string
+		wantErrSub string
+	}{
+		{endpoint: "broker.example.com:5672"},
+		{endpoint: "[::1]:5672"},
+		{endpoint: "broker.example.com", wantErrSub: "should match"},
+		{endpoint: "amqp://broker:5672", wantErrSub: "should match"},
+	}
+	for i, tc := range endpoints {
+		verb := "admits"
+		if tc.wantErrSub != "" {
+			verb = "rejects"
+		}
+		t.Run(fmt.Sprintf("the ControlPlane %s publishedMessagingEndpoint %q", verb, tc.endpoint), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			// One namespace per case: a ControlPlane is unique per namespace.
+			cp := stamp(validControlPlane(), fmt.Sprintf("cp-endpoint-%d", i), newNamespace(t, ctx, c, "test-cp-endpoint-"))
+			cp.Spec.Infrastructure.PublishedMessagingEndpoint = tc.endpoint
+
+			err := c.Create(ctx, cp)
+			expectAdmission(t, err, tc.wantErrSub)
+			if tc.wantErrSub != "" {
+				g.Expect(err.Error()).To(ContainSubstring("publishedMessagingEndpoint"))
+			}
 		})
 	}
 }
