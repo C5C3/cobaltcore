@@ -127,8 +127,9 @@ application credential through K-ORC, stewards the service-catalog entries,
 and aggregates readiness into the `ControlPlane` status. The OVN control plane
 stays outside it: the network service names an existing `OVNCentral`, which
 the c5c3-operator reads but never creates. Nova is projected through
-`services.nova`; the compute nodes that join it are the follow-on
-[#1013](https://github.com/C5C3/cobaltcore/issues/1013). See
+`services.nova`, and compute nodes join it through `NovaCompute` pools, on the
+same cluster or on a compute cluster
+([Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md)). See
 [ControlPlane Reconciler Architecture](../reference/c5c3/controlplane-reconciler.md).
 
 ## Secret flow
@@ -323,7 +324,7 @@ the original document and to the state in this repository:
 | --- | --- | --- | --- |
 | CobaltCore Operation and Monitoring | Management | GitOps hub, OpenBao, ESO, observability UI (Greenhouse, Aurora) | Collapsed into the single management cluster above; a dedicated cluster is a [sketch](../future/management-cluster.md) |
 | OpenStack Control Plane | Control Plane | OpenStack control-plane services, K-ORC, infrastructure | Implemented as the management cluster, with optional [target clusters](../reference/target-clusters.md) for workload placement. Several control planes are several `ControlPlane` CRs on that cluster, at most one per namespace |
-| OpenStack Compute | Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | The dedicated cluster is a [sketch](../future/hypervisor-cluster.md). The [Nova](../reference/nova/index.md) control plane, the [OVN](../reference/ovn/index.md) chassis layer and `NovaCompute` node pools are onboarded, and the [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on KVM inside one cluster. Cloud Hypervisor is not integrated yet ([Cloud Hypervisor for VS-NfD](#cloud-hypervisor-for-vs-nfd)). Attaching a separate compute cluster is tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013) |
+| OpenStack Compute | Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | The dedicated cluster is a [sketch](../future/hypervisor-cluster.md). The [Nova](../reference/nova/index.md) control plane, the [OVN](../reference/ovn/index.md) chassis layer and `NovaCompute` node pools are onboarded, and the [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on KVM inside one cluster. Cloud Hypervisor is not integrated yet ([Cloud Hypervisor for VS-NfD](#cloud-hypervisor-for-vs-nfd)). A separate compute cluster attaches as [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) describes; no suite covers it across a cluster boundary yet ([What this repository tests](../guides/nova/connect-a-compute-cluster.md#what-this-repository-tests)) |
 | Ceph Storage | Storage | Ceph via Rook, storage observability | [Sketch](../future/storage-cluster.md); block storage itself is onboarded as the [Cinder](../reference/cinder/index.md) control-plane service on the management cluster |
 | OpenStack Network | None; the original runs the OVN operator on the control-plane cluster and `ovn-controller` on the hypervisors | OVN and the outbound path: load balancer, router, BGP | No dedicated cluster. The [OVN](../reference/ovn/index.md) chassis layer runs on labelled nodes, and the `openstack.c5c3.io/gateway` label makes a node a network node ([Label a Node as a Compute or Network Node](../guides/ovn/label-a-chassis-node.md)) |
 
