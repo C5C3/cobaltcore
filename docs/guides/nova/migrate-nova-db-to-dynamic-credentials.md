@@ -22,7 +22,7 @@ credential chain of its own, and this guide moves both.
 
 ## What changes
 
-- **Before:** each Nova DB password is a long-lived value materialised from an
+- **Before:** each Nova DB password is a long-lived value copied from an
   OpenBao KV path into a Secret of its own. Nothing seeds those paths, so on the
   static branch an operator writes them and rotates them by hand.
 
@@ -35,8 +35,9 @@ credential chain of its own, and this guide moves both.
   [`VaultDynamicSecret`](https://external-secrets.io/) generators, one per chain,
   that read short-lived credentials from the OpenBao database engine. The
   External Secrets Operator re-issues a fresh lease before the previous one
-  expires and materialises the current username and password into the same two
-  Secrets. No long-lived static Nova DB password remains at rest.
+  expires and stores each lease's username and password in its Kubernetes
+  Secret. Dynamic mode does not read static passwords from the OpenBao KV paths.
+  Any existing static KV values remain until you delete them in step 5.
 
   | Chain | Auth role | ServiceAccount | Creds path | Engine grant |
   | --- | --- | --- | --- | --- |
@@ -112,6 +113,11 @@ The database engine mount, the `nova-api-db` and `nova-cell-db`
 Kubernetes-auth roles, and the `nova-api-db-dynamic` and `nova-cell-db-dynamic`
 policies are written by the idempotent bootstrap scripts. Re-apply them so a
 cluster provisioned before Nova was onboarded picks them up:
+
+For a kind devstack, obtain and export `BAO_TOKEN` as described in
+[Running the Full Bootstrap](../../reference/infrastructure/openbao-bootstrap.md#running-the-full-bootstrap).
+That procedure reads the root token from `openbao-init-keys` and exports it for
+the bootstrap scripts.
 
 ```bash
 # From the repo root, with BAO_TOKEN exported (the OpenBao root token).
@@ -247,7 +253,7 @@ kubectl patch controlplane controlplane -n openstack --type merge \
 On the next reconcile the c5c3 operator projects both generators, their
 ServiceAccounts and client Certificates, and both ExternalSecrets switch to
 drawing from their generator. On a cluster that ran the static path, delete the
-two materialised Secrets once, so ESO re-materialises them from the generators
+two credential Secrets once, so ESO syncs them from the generators
 immediately instead of at the next refresh:
 
 ```bash
@@ -284,12 +290,12 @@ The command prints `Dynamic Dynamic`. Watch for:
 - Both ExternalSecrets, `controlplane-nova-api-db-credentials` and
   `controlplane-nova-db-credentials`, changing from static `data[].remoteRef` to
   `dataFrom[].sourceRef.generatorRef` (kind `VaultDynamicSecret`).
-- The materialised Secrets' `username` becoming engine-issued logins rather than
+- The Kubernetes Secrets' `username` values becoming engine-issued logins rather than
   `controlplane-nova-api` and `controlplane-nova`.
 - A rollout of all five Nova Deployments: `controlplane-nova`,
   `controlplane-nova-metadata`, `controlplane-nova-scheduler`,
   `controlplane-nova-conductor` and `controlplane-nova-novncproxy`. The nova
-  operator stamps the `nova.c5c3.io/api-db-connection-hash` and
+  operator sets the `nova.c5c3.io/api-db-connection-hash` and
   `nova.c5c3.io/db-connection-hash` pod-template annotations on every workload,
   so a changed credential rolls all of them. Both DSNs travel in environment
   variables, which only take effect on a pod restart.
@@ -373,8 +379,8 @@ their Certificates are torn down with the switch.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects new
   connections. Already-open sessions of a dropped user may persist until they
   disconnect.
-- **ESO or OpenBao outage longer than the lease:** the materialised credentials
-  expire before a refresh lands. Running pods keep pooled connections, but new
+- **ESO or OpenBao outage longer than the lease:** the leased credentials
+  expire before a refresh completes. Running pods keep pooled connections, but new
   connections fail until ESO recovers. This surfaces through the child's own
   `DatabaseReady` and, ControlPlane-side, as `NovaReady=False`.
 
@@ -398,7 +404,7 @@ for `NovaReady`, reads both database blocks of the projected child back as
 `VaultDynamicSecret` generator and carries no static `spec.data` refs, that the
 generator reads `database/mariadb/creds/nova-api-<namespace>` or
 `database/mariadb/creds/nova-cell-<namespace>`, that the `nova-api-db-creds` or
-`nova-cell-db-creds` ServiceAccount exists, and that the materialised username is
+`nova-cell-db-creds` ServiceAccount exists, and that the credential Secret has
 neither empty nor the schema name.
 
 ```bash

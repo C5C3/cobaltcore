@@ -17,7 +17,7 @@ engine wired for the Glance service DB user.
 
 ## What changes
 
-- **Before:** the Glance DB password is a long-lived value materialised from an
+- **Before:** the Glance DB password is a long-lived value copied from an
   OpenBao KV path (`openstack/glance/{namespace}/{name}/db`) into the
   `{name}-glance-db-credentials` Secret. Nothing seeds that path, so on the
   static branch an operator writes it and rotates it by hand.
@@ -25,10 +25,12 @@ engine wired for the Glance service DB user.
   [`VaultDynamicSecret`](https://external-secrets.io/) generator that reads
   short-lived credentials from the OpenBao database engine
   (`database/mariadb/creds/glance-{namespace}`, where `{namespace}` is the Glance
-  service namespace — the ControlPlane's own namespace unless Glance runs in a
-  dedicated one). The External Secrets Operator re-issues a fresh lease before
-  the previous one expires and materialises the current username and password
-  into the same Secret. No long-lived static DB password remains at rest.
+  service namespace, which is the ControlPlane's namespace unless Glance runs
+  in a dedicated one). The External Secrets Operator re-issues a fresh lease
+  before the previous one expires and stores its username and password in the
+  Kubernetes Secret. Dynamic mode does not read a static password from the
+  OpenBao KV path. Any existing static KV value remains until you delete it in
+  step 5.
 
 The engine issues an ephemeral MySQL user per lease (for example `v-kube-...`)
 with `ALL PRIVILEGES` on the Glance database and drops it at lease end.
@@ -50,8 +52,11 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 Follow that tutorial through to its final **Verify** step. On this devstack the
 ControlPlane is `controlplane` in `openstack`, so its projected Glance is
 `controlplane-glance` and its DB-credential Secret is
-`controlplane-glance-db-credentials` — the names the migration below manages.
+`controlplane-glance-db-credentials`. The migration uses these names.
 :::
+
+The Quick Start's managed shared database already uses Dynamic credentials.
+Step 3 explains how to keep Glance Static while you prepare a cutover.
 
 - The OpenBao `database` secrets engine is mounted at `database/mariadb` (the
   `setup-secret-engines.sh` bootstrap step). On a greenfield cluster this is
@@ -71,6 +76,11 @@ ControlPlane is `controlplane` in `openstack`, so its projected Glance is
 The database engine mount, the `glance-db` Kubernetes-auth role, and the
 `glance-db-dynamic` policy are added by the (idempotent) bootstrap scripts.
 Re-apply them so a cluster provisioned before this change picks them up:
+
+For a kind devstack, obtain and export `BAO_TOKEN` as described in
+[Running the Full Bootstrap](../../reference/infrastructure/openbao-bootstrap.md#running-the-full-bootstrap).
+That procedure reads the root token from `openbao-init-keys` and exports it for
+the bootstrap scripts.
 
 ```bash
 # From the repo root, with BAO_TOKEN exported (the OpenBao root token).
@@ -92,17 +102,17 @@ bash deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane
 ```
 
 When the ControlPlane declares `spec.services.glance` on the shared managed
-database, the script provisions the Glance leg:
+database, the script configures the Glance engine connection and role:
 
-- `database/mariadb/config/glance-<glance-namespace>` — the connection to the
+- `database/mariadb/config/glance-<glance-namespace>`: the connection to the
   tenant's MariaDB, authenticated as root.
-- `database/mariadb/roles/glance-<glance-namespace>` — the role that issues
+- `database/mariadb/roles/glance-<glance-namespace>`: the role that issues
   short-lived users (`default_ttl` 48h, `max_ttl` 72h by default; override with
   `DB_CREDS_DEFAULT_TTL` / `DB_CREDS_MAX_TTL`).
 
 When Glance lives in a dedicated service namespace, that namespace's MariaDB must
-be Ready first — the script resolves that namespace's root secret and fails
-loudly otherwise. A ControlPlane whose Glance declares a *dedicated* database is
+be Ready first. The script resolves that namespace's root secret and reports an
+error if it is missing. A ControlPlane whose Glance declares a *dedicated* database is
 skipped: a dedicated Glance database is Static-only.
 
 `make deploy-infra WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=true` runs this
@@ -111,9 +121,8 @@ automatically for the bundled ControlPlane after its MariaDB becomes Ready.
 ### 3. (Optional) Stage the cutover with `databaseCredentialsMode: Static`
 
 Dynamic is the default effective mode for a managed ControlPlane on the shared
-database. To keep Glance on the static credential — for example while Keystone
-already runs Dynamic — pin the per-service override so the blast radius stays on
-Glance:
+database. To keep Glance on the static credential while Keystone runs Dynamic,
+pin the per-service override so the change applies only to Glance:
 
 ```yaml
 spec:
@@ -132,25 +141,25 @@ to cut over.
 
 ### 4. Upgrade the operators and observe the cutover
 
-Upgrade the c5c3 and glance operators to a build that includes the dynamic engine
-wiring. On the next reconcile the c5c3 operator projects the generator,
+Upgrade the c5c3 and glance operators to a build that includes the dynamic
+database integration. On the next reconcile the c5c3 operator projects the generator,
 ServiceAccount, and Certificate, and the ExternalSecret switches to drawing from
 the generator.
 
-On a cluster that ran the static path, delete the materialised credential Secret
-once so the engine-issued value is the only thing that can ever be read from it:
+On a cluster that ran the static path, delete the credential Secret once to
+remove the old value before ESO syncs the engine-issued credential:
 
 ```bash
 kubectl delete secret <controlplane>-glance-db-credentials -n <namespace>
 ```
 
-The ExternalSecret switches to the generator in place — same name, same target
-Secret — so until ESO's first generator-backed sync lands, the Secret still holds
+The ExternalSecret switches to the generator without changing its name or target.
+Until ESO completes its first generator-backed sync, the Secret still holds
 whatever the previous static sync wrote, including the retired `username=glance`
 placeholder the old bootstrap seeded. That name is a *syntactically valid*
 username naming a MySQL user that has never existed (the static login is the
-Glance CR name, `<controlplane>-glance`). Deleting the Secret forces ESO to
-re-materialise it from the generator immediately instead of at the next refresh.
+Glance CR name, `<controlplane>-glance`). Deleting the Secret forces ESO to sync
+it from the generator immediately instead of at the next refresh.
 
 You do not have to get this right for Glance to stay up: the c5c3 operator will
 not project `credentialsMode: Dynamic` onto the Glance child until that
@@ -167,17 +176,17 @@ Watch for:
 - The `controlplane-glance-db-credentials` ExternalSecret spec changing from
   static `data[].remoteRef` to `dataFrom[].sourceRef.generatorRef` (kind
   `VaultDynamicSecret`).
-- The materialised Secret's `username` becoming an engine-issued login (not
+- The Kubernetes Secret's `username` becoming an engine-issued login (not
   `glance`).
-- A Glance Deployment rollout: the operator stamps a
+- A Glance Deployment rollout: the operator sets a
   `glance.c5c3.io/db-connection-hash` pod-template annotation in Dynamic mode, so
   a rotated credential rolls the Deployment (the DSN is consumed via an
   environment variable, which only takes effect on a Pod restart).
 
 Because the engine's GRANT overlaps any pre-existing operator-provisioned
-`User`/`Grant` from the static deployment, Glance keeps serving throughout — the
-rolling restart (protected by the Glance PodDisruptionBudget) simply moves it
-onto an engine-issued login. This is the no-downtime property.
+`User`/`Grant` from the static deployment, Glance keeps serving throughout.
+The rolling restart is protected by the Glance PodDisruptionBudget and moves it
+onto an engine-issued login without interrupting database service.
 
 ### 5. Retire the static credential
 
@@ -207,15 +216,13 @@ operators if you also need to remove the generator objects.
 
 ## Operational considerations
 
-- **Rotation churn vs. lease headroom:** because the DSN is consumed via an
-  environment variable, a rotated engine credential only takes effect on a Pod
-  restart, so Glance rolls each time the ExternalSecret re-issues the credential
-  (a rotating dynamic credential means every refresh is a *new* credential — there
-  is no stable value to renew in place). The defaults balance two concerns: the
-  24h refresh interval keeps the roll cadence to at most once a day, while the 48h
-  `default_ttl` keeps a 24h gap (`default_ttl` − refresh) so the operator has a
-  full day to roll the pods before the previous, still-in-use lease is revoked —
-  long enough that a stalled rollout pages on-call before it can become an outage.
+- **Rotation churn vs. lease headroom:** the DSN comes from an environment
+  variable, so Glance must restart to use a rotated credential. ESO creates a
+  new credential on each refresh; OpenBao cannot renew the old credential in
+  place. The 24h refresh interval limits rollouts to at most one per day. The
+  48h `default_ttl` leaves a 24h window for pods to roll before OpenBao revokes
+  the previous lease. A stalled rollout should page on-call before it becomes an
+  outage.
   Raise `DB_CREDS_DEFAULT_TTL` / `DB_CREDS_MAX_TTL` (and the operator's refresh
   interval) further to trade churn against lease headroom; the PodDisruptionBudget
   and the surge-before-remove rollout strategy keep each roll zero-downtime.
@@ -224,7 +231,7 @@ operators if you also need to remove the generator objects.
   lifetime is `min(lease TTL, minting token TTL)`. The `glance-db` auth role
   therefore pins its token TTLs to `DB_CREDS_MAX_TTL` (72h). When raising
   `DB_CREDS_*` beyond that, raise the role's `token_ttl`/`token_max_ttl` in
-  lockstep — a shorter token silently drops the ephemeral MySQL user under a
+  lockstep. A shorter token silently drops the ephemeral MySQL user under a
   running Glance long before the advertised lease end.
 - **No per-user connection cap on the dynamic path.** In Static mode the
   operator sizes the MariaDB `User` CR's `max_user_connections` for the CR's
@@ -235,27 +242,26 @@ operators if you also need to remove the generator objects.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects
   *new* connections. Already-open sessions of a dropped user may persist until
   they disconnect.
-- **ESO/OpenBao outage longer than the lease:** the materialised credential
-  expires before a refresh lands; running Pods keep pooled connections but new
+- **ESO/OpenBao outage longer than the lease:** the leased credential
+  expires before a refresh completes. Running Pods keep pooled connections, but new
   connections fail until ESO recovers. This surfaces through the Glance child's
   own database readiness and, ControlPlane-side, as `GlanceReady=False`.
 
 ## See also
 
-- [OpenBao Bootstrap reference](/reference/infrastructure/openbao-bootstrap) —
+- [OpenBao Bootstrap reference](/reference/infrastructure/openbao-bootstrap):
   engines, auth roles, policies, and secret paths.
-- [ControlPlane reconciler reference](/reference/c5c3/controlplane-reconciler) —
+- [ControlPlane reconciler reference](/reference/c5c3/controlplane-reconciler):
   `reconcileGlance` DB-credential projection flow.
-- [Migrate Keystone DB to Dynamic Credentials](/guides/keystone/migrate-keystone-db-to-dynamic-credentials) —
+- [Migrate Keystone DB to Dynamic Credentials](/guides/keystone/migrate-keystone-db-to-dynamic-credentials):
   the sibling migration for the Keystone service DB user.
 
 ## Tested by
 
-The dynamic, engine-issued per-ControlPlane database credential this guide
-migrates to — the projected Dynamic mode, the `VaultDynamicSecret`, the
-generator-backed `controlplane-glance-db-credentials` ExternalSecret, and the
-transient engine-issued login — is asserted on the live CI e2e kind cluster by
-this chainsaw suite:
+The CI e2e kind cluster asserts the destination state: projected Dynamic mode,
+the `VaultDynamicSecret`, the generator-backed
+`controlplane-glance-db-credentials` ExternalSecret, and the transient
+engine-issued login. Run the Chainsaw suite with:
 
 ```bash
 chainsaw test --test-dir tests/e2e/c5c3/full-controlplane-keystone

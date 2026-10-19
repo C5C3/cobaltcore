@@ -17,7 +17,7 @@ database secrets engine wired for the Placement service DB user.
 
 ## What changes
 
-- **Before:** the Placement DB password is a long-lived value materialised from
+- **Before:** the Placement DB password is a long-lived value copied from
   an OpenBao KV path (`openstack/placement/{namespace}/{name}/db`) into the
   `{name}-placement-db-credentials` Secret. Nothing seeds that path, so on the
   static branch an operator writes it and rotates it by hand.
@@ -27,9 +27,10 @@ database secrets engine wired for the Placement service DB user.
   (`database/mariadb/creds/placement-{namespace}`, where `{namespace}` is the
   Placement service namespace, the ControlPlane's own namespace unless Placement
   runs in a dedicated one). The External Secrets Operator re-issues a fresh lease
-  before the previous one expires and materialises the current username and
-  password into the same Secret. No long-lived static DB password remains at
-  rest.
+  before the previous one expires and stores its username and password in the
+  Kubernetes Secret. Dynamic mode does not read a static password from the
+  OpenBao KV path. Any existing static KV value remains until you delete it in
+  step 5.
 
 The engine issues an ephemeral MySQL user per lease (for example `v-kube-...`)
 with `ALL PRIVILEGES` on the Placement database and drops it at lease end.
@@ -76,6 +77,11 @@ The database engine mount, the `placement-db` Kubernetes-auth role, and the
 Re-apply them so a cluster provisioned before Placement was onboarded picks them
 up:
 
+For a kind devstack, obtain and export `BAO_TOKEN` as described in
+[Running the Full Bootstrap](../../reference/infrastructure/openbao-bootstrap.md#running-the-full-bootstrap).
+That procedure reads the root token from `openbao-init-keys` and exports it for
+the bootstrap scripts.
+
 ```bash
 # From the repo root, with BAO_TOKEN exported (the OpenBao root token).
 bash deploy/openbao/bootstrap/setup-secret-engines.sh
@@ -96,7 +102,7 @@ bash deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane
 ```
 
 When the ControlPlane declares `spec.services.placement` on the shared managed
-database, the script provisions the Placement leg:
+database, the script configures the Placement engine connection and role:
 
 - `database/mariadb/config/placement-<placement-namespace>`, the connection to
   the tenant's MariaDB, authenticated as root.
@@ -141,20 +147,20 @@ over.
 ### 4. Upgrade the operators and observe the cutover
 
 Upgrade the c5c3 and placement operators to a build that includes the dynamic
-engine wiring. On the next reconcile the c5c3 operator projects the generator,
+database integration. On the next reconcile the c5c3 operator projects the generator,
 ServiceAccount, and Certificate, and the ExternalSecret switches to drawing from
 the generator.
 
-On a cluster that ran the static path, delete the materialised credential Secret
-once so the engine-issued value is the only thing that can ever be read from it:
+On a cluster that ran the static path, delete the credential Secret once to
+remove the old value before ESO syncs the engine-issued credential:
 
 ```bash
 kubectl delete secret <controlplane>-placement-db-credentials -n <namespace>
 ```
 
 The ExternalSecret is updated in place (same name, same target Secret), so until
-ESO's first generator-backed sync lands the Secret still holds whatever the
-previous static sync wrote. Deleting it forces ESO to re-materialise from the
+Until ESO completes its first generator-backed sync, the Secret still holds
+whatever the previous static sync wrote. Deleting it forces ESO to sync from the
 generator immediately instead of at the next refresh.
 
 You do not have to get this right for Placement to stay up: the c5c3 operator
@@ -173,9 +179,9 @@ Watch for:
 - The `controlplane-placement-db-credentials` ExternalSecret spec changing from
   static `data[].remoteRef` to `dataFrom[].sourceRef.generatorRef` (kind
   `VaultDynamicSecret`).
-- The materialised Secret's `username` becoming an engine-issued login rather
+- The Kubernetes Secret's `username` becoming an engine-issued login rather
   than `controlplane-placement`.
-- A Placement Deployment rollout: the operator stamps a
+- A Placement Deployment rollout: the operator sets a
   `placement.c5c3.io/db-connection-hash` pod-template annotation, so a rotated
   credential rolls the Deployment. The DSN travels in the
   `OS_PLACEMENT_DATABASE__CONNECTION` environment variable, which only takes
@@ -241,22 +247,22 @@ Roll back the operators if you also need to remove the generator objects.
 - **Revocation semantics:** revoking a lease runs `DROP USER`, which rejects new
   connections. Already-open sessions of a dropped user may persist until they
   disconnect.
-- **ESO or OpenBao outage longer than the lease:** the materialised credential
-  expires before a refresh lands. Running Pods keep pooled connections, but new
+- **ESO or OpenBao outage longer than the lease:** the leased credential
+  expires before a refresh completes. Running Pods keep pooled connections, but new
   connections fail until ESO recovers. This surfaces through the Placement
   child's own database readiness and, ControlPlane-side, as
   `PlacementReady=False`.
 
 ## See also
 
-- [OpenBao Bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md) —
+- [OpenBao Bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md):
   engines, auth roles, policies, and secret paths.
-- [ControlPlane reconciler reference](../../reference/c5c3/controlplane-reconciler.md) —
+- [ControlPlane reconciler reference](../../reference/c5c3/controlplane-reconciler.md):
   the `reconcilePlacement` DB-credential projection flow.
-- [Placement CRD API Reference](../../reference/placement/placement-crd.md) —
+- [Placement CRD API Reference](../../reference/placement/placement-crd.md):
   `spec.database.credentialsMode` and the fields the ControlPlane projects onto
   the child.
-- [Migrate Glance DB to Dynamic Credentials](../glance/migrate-glance-db-to-dynamic-credentials.md) —
+- [Migrate Glance DB to Dynamic Credentials](../glance/migrate-glance-db-to-dynamic-credentials.md):
   the sibling migration for the Glance service DB user.
 
 ## Tested by
