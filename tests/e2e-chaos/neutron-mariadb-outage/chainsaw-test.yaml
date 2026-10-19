@@ -19,8 +19,21 @@
 #     without a token and without touching the database, so a database outage is
 #     invisible to readiness. That is the contract this suite pins: the pod
 #     stays pooled and answers, and only database-backed requests fail
-#   - after the partition is lifted the failed write is absent from the network
-#     list, and a fresh POST answers 201 again
+#   - after the partition is lifted the write the client never heard back from
+#     has the outcome the API's request log records for it: nothing
+#     under its name after a 5xx, one network after a 201, never two; and a
+#     fresh POST answers 201 again
+#
+# The client's view of that write ends before the worker's. uWSGI's http
+# router closes the client's connection after about 60 s without a response
+# (the probe sees RemoteDisconnected), while the request stays parked in the
+# worker: neutron-lib retries a DBConnectionError up to 20 times with a
+# growing interval (neutron_lib.db.api, is_retriable), so the worker lands
+# the write once the partition lifts within that budget. On run 39264061866
+# the request log read `POST /v2.0/networks => generated 710 bytes in 65764
+# msecs (HTTP/1.1 201)` one second after the lift. Step 6 counts the POST
+# lines of the request log before the write, and step 8 waits for the next
+# one and judges by its status instead of racing the worker's next retry.
 #
 # The Neutron API rejects an unauthenticated request, so this suite brings its
 # own Keystone (00-keystone-cr.yaml) and every probe asks it for a
@@ -241,6 +254,15 @@ spec:
           POD=neutron-db-outage-failclosed-probe
           cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
           trap cleanup EXIT
+          # The number of POST /v2.0/networks lines uWSGI has logged so far
+          # (the baseline's). Step 8 waits for the next one, the write below,
+          # and reads its status there; the ConfigMap carries the count across
+          # the steps, and the step cleanup removes it.
+          BEFORE="$(kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-db-chaos,app.kubernetes.io/component=api \
+            -c neutron-api --tail=-1 | grep -c 'POST /v2.0/networks => generated ' || true)"
+          kubectl create configmap neutron-db-outage-marks -n "$NAMESPACE" \
+            --from-literal=posts-before-failclosed="${BEFORE}" --dry-run=client -o yaml | kubectl apply -f -
+          echo "request log: ${BEFORE} POST /v2.0/networks line(s) before the fail-closed write"
           PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
           kubectl run "$POD" -n "$NAMESPACE" \
             --image=ghcr.io/c5c3/neutron:2026.1 --restart=Never \
@@ -363,6 +385,9 @@ spec:
         content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
     - script:
         content: kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+    cleanup:
+    - script:
+        content: kubectl delete configmap neutron-db-outage-marks -n "$NAMESPACE" --ignore-not-found
   # ── Step 7: Delete NetworkChaos to lift the partition ────────────────────
   - try:
     - delete:
@@ -373,25 +398,61 @@ spec:
     catch:
     - script:
         content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
-  # ── Step 8: Assert recovery, and that the failed write stayed failed ─────
-  # The fail-closed step accepts a bounded timeout, but a timeout only proves
-  # the CLIENT gave up: the request could still have been completed by the
-  # worker it was parked in. Listing by name once the database is reachable
-  # again is what separates the two. The fresh POST after it proves the API
-  # recovers autonomously, with no operator intervention and no pod restart.
+  # ── Step 8: Assert recovery, and the outcome of the parked write ─────────
+  # The fail-closed step accepts a closed connection, but that only proves the
+  # CLIENT heard nothing: the request stays parked in the worker, which
+  # retries the database (the header), and whether the write lands depends on
+  # how long the partition outlasts it. The step waits for the request log
+  # line of that POST, which uWSGI writes when the worker answers, and holds
+  # the listing by name to it: a 5xx leaves nothing, a 201 leaves one network,
+  # which the probe deletes, and a second one or a 4xx fails. The fresh POST
+  # after it proves the API recovers autonomously, with no operator
+  # intervention and no pod restart.
   - try:
     - script:
-        timeout: 5m
+        timeout: 8m
         content: |
           set -eu
           # Log-based verdict, not an attached stream — see step 3 for why.
           POD=neutron-db-outage-recovery-probe
           cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
           trap cleanup EXIT
+          BEFORE="$(kubectl get configmap neutron-db-outage-marks -n "$NAMESPACE" -o jsonpath='{.data.posts-before-failclosed}')"
+          WANT=$((BEFORE + 1))
+          # The worker answers once its next retry reaches the database. The
+          # connections the pool held across the partition wait on TCP's
+          # retransmit, which backs off to two minutes, so the wait allows
+          # five. A count below the baseline's means the API pod restarted and
+          # its log is gone.
+          PARKED=""
+          for _ in $(seq 1 150); do
+            LINES="$(kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-db-chaos,app.kubernetes.io/component=api \
+              -c neutron-api --tail=-1 | grep 'POST /v2.0/networks => generated ' || true)"
+            COUNT="$(printf '%s' "${LINES}" | grep -c . || true)"
+            if [ "${COUNT}" -lt "${BEFORE}" ]; then
+              echo "FAIL: the request log holds ${COUNT} POST /v2.0/networks line(s), fewer than the ${BEFORE} before the write: the API pod restarted"
+              exit 1
+            fi
+            if [ "${COUNT}" -ge "${WANT}" ]; then
+              LINE="$(printf '%s\n' "${LINES}" | sed -n "${WANT}p")"
+              PARKED="$(printf '%s' "${LINE}" | sed -n 's/.*(HTTP\/1\.[01] \([0-9]\{3\}\)).*/\1/p')"
+              echo "the parked write answered in the worker: ${LINE}"
+              if [ -z "${PARKED}" ]; then
+                echo "FAIL: no HTTP status in that request log line"
+                exit 1
+              fi
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "${PARKED}" ]; then
+            echo "FAIL: no request log line for the parked POST /v2.0/networks within 300 s of the lift (${COUNT} line(s), want ${WANT})"
+            exit 1
+          fi
           PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
           kubectl run "$POD" -n "$NAMESPACE" \
             --image=ghcr.io/c5c3/neutron:2026.1 --restart=Never \
-            --env "OS_PASSWORD=${PW}" \
+            --env "OS_PASSWORD=${PW}" --env "PARKED_STATUS=${PARKED}" \
             --command -- python3 -c '
           import json, os, sys, time, urllib.request, urllib.error
 
@@ -399,6 +460,7 @@ spec:
           NEUTRON = "http://neutron-db-chaos.openstack.svc.cluster.local:9696"
           FAILED = "db-outage-failclosed"
           NAME = "db-outage-recovered"
+          PARKED = int(os.environ["PARKED_STATUS"])
 
           def fail(msg):
               print("FAIL: " + msg)
@@ -458,10 +520,26 @@ spec:
                                                    headers={"X-Auth-Token": tok}),
                                       "list networks").read())
           networks = listing.get("networks", [])
-          print("listing returned %d network(s) named %r" % (len(networks), FAILED))
-          if networks:
-              fail("the write that failed closed left %d network(s) behind: %s"
-                   % (len(networks), json.dumps(networks)))
+          print("listing returned %d network(s) named %r, the parked write answered %d" % (len(networks), FAILED, PARKED))
+          if PARKED < 500 and not 200 <= PARKED < 300:
+              fail("the parked write answered %d in the worker: a client error does not prove the database failed closed" % PARKED)
+          if PARKED >= 500 and networks:
+              fail("the parked write answered %d, yet it left %d network(s) behind: %s"
+                   % (PARKED, len(networks), json.dumps(networks)))
+          if PARKED < 500 and len(networks) != 1:
+              fail("the parked write answered %d, so one network should carry its name, not %d: %s"
+                   % (PARKED, len(networks), json.dumps(networks)))
+          for net in networks:
+              # The write landed after the lift, as a write parked in the
+              # worker does when the partition ends inside its retry budget.
+              # Once is the contract; the probe removes it.
+              resp = settle(lambda: call("DELETE", NEUTRON + "/v2.0/networks/" + net["id"],
+                                         headers={"X-Auth-Token": tok}),
+                            "delete the parked write")
+              if resp.status != 204:
+                  fail("DELETE /v2.0/networks/%s -> %d, want 204" % (net["id"], resp.status))
+              print("deleted network %s, the parked write that landed after the lift" % net["id"])
+          print("PARKED-WRITE-%s-OK" % ("LANDED-ONCE" if networks else "ABSENT"))
 
           network = json.dumps({"network": {"name": NAME}}).encode()
           resp = settle(lambda: call("POST", NEUTRON + "/v2.0/networks", data=network,
@@ -482,8 +560,9 @@ spec:
           OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
           echo "${OUT}"
           echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'PARKED-WRITE-.*-OK'
           echo "${OUT}" | grep -q 'RECOVERY-OK'
-          echo "OK: the failed write is absent and the API creates networks again"
+          echo "OK: the parked write has the outcome its status says, and the API creates networks again"
     catch:
     - script:
         content: ../diagnostics.sh chaos neutron-db-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=mariadb --dep-ns=openstack --log-label=app.kubernetes.io/instance=neutron-db-chaos
