@@ -16,12 +16,16 @@ import (
 	"testing"
 
 	"github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -429,4 +433,23 @@ func TestDeleteHTTPRoute_ToleratesNotFound(t *testing.T) {
 
 	g.Expect(DeleteHTTPRoute(context.Background(), c, "ns", "absent")).To(gomega.Succeed(),
 		"deleting a non-existent HTTPRoute must be a no-op")
+}
+
+func TestDeleteHTTPRoute_WrapsADeleteError(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	scheme, err := newGatewayScheme()
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	boom := apierrors.NewInternalError(errors.New("boom"))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+			return boom
+		},
+	}).Build()
+
+	err = DeleteHTTPRoute(context.Background(), c, "ns", "route")
+	g.Expect(err).To(gomega.MatchError("deleting HTTPRoute ns/route: Internal error occurred: boom"))
+	g.Expect(errors.Is(err, boom)).To(gomega.BeTrue())
+	g.Expect(apierrors.IsInternalError(err)).To(gomega.BeTrue(),
+		"callers branch on the status error through the wrap")
 }
