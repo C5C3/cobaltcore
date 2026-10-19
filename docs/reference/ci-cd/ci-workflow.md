@@ -705,9 +705,9 @@ called in project code are reported as informational but do not fail the job.
 This job runs independently and does **not** appear in any other job's `needs:` array. It
 is not on the critical path for E2E or publish jobs, matching the `test-race` pattern.
 When a new Go module is added to `go.work`, the `OPERATORS` variable in the Makefile must
-be updated with the new module name. The verification test
-(`tests/ci/verify_govulncheck_modules.sh`) catches drift between `go.work` and the
-Makefile automatically.
+be updated with the new module name. `tests/unit/hack/govulncheck_modules_test.sh`
+fails when `go.work`, the Makefile and the `operators/*/go.mod` files name different
+modules, and `make test-shell` runs it on every pull request and every push to `main`.
 
 Timeout: 15 minutes.
 
