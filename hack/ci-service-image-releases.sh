@@ -25,7 +25,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-OPERATOR="${OPERATOR:?OPERATOR is required (e.g. keystone)}"
+if [[ -z "${OPERATOR:-}" ]]; then
+  echo "::error::OPERATOR must be set (e.g. keystone)" >&2
+  exit 1
+fi
 
 shopt -s nullglob
 for release_dir in "${REPO_ROOT}"/releases/*/; do
