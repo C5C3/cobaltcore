@@ -224,7 +224,46 @@ compute, and network clusters attach to one control plane, and the compute
 clusters may run different hypervisors, KVM in one and Cloud Hypervisor in
 another.
 
-![One OpenStack Control Plane with attached Ceph Storage clusters, OpenStack Compute clusters running KVM or Cloud Hypervisor, and OpenStack Network clusters running OVN, two of each and more.](../diagrams/cobaltcore-attached-clusters.svg)
+![One OpenStack Control Plane with attached Ceph Storage clusters, OpenStack Compute clusters running KVM or, for VS-NfD workloads, Cloud Hypervisor, and OpenStack Network clusters running OVN, two of each and more.](../diagrams/cobaltcore-attached-clusters.svg)
+
+### Cloud Hypervisor for VS-NfD
+
+The picture carries Cloud Hypervisor beside KVM for workloads classified
+VS-NfD, the lowest German classification level for official information
+(Verschlusssache, nur für den Dienstgebrauch). A cloud for such workloads needs
+a hypervisor that the German Federal Office for Information Security (BSI) has
+approved for that level, because the hypervisor is what separates the tenants
+on a host.
+
+[Cyberus Technology](https://www.cyberus-technology.de) builds such a
+hypervisor on KVM and Cloud Hypervisor. According to Cyberus, its Cyberus
+Hypervisor received the BSI approval (Zulassung, reference BSI-VSA-11111) for
+VS-NfD and NATO RESTRICTED in September 2026, after a preliminary approval to
+operate (Einsatzerlaubnis) in November 2025. The approval covers secure
+multi-tenancy. Live migration, encrypted block storage, and Windows guests are
+planned for the next approval step
+([announcement](https://www.cyberus-technology.de/post/we-are-accredited-cyberus-hypervisor-achieves-bsi-vs-nfd-and-nato-restricted-accreditation-zulassung)).
+Cyberus describes its hypervisor as the core of a Kubernetes-based OpenStack
+distribution that it designs together with CobaltCore, a project of the
+NeoNephos Foundation at Linux Foundation Europe
+([Cloud Hypervisor at Cyberus](https://www.cyberus-technology.de/cloud-hypervisor)).
+
+The picture chooses the hypervisor per compute cluster, as
+[Attached clusters](#attached-clusters) shows. A region can therefore attach a
+compute cluster on Cloud Hypervisor for VS-NfD workloads beside compute
+clusters on KVM for all other workloads, under the same control plane and the
+same OpenStack API. Live migration matters for the operation of such a cluster:
+the maintenance of a hypervisor in
+[Teams per region and site](#teams-per-region-and-site) moves its servers by
+live migration, which the approval does not cover yet.
+
+Cloud Hypervisor is not integrated in this repository yet. A `NovaCompute` pool
+renders `[libvirt] virt_type` as `kvm` or `qemu`
+([NovaCompute CRD](../reference/nova/novacompute-crd.md)), the
+[libvirt image](../reference/ci-cd/container-images.md#libvirt) carries QEMU,
+and the metal-stack lab moves kvm-node-agent from its chart default
+`ch:///system`, the libvirt URI of Cloud Hypervisor, to `qemu:///system`
+([Lab hypervisors](../reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)).
 
 ### Teams per region and site
 
@@ -284,7 +323,7 @@ the original document and to the state in this repository:
 | --- | --- | --- | --- |
 | CobaltCore Operation and Monitoring | Management | GitOps hub, OpenBao, ESO, observability UI (Greenhouse, Aurora) | Collapsed into the single management cluster above; a dedicated cluster is a [sketch](../future/management-cluster.md) |
 | OpenStack Control Plane | Control Plane | OpenStack control-plane services, K-ORC, infrastructure | Implemented as the management cluster, with optional [target clusters](../reference/target-clusters.md) for workload placement. Several control planes are several `ControlPlane` CRs on that cluster, at most one per namespace |
-| OpenStack Compute | Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | The dedicated cluster is a [sketch](../future/hypervisor-cluster.md). The [Nova](../reference/nova/index.md) control plane, the [OVN](../reference/ovn/index.md) chassis layer and `NovaCompute` node pools are onboarded, and the [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on KVM inside one cluster. Attaching a separate compute cluster is tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013) |
+| OpenStack Compute | Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | The dedicated cluster is a [sketch](../future/hypervisor-cluster.md). The [Nova](../reference/nova/index.md) control plane, the [OVN](../reference/ovn/index.md) chassis layer and `NovaCompute` node pools are onboarded, and the [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on KVM inside one cluster. Cloud Hypervisor is not integrated yet ([Cloud Hypervisor for VS-NfD](#cloud-hypervisor-for-vs-nfd)). Attaching a separate compute cluster is tracked in [#1013](https://github.com/C5C3/cobaltcore/issues/1013) |
 | Ceph Storage | Storage | Ceph via Rook, storage observability | [Sketch](../future/storage-cluster.md); block storage itself is onboarded as the [Cinder](../reference/cinder/index.md) control-plane service on the management cluster |
 | OpenStack Network | None; the original runs the OVN operator on the control-plane cluster and `ovn-controller` on the hypervisors | OVN and the outbound path: load balancer, router, BGP | No dedicated cluster. The [OVN](../reference/ovn/index.md) chassis layer runs on labelled nodes, and the `openstack.c5c3.io/gateway` label makes a node a network node ([Label a Node as a Compute or Network Node](../guides/ovn/label-a-chassis-node.md)) |
 
