@@ -343,3 +343,75 @@ Tempest exists in this repository as a container image driven by the
 [e2e test infrastructure](../reference/testing/tempest-test-infrastructure.md),
 not as an operator. New services follow the onboarding path in
 [Adding a New Operator](../contributing/adding-a-new-operator.md).
+
+## Deployment models
+
+OpenStack on Kubernetes is also deployed without operators, from Helm charts
+that a central CI renders and applies. Large OpenStack providers run this model
+in production across many regions. This chapter describes the model and sets
+CobaltCore beside it, so that a reader who knows one can place the other.
+
+![Two ways to deploy OpenStack on Kubernetes. Left, charts, values, and a central CI: a charts repository with one chart per service, each with its own database, bus, and cache, several hundred charts in all, and a values repository with the differences per region, for example MariaDB and OVN on in region A and Galera and OVN off in region B, with secrets from a vault at deploy time. Both feed a central CI that runs one job per release and region: keystone, nova, neutron, cinder, and more for region A, the same again for region B, and a pipeline of its own for every further region. The CI pushes the releases with helm upgrade into each region, where every release, such as nova and neutron, brings its own database, bus, and cache. Right, CobaltCore: a Git repository holds one ControlPlane per region, for example sizing Standard in A and Minimal in B, with every field checked at admission. A CI builds and tests the operators and the images once. The operators carry the install order, the database migrations, the upgrades, and the key rotation, run in every region, and report the state of every resource as conditions. Flux in every region pulls its ControlPlane, and each region runs Flux, the ControlPlane, the operators, and one database, bus, and cache that all services share.](../diagrams/cobaltcore-deployment-models.svg)
+
+### Charts, values, and a central CI
+
+The model rests on two repositories and one CI. The charts repository holds one
+chart per OpenStack service, beside charts for the infrastructure, the
+monitoring, and shared building blocks, several hundred charts in all. Every
+top-level chart is one Helm release in a namespace of the same name. Each
+service chart carries its backing services as sub-charts: a database in two
+flavors, a cache, and a message bus, each behind a flag. Every release brings
+its own copies of them, and the same sub-charts and helper templates recur in
+every service chart. The procedures of a service, such as its database
+migration or its bootstrap, are Jobs in its chart.
+
+The values repository holds what differs: values for all regions, values per
+region, and values per service and region. The CI interpolates the secrets from
+a vault into these values when a job runs. Any value of any chart can differ
+per region, so the regions drift apart over time. One region runs the database
+as MariaDB and the next as a Galera cluster, and a feature runs in one region
+and stays off in another. Admission policies on the clusters check at apply
+time that a region value is not missing and that images come from the right
+registry.
+
+The central CI runs one job per release and region. A job builds the chart's
+dependencies, merges the layered values, and runs `helm upgrade --install`
+against the cluster of that region. Pipelines group the jobs per region or per
+continent, and since Helm knows no order between releases, the pipelines decide
+which release runs first. A new region needs new values files, new jobs in the
+pipeline definition, DNS records, and steps a person runs against the new
+cloud, such as registering its endpoints.
+
+### One resource per region
+
+CobaltCore moves what the CI and the values repository hold into operators and
+one typed resource. The procedures, such as the install order, the database
+migrations, the upgrades, and the key rotation, are operator code. The CI of
+this repository builds and tests that code once for every region, from unit
+tests to end-to-end suites on kind. A region is one `ControlPlane`, and its
+differences are fields such as `spec.sizing` or the presence of a service
+block, which the API checks at admission through schema rules and webhooks.
+Free-form configuration stays possible through `extraConfig`, and admission
+warns when it sets a key an operator owns. The services of a ControlPlane share
+one database, cache, and bus, and a service gets its own only when its block
+asks for them ([A composable control plane](#a-composable-control-plane)).
+
+Deployment runs in the region. Flux in each cluster applies the infrastructure
+stack from Git ([Layering](#layering)), and the operators reconcile the
+ControlPlane continuously: an edit to a projected child is reverted on the next
+reconcile, and the state of every part is a condition on a resource. The quick
+starts apply the ControlPlane itself with `kubectl`; in a region it is one more
+file in the Git repository that Flux reads. The coordination between the teams
+of a region follows [Teams per region and site](#teams-per-region-and-site).
+
+### Side by side
+
+| Aspect | Charts, values, and a central CI | CobaltCore |
+| --- | --- | --- |
+| Unit of deployment | One Helm release per service and region | One `ControlPlane` per region, from which the operators create the services |
+| Where a region differs | Any value of any chart, in the values repository | Typed fields of the ControlPlane, checked at admission, and `extraConfig` with a warning for keys an operator owns |
+| Backing services | Every release brings its own database, cache, and bus | One set per ControlPlane; a service opts out through `dedicatedBackingServices` |
+| Procedures and order | Jobs in the charts, order in the pipelines | Operator code, tested once in CI |
+| Who applies | The central CI pushes into every region | Flux and the operators in each region pull and reconcile |
+| A new region | New values files, new pipeline jobs, DNS records, and steps by hand | A cluster with the infrastructure stack and one more ControlPlane, beside the DNS records every model needs |
+| Drift | Corrected when the next job of the release runs | Corrected on the next reconcile, and reported as a condition |

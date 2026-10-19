@@ -1,0 +1,179 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="1000" viewBox="0 0 1840 1000" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Two ways to deploy OpenStack on Kubernetes">
+<title>Two ways to deploy OpenStack on Kubernetes</title>
+<rect width="1840" height="1000" fill="#F6F5F1"/>
+<rect x="919" y="40" width="2" height="900" rx="0" fill="#D5D9DE"/>
+<text x="40" y="63.92" font-size="22" font-weight="700" fill="#55606E" letter-spacing="2">CHARTS, VALUES, AND A CENTRAL CI</text>
+<text x="960" y="63.92" font-size="22" font-weight="700" fill="#55606E" letter-spacing="2">COBALTCORE</text>
+<rect x="40" y="96" width="400" height="140" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="60" y="133.64" font-size="24" font-weight="700" fill="#2B3440">charts repository</text>
+<text x="60" y="169.2" font-size="20" font-weight="400" fill="#2B3440">one chart per service</text>
+<text x="60" y="197.2" font-size="20" font-weight="400" fill="#2B3440">each with its own DB, bus, and cache</text>
+<text x="60" y="225.2" font-size="20" font-weight="400" fill="#2B3440">several hundred charts</text>
+<rect x="480" y="96" width="400" height="140" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="500" y="133.64" font-size="24" font-weight="700" fill="#2B3440">values repository</text>
+<text x="500" y="169.2" font-size="20" font-weight="400" fill="#2B3440">region A: MariaDB, OVN on</text>
+<text x="500" y="197.2" font-size="20" font-weight="400" fill="#2B3440">region B: Galera, OVN off</text>
+<text x="500" y="225.2" font-size="20" font-weight="400" fill="#2B3440">secrets from a vault at deploy time</text>
+<polyline points="240,236 240,285.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="240,296 232.8,281 247.2,281" fill="#3A4452"/>
+<polyline points="680,236 680,285.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="680,296 672.8,281 687.2,281" fill="#3A4452"/>
+<rect x="40" y="296" width="840" height="260" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="64" y="337.36" font-size="26" font-weight="700" fill="#17202B">Central CI</text>
+<text x="204" y="336.2" font-size="20" font-weight="400" fill="#55606E">one job per release and region</text>
+<text x="64" y="399.92" font-size="22" font-weight="700" fill="#2B3440">region A</text>
+<rect x="184" y="372" width="122" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="399.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">keystone</text>
+<polyline points="306,392 325.5,392" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="336,392 321,399.2 321,384.8" fill="#3A4452"/>
+<rect x="336" y="372" width="78" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="374.5" y="399.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">nova</text>
+<polyline points="414,392 433.5,392" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="444,392 429,399.2 429,384.8" fill="#3A4452"/>
+<rect x="444" y="372" width="109" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="498.5" y="399.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">neutron</text>
+<polyline points="553,392 572.5,392" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="583,392 568,399.2 568,384.8" fill="#3A4452"/>
+<rect x="583" y="372" width="93" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="629.5" y="399.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">cinder</text>
+<polyline points="676,392 695.5,392" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="706,392 691,399.2 691,384.8" fill="#3A4452"/>
+<rect x="706" y="374" width="100" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="755.5" y="399.92" font-size="22" font-weight="700" fill="#55606E" text-anchor="middle">+ more</text>
+<text x="64" y="459.92" font-size="22" font-weight="700" fill="#2B3440">region B</text>
+<rect x="184" y="432" width="122" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="245" y="459.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">keystone</text>
+<polyline points="306,452 325.5,452" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="336,452 321,459.2 321,444.8" fill="#3A4452"/>
+<rect x="336" y="432" width="78" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="374.5" y="459.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">nova</text>
+<polyline points="414,452 433.5,452" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="444,452 429,459.2 429,444.8" fill="#3A4452"/>
+<rect x="444" y="432" width="109" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="498.5" y="459.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">neutron</text>
+<polyline points="553,452 572.5,452" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="583,452 568,459.2 568,444.8" fill="#3A4452"/>
+<rect x="583" y="432" width="93" height="40" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="629.5" y="459.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">cinder</text>
+<polyline points="676,452 695.5,452" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="706,452 691,459.2 691,444.8" fill="#3A4452"/>
+<rect x="706" y="434" width="100" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="755.5" y="459.92" font-size="22" font-weight="700" fill="#55606E" text-anchor="middle">+ more</text>
+<rect x="184" y="492" width="672" height="40" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="519.5" y="519.92" font-size="22" font-weight="700" fill="#55606E" text-anchor="middle">+ more regions, each a pipeline of its own</text>
+<polyline points="244,556 244,615.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="244,626 236.8,611 251.2,611" fill="#3A4452"/>
+<polyline points="676,556 676,615.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="676,626 668.8,611 683.2,611" fill="#3A4452"/>
+<text x="460" y="598.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">helm upgrade, pushed by the CI</text>
+<rect x="40" y="626" width="408" height="252" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="56" y="640" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="93.5" y="666.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="144" y="665.36" font-size="26" font-weight="700" fill="#17202B">Region A</text>
+<rect x="56" y="690" width="376" height="52" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<text x="72" y="723.92" font-size="22" font-weight="700" fill="#1D47A6">nova</text>
+<rect x="190" y="698" width="58" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="219" y="723.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">DB</text>
+<rect x="256" y="698" width="66" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="288.5" y="723.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">bus</text>
+<rect x="330" y="698" width="89" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="374" y="723.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">cache</text>
+<rect x="56" y="754" width="376" height="52" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<text x="72" y="787.92" font-size="22" font-weight="700" fill="#1D47A6">neutron</text>
+<rect x="190" y="762" width="58" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="219" y="787.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">DB</text>
+<rect x="256" y="762" width="66" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="288.5" y="787.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">bus</text>
+<rect x="330" y="762" width="89" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="374" y="787.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">cache</text>
+<rect x="56" y="818" width="376" height="40" rx="12" fill="#FDFCF9" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="244" y="845.2" font-size="20" font-weight="700" fill="#55606E" text-anchor="middle">+ more releases, each with its own</text>
+<rect x="472" y="626" width="408" height="252" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="488" y="640" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="525.5" y="666.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="576" y="665.36" font-size="26" font-weight="700" fill="#17202B">Region B</text>
+<rect x="488" y="690" width="376" height="52" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<text x="504" y="723.92" font-size="22" font-weight="700" fill="#1D47A6">nova</text>
+<rect x="622" y="698" width="58" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="651" y="723.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">DB</text>
+<rect x="688" y="698" width="66" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="720.5" y="723.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">bus</text>
+<rect x="762" y="698" width="89" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="806" y="723.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">cache</text>
+<rect x="488" y="754" width="376" height="52" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<text x="504" y="787.92" font-size="22" font-weight="700" fill="#1D47A6">neutron</text>
+<rect x="622" y="762" width="58" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="651" y="787.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">DB</text>
+<rect x="688" y="762" width="66" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="720.5" y="787.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">bus</text>
+<rect x="762" y="762" width="89" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="806" y="787.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">cache</text>
+<rect x="488" y="818" width="376" height="40" rx="12" fill="#FDFCF9" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
+<text x="676" y="845.2" font-size="20" font-weight="700" fill="#55606E" text-anchor="middle">+ more releases, each with its own</text>
+<text x="40" y="926.22" font-size="22" font-weight="400" fill="#55606E">One job per release and region pushes the charts. Every region can override every</text>
+<text x="40" y="954.82" font-size="22" font-weight="400" fill="#55606E">value, and every release brings its own backing services.</text>
+<rect x="960" y="96" width="400" height="140" fill="#E9ECEF" stroke="#7D8794" stroke-width="2"/>
+<text x="980" y="133.64" font-size="24" font-weight="700" fill="#2B3440">Git repository</text>
+<text x="980" y="169.2" font-size="20" font-weight="400" fill="#2B3440">ControlPlane A: sizing Standard</text>
+<text x="980" y="197.2" font-size="20" font-weight="400" fill="#2B3440">ControlPlane B: sizing Minimal</text>
+<text x="980" y="225.2" font-size="20" font-weight="400" fill="#2B3440">every field checked at admission</text>
+<rect x="1400" y="96" width="400" height="120" rx="8" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1424" y="137.36" font-size="26" font-weight="700" fill="#17202B">CI</text>
+<text x="1424" y="172.2" font-size="20" font-weight="400" fill="#55606E">builds and tests the operators and the</text>
+<text x="1424" y="198.2" font-size="20" font-weight="400" fill="#55606E">images once</text>
+<polyline points="1600,216 1600,285.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1600,296 1592.8,281 1607.2,281" fill="#3A4452"/>
+<text x="1612" y="258.2" font-size="20" font-weight="400" fill="#55606E">images</text>
+<rect x="1400" y="296" width="400" height="260" rx="8" fill="#FDFCF9" stroke="#2F8A57" stroke-width="2"/>
+<text x="1424" y="337.36" font-size="26" font-weight="700" fill="#1E6B40">Operators</text>
+<text x="1424" y="378.22" font-size="22" font-weight="400" fill="#55606E">carry the install order, the database</text>
+<text x="1424" y="406.82" font-size="22" font-weight="400" fill="#55606E">migrations, the upgrades, and the</text>
+<text x="1424" y="435.42" font-size="22" font-weight="400" fill="#55606E">key rotation as code the CI tests</text>
+<text x="1424" y="464.02" font-size="22" font-weight="400" fill="#55606E">once. They run in every region and</text>
+<text x="1424" y="492.62" font-size="22" font-weight="400" fill="#55606E">report the state of every resource</text>
+<text x="1424" y="521.22" font-size="22" font-weight="400" fill="#55606E">as conditions.</text>
+<polyline points="1160,236 1160,615.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1160,626 1152.8,611 1167.2,611" fill="#3A4452"/>
+<polyline points="1320,236 1320,590 1500,590 1500,615.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1500,626 1492.8,611 1507.2,611" fill="#3A4452"/>
+<text x="1172" y="416.2" font-size="20" font-weight="400" fill="#55606E">pulled by Flux</text>
+<text x="1172" y="442.2" font-size="20" font-weight="400" fill="#55606E">in every region</text>
+<rect x="960" y="626" width="408" height="252" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="976" y="640" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="1013.5" y="666.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="1064" y="665.36" font-size="26" font-weight="700" fill="#17202B">Region A</text>
+<rect x="976" y="690" width="73" height="40" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1012" y="717.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">Flux</text>
+<rect x="1061" y="690" width="163" height="40" rx="20" fill="#1E6B40"/>
+<text x="1142.5" y="717.92" font-size="22" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane</text>
+<rect x="976" y="742" width="128" height="40" rx="17" fill="#FDFCF9" stroke="#2F8A57" stroke-width="2"/>
+<text x="1040" y="769.92" font-size="22" font-weight="700" fill="#1E6B40" text-anchor="middle">operators</text>
+<rect x="976" y="806" width="376" height="52" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<text x="992" y="839.92" font-size="22" font-weight="700" fill="#2B3440">shared</text>
+<rect x="1110" y="814" width="58" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1139" y="839.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">DB</text>
+<rect x="1176" y="814" width="66" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1208.5" y="839.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">bus</text>
+<rect x="1250" y="814" width="89" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1294" y="839.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">cache</text>
+<rect x="1392" y="626" width="408" height="252" rx="18.5" fill="#FDFCF9" stroke="#3A4452" stroke-width="3"/>
+<rect x="1408" y="640" width="76" height="36" rx="18" fill="#4B3592"/>
+<text x="1445.5" y="666.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="1496" y="665.36" font-size="26" font-weight="700" fill="#17202B">Region B</text>
+<rect x="1408" y="690" width="73" height="40" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1444" y="717.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">Flux</text>
+<rect x="1493" y="690" width="163" height="40" rx="20" fill="#1E6B40"/>
+<text x="1574.5" y="717.92" font-size="22" font-weight="700" fill="#FBFAF7" text-anchor="middle">ControlPlane</text>
+<rect x="1408" y="742" width="128" height="40" rx="17" fill="#FDFCF9" stroke="#2F8A57" stroke-width="2"/>
+<text x="1472" y="769.92" font-size="22" font-weight="700" fill="#1E6B40" text-anchor="middle">operators</text>
+<rect x="1408" y="806" width="376" height="52" rx="12" fill="#F6F5F1" stroke="#7D8794" stroke-width="2"/>
+<text x="1424" y="839.92" font-size="22" font-weight="700" fill="#2B3440">shared</text>
+<rect x="1542" y="814" width="58" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1571" y="839.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">DB</text>
+<rect x="1608" y="814" width="66" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1640.5" y="839.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">bus</text>
+<rect x="1682" y="814" width="89" height="36" rx="17" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1726" y="839.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">cache</text>
+<text x="960" y="926.22" font-size="22" font-weight="400" fill="#55606E">One ControlPlane per region, pulled by Flux. The operators carry the procedures, the</text>
+<text x="960" y="954.82" font-size="22" font-weight="400" fill="#55606E">services share their backing services, and every difference is a field the API checks.</text>
+</svg>
