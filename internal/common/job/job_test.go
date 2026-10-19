@@ -875,6 +875,48 @@ func TestEnsureCronJob_idempotent(t *testing.T) {
 	g.Expect(list.Items).To(HaveLen(1))
 }
 
+// --- DeleteCronJob ---
+
+func TestDeleteCronJob_DeletesExisting(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(testCronJob()).
+		Build()
+
+	g.Expect(DeleteCronJob(ctx, c, "default", "test-cronjob")).To(Succeed())
+
+	err := c.Get(ctx, client.ObjectKey{Name: "test-cronjob", Namespace: "default"}, &batchv1.CronJob{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+}
+
+func TestDeleteCronJob_ToleratesNotFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c := fake.NewClientBuilder().WithScheme(newScheme()).Build()
+
+	g.Expect(DeleteCronJob(context.Background(), c, "default", "test-cronjob")).To(Succeed(),
+		"deleting a non-existent CronJob must be a no-op")
+}
+
+func TestDeleteCronJob_WrapsADeleteError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	boom := apierrors.NewInternalError(errors.New("boom"))
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+				return boom
+			},
+		}).
+		Build()
+
+	err := DeleteCronJob(context.Background(), c, "default", "test-cronjob")
+	g.Expect(err).To(MatchError("deleting CronJob default/test-cronjob: Internal error occurred: boom"))
+	g.Expect(errors.Is(err, boom)).To(BeTrue())
+	g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
+}
+
 // --- TerminalCondition ---
 
 // TerminalCondition is what every caller observing a CronJob's runs decides on,
