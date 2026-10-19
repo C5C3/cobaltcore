@@ -17,6 +17,12 @@
 # The step's shell body is extracted from action.yaml and executed against a
 # recording docker stub, so this exercises the real snippet rather than a copy.
 #
+# The map reaches the action only through each consumer's with: block. A load
+# step without its image-map: line runs with an empty map and pulls every image
+# from its run-scoped tag, which a reused image does not have, so that job fails
+# on its first pull of a reused image. The consumer check reads ci.yaml alone and
+# runs without jq.
+#
 # Usage: bash tests/unit/ci/load_e2e_images_map_test.sh
 
 set -uo pipefail
@@ -24,6 +30,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 ACTION_YAML="$PROJECT_ROOT/.github/actions/load-e2e-images/action.yaml"
+CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 PASS=0
 FAIL=0
@@ -31,6 +38,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -211,13 +220,72 @@ ghcr.io/c5c3/keystone-operator:dev
   assert_eq "only that one ref is pulled" "2" "$(grep -c . <<<"$LOG")"
 }
 
+# Echo one line per load-e2e-images consumer in ci.yaml outside
+# build-e2e-images: "OK <job> <line>" when the step's image-map: line follows
+# before the next step, "MISS <job> <line>" otherwise.
+consumer_scan() {
+  awk '
+    /^jobs:$/ { in_jobs = 1; next }
+    !in_jobs { next }
+    /^  [a-z0-9-]+:$/ {
+      if (pending) print "MISS " pjob " " pending
+      pending = 0; job = $0; gsub(/[ :]/, "", job); next
+    }
+    job == "build-e2e-images" { next }
+    /^      (- |  )uses: \.\/\.github\/actions\/load-e2e-images$/ {
+      if (pending) print "MISS " pjob " " pending
+      pending = NR; pjob = job; next
+    }
+    pending && /^      - / { print "MISS " pjob " " pending; pending = 0 }
+    pending && $0 == "          image-map: ${{ needs.build-e2e-images.outputs.image-map }}" {
+      print "OK " pjob " " pending; pending = 0
+    }
+    END { if (pending) print "MISS " pjob " " pending }
+  ' "$CI_YAML"
+}
+
+test_every_consumer_passes_the_map() {
+  echo "Test: every load-e2e-images consumer passes the build job's image map"
+
+  local scan status job line
+  scan=$(consumer_scan)
+  while read -r status job line; do
+    [ "$status" = "MISS" ] || continue
+    echo "  FAIL: $job loads E2E images at ci.yaml:$line without the build job's image-map"
+    FAIL=$((FAIL + 1))
+  done <<<"$scan"
+  # Every consumer line in ci.yaml, whatever its indentation, spacing, quoting,
+  # trailing slash or trailing comment, must be one the scan judged; a form the
+  # scan does not know would otherwise pass unseen.
+  local total
+  total=$(grep -cE "^[[:space:]]+(-[[:space:]]+)?uses:[[:space:]]+[\"']?\./\.github/actions/load-e2e-images/?([\"'[:space:]#]|\$)" \
+    "$CI_YAML" || true)
+  assert_gte "ci.yaml has load-e2e-images consumers" "$total" 1
+  assert_eq "the scan judges every load-e2e-images consumer in ci.yaml" "$total" \
+    "$(grep -c . <<<"$scan" || true)"
+
+  assert_file_contains_fixed "build-e2e-images exports the map" "$CI_YAML" \
+    'image-map: ${{ steps.images.outputs.image-map }}'
+  local step
+  step=$(job_step build-e2e-images "Resolve images")
+  assert_contains "the map comes from the Resolve images step" "$step" "id: images"
+  assert_contains "which runs the image resolver" "$step" \
+    "run: hack/ci-resolve-e2e-images.sh"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+test_every_consumer_passes_the_map
+
 if ! command -v jq >/dev/null 2>&1; then
-  echo "SKIP: jq not installed (all checks skipped)"
+  echo "SKIP: jq not installed (the pull-step checks are skipped)"
+  SKIP=$((SKIP + 1))
   echo ""
-  echo "Results: 0 passed, 0 failed, 1 skipped"
+  echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
+  if [ "$FAIL" -gt 0 ]; then
+    exit 1
+  fi
   exit 0
 fi
 
