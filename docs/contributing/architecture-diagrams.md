@@ -26,6 +26,7 @@ the page embeds. A change to a diagram updates both files in the same commit.
 | `cobaltcore-control-planes` | One Operation and Monitoring cluster that creates and manages several OpenStack control planes | [Several control planes](../architecture/index.md#several-control-planes) |
 | `cobaltcore-attached-clusters` | One control plane with several storage, compute, and network clusters attached | [Attached clusters](../architecture/index.md#attached-clusters), [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) |
 | `cobaltcore-team-interfaces` | The teams of one region (control plane, compute, storage, network, platform, and service teams) and the interfaces between a site and the control plane that operators act on | [Teams per region and site](../architecture/index.md#teams-per-region-and-site) |
+| `cobaltcore-deployment-models` | Two ways to deploy OpenStack on Kubernetes side by side: charts, values, and a central CI with one job per release and region, and CobaltCore with one ControlPlane per region that Flux pulls and the operators reconcile | [Deployment models](../architecture/index.md#deployment-models) |
 | `quickstart-map` | The five quick starts as a map: what each deploys and ends with, and the four ways they relate | [Start here](../index.md#start-here), [Quick Start](../quick-start.md), [Quick Start (Extended)](../quick-start-extended.md), [Quick Start (ControlPlane)](../quick-start-controlplane.md), [Quick Start (metal-stack)](../quick-start-metal-stack.md), [Quick Start (Orders)](../quick-start-orders.md), [One devstack per guide](./guide-conventions.md#one-devstack-per-guide) |
 | `quickstart-request-path` | The six hops of a request from the workstation to an OpenStack API on the kind devstack, and the two port-forwards that leave hops out | [Access Keystone from your local machine](../quick-start-extended.md#access-keystone-from-your-local-machine), [Quick Start](../quick-start.md), [Service exposure](../architecture/index.md#service-exposure), [Step 7 of the Quick Start (ControlPlane)](../quick-start-controlplane.md#step-7-—-verify) |
 | `secrets-flow` | The read, write-back and dynamic paths between OpenBao, ESO, the operators and the services, with the cluster store and the tenant store | [Secret flow](../architecture/index.md#secret-flow), [Architecture Overview](../reference/infrastructure/openbao-bootstrap.md#architecture-overview), [External Secrets Operator](../reference/infrastructure/infrastructure-manifests.md#external-secrets-operator), [Per-ControlPlane secret stores and OpenBao identities](../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities) |
@@ -144,7 +145,7 @@ A file is named `<prefix><subject>`, lower case, words joined by hyphens.
 
 | Prefix | Figures |
 | --- | --- |
-| `cobaltcore-` | The product architecture: the eight figures of the start page and the Architecture page |
+| `cobaltcore-` | The product architecture: the nine figures of the start page and the Architecture page |
 | `quickstart-` | Entry pages: the quick-start map and the request path |
 | `secrets-` | Secret and credential paths between OpenBao, ESO, the operators and the services |
 | `controlplane-` | ControlPlane orchestration, placement, target clusters and the orders |
