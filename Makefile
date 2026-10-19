@@ -177,7 +177,8 @@ govulncheck:
 # shellcheck lints all shell scripts with shellcheck --severity=warning.
 # Covers hack/ utility scripts, operator rotation scripts embedded via ConfigMaps,
 # the chaos workload harness (tests/e2e-chaos/lib/ and the probe-lib.sh a suite
-# sources) and the patch checks the hvo and kna manager builds run
+# sources), the library of the lab failover suites (tests/lab-failover/lib/)
+# and the patch checks the hvo and kna manager builds run
 # (images/*/patch-checks.sh).
 shellcheck:
 	@echo "Linting hack/*.sh..."
@@ -186,6 +187,8 @@ shellcheck:
 	@shellcheck --severity=warning operators/*/internal/controller/scripts/*.sh
 	@echo "Linting the chaos workload harness and probe libraries..."
 	@shellcheck --severity=warning tests/e2e-chaos/lib/*.sh tests/e2e-chaos/*/probe-lib.sh
+	@echo "Linting the lab failover library..."
+	@shellcheck --severity=warning tests/lab-failover/lib/*.sh
 	@echo "Linting the image patch checks..."
 	@shellcheck --severity=warning images/*/patch-checks.sh
 
@@ -1040,6 +1043,25 @@ dizzy-keystone dizzy-glance: dizzy-%:
 #   DIZZY_SOAK_MAX_P95_SECONDS  p95 latency threshold (default none).
 dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report: dizzy-soak-%:
 	hack/dizzy-soak.sh $*
+
+.PHONY: lab-failover-preflight lab-failover-up lab-failover-run lab-failover-down
+# lab-failover-preflight, -up, -run and -down drive the failover suites of
+# tests/lab-failover/ on the metal-stack lab, against a Standard-profile
+# ControlPlane openstack-ha/cp-ha beside the lab's own. preflight only reads;
+# up, run and down need the go-ahead on the shared lab. up brings the plane
+# up, run executes the suites, down deletes the plane and the namespace; run
+# down before make teardown-infra. The outputs go to
+# _output/lab-failover/<run>/. See
+# docs/reference/infrastructure/infrastructure-manifests.md#lab-failover-runs.
+#
+# Variables:
+#   LAB_FAILOVER_CONTEXT          kube context of the lab (required).
+#   LAB_FAILOVER_GO_AHEAD         the lab's shoot name; required by up, run and down.
+#   LAB_FAILOVER_MIN_FREE_MEMORY  floor of free memory requests (default 38Gi).
+#   LAB_FAILOVER_RUN              run id (default: set by up, read by run and down).
+#   LAB_FAILOVER_SCENARIOS        suites of run, space-separated (default all eleven).
+lab-failover-preflight lab-failover-up lab-failover-run lab-failover-down: lab-failover-%:
+	hack/lab-failover.sh $*
 
 .PHONY: refresh-operator-digests
 # refresh-operator-digests re-resolves the digest behind the self-built
