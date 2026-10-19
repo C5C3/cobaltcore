@@ -32,9 +32,9 @@ Placement, Barbican, Cinder, Nova, and Neutron with its OVN layer are onboarded
 on the same scaffolding. The c5c3-operator ties the services together into a
 single ControlPlane resource, which projects Nova through `services.nova`.
 Compute nodes join it through `NovaCompute` pools, which the
-[Quick Start (metal-stack)](./quick-start-metal-stack.md) runs on KVM; a
-separate compute cluster is the follow-on
-[#1013](https://github.com/C5C3/cobaltcore/issues/1013).
+[Quick Start (metal-stack)](./quick-start-metal-stack.md) runs on KVM, and
+[Connect a Compute Cluster](./guides/nova/connect-a-compute-cluster.md)
+attaches a separate compute cluster.
 
 ## Start here
 
