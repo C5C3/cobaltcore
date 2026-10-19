@@ -303,7 +303,7 @@ back to `condition_type=UNKNOWN`.
 | The password schedule, the hold and the anchor | `keystoneuser_provision_test.go`, and the timer of a converged pass in `keystoneuser_controller_test.go` |
 | Credential delivery | `operators/c5c3/internal/controller/keystoneuser_delivery_test.go` |
 | The unscoped `clouds.yaml` | `operators/c5c3/internal/controller/korc_cloudsyaml_test.go` |
-| CRD schema | `TestIntegration_KeystoneUser_SchemaValidation` in `integration_test.go` |
+| CRD schema | `TestIntegration_CRD_CELOnly_KeystoneUser` in `operators/c5c3/api/v1alpha1/integration_test.go` |
 | An order on a target cluster | `TestIntegration_Multicluster_ControlPlanePlacement` in `multicluster_integration_test.go` |
 | End to end | `tests/e2e/c5c3/keystone-user/` |
 | Admission rejection corpus | `tests/e2e/c5c3/invalid-keystoneuser-cr/` |

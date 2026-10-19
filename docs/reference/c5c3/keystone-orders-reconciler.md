@@ -320,7 +320,7 @@ from each kind's sub-condition list.
 | Mint document, generations, schedule, grace sweep | `operators/c5c3/internal/controller/keystoneapplicationcredential_provision_test.go` |
 | Credential backup and delivery | `operators/c5c3/internal/controller/keystoneapplicationcredential_delivery_test.go` |
 | The user's holds | `TestKeystoneUser_DeleteHoldsWhileRoleAssignmentsReferenceIt`, `TestKeystoneUser_DeleteHoldsWhileApplicationCredentialsReferenceIt` in `keystoneuser_controller_test.go` |
-| CRD schemas | `TestIntegration_KeystoneProject_SchemaValidation`, `TestIntegration_KeystoneRoleAssignment_SchemaValidation`, `TestIntegration_KeystoneCatalogEntry_SchemaValidation`, `TestIntegration_KeystoneApplicationCredential_SchemaValidation` in `integration_test.go` |
+| CRD schemas | `TestIntegration_CRD_CELOnly_KeystoneProject`, `TestIntegration_CRD_CELOnly_KeystoneRoleAssignment`, `TestIntegration_CRD_CELOnly_KeystoneCatalogEntry`, `TestIntegration_CRD_CELOnly_KeystoneApplicationCredential` in `operators/c5c3/api/v1alpha1/integration_test.go` |
 | Orders on a target cluster | `TestIntegration_Multicluster_ControlPlanePlacement` in `multicluster_integration_test.go` |
 | End to end | `tests/e2e/c5c3/keystone-user/` |
 | Admission rejection corpora | `tests/e2e/c5c3/invalid-keystoneproject-cr/`, `invalid-keystoneroleassignment-cr/`, `invalid-keystonecatalogentry-cr/`, `invalid-keystoneapplicationcredential-cr/` |

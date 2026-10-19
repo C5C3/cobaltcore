@@ -270,7 +270,7 @@ from `rabbitMQVhostSubConditionTypes`.
 | Vhost provisioning and rotation | `operators/c5c3/internal/controller/rabbitmqvhost_provision_test.go` |
 | Credential delivery | `operators/c5c3/internal/controller/rabbitmqvhost_delivery_test.go` |
 | The topology builders and readers, the vhost transport URL | `internal/common/messaging/topology_test.go`, `messaging_test.go` |
-| CRD schema | `TestIntegration_RabbitMQVhost_SchemaValidation` in `integration_test.go` |
+| CRD schema | `TestIntegration_CRD_CELOnly_RabbitMQVhost` in `operators/c5c3/api/v1alpha1/integration_test.go` |
 | An order on a target cluster | `TestIntegration_Multicluster_ControlPlanePlacement` in `multicluster_integration_test.go` |
 | Startup without the topology kinds | `TestRabbitMQVhostSetup_StartsWithoutTopologyCRDs` in `setupwithmanager_integration_test.go` |
 | End to end | `tests/e2e/c5c3/messaging/` |
