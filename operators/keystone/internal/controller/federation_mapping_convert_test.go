@@ -57,14 +57,10 @@ func TestToGophercloudMappingRules_EmptyListsSurviveWireRoundTrip(t *testing.T) 
 	g.Expect(out[0].Remote[2].Whitelist).To(BeNil())
 }
 
-// TestToGophercloudMappingRules_FullShape converts a rule exercising every
-// typed field and asserts the wire JSON matches keystone's mapping-rule
-// grammar (snake_case keys, omitted zero values) — the contract the CRD types
-// document as a one-to-one mirror.
-func TestToGophercloudMappingRules_FullShape(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	rules := []keystonev1alpha1.MappingRuleSpec{{
+// fullShapeMappingRules returns the rule TestToGophercloudMappingRules_FullShape
+// converts, which FuzzToGophercloudMappingRules also uses as a seed.
+func fullShapeMappingRules() []keystonev1alpha1.MappingRuleSpec {
+	return []keystonev1alpha1.MappingRuleSpec{{
 		Local: []keystonev1alpha1.MappingLocalRuleSpec{
 			{
 				User: &keystonev1alpha1.MappingUserSpec{
@@ -96,6 +92,16 @@ func TestToGophercloudMappingRules_FullShape(t *testing.T) {
 			},
 		},
 	}}
+}
+
+// TestToGophercloudMappingRules_FullShape converts a rule exercising every
+// typed field and asserts the wire JSON matches keystone's mapping-rule
+// grammar (snake_case keys, omitted zero values) — the contract the CRD types
+// document as a one-to-one mirror.
+func TestToGophercloudMappingRules_FullShape(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	rules := fullShapeMappingRules()
 
 	out := toGophercloudMappingRules(rules)
 	g.Expect(out).To(HaveLen(1))
