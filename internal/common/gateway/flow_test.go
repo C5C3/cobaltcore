@@ -6,6 +6,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -15,7 +16,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
@@ -51,6 +54,13 @@ func baseRouteParams(conds *[]metav1.Condition) RouteFlowParams {
 		ConditionType:   "HTTPRouteReady",
 		RequeueAccepted: 10 * time.Second,
 	}
+}
+
+// flowRoute builds the desired HTTPRoute for the route p names.
+func flowRoute(p RouteFlowParams) *gatewayv1.HTTPRoute {
+	return BuildHTTPRoute(testGatewaySpec(), RouteParams{
+		Name: p.RouteName, Namespace: p.RouteNamespace, BackendService: "ks", BackendPort: 5000,
+	})
 }
 
 func TestReconcileHTTPRoute_APIAbsentGatewaySet(t *testing.T) {
@@ -94,6 +104,41 @@ func TestReconcileHTTPRoute_APIAbsentGatewaySetRemote(t *testing.T) {
 	g.Expect(cond.Message).To(gomega.ContainSubstring("rotate the cluster's kubeconfig Secret"))
 	// The remote answer is re-probed every pass, so a restart fixes nothing.
 	g.Expect(cond.Message).NotTo(gomega.ContainSubstring("restart"))
+}
+
+// A target cluster that cannot say whether it serves the kind is neither
+// answer: the flow surfaces the probe failure and returns the error, rather
+// than reading the silence as an absent CRD. With spec.gateway removed, that
+// misreading would report the exposure as gone while the route the delete
+// never reached keeps serving on the target.
+func TestReconcileHTTPRoute_RemoteProbeFailureSurfacesCapabilityProbeFailed(t *testing.T) {
+	for name, configured := range map[string]bool{
+		"gateway configured": true,
+		"gateway removed":    false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			s := flowScheme(t)
+			existing := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: "openstack"}}
+			target := fake.NewClientBuilder().WithScheme(s).WithObjects(existing).Build()
+			c := mctestutil.UnprobeableChildren(target)
+			var conds []metav1.Condition
+			p := baseRouteParams(&conds)
+			p.GatewayConfigured = configured
+
+			res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
+			g.Expect(err).To(gomega.MatchError("probing the target cluster for the HTTPRoute kind: discovery is unavailable"))
+			g.Expect(res.IsZero()).To(gomega.BeTrue())
+			cond := conditions.GetCondition(conds, p.ConditionType)
+			g.Expect(cond).NotTo(gomega.BeNil())
+			g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(gomega.Equal(multicluster.CapabilityProbeFailed))
+			g.Expect(cond.Message).To(gomega.Equal(
+				"Probing the target cluster for the HTTPRoute kind failed: discovery is unavailable"))
+			g.Expect(target.Get(context.Background(), client.ObjectKeyFromObject(existing), &gatewayv1.HTTPRoute{})).
+				To(gomega.Succeed(), "a failed probe leaves the route on the target untouched")
+		})
+	}
 }
 
 func TestReconcileHTTPRoute_APIAbsentGatewayNil(t *testing.T) {
@@ -161,6 +206,28 @@ func TestReconcileHTTPRoute_GatewayNilDeletesThroughRemoteChildrenDespiteTheLatc
 	g.Expect(cond.Reason).To(gomega.Equal(ReasonHTTPRouteNotRequired))
 }
 
+func TestReconcileHTTPRoute_GatewayNilDeleteErrorPropagates(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := flowScheme(t)
+	boom := apierrors.NewInternalError(errors.New("boom"))
+	c := fake.NewClientBuilder().WithScheme(s).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+			return boom
+		},
+	}).Build()
+	var conds []metav1.Condition
+	p := baseRouteParams(&conds)
+	p.LocalGatewayAPIAvailable = true
+	p.GatewayConfigured = false
+
+	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
+	g.Expect(err).To(gomega.MatchError("deleting HTTPRoute openstack/ks: Internal error occurred: boom"))
+	g.Expect(errors.Is(err, boom)).To(gomega.BeTrue())
+	g.Expect(res.IsZero()).To(gomega.BeTrue())
+	// The condition is written only after a successful delete.
+	g.Expect(conds).To(gomega.BeEmpty())
+}
+
 func TestReconcileHTTPRoute_GatewayEnabledNotAccepted(t *testing.T) {
 	g := gomega.NewWithT(t)
 	s := flowScheme(t)
@@ -169,9 +236,7 @@ func TestReconcileHTTPRoute_GatewayEnabledNotAccepted(t *testing.T) {
 	p := baseRouteParams(&conds)
 	p.LocalGatewayAPIAvailable = true
 	p.GatewayConfigured = true
-	p.Desired = BuildHTTPRoute(testGatewaySpec(), RouteParams{
-		Name: "ks", Namespace: "openstack", BackendService: "ks", BackendPort: 5000,
-	})
+	p.Desired = flowRoute(p)
 
 	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -180,4 +245,64 @@ func TestReconcileHTTPRoute_GatewayEnabledNotAccepted(t *testing.T) {
 	cond := conditions.GetCondition(conds, p.ConditionType)
 	g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(gomega.Equal(ReasonHTTPRouteNotAccepted))
+}
+
+func TestReconcileHTTPRoute_GatewayEnabledEnsureErrorPropagates(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := flowScheme(t)
+	boom := apierrors.NewInternalError(errors.New("boom"))
+	// EnsureHTTPRoute writes the route through Server-Side Apply, so failing
+	// Apply is enough to drive the ensure-error branch.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(flowOwner()).WithInterceptorFuncs(interceptor.Funcs{
+		Apply: func(context.Context, client.WithWatch, runtime.ApplyConfiguration, ...client.ApplyOption) error {
+			return boom
+		},
+	}).Build()
+	var conds []metav1.Condition
+	p := baseRouteParams(&conds)
+	p.LocalGatewayAPIAvailable = true
+	p.GatewayConfigured = true
+	p.Desired = flowRoute(p)
+
+	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
+	g.Expect(err).To(gomega.MatchError(
+		"ensuring HTTPRoute: applying HTTPRoute openstack/ks: Internal error occurred: boom"))
+	g.Expect(errors.Is(err, boom)).To(gomega.BeTrue())
+	g.Expect(res.IsZero()).To(gomega.BeTrue())
+	g.Expect(conds).To(gomega.BeEmpty())
+}
+
+func TestReconcileHTTPRoute_GatewayEnabledAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := flowScheme(t)
+	var conds []metav1.Condition
+	p := baseRouteParams(&conds)
+	p.LocalGatewayAPIAvailable = true
+	p.GatewayConfigured = true
+	// The Gateway controller has accepted the route already. The status
+	// subresource keeps that status out of the apply's reach, and the apply
+	// response carries it back into Desired.
+	existing := flowRoute(p)
+	existing.Status.Parents = []gatewayv1.RouteParentStatus{{
+		ParentRef:      existing.Spec.ParentRefs[0],
+		ControllerName: "example.net/gateway-controller",
+		Conditions: []metav1.Condition{{
+			Type:   string(gatewayv1.RouteConditionAccepted),
+			Status: metav1.ConditionTrue,
+			Reason: string(gatewayv1.RouteReasonAccepted),
+		}},
+	}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(flowOwner(), existing).
+		WithStatusSubresource(&gatewayv1.HTTPRoute{}).Build()
+	p.Desired = flowRoute(p)
+
+	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(res.IsZero()).To(gomega.BeTrue(), "an accepted route needs no requeue")
+	cond := conditions.GetCondition(conds, p.ConditionType)
+	g.Expect(cond).NotTo(gomega.BeNil())
+	g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(gomega.Equal(ReasonHTTPRouteAccepted))
+	g.Expect(cond.Message).To(gomega.Equal("HTTPRoute accepted by Gateway"))
+	g.Expect(cond.ObservedGeneration).To(gomega.Equal(p.Generation))
 }
