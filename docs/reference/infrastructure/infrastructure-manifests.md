@@ -4192,6 +4192,196 @@ printed `ok 82`, the volume file held `probe-82`, Part 2, Step 10 read
 `lab-volume-marker` and backed the volume up, and the deletes, proving step 6
 and the namespace check left only the six platform namespaces.
 
+#### Lab failover runs
+
+**Files:** `hack/lab-failover.sh`, `tests/lab-failover/chainsaw-config.yaml`,
+`tests/lab-failover/lib/failover.sh`, `tests/lab-failover/fixtures/`, one
+directory per suite under `tests/lab-failover/`
+
+The failover runs inject the faults a production ControlPlane has to ride out
+([#1393](https://github.com/c5c3/cobaltcore/issues/1393)): the loss of a Galera
+member and of the Galera primary component, a broker node loss and a minority
+partition, a Raft leader kill, member loss and quorum loss on both OVN
+databases, and an eviction drain of the API pods. Every ControlPlane under test
+in CI and the lab's own run `Minimal`, with one MariaDB without Galera, one
+broker and single-member Raft clusters, so none of these faults has run
+before. Per D2 of [#1386](https://github.com/c5c3/cobaltcore/issues/1386) the
+runs are lab-only: no CI job, nightly or gate runs them. They test the operators
+the lab installs from the charts published from `main`
+(`deploy/flux-system/releases/c5c3-operator.yaml`); the suites and the script
+come from the branch that runs them.
+
+Each suite is a Chainsaw test that drives the workload and consistency harness
+of the chaos suites (`tests/e2e-chaos/lib/workload.sh`, see
+[Chaos E2E Tests](../testing/chaos-e2e-tests.md)) through its fault and ends
+with the harness's verdict, a Placement audit of `cp-ha-nova` and an OVN
+database comparison of `cp-ha-neutron`. The library `failover.sh` reads the
+Galera, broker and Raft status of the plane, drains an API through the
+`pods/eviction` subresource and renders the chaos manifests. Chainsaw runs
+every suite in the namespace `openstack-ha` with `cleanup.skipDelete: true`,
+so it never deletes the namespace that holds the plane, and each suite deletes
+its own chaos object and workload pod.
+
+`hack/lab-failover.sh up` brings up a second plane beside the lab's
+`openstack/controlplane`: ControlPlane `openstack-ha/cp-ha` with
+`spec.sizing.profile: Standard`, which gives three Galera members on 100Gi
+volumes, three broker and three cache replicas, and three replicas of every
+API. The lab's plane cannot serve, because the webhook refuses a database
+replica change after creation. `down` deletes the second plane again. The
+lab's plane, its hypervisors and `lab-0` stay untouched: in `openstack` the
+script only reads the Secrets `garage-s3-credentials` and `ceph-client-cinder`,
+which it copies into `openstack-ha` with their type and data and the label
+`lab-failover.c5c3.io/copied: "true"`.
+
+| Object | From | Purpose |
+| --- | --- | --- |
+| Namespace `openstack-ha` | `up` | Carries the label `lab-failover.c5c3.io/run=<run>`, which `run` and `down` require, the lab's `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled` |
+| OpenBaoTenant `openbao-operator-system/openstack-ha` | `fixtures/00-openbao-tenant.yaml` | Admits `openstack-ha` with a quota of 100 pods, 40 CPUs and 128Gi of requests, and 80 CPUs and 256Gi of limits |
+| OVNCentral `cp-ha-ovn` | `fixtures/01-ovncentral.yaml` | Three Northbound and three Southbound Raft members and three northd replicas on the CA issuer `openstack-ovn-ca-issuer` |
+| ExternalSecret `cp-ha-horizon-secret-key` | `fixtures/02-horizon-secret-key-externalsecret.yaml` | The Horizon `SECRET_KEY` from `bootstrap/openstack-ha/cp-ha-horizon/secret-key`, through the tenant store `openbao-tenant-store` |
+| ControlPlane `cp-ha` | `fixtures/03-controlplane.yaml` | The data of `controlplane-lab.yaml` with `Standard`, `cp-ha-ovn` as its central, and no gateway, public endpoint, hypervisor operator or backup backend |
+| Job `cp-ha-seed` | `fixtures/04-seed-job.yaml` | Creates flavor `m1.nano` and the public raw image `4e0a0000-0000-4000-8000-000000001393` when they are absent, and fails on an image that is present but not active |
+| Deployment `cp-ha-fake-compute` | `fixtures/05-fake-compute.yaml` | A nova-compute on the fake driver under the name of its node, which `tests/e2e/nova/discover-hosts.sh` maps into cell1 |
+| Job `cp-ha-purge` | `fixtures/06-purge-job.yaml` | Applied by `down`: deletes every volume attachment, volume and image of the plane through its APIs |
+
+The tenant comes before the plane. With a dedicated Barbican store the
+c5c3-operator admits the namespace with an OpenBaoTenant of its own, which
+carries no quota, so the openbao-operator applies its default quota of 50
+pods. The eight-service `Standard` plane runs about 56 pods. The c5c3-operator
+creates no tenant when one already targets the namespace, so the pre-created
+tenant with twice the default quota admits `openstack-ha` instead. Its
+`spec.limitRange` stays unset, so the default LimitRange applies: `Standard`
+sets no MariaDB or Memcached resources, and their containers get a 512Mi
+memory limit, as in any tenant namespace. `up` writes what was admitted to
+`topology.txt`.
+
+Two steps of `up` follow from the code. The Horizon key reads through the
+namespaced store `openbao-tenant-store`, which the c5c3-operator creates in its
+`ESOTenantStore` step, because the ClusterSecretStore `openbao-cluster-store`
+admits only `openstack` and `shared-services`; `up` applies the ExternalSecret
+once the ControlPlane reads `ESOTenantStoreReady=True`. The ControlPlane does
+not project `spec.ovnDBSync`, and a Neutron without it has no db-sync CronJob,
+so `up` patches `{syncMode: log, suspend: true}` onto `cp-ha-neutron` for the
+OVN comparison of `verify`.
+
+The plane requests about 36 GiB of memory. A worker of `newforge` has 29.9 GiB
+allocatable, and on 2026-10-19 the three workers had about 41.4 GiB free, so
+`preflight` refuses a lab with less than 38 GiB of free memory requests. The
+volumes are about 300 GiB for Galera, 30 GiB for the broker and 6 GiB for OVN
+on the default class, for the length of the session. A session runs about five
+hours: `up` takes up to two, and each suite about twenty minutes.
+
+The runs need a lab deployed with
+`EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_CHAOS_MESH=true make deploy-infra`
+and the go-ahead on the shared lab, which `LAB_FAILOVER_GO_AHEAD` repeats.
+`preflight` only reads; `up`, `run` and `down` refuse to change anything
+unless the go-ahead names the shoot of the context:
+
+```bash
+export LAB_FAILOVER_CONTEXT=<the lab's kube context> LAB_FAILOVER_GO_AHEAD=newforge
+make lab-failover-preflight
+make lab-failover-up
+make lab-failover-run
+make lab-failover-down
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LAB_FAILOVER_CONTEXT` | none, required | The kube context of the lab. Every subcommand writes its minified kubeconfig to a temporary file of mode 0600 and hands it to kubectl, chainsaw and the harness; a `kind-` context is refused |
+| `LAB_FAILOVER_GO_AHEAD` | none, required by `up`, `run` and `down` | Must equal `.data.shootName` of the ConfigMap `kube-system/shoot-info`, `newforge` on the lab |
+| `LAB_FAILOVER_MIN_FREE_MEMORY` | `38Gi` | The floor of `preflight`: allocatable memory of the Ready nodes minus the memory requests of every pod that has not ended, as `<n>Gi` or `<n>Mi` |
+| `LAB_FAILOVER_RUN` | the UTC time `up` starts | The run id; `run` and `down` read it from the namespace's label |
+| `LAB_FAILOVER_SCENARIOS` | all eleven | The suites `run` executes, space-separated |
+
+`preflight` prints one `OK:` or `FAIL:` line per check, the shoot, the server
+and the free memory requests. `up` refuses an existing `openstack-ha`, stops
+at a failed step with its name, and writes `versions.txt` (the commit, the Flux
+HelmReleases, the operator images and the images of the Galera, broker and OVN
+pods) and `topology.txt` (pods and nodes, the admitted resources of the backing
+services, the LimitRange and quota, every Galera, broker and Raft status,
+`cluster_partition_handling`, the PDBs and the free memory before and after) to
+`_output/lab-failover/<run>/`. `run` writes a Chainsaw report and a log per
+suite there and a row per suite to `summary.tsv`: the suite, `PASS` or `FAIL`,
+start and end in UTC, and the `observed failures` and `recovery` of each stream,
+or `none` when the suite ended before `verify`. It stops at the first `FAIL`.
+`down` deletes the fake compute, the workload pods, the volumes and images of
+the plane through Job `cp-ha-purge`, the seed Job, the ControlPlane, the
+OVNCentral, the Galera and broker claims, the copied Secrets, the
+ExternalSecret, the tenant and the namespace, in that order; a second `down`
+resumes a failed one. The plane's Cinder keeps its volumes in the lab's Ceph
+pool `volumes` and its Glance keeps its images in the lab's Garage bucket
+`glance-images`, keyed by image id. The purge deletes them while the databases
+that name them still exist, also those of a suite that failed before the
+workload's own sweep. A workload pod whose suite never stopped it keeps
+creating volumes and images, so the workload pods go before the purge. Without
+the purge the next `up` could not store the seed image under its fixed id. The
+purge runs only
+while the seed Job exists, because the seed is the first write to that
+storage, and a purge that fails stops `down` before the ControlPlane goes.
+`make teardown-infra` deletes the ControlPlanes of `openstack` only, so run
+`make lab-failover-down` before `EXTERNAL_CLUSTER=true make teardown-infra`.
+The OpenBao paths that the seed and the database onboarding wrote for
+`openstack-ha` stay; they are written only when absent and point at nothing
+once the plane is gone.
+
+"Loss" is a PodChaos `pod-failure` with `duration: "180s"`, and "kill" a
+`pod-kill` with `gracePeriod: 0`. A follower is the lowest-index member that is
+not the leader. Every selector names pods of `openstack-ha`, none of them on
+`hostNetwork`. A node drain is not possible on the lab: hvo keeps the PDB
+`kube-system/maint-<node>` with `minAvailable: 1` on every worker (see
+[Lab hypervisors](#lab-hypervisors)), so the drain suite evicts pods.
+
+| Suite | Target | Fault | Streams | Fault check in the window | Recovery check, bound from fault-end | Estimated budget |
+| --- | --- | --- | --- | --- | --- | --- |
+| `galera-member-loss` | The member at `.status.currentPrimary` of MariaDB `openstack-db` | `pod-failure` 180 s | token, network, server, volume, image, placement, secret | The other two report `wsrep_cluster_size=2` and `Primary` | `GALERA-OK` within 600 s | failures=30 recovery=120s |
+| `galera-primary-loss` | The current primary and the member with the next index mod 3 | `pod-failure` 180 s on both | As above | Within 60 s the third reports a `wsrep_cluster_status` other than `Primary`, and the MariaDB reads `GaleraReady=False` | `GALERA-OK` within 900 s; the suite prints `.status.galeraRecovery.bootstrap` when it was set | failures=1000 recovery=900s |
+| `rabbitmq-node-loss` | `openstack-rabbitmq-server-0`, the first peer-discovery seed | `pod-failure` 180 s | token, server, volume | `server-1` lists 2 running nodes | `BROKER-OK` within 300 s | failures=40 recovery=300s |
+| `rabbitmq-minority-partition` | `server-0` against `server-1` and `server-2` | NetworkChaos `partition`, `direction: both`, 180 s | token, server, volume | `server-1` lists 2 running nodes | `BROKER-OK` within 300 s; the suite prints `cluster_partition_handling` | failures=40 recovery=300s |
+| `ovn-nb-leader-kill` | The Northbound leader | `pod-kill` | token, network | Another Northbound member leads within 30 s | `RAFT-OK` within 120 s, then `NORTHD-SYNC-OK` within 60 s | failures=10 recovery=60s |
+| `ovn-sb-leader-kill` | The Southbound leader | `pod-kill` | token, network | Another Southbound member leads within 30 s | `RAFT-OK` within 120 s, then `NORTHD-SYNC-OK` within 60 s | failures=10 recovery=60s |
+| `ovn-nb-member-loss` | One Northbound follower | `pod-failure` 180 s | token, network | The other two keep one leader at every 5 s sample | `RAFT-OK` within 180 s, then `NORTHD-SYNC-OK` within 60 s | failures=5 recovery=60s |
+| `ovn-sb-member-loss` | One Southbound follower | `pod-failure` 180 s | token, network | The other two keep one leader at every 5 s sample | `RAFT-OK` within 180 s, then `NORTHD-SYNC-OK` within 60 s | failures=5 recovery=60s |
+| `ovn-nb-quorum-loss` | The Northbound leader and one follower | `pod-failure` 180 s | token, network | The remaining member reports no `Role: leader` | `RAFT-OK` within 300 s, then `NORTHD-SYNC-OK` within 60 s | failures=300 recovery=300s |
+| `ovn-sb-quorum-loss` | The Southbound leader and one follower | `pod-failure` 180 s | token, network | `ovn-nbctl --wait=sb --timeout=10 sync` in the Northbound leader fails | `RAFT-OK` within 300 s, then `NORTHD-SYNC-OK` within 60 s | failures=50 recovery=300s |
+| `api-eviction-drain` | The API pods of keystone, horizon, glance, placement, barbican, neutron, cinder and nova, in that order | Eviction through `pods/eviction`, retried on 429; no chaos object | token, network, server, volume, image, placement, secret, http | Per service, at least one eviction answered 429, and the Service `cp-ha-<svc>` never without a ready endpoint | Per service, three new Ready pods within 300 s (`DRAIN-OK`), then the ControlPlane `Ready/AllReady` within 300 s | failures=10 recovery=120s |
+
+Each suite has six steps, each with a `catch` that dumps the plane: the
+baseline (`Ready/AllReady`, `GALERA-OK`, `BROKER-OK` and `RAFT-OK` for both
+databases, so damage a scenario left fails the next suite at its start), the
+workload start, the inject with `fault-start`, the fault check with the lift
+and `fault-end`, the recovery check, and `verify`. A fault check holds within
+60 s of `AllInjected` unless the table names another bound. The drain suite
+marks `fault-start` before its first eviction and `fault-end` after the last
+service is back.
+
+A suite passes only when its fault check, its recovery check, its budget and
+both consistency checks hold. Anything else is a `FAIL`, and a `FAIL` with a
+product cause gets an issue of its own, named in the result table, as
+[#1245](https://github.com/c5c3/cobaltcore/issues/1245) was for the fault runs
+above. After a run each suite's budget lines come from its own observation.
+The budget line becomes
+`failures=<max(5, 2 × worst observed)> recovery=<1.5 × observed, rounded up to 10>s`,
+and the second line
+`# Chaos budget measured: <date>, lab, failures <M>, recovery <R> s`. A suite
+that fails on an estimated budget alone, with every other check holding, gets
+the budget of that rule and runs once more in the same session; the record
+names both runs.
+
+The record names the date, the commit, the shoot, the versions of
+`versions.txt`, the admitted resources of the backing services,
+`cluster_partition_handling`, the hand actions and the deviations, and holds a
+table with the columns Suite, Verdict, Observed failures (worst stream),
+Observed recovery, Component back after, and Finding or issue, one row per
+suite. The raw outputs go to comments on
+[#1393](https://github.com/c5c3/cobaltcore/issues/1393).
+
+No lab run of the failover suites is recorded yet.
+
+**Pinned by:** `tests/unit/hack/lab_failover_test.sh`,
+`tests/unit/ci/lab_failover_lib_test.sh`,
+`tests/unit/ci/lab_failover_suites_test.sh` and
+`tests/unit/docs/infrastructure_manifests_lab_failover_runs_test.sh`.
+
 ### Lab dizzy stack
 
 **File:** `deploy/lab/metal-stack/dizzy/kustomization.yaml`
@@ -4704,7 +4894,7 @@ in every directory.
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| `spec.sizing.profile` | `Minimal` | The quick start's profile: one replica per component and a 512Mi database volume (`operators/c5c3/api/v1alpha1/sizing_profiles.go`), which fits a worker with 16 CPUs and 128 GiB. The Lightbits CSI driver rounds a request up to its 1 GiB granularity (`getReqCapacity` in `pkg/driver/controller.go` of [LightBitsLabs/los-csi](https://github.com/LightBitsLabs/los-csi)), so the 512Mi claim binds as a 1 GiB volume. A lab that needs a value between `Minimal` and `Standard` declares a cluster-scoped `SizingProfile` with `spec.base: Minimal` and selects it with `spec.sizing.profileRef.name`, which excludes `spec.sizing.profile` |
+| `spec.sizing.profile` | `Minimal` | The quick start's profile: one replica per component and a 512Mi database volume (`operators/c5c3/api/v1alpha1/sizing_profiles.go`), which fits a worker of `forge` with 16 CPUs and 128 GiB and a worker of `newforge` with 15.9 CPUs and 29.9 GiB allocatable. The Lightbits CSI driver rounds a request up to its 1 GiB granularity (`getReqCapacity` in `pkg/driver/controller.go` of [LightBitsLabs/los-csi](https://github.com/LightBitsLabs/los-csi)), so the 512Mi claim binds as a 1 GiB volume. A lab that needs a value between `Minimal` and `Standard` declares a cluster-scoped `SizingProfile` with `spec.base: Minimal` and selects it with `spec.sizing.profileRef.name`, which excludes `spec.sizing.profile` |
 | `spec.services.neutron.extraConfig.DEFAULT.global_physnet_mtu` | `"1460"` | Tenant networks are Geneve. Neutron 27.0.3 computes their MTU as `global_physnet_mtu` minus 20 (the IPv4 header, `get_mtu` in `neutron/plugins/ml2/drivers/type_tunnel.py`) minus `[ml2_type_geneve] max_header_size`, which the Neutron operator owns at 38 (`operators/neutron/internal/controller/reconcile_config.go`): 1460 - 20 - 38 = 1402 for every tenant network. 1460 is the pod network's MTU (the `cali*` lines of the [node probe](#node-probe)). The chassis tunnels over the node network, whose uplinks `lan0` and `lan1` carry 9000, so 1460 is a bound, not a match: it holds without a path-MTU measurement between the two racks, and none exists yet. The value is a string, because `extraConfig` is `map[string]map[string]string` |
 | `spec.services.nova.hypervisorOperator` | `{}` | Provisions the Keystone user `hypervisor-operator` (project `service-hypervisor-operator`, role `admin`) and writes the Secret `controlplane-nova-hypervisor-operator-auth` into `openstack` (see [`ServiceNovaHypervisorOperatorSpec`](../c5c3/controlplane-crd.md#servicenovahypervisoroperatorspec)), which [Lab hypervisors](#lab-hypervisors) feeds into the hypervisor operator's chart |
 

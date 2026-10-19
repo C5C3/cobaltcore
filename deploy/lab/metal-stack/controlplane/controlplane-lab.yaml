@@ -193,8 +193,9 @@ spec:
       hypervisorOperator: {}
   # Lab setting, identical to the quick start. Minimal is one replica per
   # component and a 512Mi database volume
-  # (operators/c5c3/api/v1alpha1/sizing_profiles.go); each worker offers 16
-  # CPUs and 128 GiB. The Lightbits CSI driver rounds a request up to its
+  # (operators/c5c3/api/v1alpha1/sizing_profiles.go); a worker of forge
+  # offers 16 CPUs and 128 GiB, a worker of newforge 15.9 CPUs and 29.9 GiB
+  # allocatable. The Lightbits CSI driver rounds a request up to its
   # 1 GiB granularity (getReqCapacity in pkg/driver/controller.go of
   # LightBitsLabs/los-csi), so the 512Mi claim binds as a 1 GiB volume. A lab
   # that needs a value between Minimal and Standard declares a cluster-scoped

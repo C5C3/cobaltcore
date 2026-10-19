@@ -98,6 +98,14 @@ the metal-stack lab is described in
 [Lab Chaos Mesh](../infrastructure/infrastructure-manifests.md#lab-chaos-mesh).
 :::
 
+The suites under `tests/lab-failover/` are lab-only and run outside
+`make e2e-chaos`. They fault the Galera cluster, the broker and the OVN Raft
+clusters of a `Standard`-profile ControlPlane on the metal-stack lab, and drain
+its API pods, with the workload harness of this page. `hack/lab-failover.sh`
+brings that plane up beside the lab's own and runs them after the go-ahead on
+the shared lab. [Lab failover runs](../infrastructure/infrastructure-manifests.md#lab-failover-runs)
+describes them and holds their record.
+
 | Prerequisite | Details |
 | --- | --- |
 | Infrastructure stack | Deployed via `WITH_CHAOS_MESH=true make deploy-infra` (opt-in path; see [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md)) |
