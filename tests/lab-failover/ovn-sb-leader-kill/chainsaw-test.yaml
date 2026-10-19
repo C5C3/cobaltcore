@@ -1,0 +1,149 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Lab failover test: OVN Southbound Raft leader kill.
+#
+# Fault: a PodChaos pod-kill, gracePeriod 0, kills the Southbound Raft leader
+# of OVNCentral cp-ha-ovn, the member ovn_leader sb names.
+#
+# Claim, phase by phase:
+#   fault     Within 30 s of AllInjected another Southbound member is leader;
+#             then the StatefulSet's replacement pod is Running.
+#   recovery  Once the PodChaos is gone, the three members are in the
+#             cluster with one leader within 120 s (RAFT-OK), and
+#             ovn-nbctl --wait=sb sync returns within 60 s
+#             (NORTHD-SYNC-OK).
+#
+# Blast radius: one pod of openstack-ha, selected by name; none runs on
+# hostNetwork. The pod-kill is one-shot, and the catch of step 3 and the
+# finally of step 4 delete the PodChaos.
+#
+# Leg: lab only, through `hack/lab-failover.sh run` after the go-ahead;
+# neither nightly nor gating (D2 of #1386). The plane is the Standard
+# ControlPlane openstack-ha/cp-ha that `hack/lab-failover.sh up` brings up.
+#
+# Workload: the token and network streams of ../../e2e-chaos/lib/workload.sh
+# run against the plane's in-cluster endpoints through the fault, as the
+# plane's admin; verify adds the Placement audit of cp-ha-nova and the OVN
+# database comparison of cp-ha-neutron. The budget is an estimate until a
+# lab run measures it.
+# Chaos budget: failures=10 recovery=60s
+# Chaos budget measured: 2026-10-19, estimate, failures 10, recovery 60 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-sb-leader-kill
+spec:
+  namespace: openstack-ha
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: The plane and its three clusters are healthy ───────────────
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          lf_baseline
+    catch:
+    - &lf-dump
+      script:
+        timeout: 5m
+        shell: bash
+        content: |
+          . ../lib/failover.sh
+          lf_dump
+  # ── Step 2: Start the workload ─────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          lf_workload_start ovn-sb-leader-kill token,network
+    catch:
+    - *lf-dump
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../../e2e-chaos/lib/workload.sh dump ovn-sb-leader-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../../e2e-chaos/lib/workload.sh stop ovn-sb-leader-kill
+  # ── Step 3: Inject the fault ───────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          target="$(ovn_leader sb)"
+          uid="$(pod_uids "$NAMESPACE" "statefulset.kubernetes.io/pod-name=${target}")"
+          echo "target: ${target} (${uid}), the leader"
+          ../../e2e-chaos/lib/workload.sh mark ovn-sb-leader-kill fault-start
+          lf_render 01-podchaos.yaml POD="$target" UID="$uid" | kubectl apply -n "$NAMESPACE" -f -
+          kubectl wait podchaos/lf-ovn-sb-leader-kill -n "$NAMESPACE" --for=condition=AllInjected --timeout=60s
+    catch:
+    - &lift
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/failover.sh
+          lf_delete_chaos podchaos lf-ovn-sb-leader-kill
+    - *lf-dump
+    - *workload-dump
+  # ── Step 4: The fault check, then lift the fault ───────────────────────
+  - try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          chaos="$(kubectl get podchaos lf-ovn-sb-leader-kill -n "$NAMESPACE" -o json)"
+          target="$(jq -r --arg ns "$NAMESPACE" '.spec.selector.pods[$ns][0]' <<<"$chaos")"
+          uid="$(jq -r '.metadata.annotations["lab-failover.c5c3.io/target-uid"]' <<<"$chaos")"
+          # Another member is leader.
+          new_leader() {
+            local leader
+            leader="$(ovn_leader sb)" || return 1
+            echo "leader: ${leader}"
+            [ "$leader" != "$target" ]
+          }
+          lf_until 30 "a Southbound member other than ${target} is leader" new_leader
+          lf_wait_recreated "$target" "$uid" 300
+          lf_delete_chaos podchaos lf-ovn-sb-leader-kill
+          ../../e2e-chaos/lib/workload.sh mark ovn-sb-leader-kill fault-end
+    catch:
+    - *lf-dump
+    - *workload-dump
+    finally:
+    - *lift
+  # ── Step 5: Recovery ─────────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/failover.sh
+          ovn_wait_healthy sb 120
+          ovn_wait_northd_sync 60
+    catch:
+    - *lf-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ─────────────────────
+  - try:
+    - script:
+        timeout: 16m
+        content: ../../e2e-chaos/lib/workload.sh verify ovn-sb-leader-kill --placement-audit cp-ha-nova --ovn-db-sync cp-ha-neutron
+    catch:
+    - *lf-dump
+    - *workload-dump
