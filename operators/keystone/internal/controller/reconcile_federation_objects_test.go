@@ -14,6 +14,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
@@ -23,6 +24,7 @@ import (
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity"
 	identityfake "github.com/c5c3/cobaltcore/operators/keystone/internal/identity/fake"
 )
 
@@ -77,6 +79,14 @@ func testOIDCBackend(name, domain string) *keystonev1alpha1.KeystoneIdentityBack
 	b.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
 	return b
 }
+
+// Request paths of the federation objects testOIDCBackend("corp-oidc", ...)
+// provisions, for the fault-injection tests.
+const (
+	corpOIDCIdentityProviderPath = "/v3/OS-FEDERATION/identity_providers/corp-oidc"
+	corpOIDCMappingPath          = "/v3/OS-FEDERATION/mappings/corp-oidc-mapping"
+	corpOIDCProtocolPath         = corpOIDCIdentityProviderPath + "/protocols/openid"
+)
 
 func TestOIDCBackend_ProvisionsFederationObjects(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -249,6 +259,251 @@ func TestOIDCBackend_MissingRoleWaitsWithBoundedPoll(t *testing.T) {
 	g.Expect(mappings.Message).To(ContainSubstring(`role "member" not found`))
 }
 
+// TestOIDCBackend_IdentityAPIFaultReportsIdentityAPIError covers a failure in
+// each step of the federation provisioning before it first succeeds: the step
+// sets its condition to IdentityAPIError and returns the error, the steps
+// after it do not run, and the first pass after the fault provisions every
+// object. The domain step runs unfaulted, so DomainReady is True throughout.
+func TestOIDCBackend_IdentityAPIFaultReportsIdentityAPIError(t *testing.T) {
+	cases := []struct {
+		name      string
+		fault     identityfake.Fault
+		condition string
+		messages  []string
+		// mappingsApplied is set when the failing step runs after the mapping
+		// step (MappingsReady True); otherwise the other federation condition
+		// is still unset.
+		mappingsApplied bool
+		// projectScope replaces the group's domain-scoped role assignment
+		// with one on project "ops" in domain "shared".
+		projectScope bool
+	}{
+		{
+			name:      "identity provider lookup fails",
+			fault:     identityfake.Fault{Method: http.MethodGet, Path: corpOIDCIdentityProviderPath, Status: http.StatusServiceUnavailable},
+			condition: conditionTypeFederationObjectsReady,
+			messages:  []string{`looking up identity provider "corp-oidc"`, "503"},
+		},
+		{
+			name:      "identity provider create fails",
+			fault:     identityfake.Fault{Method: http.MethodPut, Path: corpOIDCIdentityProviderPath, Status: http.StatusInternalServerError},
+			condition: conditionTypeFederationObjectsReady,
+			messages:  []string{`creating identity provider "corp-oidc"`, "500"},
+		},
+		{
+			// The mapping calls travel through gophercloud, whose error text
+			// follows the controller's prefix.
+			name:      "mapping lookup fails",
+			fault:     identityfake.Fault{Method: http.MethodGet, Path: corpOIDCMappingPath, Status: http.StatusServiceUnavailable},
+			condition: conditionTypeMappingsReady,
+			messages:  []string{`looking up mapping "corp-oidc-mapping"`, "503"},
+		},
+		{
+			name:      "mapping create fails",
+			fault:     identityfake.Fault{Method: http.MethodPut, Path: corpOIDCMappingPath, Status: http.StatusInternalServerError},
+			condition: conditionTypeMappingsReady,
+			messages:  []string{`creating mapping "corp-oidc-mapping"`, "500"},
+		},
+		{
+			name:      "group lookup fails",
+			fault:     identityfake.Fault{Method: http.MethodGet, Path: "/v3/groups", Status: http.StatusServiceUnavailable},
+			condition: conditionTypeMappingsReady,
+			messages:  []string{`ensuring group "federated-users"`, "503"},
+		},
+		{
+			name:      "group create fails",
+			fault:     identityfake.Fault{Method: http.MethodPost, Path: "/v3/groups", Status: http.StatusInternalServerError},
+			condition: conditionTypeMappingsReady,
+			messages:  []string{`ensuring group "federated-users"`, "500"},
+		},
+		{
+			name:      "role lookup fails",
+			fault:     identityfake.Fault{Method: http.MethodGet, Path: "/v3/roles", Status: http.StatusServiceUnavailable},
+			condition: conditionTypeMappingsReady,
+			messages:  []string{`looking up role "member"`, "503"},
+		},
+		{
+			name:      "role assignment probe fails",
+			fault:     identityfake.Fault{Method: http.MethodHead, Path: "/v3/domains/", Status: http.StatusServiceUnavailable},
+			condition: conditionTypeMappingsReady,
+			messages:  []string{`checking role "member" of group "federated-users" on domain`, "503"},
+		},
+		{
+			name:      "role assignment fails",
+			fault:     identityfake.Fault{Method: http.MethodPut, Path: "/v3/domains/", Status: http.StatusInternalServerError},
+			condition: conditionTypeMappingsReady,
+			messages:  []string{`assigning role "member" to group "federated-users" on domain`, "500"},
+		},
+		{
+			// The query keeps the fault off the backend domain's own lookup
+			// (name=corp), which runs first.
+			name:         "project domain lookup fails",
+			fault:        identityfake.Fault{Method: http.MethodGet, Path: "/v3/domains", Query: "name=shared", Status: http.StatusServiceUnavailable},
+			condition:    conditionTypeMappingsReady,
+			messages:     []string{`looking up domain "shared"`, "503"},
+			projectScope: true,
+		},
+		{
+			name:         "project lookup fails",
+			fault:        identityfake.Fault{Method: http.MethodGet, Path: "/v3/projects", Status: http.StatusServiceUnavailable},
+			condition:    conditionTypeMappingsReady,
+			messages:     []string{`looking up project "ops"`, "503"},
+			projectScope: true,
+		},
+		{
+			name:         "project role assignment probe fails",
+			fault:        identityfake.Fault{Method: http.MethodHead, Path: "/v3/projects/", Status: http.StatusServiceUnavailable},
+			condition:    conditionTypeMappingsReady,
+			messages:     []string{`checking role "member" of group "federated-users" on project "ops"`, "503"},
+			projectScope: true,
+		},
+		{
+			name:         "project role assignment fails",
+			fault:        identityfake.Fault{Method: http.MethodPut, Path: "/v3/projects/", Status: http.StatusInternalServerError},
+			condition:    conditionTypeMappingsReady,
+			messages:     []string{`assigning role "member" to group "federated-users" on project "ops"`, "500"},
+			projectScope: true,
+		},
+		{
+			name:            "protocol lookup fails",
+			fault:           identityfake.Fault{Method: http.MethodGet, Path: corpOIDCProtocolPath, Status: http.StatusServiceUnavailable},
+			condition:       conditionTypeFederationObjectsReady,
+			messages:        []string{`looking up protocol "openid"`, "503"},
+			mappingsApplied: true,
+		},
+		{
+			name:            "protocol create fails",
+			fault:           identityfake.Fault{Method: http.MethodPut, Path: corpOIDCProtocolPath, Status: http.StatusInternalServerError},
+			condition:       conditionTypeFederationObjectsReady,
+			messages:        []string{`creating protocol "openid"`, "500"},
+			mappingsApplied: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			srv := identityfake.NewServer(testAdminPassword)
+			t.Cleanup(srv.Close)
+			srv.SeedRole("member")
+
+			ks := testKeystoneWithReadyAPI()
+			backend := testOIDCBackend("corp-oidc", "corp")
+			if tc.projectScope {
+				srv.SeedProject("ops", srv.SeedDomain("shared", "", true))
+				backend.Spec.Groups[0].RoleAssignments = []keystonev1alpha1.FederationRoleAssignmentSpec{{
+					Role:    "member",
+					Project: &keystonev1alpha1.FederationProjectScopeSpec{Name: "ops", DomainName: "shared"},
+				}}
+			}
+			r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+			srv.InjectFault(tc.fault)
+
+			result, err := reconcileBackendTwice(t, r, backend)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(result.IsZero()).To(BeTrue())
+
+			failed := getBackend(t, r.Client, "corp-oidc")
+			domain := commonconditions.GetCondition(failed.Status.Conditions, conditionTypeDomainReady)
+			g.Expect(domain.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(domain.Reason).To(Equal(conditionReasonDomainProvisioned))
+			cond := commonconditions.GetCondition(failed.Status.Conditions, tc.condition)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(conditionReasonIdentityAPIError))
+			for _, m := range tc.messages {
+				g.Expect(cond.Message).To(ContainSubstring(m))
+			}
+			otherType := conditionTypeMappingsReady
+			if tc.condition == conditionTypeMappingsReady {
+				otherType = conditionTypeFederationObjectsReady
+			}
+			other := commonconditions.GetCondition(failed.Status.Conditions, otherType)
+			if tc.mappingsApplied {
+				g.Expect(other).NotTo(BeNil())
+				g.Expect(other.Status).To(Equal(metav1.ConditionTrue))
+				g.Expect(other.Reason).To(Equal(conditionReasonMappingsApplied))
+			} else {
+				g.Expect(other).To(BeNil(), "the steps after the failing one must not run")
+			}
+
+			srv.ClearFaults()
+			_, err = r.Reconcile(context.Background(), backendRequest(backend))
+			g.Expect(err).NotTo(HaveOccurred())
+
+			provisioned := getBackend(t, r.Client, "corp-oidc")
+			fedObjects := commonconditions.GetCondition(provisioned.Status.Conditions, conditionTypeFederationObjectsReady)
+			g.Expect(fedObjects.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(fedObjects.Reason).To(Equal(conditionReasonFederationObjectsProvisioned))
+			mappings := commonconditions.GetCondition(provisioned.Status.Conditions, conditionTypeMappingsReady)
+			g.Expect(mappings.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(mappings.Reason).To(Equal(conditionReasonMappingsApplied))
+			g.Expect(srv.IdentityProvider("corp-oidc")).NotTo(BeNil())
+			g.Expect(srv.Mapping("corp-oidc-mapping")).NotTo(BeNil())
+			g.Expect(srv.Protocol("corp-oidc", "openid")).NotTo(BeNil())
+			g.Expect(srv.RoleAssignments()).To(HaveLen(1))
+		})
+	}
+}
+
+// Failed drift writes on provisioned federation objects surface as reconcile
+// errors while FederationObjectsReady and MappingsReady stay True: the
+// IdentityAPIError demotion is transient and dropped. Each write goes through
+// once the identity API answers again.
+func TestOIDCBackend_UpdateFaultPreservesProvisionedFederation(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+	srv.SeedRole("member")
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testOIDCBackend("corp-oidc", "corp")
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The description drifts the identity provider (and the domain, whose
+	// unfaulted PATCH runs first); the extra remote rule drifts the mapping;
+	// the out-of-band repoint drifts the protocol's mapping_id.
+	live := getBackend(t, r.Client, "corp-oidc")
+	live.Spec.Domain.Description = "renamed"
+	live.Spec.Mappings[0].Remote = append(live.Spec.Mappings[0].Remote, keystonev1alpha1.MappingRemoteRuleSpec{Type: "HTTP_OIDC_EMAIL"})
+	g.Expect(r.Update(ctx, live)).To(Succeed())
+	idc := identity.NewHTTPClient(srv.Endpoint(), identity.Credentials{Username: "admin", Password: testAdminPassword}, nil)
+	g.Expect(idc.UpdateProtocol(ctx, "corp-oidc", "openid", "other-mapping")).To(Succeed())
+
+	srv.InjectFault(identityfake.Fault{Method: http.MethodPatch, Path: corpOIDCIdentityProviderPath, Status: http.StatusInternalServerError})
+	_, err = r.Reconcile(ctx, backendRequest(backend))
+	g.Expect(err).To(MatchError(ContainSubstring(`updating identity provider "corp-oidc"`)))
+	fedObjects := commonconditions.GetCondition(getBackend(t, r.Client, "corp-oidc").Status.Conditions, conditionTypeFederationObjectsReady)
+	g.Expect(fedObjects.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(srv.IdentityProvider("corp-oidc").Description).To(BeEmpty(), "the failed PATCH wrote nothing")
+
+	srv.ClearFaults()
+	srv.InjectFault(identityfake.Fault{Method: http.MethodPatch, Path: corpOIDCMappingPath, Status: http.StatusInternalServerError})
+	_, err = r.Reconcile(ctx, backendRequest(backend))
+	g.Expect(err).To(MatchError(ContainSubstring(`updating mapping "corp-oidc-mapping"`)))
+	mappings := commonconditions.GetCondition(getBackend(t, r.Client, "corp-oidc").Status.Conditions, conditionTypeMappingsReady)
+	g.Expect(mappings.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(string(srv.Mapping("corp-oidc-mapping").Rules)).NotTo(ContainSubstring("HTTP_OIDC_EMAIL"), "the failed PATCH wrote nothing")
+
+	srv.ClearFaults()
+	srv.InjectFault(identityfake.Fault{Method: http.MethodPatch, Path: corpOIDCProtocolPath, Status: http.StatusInternalServerError})
+	_, err = r.Reconcile(ctx, backendRequest(backend))
+	g.Expect(err).To(MatchError(ContainSubstring(`updating protocol "openid"`)))
+	fedObjects = commonconditions.GetCondition(getBackend(t, r.Client, "corp-oidc").Status.Conditions, conditionTypeFederationObjectsReady)
+	g.Expect(fedObjects.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(srv.Protocol("corp-oidc", "openid").MappingID).To(Equal("other-mapping"), "the failed PATCH wrote nothing")
+
+	srv.ClearFaults()
+	_, err = r.Reconcile(ctx, backendRequest(backend))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(srv.IdentityProvider("corp-oidc").Description).To(Equal("renamed"))
+	g.Expect(string(srv.Mapping("corp-oidc-mapping").Rules)).To(ContainSubstring("HTTP_OIDC_EMAIL"))
+	g.Expect(srv.Protocol("corp-oidc", "openid").MappingID).To(Equal("corp-oidc-mapping"))
+}
+
 func TestOIDCBackendDelete_TearsDownInReverseDependencyOrder(t *testing.T) {
 	g := NewGomegaWithT(t)
 	srv := identityfake.NewServer(testAdminPassword)
@@ -294,6 +549,80 @@ func TestOIDCBackendDelete_TearsDownInReverseDependencyOrder(t *testing.T) {
 	expectBackendEventContaining(g, r, "Normal FederationObjectsDeleted")
 	// Retain policy (the fixture default): the domain stays.
 	g.Expect(srv.GetDomainByName("corp")).NotTo(BeNil())
+}
+
+// TestOIDCBackendDelete_TeardownFaultRetriesOnBoundedPoll covers a failed
+// delete in each teardown step: the teardown warns, keeps the finalizer and
+// every object not yet deleted, and retries on the bounded poll; the first
+// pass after the fault finishes the teardown and releases the backend.
+func TestOIDCBackendDelete_TeardownFaultRetriesOnBoundedPoll(t *testing.T) {
+	cases := []struct {
+		name  string
+		path  string
+		event string
+		// protocolLeft and mappingLeft report which objects the faulted pass
+		// leaves in place; the identity provider, deleted last, always is.
+		protocolLeft bool
+		mappingLeft  bool
+	}{
+		{
+			name:         "protocol delete fails",
+			path:         corpOIDCProtocolPath,
+			event:        `Deleting protocol "openid" failed`,
+			protocolLeft: true,
+			mappingLeft:  true,
+		},
+		{
+			name:        "mapping delete fails",
+			path:        corpOIDCMappingPath,
+			event:       `Deleting mapping "corp-oidc-mapping" failed`,
+			mappingLeft: true,
+		},
+		{
+			name:  "identity provider delete fails",
+			path:  corpOIDCIdentityProviderPath,
+			event: `Deleting identity provider "corp-oidc" failed`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			srv := identityfake.NewServer(testAdminPassword)
+			t.Cleanup(srv.Close)
+			srv.SeedRole("member")
+
+			ks := testKeystoneWithReadyAPI()
+			backend := testOIDCBackend("corp-oidc", "corp")
+			r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+			_, err := reconcileBackendTwice(t, r, backend)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(r.Delete(ctx, getBackend(t, r.Client, "corp-oidc"))).To(Succeed())
+			srv.InjectFault(identityfake.Fault{Method: http.MethodDelete, Path: tc.path, Status: http.StatusInternalServerError})
+
+			result, err := r.Reconcile(ctx, backendRequest(backend))
+			g.Expect(err).NotTo(HaveOccurred(), "a failed teardown step retries on the poll, not through the error path")
+			g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
+			g.Expect(backendHasFinalizer(t, r.Client, "corp-oidc")).To(BeTrue())
+			expectBackendEventContaining(g, r, "Warning FederationTeardownFailed "+tc.event)
+			g.Expect(srv.Protocol("corp-oidc", "openid") != nil).To(Equal(tc.protocolLeft), "protocol present")
+			g.Expect(srv.Mapping("corp-oidc-mapping") != nil).To(Equal(tc.mappingLeft), "mapping present")
+			g.Expect(srv.IdentityProvider("corp-oidc")).NotTo(BeNil())
+
+			srv.ClearFaults()
+			result, err = r.Reconcile(ctx, backendRequest(backend))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(result.IsZero()).To(BeTrue())
+			g.Expect(srv.Protocol("corp-oidc", "openid")).To(BeNil())
+			g.Expect(srv.Mapping("corp-oidc-mapping")).To(BeNil())
+			g.Expect(srv.IdentityProvider("corp-oidc")).To(BeNil())
+			expectBackendEventContaining(g, r, "Normal FederationObjectsDeleted")
+			var gone keystonev1alpha1.KeystoneIdentityBackend
+			err = r.Get(ctx, backendRequest(backend).NamespacedName, &gone)
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "finalizer released, backend gone")
+		})
+	}
 }
 
 func TestOIDCBackendDelete_ToleratesObjectsAlreadyGone(t *testing.T) {
