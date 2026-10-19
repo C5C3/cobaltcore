@@ -43,6 +43,17 @@ job_block() {
   ' "$CI_YAML"
 }
 
+# job_names
+#
+# Echo every top-level job of ci.yaml, in file order. Job keys sit at 2-space
+# indent under jobs:, the same lines job_block starts a body at.
+job_names() {
+  awk '
+    /^jobs:$/ { in_jobs = 1; next }
+    in_jobs && /^  [a-z0-9-]+:$/ { gsub(/[ :]/, ""); print }
+  ' "$CI_YAML"
+}
+
 # job_step <job> <step-name>
 #
 # Echo the body of the named step of the named job. Steps sit at 6-space
