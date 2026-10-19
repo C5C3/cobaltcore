@@ -378,7 +378,7 @@ are the record of the last retirement.
    `rendered["<old>"]` anchors, the nova pin goldens); and fix the shell tests
    that read the real tree (`tests/unit/hack/gen_option_catalog_*_test.sh`,
    `tests/unit/hack/ci_build_service_image_test.sh`,
-   `tests/ci/verify_{barbican,placement}_ci_pipeline.sh`). Update the
+   `tests/unit/ci/{barbican,glance,horizon}_e2e_matrix_test.sh`). Update the
    comments in `releases/<other>/` and the surviving patch headers, drop the
    build pins that existed for the old images only, and move the `IMAGE=`
    defaults of `tests/container-images/verify_*.sh`. Decide whether the
