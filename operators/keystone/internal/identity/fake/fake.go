@@ -9,16 +9,23 @@
 // assignments). It records every request so tests can assert interaction
 // contracts — "adopt never mutates", "disable before delete", "drift-only
 // writes", and "teardown order" — from the request log rather than from
-// implementation internals. This is the "identity-API test double via
-// httptest; no ORC fixtures needed" seam shared by the identity client's unit
-// tests, the controller unit tests, and envtest integration.
+// implementation internals. InjectFault arms a Fault that answers matching
+// requests with an error status or a closed connection, so tests also reach
+// the error paths a correct answer never takes. This is the "identity-API
+// test double via httptest; no ORC fixtures needed" seam shared by the
+// identity client's unit tests, the controller unit tests, and envtest
+// integration.
 package fake
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -103,8 +110,63 @@ type Server struct {
 
 	// requests records "METHOD /path" for every call, in order.
 	requests []string
+	// faults holds the armed faults in registration order.
+	faults []Fault
 
+	mux        *http.ServeMux
 	httpServer *httptest.Server
+}
+
+// Fault is one injected failure. The fake answers a matching request with
+// Status and Body, or hijacks and closes the connection when CloseConnection
+// is set, instead of running the handler.
+//
+// net/http replays a GET or HEAD once on a new connection when a reused
+// keep-alive connection dies before any response byte arrives. A
+// CloseConnection fault with Times: 1 on a GET is therefore spent on the
+// first attempt, and the client sees the replay succeed. A connection-close
+// fault that must reach the caller targets a request net/http does not
+// replay (POST /v3/auth/tokens, which precedes every API call, or any PUT,
+// PATCH or DELETE) or arms Times: 2. Keep-alives stay enabled because the
+// envtest integration suite runs against this transport.
+type Fault struct {
+	// Method matches r.Method exactly; "" matches every method.
+	Method string
+	// Path matches r.URL.Path (the query string is not part of it). "" matches
+	// every path. A Path ending in "/" matches the subtree below it, like an
+	// http.ServeMux pattern: "/v3/domains/" matches "/v3/domains/domain-0001"
+	// and "/v3/domains/domain-0001/groups/g/roles/r".
+	Path string
+	// Query matches r.URL.RawQuery exactly; "" matches every query string.
+	// It tells apart lookups that share a path, such as "name=corp" and
+	// "name=shared" on GET /v3/domains.
+	Query string
+	// Status is the HTTP status written when CloseConnection is false, and
+	// required then: a status outside 200-999 answers 500 with a "fake:"
+	// error body instead.
+	Status int
+	// Body is the optional response body written with Status.
+	Body string
+	// CloseConnection hijacks the TCP connection and closes it without
+	// writing a response. The client sees io.EOF.
+	CloseConnection bool
+	// Times is how many matching requests the fault fires for; 0 fires
+	// until ClearFaults. Each handler invocation counts once.
+	Times int
+}
+
+// matches reports whether r falls under the fault's method, query and path.
+func (f Fault) matches(r *http.Request) bool {
+	if f.Method != "" && f.Method != r.Method {
+		return false
+	}
+	if f.Query != "" && f.Query != r.URL.RawQuery {
+		return false
+	}
+	if f.Path == "" || f.Path == r.URL.Path {
+		return true
+	}
+	return strings.HasSuffix(f.Path, "/") && strings.HasPrefix(r.URL.Path, f.Path)
 }
 
 // NewServer starts the fake identity API accepting the given admin password.
@@ -131,7 +193,8 @@ func NewServer(password string) *Server {
 	mux.HandleFunc("/v3/roles", s.handleRoles)
 	mux.HandleFunc("/v3/projects", s.handleProjects)
 	mux.HandleFunc("/v3/projects/", s.handleProjectSubpath)
-	s.httpServer = httptest.NewServer(mux)
+	s.mux = mux
+	s.httpServer = httptest.NewServer(http.HandlerFunc(s.serveHTTP))
 	return s
 }
 
@@ -162,6 +225,22 @@ func (s *Server) MutatingRequests() []string {
 		out = append(out, r)
 	}
 	return out
+}
+
+// InjectFault arms f. Faults are matched in registration order; the first
+// match fires. A fault armed with a positive Times is removed once it has
+// fired that many times; Times 0 keeps it armed until ClearFaults.
+func (s *Server) InjectFault(f Fault) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.faults = append(s.faults, f)
+}
+
+// ClearFaults disarms every fault.
+func (s *Server) ClearFaults() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.faults = nil
 }
 
 // SeedDomain pre-creates a domain (for adopt / already-exists scenarios) and
@@ -210,8 +289,78 @@ func (s *Server) record(r *http.Request) {
 	s.requests = append(s.requests, r.Method+" "+r.URL.Path)
 }
 
-func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
+// serveHTTP records every request once, answers it from the first matching
+// fault, and routes it to the API handlers otherwise.
+func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.record(r)
+	if f, ok := s.takeFault(r); ok {
+		serveFault(w, r, f)
+		return
+	}
+	s.mux.ServeHTTP(w, r)
+}
+
+// takeFault returns the first armed fault matching r and spends one of its
+// Times, removing the fault when it reaches zero.
+func (s *Server) takeFault(r *http.Request) (Fault, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, f := range s.faults {
+		if !f.matches(r) {
+			continue
+		}
+		if f.Times > 0 {
+			s.faults[i].Times--
+			if s.faults[i].Times == 0 {
+				s.faults = slices.Delete(s.faults, i, i+1)
+			}
+		}
+		return f, true
+	}
+	return Fault{}, false
+}
+
+// serveFault answers r with f: the fault's status and body, or a connection
+// closed without a response.
+func serveFault(w http.ResponseWriter, r *http.Request, f Fault) {
+	if !f.CloseConnection {
+		if f.Status < 200 || f.Status > 999 {
+			// WriteHeader panics below 100 or above 999, and the server drops
+			// the connection, which reads like a CloseConnection fault. A 1xx
+			// status is informational: the response would still finish as
+			// 200. Answer instead so the test that armed the fault fails on
+			// an unexpected status that names the mistake.
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprintf(w, "fake: fault for %s %s has no valid Status (%d)", f.Method, f.Path, f.Status)
+			return
+		}
+		if f.Body != "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		w.WriteHeader(f.Status)
+		_, _ = io.WriteString(w, f.Body)
+		return
+	}
+	// Read the request body to its end first: closing a socket with unread
+	// data resets the connection, and the client would see ECONNRESET
+	// instead of io.EOF.
+	_, _ = io.Copy(io.Discard, r.Body)
+	var conn net.Conn
+	err := errors.New("the response writer does not implement http.Hijacker")
+	if hj, ok := w.(http.Hijacker); ok {
+		conn, _, err = hj.Hijack()
+	}
+	if err != nil {
+		// Answer instead of hanging so the test that armed the fault fails
+		// on an unexpected status.
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, "fake: cannot close the connection: "+err.Error())
+		return
+	}
+	_ = conn.Close()
+}
+
+func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
@@ -250,7 +399,6 @@ func (s *Server) authorized(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
-	s.record(r)
 	if !s.authorized(w, r) {
 		return
 	}
@@ -299,7 +447,6 @@ func (s *Server) handleDomains(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDomainByID(w http.ResponseWriter, r *http.Request) {
-	s.record(r)
 	if !s.authorized(w, r) {
 		return
 	}
@@ -361,7 +508,6 @@ func (s *Server) handleDomainByID(w http.ResponseWriter, r *http.Request) {
 // handleIdentityProviders serves the identity-provider CRUD and the nested
 // protocol CRUD (/v3/OS-FEDERATION/identity_providers/{id}[/protocols/{pid}]).
 func (s *Server) handleIdentityProviders(w http.ResponseWriter, r *http.Request) {
-	s.record(r)
 	if !s.authorized(w, r) {
 		return
 	}
@@ -513,7 +659,6 @@ func (s *Server) handleProtocol(w http.ResponseWriter, r *http.Request, idpID, i
 // handleMappings serves the federation mapping CRUD
 // (/v3/OS-FEDERATION/mappings/{id}).
 func (s *Server) handleMappings(w http.ResponseWriter, r *http.Request) {
-	s.record(r)
 	if !s.authorized(w, r) {
 		return
 	}
@@ -577,7 +722,6 @@ func (s *Server) handleMappings(w http.ResponseWriter, r *http.Request) {
 
 // handleGroups serves GET /v3/groups?name=&domain_id= and POST /v3/groups.
 func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
-	s.record(r)
 	if !s.authorized(w, r) {
 		return
 	}
@@ -624,7 +768,6 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 
 // handleRoles serves GET /v3/roles?name=.
 func (s *Server) handleRoles(w http.ResponseWriter, r *http.Request) {
-	s.record(r)
 	if !s.authorized(w, r) {
 		return
 	}
@@ -646,7 +789,6 @@ func (s *Server) handleRoles(w http.ResponseWriter, r *http.Request) {
 
 // handleProjects serves GET /v3/projects?name=&domain_id=.
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
-	s.record(r)
 	if !s.authorized(w, r) {
 		return
 	}
@@ -670,7 +812,6 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 // handleProjectSubpath serves project-scoped role assignments
 // (PUT /v3/projects/{p}/groups/{g}/roles/{r}).
 func (s *Server) handleProjectSubpath(w http.ResponseWriter, r *http.Request) {
-	s.record(r)
 	if !s.authorized(w, r) {
 		return
 	}
