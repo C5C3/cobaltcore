@@ -2582,8 +2582,8 @@ schedule.
 
 ## Action Pinning
 
-All GitHub Actions except `actions/cache`, which is referenced by its `v6` tag, are
-referenced by full SHA hash with a trailing version comment:
+All GitHub Actions are referenced by full SHA hash with a trailing version
+comment:
 
 ```yaml
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
