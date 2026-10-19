@@ -119,8 +119,8 @@ check "ci.yaml SERVICE_OPERATORS includes '${SERVICE}' (same edit as ALL_OPERATO
 check "ci.yaml image_${SERVICE} / tests_e2e_${SERVICE} filters + FILTER_ lines" \
   bash -c "grep -q 'FILTER_image_${SERVICE}:' '${CI_YAML}' && grep -q 'FILTER_tests_e2e_${SERVICE}:' '${CI_YAML}'"
 check ".codecov.yml unit-${SERVICE} component" grep -Eq "name: unit-${SERVICE}$" .codecov.yml
-check "pipeline contract test tests/unit/ci/${SERVICE}_e2e_matrix_test.sh (or the older tests/ci/verify_${SERVICE}_ci_pipeline.sh; keystone predates both)" \
-  bash -c "test -f tests/unit/ci/${SERVICE}_e2e_matrix_test.sh || test -f tests/ci/verify_${SERVICE}_ci_pipeline.sh"
+check "pipeline contract test tests/unit/ci/${SERVICE}_e2e_matrix_test.sh (keystone has none)" \
+  test -f "tests/unit/ci/${SERVICE}_e2e_matrix_test.sh"
 check "tests/e2e/${SERVICE}/ chainsaw suites" bash -c "ls tests/e2e/${SERVICE}/*/chainsaw-test.yaml"
 check "Makefile verify-invalid-cr-fixtures runs tests/e2e/${SERVICE}/invalid-cr/_generate.py --check" \
   grep -q "tests/e2e/${SERVICE}/invalid-cr/_generate.py --check" Makefile
