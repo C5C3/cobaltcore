@@ -165,6 +165,27 @@ func BaselineCRDDirectoryPaths() []string {
 	return append(dirs, commonenvtest.CommonFakeCRDDirs()...)
 }
 
+// SetupC5c3EnvTestNoWebhook starts an envtest API server with only the c5c3
+// CRDs of config/crd/bases installed: no webhook configurations, no webhooks,
+// no manager. It returns a direct controller-runtime client so tests can
+// submit CRs and observe exactly the schema-layer validation the API server
+// enforces (kubebuilder validation markers + x-kubernetes-validations CEL
+// rules) without a webhook short-circuiting the rejection or filling defaults.
+// Tear-down is wired via t.Cleanup().
+//
+// The sibling service-operator CRDs and the shared fake CRD directories are
+// deliberately absent: the c5c3 CRDs admit objects without them, and the API
+// package's CRD-only tests need nothing else in the API server.
+func SetupC5c3EnvTestNoWebhook(
+	t testing.TB,
+	addToScheme func(*k8sruntime.Scheme) error,
+) (client.Client, context.Context, context.CancelFunc) {
+	t.Helper()
+
+	crdDir := filepath.Join(callerDir(), "..", "..", "config", "crd", "bases")
+	return commonenvtest.SetupEnvTestWithCRDs(t, commonenvtest.BuildScheme(addToScheme), []string{crdDir})
+}
+
 // C5c3WebhookDir returns the absolute path to the c5c3 webhook configuration
 // directory, resolved relative to this source file via runtime.Caller(0).
 func C5c3WebhookDir() string {
