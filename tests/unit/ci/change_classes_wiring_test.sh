@@ -219,6 +219,71 @@ YAML
     "differs" "$([ "$expected" = "$from_fixture" ] && echo same || echo differs)"
 }
 
+test_all_operators_names_every_operator_module() {
+  echo "Test: ALL_OPERATORS names every operator module and nothing else"
+
+  # ALL_OPERATORS is the sole source of the e2e-operators matrix and of both Go
+  # test matrices. An operator module missing from it compiles and ships with no
+  # go test leg and no e2e leg; a name without a module schedules legs that
+  # fail on a directory that does not exist. operators/shared/ is the chart
+  # library and carries no go.mod, so it stays out of both lists.
+  local expected actual f
+  expected=$(for f in "$PROJECT_ROOT"/operators/*/go.mod; do
+    [ -f "$f" ] && basename "$(dirname "$f")"
+  done | LC_ALL=C sort)
+  actual=$(resolve_env_operators ALL_OPERATORS "$CI_YAML" | LC_ALL=C sort)
+
+  assert_not_empty "operators/*/go.mod names at least one module" "$expected"
+  assert_not_empty "ALL_OPERATORS names at least one operator" "$actual"
+  assert_eq "ALL_OPERATORS names every operators/*/go.mod module and nothing else" \
+    "$expected" "$actual"
+
+  # The resolver header lists the steps of adding an operator and names this
+  # file as the one that fails when a step is missed.
+  assert_file_contains "the resolver header lists the steps of adding an operator" \
+    "$PROJECT_ROOT/hack/ci-resolve-changes.sh" "To add a new operator"
+}
+
+# Echo the body of the .codecov.yml flag <name>: the lines after its
+# `    - name: <name>` line up to the next flag or the next top-level key.
+codecov_flag_block() {
+  awk -v key="    - name: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && (/^    - name: / || /^[#a-z]/) { exit }
+    in_block { print }
+  ' "$PROJECT_ROOT/.codecov.yml"
+}
+
+test_codecov_flags_cover_every_target() {
+  echo "Test: .codecov.yml declares a unit and an integration flag per test target"
+
+  # The test and test-integration jobs upload coverage under a flag named after
+  # the matrix target. Each declared flag scopes that coverage to the target's
+  # tree and carries it forward across pull requests that skip the target, so
+  # a target added to the matrices without both blocks uploads under a flag
+  # .codecov.yml does not describe, and nothing fails.
+  local name prefix flag block tree
+  for name in common $(resolve_env_operators ALL_OPERATORS "$CI_YAML"); do
+    if [ "$name" = "common" ]; then
+      tree="- internal/common/"
+    else
+      tree="- operators/${name}/"
+    fi
+    for prefix in unit integration; do
+      flag="${prefix}-${name}"
+      block=$(codecov_flag_block "$flag")
+      assert_not_empty "the ${flag} flag is declared" "$block"
+      assert_contains "${flag} scopes to its tree" "$block" "$tree"
+      assert_contains "${flag} carries forward" "$block" "carryforward: true"
+    done
+  done
+
+  assert_file_contains_fixed "the unit job uploads under its target's flag" \
+    "$CI_YAML" 'flags: unit-${{ matrix.target }}'
+  assert_file_contains_fixed "the integration job uploads under its target's flag" \
+    "$CI_YAML" 'flags: integration-${{ matrix.target }}'
+}
+
 test_every_job_gates_on_its_own_flag() {
   echo "Test: each job reads the output that belongs to it"
 
@@ -371,6 +436,8 @@ test_every_filter_is_wired_both_ways
 test_every_filter_steers_something
 test_service_operators_match_the_release_configs
 test_service_operators_catch_a_missing_operator
+test_all_operators_names_every_operator_module
+test_codecov_flags_cover_every_target
 test_every_job_gates_on_its_own_flag
 test_label_handling_lives_in_the_resolver
 test_always_on_gates_skip_a_noop_run
