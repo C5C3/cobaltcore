@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The plane under test of the lab failover suites: a Standard-profile
+# ControlPlane beside the lab's own openstack/controlplane, which
+# `hack/lab-failover.sh up` brings up and `down` deletes.
+#
+# A fresh plane, because the lab's runs Minimal and an existing plane cannot
+# switch: the webhook refuses a database replica change after creation
+# (controlplane_webhook.go). Standard (sizing_profiles.go) yields three Galera
+# members on 100Gi, three broker and three cache replicas, and three replicas
+# of every API.
+#
+# The data is that of deploy/lab/metal-stack/controlplane/controlplane-lab.yaml
+# with these changes:
+#   - spec.sizing.profile: Standard.
+#   - no gateway and no publicEndpoint on any service: the plane is reached
+#     in-cluster only.
+#   - no spec.services.nova.hypervisorOperator, and no
+#     spec.services.cinder.backupBackend, which drops the backup pod.
+#   - spec.services.neutron.ovn.centralRef names cp-ha-ovn (01-ovncentral.yaml).
+#   - spec.services.horizon.secretKeyRef names the Secret of
+#     02-horizon-secret-key-externalsecret.yaml.
+# The Ceph backend ceph1, the Glance S3 backend, the dedicated Barbican store,
+# the Neutron MTU and the managed message bus are kept as the lab CR has them.
+# The webhook fills in the database openstack-db, the cache
+# openstack-memcached and the bus openstack-rabbitmq in openstack-ha.
+#
+# The plane's name and its namespace share 32 characters: the c5c3-operator
+# names a client certificate <cp>-keystone-db-openbao-client.<namespace>.svc,
+# and cert-manager refuses a commonName over 64 bytes
+# (tests/e2e-chaos/lib/controlplane.sh). cp-ha and openstack-ha are 17.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-ha
+  namespace: openstack-ha
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    messaging: {}
+  services:
+    keystone: {}
+    horizon:
+      secretKeyRef:
+        name: cp-ha-horizon-secret-key
+        key: secret-key
+    glance:
+      # The lab's Garage bucket, which the lab's own Glance writes to as well.
+      # Both key their objects by image id, so the seed image of
+      # 04-seed-job.yaml carries an id of its own.
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: http://garage.shared-services.svc.cluster.local:3900
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
+    placement: {}
+    barbican:
+      secretStore:
+        dedicated: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: cp-ha-ovn
+      extraConfig:
+        DEFAULT:
+          global_physnet_mtu: "1460"
+    cinder:
+      # The Secrets garage-s3-credentials and ceph-client-cinder are copies
+      # of the lab's, which `hack/lab-failover.sh up` makes in openstack-ha.
+      backends:
+        - name: ceph1
+          type: RBD
+          rbd:
+            pool: volumes
+            user: cinder
+            monitors:
+              - rook-ceph-mon-a.rook-ceph.svc.cluster.local
+            networks:
+              - 10.240.0.0/13
+              - 10.248.0.0/18
+            keySecretRef:
+              name: ceph-client-cinder
+            secretUUID: 090e4a3c-6c20-4e74-82dc-1a70382babe8
+    nova: {}
+  sizing:
+    profile: Standard
