@@ -43,6 +43,20 @@ func newNamespace(t testing.TB, ctx context.Context, c client.Client, prefix str
 	return ns.Name
 }
 
+// expectAdmission asserts that err admits the object when wantSub is empty,
+// and otherwise that it is an Invalid status error carrying wantSub.
+func expectAdmission(t testing.TB, err error, wantSub string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	if wantSub == "" {
+		g.Expect(err).NotTo(HaveOccurred(), "admission must admit the object")
+		return
+	}
+	g.Expect(err).To(HaveOccurred(), "admission must reject: %s", wantSub)
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "expected Invalid status error, got: %v", err)
+	g.Expect(err.Error()).To(ContainSubstring(wantSub))
+}
+
 // integrationHorizon returns validHorizon() stamped with name/namespace for API
 // server submission. validHorizon() is a webhook-unit helper, so it carries the
 // same field values but the ObjectMeta of a fixture rather than of a submitted
@@ -163,6 +177,110 @@ func TestIntegration_CRD_CELOnly_VerticalAutoscaling(t *testing.T) {
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), fmt.Sprintf("expected Invalid status error, got: %v", err))
 			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_WebSSO pins the CEL rules of the websso block
+// against an envtest API server with NO webhook installed. The validating
+// webhook twins these rules, and the defaulting webhook prepends the
+// "credentials" choice; neither runs here, so a reject case fails only when
+// the CRD rule itself fires.
+//
+// Rules: horizon_types.go:290, 291, 292
+func TestIntegration_CRD_CELOnly_WebSSO(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	local := WebSSOChoice{ID: "credentials", Label: "Local"}
+	keycloak := map[string]WebSSOIDPTarget{"oidc": {IdentityProvider: "keycloak", Protocol: "openid"}}
+
+	for _, tc := range []struct {
+		name    string
+		websso  *WebSSOSpec
+		wantSub string // empty: the object must be admitted
+	}{
+		{
+			name:    "enabled-without-choices",
+			websso:  &WebSSOSpec{Enabled: true},
+			wantSub: "websso.choices must contain at least one choice when websso.enabled is true",
+		},
+		{
+			name:    "initial-choice-names-no-choice",
+			websso:  &WebSSOSpec{Enabled: true, Choices: []WebSSOChoice{local}, InitialChoice: "oidc"},
+			wantSub: "websso.initialChoice must match the id of one of websso.choices",
+		},
+		{
+			name:    "idp-mapping-key-names-no-choice",
+			websso:  &WebSSOSpec{Enabled: true, Choices: []WebSSOChoice{local}, IDPMapping: keycloak},
+			wantSub: "every websso.idpMapping key must match the id of one of websso.choices",
+		},
+		{
+			name: "enabled-with-matching-choices",
+			websso: &WebSSOSpec{
+				Enabled:       true,
+				Choices:       []WebSSOChoice{local, {ID: "oidc", Label: "Keycloak"}},
+				InitialChoice: "credentials",
+				IDPMapping:    keycloak,
+			},
+		},
+		{
+			// The choices rule is inert while the block is disabled.
+			name:   "disabled-without-choices",
+			websso: &WebSSOSpec{Enabled: false},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := newNamespace(t, ctx, c, "celonly-websso-")
+			o := integrationHorizon("websso-"+tc.name, ns)
+			o.Spec.WebSSO = tc.websso
+
+			expectAdmission(t, c.Create(ctx, o), tc.wantSub)
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_MultiDomain pins the CEL rules of the
+// multiDomain block against an envtest API server with NO webhook installed,
+// so the webhook twins cannot mask a missing rule.
+//
+// Rules: horizon_types.go:381, 382
+func TestIntegration_CRD_CELOnly_MultiDomain(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	defaultDomain := []DomainChoice{{Name: "Default", Label: "Default"}}
+
+	for _, tc := range []struct {
+		name        string
+		multiDomain *MultiDomainSpec
+		wantSub     string // empty: the object must be admitted
+	}{
+		{
+			name:        "dropdown-without-enabled",
+			multiDomain: &MultiDomainSpec{Enabled: false, DomainDropdown: true, DomainChoices: defaultDomain},
+			wantSub:     "multiDomain.domainDropdown requires multiDomain.enabled",
+		},
+		{
+			name:        "dropdown-without-choices",
+			multiDomain: &MultiDomainSpec{Enabled: true, DomainDropdown: true},
+			wantSub:     "multiDomain.domainChoices must contain at least one choice when multiDomain.domainDropdown is true",
+		},
+		{
+			name:        "dropdown-with-a-choice",
+			multiDomain: &MultiDomainSpec{Enabled: true, DomainDropdown: true, DomainChoices: defaultDomain},
+		},
+		{
+			name:        "enabled-without-dropdown",
+			multiDomain: &MultiDomainSpec{Enabled: true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ns := newNamespace(t, ctx, c, "celonly-multidomain-")
+			o := integrationHorizon("multidomain-"+tc.name, ns)
+			o.Spec.MultiDomain = tc.multiDomain
+
+			expectAdmission(t, c.Create(ctx, o), tc.wantSub)
 		})
 	}
 }
