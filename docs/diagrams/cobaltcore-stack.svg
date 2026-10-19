@@ -21,14 +21,17 @@
 <text x="150" y="419.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Gardener</text>
 <rect x="285.5" y="345.5" width="1313" height="127" rx="14.5" fill="#EEEAF7" stroke="#5E43A8" stroke-width="3"/>
 <text x="942" y="400.24" font-size="34" font-weight="700" fill="#4B3592" text-anchor="middle">Kubernetes clusters</text>
-<text x="942" y="439.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Created and managed via the IronCore provider extension</text>
+<text x="942" y="439.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Created and managed via the IronCore or metal-stack provider extension</text>
 <rect x="40" y="496" width="220" height="130" rx="16" fill="#4F5A67"/>
 <text x="150" y="571.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">Garden Linux</text>
 <rect x="285.5" y="497.5" width="1313" height="127" rx="14.5" fill="#E9ECEF" stroke="#7D8794" stroke-width="3"/>
 <text x="942" y="552.24" font-size="34" font-weight="700" fill="#2B3440" text-anchor="middle">Operating system</text>
 <text x="942" y="591.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">On every node</text>
-<rect x="40" y="648" width="220" height="130" rx="16" fill="#A44E07"/>
-<text x="150" y="723.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">IronCore</text>
+<rect x="40" y="648" width="220" height="52" rx="16" fill="#A44E07"/>
+<text x="150" y="684.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">IronCore</text>
+<text x="150" y="721.64" font-size="24" font-weight="400" fill="#55606E" text-anchor="middle">or</text>
+<rect x="40" y="726" width="220" height="52" rx="16" fill="#A44E07"/>
+<text x="150" y="762.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">metal-stack</text>
 <rect x="285.5" y="649.5" width="417" height="127" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>
 <text x="494" y="725.24" font-size="34" font-weight="700" fill="#A44E07" text-anchor="middle">Server provisioning</text>
 <rect x="733.5" y="649.5" width="417" height="127" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>

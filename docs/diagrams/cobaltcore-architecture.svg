@@ -1,17 +1,20 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1820" height="932" viewBox="0 0 1820 932" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="One cloud, five Kubernetes clusters">
 <title>One cloud, five Kubernetes clusters</title>
 <rect width="1820" height="932" fill="#F6F5F1"/>
-<rect x="41.5" y="41.5" width="285" height="133" rx="16.5" fill="#EEEAF7" stroke="#5E43A8" stroke-width="3"/>
+<rect x="41.5" y="41.5" width="285" height="163" rx="16.5" fill="#EEEAF7" stroke="#5E43A8" stroke-width="3"/>
 <text x="60" y="86.96" font-size="36" font-weight="700" fill="#4B3592">Gardener</text>
-<text x="60" y="123.64" font-size="24" font-weight="400" fill="#4B3592">IronCore provider</text>
-<text x="60" y="153.64" font-size="24" font-weight="400" fill="#4B3592">extension</text>
-<text x="40" y="214.24" font-size="24" font-weight="600" fill="#4B3592">Creates and manages all</text>
-<text x="40" y="245.44" font-size="24" font-weight="600" fill="#4B3592">K8s clusters</text>
-<rect x="41.5" y="663.5" width="285" height="227" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>
-<text x="60" y="704.64" font-size="24" font-weight="700" fill="#A44E07" letter-spacing="2">BARE METAL</text>
-<text x="60" y="752.96" font-size="36" font-weight="700" fill="#A44E07">IronCore</text>
-<rect x="232" y="722" width="76" height="36" rx="18" fill="#A44E07"/>
-<text x="270" y="748.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
+<text x="60" y="123.64" font-size="24" font-weight="400" fill="#4B3592">IronCore or</text>
+<text x="60" y="153.64" font-size="24" font-weight="400" fill="#4B3592">metal-stack provider</text>
+<text x="60" y="183.64" font-size="24" font-weight="400" fill="#4B3592">extension</text>
+<text x="40" y="244.24" font-size="24" font-weight="600" fill="#4B3592">Creates and manages all</text>
+<text x="40" y="275.44" font-size="24" font-weight="600" fill="#4B3592">K8s clusters</text>
+<rect x="41.5" y="591.5" width="285" height="299" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>
+<text x="150" y="632.64" font-size="24" font-weight="700" fill="#A44E07" letter-spacing="1">BARE METAL</text>
+<text x="60" y="680.96" font-size="36" font-weight="700" fill="#A44E07">IronCore</text>
+<text x="60" y="712.64" font-size="24" font-weight="400" fill="#A44E07">or</text>
+<text x="60" y="752.96" font-size="36" font-weight="700" fill="#A44E07">metal-stack</text>
+<rect x="60" y="606" width="76" height="36" rx="18" fill="#A44E07"/>
+<text x="98" y="632.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">K8s</text>
 <text x="60" y="798.24" font-size="24" font-weight="400" fill="#2B3440">Provisions every node</text>
 <text x="60" y="829.44" font-size="24" font-weight="400" fill="#2B3440">(orange) and manages</text>
 <text x="60" y="860.64" font-size="24" font-weight="400" fill="#2B3440">it out-of-band</text>

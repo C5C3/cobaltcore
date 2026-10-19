@@ -16,7 +16,7 @@
 <text x="68" y="576.64" font-size="24" font-weight="400" fill="#2B3440">Operating system on every node</text>
 <rect x="41.5" y="621.5" width="637" height="117" rx="14.5" fill="#FBEFE3" stroke="#C9620F" stroke-width="3"/>
 <text x="68" y="672.8" font-size="30" font-weight="700" fill="#A44E07">Bare metal</text>
-<text x="68" y="710.64" font-size="24" font-weight="400" fill="#2B3440">Provisioned and managed by IronCore</text>
+<text x="68" y="710.64" font-size="24" font-weight="400" fill="#2B3440">Provisioned and managed by IronCore or metal-stack</text>
 <rect x="734" y="40" width="2" height="700" fill="#D5D9DE"/>
 <text x="784" y="64.64" font-size="24" font-weight="700" fill="#55606E" letter-spacing="2">WHY IT MATTERS</text>
 <rect x="784" y="84" width="64" height="64" rx="32" fill="#E6F1EA"/>
@@ -42,6 +42,6 @@
 <rect x="784" y="612" width="64" height="64" rx="32" fill="#E6F1EA"/>
 <g transform="translate(800,628) scale(1.33)" fill="none" stroke="#1E6B40" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></g>
 <text x="876" y="646.8" font-size="30" font-weight="700" fill="#17202B">Open building blocks</text>
-<text x="876" y="686.24" font-size="24" font-weight="400" fill="#55606E">IronCore, Gardener, Garden Linux and OpenStack: open source from bare metal to</text>
-<text x="876" y="717.44" font-size="24" font-weight="400" fill="#55606E">API.</text>
+<text x="876" y="686.24" font-size="24" font-weight="400" fill="#55606E">IronCore or metal-stack, Gardener, Garden Linux and OpenStack: open source</text>
+<text x="876" y="717.44" font-size="24" font-weight="400" fill="#55606E">from bare metal to API.</text>
 </svg>
