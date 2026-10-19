@@ -679,6 +679,54 @@ func TestNewestFederationSecret_ForeignOnlyYieldsNil(t *testing.T) {
 	g.Expect(r.newestFederationSecret(context.Background(), r.Client, ks)).To(BeNil())
 }
 
+// testLastKnownGoodSecret returns a federation Secret controlled by ks that
+// carries data, as a prior reconcile persisted it for the last-known-good
+// metadata fallbacks.
+func testLastKnownGoodSecret(ks *keystonev1alpha1.Keystone, data map[string][]byte) *corev1.Secret {
+	secret := testFederationSecret("lkg", 0, map[string]string{})
+	secret.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: keystonev1alpha1.GroupVersion.String(),
+		Kind:       "Keystone",
+		Name:       ks.Name,
+		UID:        ks.UID,
+		Controller: ptr.To(true),
+	}}
+	secret.Data = data
+	return secret
+}
+
+// TestLastKnownGoodProviderMetadata covers the lookup the OIDC fallback reads:
+// nil without a federation Secret, without the backend's key, or with an empty
+// value, and the stored document otherwise.
+func TestLastKnownGoodProviderMetadata(t *testing.T) {
+	ks := testFederationKeystone()
+	backend := testProjectableOIDCBackend("corp-oidc")
+	doc := []byte(`{"issuer":"x"}`)
+	cases := []struct {
+		name string
+		// data is the federation Secret's content; nil means no Secret.
+		data map[string][]byte
+		want []byte
+	}{
+		{name: "no federation Secret"},
+		{name: "Secret without the backend's key", data: map[string][]byte{"other-oidc.provider": doc}},
+		{name: "empty value", data: map[string][]byte{"corp-oidc.provider": {}}},
+		{name: "stored document", data: map[string][]byte{"corp-oidc.provider": doc}, want: doc},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			r := newTestReconciler(ks)
+			if tc.data != nil {
+				r = newTestReconciler(ks, testLastKnownGoodSecret(ks, tc.data))
+			}
+
+			got := r.lastKnownGoodProviderMetadata(context.Background(), r.Client, ks, backend)
+			g.Expect(got).To(Equal(tc.want))
+		})
+	}
+}
+
 // TestProviderMetadataEgressPorts covers the discovery-document port extraction:
 // scheme defaulting, empty-endpoint skipping, and the nil-on-invalid-JSON path.
 func TestProviderMetadataEgressPorts(t *testing.T) {
@@ -817,6 +865,76 @@ func TestReconcileIdentityBackends_MetadataOutageReusesLastKnownGood(t *testing.
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(third.Federation).NotTo(BeNil())
 	g.Expect(doer.calls).To(Equal(callsBefore), "cache seeded by the fallback prevents re-hammering the IdP")
+}
+
+// testDiscoveryOIDCBackend returns the corp-oidc backend in discovery mode, so
+// rendering it fetches the provider metadata.
+func testDiscoveryOIDCBackend() *keystonev1alpha1.KeystoneIdentityBackend {
+	backend := testProjectableOIDCBackend("corp-oidc")
+	backend.Spec.OIDC.Endpoints = nil
+	backend.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration"
+	return backend
+}
+
+// On a metadata outage with a cold cache, the renderer reuses the persisted
+// discovery document whose issuer matches the spec, warns, and seeds the cache
+// so the next render does not hit the failing IdP.
+func TestRenderOIDCBackend_LastKnownGoodHit(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	ks := testFederationKeystone()
+	backend := testDiscoveryOIDCBackend()
+	doc := []byte(`{"issuer":"https://idp.example.com/realms/cobaltcore","token_endpoint":"https://idp.example.com/token"}`)
+	doer := &metadataDoer{fail: true}
+	r := newTestReconciler(ks, testOIDCClientSecret("corp-oidc"),
+		testLastKnownGoodSecret(ks, map[string][]byte{"corp-oidc.provider": doc}))
+	r.HTTPClient = doer
+
+	render, err := r.renderOIDCBackend(ctx, r.Client, ks, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(render.provider).To(Equal(doc))
+	expectEvent(g, r, "Warning FederationMetadataStale")
+	g.Expect(doer.calls).To(Equal(1), "the cold cache tried the IdP once")
+
+	cached, err := r.renderOIDCBackend(ctx, r.Client, ks, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cached.provider).To(Equal(doc), "the fallback seeded the cache with the persisted document")
+	g.Expect(doer.calls).To(Equal(1), "the seeded cache answers without a fetch")
+	expectNoEvent(g, r)
+}
+
+// Without a persisted copy, the metadata outage stays a per-backend fault.
+func TestRenderOIDCBackend_LastKnownGoodMiss(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testFederationKeystone()
+	backend := testDiscoveryOIDCBackend()
+	doer := &metadataDoer{fail: true}
+	r := newTestReconciler(ks, testOIDCClientSecret("corp-oidc"))
+	r.HTTPClient = doer
+
+	_, err := r.renderOIDCBackend(context.Background(), r.Client, ks, backend)
+	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
+	expectNoEvent(g, r)
+	g.Expect(doer.calls).To(Equal(1))
+}
+
+// A persisted document for another issuer is never reused: binding the login
+// flow to it would hand federation to a stale foreign provider. The error does
+// not echo the stored issuer.
+func TestRenderOIDCBackend_LastKnownGoodIssuerMismatchIsNotReused(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testFederationKeystone()
+	backend := testDiscoveryOIDCBackend()
+	doer := &metadataDoer{fail: true}
+	r := newTestReconciler(ks, testOIDCClientSecret("corp-oidc"),
+		testLastKnownGoodSecret(ks, map[string][]byte{"corp-oidc.provider": []byte(`{"issuer":"https://other.example.com/realms/x"}`)}))
+	r.HTTPClient = doer
+
+	_, err := r.renderOIDCBackend(context.Background(), r.Client, ks, backend)
+	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
+	g.Expect(err.Error()).NotTo(ContainSubstring("other.example.com"))
+	expectNoEvent(g, r)
+	g.Expect(doer.calls).To(Equal(1))
 }
 
 func TestReconcileIdentityBackends_MixedLDAPAndOIDC(t *testing.T) {
