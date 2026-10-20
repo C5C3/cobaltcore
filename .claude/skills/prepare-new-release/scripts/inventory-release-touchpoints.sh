@@ -103,9 +103,18 @@ next_release() {
   if [[ "${n}" == "1" ]]; then echo "${y}.2"; else echo "$((y + 1)).1"; fi
 }
 
-# suite_transition <suite-dir> — "<from> <to>" of a release-upgrade/upgrade-flow
-# suite: the tag of the service's own NN-<svc>-cr.yaml and of NN-patch-upgrade.yaml.
+# suite_transition <suite-dir> — "<from> <to>" of an upgrade-path suite: the tag
+# of the service's own NN-<svc>-cr.yaml and of NN-patch-upgrade.yaml for a
+# release-upgrade/upgrade-flow suite, the openStackRelease of
+# NN-controlplane-cr.yaml and of NN-patch-upgrade.yaml for a ControlPlane hop
+# under tests/e2e/c5c3/ (a ControlPlane has no image tag).
 suite_transition() {
+  case "$1" in
+    tests/e2e/c5c3/*)
+      echo "$(first_pin openStackRelease "$(glob_one "$1" "[0-9][0-9]-controlplane-cr.yaml")") $(first_pin openStackRelease "$(glob_one "$1" "[0-9][0-9]-patch-upgrade.yaml")")"
+      return 0
+      ;;
+  esac
   local svc="${1#tests/e2e/}"
   svc="${svc%%/*}"
   echo "$(first_pin tag "$(glob_one "$1" "[0-9][0-9]-${svc}-cr.yaml")") $(first_pin tag "$(glob_one "$1" "[0-9][0-9]-patch-upgrade.yaml")")"
@@ -205,6 +214,13 @@ done
 UPGRADE_SUITES=""
 for d in tests/e2e/*/release-upgrade tests/e2e/*/upgrade-flow; do
   [[ -d "${d}" ]] && UPGRADE_SUITES="${UPGRADE_SUITES} ${d}"
+done
+# A tests/e2e/c5c3/ suite holding one NN-patch-upgrade.yaml is a ControlPlane hop.
+for d in tests/e2e/c5c3/*/; do
+  d="${d%/}"
+  if [[ -n "$(glob_one "${d}" "[0-9][0-9]-patch-upgrade.yaml")" ]]; then
+    UPGRADE_SUITES="${UPGRADE_SUITES} ${d}"
+  fi
 done
 shopt -u nullglob
 

@@ -36,7 +36,8 @@ legs load `<svc>:<release>` for every release `hack/ci-service-image-releases.sh
 prints, and the Renovate globs cover `releases/**`) — but several touch
 points are enumerated by hand and drift silently. The repo carries eight
 services (`source-refs.yaml` keys), six Tempest-covered services (twelve legs),
-and eight `release-upgrade` suites; every table row below applies per service.
+eight `release-upgrade` suites, and the ControlPlane hop of the full-chain
+suite; every table row below applies per service.
 
 | Layer | Where it lives | Source of truth |
 |---|---|---|
@@ -50,7 +51,7 @@ and eight `release-upgrade` suites; every table row below applies per service.
 | Default-release references | `deploy/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, every `${VAR:-YYYY.N}` fallback in `hack/*.sh` (three `RELEASE:-`, `IMAGE_TAG:-` in `perf-reconcile-benchmark.sh`), the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks in `hack/ci-run-tempest.sh`, the two `ghcr.io/c5c3/nova:<v>` refs of `deploy/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of `deploy/lab/metal-stack/controlplane/controlplane-lab.yaml` and `deploy/lab/metal-stack/hypervisor/compute.yaml`, image tags in `.github/workflows/ci.yaml` | the `releases/` directory set |
 | Release floor | `release.MinimumSupported` in `internal/common/release/release.go` and the `*-openstackrelease-below-floor.yaml` / `*-image-tag-below-floor.yaml` rejection fixtures of the `invalid-*` corpora | the oldest `releases/<version>/` directory |
 | Renovate | `tests/unit/renovate/*_test.sh` probes and the per-release `packageRules` in `renovate.json` (the `neutron-tempest-plugin` holds) | the `releases/` directory set |
-| Upgrade-path e2e | `tests/e2e/<svc>/release-upgrade/` (barbican, cinder, glance, horizon, keystone, neutron, nova, placement), `tests/e2e/keystone/upgrade-flow/`, `upgrade-flow/02-patch-skip-level.yaml`, `tests/e2e/keystone/upgrade-abort/` | `release.IsSequentialUpgrade` and the sorted release list |
+| Upgrade-path e2e | `tests/e2e/<svc>/release-upgrade/` (barbican, cinder, glance, horizon, keystone, neutron, nova, placement), `tests/e2e/keystone/upgrade-flow/`, `upgrade-flow/02-patch-skip-level.yaml`, `tests/e2e/keystone/upgrade-abort/`, and the ControlPlane hop of `tests/e2e/c5c3/full-controlplane-keystone/` (`00-controlplane-cr.yaml` -> `08-patch-upgrade.yaml`, read by `openStackRelease`) | `release.IsSequentialUpgrade` and the sorted release list |
 | Version pattern | the `+kubebuilder:validation:Pattern` on every `OpenStackRelease` field (ControlPlane and seven service CRDs), `controlPlaneReleaseRegexp`, the `release.ParseRelease` minor guard, 16 generated CRD YAMLs | the three-layer agreement documented at `operators/c5c3/api/v1alpha1/controlplane_types.go` |
 
 The authoritative gates are `tests/container-images/verify_release_config.sh`,
@@ -138,7 +139,11 @@ inventory. Interpret:
   `NN-<svc>-cr.yaml` (nova: `04-nova-cr.yaml`, neutron: `02-neutron-cr.yaml`),
   `to` the `tag:` of `NN-patch-upgrade.yaml`; `openStackRelease` agrees
   with the tag in both where the kind has one (Horizon has none), and
-  helper CRs and assertions name only `from` or `to`. The skip-level
+  helper CRs and assertions name only `from` or `to`. A
+  `tests/e2e/c5c3/<suite>/` holding one `NN-patch-upgrade.yaml` is a
+  ControlPlane hop: a ControlPlane has no image tag, so `from` and `to`
+  are the `openStackRelease` of its `NN-controlplane-cr.yaml` and of the
+  patch, and the same pin rule holds. The skip-level
   target must be neither wired nor the sequential successor of `to`.
   `upgrade-abort` must start at a wired release and wedge on its
   sequential successor. Its stuck patch pulls from a
@@ -255,7 +260,8 @@ These recurring shapes are worth grepping for first:
    image is loaded, the upgrade completes, and the abort suite fails.
    `upgrade-abort` avoids it by pulling the target from `registry.invalid`.
 5. **Upgrade suites stuck on the previous transition.** A new release is
-   added but some of the eight upgrade suites still test the old pair.
+   added but some of the eight upgrade suites, or the ControlPlane hop,
+   still test the old pair.
 6. **Removed release, orphan references.** `releases/<old>/` is deleted
    but the fixture pins, the plain basic-deployment suites, the kind
    ControlPlane default, the `RELEASE:-<old>` fallbacks, the option
@@ -276,7 +282,9 @@ These recurring shapes are worth grepping for first:
   guided path for adding a release.
 - The L2 service list tracks `ALL_TEMPEST_SERVICES`; the L3 service list
   is every `tests/e2e/<svc>/basic-deployment/` directory; L6 covers every
-  `release-upgrade/`, `upgrade-flow/`, and `upgrade-abort/` directory.
+  `release-upgrade/`, `upgrade-flow/`, and `upgrade-abort/` directory, and
+  its `tests/e2e/c5c3/` arm every suite there that holds one
+  `NN-patch-upgrade.yaml`.
   A new service or suite is picked up without editing the script, as
   long as it keeps the `NN-<svc>-cr.yaml` / `NN-patch-upgrade.yaml` file
   naming. L8 finds the release-floor fixtures by name, so a new one
