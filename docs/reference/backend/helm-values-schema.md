@@ -335,6 +335,55 @@ keystone-operator:
 | `helm lint` | Yes |
 | `helm template` | Yes |
 
+### Released values
+
+Each operator chart is also rendered with the `values.yaml` of its released
+chart, passed as a user values file
+(`helm template test <chart> -f <released values.yaml>`). A key that the chart
+removed or renamed since that release fails the render with a schema error,
+the error a deployment that still sets the key gets from `helm upgrade`. For a
+released `webhook.oldName` key:
+
+```text
+Error: values don't meet the specifications of the schema(s) in the following chart(s):
+keystone-operator:
+- at '/webhook': additional properties 'oldName' not allowed
+```
+
+Any other render failure with the released values fails the chart too.
+
+The released chart is the highest tag at `oci://ghcr.io/c5c3/charts/<chart>`,
+pulled without a login. Main overwrites that tag on every publish without a
+version bump, so in practice it is the chart main last published. A chart with
+no published version is skipped with a notice. Keys that a deployment can set
+but the released `values.yaml` does not carry, such as `nameOverride`, are not
+checked.
+
+The `Render the released chart values` step of
+[helm-validate](../ci-cd/ci-workflow.md#helm-validate) runs the check on every
+pull request that touches a chart. To run it locally for every chart or for one
+operator:
+
+```bash
+make verify-helm-released-values
+make verify-helm-released-values OPERATOR=keystone
+```
+
+An intended removal is waived in `hack/helm-removed-values.yaml`. The file maps
+a chart name to a list of entries, each with the dotted values path of the key
+and a reason that must not be empty:
+
+```yaml
+keystone-operator:
+  - key: webhook.oldName
+    reason: renamed to webhook.newName
+```
+
+The check deletes each waived key from the released values before the render
+and prints the reason. Add the entry in the pull request that removes or renames
+the key. Delete it once the check warns that the key is not in the values of the
+released chart, which happens after main has published the chart without it.
+
 ### Resource Quantity Definition
 
 The `resourceQuantity` definition uses `anyOf` to accept two formats:

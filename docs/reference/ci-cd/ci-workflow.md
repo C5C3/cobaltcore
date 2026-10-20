@@ -763,14 +763,19 @@ Validates Helm chart structure, template rendering, and unit tests for every
 operator chart and the operator-library testbed without requiring a cluster.
 Verifies the generated `values.schema.json` and `_rbac-rules.tpl` files are in
 sync with their sources, vendors the shared `operator-library` subchart, then
-runs `helm lint`, `helm template` with six value override scenarios, and
-`helm unittest` for each chart to catch regressions at PR time. The chart list
-is the `operators/*/helm/*-operator` and `operators/*/helm/*-testbed` globs, so
-a new operator chart in that layout is validated without editing the job.
+runs `helm lint`, `helm template` with seven value override scenarios, and
+`helm unittest` for each chart to catch regressions at PR time. It then renders
+every operator chart with the `values.yaml` of its released chart, the highest
+tag under `oci://ghcr.io/c5c3/charts` pulled without a login, and fails when
+the chart rejects a key; `hack/helm-removed-values.yaml` waives an intended
+removal (see [Released values](../backend/helm-values-schema.md#released-values)).
+The chart list is the `operators/*/helm/*-operator` and
+`operators/*/helm/*-testbed` globs, so a new operator chart in that layout is
+validated without editing the job.
 
 **Dependencies:** `needs: [changes]`
 **Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'`
-**Path filter:** `operators/*/helm/**`, `deploy/target-cluster/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `Makefile` (forced `true` on `v*` tag pushes)
+**Path filter:** `operators/*/helm/**`, `deploy/target-cluster/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `hack/verify-helm-released-values.sh`, `hack/helm-removed-values.yaml`, `Makefile` (forced `true` on `v*` tag pushes)
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -783,7 +788,8 @@ a new operator chart in that layout is validated without editing the job.
 | 7 | `helm lint` | Validates chart structure and syntax for every chart |
 | 8 | `helm template` (7 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
 | 9 | `helm unittest` | Runs the unit test suites under each chart's `tests/` directory |
-| 10 | Validate target-cluster-access chart | Runs `helm lint`, `helm template` (3 scenarios) and `helm unittest` on `deploy/target-cluster/target-cluster-access` |
+| 10 | `make verify-helm-released-values` | Renders every operator chart with the `values.yaml` of its released chart from `oci://ghcr.io/c5c3/charts` and fails when the chart rejects them; `hack/helm-removed-values.yaml` waives an intended removal |
+| 11 | Validate target-cluster-access chart | Runs `helm lint`, `helm template` (3 scenarios) and `helm unittest` on `deploy/target-cluster/target-cluster-access` |
 
 **Template scenarios (step 8), run against each chart:**
 
