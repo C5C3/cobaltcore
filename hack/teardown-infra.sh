@@ -42,6 +42,11 @@ esac
 # wait that runs out ends the teardown with exit 1, naming what is still there.
 TEARDOWN_TIMEOUT="${TEARDOWN_TIMEOUT:-600}"
 
+# Seconds between two reads of the three external-cluster waits that poll: the
+# stack CRs still being reaped, the pods and PersistentVolumes on an
+# nfs.csi.k8s.io volume, and the Rook cleanup Jobs.
+TEARDOWN_POLL_SECONDS="${TEARDOWN_POLL_SECONDS:-5}"
+
 # The API groups whose CRDs the stack registers: the CobaltCore operators
 # (operators/*/config/crd/bases: c5c3.io and <svc>.openstack.c5c3.io), the
 # HelmReleases and Flux Kustomizations of deploy/flux-system, the two bundles
@@ -409,7 +414,7 @@ wait_for_stack_crs_gone() {
       log "       Their operators are still installed; look at each object's conditions before rerunning."
       exit 1
     fi
-    sleep 5
+    sleep "${TEARDOWN_POLL_SECONDS}"
   done
 }
 
@@ -465,7 +470,7 @@ wait_for_nfs_pods_gone() {
       log "       The csi-driver-nfs node plugin has to unmount them before it is removed; delete what owns these pods and claims and rerun."
       exit 1
     fi
-    sleep 5
+    sleep "${TEARDOWN_POLL_SECONDS}"
   done
 }
 
@@ -540,7 +545,7 @@ wait_for_ceph_cleanup_jobs_done() {
       fi
       exit 1
     fi
-    sleep 5
+    sleep "${TEARDOWN_POLL_SECONDS}"
   done
 }
 
