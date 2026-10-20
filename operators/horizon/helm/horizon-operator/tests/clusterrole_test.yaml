@@ -10,7 +10,7 @@ suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should grant full CRUD on horizons
+  - it: should grant get, list, watch and update on horizons
     asserts:
       - contains:
           path: rules
@@ -20,11 +20,8 @@ tests:
             resources:
               - horizons
             verbs:
-              - create
-              - delete
               - get
               - list
-              - patch
               - update
               - watch
 
@@ -94,8 +91,6 @@ tests:
               - priorityclasses
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant the leader-election verbs on leases
     asserts:
