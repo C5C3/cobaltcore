@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch moving spec.image.tag back to the start release (2026.2 -> 2026.1)
+# after the upgrade completed. The Keystone webhook admits it; the controller
+# refuses it with DowngradeNotSupported and keeps the 2026.2 image running.
+# Unlike upgrade-abort/02-patch-abort.yaml, no upgrade is in flight, so the
+# revert is a downgrade, not an abort.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-upgrade-flow
+  namespace: openstack
+spec:
+  image:
+    tag: "2026.1"

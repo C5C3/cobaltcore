@@ -7,6 +7,10 @@
 #   (1) Fresh deployment sets status.installedRelease
 #   (2) Sequential upgrade (2026.1 -> 2026.2) triggers expand-migrate-contract phases
 #   (3) Skip-level upgrade (2026.2 -> 2027.2) is rejected with UpgradePathInvalid
+#   (4) A downgrade back to 2026.1 after the completed upgrade is admitted,
+#       refused by the controller with DowngradeNotSupported, and leaves
+#       installedRelease and the 2026.2 image in place. No upgrade is in
+#       flight, so unlike upgrade-abort the revert is not an abort.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -145,3 +149,79 @@ spec:
           kubectl get keystone keystone-upgrade-flow -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Patch image tag back to the start release ─────────────────
+  # No expect: the Keystone webhook has no downgrade rule, so the patch must
+  # be admitted and an admission error fails the step.
+  - try:
+    - patch:
+        file: 03-patch-downgrade.yaml
+  # ── Step 8: Assert the downgrade is refused and the image kept ────────
+  - try:
+    # Step 6 left the reason at UpgradePathInvalid, so this passes only after
+    # the controller has processed the downgrade.
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-upgrade-flow
+            namespace: openstack
+          status:
+            installedRelease: "2026.2"
+            (conditions[?type == 'DatabaseReady']):
+            - status: "False"
+              reason: DowngradeNotSupported
+    # The Database step refuses before the Deployment step runs, so the
+    # Deployment keeps the upgraded image.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-upgrade-flow
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (containers[?name == 'keystone']):
+                - image: ghcr.io/c5c3/keystone:2026.2
+    # The refusal writes no upgrade state, and the Warning event leaves the
+    # controller through the asynchronous event recorder, so it is polled.
+    - script:
+        timeout: 90s
+        content: |
+          set -eu
+          echo "=== Verify no upgrade state written ==="
+          PHASE="$(kubectl get keystone keystone-upgrade-flow -n $NAMESPACE -o jsonpath='{.status.upgradePhase}')"
+          if [ -n "$PHASE" ]; then
+            echo "ERROR: upgradePhase set to '$PHASE' after a refused downgrade"
+            exit 1
+          fi
+          TARGET="$(kubectl get keystone keystone-upgrade-flow -n $NAMESPACE -o jsonpath='{.status.targetRelease}')"
+          if [ -n "$TARGET" ]; then
+            echo "ERROR: targetRelease set to '$TARGET' after a refused downgrade"
+            exit 1
+          fi
+          echo "OK: upgradePhase and targetRelease empty"
+          echo "=== Verify DowngradeNotSupported event emitted ==="
+          i=0
+          until [ -n "$(kubectl get events -n $NAMESPACE \
+                 --field-selector reason=DowngradeNotSupported,involvedObject.name=keystone-upgrade-flow \
+                 -o name 2>/dev/null)" ]; do
+            i=$((i + 1))
+            if [ "$i" -ge 30 ]; then
+              echo "ERROR: no DowngradeNotSupported event found for keystone-upgrade-flow"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: DowngradeNotSupported event present"
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-upgrade-flow -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Deployment image ==="
+          kubectl get deployment keystone-upgrade-flow -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[*].image}' 2>&1 || true
