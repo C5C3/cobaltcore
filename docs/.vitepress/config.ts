@@ -313,6 +313,7 @@ export default defineConfig({
               { text: 'dizzy Chaos Testing', link: '/reference/testing/dizzy-chaos-testing' },
               { text: 'Tempest Test Infrastructure', link: '/reference/testing/tempest-test-infrastructure' },
               { text: 'Performance Baselines', link: '/reference/testing/reconcile-performance-benchmark' },
+              { text: 'RBAC Usage Audit', link: '/reference/testing/rbac-usage-audit' },
               { text: 'Sizing Calibration', link: '/reference/testing/sizing-calibration' },
             ],
           },

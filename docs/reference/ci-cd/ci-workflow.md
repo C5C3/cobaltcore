@@ -964,7 +964,7 @@ Chainsaw E2E test suites.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
-| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` from `hack/kind-config-audit.yaml`, whose API server writes the audit log step 12 reads |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2026.1 and 2026.2 today) and the 2026.1-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2026.1 and 2026.2) and `ovn:<pin>`; the `c5c3` leg, which ships no service image, loads `keystone:2026.1` as the shell its `env-key-material` suite runs in |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
@@ -973,8 +973,10 @@ Chainsaw E2E test suites.
 | 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` and `tests/e2e/<operator>-operator/`, among them the operator's `env-key-material` suite, which reads the operator pod's spec and process environment for key material; a `nova` shard runs its half of the suite directories |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, operator logs |
 | 11 | `hack/ci-dump-diagnostics.sh` (always, sibling operators) | The `neutron` leg dumps `ovn-system`; the `nova` leg dumps `keystone-system`, `placement-system`, `glance-system`, `ovn-system` and `neutron-system`, one call per operator under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again |
-| 12 | Upload JUnit report | Uploads test results as the `e2e-<operator>-junit-report` artifact, `e2e-nova-<shard>-junit-report` on a `nova` shard (14-day retention) |
-| 13 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 12 | `hack/ci-rbac-usage-report.sh` (always, `continue-on-error`) | Diffs the requests of the operator's ServiceAccount in the kube-apiserver audit log against the ClusterRole its markers render and prints the [RBAC usage report](../testing/rbac-usage-audit.md); never fails the job |
+| 13 | Upload RBAC usage report (always) | Uploads `_output/rbac-usage/` as the `rbac-usage-<operator>` artifact, `rbac-usage-nova-<shard>` on a `nova` shard (14-day retention) |
+| 14 | Upload JUnit report | Uploads test results as the `e2e-<operator>-junit-report` artifact, `e2e-nova-<shard>-junit-report` on a `nova` shard (14-day retention) |
+| 15 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Matrix strategy:**
 
@@ -1576,6 +1578,15 @@ Under `ci:measure-sizing` the job runs the
 [sizing measurement](#sizing-measurement): the watch starts after
 `Setup E2E infrastructure`, and the collect and upload steps follow
 `Run own-namespace registration E2E test` and publish `sizing-e2e-controlplane`.
+
+The job creates its cluster from `hack/kind-config-audit.yaml`, so the API
+server writes an audit log. After the diagnostics dumps, the `Report RBAC usage`
+step runs `hack/ci-rbac-usage-report.sh` for the c5c3-operator under
+`continue-on-error`, and `Upload RBAC usage report` publishes
+`_output/rbac-usage/` as `rbac-usage-c5c3` (14-day retention). The c5c3 entry
+of `e2e-operator` runs that operator against the service CRDs alone, so this
+report covers the ControlPlane reconciler driving live service operators.
+[RBAC Usage Audit](../testing/rbac-usage-audit.md) explains the report.
 
 ### e2e-controlplane-sso
 
@@ -2349,9 +2360,10 @@ within its first minute:
 ERROR: failed to create cluster: node(s) already exist for a cluster with the name "cobaltcore"
 ```
 
-A leftover under another name fails the job differently. `hack/kind-config.yaml`
-and `hack/kind-config-multinode.yaml` bind the same two host ports, so one stale
-control-plane node blocks every cluster on that runner.
+A leftover under another name fails the job differently. `hack/kind-config.yaml`,
+`hack/kind-config-audit.yaml` and `hack/kind-config-multinode.yaml` bind the same
+two host ports, so one stale control-plane node blocks every cluster on that
+runner.
 
 | Step | Description |
 | --- | --- |
