@@ -393,37 +393,48 @@ var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 	mariadbv1alpha1.GroupVersion.WithKind("Grant"),
 }
 
-// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/reconcile_fernet.go:214 (createKeysSecret) to update keystones/finalizers.
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/finalizers,verbs=update
 // create/delete are intentionally NOT granted: users create backend CRs; the
 // operator only reads them and updates the object (finalizer add/remove).
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/reconcile_deployment.go:105 (reconcileDeployment) to delete deployments.
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/reconcile_deployment.go:149 (reconcileDeployment) to delete services.
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
+// Unexercised by the e2e suites; used by internal/common/rotation/rotation.go:248 (EnsureRBAC) to patch secrets.
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by internal/common/rotation/rotation.go:241 (EnsureRBAC) to update serviceaccounts.
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // Required for getValidationErrorMessage to list pods of failed policy
 // validation Jobs and extract error details from terminated container state.
 // The List goes through the uncached API reader and never watches, which is
 // why the verbs stay get and list.
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/reconcile_policyvalidation.go:129 (getValidationErrorMessage) to list pods.
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
-// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;patch;delete
 // Required for the operator to observe the referenced MariaDB cluster's
 // Ready condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
 // Required so the operator can issue the per-Keystone database client
 // Certificate (Spec.Database.TLS) and have cert-manager rotate the keypair
 // Secret consumed by the Keystone workloads.
-// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
-// delete is intentionally NOT granted: the operator only manages externalsecret
-// lifecycles via owner-references, it never calls r.Delete on them directly.
-// +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch;create;update;patch
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/reconcile_databasetls.go:146 (reconcileDatabaseTLS) to create and update certificates.
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;delete
+// The operator only reads ExternalSecrets, to attribute a missing or unsynced
+// Secret (secrets.WaitForExternalSecret); it creates, changes and deletes none.
+// +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch
 // delete is required so the openbao-finalizer can tear down the fernet-keys
 // and credential-keys backup PushSecrets on Keystone CR deletion and rely on
 // ESO DeletionPolicy=Delete to purge the kv-v2 paths.
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/reconcile_secrets.go:295 (finalizeOpenBaoSecrets) to update pushsecrets.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // Required so the operator can observe the selected store's Ready condition
 // and reflect upstream secret-backend (OpenBao) outages in SecretsReady. A
@@ -431,19 +442,25 @@ var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 // (default) or a namespaced SecretStore via spec.secretStoreRef, so both kinds
 // must be watchable.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
-// Required to create/update/delete HTTPRoutes that expose Keystone API externally.
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/reconcile_deployment.go:154 (reconcileDeployment) to delete poddisruptionbudgets.
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/keystone/internal/controller/keystone_controller.go:1177 (setupWithOptions) to list and watch verticalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
+// Required to create, patch and delete HTTPRoutes that expose Keystone API externally.
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch;delete
 // Required so the operator can observe the Accepted condition set by the
 // upstream Gateway controller and reflect it in HTTPRouteReady.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by internal/common/rotation/rotation.go:269 (EnsureRBAC) to update rolebindings.
+// Unexercised by the e2e suites; used by internal/common/rotation/rotation.go:248 (EnsureRBAC) to update roles.
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;delete
 // Required for the webhook to validate that spec.priorityClassName references
 // an existing PriorityClass at admission time.
-// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the Keystone CR.
 func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

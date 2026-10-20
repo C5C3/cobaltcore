@@ -10,7 +10,7 @@ suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should grant full CRUD on keystones
+  - it: should grant get, list, watch, update and patch on keystones
     asserts:
       - contains:
           path: rules
@@ -20,8 +20,6 @@ tests:
             resources:
               - keystones
             verbs:
-              - create
-              - delete
               - get
               - list
               - patch
@@ -83,7 +81,7 @@ tests:
               - list
               - watch
 
-  - it: should grant CRUD without delete on externalsecrets
+  - it: should grant read-only on externalsecrets
     asserts:
       - contains:
           path: rules
@@ -91,13 +89,12 @@ tests:
             apiGroups:
               - external-secrets.io
             resources:
+              - clustersecretstores
               - externalsecrets
+              - secretstores
             verbs:
-              - create
               - get
               - list
-              - patch
-              - update
               - watch
 
   - it: should grant read-only on clustersecretstores and secretstores
@@ -109,6 +106,7 @@ tests:
               - external-secrets.io
             resources:
               - clustersecretstores
+              - externalsecrets
               - secretstores
             verbs:
               - get
@@ -138,8 +136,6 @@ tests:
               - priorityclasses
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant the leader-election verbs on leases
     asserts:
