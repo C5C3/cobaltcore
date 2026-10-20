@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: the horizon-operator's process environment holds no key
+# material.
+#
+# ../../lib/assert-operator-env-clean.sh reads the spec of the operator pod that
+# hack/ci-deploy-operator.sh deployed into horizon-system and, through an
+# ephemeral container, the environment of its running manager. It fails on env
+# read from a Secret, on a name such as DB_PASSWORD and on a value such as a
+# PEM block, and names the variable without printing its value.
+#
+# The operator image is a static binary without a shell, so the ephemeral
+# container runs ghcr.io/c5c3/horizon:2026.1, the service image the
+# horizon leg of the e2e-operator job loads onto the node for its own suites.
+# The scan adds one ephemeral container to the pod, which Kubernetes cannot
+# remove again; apart from that it only reads.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-env-key-material
+spec:
+  # The operator's own namespace exists before the suite runs, so chainsaw
+  # neither creates nor deletes it.
+  namespace: horizon-system
+  steps:
+  - name: scan
+    try:
+    - script:
+        timeout: 180s
+        content: |
+          ../../lib/assert-operator-env-clean.sh horizon-system horizon-operator ghcr.io/c5c3/horizon:2026.1
+    catch:
+    # States only: the log of an env-scan container holds the values the scan
+    # judged, every line of a multi-line one included, and a CI log must not
+    # repeat them, so the catch never reads it.
+    - script:
+        content: |
+          for pod in $(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator -o name 2>/dev/null); do
+            echo "=== $pod: ephemeral containers ==="
+            kubectl get "$pod" -n horizon-system -o jsonpath='{range .status.ephemeralContainerStatuses[*]}{.name}{" "}{.state}{"\n"}{end}' 2>&1 || true
+          done
