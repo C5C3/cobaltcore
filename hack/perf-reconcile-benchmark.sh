@@ -12,10 +12,13 @@
 # and the built-in end-to-end histogram
 # (controller_runtime_reconcile_time_seconds{controller="keystone"}).
 #
-# It is the regression gate for the reconcile-performance work (issue #361). It
-# is NOT wired into CI: a 25-CR load spawns 25 Deployments plus their Jobs and
-# MariaDB objects, which does not fit CI kind runners. Run it locally or on a
-# dedicated cluster. See docs/reference/testing/reconcile-performance-benchmark.md.
+# It is the regression gate for the reconcile-performance work (issue #361).
+# The nightly Performance workflow (.github/workflows/performance.yaml) runs it
+# with CR_COUNTS="1 3" and RESULT_JSON, and hack/perf-baseline.py compares the
+# file against tests/perf/baseline.json. The 25-CR default spawns 25
+# Deployments plus their Jobs and MariaDB objects, which does not fit a CI kind
+# runner: run it locally or on a dedicated cluster. See
+# docs/reference/testing/reconcile-performance-benchmark.md.
 #
 # Environment variables:
 #   CR_COUNTS           space-separated CR counts to benchmark (default "1 5 25")
@@ -31,8 +34,14 @@
 #   IMAGE_TAG           keystone image tag                     (default 2026.1)
 #   GATE_P95_SECONDS    if set, exit non-zero when the steady-state end-to-end
 #                       p95 exceeds this many seconds (the D3 SLO as a gate)
+#   RESULT_JSON         if set, also write the six quantiles of every count to
+#                       this JSON file, a nan as null, with IMAGE_TAG as
+#                       meta.release; the report on stdout stays the same
 
 set -euo pipefail
+# awk follows the locale: a comma-decimal one reads the bucket bound 0.025 as 0
+# and prints 0,0350, which RESULT_JSON cannot hold as a number.
+export LC_ALL=C
 
 CR_COUNTS="${CR_COUNTS:-1 5 25}"
 NAMESPACE="${NAMESPACE:-openstack}"
@@ -46,6 +55,7 @@ CACHE_CLUSTER_REF="${CACHE_CLUSTER_REF:-openstack-memcached}"
 IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/c5c3/keystone}"
 IMAGE_TAG="${IMAGE_TAG:-2026.1}"
 GATE_P95_SECONDS="${GATE_P95_SECONDS:-}"
+RESULT_JSON="${RESULT_JSON:-}"
 
 CR_PREFIX="keystone-perf"
 WORKDIR="$(mktemp -d)"
@@ -97,7 +107,8 @@ metadata:
   name: ${CR_PREFIX}-${i}
   namespace: ${NAMESPACE}
 spec:
-  replicas: 1
+  deployment:
+    replicas: 1
   image:
     repository: ${IMAGE_REPOSITORY}
     tag: "${IMAGE_TAG}"
@@ -214,6 +225,55 @@ quantile() {
   ' "${before}" "${after}"
 }
 
+# write_count_json writes the six quantiles of one count to
+# ${WORKDIR}/count-<count>.json, keyed reconcile.<count>.<name>, a nan as null.
+# Args: <count> <e2e_p50> <e2e_p95> <e2e_p99> <sub_p50> <sub_p95> <sub_p99>.
+write_count_json() {
+  local count="$1" name value sep="{"
+  shift
+  for name in e2e_p50_s e2e_p95_s e2e_p99_s sub_p50_s sub_p95_s sub_p99_s; do
+    value="$1"
+    shift
+    if [[ "${value}" == "nan" ]]; then
+      value=null
+    fi
+    printf '%s"reconcile.%s.%s": %s' "${sep}" "${count}" "${name}" "${value}"
+    sep=", "
+  done >"${WORKDIR}/count-${count}.json"
+  printf '}\n' >>"${WORKDIR}/count-${count}.json"
+}
+
+# merge_results merges the count files into RESULT_JSON under the meta block
+# hack/perf-baseline.py compare reads the release from.
+merge_results() {
+  mkdir -p "$(dirname "${RESULT_JSON}")"
+  python3 - "${RESULT_JSON}" "${IMAGE_TAG}" "${CR_COUNTS}" "${SETTLE_SECONDS}" "${WORKDIR}"/count-*.json <<'PY'
+import datetime
+import json
+import sys
+
+out, release, cr_counts, settle, *parts = sys.argv[1:]
+metrics = {}
+for part in parts:
+    with open(part, encoding="utf-8") as handle:
+        metrics.update(json.load(handle))
+measured_at = datetime.datetime.now(datetime.timezone.utc)
+result = {
+    "meta": {
+        "release": release,
+        "measured_at": measured_at.isoformat(timespec="seconds"),
+        "cr_counts": cr_counts,
+        "settle_seconds": int(settle),
+    },
+    "metrics": metrics,
+}
+with open(out, "w", encoding="utf-8") as handle:
+    json.dump(result, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+  log "wrote ${RESULT_JSON}"
+}
+
 run_count() {
   local count="$1"
   log "benchmarking ${count} Keystone CR(s)"
@@ -253,6 +313,10 @@ run_count() {
   printf '  sub-reconciler (keystone_operator_reconcile_duration_seconds): p50=%ss p95=%ss p99=%ss\n\n' \
     "${sub_p50}" "${sub_p95}" "${sub_p99}"
 
+  if [[ -n "${RESULT_JSON}" ]]; then
+    write_count_json "${count}" "${e2e_p50}" "${e2e_p95}" "${e2e_p99}" "${sub_p50}" "${sub_p95}" "${sub_p99}"
+  fi
+
   if [[ -n "${GATE_P95_SECONDS}" && "${e2e_p95}" != "nan" ]]; then
     if awk -v v="${e2e_p95}" -v g="${GATE_P95_SECONDS}" 'BEGIN { exit !(v + 0 > g + 0) }'; then
       err "end-to-end p95 ${e2e_p95}s exceeds gate ${GATE_P95_SECONDS}s for ${count} CR(s)"
@@ -269,6 +333,10 @@ main() {
   for count in ${CR_COUNTS}; do
     run_count "${count}"
   done
+  # Before the gate's exit, so a red gate still leaves the file behind.
+  if [[ -n "${RESULT_JSON}" ]]; then
+    merge_results
+  fi
   if [[ "${GATE_FAILED}" == "1" ]]; then
     exit 1
   fi
