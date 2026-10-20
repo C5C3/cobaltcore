@@ -29,7 +29,7 @@ tests:
               - update
               - watch
 
-  - it: should grant get/update/patch on the OVN status subresources
+  - it: should grant get/update on the OVN status subresources
     asserts:
       - contains:
           path: rules
@@ -41,7 +41,6 @@ tests:
               - ovnchassis/status
             verbs:
               - get
-              - patch
               - update
 
   - it: should grant update on the OVN finalizers subresources
@@ -75,9 +74,9 @@ tests:
               - watch
 
   # The chassis controller copies the central's client Secret onto the
-  # chassis's cluster (<chassis>-ovn-client), so secrets sit on the full-verb
-  # core rule beside the other children the operator writes.
-  - it: should grant full CRUD on secrets for the client-identity copy
+  # chassis's cluster (<chassis>-ovn-client) with a create and keeps it current
+  # with an update; it never patches or deletes the copy.
+  - it: should grant create, read and update on secrets for the client-identity copy
     asserts:
       - contains:
           path: rules
@@ -87,7 +86,6 @@ tests:
             resources:
               - configmaps
               - persistentvolumeclaims
-              - secrets
               - services
             verbs:
               - create
@@ -95,6 +93,18 @@ tests:
               - get
               - list
               - patch
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ''
+            resources:
+              - secrets
+            verbs:
+              - create
+              - get
+              - list
               - update
               - watch
 
@@ -207,10 +217,8 @@ tests:
               - priorityclasses
             verbs:
               - get
-              - list
-              - watch
 
-  - it: should grant full CRUD on poddisruptionbudgets for the Raft budgets
+  - it: should grant the apply and delete verbs on poddisruptionbudgets for the Raft budgets
     asserts:
       - contains:
           path: rules
@@ -225,7 +233,6 @@ tests:
               - get
               - list
               - patch
-              - update
               - watch
 
   - it: should grant the leader-election verbs on leases
