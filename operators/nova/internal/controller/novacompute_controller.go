@@ -256,15 +256,16 @@ func (p *novaComputePass) computeClient(ctx context.Context) (*computeapi.Client
 	return api, nil
 }
 
-// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/reconcile_novacompute_daemonset.go:141 (reconcileNovaComputeDaemonSet) to update novacomputes/finalizers.
 // +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes/finalizers,verbs=update
 // daemonsets carry the nova-compute pods of a node pool.
-// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;patch;delete
 // verticalpodautoscalers carry the opt-in VPA of the pool's DaemonSet.
-// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // nodes are read to resolve a pool's selection, its zones and its conflicts.
-// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list
 // hypervisors (openstack-hypervisor-operator) are read and patched by the Traits
 // step to steer the custom Placement traits of a pool's hosts.
 // +kubebuilder:rbac:groups=kvm.cloud.sap,resources=hypervisors,verbs=get;patch

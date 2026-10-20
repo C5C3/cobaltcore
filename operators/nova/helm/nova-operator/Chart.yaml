@@ -2,7 +2,7 @@ apiVersion: v2
 name: nova-operator
 description: A Helm chart for deploying the Nova OpenStack compute service operator
 type: application
-version: 0.5.0
+version: 0.5.1
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for all operator
@@ -15,6 +15,8 @@ dependencies:
 annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
+    - kind: changed
+      description: The ClusterRole drops every verb that neither the RBAC usage audit of the e2e suites nor a call site in the operator claims (docs/reference/testing/rbac-usage-audit.md), and the leader-election rule grants get, create and update on leases only
     - kind: fixed
       description: The opt-in NetworkPolicy admits the operator's API health check and the NovaCompute Keystone and Placement calls with egress on TCP 8774 to the nova pods, on TCP 5000 and 5050 to the keystone pods and on TCP 8778 to the placement pods, selected by app.kubernetes.io/name and app.kubernetes.io/managed-by in any namespace
     - kind: added

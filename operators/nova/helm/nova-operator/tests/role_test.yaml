@@ -57,6 +57,17 @@ tests:
               - nova.openstack.c5c3.io
             resources:
               - novacomputes
+            verbs:
+              - get
+              - list
+              - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - nova.openstack.c5c3.io
+            resources:
               - novas
             verbs:
               - get
