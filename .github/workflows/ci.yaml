@@ -693,10 +693,11 @@ jobs:
   # is installed explicitly so deploy/ overlay tests run the full assertion
   # set instead of skipping their kustomize-build checks. The renovate/
   # tests pull renovate-config-validator via npx, taking ~30s on a cold
-  # runner.
+  # runner. The whole job takes 6–8 minutes, so the wall sits at 12 to
+  # leave headroom for slow runners and newly added suites.
   test-shell:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install kustomize
