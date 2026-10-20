@@ -258,6 +258,24 @@ each moves to `<prev> -> <version>`:
 `tests/e2e/nova/release-upgrade/01-catalog-setup-job.yaml` keeps
 `ghcr.io/c5c3/tempest:<default>`, like every other e2e fixture Job.
 
+The ControlPlane hop of `tests/e2e/c5c3/full-controlplane-keystone/` (Link 8)
+moves to `<prev> -> <version>` as well:
+
+- the start release in `00-controlplane-cr.yaml`,
+  `05-neutronmetadataagent-cr.yaml` and `06-fake-compute.yaml`;
+- the target in `08-patch-upgrade.yaml`;
+- the `ghcr.io/c5c3/keystone:<v>` client pins of its `chainsaw-test.yaml`,
+  which follow the start release;
+- the sixteen service image refs of the `e2e-controlplane` job in
+  `.github/workflows/ci.yaml`, the eight services at both releases in both of
+  its load steps, which `tests/unit/ci/e2e_controlplane_output_test.sh` checks
+  against the fixtures.
+
+`tests/unit/deploy/fake_compute_overlay_test.sh` compares `06-fake-compute.yaml`
+with `deploy/kind/fake-compute/fake-compute.yaml`, which pins the default
+release, so a `<prev>` that is not the default release reddens that test until
+both agree.
+
 The skip-level fixture (`upgrade-flow/02-patch-skip-level.yaml`) must keep
 targeting a version that is neither under `releases/` nor the sequential
 successor of the new release. That is what makes it a rejection test.

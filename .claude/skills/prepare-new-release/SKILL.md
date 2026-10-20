@@ -197,7 +197,16 @@ Copy `releases/<newest>/` as the template and adjust:
   assertion that encodes a launch mode of the start release once the
   start moves past that boundary (glance asserted the eventlet command
   below 2026.1). `tests/e2e/nova/release-upgrade/01-catalog-setup-job.yaml`
-  keeps `ghcr.io/c5c3/tempest:<default>`.
+  keeps `ghcr.io/c5c3/tempest:<default>`. The ControlPlane hop of
+  `tests/e2e/c5c3/full-controlplane-keystone/` moves to `<prev> -> <version>`
+  too: the start release in `00-controlplane-cr.yaml`,
+  `05-neutronmetadataagent-cr.yaml` and `06-fake-compute.yaml`, the target in
+  `08-patch-upgrade.yaml`, the `ghcr.io/c5c3/keystone:<v>` client pins of its
+  `chainsaw-test.yaml`, and the sixteen service image refs of the
+  `e2e-controlplane` job, which `tests/unit/ci/e2e_controlplane_output_test.sh`
+  checks against the fixtures. `tests/unit/deploy/fake_compute_overlay_test.sh`
+  compares `06-fake-compute.yaml` with the kind fake compute, which pins the
+  default release, so a `<prev>` off the default reddens it until both agree.
   `tests/e2e/keystone/upgrade-abort/` needs no move: its stuck patch pulls
   the target from `registry.invalid/…`, so it wedges whatever releases
   exist; it only has to start at a release that is still wired (move it

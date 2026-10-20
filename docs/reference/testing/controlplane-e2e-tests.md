@@ -79,11 +79,16 @@ E2E_REQUIRE_CONTROLPLANE_STACK=true chainsaw test \
 Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 `tests/e2e/` tree) stays safe on clusters that only carry the Keystone wiring.
 
+The full-chain suite ends by moving the plane to the release of its
+`08-patch-upgrade.yaml` (Link 8). A local run therefore needs the eight service
+images of that release as well as those of the start release: kind-loaded, as the
+`e2e-controlplane` job does, or pullable from ghcr.io.
+
 ## Test Suite Inventory
 
 | Suite | CR Name(s) | Behaviour Validated |
 | --- | --- | --- |
-| [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
+| [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check, and a release hop from the start release to its successor |
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, and a namespace assignment's role allowlist refuses and freezes the account |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
 | [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` + `KeystoneProject` `workflow-project` + `KeystoneRoleAssignment` `workflow-member` + `KeystoneCatalogEntry` `workflow-dns` + `KeystoneApplicationCredential` `workflow-appcred` + `MariaDBDatabase` `workflow-db` | Keystone and database orders: a user order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates and a one-minute schedule rotates once more before it is turned off; a project is provisioned, a role and a catalog entry are refused until the entry admits them, a Job scopes a token to the project and reads the entry out of the catalog, a duplicate assignment and a colliding entry are refused; an application credential is refused without the role, then created as the user and delivered, rotated on its schedule and by hand, and the superseded credential stops working after its grace period; a database order gets its Secret, a Job writes a row with it, and a forced ESO refresh delivers a new user; an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes every order, and deletion revokes the database order's leases and keeps or drops its schema by `deletionPolicy`, holds the assignment on the credential order and the user on the assignment, and removes everything down to the OpenBao paths |
@@ -117,7 +122,10 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 
 Applies one `ControlPlane` CR carrying eight services (keystone, horizon,
 glance, placement, barbican, neutron, cinder, nova) and asserts the whole chain
-link by link, gating each link on the previous one. It runs with
+link by link, gating each link on the previous one. It then moves the live plane
+from the release of `00-controlplane-cr.yaml` to the release of
+`08-patch-upgrade.yaml` and runs the authenticated checks again against the
+upgraded plane (Link 8). It runs with
 `spec.concurrent: false`, because the compute leg pins a node: the script labels
 one node `openstack.c5c3.io/chassis=true` before it applies the ControlPlane, and
 the `OVNChassis` pods that land there program the local Open vSwitch over host
@@ -301,7 +309,9 @@ paths any other chassis or metadata agent would share.
 
 6a. **Service status** — `status.services[]` reports eight entries, ready, in the
    order `setServicesStatus` emits them: keystone, horizon, glance, placement,
-   barbican, neutron, cinder, nova.
+   barbican, neutron, cinder, nova. Every entry carries the start release, which
+   is what each child reports installed; the suite polls for it for up to 120
+   seconds.
 
 6b. **Dynamic DB credential engine** — no static DB password remains at rest (the
    retired per-CR KV path is absent, AC 2/6); an engine-issued credential
@@ -402,6 +412,53 @@ paths any other chassis or metadata agent would share.
    Neither live nor cold migration is called: the suite has one compute, and
    both check the same admin rule the services and aggregates blocks prove.
 
+8a. **Release patch** — the day-2 release upgrade on the live plane. The suite
+   reads both releases from its fixtures, the start from `00-controlplane-cr.yaml`
+   and the target from `08-patch-upgrade.yaml`, so the hop's assertions follow
+   those two files; the full list of what a release move edits is in
+   [Adding a New Release](../../contributing/adding-a-new-release.md#upgrade-path).
+   It applies the patch
+   with `kubectl patch --type merge --patch-file`, which the webhook admits only
+   for the sequential successor, and waits up to 120 seconds for the new
+   generation in `status.observedGeneration`. It then reads the `nova` entry of
+   `status.services` and, after it, the Nova child's `installedRelease`; an entry
+   at the target beside a child below it fails the link. The two reads cannot
+   race: the entry reaches the target only after the child did, and a child
+   never moves back, so the later read of the child is at least as far as the
+   entry.
+
+8b. **Children** — against one 30-minute deadline, each of the seven database
+   children has to report the target as `installedRelease`, with no
+   `targetRelease` or `upgradePhase` left and `Ready=True` at its current
+   generation (Placement and Barbican carry no `upgradePhase`). The Horizon child
+   has to converge on the target image tag, `Ready` at its current generation.
+   A child that misses the deadline fails with a line naming all of those fields.
+
+8c. **Deployments** — the Deployments of each child, selected by its
+   `app.kubernetes.io/name` and `app.kubernetes.io/instance` labels, finish their
+   rollout within a shared 600 seconds, and every `ghcr.io/c5c3/<svc>:` image of
+   their containers and init containers carries the target tag. A child without a
+   Deployment, or a Deployment without a service image, fails the link.
+
+8d. **Plane** — `Ready=True` with reason `AllReady` at the patched generation, and
+   all eight `status.services` entries at the target release and ready.
+
+8e. **Checks after the hop** — the verify Job of Link 7, the two port-event log
+   checks and the dashboard login of Link 2c run again, from the same shell
+   functions. The token issue proves that the application credential created
+   before the hop still authenticates after the Keystone migration, and the
+   server boot goes through the upgraded APIs. The hypervisor operator's Job of
+   Link 7d is not rerun.
+
+The data plane stays at the start release: the fake compute and the metadata
+agent are not ControlPlane children, and nova renders `[upgrade_levels]
+compute = auto`, which lets a compute of the start release serve the upgraded
+control plane. Control plane first is also the order an operator upgrades in.
+The suite never deletes its ControlPlane, so a second run on a reused cluster
+finds it at the target release, which the webhook refuses to move back. The
+script stops on that before it applies anything and names the
+`kubectl delete controlplane` that clears it.
+
 The block-storage service widens this suite's presence guard. Beyond the CRDs
 and operators its peers need, it requires a running cinder-operator, a
 `shared-rabbitmq` broker reporting `AllReplicasReady`, and an `nfs-server`
@@ -416,7 +473,7 @@ nova-operator, and the chassis its server's port binds on needs the
 `openvswitch` and `geneve` kernel modules on the runner host, which the
 `e2e-controlplane` job asks for with `WITH_OVN_KERNEL_MODULES: "true"`.
 
-The suite budgets 65 minutes for the consolidated script, 5 for its diagnostic
+The suite budgets 100 minutes for the consolidated script, 5 for its diagnostic
 `catch`, and one timeout per `finally` script: 5 minutes to delete the verify
 Job, 2 to release the broker vhost, and 5 for the compute leg's own footprint.
 That last one first deletes the hypervisor-operator Job and the K-ORC fixtures,
@@ -428,7 +485,9 @@ apply and takes the `openstack.c5c3.io/chassis` label off every node, because
 none of the three is owned by the ControlPlane and a label left standing
 advertises a chassis role nothing serves. With the shared
 3-minute cleanup budget the suite's ceiling is
-`65 + 5 + 5 + 2 + 5 + 3 = 85` minutes. Every one of those timeouts is pinned
+`100 + 5 + 5 + 2 + 5 + 3 = 120` minutes. A green pass spends about 13 minutes
+before Link 8 and about 20 in it; the waits of Link 8 are bounded at 77. Every one
+of those timeouts is pinned
 rather than inherited: chainsaw applies the suite's `exec` budget to each script
 operation, so an unpinned `catch` or `finally` would each carry 30 minutes of
 their own.
@@ -1293,7 +1352,8 @@ tests/e2e/c5c3/
 │   ├── 04-ovnchassis-cr.yaml           OVNChassis on the labelled node, which binds the server's port
 │   ├── 05-neutronmetadataagent-cr.yaml Metadata agent on that chassis, gated on the generated secret
 │   ├── 06-fake-compute.yaml            nova-compute built out of the published compute contract
-│   └── 07-hypervisor-operator-verify-job.yaml  Calls as the hypervisor operator's user
+│   ├── 07-hypervisor-operator-verify-job.yaml  Calls as the hypervisor operator's user
+│   └── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml              ControlPlane admission rejections
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures

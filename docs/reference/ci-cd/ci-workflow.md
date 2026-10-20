@@ -1489,6 +1489,13 @@ the `openvswitch` and `geneve` modules on the runner host, which
 operator half at `nova-system` while the workload half stays on `openstack`,
 where the projected Nova child and the suite's fake compute run.
 
+The full-chain suite ends with a release hop (Link 8): it patches the live plane
+from the release of its `00-controlplane-cr.yaml` to the release of
+`08-patch-upgrade.yaml` and runs the authenticated checks again. Both image
+lists therefore carry the eight service images at `2026.2` beside the `2026.1`
+ones. `tests/unit/ci/e2e_controlplane_output_test.sh` reads the two releases from
+those fixtures and fails when either step misses one of the sixteen refs.
+
 A second chainsaw step on the same cluster runs
 `tests/e2e/c5c3/keystone-service-foreign-namespace/`, the cross-namespace
 `KeystoneService` suite: it brings up a Keystone-only ControlPlane of its own,
@@ -1553,7 +1560,7 @@ fails the step above 4000m CPU or 16Gi memory. The job-level `env` sets
 `hack/ci-deploy-operator.sh`, so every operator runs one replica, as in the kind
 devstack, and the gate counts that footprint. The other e2e jobs keep the chart
 default of two. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 320-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 360-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy, and its four chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
@@ -1561,14 +1568,15 @@ overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
 and the `cleanup` budget runs after all three. Each of the four suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 85, 80, 110 and 90 minutes. The job wall has to outlast the bring-up plus
+ceilings at 120, 80, 110 and 90 minutes. The job wall has to outlast the bring-up plus
 the suites that pass plus the full ceiling of the one that stalls, or a stalled
 suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML. The 320 minutes cover roughly 40 minutes of bring-up, the
-85-minute ceiling of the full-chain suite, roughly 25 minutes for the
+no JUnit XML. The 360 minutes cover roughly 45 minutes of bring-up, the
+120-minute ceiling of the full-chain suite, roughly 25 minutes for the
 foreign-namespace pass and 55 for the keystone-user pass, and the 110-minute
-ceiling of the keystone-user suite, the largest of the four, 315 minutes in
-all; the bring-up and the two pass terms are
+ceiling of the keystone-user suite, the largest of the other three, for the
+suite that stalls: 45+120+25+55+110 = 355 minutes in all; the bring-up and the
+two pass terms are
 estimates, so confirm them against the first green run of the leg and re-derive
 the wall if one overruns.
 
