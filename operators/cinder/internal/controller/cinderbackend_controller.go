@@ -137,7 +137,7 @@ type CinderBackendReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinderbackends,verbs=get;list;watch;update
-// +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinderbackends/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinderbackends/status,verbs=get;update
 // +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch

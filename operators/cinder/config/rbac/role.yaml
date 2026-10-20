@@ -8,15 +8,11 @@ rules:
   - ""
   resources:
   - configmaps
-  - secrets
-  - services
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - ""
@@ -33,6 +29,28 @@ rules:
   - get
   - list
 - apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -42,7 +60,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling
@@ -54,7 +71,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling.k8s.io
@@ -66,26 +82,32 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - batch
   resources:
   - cronjobs
-  - jobs
   verbs:
   - create
   - delete
   - get
   - list
   - patch
-  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - cinder.openstack.c5c3.io
   resources:
   - cinderbackends
-  - cinderbackupbackends
   verbs:
   - get
   - list
@@ -99,8 +121,15 @@ rules:
   - cinders/status
   verbs:
   - get
-  - patch
   - update
+- apiGroups:
+  - cinder.openstack.c5c3.io
+  resources:
+  - cinderbackupbackends
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - cinder.openstack.c5c3.io
   resources:
@@ -137,7 +166,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - gateway.networking.k8s.io
@@ -157,7 +185,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - k8s.mariadb.com
@@ -177,7 +204,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - policy
@@ -189,7 +215,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - rabbitmq.com
@@ -197,16 +222,12 @@ rules:
   - rabbitmqclusters
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - scheduling.k8s.io
   resources:
   - priorityclasses
   verbs:
   - get
-  - list
-  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
