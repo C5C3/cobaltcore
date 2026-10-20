@@ -102,9 +102,8 @@ type KeystoneProjectReconciler struct {
 // target-cluster-access chart's Role for an assigned namespace grants the same
 // verbs. The teardown holds read the KeystoneRoleAssignments and
 // KeystoneApplicationCredentials beside the order.
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects/finalizers,verbs=update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneprojects/status,verbs=get;update
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials,verbs=get;list;watch
 

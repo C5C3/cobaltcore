@@ -25,7 +25,6 @@ rules:
   - ""
   resources:
   - secrets
-  - serviceaccounts
   verbs:
   - create
   - delete
@@ -33,6 +32,17 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
   - watch
 - apiGroups:
   - ""
@@ -57,20 +67,21 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - c5c3.io
   resources:
   - controlplanes
-  - credentialrotations
-  - keystoneservices
+  - keystoneapplicationcredentials
+  - keystonecatalogentries
+  - keystoneprojects
+  - keystoneroleassignments
+  - keystoneusers
+  - mariadbdatabases
+  - rabbitmqvhosts
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -78,9 +89,6 @@ rules:
   resources:
   - controlplanes/finalizers
   - keystoneapplicationcredentials/finalizers
-  - keystonecatalogentries/finalizers
-  - keystoneprojects/finalizers
-  - keystoneroleassignments/finalizers
   - keystoneservices/finalizers
   - keystoneusers/finalizers
   - mariadbdatabases/finalizers
@@ -102,32 +110,27 @@ rules:
   - rabbitmqvhosts/status
   verbs:
   - get
-  - patch
   - update
 - apiGroups:
   - c5c3.io
   resources:
-  - keystoneapplicationcredentials
-  - keystonecatalogentries
-  - keystoneprojects
-  - keystoneroleassignments
-  - keystoneusers
-  - mariadbdatabases
-  - rabbitmqvhosts
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - c5c3.io
-  resources:
-  - secretaggregates
+  - credentialrotations
   - sizingprofiles
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - c5c3.io
+  resources:
+  - keystoneservices
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - cert-manager.io
@@ -138,7 +141,6 @@ rules:
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -153,7 +155,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - discovery.k8s.io
@@ -174,7 +175,6 @@ rules:
   resources:
   - externalsecrets
   - pushsecrets
-  - secretstores
   verbs:
   - create
   - delete
@@ -184,9 +184,28 @@ rules:
   - update
   - watch
 - apiGroups:
+  - external-secrets.io
+  resources:
+  - secretstores
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
   - generators.external-secrets.io
   resources:
   - passwords
+  verbs:
+  - create
+  - delete
+  - get
+  - patch
+- apiGroups:
+  - generators.external-secrets.io
+  resources:
   - vaultdynamicsecrets
   verbs:
   - create
@@ -194,7 +213,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - glance.openstack.c5c3.io
@@ -207,7 +225,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - horizon.openstack.c5c3.io
@@ -218,20 +235,28 @@ rules:
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
   - k8s.mariadb.com
   resources:
   - databases
-  - mariadbs
   verbs:
   - create
   - delete
   - get
   - list
   - patch
+  - watch
+- apiGroups:
+  - k8s.mariadb.com
+  resources:
+  - mariadbs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - update
   - watch
 - apiGroups:
@@ -252,7 +277,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - memcached.c5c3.io
@@ -263,7 +287,6 @@ rules:
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -284,7 +307,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - nova.openstack.c5c3.io
@@ -304,20 +326,27 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - openbao.org
   resources:
   - openbaoclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - openbao.org
+  resources:
   - openbaotenants
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - openstack.k-orc.cloud
@@ -325,10 +354,7 @@ rules:
   - applicationcredentials
   - domains
   - endpoints
-  - projects
   - regions
-  - roleassignments
-  - roles
   - services
   - users
   verbs:
@@ -354,6 +380,19 @@ rules:
   verbs:
   - patch
 - apiGroups:
+  - openstack.k-orc.cloud
+  resources:
+  - projects
+  - roleassignments
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
   - ovn.openstack.c5c3.io
   resources:
   - ovncentrals
@@ -371,13 +410,11 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - rabbitmq.com
   resources:
   - permissions
-  - rabbitmqclusters
   - users
   - vhosts
   verbs:
@@ -386,6 +423,16 @@ rules:
   - get
   - list
   - patch
+  - watch
+- apiGroups:
+  - rabbitmq.com
+  resources:
+  - rabbitmqclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - update
   - watch
 - apiGroups:

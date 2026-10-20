@@ -137,7 +137,8 @@ type KeystoneServiceReconciler struct {
 // ControlPlane and CredentialRotation marker blocks, and the chart mirrors the
 // deduplicated union.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices,verbs=get;list;watch;update
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/keystoneservice_controller.go:678 (claimKeystoneServiceChild) to update keystoneservices/finalizers.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices/finalizers,verbs=update
 
 // Reconcile drives one KeystoneService CR: finalizer installation, the gated

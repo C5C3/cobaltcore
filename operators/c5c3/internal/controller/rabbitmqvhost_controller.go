@@ -175,10 +175,11 @@ type RabbitMQVhostReconciler struct {
 // ControlPlane's namespace. The Secrets and PushSecrets it writes there and the
 // ControlPlane and RabbitmqCluster reads are granted by the ControlPlane's
 // marker block.
-// +kubebuilder:rbac:groups=c5c3.io,resources=rabbitmqvhosts,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=rabbitmqvhosts/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=rabbitmqvhosts,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=c5c3.io,resources=rabbitmqvhosts/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/rabbitmqvhost_delivery.go:186 (deliverCredentials) to update rabbitmqvhosts/finalizers.
 // +kubebuilder:rbac:groups=c5c3.io,resources=rabbitmqvhosts/finalizers,verbs=update
-// +kubebuilder:rbac:groups=rabbitmq.com,resources=vhosts;users;permissions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rabbitmq.com,resources=vhosts;users;permissions,verbs=get;list;watch;create;patch;delete
 
 // Reconcile drives one RabbitMQVhost: the gates, finalizer installation, the
 // provision, the rotation, the delivery and the teardown.

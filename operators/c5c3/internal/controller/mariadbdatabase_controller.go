@@ -236,10 +236,11 @@ type MariaDBDatabaseReconciler struct {
 // and MariaDB reads, are granted by the ControlPlane's marker block. On a target
 // cluster the target-cluster-access chart's Role for an assigned namespace
 // grants the same verbs on the order.
-// +kubebuilder:rbac:groups=c5c3.io,resources=mariadbdatabases,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=mariadbdatabases/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=mariadbdatabases,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=c5c3.io,resources=mariadbdatabases/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/mariadbdatabase_delivery.go:149 (deliverCredentials) to update mariadbdatabases/finalizers.
 // +kubebuilder:rbac:groups=c5c3.io,resources=mariadbdatabases/finalizers,verbs=update
-// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases,verbs=get;list;watch;create;patch;delete
 
 // Reconcile drives one MariaDBDatabase: the gates, finalizer installation, the
 // provision and delivery, and the teardown.

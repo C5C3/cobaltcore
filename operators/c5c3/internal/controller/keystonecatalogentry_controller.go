@@ -83,9 +83,8 @@ type KeystoneCatalogEntryReconciler struct {
 // updates them to install and release its finalizer; it never creates or
 // deletes one. The K-ORC Services, Endpoints and Regions it writes are granted
 // by the ControlPlane's marker block.
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystonecatalogentries,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystonecatalogentries/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystonecatalogentries/finalizers,verbs=update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystonecatalogentries,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystonecatalogentries/status,verbs=get;update
 
 // Reconcile drives one KeystoneCatalogEntry: the gates, finalizer installation,
 // the registration and the teardown.

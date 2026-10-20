@@ -114,9 +114,8 @@ type KeystoneRoleAssignmentReconciler struct {
 // assignment references, which the markers of those kinds grant. The K-ORC Roles
 // and RoleAssignments it writes are granted by the ControlPlane's marker block.
 // The teardown hold reads the KeystoneApplicationCredentials beside the order.
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments/finalizers,verbs=update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneroleassignments/status,verbs=get;update
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials,verbs=get;list;watch
 
 // Reconcile drives one KeystoneRoleAssignment: the gates, finalizer
