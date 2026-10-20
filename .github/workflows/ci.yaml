@@ -3036,11 +3036,14 @@ jobs:
         env:
           OPERATOR: c5c3
         run: hack/ci-rbac-usage-report.sh
+      # Named after the job, as sizing-e2e-controlplane is: the c5c3 leg of
+      # e2e-operator already uploads rbac-usage-c5c3, and upload-artifact keeps
+      # two artifacts of one name side by side.
       - name: Upload RBAC usage report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: rbac-usage-c5c3
+          name: rbac-usage-e2e-controlplane
           path: _output/rbac-usage/
           retention-days: 14
       - name: Upload JUnit report

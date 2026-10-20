@@ -1583,7 +1583,7 @@ The job creates its cluster from `hack/kind-config-audit.yaml`, so the API
 server writes an audit log. After the diagnostics dumps, the `Report RBAC usage`
 step runs `hack/ci-rbac-usage-report.sh` for the c5c3-operator under
 `continue-on-error`, and `Upload RBAC usage report` publishes
-`_output/rbac-usage/` as `rbac-usage-c5c3` (14-day retention). The c5c3 entry
+`_output/rbac-usage/` as `rbac-usage-e2e-controlplane` (14-day retention). The c5c3 entry
 of `e2e-operator` runs that operator against the service CRDs alone, so this
 report covers the ControlPlane reconciler driving live service operators.
 [RBAC Usage Audit](../testing/rbac-usage-audit.md) explains the report.
