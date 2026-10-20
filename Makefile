@@ -469,6 +469,15 @@ gen-helm-schema:
 verify-helm-schema:
 	python3 hack/gen-helm-values-schema.py --check
 
+.PHONY: verify-helm-released-values
+# verify-helm-released-values renders every operator chart with the values.yaml
+# of its released chart (the highest tag under oci://ghcr.io/c5c3/charts) and
+# fails when the chart rejects them. Waive an intended removal in
+# hack/helm-removed-values.yaml. Needs network access to ghcr.io, no login.
+# Usage: make verify-helm-released-values [OPERATOR=keystone]
+verify-helm-released-values:
+	hack/verify-helm-released-values.sh $(OPERATOR)
+
 # ============================================================================
 # Deployment and Docker Targets
 # ============================================================================
