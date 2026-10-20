@@ -64,7 +64,7 @@ tests:
               - update
               - watch
 
-  - it: should grant get/list/update/watch on the backend kinds
+  - it: should grant get/list/watch on the backend kinds and update on cinderbackends
     set:
       rbac:
         namespaceScoped: true
@@ -78,11 +78,21 @@ tests:
               - cinder.openstack.c5c3.io
             resources:
               - cinderbackends
-              - cinderbackupbackends
             verbs:
               - get
               - list
               - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cinder.openstack.c5c3.io
+            resources:
+              - cinderbackupbackends
+            verbs:
+              - get
+              - list
               - watch
 
   - it: should grant the leader-election verbs on leases

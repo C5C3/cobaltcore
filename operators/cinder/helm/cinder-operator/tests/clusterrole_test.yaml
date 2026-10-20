@@ -27,9 +27,9 @@ tests:
               - update
               - watch
 
-  # update, not full CRUD: the satellite kinds are written by their owners; the
-  # operator only sets the detach finalizer on them.
-  - it: should grant get/list/update/watch on the backend kinds
+  # The satellite kinds are written by their owners. The operator only sets the
+  # detach finalizer on a CinderBackend, so cinderbackupbackends carries no update.
+  - it: should grant get/list/watch on the backend kinds and update on cinderbackends
     asserts:
       - contains:
           path: rules
@@ -38,11 +38,21 @@ tests:
               - cinder.openstack.c5c3.io
             resources:
               - cinderbackends
-              - cinderbackupbackends
             verbs:
               - get
               - list
               - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cinder.openstack.c5c3.io
+            resources:
+              - cinderbackupbackends
+            verbs:
+              - get
+              - list
               - watch
 
   - it: should restrict events to create and patch only
@@ -96,8 +106,6 @@ tests:
               - rabbitmqclusters
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant read-only on externalsecrets
     asserts:
@@ -138,8 +146,6 @@ tests:
               - priorityclasses
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant the leader-election verbs on leases
     asserts:

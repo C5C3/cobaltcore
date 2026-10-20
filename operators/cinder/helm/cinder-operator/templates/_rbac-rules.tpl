@@ -9,15 +9,11 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - ''
   resources:
   - configmaps
-  - secrets
-  - services
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - ''
@@ -34,6 +30,28 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
 - apiGroups:
+  - ''
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ''
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
   - apps
   resources:
   - deployments
@@ -43,7 +61,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling
@@ -55,7 +72,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling.k8s.io
@@ -67,26 +83,32 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - batch
   resources:
   - cronjobs
-  - jobs
   verbs:
   - create
   - delete
   - get
   - list
   - patch
-  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - cinder.openstack.c5c3.io
   resources:
   - cinderbackends
-  - cinderbackupbackends
   verbs:
   - get
   - list
@@ -100,8 +122,15 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - cinders/status
   verbs:
   - get
-  - patch
   - update
+- apiGroups:
+  - cinder.openstack.c5c3.io
+  resources:
+  - cinderbackupbackends
+  verbs:
+  - get
+  - list
+  - watch
 - apiGroups:
   - cinder.openstack.c5c3.io
   resources:
@@ -138,7 +167,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - gateway.networking.k8s.io
@@ -158,7 +186,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - k8s.mariadb.com
@@ -178,7 +205,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - policy
@@ -190,7 +216,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - rabbitmq.com
@@ -198,16 +223,12 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - rabbitmqclusters
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - scheduling.k8s.io
   resources:
   - priorityclasses
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - coordination.k8s.io
   resources:
