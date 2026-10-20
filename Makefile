@@ -1082,8 +1082,10 @@ refresh-operator-digests:
 # It applies 1/5/25 Keystone CRs (CR_COUNTS overrides), waits for readiness, and
 # reports p50/p95/p99 for the per-sub-reconciler and end-to-end reconcile
 # histograms. Set GATE_P95_SECONDS to fail when the steady-state end-to-end p95
-# exceeds a target (the D3 SLO as a gate). Deliberately not a CI job — a 25-CR
-# load exceeds CI kind runner capacity. See
+# exceeds a target (the D3 SLO as a gate), and RESULT_JSON to also write the
+# quantiles to that JSON file. The nightly Performance workflow
+# (.github/workflows/performance.yaml) runs it with CR_COUNTS="1 3" and
+# RESULT_JSON; the 25-CR default stays a local or dedicated-cluster run. See
 # docs/reference/testing/reconcile-performance-benchmark.md.
 perf-benchmark:
 	hack/perf-reconcile-benchmark.sh
