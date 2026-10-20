@@ -74,6 +74,23 @@ LICENSE_HEADER = """\
 # required-field check runs, exactly as the minimal managed fixtures rely on.
 VALID_RELEASE = "2026.1"
 
+
+def successor_release(rel: str) -> str:
+    """Return the release a sequential upgrade from ``rel`` moves to.
+
+    YYYY.1 moves to YYYY.2 and YYYY.2 to the next year's .1, the same rule as
+    release.IsSequentialUpgrade.
+    """
+    year, minor = (int(part) for part in rel.split("."))
+    return f"{year}.2" if minor == 1 else f"{year + 1}.1"
+
+
+# The release the downgrade wave's base runs at: VALID_RELEASE's sequential
+# successor, so the update back to VALID_RELEASE is a one-release downgrade that
+# stays at the release floor and draws the downgrade error alone. A target below
+# VALID_RELEASE would add the floor error.
+DOWNGRADE_BASE_RELEASE = successor_release(VALID_RELEASE)
+
 SCAFFOLD = """\
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
@@ -3259,6 +3276,37 @@ FIXTURES: tuple[Fixture, ...] = (
             + "        nfs: null\n"
             + VALID_CINDER_BACKUP_RBD_BLOCK
         ),
+    ),
+    # --- transition wave I: openStackRelease downgrade
+    #     (Test: c5c3-invalid-cr-release-downgrade) ---
+    Fixture(
+        filename="158-transition-base-release.yaml",
+        comment=(
+            "Accepted base for the release-downgrade test: a brownfield,\n"
+            f"keystone-unset (staged-adoption) ControlPlane at {DOWNGRADE_BASE_RELEASE}. It projects no\n"
+            "service child, so the persisting base provisions nothing and pulls no "
+            f"{DOWNGRADE_BASE_RELEASE}\n"
+            "image."
+        ),
+        name="cp-transition-i",
+        release=DOWNGRADE_BASE_RELEASE,
+        keystone="",
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="159-transition-release-downgrade.yaml",
+        comment=(
+            "UPDATE lowering spec.openStackRelease of the accepted base from "
+            f"{DOWNGRADE_BASE_RELEASE} to\n"
+            f"{VALID_RELEASE} is rejected by the validating webhook (validateReleaseNotDowngraded):\n"
+            "the migrations are forward-only, so a lower release would project an older\n"
+            "image onto an already-migrated schema. The release is the only change against\n"
+            f"the base, and {VALID_RELEASE} is the release floor, so the downgrade error is the only\n"
+            "one. Webhook-only, no CEL transition rule."
+        ),
+        name="cp-transition-i",
+        keystone="",
+        infrastructure=MANAGED_INFRA,
     ),
 )
 
