@@ -1125,6 +1125,22 @@ perf-benchmark:
 perf-token-baseline:
 	hack/perf-token-baseline.sh
 
+.PHONY: audit-rbac-usage
+# audit-rbac-usage diffs the RBAC requests an operator's ServiceAccount made on
+# a local kind cluster against the ClusterRole its kubebuilder markers render.
+# The cluster must come from hack/kind-config-audit.yaml, which writes the
+# kube-apiserver audit log the diff reads; run the operator and its suites
+# first. The report goes to stdout and OUT_DIR. See
+# docs/reference/testing/rbac-usage-audit.md.
+#
+# Variables:
+#   OPERATOR            operator to audit (required), e.g. keystone.
+#   KIND_CLUSTER        kind cluster whose node holds the log (default cobaltcore).
+#   OPERATOR_NAMESPACE  namespace of the operator's ServiceAccount (default <operator>-system).
+#   OUT_DIR             report directory (default _output/rbac-usage).
+audit-rbac-usage:
+	OPERATOR="$(OPERATOR)" hack/ci-rbac-usage-report.sh
+
 .PHONY: teardown-infra
 teardown-infra:
 	hack/teardown-infra.sh
