@@ -8,15 +8,11 @@ rules:
   - ""
   resources:
   - configmaps
-  - secrets
-  - services
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - ""
@@ -25,6 +21,28 @@ rules:
   verbs:
   - create
   - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
 - apiGroups:
   - apps
   resources:
@@ -35,7 +53,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling
@@ -47,7 +64,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling.k8s.io
@@ -59,20 +75,27 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - batch
   resources:
   - cronjobs
-  - jobs
   verbs:
   - create
   - delete
   - get
   - list
   - patch
-  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - external-secrets.io
@@ -94,7 +117,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - gateway.networking.k8s.io
@@ -117,15 +139,12 @@ rules:
   - glances/status
   verbs:
   - get
-  - patch
   - update
 - apiGroups:
   - glance.openstack.c5c3.io
   resources:
   - glances
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch
@@ -149,7 +168,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - k8s.mariadb.com
@@ -169,7 +187,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - policy
@@ -181,7 +198,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - scheduling.k8s.io
@@ -189,8 +205,6 @@ rules:
   - priorityclasses
   verbs:
   - get
-  - list
-  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
