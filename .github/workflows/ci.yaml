@@ -398,6 +398,8 @@ jobs:
               - 'hack/install-test-deps.sh'
               - 'hack/kind-config.yaml'
               - 'hack/kind-config-multinode.yaml'
+              - 'hack/kind-config-audit.yaml'
+              - 'hack/audit-policy.yaml'
               - 'hack/ci-deploy-operator.sh'
               - 'hack/ci-deploy-korc.sh'
               - 'hack/ci-dump-diagnostics.sh'
@@ -1471,11 +1473,13 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.work
+      # The audit config makes the API server write the audit log the
+      # Report RBAC usage step reads.
       - name: Create kind cluster
         uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
-          config: hack/kind-config.yaml
+          config: hack/kind-config-audit.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
       # Resolve which images this operator needs: always its operator image,
       # plus one service image per release that ships one. The release list
@@ -1809,6 +1813,29 @@ jobs:
           for op in keystone placement glance ovn neutron; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
+      # Diffs the requests the operator's ServiceAccount made, as the audit
+      # log of hack/kind-config-audit.yaml recorded them, against the
+      # ClusterRole its markers render
+      # (docs/reference/testing/rbac-usage-audit.md). It reports and never
+      # gates: a path the suites skip is no reason to fail correct code, and a
+      # run that never deployed the operator has no events to report. The
+      # sibling operators of the neutron and nova legs are reported by their
+      # own legs.
+      - name: Report RBAC usage
+        if: always()
+        continue-on-error: true
+        env:
+          OPERATOR: ${{ matrix.operator }}
+        run: hack/ci-rbac-usage-report.sh
+      # Named like the JUnit report below, so each nova shard keeps its own:
+      # rbac-usage-nova-1 and rbac-usage-nova-2.
+      - name: Upload RBAC usage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rbac-usage-${{ matrix.operator }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}
+          path: _output/rbac-usage/
+          retention-days: 14
       # Two artifacts of one run cannot share a name, so each nova shard adds
       # its number: e2e-nova-1-junit-report and e2e-nova-2-junit-report.
       - name: Upload JUnit report
@@ -2721,11 +2748,13 @@ jobs:
       OPERATOR_REPLICAS: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The audit config makes the API server write the audit log the
+      # Report RBAC usage step reads.
       - name: Create kind cluster
         uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
-          config: hack/kind-config.yaml
+          config: hack/kind-config-audit.yaml
           cluster-name: ${{ env.KIND_CLUSTER }}
       # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
@@ -3018,6 +3047,24 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: nova
+      # The RBAC usage report of the e2e-operator legs, for the c5c3-operator:
+      # its e2e-operator leg runs it against the service CRDs alone, while
+      # this job drives the ControlPlane reconciler against live service
+      # operators. The service operators running here are reported by their
+      # own e2e-operator legs. It reports and never gates, as there.
+      - name: Report RBAC usage
+        if: always()
+        continue-on-error: true
+        env:
+          OPERATOR: c5c3
+        run: hack/ci-rbac-usage-report.sh
+      - name: Upload RBAC usage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rbac-usage-c5c3
+          path: _output/rbac-usage/
+          retention-days: 14
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
