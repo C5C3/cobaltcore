@@ -140,8 +140,9 @@ type KeystoneApplicationCredentialReconciler struct {
 // kinds grant. The K-ORC ApplicationCredentials, Secrets and PushSecrets it
 // writes in the ControlPlane's namespace are granted by the ControlPlane's
 // marker block.
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/keystoneapplicationcredential_delivery.go:166 (deliverCredential) to update keystoneapplicationcredentials/finalizers.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneapplicationcredentials/finalizers,verbs=update
 
 // Reconcile drives one KeystoneApplicationCredential: the gates, finalizer

@@ -10,7 +10,7 @@ suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should grant full CRUD on controlplanes
+  - it: should grant read and update on controlplanes and the full verbs on keystoneservices
     asserts:
       - contains:
           path: rules
@@ -19,7 +19,36 @@ tests:
               - c5c3.io
             resources:
               - controlplanes
+              - keystoneapplicationcredentials
+              - keystonecatalogentries
+              - keystoneprojects
+              - keystoneroleassignments
+              - keystoneusers
+              - mariadbdatabases
+              - rabbitmqvhosts
+            verbs:
+              - get
+              - list
+              - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
               - credentialrotations
+              - sizingprofiles
+            verbs:
+              - get
+              - list
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
               - keystoneservices
             verbs:
               - create
@@ -32,7 +61,7 @@ tests:
 
   # The order reconcilers read the orders and update them to install and
   # release their finalizers; they never create or delete one.
-  - it: should grant get/list/watch/update/patch on the order kinds and nothing more
+  - it: should grant get/list/watch/update on the order kinds and nothing more
     asserts:
       - contains:
           path: rules
@@ -40,6 +69,7 @@ tests:
             apiGroups:
               - c5c3.io
             resources:
+              - controlplanes
               - keystoneapplicationcredentials
               - keystonecatalogentries
               - keystoneprojects
@@ -50,7 +80,6 @@ tests:
             verbs:
               - get
               - list
-              - patch
               - update
               - watch
       - contains:
@@ -71,7 +100,6 @@ tests:
               - rabbitmqvhosts/status
             verbs:
               - get
-              - patch
               - update
       - contains:
           path: rules
@@ -81,9 +109,6 @@ tests:
             resources:
               - controlplanes/finalizers
               - keystoneapplicationcredentials/finalizers
-              - keystonecatalogentries/finalizers
-              - keystoneprojects/finalizers
-              - keystoneroleassignments/finalizers
               - keystoneservices/finalizers
               - keystoneusers/finalizers
               - mariadbdatabases/finalizers
@@ -114,7 +139,7 @@ tests:
 
   # The ControlPlane writes the shared MariaDB, and a MariaDBDatabase order
   # writes its Database CR beside it.
-  - it: should grant full CRUD on k8s.mariadb.com databases and mariadbs
+  - it: should grant the write verbs the operator uses on k8s.mariadb.com databases and mariadbs
     asserts:
       - contains:
           path: rules
@@ -123,20 +148,32 @@ tests:
               - k8s.mariadb.com
             resources:
               - databases
-              - mariadbs
             verbs:
               - create
               - delete
               - get
               - list
               - patch
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - mariadbs
+            verbs:
+              - create
+              - delete
+              - get
+              - list
               - update
               - watch
 
   # The ControlPlane projects the RabbitmqCluster of a managed bus, and the
   # RabbitMQVhost controller writes the topology operator's Vhost, User and
   # Permission children; those write verbs are the order's only new reach.
-  - it: should grant full CRUD on the rabbitmq.com kinds the operator writes
+  - it: should grant the write verbs the operator uses on the rabbitmq.com kinds it writes
     asserts:
       - contains:
           path: rules
@@ -145,7 +182,6 @@ tests:
               - rabbitmq.com
             resources:
               - permissions
-              - rabbitmqclusters
               - users
               - vhosts
             verbs:
@@ -154,12 +190,27 @@ tests:
               - get
               - list
               - patch
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rabbitmq.com
+            resources:
+              - rabbitmqclusters
+            verbs:
+              - create
+              - delete
+              - get
+              - list
               - update
               - watch
 
   # The ControlPlane reads the SizingProfile it references and watches the
-  # kind; it never writes one.
-  - it: should grant read-only on secretaggregates and sizingprofiles
+  # kind; it never writes one. The CredentialRotation reconciler reads its CRs
+  # the same way, so controller-gen merges the two into one rule. Nothing reads
+  # a SecretAggregate any more, and the RBAC usage audit removed its grant.
+  - it: should grant read-only on credentialrotations and sizingprofiles
     asserts:
       - contains:
           path: rules
@@ -167,7 +218,7 @@ tests:
             apiGroups:
               - c5c3.io
             resources:
-              - secretaggregates
+              - credentialrotations
               - sizingprofiles
             verbs:
               - get
@@ -217,10 +268,11 @@ tests:
               - update
               - watch
 
-  # The Neutron child is projected and Owned, so it takes full CRUD; the
+  # The Neutron child is projected and Owned, so it takes the apply and delete
+  # verbs; the
   # OVNCentral is deployed outside the plane and only referenced, so the operator
   # reads and watches it and must never be able to write it.
-  - it: should grant full CRUD on neutrons and read-only access on ovncentrals
+  - it: should grant the projection verbs on neutrons and read-only access on ovncentrals
     asserts:
       - contains:
           path: rules
@@ -235,7 +287,6 @@ tests:
               - get
               - list
               - patch
-              - update
               - watch
       - contains:
           path: rules
@@ -265,8 +316,8 @@ tests:
               - watch
 
   # The Cinder child and its two satellite kinds are projected and Owned, so all
-  # three take full CRUD.
-  - it: should grant full CRUD on cinders, cinderbackends and cinderbackupbackends
+  # three take the apply and delete verbs.
+  - it: should grant the projection verbs on cinders, cinderbackends and cinderbackupbackends
     asserts:
       - contains:
           path: rules
@@ -283,12 +334,12 @@ tests:
               - get
               - list
               - patch
-              - update
               - watch
 
-  # The Nova child is projected and Owned, so it takes full CRUD. Nova has no
+  # The Nova child is projected and Owned, so it takes the apply and delete
+  # verbs. Nova has no
   # satellite kind, so novas is the single operator-written kind of its group.
-  - it: should grant full CRUD on novas
+  - it: should grant the projection verbs on novas
     asserts:
       - contains:
           path: rules
@@ -303,14 +354,14 @@ tests:
               - get
               - list
               - patch
-              - update
               - watch
 
   # The ESO generator kinds the reconciler authors share one rule: the
   # VaultDynamicSecret behind every dynamic DB credential, and the Password that
-  # mints the Nova metadata shared secret. Both are created, updated and deleted
-  # with the service they belong to, so the rule carries full CRUD.
-  - it: should grant full CRUD on passwords and vaultdynamicsecrets
+  # mints the Nova metadata shared secret. Both are applied and deleted with the
+  # service they belong to. The Password is read only through uncached readers,
+  # so its rule carries no list or watch.
+  - it: should grant the projection verbs on passwords and vaultdynamicsecrets
     asserts:
       - contains:
           path: rules
@@ -319,6 +370,17 @@ tests:
               - generators.external-secrets.io
             resources:
               - passwords
+            verbs:
+              - create
+              - delete
+              - get
+              - patch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - generators.external-secrets.io
+            resources:
               - vaultdynamicsecrets
             verbs:
               - create
@@ -326,7 +388,6 @@ tests:
               - get
               - list
               - patch
-              - update
               - watch
 
   # The dedicated OpenBao instance needs a Role/RoleBinding pair for the
@@ -435,7 +496,6 @@ tests:
             resources:
               - externalsecrets
               - pushsecrets
-              - secretstores
             verbs:
               - create
               - delete
@@ -443,6 +503,20 @@ tests:
               - list
               - patch
               - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - secretstores
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
               - watch
 
   - it: should grant read-only on clustersecretstores

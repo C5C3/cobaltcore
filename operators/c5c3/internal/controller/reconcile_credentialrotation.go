@@ -43,8 +43,8 @@ type CredentialRotationReconciler struct {
 	Recorder record.EventRecorder
 }
 
-// +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations/status,verbs=get;update
 // +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices,verbs=get;list;watch
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;users,verbs=get;list;watch;update;patch

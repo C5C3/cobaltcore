@@ -26,7 +26,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - ''
   resources:
   - secrets
-  - serviceaccounts
   verbs:
   - create
   - delete
@@ -34,6 +33,17 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ''
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
   - watch
 - apiGroups:
   - ''
@@ -58,20 +68,21 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - c5c3.io
   resources:
   - controlplanes
-  - credentialrotations
-  - keystoneservices
+  - keystoneapplicationcredentials
+  - keystonecatalogentries
+  - keystoneprojects
+  - keystoneroleassignments
+  - keystoneusers
+  - mariadbdatabases
+  - rabbitmqvhosts
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -79,9 +90,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   resources:
   - controlplanes/finalizers
   - keystoneapplicationcredentials/finalizers
-  - keystonecatalogentries/finalizers
-  - keystoneprojects/finalizers
-  - keystoneroleassignments/finalizers
   - keystoneservices/finalizers
   - keystoneusers/finalizers
   - mariadbdatabases/finalizers
@@ -103,32 +111,27 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - rabbitmqvhosts/status
   verbs:
   - get
-  - patch
   - update
 - apiGroups:
   - c5c3.io
   resources:
-  - keystoneapplicationcredentials
-  - keystonecatalogentries
-  - keystoneprojects
-  - keystoneroleassignments
-  - keystoneusers
-  - mariadbdatabases
-  - rabbitmqvhosts
-  verbs:
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - c5c3.io
-  resources:
-  - secretaggregates
+  - credentialrotations
   - sizingprofiles
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - c5c3.io
+  resources:
+  - keystoneservices
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - cert-manager.io
@@ -139,7 +142,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -154,7 +156,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - discovery.k8s.io
@@ -175,7 +176,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   resources:
   - externalsecrets
   - pushsecrets
-  - secretstores
   verbs:
   - create
   - delete
@@ -185,9 +185,28 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - update
   - watch
 - apiGroups:
+  - external-secrets.io
+  resources:
+  - secretstores
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
   - generators.external-secrets.io
   resources:
   - passwords
+  verbs:
+  - create
+  - delete
+  - get
+  - patch
+- apiGroups:
+  - generators.external-secrets.io
+  resources:
   - vaultdynamicsecrets
   verbs:
   - create
@@ -195,7 +214,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - glance.openstack.c5c3.io
@@ -208,7 +226,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - horizon.openstack.c5c3.io
@@ -219,20 +236,28 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
   - k8s.mariadb.com
   resources:
   - databases
-  - mariadbs
   verbs:
   - create
   - delete
   - get
   - list
   - patch
+  - watch
+- apiGroups:
+  - k8s.mariadb.com
+  resources:
+  - mariadbs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - update
   - watch
 - apiGroups:
@@ -253,7 +278,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - memcached.c5c3.io
@@ -264,7 +288,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -285,7 +308,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - nova.openstack.c5c3.io
@@ -305,20 +327,27 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - openbao.org
   resources:
   - openbaoclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - openbao.org
+  resources:
   - openbaotenants
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - openstack.k-orc.cloud
@@ -326,10 +355,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - applicationcredentials
   - domains
   - endpoints
-  - projects
   - regions
-  - roleassignments
-  - roles
   - services
   - users
   verbs:
@@ -355,6 +381,19 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   verbs:
   - patch
 - apiGroups:
+  - openstack.k-orc.cloud
+  resources:
+  - projects
+  - roleassignments
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
   - ovn.openstack.c5c3.io
   resources:
   - ovncentrals
@@ -372,13 +411,11 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - rabbitmq.com
   resources:
   - permissions
-  - rabbitmqclusters
   - users
   - vhosts
   verbs:
@@ -387,6 +424,16 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
+  - watch
+- apiGroups:
+  - rabbitmq.com
+  resources:
+  - rabbitmqclusters
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - update
   - watch
 - apiGroups:

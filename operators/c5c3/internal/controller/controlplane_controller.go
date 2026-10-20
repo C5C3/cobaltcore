@@ -272,14 +272,12 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 	openbaov1alpha1.GroupVersion.WithKind("OpenBaoCluster"),
 }
 
-// +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_korc.go:368 (reconcileKORC) to update controlplanes/finalizers.
 // +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes/finalizers,verbs=update
-// +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations/status,verbs=get;update;patch
-// The ControlPlane reconciler only observes SecretAggregate CRs; it never
-// creates or mutates them, so the rule is intentionally read-only.
-// +kubebuilder:rbac:groups=c5c3.io,resources=secretaggregates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations,verbs=get;list;watch
+// +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations/status,verbs=get;update
 // The ControlPlane resolves its sizing from the SizingProfile
 // spec.sizing.profileRef names and watches the kind, so an edit of a profile
 // reaches every ControlPlane that references it. The ControlPlane and
@@ -300,50 +298,66 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // to the ControlPlane reconciler, which projects one registration per built-in
 // service, resets foreign spec fields on one, and sweeps it on the deletion
 // opt-in.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1678 (deleteProjectedRegistrations) to delete keystoneservices.
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices,verbs=create;update;patch;delete
 // Projected and Owned by reconcileInfrastructure.
-// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1541 (sweepExternalNamespaceResidue) to delete mariadbs.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_infrastructure.go:771 (ensureMariaDB) to update mariadbs.
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;delete
 // Projected and Owned by reconcileInfrastructure (resolved via the cluster
 // RESTMapper at runtime; no Go scheme registration required).
-// +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch;create;update;delete
 // Projected and Owned by reconcileInfrastructure for spec.infrastructure.messaging
 // (resolved via the cluster RESTMapper at runtime; no Go scheme registration
 // required). The watch is registered only when the CRD is served.
-// +kubebuilder:rbac:groups=rabbitmq.com,resources=rabbitmqclusters,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_infrastructure.go:1077 (ensureRabbitMQ) to update rabbitmqclusters.
+// +kubebuilder:rbac:groups=rabbitmq.com,resources=rabbitmqclusters,verbs=get;list;watch;create;update;delete
 // The ControlPlane reconciler projects and Owns a Keystone child.
-// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;patch;delete
 // READ-ONLY: the ControlPlane reconciler watches the federation/domain backends
 // attached to its Keystone child to project the Horizon websso choices and the
 // Keystone trusted_dashboard. The backends themselves are authored by the
 // operator and reconciled by the keystone-operator, never written here.
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends,verbs=get;list;watch
 // The ControlPlane reconciler projects and Owns a Horizon child.
-// +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_horizon.go:541 (deleteOrphanedHorizon) to delete horizons.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_horizon.go:209 (reconcileHorizon) to update horizons.
+// +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;delete
 // glancebackends, glances:
 // The ControlPlane reconciler projects and Owns a Glance child plus one
 // GlanceBackend child per services.glance.backends entry. Both are
-// operator-written children, so both get full verbs.
-// +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glances,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=get;list;watch;create;update;patch;delete
+// operator-written children, so both get the verbs the projection writes with.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_glance.go:456 (deleteOrphanedGlance) to delete glances.
+// +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glances,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_glance.go:566 (reconcileGlanceBackends) to delete glancebackends.
+// +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=get;list;watch;create;patch;delete
 // The ControlPlane reconciler projects and Owns a Placement child. Placement has
 // no satellite kind, so placements is the single operator-written child kind.
-// +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_placement.go:404 (deleteOrphanedPlacement) to delete placements.
+// +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements,verbs=get;list;watch;create;patch;delete
 // barbicans, barbicansecretstores:
 // The ControlPlane reconciler projects and Owns a Barbican child plus the
 // BarbicanSecretStore that points it at its secret backend. Both are
-// operator-written children, so both get full verbs.
-// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=get;list;watch;create;update;patch;delete
+// operator-written children, so both get the verbs the projection writes with.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican.go:739 (deleteOrphanedBarbican) to delete barbicans.
+// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican.go:652 (reconcileBarbicanSecretStore) to delete barbicansecretstores.
+// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=get;list;watch;create;patch;delete
 // The ControlPlane reconciler projects and Owns a Neutron child, the network
 // service the OVN control plane below carries the logical model for.
-// +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutrons,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_neutron.go:601 (deleteOrphanedNeutron) to delete neutrons.
+// +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutrons,verbs=get;list;watch;create;patch;delete
 // cinders, cinderbackends, cinderbackupbackends:
 // The ControlPlane reconciler projects and Owns a Cinder child plus one
 // CinderBackend per services.cinder.backends entry and one CinderBackupBackend
 // for services.cinder.backupBackend. All three are operator-written children, so
-// all three get full verbs.
-// +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinders;cinderbackends;cinderbackupbackends,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas,verbs=get;list;watch;create;update;patch;delete
+// all three get the verbs the projection writes with.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_cinder.go:283 (reconcileCinderBackends) to delete cinderbackends.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_cinder.go:323 (reconcileCinderBackupBackend) to delete cinderbackupbackends.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_cinder.go:790 (deleteOrphanedCinder) to delete cinders.
+// +kubebuilder:rbac:groups=cinder.openstack.c5c3.io,resources=cinders;cinderbackends;cinderbackupbackends,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_nova.go:936 (deleteOrphanedNova) to delete novas.
+// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas,verbs=get;list;watch;create;patch;delete
 // The NovaComputes of a projected Nova are user-authored and only READ, to find
 // the clusters the compute contract has to be mirrored to: read-only verbs.
 // +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novacomputes,verbs=get;list;watch
@@ -358,7 +372,11 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // A managed Barbican secret store gets a dedicated OpenBao instance: the
 // OpenBaoCluster the store reads and writes through, and the OpenBaoTenant that
 // admits the Barbican service namespace to it.
-// +kubebuilder:rbac:groups=openbao.org,resources=openbaoclusters;openbaotenants,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican.go:766 (deleteOrphanedBarbican) to delete openbaoclusters.
+// +kubebuilder:rbac:groups=openbao.org,resources=openbaoclusters,verbs=get;list;watch;create;update;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican_openbao.go:264 (ensureBarbicanOpenBaoTenant) to create openbaotenants.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican.go:828 (deleteOwnedEnsembleObject) to delete openbaotenants.
+// +kubebuilder:rbac:groups=openbao.org,resources=openbaotenants,verbs=get;list;watch;create;delete
 // rolebindings, roles:
 // The dedicated OpenBao instance comes with its own RBAC: the Role/RoleBinding
 // pair that lets the barbican-operator mint a bound token for the instance's
@@ -382,11 +400,15 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // deleteBarbicanEnsembleIn both re-check isControlPlaneChild against the live
 // object before deleting. Removing the grant entirely needs the binding to move
 // to the openbao-operator, which already creates the ServiceAccount it binds.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1208 (deleteBarbicanAuthDelegatorBinding) to delete clusterrolebindings.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican.go:828 (deleteOwnedEnsembleObject) to delete rolebindings and roles.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican.go:818 (deleteOwnedEnsembleObject) to get rolebindings and roles.
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterrolebindings,verbs=get;create;patch;delete
 // Kubernetes refuses a binding to a ClusterRole whose permissions the author
 // does not hold. bind on that single name is the narrow exception that lets the
 // reconciler grant the OpenBao instance its TokenReview without holding
 // TokenReview itself; no other ClusterRole is bindable.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican_openbao.go:195 (ensureBarbicanOpenBao) to bind clusterroles.
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames="system:auth-delegator",verbs=bind
 // domains, projects, roles, roleassignments, regions. Minted/owned by
 // reconcileKORC and reconcileCatalog; users + domains are imported (unmanaged) so
@@ -398,7 +420,15 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // patch on the nine status subresources is what unlatchKORCTransportErrors
 // (korc_unlatch.go) uses to clear a latched transport error from a child's
 // Progressing condition. No other status verb is granted.
-// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments;regions,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_credentialrotation.go:520 (clearPasswordHashAnnotation) to update applicationcredentials.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:2228 (forceRemoveKORCFinalizers) to update domains, endpoints, regions and services.
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;regions,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=projects;roles;roleassignments,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_korc.go:389 (reconcileKORC) to patch applicationcredentials/status.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_korc.go:232 (reconcileKORC) to patch domains/status.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_catalog.go:195 (reconcileCatalog) to patch endpoints/status, regions/status and services/status.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/registration_projection.go:819 (applyAccountRole) to patch roleassignments/status and roles/status.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/keystoneuser_provision.go:165 (provisionUser) to patch users/status.
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials/status;services/status;endpoints/status;users/status;domains/status;projects/status;roles/status;roleassignments/status;regions/status,verbs=patch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // Required so the operator can observe the shared cluster store's Ready condition
@@ -408,20 +438,24 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // The operator PROVISIONS the per-tenant namespaced SecretStore (openbao-tenant-store)
 // it defaults every ControlPlane onto (reconcileESOTenantStore), and observes its
 // Ready condition, so it needs the write verbs in addition to the read verbs.
-// +kubebuilder:rbac:groups=external-secrets.io,resources=secretstores,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=external-secrets.io,resources=secretstores,verbs=get;list;watch;create;patch;delete
 // Required so reconcileDBCredentials can project the per-ControlPlane
 // VaultDynamicSecret generator that issues short-lived DB credentials in
 // Dynamic credentials mode, and so reconcileNovaMetadataSecret can project the
 // Password generator that mints the metadata shared secret.
-// +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets;passwords,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=generators.external-secrets.io,resources=vaultdynamicsecrets,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_nova_metadata_secret.go:275 (deleteGeneratedNovaMetadataSecret) to delete passwords.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1530 (sweepExternalNamespaceResidue) to get passwords.
+// +kubebuilder:rbac:groups=generators.external-secrets.io,resources=passwords,verbs=get;create;patch;delete
 // Required so reconcileDBCredentials can project the per-ControlPlane mTLS client
 // Certificate the VaultDynamicSecret generator presents to the OpenBao listener.
-// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_dbcredentials.go:747 (ensureDynamicDBCredentialObjects) to update certificates.
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // Required so reconcileDBCredentials can project (and clean up on a Static flip)
 // the per-ControlPlane ServiceAccount whose token the VaultDynamicSecret
 // generator presents to OpenBao. delete is used by the Dynamic->Static teardown.
-// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;patch;delete
 // Required so the reconciler may author the TokenRequest Role that lets the
 // barbican-operator mint a bound token for a dedicated OpenBao instance:
 // Kubernetes only lets an author grant permissions it holds itself.
@@ -448,6 +482,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // kubernetes.io/service-account-token Secret for any account and read the token
 // out of it. Removing it for real needs the grant to be authored by the
 // openbao-operator, which owns the instance the account belongs to.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_barbican_openbao.go:198 (ensureBarbicanOpenBao) to create serviceaccounts/token.
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts/token,verbs=create
 // Read-only on the single well-known EndpointSlice default/kubernetes, which
 // carries the addresses the API server answers on. A dedicated Barbican secret
