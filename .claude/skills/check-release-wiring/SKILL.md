@@ -36,7 +36,7 @@ legs load `<svc>:<release>` for every release `hack/ci-service-image-releases.sh
 prints, and the Renovate globs cover `releases/**`) — but several touch
 points are enumerated by hand and drift silently. The repo carries eight
 services (`source-refs.yaml` keys), six Tempest-covered services (twelve legs),
-and seven `release-upgrade` suites; every table row below applies per service.
+and eight `release-upgrade` suites; every table row below applies per service.
 
 | Layer | Where it lives | Source of truth |
 |---|---|---|
@@ -50,7 +50,7 @@ and seven `release-upgrade` suites; every table row below applies per service.
 | Default-release references | `deploy/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, every `${VAR:-YYYY.N}` fallback in `hack/*.sh` (three `RELEASE:-`, `IMAGE_TAG:-` in `perf-reconcile-benchmark.sh`), the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks in `hack/ci-run-tempest.sh`, the two `ghcr.io/c5c3/nova:<v>` refs of `deploy/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of `deploy/lab/metal-stack/controlplane/controlplane-lab.yaml` and `deploy/lab/metal-stack/hypervisor/compute.yaml`, image tags in `.github/workflows/ci.yaml` | the `releases/` directory set |
 | Release floor | `release.MinimumSupported` in `internal/common/release/release.go` and the `*-openstackrelease-below-floor.yaml` / `*-image-tag-below-floor.yaml` rejection fixtures of the `invalid-*` corpora | the oldest `releases/<version>/` directory |
 | Renovate | `tests/unit/renovate/*_test.sh` probes and the per-release `packageRules` in `renovate.json` (the `neutron-tempest-plugin` holds) | the `releases/` directory set |
-| Upgrade-path e2e | `tests/e2e/<svc>/release-upgrade/` (barbican, cinder, glance, keystone, neutron, nova, placement), `tests/e2e/keystone/upgrade-flow/`, `upgrade-flow/02-patch-skip-level.yaml`, `tests/e2e/keystone/upgrade-abort/` | `release.IsSequentialUpgrade` and the sorted release list |
+| Upgrade-path e2e | `tests/e2e/<svc>/release-upgrade/` (barbican, cinder, glance, horizon, keystone, neutron, nova, placement), `tests/e2e/keystone/upgrade-flow/`, `upgrade-flow/02-patch-skip-level.yaml`, `tests/e2e/keystone/upgrade-abort/` | `release.IsSequentialUpgrade` and the sorted release list |
 | Version pattern | the `+kubebuilder:validation:Pattern` on every `OpenStackRelease` field (ControlPlane and seven service CRDs), `controlPlaneReleaseRegexp`, the `release.ParseRelease` minor guard, 16 generated CRD YAMLs | the three-layer agreement documented at `operators/c5c3/api/v1alpha1/controlplane_types.go` |
 
 The authoritative gates are `tests/container-images/verify_release_config.sh`,
@@ -137,10 +137,11 @@ inventory. Interpret:
   newest sequential transition: `from` is the `tag:` of the service's own
   `NN-<svc>-cr.yaml` (nova: `04-nova-cr.yaml`, neutron: `02-neutron-cr.yaml`),
   `to` the `tag:` of `NN-patch-upgrade.yaml`; `openStackRelease` agrees
-  with the tag in both, and helper CRs and assertions name only `from` or
-  `to`. The skip-level target must be neither wired nor the sequential
-  successor of `to`. `upgrade-abort` must start at a wired release and
-  wedge on its sequential successor. Its stuck patch pulls from a
+  with the tag in both where the kind has one (Horizon has none), and
+  helper CRs and assertions name only `from` or `to`. The skip-level
+  target must be neither wired nor the sequential successor of `to`.
+  `upgrade-abort` must start at a wired release and wedge on its
+  sequential successor. Its stuck patch pulls from a
   registry under the reserved `.invalid` TLD, so the wedge holds whatever
   releases exist, and its abort patch must restore the start repository
   and tag. A stuck patch on the real repository (the old shape) wedges

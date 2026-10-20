@@ -26,7 +26,7 @@ checklist, and where it and this list disagree, the inventory and
 ## What auto-extends and what does not
 
 The repo carries eight services (`source-refs.yaml` keys), six
-Tempest-covered services (twelve legs across two releases), seven
+Tempest-covered services (twelve legs across two releases), eight
 `release-upgrade` suites, and seven operators with option catalogs. Every
 hand-maintained row applies once per service.
 
@@ -43,7 +43,7 @@ hand-maintained row applies once per service.
 | Service patches | `patches/<svc>/<version>/*.patch` (cinder, glance today) | **no** — a missing dir builds the service unpatched, silently |
 | Tempest config | `tests/tempest/<svc>-<slug>/` for every service in `ALL_TEMPEST_SERVICES` of `hack/ci-generate-tempest-matrix.sh` (keystone, glance, barbican, neutron, cinder, nova) — the generator **hard-fails the whole pipeline** when any one is missing | **no** — six multi-CR directories |
 | Per-release e2e variant | `tests/e2e/<svc>/basic-deployment-<slug>/` for each of the eight services | **no** — hand-cloned, hard-coded names and image refs |
-| Upgrade-path e2e | seven `release-upgrade/`, keystone `upgrade-flow/` and `upgrade-abort/` | **no** — must move to the newest transition |
+| Upgrade-path e2e | eight `release-upgrade/`, keystone `upgrade-flow/` and `upgrade-abort/` | **no** — must move to the newest transition |
 | Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` and the ci.yaml `e2e-multicluster` preloads | **no** — one pinned release; bumped only when that pin moves |
 | Default-release references | kind ControlPlane, `deploy-infra` preload, `${VAR:-YYYY.N}` fallbacks in `hack/`, the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks of `hack/ci-run-tempest.sh`, the nova refs of `deploy/kind/fake-compute/fake-compute.yaml`, the metal-stack lab manifests, `ci.yaml` image tags, the eight plain `basic-deployment` suites | **no** — a decision, not a mechanical bump |
 
@@ -190,7 +190,10 @@ Copy `releases/<newest>/` as the template and adjust:
   service's own `NN-<svc>-cr.yaml` (`tag:` + `openStackRelease:`), the
   `NN-patch-upgrade.yaml` target, helper CRs pinned at the target
   (nova's Keystone and Placement), the `installedRelease` /
-  `ghcr.io/c5c3/<svc>:<v>` assertions in `chainsaw-test.yaml`, and any
+  `ghcr.io/c5c3/<svc>:<v>` assertions in `chainsaw-test.yaml`, the
+  Horizon `KEY_PREFIX` literals of `release-upgrade/` and
+  `basic-deployment*/`, recomputed as
+  `docs/contributing/adding-a-new-release.md` shows, and any
   assertion that encodes a launch mode of the start release once the
   start moves past that boundary (glance asserted the eventlet command
   below 2026.1). `tests/e2e/nova/release-upgrade/01-catalog-setup-job.yaml`
