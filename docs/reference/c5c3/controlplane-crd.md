@@ -2685,7 +2685,7 @@ the kind/name and applies it.
 | `conditions` | `[]metav1.Condition` | Latest available observations of the control-plane state. Each condition carries an `observedGeneration`. See [Status Conditions](#status-conditions). |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
-| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, `horizon`, `glance`, `placement`, `barbican`, `neutron`, `cinder`, then `nova` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` / `CinderReady` / `NovaReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
+| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, `horizon`, `glance`, `placement`, `barbican`, `neutron`, `cinder`, then `nova` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` / `NeutronReady` / `CinderReady` / `NovaReady` condition. Its `release` is the release the child reports installed: the child's `status.installedRelease` for the seven database services, and for Horizon the image tag of the generation the child last reported `Ready` for. It stays empty until the child reports one and for a Keystone in External mode, and a failed child read keeps the value written before. An unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
 | `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
 | `namespaceAssignments` | [`[]NamespaceAssignmentStatus`](#namespaceassignmentstatus) | What each `spec.namespaceAssignments` entry resolves to, one entry per spec entry and in spec order. A `listType=atomic` list, empty when the spec assigns no namespace. See [NamespaceAssignmentsReady](#namespaceassignmentsready). |
 
@@ -2706,7 +2706,13 @@ Reports the observed readiness of a single projected service CR.
 | --- | --- | --- | --- |
 | `name` | `string` | Yes | Service name (e.g. `keystone`); keys the `listType=map` `services` list. |
 | `ready` | `bool` | Yes | Whether the projected service CR is Ready. |
-| `release` | `string` | No | The OpenStack release the service currently reports installed. |
+| `release` | `string` | No | The OpenStack release the service currently reports installed. For Keystone, Glance, Placement, Barbican, Neutron, Cinder and Nova it is the child's `status.installedRelease`, which the service operator writes once that release's migrations completed. Horizon has no installed release, so its entry reports the `spec.image.tag` of the generation the Horizon child last reported `Ready` for. Empty until the child reports a release, and empty for a Keystone in External mode, which has no child. A child read that fails with anything but NotFound keeps the release the entry reported before. |
+
+> **Upgrade note.** Operators before this release wrote `spec.openStackRelease`
+> into `release`. From this release on it reports the release each child has
+> installed: it is empty until the child reports one, it lags the spec during a
+> release upgrade, and it stays empty for a Keystone in External mode. Read
+> `spec.openStackRelease` for the target release.
 
 ### AdminApplicationCredentialStatus
 
