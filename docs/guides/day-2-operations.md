@@ -143,7 +143,7 @@ When all four complete successfully:
 
 - The child's `.status.installedRelease` is set to the new tag
 - `.status.targetRelease` and `.status.upgradePhase` are cleared
-- The ControlPlane's `.status.services[?(@.name=='keystone')].release` reports the new release
+- The ControlPlane's `.status.services[?(@.name=='keystone')].release` reports the new release. The entry reads the child's `installedRelease`, so it moves only once the child has finished the upgrade
 - A `UpgradeComplete` event is emitted on the child
 
 The figure shows the same four phases with their failure states. Its abort
