@@ -66,7 +66,7 @@ tests:
               - update
               - watch
 
-  - it: should grant full CRUD on coordination leases
+  - it: should grant the leader-election verbs on leases
     set:
       rbac:
         namespaceScoped: true
@@ -82,9 +82,5 @@ tests:
               - leases
             verbs:
               - get
-              - list
-              - watch
               - create
               - update
-              - patch
-              - delete

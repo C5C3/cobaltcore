@@ -196,7 +196,7 @@ tests:
               - list
               - watch
 
-  - it: should grant full CRUD on leases for leader election
+  - it: should grant the leader-election verbs on leases
     asserts:
       - contains:
           path: rules
@@ -207,12 +207,8 @@ tests:
               - leases
             verbs:
               - get
-              - list
-              - watch
               - create
               - update
-              - patch
-              - delete
 
   # ClusterRole must not render in namespace-scoped mode.
   - it: should not render ClusterRole when rbac.namespaceScoped is true
@@ -254,9 +250,5 @@ tests:
               - leases
             verbs:
               - get
-              - list
-              - watch
               - create
               - update
-              - patch
-              - delete

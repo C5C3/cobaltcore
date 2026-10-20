@@ -50,10 +50,15 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# The verbs client-go's lease lock issues (resourcelock.LeaseLock in
+# k8s.io/client-go/tools/leaderelection/resourcelock/leaselock.go): it gets,
+# creates and updates the election lease, and nothing else. The RBAC usage
+# audit (docs/reference/testing/rbac-usage-audit.md) recorded no other verb on
+# leases for any operator.
 LEADER_ELECTION_RULE = {
     "apiGroups": ["coordination.k8s.io"],
     "resources": ["leases"],
-    "verbs": ["get", "list", "watch", "create", "update", "patch", "delete"],
+    "verbs": ["get", "create", "update"],
 }
 
 

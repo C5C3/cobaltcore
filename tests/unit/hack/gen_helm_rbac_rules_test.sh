@@ -127,15 +127,11 @@ $(webhook_role "$PRIORITYCLASS_GET")"
   - leases
   verbs:
   - get
-  - list
-  - watch
   - create
   - update
-  - patch
-  - delete
 {{- end }}'
   assert_eq "the manager template ends with the leases rule" \
-    "$tail_want" "$(tail -n 13 "$TMP/$TEMPLATES/_rbac-rules.tpl")"
+    "$tail_want" "$(tail -n 9 "$TMP/$TEMPLATES/_rbac-rules.tpl")"
   assert_contains "the manager rules keep the secrets grant" \
     "$(define_body "$TMP/$TEMPLATES/_rbac-rules.tpl")" "- secrets"
   rm -rf "$TMP"

@@ -198,10 +198,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - leases
   verbs:
   - get
-  - list
-  - watch
   - create
   - update
-  - patch
-  - delete
 {{- end }}
