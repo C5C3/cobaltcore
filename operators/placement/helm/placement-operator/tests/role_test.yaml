@@ -43,7 +43,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should grant full CRUD on placements
+  - it: should grant get, list, watch, update and patch on placements
     set:
       rbac:
         namespaceScoped: true
@@ -58,8 +58,6 @@ tests:
             resources:
               - placements
             verbs:
-              - create
-              - delete
               - get
               - list
               - patch
