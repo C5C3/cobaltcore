@@ -2653,13 +2653,14 @@ jobs:
   # applies that budget to every script operation, so try, catch and finally each
   # get one, and the cleanup runs after all three. Each of the four therefore
   # pins its catch and its finally explicitly, which puts the ceilings at
-  # 65+5+5+5+2+3 = 85m (full-chain, where the compute leg added a third finally
-  # script and lengthened the exec budget), 40+5+20+15 = 80m (foreign-namespace),
+  # 100+5+5+5+2+3 = 120m (full-chain, where the compute leg added a third
+  # finally script and the release hop lengthened the exec budget),
+  # 40+5+20+15 = 80m (foreign-namespace),
   # 70+5+20+15 = 110m (keystone-user) and 50+5+20+15 = 90m (own-namespace).
   # Unpinned, catch and finally would inherit the exec budget and the
   # own-namespace ceiling alone would be 165m.
   #
-  # timeout-minutes has to outlast the bring-up (kind create, twenty kind
+  # timeout-minutes has to outlast the bring-up (kind create, twenty-eight kind
   # loads, setup-e2e-infra, K-ORC and ten operator deploys) plus the suites
   # that pass plus the full ceiling of the one that stalls, or the job wall
   # arrives before a suite's own timeout does: chainsaw is killed outright, its
@@ -2684,7 +2685,10 @@ jobs:
   # 40+85+25+45+100 = 295m. Its database leg orders, refreshes and tears down
   # a MariaDBDatabase, which raised its exec budget 60m -> 70m, its ceiling to
   # 110m and its pass estimate to ~55m, so the wall moved to 320m:
-  # 40+85+25+55+110 = 315m. The bring-up and the two pass terms are the
+  # 40+85+25+55+110 = 315m. Link 8 of the full-chain suite raised its exec
+  # budget from 65m to 100m and its ceiling to 120m, and the bring-up grew
+  # eight image loads (about 5 minutes), so the wall moved to 360m:
+  # 45+120+25+55+110 = 355m. The bring-up and the two pass terms are the
   # estimates in that sum —
   # confirm them against the first green run of this leg and re-derive if one
   # overruns. The worst case holds the runner for over five hours, which
@@ -2704,7 +2708,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 320
+    timeout-minutes: 360
     continue-on-error: false
     permissions:
       contents: read
@@ -2730,7 +2734,9 @@ jobs:
       # Pull the pre-built dev operator images plus the service images the
       # projected children run (the OVN daemon image among them, which the
       # ovn-operator rolls out for the standalone central the suite applies) and
-      # the OpenStack-client (tempest) image the verify Job uses.
+      # the OpenStack-client (tempest) image the verify Job uses. The full-chain
+      # suite moves the plane to the release of its 08-patch-upgrade.yaml, so
+      # the eight service images load at that release as well.
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
@@ -2754,6 +2760,14 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/neutron:2026.1
             ${{ env.IMAGE_PREFIX }}/cinder:2026.1
             ${{ env.IMAGE_PREFIX }}/nova:2026.1
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.2
+            ${{ env.IMAGE_PREFIX }}/horizon:2026.2
+            ${{ env.IMAGE_PREFIX }}/glance:2026.2
+            ${{ env.IMAGE_PREFIX }}/placement:2026.2
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.2
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.2
+            ${{ env.IMAGE_PREFIX }}/cinder:2026.2
+            ${{ env.IMAGE_PREFIX }}/nova:2026.2
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
             ${{ env.IMAGE_PREFIX }}/tempest:2026.1
       - name: Load images into kind
@@ -2776,6 +2790,14 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
       # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and

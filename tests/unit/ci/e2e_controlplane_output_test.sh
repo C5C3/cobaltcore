@@ -39,6 +39,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -278,6 +280,35 @@ test_job_runs_all_four_suites() {
     "4" "$(grep -c 'E2E_REQUIRE_CONTROLPLANE_STACK: "true"' <<<"$block")"
 }
 
+test_job_loads_both_ends_of_the_release_hop() {
+  echo "Test: the job loads every service image at both ends of the full chain's release hop"
+
+  local suite="$PROJECT_ROOT/tests/e2e/c5c3/full-controlplane-keystone"
+  local from to pulls loads release svc ref
+  # The suite reads its two releases with the same awk, so a release move that
+  # edits the fixtures and not the job fails here.
+  from="$(awk -F'"' '/^[[:space:]]*openStackRelease:/ { print $2; exit }' "$suite/00-controlplane-cr.yaml")"
+  to="$(awk -F'"' '/^[[:space:]]*openStackRelease:/ { print $2; exit }' "$suite/08-patch-upgrade.yaml")"
+  assert_not_empty "00-controlplane-cr.yaml names the start release" "$from"
+  assert_not_empty "08-patch-upgrade.yaml names the target release" "$to"
+
+  # Each step is matched on its own: a kind load line carries the same image
+  # ref as its pull line, so a whole-job match would miss a deleted pull.
+  pulls="$(job_step e2e-controlplane "Load E2E images")"
+  loads="$(job_step e2e-controlplane "Load images into kind")"
+  assert_not_empty "the job has a Load E2E images step" "$pulls"
+  assert_not_empty "the job has a Load images into kind step" "$loads"
+  for release in "$from" "$to"; do
+    for svc in keystone horizon glance placement barbican neutron cinder nova; do
+      ref="\${{ env.IMAGE_PREFIX }}/${svc}:${release}"
+      assert_eq "the job pulls ${svc}:${release}" "1" \
+        "$(awk -v ref="$ref" '{ sub(/^[[:space:]]+/, "") } $0 == ref { n++ } END { print n + 0 }' <<<"$pulls")"
+      assert_contains "the job loads ${svc}:${release} into kind" \
+        "$loads" "kind load docker-image ${ref} --name"
+    done
+  done
+}
+
 test_autoscaling_job_runs_its_suite() {
   echo "Test: the autoscaling job runs its suite on a cluster with metrics-server"
 
@@ -305,6 +336,7 @@ test_resolve_script_errors_without_operators
 test_ci_yaml_wires_all_four_sides
 test_filter_covers_the_machinery_and_the_suites
 test_job_runs_all_four_suites
+test_job_loads_both_ends_of_the_release_hop
 test_autoscaling_job_runs_its_suite
 
 echo ""
