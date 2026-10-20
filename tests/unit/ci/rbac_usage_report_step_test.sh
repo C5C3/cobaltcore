@@ -87,11 +87,17 @@ test_e2e_operator() {
 }
 
 test_e2e_controlplane() {
-  check_step e2e-controlplane "c5c3" "rbac-usage-c5c3"
+  check_step e2e-controlplane "c5c3" "rbac-usage-e2e-controlplane"
 }
 
 test_only_the_audited_jobs_report() {
   echo "Test: only the two jobs on the audited cluster run the report"
+
+  # The c5c3 entry of the e2e-operator matrix already uploads rbac-usage-c5c3.
+  # upload-artifact keeps a second artifact of the same name beside it, and
+  # gh run download --name then returns only one of them.
+  assert_not_contains "e2e-controlplane does not reuse a matrix artifact name" \
+    "$(job_step e2e-controlplane "Upload RBAC usage report")" "name: rbac-usage-c5c3"
 
   assert_eq "two steps run hack/ci-rbac-usage-report.sh" "2" \
     "$(grep -c 'run: hack/ci-rbac-usage-report.sh$' "$CI_YAML" | tr -d ' ')"

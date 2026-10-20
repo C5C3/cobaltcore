@@ -122,18 +122,19 @@ oldest events, such as an informer's first `list`, may then be gone.
 | Job | `OPERATOR` | Artifact |
 | --- | --- | --- |
 | `e2e-operator` | the matrix operator | `rbac-usage-<operator>`, `rbac-usage-nova-<shard>` on a nova shard |
-| `e2e-controlplane` | `c5c3` | `rbac-usage-c5c3` |
+| `e2e-controlplane` | `c5c3` | `rbac-usage-e2e-controlplane` |
 
 Each artifact holds `audit.jsonl` (the operator's events) and
-`<operator>.json` (the findings). The c5c3-operator appears in two artifacts
-and the nova-operator in one per shard. A verb used in any of them counts as
-used, so diff them together:
+`<operator>.json` (the findings). The c5c3-operator appears in two artifacts,
+`rbac-usage-c5c3` and `rbac-usage-e2e-controlplane`, and the nova-operator in
+one per shard. A verb used in any of them counts as used, so diff them
+together:
 
 ```bash
 gh run download <run-id> --pattern 'rbac-usage-*' --dir _output/rbac-usage-run
-python3 hack/audit-rbac-usage.py --operator nova \
-  --audit-log _output/rbac-usage-run/rbac-usage-nova-1/audit.jsonl \
-  --audit-log _output/rbac-usage-run/rbac-usage-nova-2/audit.jsonl
+python3 hack/audit-rbac-usage.py --operator c5c3 \
+  --audit-log _output/rbac-usage-run/rbac-usage-c5c3/audit.jsonl \
+  --audit-log _output/rbac-usage-run/rbac-usage-e2e-controlplane/audit.jsonl
 ```
 
 ## Running it locally
