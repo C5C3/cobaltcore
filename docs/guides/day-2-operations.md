@@ -354,11 +354,13 @@ scheduled rotation during an incident without deleting the CronJob, and
 
 ## Tested by
 
-Scale, release upgrade (Keystone and Horizon), image upgrade, zero-downtime
-rollout, manual Fernet rotation, and the release floor are each asserted on the
-CI e2e kind cluster by these chainsaw suites:
+Scale, release upgrade (Keystone and Horizon, and all eight children through the
+ControlPlane), image upgrade, zero-downtime rollout, manual Fernet rotation, and
+the release floor are each asserted on the CI e2e kind cluster by these chainsaw
+suites:
 
 ```bash
+chainsaw test --test-dir tests/e2e/c5c3/full-controlplane-keystone
 chainsaw test --test-dir tests/e2e/keystone/release-upgrade
 chainsaw test --test-dir tests/e2e/horizon/release-upgrade
 chainsaw test --test-dir tests/e2e/keystone/image-upgrade
@@ -366,3 +368,6 @@ chainsaw test --test-dir tests/e2e/keystone/rolling-update-zero-downtime
 chainsaw test --test-dir tests/e2e/keystone/fernet-rotation
 chainsaw test --test-dir tests/e2e/c5c3/invalid-cr
 ```
+
+The full-chain suite needs the stack the `e2e-controlplane` job brings up; see
+[ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#running-the-tests).
