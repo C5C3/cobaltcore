@@ -302,8 +302,9 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 	mariadbv1alpha1.GroupVersion.WithKind("Grant"),
 }
 
-// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_deployment.go:167 (reconcileDeployment) to update barbicans/finalizers.
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans/finalizers,verbs=update
 // Users create store CRs; the operator lists and watches them to assemble the
 // aggregate Barbican secret-store configuration and never creates or deletes
@@ -313,22 +314,32 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 // and releases that finalizer again on delete — all plain Updates of the
 // main resource.
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_deployment.go:167 (reconcileDeployment) to delete deployments.
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_deployment.go:211 (reconcileDeployment) to delete services.
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/policy/policy.go:30 (LoadPolicyFromConfigMap) to list and watch configmaps.
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_config.go:147 (reconcileConfig) to delete secrets.
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbicansecretstore_controller.go:845 (mintCredentials) to update secrets.
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // NOTE: create on serviceaccounts/token is deliberately NOT part of this rule
 // set. It is granted per namespace by templates/tokenrequest-rbac.yaml — see the
 // comment there for why it must never reach a ClusterRole.
 // jobs covers the db-sync Job; cronjobs covers the recurring database clean-up
 // the DBClean sub-reconciler projects.
-// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_dbclean.go:182 (reconcileDBClean) to delete cronjobs.
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;patch;delete
 // Required for the operator to observe the referenced MariaDB cluster's
 // Ready condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
 // The database and service-user credentials Secrets are ESO-managed; the
 // operator only reads the ExternalSecrets to attribute a not-synced Secret in
 // SecretsReady messages.
+// Unexercised by the e2e suites; used by internal/common/secrets/secrets.go:68 (WaitForExternalSecret) to list and watch externalsecrets.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch
 // Required so the operator can observe the selected store's Ready condition
 // and reflect upstream secret-backend (OpenBao) outages in SecretsReady. A
@@ -341,18 +352,23 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 // provisioner ServiceAccount, and watches it so an instance turning Available
 // wakes the store.
 // +kubebuilder:rbac:groups=openbao.org,resources=openbaoclusters,verbs=get;list;watch
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
-// Required to create/update/delete HTTPRoutes that expose the Barbican API externally.
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_deployment.go:216 (reconcileDeployment) to delete poddisruptionbudgets.
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_hpa.go:26 (reconcileHPA) to create and patch horizontalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/barbican/internal/controller/barbican_controller.go:814 (SetupWithManager) to list and watch verticalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
+// Required to create, patch and delete HTTPRoutes that expose the Barbican API externally.
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch;delete
 // Required so the operator can observe the Accepted condition set by the
 // upstream Gateway controller and reflect it in HTTPRouteReady.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
 // Required for the webhook to validate that spec.priorityClassName references
 // an existing PriorityClass at admission time.
-// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the Barbican CR. It fetches the
 // CR, drives the finalizer-gated deletion path, ensures the finalizer, then runs
