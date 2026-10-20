@@ -80,3 +80,12 @@ e2e_chaos_matrix_entry() {
     in_block { print }
   '
 }
+
+# workflow_kind_pin <file>
+#
+# Echo the KIND_VERSION the env of the workflow <file> pins, quoted or not.
+# tests/unit/renovate/workflow_pins_custommanager_test.sh holds the pins of
+# ci.yaml and performance.yaml in lockstep through it.
+workflow_kind_pin() {
+  sed -n 's/^[[:space:]]*KIND_VERSION:[[:space:]]*"\{0,1\}\(v[0-9.]*\)"\{0,1\}[[:space:]]*$/\1/p' "$1" | head -1
+}

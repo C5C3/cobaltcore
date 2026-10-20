@@ -798,7 +798,8 @@
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
         "hack/install-test-deps.sh",
-        ".github/workflows/ci.yaml"
+        ".github/workflows/ci.yaml",
+        ".github/workflows/performance.yaml"
       ],
       "matchPackageNames": ["kubernetes-sigs/kind"],
       "matchUpdateTypes": ["major"],
@@ -808,7 +809,8 @@
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
         "hack/install-test-deps.sh",
-        ".github/workflows/ci.yaml"
+        ".github/workflows/ci.yaml",
+        ".github/workflows/performance.yaml"
       ],
       "matchPackageNames": ["kubernetes-sigs/kind"],
       "matchUpdateTypes": ["minor", "patch"],
