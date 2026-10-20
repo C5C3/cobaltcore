@@ -199,10 +199,14 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // No create and no delete: both CR kinds are written by whoever deploys the
 // control plane. The operator reads them, stamps their status and manages their
 // finalizers, and never brings one into being or takes it away.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovncentral_controller.go:345 (Reconcile) to update ovncentrals.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovnchassis_controller.go:249 (Reconcile) to update ovnchassis.
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals;ovnchassis,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/status,verbs=get;update
+// +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_database.go:201 (reconcileRaftDatabase) to update ovncentrals/finalizers.
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/finalizers,verbs=update
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_ovs.go:107 (reconcileOVS) to update ovnchassis/finalizers.
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/finalizers,verbs=update
 // The two inputs the operator reads and never writes: nodes and pods for the
 // addresses the endpoint step publishes to the chassis layer.
@@ -211,25 +215,44 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // from the StatefulSet volumeClaimTemplates. secrets covers the certificate
 // material cert-manager writes and the client-identity copy of a chassis on
 // another cluster than its central.
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims;secrets,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_database.go:201 (reconcileRaftDatabase) to delete configmaps.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_backup.go:214 (reconcileBackup) to delete persistentvolumeclaims.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_relay.go:237 (deleteRelay) to delete services.
+// +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_client_secret.go:151 (writeChassisClientSecret) to create secrets.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_client_secret.go:172 (writeChassisClientSecret) to update secrets.
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_maintenance.go:449 (runMaintenanceJob) to patch events.
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // statefulsets carry the northbound and southbound databases, deployments the
 // northd and relay tiers, daemonsets the per-node chassis pods.
-// +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_ovs.go:107 (reconcileOVS) to delete daemonsets.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_relay.go:234 (deleteRelay) to delete deployments.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_database.go:221 (reconcileRaftDatabase) to delete statefulsets.
+// +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments;daemonsets,verbs=get;list;watch;create;patch;delete
 // jobs covers the chassis maintenance Jobs; cronjobs covers the recurring
 // database backup.
-// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by internal/common/job/job.go:205 (recreateStaleJob) to delete jobs.
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_backup.go:238 (reconcileBackup) to delete cronjobs.
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;patch;delete
 // poddisruptionbudgets covers the budget of each Raft database.
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_database.go:225 (reconcileRaftDatabase) to delete poddisruptionbudgets.
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
 // The operator issues the OVN client and server certificates through
 // cert-manager and reads back the Secrets they write.
-// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/reconcile_relay.go:240 (deleteRelay) to delete certificates.
+// Unexercised by the e2e suites; used by internal/common/tls/tls.go:65 (EnsureCertificate) to update certificates.
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;delete
 // verticalpodautoscalers carry the opt-in VPAs of the databases, northd, the
 // relay and the chassis DaemonSets.
-// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/ovn/internal/controller/ovncentral_controller.go:594 (setupWithOptions) to list and watch verticalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // The validating webhooks look up every priorityClassName the two CR kinds
 // reference, through the uncached API reader that runs as this ServiceAccount.
-// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the OVNCentral CR. It fetches
 // the CR, drives the teardown of a terminating one, ensures the remote-children

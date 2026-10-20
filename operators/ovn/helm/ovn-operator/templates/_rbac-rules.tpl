@@ -10,7 +10,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   resources:
   - configmaps
   - persistentvolumeclaims
-  - secrets
   - services
   verbs:
   - create
@@ -18,7 +17,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - ''
@@ -37,6 +35,16 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - list
   - watch
 - apiGroups:
+  - ''
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
   - apps
   resources:
   - daemonsets
@@ -48,7 +56,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling.k8s.io
@@ -60,20 +67,27 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - batch
   resources:
   - cronjobs
-  - jobs
   verbs:
   - create
   - delete
   - get
   - list
   - patch
-  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - cert-manager.io
@@ -84,7 +98,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -112,7 +125,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - ovnchassis/status
   verbs:
   - get
-  - patch
   - update
 - apiGroups:
   - policy
@@ -124,7 +136,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - scheduling.k8s.io
@@ -132,8 +143,6 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - priorityclasses
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - coordination.k8s.io
   resources:

@@ -143,20 +143,22 @@ type OVNChassisReconciler struct {
 // chassis on another cluster than its central.
 
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals;ovnchassis,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/status,verbs=get;update
+// +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/status,verbs=get;update
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=nodes;pods,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims;secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments;daemonsets,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;delete
 // verticalpodautoscalers carry the opt-in VPAs of the databases, northd, the
 // relay and the chassis DaemonSets.
-// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the OVNChassis CR. It fetches
 // the CR, drives the teardown of a terminating one, ensures the remote-children
