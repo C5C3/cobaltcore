@@ -1090,6 +1090,32 @@ refresh-operator-digests:
 perf-benchmark:
 	hack/perf-reconcile-benchmark.sh
 
+.PHONY: perf-token-baseline
+# perf-token-baseline measures Keystone token issue and validate latency
+# against a running kind stack with the keystone operator deployed. It applies
+# one Keystone CR, runs the token stream of the chaos workload harness against
+# it, and writes the p50/p99 of each op with its sample and failure counts to
+# RESULT_JSON. Exits 1 when an op has fewer than MIN_SAMPLES ok records or any
+# failed record. The nightly Performance workflow runs it. See
+# docs/reference/testing/reconcile-performance-benchmark.md.
+#
+# Variables:
+#   NAMESPACE             namespace of the CR and the workload pod (default openstack).
+#   CR_NAME               Keystone CR name (default keystone-perf-token).
+#   DURATION_SECONDS      how long the token stream runs (default 600).
+#   MIN_SAMPLES           ok records each op needs (default 300).
+#   READY_TIMEOUT         kubectl wait and delete timeout (default 600s).
+#   OPERATOR_NAMESPACE    namespace of the operator Deployment (default keystone-system).
+#   OPERATOR_DEPLOY       operator Deployment name (default keystone-operator).
+#   DB_CLUSTER_REF        managed MariaDB cluster name (default openstack-db).
+#   CACHE_CLUSTER_REF     managed memcached cluster name (default openstack-memcached).
+#   IMAGE_REPOSITORY      keystone image repository (default ghcr.io/c5c3/keystone).
+#   IMAGE_TAG             keystone image tag, recorded as meta.release (default 2026.1).
+#   RESULT_JSON           the JSON file written (default _output/perf/token.json).
+#   CHAOS_WORKLOAD_IMAGE  workload pod image (default ghcr.io/c5c3/tempest:2026.1).
+perf-token-baseline:
+	hack/perf-token-baseline.sh
+
 .PHONY: teardown-infra
 teardown-infra:
 	hack/teardown-infra.sh
