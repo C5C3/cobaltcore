@@ -10,7 +10,7 @@ suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should grant full CRUD on placements
+  - it: should grant get, list, watch, update and patch on placements
     asserts:
       - contains:
           path: rules
@@ -20,8 +20,6 @@ tests:
             resources:
               - placements
             verbs:
-              - create
-              - delete
               - get
               - list
               - patch
@@ -115,8 +113,6 @@ tests:
               - priorityclasses
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant the leader-election verbs on leases
     asserts:

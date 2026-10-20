@@ -246,20 +246,28 @@ var PlacementRemoteChildKinds = []schema.GroupVersionKind{
 	mariadbv1alpha1.GroupVersion.WithKind("Grant"),
 }
 
-// +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements/status,verbs=get;update
+// Unexercised by the e2e suites; used by internal/common/apply/apply.go:53 (EnsureObject) to update placements/finalizers.
 // +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/deployment.go:53 (EnsureDeployment) to delete deployments.
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/placement/internal/controller/reconcile_deployment.go:176 (reconcileDeployment) to delete services.
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/config/config.go:517 (pruneImmutableObjects) to delete configmaps.
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
+// Unexercised by the e2e suites; used by internal/common/database/connection.go:342 (ReconcileConnectionSecret) to update secrets.
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;patch;delete
 // Required for the operator to observe the referenced MariaDB cluster's
 // Ready condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
 // The database and service-user credentials Secrets are ESO-managed; the
 // operator only reads the ExternalSecrets to attribute a not-synced Secret in
 // SecretsReady messages.
+// Unexercised by the e2e suites; used by internal/common/secrets/secrets.go:68 (WaitForExternalSecret) to list and watch externalsecrets.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch
 // Required so the operator can observe the selected store's Ready condition
 // and reflect upstream secret-backend (OpenBao) outages in SecretsReady. A
@@ -267,18 +275,24 @@ var PlacementRemoteChildKinds = []schema.GroupVersionKind{
 // (default) or a namespaced SecretStore via spec.secretStoreRef, so both kinds
 // must be watchable.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
-// Required to create/update/delete HTTPRoutes that expose the Placement API externally.
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/placement/internal/controller/reconcile_deployment.go:181 (reconcileDeployment) to delete poddisruptionbudgets.
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/deployment.go:174 (EnsureHPA) to create and patch horizontalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/placement/internal/controller/placement_controller.go:697 (SetupWithManager) to list and watch verticalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
+// Required to create, patch and delete HTTPRoutes that expose the Placement API externally.
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch;delete
 // Required so the operator can observe the Accepted condition set by the
 // upstream Gateway controller and reflect it in HTTPRouteReady.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
 // Required for the webhook to validate that spec.priorityClassName references
 // an existing PriorityClass at admission time.
-// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
+// Unexercised by the e2e suites; used by internal/common/validation/validation.go:312 (PriorityClassExists) to get priorityclasses.
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the Placement CR. It fetches the
 // CR, drives the finalizer-gated deletion path, ensures the finalizer, then runs
