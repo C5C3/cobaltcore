@@ -3186,7 +3186,13 @@ type ServiceStatus struct {
 	// Ready reports whether the projected service CR is Ready.
 	Ready bool `json:"ready"`
 
-	// Release is the OpenStack release the service currently reports installed.
+	// Release is the OpenStack release the service currently reports installed:
+	// the child's status.installedRelease for Keystone, Glance, Placement,
+	// Barbican, Neutron, Cinder and Nova, written once that release's migrations
+	// completed. Horizon has no installed release; its entry reports the image
+	// tag of the generation the Horizon child last reported Ready for. Empty
+	// until the child reports one, and empty for a Keystone in External mode,
+	// which has no child.
 	// +optional
 	Release string `json:"release,omitempty"`
 }

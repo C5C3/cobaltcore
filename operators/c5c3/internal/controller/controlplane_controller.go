@@ -783,11 +783,13 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 // Ready condition on EVERY status write — including the in-progress/
 // early-return paths where a sub-reconciler requeued before the chain
 // converged — projects status.services/status.updatePhase via
-// setServicesStatus, and stamps status.observedGeneration so a stale status
-// is distinguishable from a current one.
+// setServicesStatus, with the releases the children report installed, and
+// stamps status.observedGeneration so a stale status is distinguishable from a
+// current one.
 func (r *ControlPlaneReconciler) updateStatus(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, statusBefore *c5c3v1alpha1.ControlPlaneStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
+	releases := r.observedServiceReleases(ctx, cp)
 	return controlPlaneSkeleton.UpdateStatus(ctx, r.Client, cp, statusBefore, &cp.Status, func() {
-		setServicesStatus(cp)
+		setServicesStatus(cp, releases)
 		cp.Status.ObservedGeneration = cp.Generation
 	}, result, reconcileErr)
 }
@@ -906,9 +908,10 @@ const novaServiceKey = "nova"
 // machine is implemented — the other UpdatePhase values are reserved (see the
 // UpdatePhase DECISION comment), and "no update in progress" is the honest L1
 // state. status.services maps each projected service to its observed readiness,
-// derived from the corresponding sub-condition, with the release the service is
-// being driven to.
-func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
+// derived from the corresponding sub-condition, with the release its child
+// reports installed: releases[<service key>], as observedServiceReleases reads
+// it. A nil releases map reports "" for every service.
+func setServicesStatus(cp *c5c3v1alpha1.ControlPlane, releases map[string]string) {
 	cp.Status.UpdatePhase = c5c3v1alpha1.UpdatePhaseIdle
 	// Only report the Keystone service when it is actually managed by this
 	// ControlPlane (spec.services.keystone set). When unset the ControlPlane
@@ -926,59 +929,148 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    keystoneServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeKeystoneReady),
-			Release: cp.Spec.OpenStackRelease,
+			Release: releases[keystoneServiceKey],
 		})
 	}
 	if cp.Spec.Services.Horizon != nil {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    horizonServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeHorizonReady),
-			Release: cp.Spec.OpenStackRelease,
+			Release: releases[horizonServiceKey],
 		})
 	}
 	if cp.Spec.Services.Glance != nil {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    glanceServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeGlanceReady),
-			Release: cp.Spec.OpenStackRelease,
+			Release: releases[glanceServiceKey],
 		})
 	}
 	if cp.Spec.Services.Placement != nil {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    placementServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypePlacementReady),
-			Release: cp.Spec.OpenStackRelease,
+			Release: releases[placementServiceKey],
 		})
 	}
 	if cp.Spec.Services.Barbican != nil {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    barbicanServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeBarbicanReady),
-			Release: cp.Spec.OpenStackRelease,
+			Release: releases[barbicanServiceKey],
 		})
 	}
 	if cp.Spec.Services.Neutron != nil {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    neutronServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeNeutronReady),
-			Release: cp.Spec.OpenStackRelease,
+			Release: releases[neutronServiceKey],
 		})
 	}
 	if cp.Spec.Services.Cinder != nil {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    cinderServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeCinderReady),
-			Release: cp.Spec.OpenStackRelease,
+			Release: releases[cinderServiceKey],
 		})
 	}
 	if cp.Spec.Services.Nova != nil {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    novaServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeNovaReady),
-			Release: cp.Spec.OpenStackRelease,
+			Release: releases[novaServiceKey],
 		})
 	}
 	cp.Status.Services = services
+}
+
+// observedServiceReleases returns the release each declared service's child
+// reports installed, keyed by the status.services service keys, for
+// setServicesStatus. The seven database kinds report their
+// status.installedRelease, which their operator writes once that release's
+// migrations completed, so a fresh child reports "" until its first db-sync
+// finished. Horizon has no installed release: it reports spec.image.tag once the
+// child is Ready at its current generation, and keeps the release its entry
+// carried at the start of the pass until then; a digest-pinned image has no tag
+// and reports "". A missing child reports "", and a Keystone in External mode has
+// no child, so it is not read. Any other read error keeps the entry's previous
+// release and is logged rather than returned, so a cache that has not synced
+// never fails the status write. Every read goes through the informer cache the
+// controller already keeps for these kinds.
+func (r *ControlPlaneReconciler) observedServiceReleases(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) map[string]string {
+	previous := make(map[string]string, len(cp.Status.Services))
+	for _, s := range cp.Status.Services {
+		previous[s.Name] = s.Release
+	}
+	releases := map[string]string{}
+	// read fetches one child and reports whether it was read; for a missing child
+	// or a failed read it records the release the entry reports instead.
+	read := func(key, namespace, name string, child client.Object) bool {
+		err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, child)
+		switch {
+		case err == nil:
+			return true
+		case apierrors.IsNotFound(err):
+			releases[key] = ""
+		default:
+			log.FromContext(ctx).Error(err, "reading the service child for status.services; keeping the release it reported before",
+				"service", key, "child", namespace+"/"+name)
+			releases[key] = previous[key]
+		}
+		return false
+	}
+	if cp.Spec.Services.Keystone != nil && !cp.IsExternalKeystone() {
+		ks := &keystonev1alpha1.Keystone{}
+		if read(keystoneServiceKey, cp.KeystoneNamespace(), keystoneName(cp), ks) {
+			releases[keystoneServiceKey] = ks.Status.InstalledRelease
+		}
+	}
+	if cp.Spec.Services.Horizon != nil {
+		hz := &horizonv1alpha1.Horizon{}
+		if read(horizonServiceKey, cp.HorizonNamespace(), horizonName(cp), hz) {
+			releases[horizonServiceKey] = previous[horizonServiceKey]
+			if conditions.IsReady(hz.Status.Conditions) && hz.Status.ObservedGeneration == hz.Generation {
+				releases[horizonServiceKey] = hz.Spec.Image.Tag
+			}
+		}
+	}
+	if cp.Spec.Services.Glance != nil {
+		gl := &glancev1alpha1.Glance{}
+		if read(glanceServiceKey, cp.GlanceNamespace(), glanceName(cp), gl) {
+			releases[glanceServiceKey] = gl.Status.InstalledRelease
+		}
+	}
+	if cp.Spec.Services.Placement != nil {
+		pl := &placementv1alpha1.Placement{}
+		if read(placementServiceKey, cp.PlacementNamespace(), placementName(cp), pl) {
+			releases[placementServiceKey] = pl.Status.InstalledRelease
+		}
+	}
+	if cp.Spec.Services.Barbican != nil {
+		bn := &barbicanv1alpha1.Barbican{}
+		if read(barbicanServiceKey, cp.BarbicanNamespace(), barbicanName(cp), bn) {
+			releases[barbicanServiceKey] = bn.Status.InstalledRelease
+		}
+	}
+	if cp.Spec.Services.Neutron != nil {
+		nn := &neutronv1alpha1.Neutron{}
+		if read(neutronServiceKey, cp.NeutronNamespace(), neutronName(cp), nn) {
+			releases[neutronServiceKey] = nn.Status.InstalledRelease
+		}
+	}
+	if cp.Spec.Services.Cinder != nil {
+		cn := &cinderv1alpha1.Cinder{}
+		if read(cinderServiceKey, cp.CinderNamespace(), cinderName(cp), cn) {
+			releases[cinderServiceKey] = cn.Status.InstalledRelease
+		}
+	}
+	if cp.Spec.Services.Nova != nil {
+		nv := &novav1alpha1.Nova{}
+		if read(novaServiceKey, cp.NovaNamespace(), novaName(cp), nv) {
+			releases[novaServiceKey] = nv.Status.InstalledRelease
+		}
+	}
+	return releases
 }
 
 // controlPlaneSecretNameExtractor is the controller-runtime IndexerFunc registered

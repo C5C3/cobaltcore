@@ -8,10 +8,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -22,7 +25,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
+	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // controllerTestScheme returns a runtime.Scheme with the c5c3 ControlPlane type
@@ -94,7 +106,8 @@ func TestAggregateReady_OneFalse(t *testing.T) {
 // TestSetServicesStatus_WritesPhaseAndKeystoneReadiness verifies that
 // setServicesStatus populates the previously-unwritten status.updatePhase (fixed
 // at Idle) and the status.services entry named "keystone", deriving the service
-// readiness from the KeystoneReady sub-condition and the release from spec (#476).
+// readiness from the KeystoneReady sub-condition and the release from the
+// releases map (#476).
 func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -107,7 +120,7 @@ func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 	}
 
 	// KeystoneReady absent => service reported not Ready.
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.UpdatePhase).To(Equal(c5c3v1alpha1.UpdatePhaseIdle))
 	svc := findServiceStatus(cp.Status.Services, "keystone")
 	g.Expect(svc).NotTo(BeNil(), "status.services must report the projected keystone service")
@@ -117,7 +130,7 @@ func TestSetServicesStatus_WritesPhaseAndKeystoneReadiness(t *testing.T) {
 
 	// KeystoneReady True => service reported Ready.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeKeystoneReady))
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	svc = findServiceStatus(cp.Status.Services, "keystone")
 	g.Expect(svc).NotTo(BeNil(), "status.services must still report the projected keystone service")
 	g.Expect(svc.Ready).To(BeTrue(),
@@ -141,7 +154,7 @@ func TestSetServicesStatus_GlanceEntry(t *testing.T) {
 		},
 	}
 
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(3))
 	// Stable order: keystone, horizon, glance.
 	g.Expect(cp.Status.Services[2].Name).To(Equal("glance"))
@@ -151,14 +164,14 @@ func TestSetServicesStatus_GlanceEntry(t *testing.T) {
 
 	// GlanceReady True flips only the glance entry.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeGlanceReady))
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	glance := findServiceStatus(cp.Status.Services, "glance")
 	g.Expect(glance).NotTo(BeNil())
 	g.Expect(glance.Ready).To(BeTrue())
 
 	// An unmanaged glance is omitted rather than reported.
 	cp.Spec.Services.Glance = nil
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(2))
 	g.Expect(findServiceStatus(cp.Status.Services, "glance")).To(BeNil())
 }
@@ -181,7 +194,7 @@ func TestSetServicesStatus_PlacementEntry(t *testing.T) {
 		},
 	}
 
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(4))
 	// Stable order: keystone, horizon, glance, placement.
 	g.Expect(cp.Status.Services[3].Name).To(Equal("placement"))
@@ -191,7 +204,7 @@ func TestSetServicesStatus_PlacementEntry(t *testing.T) {
 
 	// PlacementReady True flips only the placement entry.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypePlacementReady))
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	placement := findServiceStatus(cp.Status.Services, "placement")
 	g.Expect(placement).NotTo(BeNil())
 	g.Expect(placement.Ready).To(BeTrue())
@@ -201,7 +214,7 @@ func TestSetServicesStatus_PlacementEntry(t *testing.T) {
 	// An unmanaged placement is omitted rather than reported, and the remaining
 	// entries keep their positions.
 	cp.Spec.Services.Placement = nil
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(3))
 	g.Expect(findServiceStatus(cp.Status.Services, "placement")).To(BeNil())
 	g.Expect(cp.Status.Services[2].Name).To(Equal("glance"))
@@ -227,7 +240,7 @@ func TestSetServicesStatus_BarbicanEntry(t *testing.T) {
 		},
 	}
 
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(5))
 	// Stable order: keystone, horizon, glance, placement, barbican.
 	g.Expect(cp.Status.Services[4].Name).To(Equal("barbican"))
@@ -237,7 +250,7 @@ func TestSetServicesStatus_BarbicanEntry(t *testing.T) {
 
 	// BarbicanReady True flips only the barbican entry.
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeBarbicanReady))
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	barbican := findServiceStatus(cp.Status.Services, "barbican")
 	g.Expect(barbican).NotTo(BeNil())
 	g.Expect(barbican.Ready).To(BeTrue())
@@ -249,7 +262,7 @@ func TestSetServicesStatus_BarbicanEntry(t *testing.T) {
 	// freeze reads status.services[].name, so a dropped service disappearing from
 	// the list is what eventually reopens its CREATE path (serviceDeclaredBefore).
 	cp.Spec.Services.Barbican = nil
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(4))
 	g.Expect(findServiceStatus(cp.Status.Services, "barbican")).To(BeNil())
 	g.Expect(cp.Status.Services[3].Name).To(Equal("placement"))
@@ -280,7 +293,7 @@ func TestSetServicesStatus_NeutronEntry(t *testing.T) {
 		},
 	}
 
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(6))
 	// Stable order: keystone, horizon, glance, placement, barbican, neutron.
 	g.Expect(cp.Status.Services[5].Name).To(Equal("neutron"))
@@ -296,11 +309,11 @@ func TestSetServicesStatus_NeutronEntry(t *testing.T) {
 		Reason:  "WaitingForOVN",
 		Message: "OVNReady is not True; Neutron projection deferred",
 	})
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(findServiceStatus(cp.Status.Services, "neutron").Ready).To(BeFalse())
 
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeNeutronReady))
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	neutron := findServiceStatus(cp.Status.Services, "neutron")
 	g.Expect(neutron).NotTo(BeNil())
 	g.Expect(neutron.Ready).To(BeTrue())
@@ -310,7 +323,7 @@ func TestSetServicesStatus_NeutronEntry(t *testing.T) {
 	// An unmanaged neutron is omitted rather than reported, and the remaining
 	// entries keep their positions.
 	cp.Spec.Services.Neutron = nil
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(5))
 	g.Expect(findServiceStatus(cp.Status.Services, "neutron")).To(BeNil())
 	g.Expect(cp.Status.Services[4].Name).To(Equal("barbican"))
@@ -351,7 +364,7 @@ func TestSetServicesStatus_CinderEntry(t *testing.T) {
 		},
 	}
 
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(7))
 	// Stable order: keystone, horizon, glance, placement, barbican, neutron, cinder.
 	g.Expect(cp.Status.Services[6].Name).To(Equal("cinder"))
@@ -367,11 +380,11 @@ func TestSetServicesStatus_CinderEntry(t *testing.T) {
 		Reason:  "WaitingForKeystone",
 		Message: "KeystoneReady is not True; Cinder projection deferred",
 	})
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(findServiceStatus(cp.Status.Services, "cinder").Ready).To(BeFalse())
 
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeCinderReady))
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	cinder := findServiceStatus(cp.Status.Services, "cinder")
 	g.Expect(cinder).NotTo(BeNil())
 	g.Expect(cinder.Ready).To(BeTrue())
@@ -381,7 +394,7 @@ func TestSetServicesStatus_CinderEntry(t *testing.T) {
 	// An unmanaged cinder is omitted rather than reported, and the remaining
 	// entries keep their positions.
 	cp.Spec.Services.Cinder = nil
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(6))
 	g.Expect(findServiceStatus(cp.Status.Services, "cinder")).To(BeNil())
 	g.Expect(cp.Status.Services[5].Name).To(Equal("neutron"))
@@ -423,7 +436,7 @@ func TestSetServicesStatus_NovaEntry(t *testing.T) {
 		},
 	}
 
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(8))
 	// Stable order: keystone, horizon, glance, placement, barbican, neutron,
 	// cinder, nova.
@@ -440,11 +453,11 @@ func TestSetServicesStatus_NovaEntry(t *testing.T) {
 		Reason:  "WaitingForPlacement",
 		Message: "PlacementReady is not True; Nova projection deferred",
 	})
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(findServiceStatus(cp.Status.Services, "nova").Ready).To(BeFalse())
 
 	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeNovaReady))
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	nova := findServiceStatus(cp.Status.Services, "nova")
 	g.Expect(nova).NotTo(BeNil())
 	g.Expect(nova.Ready).To(BeTrue())
@@ -454,7 +467,7 @@ func TestSetServicesStatus_NovaEntry(t *testing.T) {
 	// An unmanaged nova is omitted rather than reported, and the remaining
 	// entries keep their positions.
 	cp.Spec.Services.Nova = nil
-	setServicesStatus(cp)
+	setServicesStatus(cp, releasesAt("2026.1"))
 	g.Expect(cp.Status.Services).To(HaveLen(7))
 	g.Expect(findServiceStatus(cp.Status.Services, "nova")).To(BeNil())
 	g.Expect(cp.Status.Services[6].Name).To(Equal("cinder"))
@@ -552,6 +565,36 @@ func TestAggregateReady_OVNAndNeutronBlockIt(t *testing.T) {
 	}
 }
 
+// releasesAt reports every service at release, as observedServiceReleases does
+// for a plane whose children all installed it.
+func releasesAt(release string) map[string]string {
+	return map[string]string{
+		keystoneServiceKey:  release,
+		horizonServiceKey:   release,
+		glanceServiceKey:    release,
+		placementServiceKey: release,
+		barbicanServiceKey:  release,
+		neutronServiceKey:   release,
+		cinderServiceKey:    release,
+		novaServiceKey:      release,
+	}
+}
+
+// distinctReleases gives every service its own release, so a lookup under the
+// wrong key or a read of spec.openStackRelease fails the assertion.
+func distinctReleases() map[string]string {
+	return map[string]string{
+		keystoneServiceKey:  "r-keystone",
+		horizonServiceKey:   "r-horizon",
+		glanceServiceKey:    "r-glance",
+		placementServiceKey: "r-placement",
+		barbicanServiceKey:  "r-barbican",
+		neutronServiceKey:   "r-neutron",
+		cinderServiceKey:    "r-cinder",
+		novaServiceKey:      "r-nova",
+	}
+}
+
 // findServiceStatus returns a pointer to the ServiceStatus entry with the given
 // name, or nil when the listType=map status.services list has no such entry.
 func findServiceStatus(services []c5c3v1alpha1.ServiceStatus, name string) *c5c3v1alpha1.ServiceStatus {
@@ -592,7 +635,7 @@ func TestUpdateStatus_SkipsWriteWhenUnchanged(t *testing.T) {
 	// aggregated + services projected + ObservedGeneration stamped), then
 	// snapshot it — a converged steady-state pass.
 	setReadyCondition(cp)
-	setServicesStatus(cp)
+	setServicesStatus(cp, nil)
 	cp.Status.ObservedGeneration = cp.Generation
 	snapshot := cp.Status.DeepCopy()
 
@@ -605,6 +648,374 @@ func TestUpdateStatus_SkipsWriteWhenUnchanged(t *testing.T) {
 	_, err = r.updateStatus(context.Background(), cp, &c5c3v1alpha1.ControlPlaneStatus{}, ctrl.Result{}, nil)
 	g.Expect(err).To(HaveOccurred(), "a changed status must attempt the write")
 	g.Expect(err.Error()).To(ContainSubstring("updating status:"))
+}
+
+// serviceReleasesTestScheme extends controllerTestScheme with the eight service
+// child kinds observedServiceReleases reads.
+func serviceReleasesTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := controllerTestScheme(t)
+	adders := []struct {
+		name string
+		add  func(*runtime.Scheme) error
+	}{
+		{"keystone", keystonev1alpha1.AddToScheme},
+		{"horizon", horizonv1alpha1.AddToScheme},
+		{"glance", glancev1alpha1.AddToScheme},
+		{"placement", placementv1alpha1.AddToScheme},
+		{"barbican", barbicanv1alpha1.AddToScheme},
+		{"neutron", neutronv1alpha1.AddToScheme},
+		{"cinder", cinderv1alpha1.AddToScheme},
+		{"nova", novav1alpha1.AddToScheme},
+	}
+	for _, a := range adders {
+		if err := a.add(s); err != nil {
+			t.Fatalf("adding %s scheme: %v", a.name, err)
+		}
+	}
+	return s
+}
+
+// serviceReleasesReconciler returns a reconciler whose fake client holds objs
+// and routes its calls through funcs.
+func serviceReleasesReconciler(t *testing.T, funcs interceptor.Funcs, objs ...client.Object) *ControlPlaneReconciler {
+	t.Helper()
+	s := serviceReleasesTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).WithInterceptorFuncs(funcs).Build()
+	return &ControlPlaneReconciler{Client: c, Scheme: s}
+}
+
+// allServicesControlPlane returns a ControlPlane at release that declares all
+// eight services in its own namespace.
+func allServicesControlPlane(release string) *c5c3v1alpha1.ControlPlane {
+	return &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: release,
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
+				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
+				Glance:    &c5c3v1alpha1.ServiceGlanceSpec{},
+				Placement: &c5c3v1alpha1.ServicePlacementSpec{},
+				Barbican:  &c5c3v1alpha1.ServiceBarbicanSpec{},
+				Neutron:   &c5c3v1alpha1.ServiceNeutronSpec{},
+				Cinder:    &c5c3v1alpha1.ServiceCinderSpec{},
+				Nova:      &c5c3v1alpha1.ServiceNovaSpec{},
+			},
+		},
+	}
+}
+
+// databaseChildren returns the seven database children cp projects, each
+// reporting the installedRelease that installed names under its service key.
+func databaseChildren(cp *c5c3v1alpha1.ControlPlane, installed map[string]string) []client.Object {
+	om := func(name string) metav1.ObjectMeta { return metav1.ObjectMeta{Name: name, Namespace: cp.Namespace} }
+	ks := &keystonev1alpha1.Keystone{ObjectMeta: om(keystoneName(cp))}
+	ks.Status.InstalledRelease = installed[keystoneServiceKey]
+	gl := &glancev1alpha1.Glance{ObjectMeta: om(glanceName(cp))}
+	gl.Status.InstalledRelease = installed[glanceServiceKey]
+	pl := &placementv1alpha1.Placement{ObjectMeta: om(placementName(cp))}
+	pl.Status.InstalledRelease = installed[placementServiceKey]
+	bn := &barbicanv1alpha1.Barbican{ObjectMeta: om(barbicanName(cp))}
+	bn.Status.InstalledRelease = installed[barbicanServiceKey]
+	nn := &neutronv1alpha1.Neutron{ObjectMeta: om(neutronName(cp))}
+	nn.Status.InstalledRelease = installed[neutronServiceKey]
+	cn := &cinderv1alpha1.Cinder{ObjectMeta: om(cinderName(cp))}
+	cn.Status.InstalledRelease = installed[cinderServiceKey]
+	nv := &novav1alpha1.Nova{ObjectMeta: om(novaName(cp))}
+	nv.Status.InstalledRelease = installed[novaServiceKey]
+	return []client.Object{ks, gl, pl, bn, nn, cn, nv}
+}
+
+// TestObservedServiceReleases_ReportsEachChildsInstalledRelease pins the source
+// of every database service's release: the child's status.installedRelease, not
+// spec.openStackRelease. Every child reports its own release, none of them the
+// spec's 2026.2, so a child read into another service's key fails as well.
+func TestObservedServiceReleases_ReportsEachChildsInstalledRelease(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := allServicesControlPlane("2026.2")
+	installed := distinctReleases()
+	r := serviceReleasesReconciler(t, interceptor.Funcs{}, databaseChildren(cp, installed)...)
+
+	releases := r.observedServiceReleases(context.Background(), cp)
+
+	for _, key := range []string{keystoneServiceKey, glanceServiceKey, placementServiceKey, barbicanServiceKey, neutronServiceKey, cinderServiceKey, novaServiceKey} {
+		g.Expect(releases).To(HaveKeyWithValue(key, installed[key]), "service %s", key)
+	}
+	g.Expect(releases).To(HaveKeyWithValue(horizonServiceKey, ""),
+		"a declared Horizon without a child reports no release")
+}
+
+// TestObservedServiceReleases_MissingChildReportsEmpty pins that a declared
+// service whose child does not exist (not created yet, or deleted) reports no
+// release, even when its entry carried one before.
+func TestObservedServiceReleases_MissingChildReportsEmpty(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2026.1",
+			Services:         c5c3v1alpha1.ServicesSpec{Placement: &c5c3v1alpha1.ServicePlacementSpec{}},
+		},
+		Status: c5c3v1alpha1.ControlPlaneStatus{
+			Services: []c5c3v1alpha1.ServiceStatus{{Name: placementServiceKey, Release: "2026.1"}},
+		},
+	}
+	r := serviceReleasesReconciler(t, interceptor.Funcs{})
+
+	releases := r.observedServiceReleases(context.Background(), cp)
+
+	g.Expect(releases).To(Equal(map[string]string{placementServiceKey: ""}))
+}
+
+// TestObservedServiceReleases_ReadErrorKeepsPreviousRelease pins the failure
+// policy: a child read that fails with anything but NotFound keeps the release the
+// entry reported before, and the other services are still read.
+func TestObservedServiceReleases_ReadErrorKeepsPreviousRelease(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := allServicesControlPlane("2026.2")
+	cp.Status.Services = []c5c3v1alpha1.ServiceStatus{{Name: novaServiceKey, Release: "2026.1"}}
+	r := serviceReleasesReconciler(t, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*novav1alpha1.Nova); ok {
+				return apierrors.NewServiceUnavailable("cache not synced")
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}, databaseChildren(cp, releasesAt("2026.2"))...)
+
+	releases := r.observedServiceReleases(context.Background(), cp)
+
+	g.Expect(releases).To(HaveKeyWithValue(novaServiceKey, "2026.1"),
+		"a failed read keeps the release the entry reported before")
+	for _, key := range []string{keystoneServiceKey, glanceServiceKey, placementServiceKey, barbicanServiceKey, neutronServiceKey, cinderServiceKey} {
+		g.Expect(releases).To(HaveKeyWithValue(key, "2026.2"), "service %s is still read", key)
+	}
+}
+
+// TestObservedServiceReleases_HorizonReportsTagOfConvergedGeneration pins
+// Horizon's rule: it has no installed release, so its entry reports the image
+// tag of the generation the child last reported Ready for.
+func TestObservedServiceReleases_HorizonReportsTagOfConvergedGeneration(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	cases := []struct {
+		name               string
+		image              commonv1.ImageSpec
+		generation         int64
+		observedGeneration int64
+		ready              bool
+		previous           string
+		want               string
+	}{
+		{
+			name:               "Ready at its current generation reports the tag",
+			image:              commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.2"},
+			generation:         3,
+			observedGeneration: 3,
+			ready:              true,
+			previous:           "2026.1",
+			want:               "2026.2",
+		},
+		{
+			name:               "Ready at an older generation keeps the previous release",
+			image:              commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.2"},
+			generation:         4,
+			observedGeneration: 3,
+			ready:              true,
+			previous:           "2026.1",
+			want:               "2026.1",
+		},
+		{
+			name:               "not Ready at its current generation keeps the previous release",
+			image:              commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.2"},
+			generation:         4,
+			observedGeneration: 4,
+			ready:              false,
+			previous:           "2026.1",
+			want:               "2026.1",
+		},
+		{
+			name:               "a first pass before convergence reports no release",
+			image:              commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Tag: "2026.2"},
+			generation:         1,
+			observedGeneration: 0,
+			ready:              false,
+			previous:           "",
+			want:               "",
+		},
+		{
+			name:               "a digest-pinned image reports no release",
+			image:              commonv1.ImageSpec{Repository: "ghcr.io/c5c3/horizon", Digest: digest},
+			generation:         3,
+			observedGeneration: 3,
+			ready:              true,
+			previous:           "2026.1",
+			want:               "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g := NewGomegaWithT(t)
+			cp := &c5c3v1alpha1.ControlPlane{
+				ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+				Spec: c5c3v1alpha1.ControlPlaneSpec{
+					OpenStackRelease: "2026.2",
+					Services:         c5c3v1alpha1.ServicesSpec{Horizon: &c5c3v1alpha1.ServiceHorizonSpec{}},
+				},
+			}
+			// A first pass has no horizon entry yet.
+			if tc.previous != "" {
+				cp.Status.Services = []c5c3v1alpha1.ServiceStatus{{Name: horizonServiceKey, Release: tc.previous}}
+			}
+			hz := &horizonv1alpha1.Horizon{
+				ObjectMeta: metav1.ObjectMeta{Name: horizonName(cp), Namespace: cp.Namespace, Generation: tc.generation},
+				Spec:       horizonv1alpha1.HorizonSpec{Image: tc.image},
+			}
+			hz.Status.ObservedGeneration = tc.observedGeneration
+			ready := trueCondition("Ready")
+			if !tc.ready {
+				ready.Status = metav1.ConditionFalse
+			}
+			hz.Status.Conditions = []metav1.Condition{ready}
+			r := serviceReleasesReconciler(t, interceptor.Funcs{}, hz)
+
+			releases := r.observedServiceReleases(context.Background(), cp)
+
+			g.Expect(releases).To(HaveKeyWithValue(horizonServiceKey, tc.want))
+		})
+	}
+}
+
+// TestObservedServiceReleases_ExternalKeystoneReadsNoChild pins that a Keystone
+// in External mode, which has no child, reports no release and is never read,
+// even when a Keystone of the projected name exists.
+func TestObservedServiceReleases_ExternalKeystoneReadsNoChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2026.1",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{Mode: c5c3v1alpha1.KeystoneModeExternal},
+			},
+		},
+	}
+	stray := &keystonev1alpha1.Keystone{ObjectMeta: metav1.ObjectMeta{Name: keystoneName(cp), Namespace: cp.Namespace}}
+	stray.Status.InstalledRelease = "2026.1"
+	keystoneReads := 0
+	r := serviceReleasesReconciler(t, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*keystonev1alpha1.Keystone); ok {
+				keystoneReads++
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}, stray)
+
+	releases := r.observedServiceReleases(context.Background(), cp)
+
+	g.Expect(keystoneReads).To(BeZero(), "an External Keystone has no child to read")
+	g.Expect(releases[keystoneServiceKey]).To(BeEmpty())
+}
+
+// TestObservedServiceReleases_NoServiceDeclared pins that a ControlPlane without
+// services reads nothing, and that status.services stays nil for it.
+func TestObservedServiceReleases_NoServiceDeclared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec:       c5c3v1alpha1.ControlPlaneSpec{OpenStackRelease: "2026.1"},
+	}
+	reads := 0
+	r := serviceReleasesReconciler(t, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			reads++
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	releases := r.observedServiceReleases(context.Background(), cp)
+
+	g.Expect(reads).To(BeZero())
+	g.Expect(releases).To(BeEmpty())
+	setServicesStatus(cp, releases)
+	g.Expect(cp.Status.Services).To(BeNil())
+}
+
+// TestSetServicesStatus_ReleaseFollowsTheChildNotTheSpec pins that an entry's
+// release comes from the releases map under its own service key, so it lags a
+// spec that already names the next release.
+func TestSetServicesStatus_ReleaseFollowsTheChildNotTheSpec(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := allServicesControlPlane("2026.2")
+	releases := distinctReleases()
+
+	setServicesStatus(cp, releases)
+
+	g.Expect(cp.Status.Services).To(HaveLen(8))
+	for _, s := range cp.Status.Services {
+		g.Expect(s.Release).To(Equal(releases[s.Name]), "service %s", s.Name)
+	}
+}
+
+// TestObservedServiceReleases_CoversEveryReportedService keeps the two
+// per-service ladders in step: every entry setServicesStatus writes has a
+// release observedServiceReleases looked up for it. Every ServicesSpec field is
+// declared, so a service added to ServicesSpec and setServicesStatus but not to
+// observedServiceReleases fails here.
+func TestObservedServiceReleases_CoversEveryReportedService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"}}
+	services := reflect.ValueOf(&cp.Spec.Services).Elem()
+	for i := range services.NumField() {
+		f := services.Field(i)
+		f.Set(reflect.New(f.Type().Elem()))
+	}
+	r := serviceReleasesReconciler(t, interceptor.Funcs{})
+
+	releases := r.observedServiceReleases(context.Background(), cp)
+	setServicesStatus(cp, releases)
+
+	g.Expect(cp.Status.Services).To(HaveLen(services.NumField()))
+	for _, s := range cp.Status.Services {
+		g.Expect(releases).To(HaveKey(s.Name), "service %s has no release lookup", s.Name)
+	}
+}
+
+// TestUpdateStatus_WritesTheChildsInstalledRelease pins the write path end to
+// end: updateStatus reads the Keystone child and persists the release it reports
+// installed, not the spec's.
+func TestUpdateStatus_WritesTheChildsInstalledRelease(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := serviceReleasesTestScheme(t)
+	stored := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2026.2",
+			Services:         c5c3v1alpha1.ServicesSpec{Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{}},
+		},
+	}
+	ks := &keystonev1alpha1.Keystone{ObjectMeta: metav1.ObjectMeta{Name: keystoneName(stored), Namespace: stored.Namespace}}
+	ks.Status.InstalledRelease = "2026.1"
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(stored, ks).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	key := client.ObjectKeyFromObject(stored)
+	cp := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, key, cp)).To(Succeed())
+
+	_, err := r.updateStatus(ctx, cp, &c5c3v1alpha1.ControlPlaneStatus{}, ctrl.Result{}, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	written := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, key, written)).To(Succeed())
+	g.Expect(written.Status.Services).To(HaveLen(1))
+	g.Expect(written.Status.Services[0].Release).To(Equal("2026.1"),
+		"the written entry carries the child's installedRelease, not spec.openStackRelease 2026.2")
 }
 
 func TestReconcile_NotFound_EarlyReturn(t *testing.T) {
