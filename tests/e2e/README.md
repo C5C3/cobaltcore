@@ -52,14 +52,18 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/<suite>
   `tests/e2e/nova/compute-node-pool/` also labels the node with the zone
   and the pool label its `NovaCompute` selects.
 - **Shared scripts.** `tests/e2e/lib/` holds scripts that the suites of
-  several operators run, such as `assert-namespace-scoped-operator.sh`,
-  the proof every `namespace-scoped-rbac` suite runs against the operator
-  release it installed. Chainsaw runs script steps in the suite
-  directory, so a suite calls them by relative path
+  several operators run: `assert-namespace-scoped-operator.sh`, the proof
+  every `namespace-scoped-rbac` suite runs against the operator release it
+  installed, and `assert-operator-env-clean.sh`, the scan every
+  `env-key-material` suite runs to show that the operator's pod spec and
+  process environment hold no key material. Chainsaw runs script steps in
+  the suite directory, so a suite calls them by relative path
   (`../../lib/<script>.sh`). Each script is unit-tested under
-  `tests/unit/ci/` against a stubbed `kubectl`, and `tests/e2e/lib/**`
-  is listed in the `tests_e2e_<op>` path filter of every operator whose
-  suites run one, so an edit to a script runs those `e2e-operator` jobs.
+  `tests/unit/ci/` against a stubbed `kubectl`. The `tests_e2e_<op>` path
+  filter of every operator whose suites run a script lists it, so an edit
+  to a script runs those `e2e-operator` jobs: the seven operators that run
+  both list `tests/e2e/lib/**`, and c5c3, ovn and neutron list the scan
+  alone.
 
 ## Configuration
 

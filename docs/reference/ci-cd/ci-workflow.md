@@ -72,7 +72,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `go_common` | `internal/**`, `go.work`, `.golangci.yml`, `flake.nix`, `flake.lock`, `nix/lib/operator-image.nix`, `nix/lib/static-image.nix`, `nix/lib/image-defaults.nix`, `hack/ci-nix-build-e2e-images.sh` | every operator's Go gates and operator image, every `e2e-operator` leg, `e2e-operator-upgrade`; a push publishes every operator image |
 | `images_base` | `flake.nix`, `flake.lock`, `nix/lib/**`, `nix/pkgs/**`, `releases/**`, `scripts/**`, `overrides/**`, `hack/ci-nix-build-e2e-images.sh`, `hack/ci-service-image-releases.sh` | every service image, every Tempest image (one per release), every service operator's e2e leg |
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
-| `tests_e2e_<op>` | `tests/e2e/<op>/**`, `tests/e2e/<op>-operator/**`, and `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova) | that operator's `e2e-operator` leg |
+| `tests_e2e_<op>` | `tests/e2e/<op>/**` and `tests/e2e/<op>-operator/**` (`tests/e2e/c5c3/**` alone for c5c3); `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova), and `tests/e2e/lib/assert-operator-env-clean.sh` alone for c5c3, ovn and neutron, whose `env-key-material` suites run only that script | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
 | `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
@@ -959,11 +959,11 @@ Chainsaw E2E test suites.
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2026.1 and 2026.2 today) and the 2026.1-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2026.1 and 2026.2) and `ovn:<pin>` |
+| 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2026.1 and 2026.2 today) and the 2026.1-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2026.1 and 2026.2) and `ovn:<pin>`; the `c5c3` leg, which ships no service image, loads `keystone:2026.1` as the shell its `env-key-material` suite runs in |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
 | 7 | `hack/ci-deploy-operator.sh` (sibling operators) | `nova` leg: keystone-, placement- and glance-operator; `neutron` and `nova` legs: ovn-operator; `nova` leg: neutron-operator. Each goes into its `<op>-system` Namespace, ahead of the matrix operator |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
-| 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` and `tests/e2e/<operator>-operator/`; a `nova` shard runs its half of the suite directories |
+| 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` and `tests/e2e/<operator>-operator/`, among them the operator's `env-key-material` suite, which reads the operator pod's spec and process environment for key material; a `nova` shard runs its half of the suite directories |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, operator logs |
 | 11 | `hack/ci-dump-diagnostics.sh` (always, sibling operators) | The `neutron` leg dumps `ovn-system`; the `nova` leg dumps `keystone-system`, `placement-system`, `glance-system`, `ovn-system` and `neutron-system`, one call per operator under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again |
 | 12 | Upload JUnit report | Uploads test results as the `e2e-<operator>-junit-report` artifact, `e2e-nova-<shard>-junit-report` on a `nova` shard (14-day retention) |
@@ -1047,8 +1047,8 @@ per-release suite, so it is loaded once. It loads the whole list in one
 `kind load docker-image` call, so the base layers the service images share go
 onto the node once. Every release is there so a 2026.1 or 2026.2 Nova suite
 can pair with siblings of its own release. The suites the leg carries are the
-eighteen under `tests/e2e/nova/` and the chart-level `metrics` suite under
-`tests/e2e/nova-operator/`, described in
+eighteen under `tests/e2e/nova/` and the chart-level `metrics` and
+`env-key-material` suites under `tests/e2e/nova-operator/`, described in
 [Nova E2E Test Suites](../testing/nova-e2e-tests.md).
 Chainsaw runs with `--parallel 2`, because a full-stack Nova suite carries a
 Keystone, an OVNCentral, a Neutron, a Placement, a Glance and the five Nova

@@ -25,10 +25,11 @@ infrastructure deployment automation, see
 The suites cover the reconciler lifecycle from a first deployment through backend
 attach and detach, a backup round trip, scaling, a cross-release upgrade and
 deletion. Each suite creates its own `Cinder` CR in the shared `openstack`
-namespace. Two suites sit outside it: `pod-security-restricted` owns a
-`cinder-pss` namespace labelled with the restricted profile, and
+namespace. Three suites sit outside it: `pod-security-restricted` owns a
+`cinder-pss` namespace labelled with the restricted profile,
 `cinder-operator/metrics` installs a second cinder-operator Helm release in
-`cinder-system`.
+`cinder-system`, and `cinder-operator/env-key-material` reads the spec and the
+process environment of the operator pod there.
 
 Satellite objects carry a per-suite name prefix (`basic-nfs1`, `nfsbe-nfs1`,
 `multi-nfs-a`). `CinderBackend.spec.cinderRef` is immutable, so a backend named
@@ -169,6 +170,7 @@ deletions.
 | [maintenance-endpoint-isolation](#maintenance-endpoint-isolation) | `cinder-isolation` | db-purge and service-remove pods never become API Service backends, and the Service is never left without any |
 | [gateway-quick-start-smoke](#gateway-quick-start-smoke) | `cinder-smoke` | `curl -k https://cinder.127-0-0-1.nip.io/` answers HTTP 300 with the Cinder version document |
 | [metrics](#metrics) | — (operator-level) | cinder-operator chart renders and removes the ServiceMonitor |
+| [env-key-material](#env-key-material) | — (operator-level) | The cinder-operator pod reads no Secret into env, and its manager's process environment holds no key material |
 | [invalid-cr](../cinder/cinder-crd.md) | (rejected at admission) | `Cinder` rejection corpus: the release pattern and the release floor, the image and database and cache and messaging union rules, the messaging TLS rule, the db-purge bounds, the Keystone-pairing rules, the volume replica cap, the backup strategy, both `extraConfig` guards, the name bound, the gateway rule and the `verticalAutoscaling` rules |
 | [invalid-cinderbackend-cr](../cinder/cinder-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackend` rejection corpus: the union rule, the reserved name, a relative export path, an export path carrying a newline, both `extraOptions` guards, the `cinderRef` transition rule, and the two name bounds; for RBD both halves of the union, the `client.` prefix, an empty monitor list, a network that is no CIDR, an invalid key Secret name, the per-type denylist, and the `type` transition rule |
 | [invalid-cinderbackupbackend-cr](../cinder/cinder-backup-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackupBackend` rejection corpus: the union rule, the chunk-size minimum, the compression enum, the `extraOptions` denylist, the `cinderRef` transition rule, the second-backup rule, and an export path carrying a newline; for RBD both halves of the union, the `client.` prefix, an empty monitor list, a network that is no CIDR, an invalid key Secret name, the per-type denylist, and the `type` transition rule |
@@ -770,6 +772,37 @@ endpoint when `monitoring.serviceMonitor.enabled` is toggled.
 
 ---
 
+### env-key-material
+
+**File:** `tests/e2e/cinder-operator/env-key-material/chainsaw-test.yaml`
+
+**Purpose:** The cinder-operator pod in `cinder-system` reads no Secret into
+env, and the process environment of its manager holds no variable named like
+key material and no value that looks like it, such as a PEM block.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | scan | `script` (180s) | `../../lib/assert-operator-env-clean.sh cinder-system cinder-operator ghcr.io/c5c3/cinder:2026.1` checks the pod spec, then reads `/proc/<pid>/environ` of the manager from an ephemeral container |
+
+**Fixtures:** none. The suite reads the operator that `hack/ci-deploy-operator.sh`
+deployed.
+
+**Design notes:**
+
+- The operator image is a static binary without a shell. The ephemeral
+  container runs the `cinder:2026.1` service image the leg loads for its other
+  suites, joins the manager's process namespace (`--target=manager`) and runs
+  as the pod's uid under the restricted profile.
+- A finding names the variable and never prints its value. The catch prints
+  the ephemeral containers' states and never reads their logs, which hold the
+  values the scan judged.
+- Each run adds one ephemeral container to the operator pod, which Kubernetes
+  cannot remove again.
+
+---
+
 ## Assertion Patterns
 
 ### Resource assertion (`assert`)
@@ -961,6 +994,8 @@ tests/e2e/cinder/
     └── 03-patch-scale-to-one.yaml      Patch to 1 replica
 
 tests/e2e/cinder-operator/
+├── env-key-material/
+│   └── chainsaw-test.yaml              Operator pod spec and process environment free of key material
 └── metrics/
     └── chainsaw-test.yaml              cinder-operator chart ServiceMonitor
 ```
