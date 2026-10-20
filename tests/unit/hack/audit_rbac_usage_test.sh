@@ -284,11 +284,11 @@ test_get_follows_list() {
   assert_eq "get on keystones/status is implied by list on keystones" \
     "patch,update" "$(unused_verbs keystones/status)"
   assert_eq "the implied gets are listed" \
-    "/secrets apps/deployments coordination.k8s.io/leases demo.c5c3.io/keystones/status" \
+    "/secrets apps/deployments demo.c5c3.io/keystones/status" \
     "$(result "' '.join(sorted(row['apiGroup'] + '/' + row['resource'] for row in r['get_implied_by_list']))")"
   assert_eq "get on priorityclasses, where no list is granted, is unused" \
     "get" "$(unused_verbs priorityclasses)"
-  assert_contains "the report has the GET IMPLIED BY LIST section" "$(cat "$OUT")" "GET IMPLIED BY LIST (4)"
+  assert_contains "the report has the GET IMPLIED BY LIST section" "$(cat "$OUT")" "GET IMPLIED BY LIST (3)"
   rm -rf "$TMP"
 }
 
