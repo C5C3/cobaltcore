@@ -156,8 +156,9 @@ cluster with, passed to the `create-kind-cluster` composite action, which hands 
 `helm/kind-action`'s `version` input. That action defaults to v0.31.0, whose kindnetd
 does not enforce NetworkPolicy egress against the post-DNAT destination; pinning it
 keeps CI on the enforcing build and in lockstep with the `KIND_VERSION` in
-`hack/install-test-deps.sh` that local development installs. Renovate groups the two
-pins so they bump in one pull request, and
+`hack/install-test-deps.sh` that local development installs and the one of the
+nightly `.github/workflows/performance.yaml`. Renovate groups the three pins so
+they bump in one pull request, and
 `tests/unit/renovate/workflow_pins_custommanager_test.sh` asserts they agree.
 `CONTROLLER_GEN_VERSION` is used by `verify-codegen` to pin controller-gen to a specific
 version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specific

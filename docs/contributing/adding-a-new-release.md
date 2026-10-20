@@ -313,7 +313,7 @@ None of these are mechanical; decide and record each in the PR description:
   (`openStackRelease`), the `hack/deploy-infra.sh` image preload, the
   `${VAR:-YYYY.N}` fallbacks in `hack/` (`RELEASE` in
   `run-tempest.sh`; `IMAGE_TAG` in
-  `perf-reconcile-benchmark.sh`), the
+  `perf-reconcile-benchmark.sh` and `perf-token-baseline.sh`), the
   slug fallbacks of `hack/ci-run-tempest.sh` (`CONFIG_DIR` defaults to
   `tests/tempest/${SERVICE}-<slug>` and `SERVICE_K8S_NAME` to
   `${SERVICE}-tempest-<slug>`), the two `ghcr.io/c5c3/nova:<default>` refs of
@@ -392,7 +392,14 @@ are the record of the last retirement.
    build pins that existed for the old images only, and move the `IMAGE=`
    defaults of `tests/container-images/verify_*.sh`. Decide whether the
    published images stay: `.github/workflows/cleanup-images.yaml` keeps bare
-   release tags (decision D6 of #1321). The code import of
+   release tags (decision D6 of #1321). When `<old>` is the oldest release
+   keystone ships an image for, the nightly Performance workflow moves to the
+   next one, and its `compare` exits 2 against `tests/perf/baseline.json`
+   until the baseline names that release: dispatch `performance.yaml` on the
+   branch, write the baseline from its artifact with `hack/perf-baseline.py
+   write-baseline --release <new-oldest>` (see
+   [Re-baselining](../reference/testing/reconcile-performance-benchmark.md#re-baselining)),
+   and commit it in this pull request. The code import of
    `tests/tempest/glance-2026-1/02-glance-cr.yaml` in
    [Filter web-download Image Imports](../guides/glance/filter-web-download-imports.md)
    moves when `2026.1` is the release being removed; the surviving twin needs

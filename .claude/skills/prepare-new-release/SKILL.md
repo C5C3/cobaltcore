@@ -251,9 +251,12 @@ None of these are mechanical; decide and record each:
   variants. Then remove the release in one pull request: six Tempest
   directories, eight e2e variants, seven option catalogs with their
   `HaveLen`/`HaveKey` assertions, `overrides/<old>/`, `patches/*/<old>/`,
-  the renovate probes and hold, the Go fixtures that pin it, and the docs
-  code-import of `tests/tempest/glance-2026-1/02-glance-cr.yaml` when
-  2026.1 retires. Then move the floor (`release.MinimumSupported`) with
+  the renovate probes and hold, the Go fixtures that pin it, a
+  `tests/perf/baseline.json` written from a Performance run on the next
+  oldest release (the nightly's `compare` exits 2 on a release mismatch),
+  and the docs code-import of
+  `tests/tempest/glance-2026-1/02-glance-cr.yaml` when 2026.1 retires.
+  Then move the floor (`release.MinimumSupported`) with
   the `*-below-floor.yaml` fixtures and remove the code only the old
   release reached. Last, sweep the docs and skills and run the gates.
   Run [[check-release-wiring]] after each step; its L8 fails on a floor
