@@ -8,15 +8,11 @@ rules:
   - ""
   resources:
   - configmaps
-  - secrets
-  - services
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - ""
@@ -25,6 +21,28 @@ rules:
   verbs:
   - create
   - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - watch
 - apiGroups:
   - apps
   resources:
@@ -36,7 +54,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling
@@ -48,7 +65,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - autoscaling.k8s.io
@@ -60,20 +76,27 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - batch
   resources:
   - cronjobs
-  - jobs
   verbs:
   - create
   - delete
   - get
   - list
   - patch
-  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - external-secrets.io
@@ -95,7 +118,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - gateway.networking.k8s.io
@@ -115,7 +137,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - k8s.mariadb.com
@@ -135,19 +156,14 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - neutron.openstack.c5c3.io
   resources:
   - neutronmetadataagents
-  - neutrons
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -164,8 +180,17 @@ rules:
   - neutrons/status
   verbs:
   - get
+  - update
+- apiGroups:
+  - neutron.openstack.c5c3.io
+  resources:
+  - neutrons
+  verbs:
+  - get
+  - list
   - patch
   - update
+  - watch
 - apiGroups:
   - ovn.openstack.c5c3.io
   resources:
@@ -185,7 +210,6 @@ rules:
   - get
   - list
   - patch
-  - update
   - watch
 - apiGroups:
   - rabbitmq.com
@@ -193,16 +217,12 @@ rules:
   - rabbitmqclusters
   verbs:
   - get
-  - list
-  - watch
 - apiGroups:
   - scheduling.k8s.io
   resources:
   - priorityclasses
   verbs:
   - get
-  - list
-  - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

@@ -10,7 +10,7 @@ suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should grant full CRUD on the Neutron CRs
+  - it: should grant get/list/watch/update on the Neutron CRs and patch on neutrons
     asserts:
       - contains:
           path: rules
@@ -19,17 +19,26 @@ tests:
               - neutron.openstack.c5c3.io
             resources:
               - neutronmetadataagents
+            verbs:
+              - get
+              - list
+              - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - neutron.openstack.c5c3.io
+            resources:
               - neutrons
             verbs:
-              - create
-              - delete
               - get
               - list
               - patch
               - update
               - watch
 
-  - it: should grant get/update/patch on the Neutron status subresource
+  - it: should grant get/update on the Neutron status subresource
     asserts:
       - contains:
           path: rules
@@ -41,7 +50,6 @@ tests:
               - neutrons/status
             verbs:
               - get
-              - patch
               - update
 
   - it: should grant update on the Neutron finalizers subresource
@@ -205,8 +213,6 @@ tests:
               - rabbitmqclusters
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant read-only on externalsecrets
     asserts:
@@ -250,8 +256,6 @@ tests:
               - priorityclasses
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant the leader-election verbs on leases
     asserts:
