@@ -131,6 +131,9 @@
 #                        fake compute) and fails above 4000m CPU or 16Gi
 #                        memory. Enforced under E2E_NODE_BUDGET=true (the
 #                        e2e-controlplane job); otherwise it prints a SKIP line.
+#   6a. Service status — status.services carries the eight services in their
+#                        stable order, every entry ready and at the start
+#                        release of 00-controlplane-cr.yaml.
 #   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`,
 #                        `openstack catalog list` (identity, image, placement,
 #                        key-manager, network AND block-storage), an image upload
@@ -161,6 +164,27 @@
 #                        public compute and placement row per scope, the admin
 #                        reach into services, hypervisors, aggregates and
 #                        Placement, and the test@cc3test scope.
+#   8a. Release patch  — 08-patch-upgrade.yaml moves spec.openStackRelease to
+#                        the next release; the webhook admits it, the new
+#                        generation reaches status.observedGeneration within
+#                        120s, and the nova entry of status.services stays
+#                        below the target while the Nova child has not
+#                        installed it.
+#   8b. Children       — each of the seven database children reports the
+#                        target as installedRelease with no targetRelease or
+#                        upgradePhase left, Ready at its current generation,
+#                        and the Horizon child converges on the target image
+#                        tag, all against one 30-minute deadline.
+#   8c. Deployments    — every Deployment of the eight children finishes its
+#                        rollout within 600s and runs ghcr.io/c5c3/<svc> at
+#                        the target tag.
+#   8d. Plane          — ControlPlane Ready=True (reason AllReady) at the
+#                        patched generation, and all eight status.services
+#                        entries at the target release and ready.
+#   8e. API after hop  — the verify Job of Link 7b, the port-event check of
+#                        Link 7c and the dashboard login of Link 2c run again
+#                        against the new release. The data plane (fake
+#                        compute, metadata agent) stays at the start release.
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
 # Ambiguity: the task says "follow tests/e2e/keystone/basic-deployment
@@ -230,8 +254,9 @@ spec:
   concurrent: false
   # The full chain (Galera bring-up + Keystone bootstrap + K-ORC mint + the
   # OpenBao round-trip + the dedicated OpenBao instance the Barbican store is
-  # provisioned against) is long-running, so the consolidated script and its
-  # diagnostic catch get generous bounds well above the 120s suite default.
+  # provisioned against + Link 8's release hop) is long-running, so the
+  # consolidated script and its diagnostic catch get generous bounds well
+  # above the 120s suite default.
   timeouts:
     assert: 5m
     exec: 30m
@@ -239,7 +264,10 @@ spec:
   # ── Step 1: Presence-gate, apply the ControlPlane, assert the chain ────────
   - try:
     - script:
-        timeout: 65m
+        # About 13 minutes of a green pass come before Link 8. Link 8 waits at
+        # most 2 + 30 + 10 + 5 + 5 + 25 minutes (patch, children, rollouts,
+        # Ready, status.services, verify Job) and a pass needs about 20.
+        timeout: 100m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone e2e script pins bash for the same reason.
         shell: bash
@@ -527,6 +555,263 @@ spec:
               -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}" 2>/dev/null || true
           }
 
+          # Both ends of Link 8's release hop, read from the fixtures: the
+          # start release from the ControlPlane CR, the target from the merge
+          # patch. The assertions below follow them; the keystone client pins
+          # of this script and the other start-release fixtures still move by
+          # hand (docs/contributing/adding-a-new-release.md lists them). awk
+          # stops at the first hit without a pipe, so no writer upstream takes
+          # a SIGPIPE under pipefail.
+          release_of() { awk -F'"' '/^[[:space:]]*openStackRelease:/ { print $2; exit }' "$1"; }
+          FROM_RELEASE="$(release_of 00-controlplane-cr.yaml)"
+          TO_RELEASE="$(release_of 08-patch-upgrade.yaml)"
+          if [ -z "${FROM_RELEASE}" ]; then
+            echo "ERROR: 00-controlplane-cr.yaml names no openStackRelease"; exit 1
+          fi
+          if [ -z "${TO_RELEASE}" ]; then
+            echo "ERROR: 08-patch-upgrade.yaml names no openStackRelease"; exit 1
+          fi
+          if [ "${FROM_RELEASE}" = "${TO_RELEASE}" ]; then
+            echo "ERROR: the hop starts and ends at ${FROM_RELEASE}"; exit 1
+          fi
+          echo "OK: the release hop moves the plane from ${FROM_RELEASE} to ${TO_RELEASE}"
+
+          # Poll status.services until each of the eight entries reads
+          # <release>/true. An entry carries the release its child reports
+          # installed, so it moves only once that child finished its upgrade.
+          wait_services_release() { # <release> <timeoutSeconds>
+            local want="$1" timeout="$2"
+            local deadline got name missing
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              got="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+                -o jsonpath='{range .status.services[*]}{.name}={.release}/{.ready}{" "}{end}' 2>/dev/null || true)"
+              missing=""
+              for name in keystone horizon glance placement barbican neutron cinder nova; do
+                case " ${got} " in
+                  *" ${name}=${want}/true "*) ;;
+                  *) missing="${missing} ${name}" ;;
+                esac
+              done
+              if [ -z "${missing}" ]; then
+                echo "OK: status.services reports all eight services at ${want} and ready"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: status.services did not report all eight services at ${want} and ready within ${timeout}s (last: '${got}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # Link 2c's dashboard login, run again by Link 8e after the release hop.
+          # A real login POST is the only check that exercises the dashboard's
+          # server-side Keystone path end-to-end: Django authenticates against
+          # OPENSTACK_KEYSTONE_URL and then lists the user's projects via the
+          # catalog interface selected by OPENSTACK_ENDPOINT_TYPE. A login-page
+          # GET renders without a live Keystone and misses both (which is how
+          # an unreachable keystoneEndpoint once passed CI). Success is the 302
+          # redirect plus a sessionid cookie; a failed login re-renders the
+          # form with HTTP 200.
+          horizon_login_round_trip() {
+            echo "== Horizon login POST (expect 302 + sessionid) =="
+            ADMIN_PW="$(kubectl get secret "${KEYSTONE_CR}-admin-credentials" -n "${CP_NS}" \
+              -o 'jsonpath={.data.password}' | base64 -d)"
+            kubectl run cp-horizon-login --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
+              -n "${CP_NS}" \
+              --env "HORIZON_BASE=http://${HORIZON_CR}.${CP_NS}.svc:8080" \
+              --env "OS_PASSWORD=${ADMIN_PW}" \
+              --command -- python3 - <<'PYEOF'
+          import http.cookiejar
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          base = os.environ['HORIZON_BASE']
+          login_url = base + '/auth/login/'
+          jar = http.cookiejar.CookieJar()
+          opener = urllib.request.build_opener(
+              urllib.request.HTTPCookieProcessor(jar), NoRedirect())
+          body = opener.open(login_url).read().decode()
+          token = re.search('name="csrfmiddlewaretoken" value="([^"]+)"', body).group(1)
+          form = urllib.parse.urlencode({
+              'csrfmiddlewaretoken': token,
+              'region': 'default',
+              'domain': 'Default',
+              'username': 'admin',
+              'password': os.environ['OS_PASSWORD'],
+          }).encode()
+          req = urllib.request.Request(login_url, data=form,
+                                       headers={'Referer': login_url})
+          try:
+              status = opener.open(req).status
+          except urllib.error.HTTPError as err:
+              status = err.code
+          assert status == 302, (
+              'login POST returned HTTP %s (expected 302); the dashboard could '
+              'not authenticate against Keystone' % status)
+          assert any(c.name == 'sessionid' for c in jar), \
+              'no sessionid cookie after the login redirect'
+          print('OK: dashboard login round-trip succeeded (302 + sessionid)')
+          PYEOF
+            echo "OK: Horizon authenticated against Keystone through the cluster-local endpoint"
+          }
+
+          # Link 7b's verify Job, run again by Link 8e after the release hop.
+          # Authenticate with the materialised admin clouds.yaml (the minted,
+          # OpenBao-round-tripped application credential) and prove a token can
+          # be issued and the identity service appears in the catalog. The Job
+          # manifest lives in a sibling fixture (01-openstack-verify-job.yaml); it
+          # runs in the ControlPlane namespace and mounts the per-CR
+          # k-orc-clouds-yaml Secret materialised there.
+          run_openstack_verify() {
+            echo "== openstack token issue + catalog list (cloud: admin) =="
+            kubectl delete job cp-openstack-verify -n "${CP_NS}" --ignore-not-found
+            kubectl apply -f 01-openstack-verify-job.yaml
+            # The Job runs dozens of openstack CLI calls in sequence (token issue,
+            # catalog list, five role-assignment lists, then the image, placement,
+            # secret and network round-trips), and with seven services up on the
+            # 4-vCPU CI node each call takes 15-25s: the run that added the network
+            # round-trip was still on `network show` when a 5m wait expired. The four
+            # block-storage round-trips add more than twenty calls of their own, most
+            # of them behind a poll on a volume reaching available. A 15m wait
+            # expired on three runs with every leg green and the Job inside its last
+            # one, the image-volume cache; the slowest needed about 16m. The compute
+            # round-trip adds a boot polled to ACTIVE, a port lookup and two
+            # metadata requests on top of that, so the wait is 25m, which sits
+            # inside the 100m step budget above.
+            kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=25m
+            echo "=== openstack client output ==="
+            # Fetch the Job log ONCE and assert on the captured text. `kubectl
+            # logs | grep -q` fails under pipefail exactly when it MATCHES:
+            # grep -q exits at the first hit and closes the pipe while kubectl is
+            # still streaming, so kubectl dies on EPIPE and pipefail turns the
+            # matched pipeline into a failure. The image round-trip output grew
+            # the log past the point where kubectl finishes writing before grep
+            # exits. A single capture also pins every assertion to one pod's log
+            # instead of re-selecting a pod per kubectl call.
+            #
+            # That pod is the Succeeded one, read by name. job/<name> resolves to
+            # the OLDEST pod (kubectl's log-pod sort ranks finished pods equal on
+            # phase, readiness and restarts, then puts the older first), which
+            # after a backoffLimit retry is the failed attempt: a Job that came
+            # good on its retry would fail every assertion below.
+            VERIFY_PODS="$(kubectl get pods -n "${CP_NS}" -l job-name=cp-openstack-verify \
+              --field-selector=status.phase=Succeeded -o name)"
+            VERIFY_POD="${VERIFY_PODS%%$'\n'*}"
+            test -n "${VERIFY_POD}" || { echo "ERROR: no Succeeded pod of cp-openstack-verify"; exit 1; }
+            VERIFY_LOGS="$(kubectl logs -n "${CP_NS}" "${VERIFY_POD}")"
+            printf '%s\n' "${VERIFY_LOGS}"
+            grep -qi "identity" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: identity (keystone) service not listed in the catalog"; exit 1; }
+            grep -qi "image" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: image (glance) service not listed in the catalog"; exit 1; }
+            grep -qi "placement" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: placement service not listed in the catalog"; exit 1; }
+            grep -qi "key-manager" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: key-manager (barbican) service not listed in the catalog"; exit 1; }
+            grep -qi "network" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: network service missing from the catalog"; exit 1; }
+            grep -qi "block-storage" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: block-storage (cinder) service not listed in the catalog"; exit 1; }
+            # The Job fails itself on a payload mismatch; this grep pins the positive
+            # line so a silently skipped round-trip cannot pass as a green Job.
+            grep -q "secret round-trip payload matches" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the Barbican secret round-trip did not confirm a matching payload"; exit 1; }
+            grep -q "OK: network round-trip" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the network round-trip did not confirm an ACTIVE network"; exit 1; }
+            grep -q "OK: region description round-trip" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the Keystone region description did not round-trip through openstack region show"; exit 1; }
+            grep -q "OK: volume round-trip" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the volume round-trip did not reach an available volume on the NFS backend"; exit 1; }
+            grep -q "OK: backup round-trip" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the backup round-trip did not create, restore and delete a backup"; exit 1; }
+            grep -q "OK: encrypted volume type" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the encrypted volume did not put exactly one key into Barbican and take it back out"; exit 1; }
+            grep -q "OK: image-volume cache" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the second create-from-image did not reuse the cached image volume"; exit 1; }
+            # The compute round-trip. The server and the port lines are matched
+            # WITH the node in them, so a server that landed anywhere else, or a
+            # port bound to another host, fails here instead of passing on a line
+            # that merely starts the same way.
+            grep -q "OK: compute service " <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: no nova-compute host reported up to the verify Job"; exit 1; }
+            # The host as the Job printed it, compared rather than only matched, so
+            # a mismatch names both sides instead of failing a silent grep. awk
+            # stops at the first hit without a pipe, which is the same reason the
+            # matches above use here-strings.
+            VERIFY_HOST="$(awk '/^OK: compute service .* up$/ { print $4; exit }' <<<"${VERIFY_LOGS}")"
+            assert_eq "the compute the verify Job saw is the labelled node" "${NODE}" "${VERIFY_HOST}"
+            grep -q "OK: server cp-server ACTIVE on ${NODE}" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: cp-server did not reach ACTIVE on node ${NODE}"; exit 1; }
+            grep -q "OK: port bound (ovs) on ${NODE}" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the server's port was not bound with vif_type ovs on node ${NODE}"; exit 1; }
+            grep -q "OK: metadata signed round-trip" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the signed metadata request did not answer 200 with the server's uuid, or a wrong signature was not refused"; exit 1; }
+            grep -q "OK: compute round-trip" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the compute round-trip did not boot and remove a server"; exit 1; }
+          }
+
+          # Link 7c's port-event check, run again by Link 8e after the release hop.
+          # Booting a server is the only thing in this suite that makes the two
+          # services call each other: neutron posts network-changed to the
+          # compute API as the notifier account, and nova answers it. The verify
+          # Job sees neither call, so the proof is in the two logs.
+          #
+          # Both are captured ONCE and matched with here-strings, the rule the
+          # verify-Job capture above documents: a `kubectl logs | grep -q`
+          # pipeline fails under pipefail exactly when it matches.
+          #
+          # The nova API's uWSGI access log prints the request path and the
+          # status on one line, so a 200 on os-server-external-events is the
+          # compute side of the exchange. The API Deployment carries the Nova
+          # CR's own name (the components take a suffix, the API does not).
+          assert_port_events() {
+            NOVA_API_LOGS="$(kubectl logs -n "${CP_NS}" "deploy/${NOVA_CR}" --tail=2000)"
+            if ! grep -Eq 'os-server-external-events.*200' <<<"${NOVA_API_LOGS}"; then
+              echo "ERROR: the nova API logged no os-server-external-events call answered 200; the notifier never reached it"
+              printf '%s\n' "${NOVA_API_LOGS}"
+              exit 1
+            fi
+            echo "OK: the nova API answered an os-server-external-events call with 200"
+            # The neutron side of the same exchange. A notifier whose account is
+            # too narrow still posts the event and still logs it, but nova answers
+            # 404 and neutron records the event as returned with failed status, so
+            # the absence of that line is what proves the roles are right.
+            #
+            # network-vif-deleted is deliberately NOT asserted: nova answers 404
+            # for an instance it has already destroyed whatever role the caller
+            # holds, so the teardown leaves a failed-status line no wiring can
+            # remove.
+            NEUTRON_LOGS="$(kubectl logs -n "${CP_NS}" "deploy/${NEUTRON_CR}" --tail=2000)"
+            if grep -Eq 'network-changed.*returned with failed status' <<<"${NEUTRON_LOGS}"; then
+              echo "ERROR: neutron recorded a network-changed event nova refused; the notifier account is too narrow"
+              printf '%s\n' "${NEUTRON_LOGS}"
+              exit 1
+            fi
+            echo "OK: no network-changed event came back from nova with a failed status"
+          }
+
+          # The suite never deletes its ControlPlane, so a second run on a
+          # reused cluster finds the one an earlier run's Link 8 moved to
+          # TO_RELEASE. The webhook refuses the move back, so the run stops
+          # here, before anything is applied. --ignore-not-found keeps an
+          # absent ControlPlane quiet while any other read error still stops
+          # the script.
+          EXISTING="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" --ignore-not-found \
+            -o jsonpath='{.spec.openStackRelease}')"
+          if [ -n "${EXISTING}" ] && [ "${EXISTING}" != "${FROM_RELEASE}" ]; then
+            echo "ERROR: ControlPlane ${CP_NS}/${CP_NAME} already runs openStackRelease ${EXISTING} from an earlier run's release hop; the webhook refuses the move back to ${FROM_RELEASE}. Delete it (kubectl delete controlplane ${CP_NAME} -n ${CP_NS}) and run the suite again."
+            exit 1
+          fi
+
           # Apply the ControlPlane CR now that the CRD presence guard has passed.
           # Chainsaw runs scripts with the test directory as CWD.
           kubectl apply -f 02-horizon-secret-key-externalsecret.yaml
@@ -615,7 +900,7 @@ spec:
           wait_cp_condition KeystoneReady 600
           assert_eq "Keystone projected with Dynamic credentialsMode" "Dynamic" \
             "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
-          assert_eq "Keystone image tag derived from openStackRelease" "2026.1" \
+          assert_eq "Keystone image tag derived from openStackRelease" "${FROM_RELEASE}" \
             "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Keystone database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -627,7 +912,7 @@ spec:
 
           # ── Link 2b: Horizon child (gated on KeystoneReady) ────────────────
           wait_cp_condition HorizonReady 600
-          assert_eq "Horizon image tag derived from openStackRelease" "2026.1" \
+          assert_eq "Horizon image tag derived from openStackRelease" "${FROM_RELEASE}" \
             "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Horizon cache clusterRef wired to infra" "openstack-memcached" \
             "$(kubectl get horizon "${HORIZON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
@@ -643,61 +928,9 @@ spec:
           assert_eq "Horizon CR owned by ControlPlane" "${CP_NAME}" "$(owner_of horizon "${HORIZON_CR}")"
 
           # ── Link 2c: Horizon dashboard login round-trip ────────────────────
-          # A real login POST is the only check that exercises the dashboard's
-          # server-side Keystone path end-to-end: Django authenticates against
-          # OPENSTACK_KEYSTONE_URL and then lists the user's projects via the
-          # catalog interface selected by OPENSTACK_ENDPOINT_TYPE. A login-page
-          # GET renders without a live Keystone and misses both (which is how
-          # an unreachable keystoneEndpoint once passed CI). Success is the 302
-          # redirect plus a sessionid cookie; a failed login re-renders the
-          # form with HTTP 200.
-          echo "== Horizon login POST (expect 302 + sessionid) =="
-          ADMIN_PW="$(kubectl get secret "${KEYSTONE_CR}-admin-credentials" -n "${CP_NS}" \
-            -o 'jsonpath={.data.password}' | base64 -d)"
-          kubectl run cp-horizon-login --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
-            -n "${CP_NS}" \
-            --env "HORIZON_BASE=http://${HORIZON_CR}.${CP_NS}.svc:8080" \
-            --env "OS_PASSWORD=${ADMIN_PW}" \
-            --command -- python3 - <<'PYEOF'
-          import http.cookiejar
-          import os
-          import re
-          import urllib.error
-          import urllib.parse
-          import urllib.request
-
-          class NoRedirect(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, req, fp, code, msg, headers, newurl):
-                  return None
-
-          base = os.environ['HORIZON_BASE']
-          login_url = base + '/auth/login/'
-          jar = http.cookiejar.CookieJar()
-          opener = urllib.request.build_opener(
-              urllib.request.HTTPCookieProcessor(jar), NoRedirect())
-          body = opener.open(login_url).read().decode()
-          token = re.search('name="csrfmiddlewaretoken" value="([^"]+)"', body).group(1)
-          form = urllib.parse.urlencode({
-              'csrfmiddlewaretoken': token,
-              'region': 'default',
-              'domain': 'Default',
-              'username': 'admin',
-              'password': os.environ['OS_PASSWORD'],
-          }).encode()
-          req = urllib.request.Request(login_url, data=form,
-                                       headers={'Referer': login_url})
-          try:
-              status = opener.open(req).status
-          except urllib.error.HTTPError as err:
-              status = err.code
-          assert status == 302, (
-              'login POST returned HTTP %s (expected 302); the dashboard could '
-              'not authenticate against Keystone' % status)
-          assert any(c.name == 'sessionid' for c in jar), \
-              'no sessionid cookie after the login redirect'
-          print('OK: dashboard login round-trip succeeded (302 + sessionid)')
-          PYEOF
-          echo "OK: Horizon authenticated against Keystone through the cluster-local endpoint"
+          # horizon_login_round_trip (Helpers) holds the check; Link 8e runs it again
+          # against the upgraded plane.
+          horizon_login_round_trip
 
           # ── Link 3: K-ORC ApplicationCredential (restricted:true, owned) ───
           wait_cp_condition KORCReady 600
@@ -812,7 +1045,7 @@ spec:
           # glance-api Deployment + db-sync against MariaDB and the S3 backend —
           # this is the live end-to-end proof the envtest chain simulates.
           wait_cp_condition GlanceReady 600
-          assert_eq "Glance image tag derived from openStackRelease" "2026.1" \
+          assert_eq "Glance image tag derived from openStackRelease" "${FROM_RELEASE}" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Glance database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -934,7 +1167,7 @@ spec:
           # placement-api Deployment + db-sync against MariaDB — this is the live
           # end-to-end proof the envtest chain simulates.
           wait_cp_condition PlacementReady 600
-          assert_eq "Placement image tag derived from openStackRelease" "2026.1" \
+          assert_eq "Placement image tag derived from openStackRelease" "${FROM_RELEASE}" \
             "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Placement database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -1117,7 +1350,7 @@ spec:
               -o "jsonpath={.status.conditions[?(@.type=='SecretStoresReady')].reason}")"
 
           # The child itself, on the Placement child's terms.
-          assert_eq "Barbican image tag derived from openStackRelease" "2026.1" \
+          assert_eq "Barbican image tag derived from openStackRelease" "${FROM_RELEASE}" \
             "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Barbican database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -1202,7 +1435,7 @@ spec:
 
           wait_cp_condition NeutronReady 900
 
-          assert_eq "Neutron image tag derived from openStackRelease" "2026.1" \
+          assert_eq "Neutron image tag derived from openStackRelease" "${FROM_RELEASE}" \
             "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Neutron database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -1284,7 +1517,7 @@ spec:
           # share before they report anything.
           wait_cp_condition CinderReady 900
 
-          assert_eq "Cinder image tag derived from openStackRelease" "2026.1" \
+          assert_eq "Cinder image tag derived from openStackRelease" "${FROM_RELEASE}" \
             "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
           assert_eq "Cinder database clusterRef wired to infra" "openstack-db" \
             "$(kubectl get cinders.cinder.openstack.c5c3.io "${CINDER_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
@@ -1418,7 +1651,7 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
               -o "jsonpath={.status.conditions[?(@.type=='ServiceAccountsReady')].reason}")"
 
-          assert_eq "Nova image tag derived from openStackRelease" "2026.1" \
+          assert_eq "Nova image tag derived from openStackRelease" "${FROM_RELEASE}" \
             "$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
 
           # Nova is the only service whose state lives in two logical databases:
@@ -1710,6 +1943,10 @@ spec:
           assert_eq "status.services reports exactly eight services" "8" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
               -o 'jsonpath={.status.services[*].name}' | wc -w | tr -d ' ')"
+          # Every entry carries the release its child reports installed. A
+          # child sets its installedRelease once its first db-sync completed,
+          # so the entries are polled rather than read once.
+          wait_services_release "${FROM_RELEASE}" 120
 
           # ── Link 6b: dynamic DB credential engine (no-static / revoke / iso) ─
           # Per-tenant role is keyed on the namespace alone (dbDynamicRoleFor /
@@ -1815,135 +2052,14 @@ spec:
           echo "OK: Keystone /v3 returned HTTP 200"
 
           # ── Link 7b: openstack token issue + catalog list ─────────────────
-          # Authenticate with the materialised admin clouds.yaml (the minted,
-          # OpenBao-round-tripped application credential) and prove a token can
-          # be issued and the identity service appears in the catalog. The Job
-          # manifest lives in a sibling fixture (01-openstack-verify-job.yaml); it
-          # runs in the ControlPlane namespace and mounts the per-CR
-          # k-orc-clouds-yaml Secret materialised there.
-          echo "== openstack token issue + catalog list (cloud: admin) =="
-          kubectl delete job cp-openstack-verify -n "${CP_NS}" --ignore-not-found
-          kubectl apply -f 01-openstack-verify-job.yaml
-          # The Job runs dozens of openstack CLI calls in sequence (token issue,
-          # catalog list, five role-assignment lists, then the image, placement,
-          # secret and network round-trips), and with seven services up on the
-          # 4-vCPU CI node each call takes 15-25s: the run that added the network
-          # round-trip was still on `network show` when a 5m wait expired. The four
-          # block-storage round-trips add more than twenty calls of their own, most
-          # of them behind a poll on a volume reaching available. A 15m wait
-          # expired on three runs with every leg green and the Job inside its last
-          # one, the image-volume cache; the slowest needed about 16m. The compute
-          # round-trip adds a boot polled to ACTIVE, a port lookup and two
-          # metadata requests on top of that, so the wait is 25m, which sits
-          # inside the 65m step budget above.
-          kubectl wait --for=condition=complete job/cp-openstack-verify -n "${CP_NS}" --timeout=25m
-          echo "=== openstack client output ==="
-          # Fetch the Job log ONCE and assert on the captured text. `kubectl
-          # logs | grep -q` fails under pipefail exactly when it MATCHES:
-          # grep -q exits at the first hit and closes the pipe while kubectl is
-          # still streaming, so kubectl dies on EPIPE and pipefail turns the
-          # matched pipeline into a failure. The image round-trip output grew
-          # the log past the point where kubectl finishes writing before grep
-          # exits. A single capture also pins every assertion to one pod's log
-          # instead of re-selecting a pod per kubectl call.
-          #
-          # That pod is the Succeeded one, read by name. job/<name> resolves to
-          # the OLDEST pod (kubectl's log-pod sort ranks finished pods equal on
-          # phase, readiness and restarts, then puts the older first), which
-          # after a backoffLimit retry is the failed attempt: a Job that came
-          # good on its retry would fail every assertion below.
-          VERIFY_PODS="$(kubectl get pods -n "${CP_NS}" -l job-name=cp-openstack-verify \
-            --field-selector=status.phase=Succeeded -o name)"
-          VERIFY_POD="${VERIFY_PODS%%$'\n'*}"
-          test -n "${VERIFY_POD}" || { echo "ERROR: no Succeeded pod of cp-openstack-verify"; exit 1; }
-          VERIFY_LOGS="$(kubectl logs -n "${CP_NS}" "${VERIFY_POD}")"
-          printf '%s\n' "${VERIFY_LOGS}"
-          grep -qi "identity" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: identity (keystone) service not listed in the catalog"; exit 1; }
-          grep -qi "image" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: image (glance) service not listed in the catalog"; exit 1; }
-          grep -qi "placement" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: placement service not listed in the catalog"; exit 1; }
-          grep -qi "key-manager" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: key-manager (barbican) service not listed in the catalog"; exit 1; }
-          grep -qi "network" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: network service missing from the catalog"; exit 1; }
-          grep -qi "block-storage" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: block-storage (cinder) service not listed in the catalog"; exit 1; }
-          # The Job fails itself on a payload mismatch; this grep pins the positive
-          # line so a silently skipped round-trip cannot pass as a green Job.
-          grep -q "secret round-trip payload matches" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the Barbican secret round-trip did not confirm a matching payload"; exit 1; }
-          grep -q "OK: network round-trip" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the network round-trip did not confirm an ACTIVE network"; exit 1; }
-          grep -q "OK: region description round-trip" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the Keystone region description did not round-trip through openstack region show"; exit 1; }
-          grep -q "OK: volume round-trip" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the volume round-trip did not reach an available volume on the NFS backend"; exit 1; }
-          grep -q "OK: backup round-trip" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the backup round-trip did not create, restore and delete a backup"; exit 1; }
-          grep -q "OK: encrypted volume type" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the encrypted volume did not put exactly one key into Barbican and take it back out"; exit 1; }
-          grep -q "OK: image-volume cache" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the second create-from-image did not reuse the cached image volume"; exit 1; }
-          # The compute round-trip. The server and the port lines are matched
-          # WITH the node in them, so a server that landed anywhere else, or a
-          # port bound to another host, fails here instead of passing on a line
-          # that merely starts the same way.
-          grep -q "OK: compute service " <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: no nova-compute host reported up to the verify Job"; exit 1; }
-          # The host as the Job printed it, compared rather than only matched, so
-          # a mismatch names both sides instead of failing a silent grep. awk
-          # stops at the first hit without a pipe, which is the same reason the
-          # matches above use here-strings.
-          VERIFY_HOST="$(awk '/^OK: compute service .* up$/ { print $4; exit }' <<<"${VERIFY_LOGS}")"
-          assert_eq "the compute the verify Job saw is the labelled node" "${NODE}" "${VERIFY_HOST}"
-          grep -q "OK: server cp-server ACTIVE on ${NODE}" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: cp-server did not reach ACTIVE on node ${NODE}"; exit 1; }
-          grep -q "OK: port bound (ovs) on ${NODE}" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the server's port was not bound with vif_type ovs on node ${NODE}"; exit 1; }
-          grep -q "OK: metadata signed round-trip" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the signed metadata request did not answer 200 with the server's uuid, or a wrong signature was not refused"; exit 1; }
-          grep -q "OK: compute round-trip" <<<"${VERIFY_LOGS}" \
-            || { echo "ERROR: the compute round-trip did not boot and remove a server"; exit 1; }
+          # run_openstack_verify (Helpers) holds the check; Link 8e runs it again
+          # against the upgraded plane.
+          run_openstack_verify
 
           # ── Link 7c: the port events the boot travelled on ─────────────────
-          # Booting a server is the only thing in this suite that makes the two
-          # services call each other: neutron posts network-changed to the
-          # compute API as the notifier account, and nova answers it. The verify
-          # Job sees neither call, so the proof is in the two logs.
-          #
-          # Both are captured ONCE and matched with here-strings, the rule the
-          # verify-Job capture above documents: a `kubectl logs | grep -q`
-          # pipeline fails under pipefail exactly when it matches.
-          #
-          # The nova API's uWSGI access log prints the request path and the
-          # status on one line, so a 200 on os-server-external-events is the
-          # compute side of the exchange. The API Deployment carries the Nova
-          # CR's own name (the components take a suffix, the API does not).
-          NOVA_API_LOGS="$(kubectl logs -n "${CP_NS}" "deploy/${NOVA_CR}" --tail=2000)"
-          if ! grep -Eq 'os-server-external-events.*200' <<<"${NOVA_API_LOGS}"; then
-            echo "ERROR: the nova API logged no os-server-external-events call answered 200; the notifier never reached it"
-            printf '%s\n' "${NOVA_API_LOGS}"
-            exit 1
-          fi
-          echo "OK: the nova API answered an os-server-external-events call with 200"
-          # The neutron side of the same exchange. A notifier whose account is
-          # too narrow still posts the event and still logs it, but nova answers
-          # 404 and neutron records the event as returned with failed status, so
-          # the absence of that line is what proves the roles are right.
-          #
-          # network-vif-deleted is deliberately NOT asserted: nova answers 404
-          # for an instance it has already destroyed whatever role the caller
-          # holds, so the teardown leaves a failed-status line no wiring can
-          # remove.
-          NEUTRON_LOGS="$(kubectl logs -n "${CP_NS}" "deploy/${NEUTRON_CR}" --tail=2000)"
-          if grep -Eq 'network-changed.*returned with failed status' <<<"${NEUTRON_LOGS}"; then
-            echo "ERROR: neutron recorded a network-changed event nova refused; the notifier account is too narrow"
-            printf '%s\n' "${NEUTRON_LOGS}"
-            exit 1
-          fi
-          echo "OK: no network-changed event came back from nova with a failed status"
+          # assert_port_events (Helpers) holds the check; Link 8e runs it again
+          # against the upgraded plane.
+          assert_port_events
 
           # ── Link 7d: the hypervisor operator's account ─────────────────────
           # spec.services.nova.hypervisorOperator has the plane write the auth
@@ -2023,7 +2139,171 @@ spec:
             grep -q "${line}" <<<"${HVO_LOGS}" \
               || { echo "ERROR: the hypervisor-operator Job printed no '${line}' line"; exit 1; }
           done
-          echo "OK: token issued, identity + image + placement + key-manager + network + block-storage + compute services catalogued, the image, placement, secret, network, volume, backup, encryption, cache and compute round-trips passed, and the hypervisor operator's account reaches what it needs — full chain verified."
+
+          # ── Link 8a: patch spec.openStackRelease to the next release ──────
+          # The day-2 release upgrade of docs/guides/day-2-operations.md: one
+          # merge patch of spec.openStackRelease on the live plane, which the
+          # webhook admits only for the sequential successor. The generations
+          # are validated as integers before they are compared, so an empty
+          # read cannot pass for "not greater".
+          G0="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o jsonpath='{.metadata.generation}')"
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge --patch-file 08-patch-upgrade.yaml \
+            || { echo "ERROR: the ControlPlane webhook refused openStackRelease ${TO_RELEASE}"; exit 1; }
+          G1="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o jsonpath='{.metadata.generation}')"
+          if ! [[ "${G0}" =~ ^[0-9]+$ && "${G1}" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: could not read metadata.generation (before '${G0}', after '${G1}')"; exit 1
+          fi
+          if [ "${G1}" -le "${G0}" ]; then
+            echo "ERROR: the patch left metadata.generation at ${G0}; spec.openStackRelease did not change"; exit 1
+          fi
+          echo "OK: spec.openStackRelease patched to ${TO_RELEASE} (generation ${G0} -> ${G1})"
+          OBSERVED_DEADLINE=$(( $(date +%s) + 120 ))
+          while true; do
+            OBSERVED="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o jsonpath='{.status.observedGeneration}' 2>/dev/null || true)"
+            if [ "${OBSERVED}" = "${G1}" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "${OBSERVED_DEADLINE}" ]; then
+              echo "ERROR: ControlPlane status.observedGeneration did not reach ${G1} within 120s (last: '${OBSERVED}')"; exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: ControlPlane status.observedGeneration reached ${G1}"
+          # The nova entry has to follow the Nova child, not the spec. The entry
+          # is read first and the child after it: the entry reaches the target
+          # only after the child did, and a child never moves back, so an entry
+          # at the target beside a child below it is never a race between the
+          # two reads. Nova runs the longest upgrade of the eight, so its child
+          # is still below the target this early.
+          NOVA_ENTRY="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+            -o jsonpath='{.status.services[?(@.name=="nova")].release}')"
+          NOVA_INSTALLED="$(kubectl get novas.nova.openstack.c5c3.io "${NOVA_CR}" -n "${CP_NS}" \
+            -o jsonpath='{.status.installedRelease}')"
+          if [ "${NOVA_ENTRY}" = "${TO_RELEASE}" ] && [ "${NOVA_INSTALLED}" != "${TO_RELEASE}" ]; then
+            echo "ERROR: status.services reports nova at ${TO_RELEASE} while the Nova child still reports installedRelease '${NOVA_INSTALLED}'; the entry must follow the child, not spec.openStackRelease"
+            exit 1
+          fi
+          echo "OK: status.services holds nova at '${NOVA_ENTRY}' while the Nova child reports installedRelease '${NOVA_INSTALLED}'"
+
+          # ── Link 8b: every child installs the next release ────────────────
+          # One deadline for all of them: the eight children upgrade side by
+          # side against the one MariaDB, so their waits share the budget. A
+          # database child is done when it reports the target installed, has
+          # no upgrade in flight (Placement and Barbican carry no upgradePhase,
+          # and the empty read passes) and is Ready at its current generation.
+          HOP_DEADLINE=$(( $(date +%s) + 1800 ))
+          wait_child_release() { # <resource> <name>
+            local res="$1" name="$2"
+            local got installed target phase observed generation ready
+            while true; do
+              got="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+                -o jsonpath='{.status.installedRelease}|{.status.targetRelease}|{.status.upgradePhase}|{.status.observedGeneration}|{.metadata.generation}|{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+              IFS='|' read -r installed target phase observed generation ready <<<"${got}"
+              if [ "${installed}" = "${TO_RELEASE}" ] && [ -z "${target}" ] && [ -z "${phase}" ] \
+                && [ -n "${generation}" ] && [ "${observed}" = "${generation}" ] && [ "${ready}" = "True" ]; then
+                echo "OK: ${res}/${name} installed ${TO_RELEASE}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${HOP_DEADLINE}" ]; then
+                echo "ERROR: ${res}/${name} did not finish the upgrade to ${TO_RELEASE} by the hop deadline (installedRelease='${installed}', targetRelease='${target}', upgradePhase='${phase}', observedGeneration=${observed}/generation=${generation}, Ready='${ready}')"
+                return 1
+              fi
+              sleep 10
+            done
+          }
+          wait_child_release keystones.keystone.openstack.c5c3.io "${KEYSTONE_CR}"
+          wait_child_release glances.glance.openstack.c5c3.io "${GLANCE_CR}"
+          wait_child_release placements.placement.openstack.c5c3.io "${PLACEMENT_CR}"
+          wait_child_release barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}"
+          wait_child_release neutrons.neutron.openstack.c5c3.io "${NEUTRON_CR}"
+          wait_child_release cinders.cinder.openstack.c5c3.io "${CINDER_CR}"
+          wait_child_release novas.nova.openstack.c5c3.io "${NOVA_CR}"
+          # Horizon has no installedRelease: it is done when its image tag is the
+          # target and it reports Ready for the generation that carries it.
+          while true; do
+            HZ="$(kubectl get horizons.horizon.openstack.c5c3.io "${HORIZON_CR}" -n "${CP_NS}" \
+              -o jsonpath='{.spec.image.tag}|{.status.observedGeneration}|{.metadata.generation}|{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+            IFS='|' read -r HZ_TAG HZ_OBSERVED HZ_GENERATION HZ_READY <<<"${HZ}"
+            if [ "${HZ_TAG}" = "${TO_RELEASE}" ] && [ -n "${HZ_GENERATION}" ] \
+              && [ "${HZ_OBSERVED}" = "${HZ_GENERATION}" ] && [ "${HZ_READY}" = "True" ]; then
+              echo "OK: horizons/${HORIZON_CR} converged on image tag ${TO_RELEASE}"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${HOP_DEADLINE}" ]; then
+              echo "ERROR: horizons/${HORIZON_CR} did not converge on image tag ${TO_RELEASE} by the hop deadline (tag='${HZ_TAG}', observedGeneration=${HZ_OBSERVED}/generation=${HZ_GENERATION}, Ready='${HZ_READY}')"
+              exit 1
+            fi
+            sleep 10
+          done
+
+          # ── Link 8c: every child Deployment runs the next release ─────────
+          # The labels are the ones every service operator puts on its
+          # workloads (internal/common/naming CommonLabels), so the fake compute
+          # and the metadata agent, which carry other names, drop out: the data
+          # plane stays at the start release. A service image is matched with
+          # its colon, which keeps keystone-federation-proxy out of keystone's.
+          ROLLOUT_DEADLINE=$(( $(date +%s) + 600 ))
+          for pair in "keystone ${KEYSTONE_CR}" "horizon ${HORIZON_CR}" "glance ${GLANCE_CR}" \
+            "placement ${PLACEMENT_CR}" "barbican ${BARBICAN_CR}" "neutron ${NEUTRON_CR}" \
+            "cinder ${CINDER_CR}" "nova ${NOVA_CR}"; do
+            app="${pair%% *}"
+            instance="${pair#* }"
+            DEPLOYS="$(kubectl get deploy -n "${CP_NS}" \
+              -l "app.kubernetes.io/name=${app},app.kubernetes.io/instance=${instance}" -o name)"
+            if [ -z "${DEPLOYS}" ]; then
+              echo "ERROR: no Deployment carries app.kubernetes.io/name=${app},app.kubernetes.io/instance=${instance}"; exit 1
+            fi
+            while IFS= read -r deploy; do
+              left=$(( ROLLOUT_DEADLINE - $(date +%s) ))
+              if [ "${left}" -le 0 ]; then
+                echo "ERROR: the child Deployments did not finish rolling out within 600s"; exit 1
+              fi
+              kubectl rollout status "${deploy}" -n "${CP_NS}" --timeout="${left}s" \
+                || { echo "ERROR: the child Deployments did not finish rolling out within 600s (${deploy})"; exit 1; }
+              IMAGES="$(kubectl get "${deploy}" -n "${CP_NS}" \
+                -o jsonpath='{range .spec.template.spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.template.spec.containers[*]}{.image}{"\n"}{end}')"
+              matched=0
+              while IFS= read -r image; do
+                case "${image}" in
+                  "ghcr.io/c5c3/${app}:"*)
+                    matched=$(( matched + 1 ))
+                    case "${image}" in
+                      *":${TO_RELEASE}") ;;
+                      *) echo "ERROR: ${deploy} runs ${image}, not ghcr.io/c5c3/${app}:${TO_RELEASE}"; exit 1 ;;
+                    esac
+                    ;;
+                esac
+              done <<<"${IMAGES}"
+              if [ "${matched}" -eq 0 ]; then
+                echo "ERROR: ${deploy} runs no ghcr.io/c5c3/${app} container"; exit 1
+              fi
+              echo "OK: ${deploy} rolled out on ghcr.io/c5c3/${app}:${TO_RELEASE}"
+            done <<<"${DEPLOYS}"
+          done
+
+          # ── Link 8d: the plane is Ready at the patched generation ─────────
+          wait_cp_condition Ready 300
+          assert_eq "Aggregate Ready reason after the hop" "AllReady" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
+          assert_eq "ControlPlane status.observedGeneration after the hop" "${G1}" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.observedGeneration}')"
+          wait_services_release "${TO_RELEASE}" 300
+          assert_eq "status.services reports exactly eight services after the hop" "8" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o 'jsonpath={.status.services[*].name}' | wc -w | tr -d ' ')"
+
+          # ── Link 8e: the authenticated checks against the next release ────
+          # The token issue proves the application credential the plane created
+          # before the hop still authenticates after the Keystone migration, and
+          # every round trip, the server boot on the start-release fake compute
+          # included, now goes through the upgraded APIs. The hypervisor
+          # operator's Job (Link 7d) is not rerun: the hop does not change what
+          # that account reaches.
+          run_openstack_verify
+          assert_port_events
+          horizon_login_round_trip
+          echo "OK: token issued, identity + image + placement + key-manager + network + block-storage + compute services catalogued, the image, placement, secret, network, volume, backup, encryption, cache and compute round-trips passed, and the hypervisor operator's account reaches what it needs; the plane moved from ${FROM_RELEASE} to ${TO_RELEASE}, every child installed it, every Deployment runs it, and the verify Job, the port events and the dashboard login pass against it — full chain verified."
     catch:
     - script:
         # Pinned, because chainsaw applies the test's exec budget to EVERY
@@ -2173,13 +2453,29 @@ spec:
             echo "--- ${pod} ---"
             kubectl logs -n openstack "${pod}" --tail=400 2>&1 || true
           done
+          echo "=== Release hop: child upgrade state ==="
+          # Where Link 8 stalled: each child's installed and target release, its
+          # upgrade phase and generations, the phase Jobs the upgrades run, what
+          # status.services reports, and the MariaDB all eight migrate against.
+          for res in keystones.keystone.openstack.c5c3.io glances.glance.openstack.c5c3.io \
+            placements.placement.openstack.c5c3.io barbicans.barbican.openstack.c5c3.io \
+            neutrons.neutron.openstack.c5c3.io cinders.cinder.openstack.c5c3.io \
+            novas.nova.openstack.c5c3.io; do
+            kubectl get "${res}" -n openstack \
+              -o custom-columns=NAME:.metadata.name,INSTALLED:.status.installedRelease,TARGET:.status.targetRelease,PHASE:.status.upgradePhase,OBSERVED:.status.observedGeneration,GEN:.metadata.generation 2>&1 || true
+          done
+          kubectl get horizons.horizon.openstack.c5c3.io controlplane-keystone-horizon -n openstack \
+            -o jsonpath='{.spec.image.tag}{"\n"}' 2>&1 || true
+          kubectl get jobs -n openstack -o wide 2>&1 || true
+          kubectl get controlplane controlplane-keystone -n openstack -o jsonpath='{.status.services}{"\n"}' 2>&1 || true
+          kubectl logs -n openstack openstack-db-0 -c mariadb --tail=100 2>&1 || true
           echo "=== Events (openstack ns, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
     finally:
     - script:
         # Pinned for the same reason as catch above; one delete needs nothing
         # like the test's exec budget. Keeps the suite's ceiling at
-        # exec + catch + finally + cleanup = 65 + 5 + 5 + 5 + 2 + 3 = 85m, which is
+        # exec + catch + finally + cleanup = 100 + 5 + 5 + 5 + 2 + 3 = 120m, which is
         # the number .github/workflows/ci.yaml budgets against.
         timeout: 5m
         shell: bash
