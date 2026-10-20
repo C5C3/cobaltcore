@@ -433,13 +433,16 @@ jobs:
               - 'package-lock.json'
             # The operator charts share the operator-library library chart and a
             # values.schema.json generator, so a change to any chart, the shared
-            # library, either generator, or the Makefile targets behind them
-            # must re-run Helm validation.
+            # library, either generator, the released-values check and its
+            # waiver list, or the Makefile targets behind them must re-run Helm
+            # validation.
             helm:
               - 'operators/*/helm/**'
               - 'deploy/target-cluster/**'
               - 'hack/gen-helm-values-schema.py'
               - 'hack/gen-helm-rbac-rules.py'
+              - 'hack/verify-helm-released-values.sh'
+              - 'hack/helm-removed-values.yaml'
               - 'Makefile'
             # The target-cluster-access chart is published outside the
             # per-operator helm-push matrix, so it needs its own gate.
@@ -970,9 +973,11 @@ jobs:
   # helm-unittest for every operator chart to catch regressions early without a
   # cluster. The charts share the operator-library subchart and a generated
   # values.schema.json, so the job verifies the schema is in sync and vendors
-  # the subchart (make helm-deps) before rendering. The chart list is the
-  # operators/*/helm/*-operator glob, so a new operator chart that follows the
-  # directory convention is validated without editing this job.
+  # the subchart (make helm-deps) before rendering. It also renders every
+  # operator chart with the values.yaml of its released chart, so a removed or
+  # renamed value fails here before a deployment's helm upgrade. The chart list
+  # is the operators/*/helm/*-operator glob, so a new operator chart that follows
+  # the directory convention is validated without editing this job.
   helm-validate:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'
@@ -1069,6 +1074,15 @@ jobs:
             echo "--- unittest $chart ---"
             helm unittest "$chart"
           done
+      # Renders every operator chart with the values.yaml of its released chart,
+      # the highest tag under oci://ghcr.io/c5c3/charts, pulled without a login,
+      # so a removed or renamed key fails here instead of at a deployment's
+      # helm upgrade. An intended removal is waived in
+      # hack/helm-removed-values.yaml. The render is its own step because the
+      # cinder and nova matrix tests replay every helm template line of the
+      # Helm template step.
+      - name: Render the released chart values
+        run: make verify-helm-released-values
       # The target-cluster-access chart is validated on its own: it has no
       # subchart, no values.schema.json, and none of the operator scenarios the
       # loops above render (webhook, RBAC scope, image resources). Its own
