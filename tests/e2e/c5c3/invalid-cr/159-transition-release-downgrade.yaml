@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE lowering spec.openStackRelease of the accepted base from 2026.2 to
+# 2026.1 is rejected by the validating webhook (validateReleaseNotDowngraded):
+# the migrations are forward-only, so a lower release would project an older
+# image onto an already-migrated schema. The release is the only change against
+# the base, and 2026.1 is the release floor, so the downgrade error is the only
+# one. Webhook-only, no CEL transition rule.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-i
+spec:
+  openStackRelease: "2026.1"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

@@ -25,6 +25,8 @@ Coverage:
   direction, including orphan files) fails the unit test.
 * The webhook name the negative arms in ``chainsaw-test.yaml`` scan for is the
   one the Helm chart registers, so those arms cannot go vacuous behind a rename.
+* The release-downgrade pair lowers only spec.openStackRelease, from a release
+  above ``VALID_RELEASE`` to ``VALID_RELEASE``.
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ _CHART_WEBHOOK_TEMPLATE = (
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 158
+_EXPECTED_FIXTURE_COUNT = 160
 
 
 def _load_generator() -> types.ModuleType:
@@ -156,6 +158,27 @@ class TestFixtures(unittest.TestCase):
                 rendered.index("\n  korc:\n"),
                 f"{fixture.filename} must render the assignments before korc",
             )
+
+    def test_release_downgrade_pair_lowers_only_the_release(self) -> None:
+        # c5c3-invalid-cr-release-downgrade expects the update from 158 to 159 to
+        # draw the downgrade error alone. That needs 159 at VALID_RELEASE (the
+        # floor), 158 above it, and no other difference. A pair at one release
+        # is admitted, which only the cluster-bound e2e-operator job would see.
+        by_name = {fixture.filename: fixture for fixture in self.generator.FIXTURES}
+        base = by_name["158-transition-base-release.yaml"]
+        down = by_name["159-transition-release-downgrade.yaml"]
+        self.assertEqual(down.release, self.generator.VALID_RELEASE)
+        base_key, down_key = (tuple(map(int, f.release.split("."))) for f in (base, down))
+        self.assertGreater(base_key, down_key)
+        base_lines, down_lines = (
+            [
+                line
+                for line in f.render().splitlines()
+                if not line.startswith("#") and "openStackRelease:" not in line
+            ]
+            for f in (base, down)
+        )
+        self.assertEqual(base_lines, down_lines)
 
     def test_webhook_name_matches_deployed_chart(self) -> None:
         # The negative arms on the CEL steps assert the rejection carries NO

@@ -1607,3 +1607,28 @@ spec:
     # projects a new satellite.
     - apply:
         file: 156-transition-cinder-backup-rename-to-rbd.yaml
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  # Own ephemeral namespace so the accepted base persists (see the sibling
+  # transition waves).
+  name: c5c3-invalid-cr-release-downgrade
+spec:
+  steps:
+  - try:
+    # Base CR (brownfield, keystone unset, one release above the floor) must be
+    # admitted. It projects no service child, so it provisions nothing.
+    - apply:
+        file: 158-transition-base-release.yaml
+    # Lowering openStackRelease on the live ControlPlane is rejected: the
+    # migrations are forward-only, so the lower release would project an older
+    # image onto an already-migrated schema. Webhook-only (no CEL rule).
+    - apply:
+        file: 159-transition-release-downgrade.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.openStackRelease')): true
+            (contains($error, 'openStackRelease downgrade from')): true
+            (contains($error, 'is not permitted; Keystone DB migrations are not reversible')): true
