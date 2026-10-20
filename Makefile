@@ -189,6 +189,8 @@ shellcheck:
 	@shellcheck --severity=warning tests/e2e-chaos/lib/*.sh tests/e2e-chaos/*/probe-lib.sh
 	@echo "Linting the lab failover library..."
 	@shellcheck --severity=warning tests/lab-failover/lib/*.sh
+	@echo "Linting the shared e2e suite scripts..."
+	@shellcheck --severity=warning tests/e2e/lib/*.sh
 	@echo "Linting the image patch checks..."
 	@shellcheck --severity=warning images/*/patch-checks.sh
 
