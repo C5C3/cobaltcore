@@ -1,0 +1,146 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Performance
+
+# Measures the keystone-operator every night against the committed baseline,
+# tests/perf/baseline.json: the p50/p99 of Keystone token issue and validate
+# (hack/perf-token-baseline.sh) and the reconcile latency of 1 and 3 Keystone
+# CRs (hack/perf-reconcile-benchmark.sh). hack/perf-baseline.py compare fails
+# the run when a latency is more than 20 % above its baseline, the tolerance
+# #625 Phase 8 named, and exits 2 when the baseline is of another release than
+# the one measured, so a release move forces a new baseline.
+#
+# The operator is the keystone-operator:latest image every main push publishes,
+# deployed with the chart of the checked-out commit. A red night fails the run
+# and GitHub notifies the user who last changed the cron line of this file; the
+# workflow opens no issue (#1388 can adopt it into its per-suite reporting).
+#
+# A workflow of its own rather than a trigger on ci.yaml: every ci.yaml job
+# gates on pull_request or on the changes resolver, and
+# hack/ci-resolve-changes.sh knows two event types.
+# docs/reference/testing/reconcile-performance-benchmark.md describes the
+# measurements and how to re-baseline.
+
+"on":
+  schedule:
+    # Nightly at 01:30 UTC
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+# One night at a time; a second dispatch waits instead of cancelling a
+# measurement half way through.
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_PREFIX: ghcr.io/c5c3
+  # Kind cluster name, as in ci.yaml.
+  KIND_CLUSTER: cobaltcore
+  # kind binary version, in lockstep with ci.yaml and hack/install-test-deps.sh
+  # (tests/unit/renovate/workflow_pins_custommanager_test.sh asserts the three
+  # match; the Renovate kind group bumps them in one pull request).
+  KIND_VERSION: v0.33.0
+
+jobs:
+  baseline:
+    runs-on: self-hosted
+    # About 45 minutes: the stack, 10 minutes of token traffic, two reconcile
+    # counts with a 120 s settle each, and the Keystone bring-ups between them.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The oldest release keystone ships a service image for; the baseline
+      # records it, and compare refuses a measurement of another release.
+      - name: Resolve the release
+        run: |
+          release="$(OPERATOR=keystone hack/ci-service-image-releases.sh | head -n1)"
+          if [ -z "${release}" ]; then
+            echo "::error::keystone ships no service image release"
+            exit 1
+          fi
+          echo "RELEASE=${release}" >> "$GITHUB_ENV"
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      # The images below are published packages; packages: read above is what
+      # the token carries.
+      - name: Log in to GHCR
+        uses: ./.github/actions/registry-login
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # hack/ci-deploy-operator.sh installs with imagePullPolicy=Never, and
+      # the Keystone CRs and the token workload pod run the two service
+      # images, so all three are loaded into the node.
+      - name: Pull and load the images
+        run: |
+          for image in \
+            "${IMAGE_PREFIX}/keystone-operator:latest" \
+            "${IMAGE_PREFIX}/keystone:${RELEASE}" \
+            "${IMAGE_PREFIX}/tempest:${RELEASE}"; do
+            docker pull "${image}"
+            kind load docker-image "${image}" --name "${KIND_CLUSTER}"
+          done
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+      - name: Deploy keystone operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          IMAGE_TAG: latest
+          NAMESPACE: keystone-system
+          # One replica: the reconcile benchmark scrapes the metrics through a
+          # port-forward to the Deployment, and only the leader reconciles.
+          OPERATOR_REPLICAS: "1"
+      - name: Measure token issue and validate
+        run: hack/perf-token-baseline.sh
+        env:
+          IMAGE_TAG: ${{ env.RELEASE }}
+          CHAOS_WORKLOAD_IMAGE: ${{ env.IMAGE_PREFIX }}/tempest:${{ env.RELEASE }}
+          RESULT_JSON: _output/perf/token.json
+      # Two counts, not the default 1 5 25: 25 CRs do not fit a runner. The
+      # gate is the steady-state SLO of
+      # docs/reference/keystone-operator-metrics.md.
+      - name: Measure reconcile latency
+        run: hack/perf-reconcile-benchmark.sh
+        env:
+          CR_COUNTS: "1 3"
+          SETTLE_SECONDS: "120"
+          GATE_P95_SECONDS: "2"
+          IMAGE_TAG: ${{ env.RELEASE }}
+          RESULT_JSON: _output/perf/reconcile.json
+      # After both measurements, so a failed measurement leaves no comparison.
+      - name: Compare against the baseline
+        run: |
+          python3 hack/perf-baseline.py compare \
+            --baseline tests/perf/baseline.json \
+            --tolerance-percent 20 \
+            --measured _output/perf/token.json _output/perf/reconcile.json
+      - name: Upload performance results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: performance-results
+          path: _output/perf/
+          retention-days: 90
+      - name: Dump diagnostic info
+        if: failure()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: keystone
+      # Last step of the job, so the dump above still had a cluster to read.
+      # Never fails the job (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh

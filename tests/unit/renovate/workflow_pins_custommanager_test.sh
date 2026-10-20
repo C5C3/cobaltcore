@@ -15,11 +15,13 @@
 # For each: regex must capture the literal in the workflow file that pins it,
 # and the paired packageRule must disable majors and automerge minor/patch.
 #
-# KIND_VERSION carries one extra obligation. It is pinned twice — in ci.yaml for
-# the e2e clusters and in hack/install-test-deps.sh for local development — and the
-# two must agree, or CI and a developer's kind enforce NetworkPolicy egress
-# differently. Renovate must therefore bump both in ONE pull request; ungrouped it
-# would open two, each leaving the lockstep assertion below red.
+# KIND_VERSION carries one extra obligation. It is pinned three times — in ci.yaml
+# for the e2e clusters, in performance.yaml for the nightly's cluster and in
+# hack/install-test-deps.sh for local development — and the three must agree, or
+# CI, the nightly and a developer's kind enforce NetworkPolicy egress
+# differently. Renovate must therefore bump all three in ONE pull request, and
+# both kind packageRules must name every file; ungrouped it would open several,
+# each leaving the lockstep assertion below red.
 #
 # Usage: bash tests/unit/renovate/workflow_pins_custommanager_test.sh
 
@@ -34,6 +36,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 
@@ -43,6 +47,7 @@ TOOLS=(
   "GOFUMPT_VERSION:mvdan/gofumpt:.github/workflows/ci.yaml"
   "GOLANGCI_LINT_VERSION:golangci/golangci-lint:.github/workflows/ci.yaml"
   "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/ci.yaml"
+  "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/performance.yaml"
   "YQ_VERSION:mikefarah/yq:.github/workflows/verify-container-images.yaml"
   "ACTIONLINT_VERSION:rhysd/actionlint:.github/workflows/ci.yaml"
 )
@@ -103,20 +108,15 @@ test_each_workflow_pin_has_manager() {
 }
 
 test_kind_version_is_pinned_in_lockstep() {
-  echo "Test: the kind pins in ci.yaml and install-test-deps.sh agree, and bump together"
+  echo "Test: the kind pins in ci.yaml, performance.yaml and install-test-deps.sh agree, and bump together"
 
-  if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (3 checks skipped)"
-    SKIP=$((SKIP + 3))
-    return
-  fi
-
-  local ci_file install_file ci_kind install_kind
+  local ci_file perf_file install_file ci_kind perf_kind install_kind
   ci_file="$PROJECT_ROOT/.github/workflows/ci.yaml"
+  perf_file="$PROJECT_ROOT/.github/workflows/performance.yaml"
   install_file="$PROJECT_ROOT/hack/install-test-deps.sh"
 
-  ci_kind="$(sed -n 's/^[[:space:]]*KIND_VERSION:[[:space:]]*"\{0,1\}\(v[0-9.]*\)"\{0,1\}[[:space:]]*$/\1/p' \
-    "$ci_file" | head -1)"
+  ci_kind="$(workflow_kind_pin "$ci_file")"
+  perf_kind="$(workflow_kind_pin "$perf_file")"
   install_kind="$(sed -n 's/^KIND_VERSION="\(v[0-9.]*\)"$/\1/p' "$install_file" | head -1)"
 
   assert_not_empty "ci.yaml pins KIND_VERSION" "$ci_kind"
@@ -124,6 +124,13 @@ test_kind_version_is_pinned_in_lockstep() {
   # local development installs a newer kind is how a NetworkPolicy egress posture
   # that only holds on one of them reaches main unnoticed.
   assert_eq "the ci.yaml and install-test-deps.sh kind pins agree" "$install_kind" "$ci_kind"
+  assert_eq "the ci.yaml and performance.yaml kind pins agree" "$ci_kind" "$perf_kind"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (3 checks skipped)"
+    SKIP=$((SKIP + 3))
+    return
+  fi
 
   # One group, so Renovate bumps both files in a single pull request. Two rules
   # would open two, and each would fail the assertion above until the other landed.
@@ -133,6 +140,20 @@ test_kind_version_is_pinned_in_lockstep() {
     | select(((.matchUpdateTypes // []) | index("minor")) != null)
     | .groupName] | unique | join(",")' "$RENOVATE_FILE")"
   assert_eq "exactly one Renovate group owns the kind pins" "kind" "$groups"
+
+  # Both kind packageRules, the major-disable and the minor/patch group, name
+  # every pinning file. A rule that leaves one out lets Renovate move that pin
+  # alone, or not at all.
+  local rules files
+  rules="$(jq '[.packageRules[]
+    | select(((.matchPackageNames // []) | index("kubernetes-sigs/kind")) != null)] | length' \
+    "$RENOVATE_FILE")"
+  assert_eq "two packageRules cover kind" "2" "$rules"
+  files="$(jq -r '[.packageRules[]
+    | select(((.matchPackageNames // []) | index("kubernetes-sigs/kind")) != null)
+    | (.matchFileNames // []) | sort | join(",")] | unique | join(" ")' "$RENOVATE_FILE")"
+  assert_eq "both kind packageRules list the three pinning files" \
+    ".github/workflows/ci.yaml,.github/workflows/performance.yaml,hack/install-test-deps.sh" "$files"
 }
 
 test_workflow_pins_share_a_package_rule() {
