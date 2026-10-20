@@ -290,10 +290,14 @@ jobs:
               - 'tests/e2e/keystone-operator/**'
               # The namespace-scoped-rbac suites of keystone, horizon, glance,
               # placement, barbican, cinder and nova run the shared proof
-              # script under tests/e2e/lib/, so those seven filters list it.
+              # script under tests/e2e/lib/, and their env-key-material suites
+              # the environment scan beside it, so those seven filters list the
+              # directory. c5c3, ovn and neutron run the scan alone and list
+              # that one script, so an edit to the proof does not run them.
               - 'tests/e2e/lib/**'
             tests_e2e_c5c3:
               - 'tests/e2e/c5c3/**'
+              - 'tests/e2e/lib/assert-operator-env-clean.sh'
             tests_e2e_horizon:
               - 'tests/e2e/horizon/**'
               - 'tests/e2e/horizon-operator/**'
@@ -312,8 +316,12 @@ jobs:
               - 'tests/e2e/lib/**'
             tests_e2e_ovn:
               - 'tests/e2e/ovn/**'
+              - 'tests/e2e/ovn-operator/**'
+              - 'tests/e2e/lib/assert-operator-env-clean.sh'
             tests_e2e_neutron:
               - 'tests/e2e/neutron/**'
+              - 'tests/e2e/neutron-operator/**'
+              - 'tests/e2e/lib/assert-operator-env-clean.sh'
             tests_e2e_cinder:
               - 'tests/e2e/cinder/**'
               - 'tests/e2e/cinder-operator/**'
@@ -1458,8 +1466,9 @@ jobs:
       # plus one service image per release that ships one. The release list
       # comes from source-refs.yaml (ci-service-image-releases.sh), so an
       # orchestration operator without a service image — e.g. c5c3 —
-      # loads only its operator image instead of failing to pull a
-      # non-existent c5c3:<release>.
+      # loads no service image of its own instead of failing to pull a
+      # non-existent c5c3:<release>; the c5c3 block below adds the keystone
+      # image its env-key-material suite needs.
       - name: Resolve E2E images
         id: e2e-images
         env:
@@ -1488,6 +1497,13 @@ jobs:
           # operator image and the daemon image that operator rolls out.
           if [ "${OPERATOR}" = "neutron" ]; then
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn-operator:dev"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+          fi
+          # The env-key-material suite reads the c5c3-operator's process
+          # environment from an ephemeral container, which needs a shell the
+          # static operator image lacks. c5c3 ships no service image, so the
+          # leg loads the keystone one for that suite alone.
+          if [ "${OPERATOR}" = "c5c3" ]; then
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/keystone:2026.1"
           fi
           # A Nova has no identity-free posture (spec.keystoneEndpoint and
           # spec.serviceUser are required), and its functional suites boot a
@@ -1559,6 +1575,9 @@ jobs:
           if [ "${OPERATOR}" = "neutron" ]; then
             kind load docker-image "${IMAGE_PREFIX}/ovn-operator:dev" --name "${KIND_CLUSTER}"
             kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}" --name "${KIND_CLUSTER}"
+          fi
+          if [ "${OPERATOR}" = "c5c3" ]; then
+            kind load docker-image "${IMAGE_PREFIX}/keystone:2026.1" --name "${KIND_CLUSTER}"
           fi
           # The image-upgrade E2E test re-tags the 2026.1 service image; only
           # operators that ship a 2026.1 service image need it loaded.

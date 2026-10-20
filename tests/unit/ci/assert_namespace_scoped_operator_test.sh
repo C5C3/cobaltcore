@@ -487,11 +487,14 @@ test_the_seven_filters_list_the_shared_scripts() {
     assert_contains "tests_e2e_$op lists the shared scripts" "$block" "'tests/e2e/lib/**'"
   done
   # The neutron, ovn and c5c3 charts refuse rbac.namespaceScoped=true, so
-  # these operators have no such suite, and a script edit must not run them.
+  # these operators have no such suite, and an edit to the proof must not run
+  # them. Their env-key-material suites run the environment scan beside it,
+  # which their filters name on its own.
   for op in c5c3 ovn neutron; do
     block="$(filter_block "tests_e2e_$op")"
     assert_not_empty "tests_e2e_$op exists" "$block"
-    assert_not_contains "tests_e2e_$op leaves the shared scripts out" "$block" "tests/e2e/lib/"
+    assert_not_contains "tests_e2e_$op leaves the shared directory out" "$block" "tests/e2e/lib/**"
+    assert_not_contains "tests_e2e_$op leaves the proof out" "$block" "assert-namespace-scoped-operator.sh"
   done
 }
 
