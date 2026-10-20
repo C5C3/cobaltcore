@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# kube-apiserver audit policy of the audited kind cluster
+# (hack/kind-config-audit.yaml), which the e2e-operator and e2e-controlplane
+# jobs create. hack/audit-rbac-usage.py diffs the (group, resource, verb)
+# triples an operator's ServiceAccount issued against the ClusterRole its
+# kubebuilder RBAC markers render; see
+# docs/reference/testing/rbac-usage-audit.md.
+#
+# The diff needs the user, the verb and the object reference of a request and
+# never its body, so ServiceAccount requests are logged at Metadata. Everything
+# else, the suites' own kubectl traffic as kubernetes-admin among it, is noise
+# and is not logged. RequestReceived is omitted because ResponseComplete (or
+# ResponseStarted for a watch) carries the same fields plus the response code,
+# which halves the events.
+---
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - RequestReceived
+rules:
+  - level: Metadata
+    userGroups:
+      - system:serviceaccounts
+    omitManagedFields: true
+  - level: None

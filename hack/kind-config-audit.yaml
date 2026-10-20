@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kind cluster configuration with kube-apiserver audit logging, for the CI jobs
+# that deploy the operators under test (e2e-operator and e2e-controlplane) and
+# for the local procedure in docs/reference/testing/rbac-usage-audit.md.
+# hack/ci-rbac-usage-report.sh reads the log after the suites and diffs what
+# each operator's ServiceAccount issued against its ClusterRole.
+#
+# The node is hack/kind-config.yaml's, with the same two port mappings
+# (tests/unit/hack/kind_config_audit_test.sh keeps them equal), plus the
+# kubeadm patch of the kind auditing guide
+# (https://kind.sigs.k8s.io/docs/user/auditing/). It is a file of its own
+# rather than an edit of hack/kind-config.yaml, so a patch that breaks cluster
+# creation breaks the two jobs that need the log, not every e2e job and not
+# local development.
+#
+# kind v0.33 renders kubeadm v1beta4 for its node images, where extraArgs is a
+# list of name/value pairs; the guide's map form is the v1beta3 shape. kind
+# appends these entries to its own apiServer extraArgs (an empty
+# runtime-config), as /kind/kubeadm.conf on the node shows.
+#
+# The log rotates at 100 MB and keeps ten rotated files, about 1.1 GB on the
+# node at most. hostPath is relative: kind resolves it against the working
+# directory, and every caller runs from the repository root.
+---
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    # Bridge host :443 → container :31443 so `https://keystone.127-0-0-1.nip.io/v3`
+    # reaches the Envoy Gateway data-plane Service (type=NodePort,
+    # nodePort=31443; pinned via the EnvoyProxy CR in
+    # deploy/kind/base/envoy-gateway.yaml). Listening on 127.0.0.1 keeps
+    # the Quick Start endpoint local-only.
+    extraPortMappings:
+      - hostPort: 443
+        containerPort: 31443
+        protocol: TCP
+        listenAddress: "127.0.0.1"
+      # Bridge host :8428 → container :30428 so host-side OTLP metric export
+      # (`http://localhost:8428/opentelemetry/v1/metrics`) reaches the
+      # VictoriaMetrics server (type=NodePort, nodePort=30428) of the opt-in
+      # dizzy observability overlay (deploy/kind/dizzy/, gated on
+      # WITH_DIZZY=true in hack/deploy-infra.sh). Listening on 127.0.0.1 keeps
+      # it loopback-only.
+      - hostPort: 8428
+        containerPort: 30428
+        protocol: TCP
+        listenAddress: "127.0.0.1"
+    kubeadmConfigPatches:
+      - |
+        kind: ClusterConfiguration
+        apiServer:
+          extraArgs:
+            - name: audit-log-path
+              value: /var/log/kubernetes/kube-apiserver-audit.log
+            - name: audit-policy-file
+              value: /etc/kubernetes/policies/audit-policy.yaml
+            - name: audit-log-maxsize
+              value: "100"
+            - name: audit-log-maxbackup
+              value: "10"
+          extraVolumes:
+            - name: audit-policies
+              hostPath: /etc/kubernetes/policies
+              mountPath: /etc/kubernetes/policies
+              readOnly: true
+              pathType: DirectoryOrCreate
+            - name: audit-logs
+              hostPath: /var/log/kubernetes
+              mountPath: /var/log/kubernetes
+              readOnly: false
+              pathType: DirectoryOrCreate
+    extraMounts:
+      - hostPath: hack/audit-policy.yaml
+        containerPath: /etc/kubernetes/policies/audit-policy.yaml
+        readOnly: true
