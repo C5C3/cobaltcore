@@ -21,6 +21,17 @@ tests:
               - nova.openstack.c5c3.io
             resources:
               - novacomputes
+            verbs:
+              - get
+              - list
+              - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - nova.openstack.c5c3.io
+            resources:
               - novas
             verbs:
               - get
@@ -29,8 +40,10 @@ tests:
               - update
               - watch
 
-  # A NovaCompute reads Nodes to resolve its pool, never writes them.
-  - it: should restrict nodes to get, list and watch
+  # A NovaCompute reads Nodes to resolve its pool, never writes them. It reads
+  # them through the uncached API reader, and its Node watch runs only on a
+  # target cluster, so the management-cluster rule carries no watch.
+  - it: should restrict nodes to get and list
     asserts:
       - contains:
           path: rules
@@ -39,10 +52,10 @@ tests:
               - ''
             resources:
               - nodes
+              - pods
             verbs:
               - get
               - list
-              - watch
 
   # The Traits step reads a node's Hypervisor and patches its custom traits;
   # it never creates, lists or deletes one.
@@ -60,7 +73,7 @@ tests:
               - patch
 
   # The nova-compute pods of a node pool run in a DaemonSet the operator owns.
-  - it: should grant full CRUD on daemonsets and deployments
+  - it: should grant the apply and delete verbs on daemonsets and deployments
     asserts:
       - contains:
           path: rules
@@ -76,7 +89,6 @@ tests:
               - get
               - list
               - patch
-              - update
               - watch
 
   - it: should restrict events to create and patch only
@@ -100,6 +112,7 @@ tests:
             apiGroups:
               - ''
             resources:
+              - nodes
               - pods
             verbs:
               - get
@@ -107,7 +120,7 @@ tests:
 
   # The db-sync runs as a Job and the row archival as a CronJob, so the batch
   # rule has to cover both kinds.
-  - it: should grant full CRUD on jobs and cronjobs
+  - it: should grant the apply and delete verbs on jobs and cronjobs
     asserts:
       - contains:
           path: rules
@@ -116,14 +129,25 @@ tests:
               - batch
             resources:
               - cronjobs
-              - jobs
             verbs:
               - create
               - delete
               - get
               - list
               - patch
-              - update
+              - watch
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - batch
+            resources:
+              - jobs
+            verbs:
+              - create
+              - delete
+              - get
+              - list
               - watch
 
   - it: should grant read-only on mariadb cluster CRs
@@ -151,8 +175,6 @@ tests:
               - rabbitmqclusters
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant read-only on externalsecrets
     asserts:
@@ -193,8 +215,6 @@ tests:
               - priorityclasses
             verbs:
               - get
-              - list
-              - watch
 
   - it: should grant the leader-election verbs on leases
     asserts:

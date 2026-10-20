@@ -240,11 +240,17 @@ var NovaRemoteChildKinds = []schema.GroupVersionKind{
 // The operator never creates a Nova; it reads them, patches their status and
 // holds them with a finalizer.
 // +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas,verbs=get;list;watch;update;patch
-// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas/status,verbs=get;update
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/reconcile_deployment.go:187 (reconcileDeployment) to update novas/finalizers.
 // +kubebuilder:rbac:groups=nova.openstack.c5c3.io,resources=novas/finalizers,verbs=update
 // configmaps carry the rendered nova.conf and its role overlays; secrets covers
 // the derived db-connection, transport-url and compute-contract Secrets.
-// +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/reconcile_consoleproxy.go:136 (deleteConsoleProxy) to delete services.
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/reconcile_config.go:267 (reconcileConfig) to delete configmaps.
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
+// Unexercised by the e2e suites; used by internal/common/messaging/messaging.go:338 (ReconcileTransportURLSecret) to update secrets.
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // Required to read the termination message a finished migration Job left on its
 // Pod, which carries the upgrade-check findings and the cell mapping the
@@ -252,40 +258,52 @@ var NovaRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
 // deployments carry the API, the metadata API, the scheduler, the conductor and
 // the console proxy.
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/reconcile_consoleproxy.go:129 (deleteConsoleProxy) to delete deployments.
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
 // jobs covers the db-sync of both schemas and the expand/migrate/contract
 // phases; cronjobs covers the recurring archive of soft-deleted rows.
-// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/reconcile_dbarchive.go:203 (reconcileDBArchive) to delete cronjobs.
+// +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;patch;delete
 // Required for the operator to observe the referenced MariaDB clusters' Ready
 // condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
 // In managed messaging mode the transport URL is derived from the named
-// RabbitmqCluster instead of read from a Secret, so the operator reads and
-// watches the cluster.
-// +kubebuilder:rbac:groups=rabbitmq.com,resources=rabbitmqclusters,verbs=get;list;watch
+// RabbitmqCluster instead of read from a Secret, so the operator reads the
+// cluster. It reads it as an unstructured object, which the manager client
+// fetches uncached, so get suffices.
+// Unexercised by the e2e suites; used by internal/common/messaging/messaging.go:382 (resolveManaged) to get rabbitmqclusters.
+// +kubebuilder:rbac:groups=rabbitmq.com,resources=rabbitmqclusters,verbs=get
 // The database, service-user, metadata and messaging credential Secrets are
 // ESO-managed; the operator only reads the ExternalSecrets to attribute a
 // not-synced Secret in SecretsReady messages.
+// Unexercised by the e2e suites; used by internal/common/secrets/secrets.go:68 (WaitForExternalSecret) to list and watch externalsecrets.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch
 // Required so the operator can observe the selected store's Ready condition and
 // reflect upstream secret-backend outages in SecretsReady. A CR selects either
 // the shared cluster-scoped ClusterSecretStore (default) or a namespaced
 // SecretStore, so both kinds must be watchable.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/reconcile_deployment.go:198 (reconcileDeployment) to delete poddisruptionbudgets.
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/reconcile_hpa.go:32 (reconcileHPA) to create and patch horizontalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/nova/internal/controller/nova_controller.go:842 (setupWithOptions) to list and watch verticalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create/update/delete the HTTPRoutes that expose the Nova API, the
 // metadata API and the console proxy externally.
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch;delete
 // Required so the operator can observe the Accepted condition set by the
 // upstream Gateway controller and reflect it in the three route conditions.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
 // Required for the webhook to validate that spec.priorityClassName references
 // an existing PriorityClass at admission time.
-// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
+// Unexercised by the e2e suites; used by internal/common/validation/validation.go:312 (PriorityClassExists) to get priorityclasses.
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the Nova CR. It fetches the CR,
 // drives the finalizer-gated deletion path, ensures the finalizers, then runs
