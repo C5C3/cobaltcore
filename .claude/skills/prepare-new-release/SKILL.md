@@ -188,11 +188,12 @@ Copy `releases/<newest>/` as the template and adjust:
 - **Upgrade path** — move every `tests/e2e/<svc>/release-upgrade/` and
   `tests/e2e/keystone/upgrade-flow/` to `<prev> -> <version>`: the
   service's own `NN-<svc>-cr.yaml` (`tag:` + `openStackRelease:`), the
-  `NN-patch-upgrade.yaml` target, helper CRs pinned at the target
-  (nova's Keystone and Placement), the `installedRelease` /
-  `ghcr.io/c5c3/<svc>:<v>` assertions in `chainsaw-test.yaml`, the
-  Horizon `KEY_PREFIX` literals of `release-upgrade/` and
-  `basic-deployment*/`, recomputed as
+  `NN-patch-upgrade.yaml` target, keystone's
+  `upgrade-flow/03-patch-downgrade.yaml` (back to `<prev>`), helper CRs
+  pinned at the target (nova's Keystone and Placement), the
+  `installedRelease` / `ghcr.io/c5c3/<svc>:<v>` assertions in
+  `chainsaw-test.yaml`, the Horizon `KEY_PREFIX` literals of
+  `release-upgrade/` and `basic-deployment*/`, recomputed as
   `docs/contributing/adding-a-new-release.md` shows, and any
   assertion that encodes a launch mode of the start release once the
   start moves past that boundary (glance asserted the eventlet command

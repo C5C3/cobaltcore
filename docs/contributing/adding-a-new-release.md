@@ -234,6 +234,8 @@ each moves to `<prev> -> <version>`:
 - the start release in the service's own `NN-<svc>-cr.yaml` (`tag:`, plus
   `openStackRelease:` where the kind has one);
 - the target in `NN-patch-upgrade.yaml`;
+- keystone's `upgrade-flow/03-patch-downgrade.yaml`, which names the start
+  release `<prev>`;
 - helper CRs pinned at the target, such as nova's Keystone and Placement;
 - the `installedRelease` and `ghcr.io/c5c3/<svc>:<v>` assertions in
   `chainsaw-test.yaml`;
