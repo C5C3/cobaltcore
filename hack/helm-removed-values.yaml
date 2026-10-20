@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Values keys that an operator chart removed or renamed on purpose.
+#
+# hack/verify-helm-released-values.sh renders every operator chart with the
+# values.yaml of its released chart, the highest tag under
+# oci://ghcr.io/c5c3/charts, and fails the chart when it rejects a key. It runs
+# as make verify-helm-released-values and in the "Render the released chart
+# values" step of the helm-validate CI job. An entry here deletes one key from
+# the released values before the render, so a chart that dropped the key on
+# purpose passes.
+#
+# Add the entry in the pull request that removes or renames the key. Delete it
+# once the script warns that the key is not in the values of the released chart,
+# which happens after main has published the chart without the key.
+#
+# The top level maps a chart name (the chart directory under operators/<op>/helm/)
+# to a list of entries. An entry's key is the dotted values path; a path segment
+# may also be a list index. Its reason is printed in the run log and must not be
+# empty:
+#
+#   keystone-operator:
+#     - key: webhook.oldName
+#       reason: renamed to webhook.newName
+{}
