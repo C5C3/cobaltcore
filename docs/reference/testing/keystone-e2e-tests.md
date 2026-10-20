@@ -140,7 +140,7 @@ Deployment rollout, bootstrap Job).
 | trust-flush | `keystone-trust-flush` | Trust-flush CronJob creation, schedule and suspend tracking `spec.trustFlush` |
 | trust-flush-default | `keystone-trust-flush-default` | Default-on posture: omitted `spec.trustFlush` materializes the hourly CronJob |
 | upgrade-abort | `keystone-upgrade-abort` | In-flight upgrade abort by reverting the image tag; the upgrade wedges in `Expanding` because its target is pulled from an unresolvable `registry.invalid` repository, whichever releases exist, and recovers cleanly |
-| upgrade-flow | `keystone-upgrade-flow` | Expand-migrate-contract phase progression with `installedRelease`/`targetRelease` bookkeeping |
+| upgrade-flow | `keystone-upgrade-flow` | Expand-migrate-contract phase progression with `installedRelease`/`targetRelease` bookkeeping, skip-level rejection (`UpgradePathInvalid`) and downgrade rejection after the completed upgrade (`DowngradeNotSupported`, image kept) |
 | uwsgi | `keystone-uwsgi` | `spec.uwsgi` defaulting and propagation into the uWSGI command line |
 | [vertical-autoscaling](#vertical-autoscaling) | `keystone-vertical` | `spec.deployment.verticalAutoscaling` on a cluster without the VerticalPodAutoscaler: `VPAReady=False/VPANotInstalled` naming `autoscaling.k8s.io` while the Deployment and the API converge and `Ready` stays `False`; removing the opt-in returns `VPAReady=True/VPANotRequired` and `Ready=True` |
 
@@ -1139,7 +1139,8 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              Expand-migrate-contract upgrade
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial release
 │   ├── 01-patch-upgrade.yaml           Patch for sequential upgrade
-│   └── 02-patch-skip-level.yaml        Patch for skip-level upgrade
+│   ├── 02-patch-skip-level.yaml        Patch for skip-level upgrade
+│   └── 03-patch-downgrade.yaml         Patch back to the start release (refused by the controller)
 ├── uwsgi/
 │   ├── chainsaw-test.yaml              uWSGI command propagation
 │   ├── 00-keystone-cr.yaml             Keystone CR without explicit uWSGI
