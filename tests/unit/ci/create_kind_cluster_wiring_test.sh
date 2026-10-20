@@ -129,6 +129,50 @@ test_inputs_match() {
 }
 
 # ---------------------------------------------------------------------------
+# Test C2: each job creates its cluster from the config it needs
+# ---------------------------------------------------------------------------
+
+# job_kind_configs — Echo "<job> <config>" for every create-kind-cluster step,
+# in file order, with <none> for a step that passes no config.
+job_kind_configs() {
+  awk -v ref="$ACTION_REF" '
+    function flush() { if (in_step) print job, (config == "" ? "<none>" : config); in_step = 0 }
+    /^  [a-z0-9_-]+:$/ { flush(); job = $1; sub(/:$/, "", job) }
+    /^      - / { flush() }
+    $0 == "        uses: " ref { in_step = 1; config = ""; next }
+    in_step && /^          config: / { config = $2 }
+    END { flush() }
+  ' "$CI_YAML"
+}
+
+# expected_kind_config <job> — the config(s) a job's create-kind-cluster steps
+# pass, space-separated. The two jobs that deploy operators under test read the
+# kube-apiserver audit log, so only they pay for writing it; e2e-ovn-overlay
+# needs worker nodes; the bare target cluster of e2e-orders-multicluster takes
+# no config and so binds no host port beside its management cluster.
+expected_kind_config() {
+  case "$1" in
+    e2e-operator | e2e-controlplane) echo "hack/kind-config-audit.yaml" ;;
+    e2e-ovn-overlay) echo "hack/kind-config-multinode.yaml" ;;
+    e2e-orders-multicluster) echo "<none> hack/kind-config.yaml" ;;
+    *) echo "hack/kind-config.yaml" ;;
+  esac
+}
+
+test_each_job_uses_its_config() {
+  echo "Test: each job creates its cluster from the kind config it needs"
+
+  local configs job have
+  configs="$(job_kind_configs)"
+  for job in $(cut -d' ' -f1 <<<"$configs" | uniq); do
+    have="$(awk -v j="$job" '$1 == j { printf "%s%s", sep, $2; sep = " " }' <<<"$configs")"
+    assert_eq "$job passes $(expected_kind_config "$job")" "$(expected_kind_config "$job")" "$have"
+  done
+  assert_eq "exactly two jobs create the audited cluster" "2" \
+    "$(grep -c ' hack/kind-config-audit.yaml$' <<<"$configs" | tr -d ' ')"
+}
+
+# ---------------------------------------------------------------------------
 # Test D: what the action keeps from helm/kind-action
 # ---------------------------------------------------------------------------
 test_action_keeps_install_and_teardown() {
@@ -236,6 +280,7 @@ test_scripts_are_executable() {
 test_no_direct_kind_action
 test_every_step_uses_the_action
 test_inputs_match
+test_each_job_uses_its_config
 test_action_keeps_install_and_teardown
 test_every_job_tears_its_cluster_down
 test_scripts_are_executable
