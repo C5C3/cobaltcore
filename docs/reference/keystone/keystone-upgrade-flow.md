@@ -68,6 +68,21 @@ release step forward:
 | `2026.1` | `2027.1` | **No** | Skip-level (skips 2026.2) |
 | `2026.2` | `2026.1` | **No** | Downgrade |
 
+The Keystone validating webhook admits every tag in this table: on
+`spec.image.tag` it checks only the release floor. The operator refuses the
+invalid paths in its Database step, before it touches the Deployment. A
+downgrade sets `DatabaseReady=False` with reason `DowngradeNotSupported` and
+emits a `DowngradeNotSupported` Warning event on the Keystone CR.
+`status.installedRelease` and the image the Deployment runs stay as they were.
+Like the webhooks of the other service operators, the Keystone webhook has no
+downgrade rule of its own. A patch to an older tag is therefore admitted, and
+the refusal shows only in the status and the event. A Keystone that a
+ControlPlane manages is stopped earlier when its release moves: the ControlPlane
+webhook rejects a lower `spec.openStackRelease` at admission (see
+[Update-only immutability rules](../c5c3/controlplane-crd.md#update-only-immutability-rules)).
+A `spec.services.keystone.image` override is projected as written, so an older
+override tag meets the operator's refusal instead.
+
 ### Patch Revisions
 
 Tag changes that differ only in patch suffix (e.g., `2026.1` to `2026.1-p1`) are
