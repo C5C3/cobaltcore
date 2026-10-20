@@ -576,7 +576,7 @@ func TestSetServicesStatus_TwoServices(t *testing.T) {
 		ObservedGeneration: 1, Reason: "HorizonReady", Message: "ready",
 	})
 
-	setServicesStatus(cp)
+	setServicesStatus(cp, nil)
 
 	g.Expect(cp.Status.Services).To(HaveLen(2))
 	g.Expect(cp.Status.Services[0].Name).To(Equal("keystone"))
@@ -589,7 +589,7 @@ func TestSetServicesStatus_TwoServices(t *testing.T) {
 		Type: conditionTypeHorizonReady, Status: metav1.ConditionFalse,
 		ObservedGeneration: 1, Reason: "WaitingForHorizon", Message: "not ready",
 	})
-	setServicesStatus(cp)
+	setServicesStatus(cp, nil)
 	g.Expect(cp.Status.Services[0].Ready).To(BeTrue())
 	g.Expect(cp.Status.Services[1].Ready).To(BeFalse())
 }
@@ -599,7 +599,7 @@ func TestSetServicesStatus_HorizonOnlyWhenConfigured(t *testing.T) {
 	cp := horizonControlPlane()
 	cp.Spec.Services.Horizon = nil
 
-	setServicesStatus(cp)
+	setServicesStatus(cp, nil)
 
 	g.Expect(cp.Status.Services).To(HaveLen(1))
 	g.Expect(cp.Status.Services[0].Name).To(Equal("keystone"))

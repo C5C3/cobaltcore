@@ -569,6 +569,8 @@ func simulateKeystoneReadyWhenPresent(t testing.TB, ctx context.Context, c clien
 		Reason:  "KeystoneReady",
 		Message: "simulated ready",
 	})
+	// The release the operator writes once its migrations completed.
+	ks.Status.InstalledRelease = ks.Spec.Image.Tag
 	g.Expect(c.Status().Update(ctx, ks)).To(Succeed(), "set Keystone Ready=True")
 }
 
@@ -590,6 +592,8 @@ func simulateHorizonReadyWhenPresent(t testing.TB, ctx context.Context, c client
 		Reason:  "AllReady",
 		Message: "simulated ready",
 	})
+	// The generation the operator reports Ready for.
+	hz.Status.ObservedGeneration = hz.Generation
 	g.Expect(c.Status().Update(ctx, hz)).To(Succeed(), "set Horizon Ready=True")
 }
 
@@ -612,6 +616,8 @@ func simulateGlanceReadyWhenPresent(t testing.TB, ctx context.Context, c client.
 		Reason:  "AllReady",
 		Message: "simulated ready",
 	})
+	// The release the operator writes once its migrations completed.
+	gl.Status.InstalledRelease = gl.Spec.Image.Tag
 	g.Expect(c.Status().Update(ctx, gl)).To(Succeed(), "set Glance Ready=True")
 }
 
@@ -634,6 +640,8 @@ func simulatePlacementReadyWhenPresent(t testing.TB, ctx context.Context, c clie
 		Reason:  "AllReady",
 		Message: "simulated ready",
 	})
+	// The release the operator writes once its migrations completed.
+	pl.Status.InstalledRelease = pl.Spec.Image.Tag
 	g.Expect(c.Status().Update(ctx, pl)).To(Succeed(), "set Placement Ready=True")
 }
 
@@ -656,6 +664,8 @@ func simulateBarbicanReadyWhenPresent(t testing.TB, ctx context.Context, c clien
 		Reason:  "AllReady",
 		Message: "simulated ready",
 	})
+	// The release the operator writes once its migrations completed.
+	bn.Status.InstalledRelease = bn.Spec.Image.Tag
 	g.Expect(c.Status().Update(ctx, bn)).To(Succeed(), "set Barbican Ready=True")
 }
 
@@ -678,6 +688,8 @@ func simulateNeutronReadyWhenPresent(t testing.TB, ctx context.Context, c client
 		Reason:  "AllReady",
 		Message: "simulated ready",
 	})
+	// The release the operator writes once its migrations completed.
+	nn.Status.InstalledRelease = nn.Spec.Image.Tag
 	g.Expect(c.Status().Update(ctx, nn)).To(Succeed(), "set Neutron Ready=True")
 }
 
@@ -700,6 +712,8 @@ func simulateCinderReadyWhenPresent(t testing.TB, ctx context.Context, c client.
 		Reason:  "AllReady",
 		Message: "simulated ready",
 	})
+	// The release the operator writes once its migrations completed.
+	cn.Status.InstalledRelease = cn.Spec.Image.Tag
 	g.Expect(c.Status().Update(ctx, cn)).To(Succeed(), "set Cinder Ready=True")
 }
 
@@ -722,6 +736,8 @@ func simulateNovaReadyWhenPresent(t testing.TB, ctx context.Context, c client.Cl
 		Reason:  "AllReady",
 		Message: "simulated ready",
 	})
+	// The release the operator writes once its migrations completed.
+	nv.Status.InstalledRelease = nv.Spec.Image.Tag
 	g.Expect(c.Status().Update(ctx, nv)).To(Succeed(), "set Nova Ready=True")
 }
 
@@ -3137,19 +3153,29 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(final.Status.Services[2].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[3].Name).To(Equal("placement"))
 	g.Expect(final.Status.Services[3].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[3].Release).To(Equal("2026.1"))
 	g.Expect(final.Status.Services[4].Name).To(Equal("barbican"))
 	g.Expect(final.Status.Services[4].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[4].Release).To(Equal("2026.1"))
 	g.Expect(final.Status.Services[5].Name).To(Equal("neutron"))
 	g.Expect(final.Status.Services[5].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[5].Release).To(Equal("2026.1"))
 	g.Expect(final.Status.Services[6].Name).To(Equal("cinder"))
 	g.Expect(final.Status.Services[6].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[6].Release).To(Equal("2026.1"))
 	g.Expect(final.Status.Services[7].Name).To(Equal("nova"))
 	g.Expect(final.Status.Services[7].Ready).To(BeTrue())
-	g.Expect(final.Status.Services[7].Release).To(Equal("2026.1"))
+	// Each release is the installedRelease the simulator set on the child. It is
+	// read through the informer cache, while a child's Ready is mirrored from the
+	// apply response, so a pass can report the child Ready one pass before the
+	// cache carries its release; the releases are polled for that reason.
+	// Horizon's is not asserted: a later re-projection can bump its generation
+	// past the simulated status.
+	g.Eventually(func(g Gomega) {
+		live := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, cpKey, live)).To(Succeed())
+		g.Expect(live.Status.Services).To(HaveLen(8))
+		for _, i := range []int{0, 2, 3, 4, 5, 6, 7} {
+			g.Expect(live.Status.Services[i].Release).To(Equal("2026.1"),
+				"status.services[%d] (%s) reports the release its child installed", i, live.Status.Services[i].Name)
+		}
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed())
 
 	// Every condition records the generation it was observed against.
 	for _, cond := range final.Status.Conditions {
