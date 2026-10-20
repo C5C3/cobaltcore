@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Link 8's merge patch: it moves the live ControlPlane to the next release. The
+# suite applies it with `kubectl patch --type merge --patch-file`, never with
+# `kubectl apply`, which would prune every field this partial object leaves
+# out. The check-release-wiring audit reads the hop's transition from the
+# openStackRelease of 00-controlplane-cr.yaml (start) and of this file
+# (target).
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane-keystone
+  namespace: openstack
+spec:
+  openStackRelease: "2026.2"
