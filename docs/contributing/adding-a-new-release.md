@@ -237,6 +237,15 @@ each moves to `<prev> -> <version>`:
 - helper CRs pinned at the target, such as nova's Keystone and Placement;
 - the `installedRelease` and `ghcr.io/c5c3/<svc>:<v>` assertions in
   `chainsaw-test.yaml`;
+- the Horizon suite's two `KEY_PREFIX` literals
+  (`tests/e2e/horizon/release-upgrade/chainsaw-test.yaml`), and the one each
+  `tests/e2e/horizon/basic-deployment*/` suite greps: `horizon-` plus the
+  first 12 hex characters of `sha256("ghcr.io/c5c3/horizon:<v>")`,
+  recomputed with
+  `printf '%s' ghcr.io/c5c3/horizon:<v> | sha256sum | cut -c1-12`. Horizon
+  has no `openStackRelease` and no `installedRelease`, so its suite moves on
+  `tag:`, the image refs and these literals alone; the
+  `check-release-wiring` audit does not see them;
 - assertions that encode a launch mode of the start release, once the start
   moves past that boundary (the glance suite asserted the eventlet
   `glance-api` command while it started below 2026.1);

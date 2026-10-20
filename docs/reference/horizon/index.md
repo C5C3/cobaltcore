@@ -38,7 +38,10 @@ The v1 operator resolves the onboarding decisions as follows:
   the dashboard answers HTTP 500, the login page included. With the prefix,
   Horizon CRs on different images never read each other's entries. An image
   change starts with a cold cache, and two CRs on one image share a warm one
-  ([#1305](https://github.com/C5C3/cobaltcore/issues/1305)).
+  ([#1305](https://github.com/C5C3/cobaltcore/issues/1305)). The
+  `tests/e2e/horizon/release-upgrade/` suite moves a Horizon from 2026.1 to
+  2026.2 and asserts that the prefix the Deployment mounts changes with the
+  image, and that the login page renders on both sides of the hop.
 - **Keystone endpoint: a plain URL field.** `spec.keystoneEndpoint` keeps the
   operator decoupled from the keystone-operator. The c5c3 ControlPlane
   operator derives the value top-down from its Keystone child's naming
