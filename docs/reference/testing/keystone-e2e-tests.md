@@ -31,7 +31,8 @@ representative subset step by step.
 Most suites run in the `openstack` namespace; `pod-security-restricted` creates
 its own `keystone-pss-restricted-test` namespace. Two operator-level suites,
 `metrics` and `prometheus-stack`, exercise the keystone-operator Helm deployment
-in `keystone-system`.
+in `keystone-system`, and `keystone-operator/env-key-material` reads the spec
+and the process environment of that deployment's pod.
 The operator-level suite `namespace-scoped-rbac` installs a namespace-scoped
 release and a standalone webhook release of the chart into `openstack`. All
 suites assume the pre-deployed infrastructure stack (MariaDB, Memcached, ESO,
@@ -122,6 +123,7 @@ Deployment rollout, bootstrap Job).
 | configmap-no-secrets | `keystone-cc0080` | No secrets leak into the ConfigMap: placeholder URL in `keystone.conf`, real DSN only in the derived `<name>-db-connection` Secret |
 | credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step |
 | database-tls | `keystone-dbtls` | `spec.database.tls` up to `verify-full`: `DatabaseTLSReady=True`, cert-manager client cert, encrypted MariaDB connection |
+| env-key-material | — (operator-level) | The keystone-operator pod in `keystone-system` reads no Secret into env, and its manager's process environment, read from an ephemeral container on the `keystone:2026.1` image by `tests/e2e/lib/assert-operator-env-clean.sh`, holds no variable named like key material and no value such as a PEM block; a finding names the variable, never its value |
 | gateway-quick-start | `keystone-gateway-qs` | Envoy Gateway quick-start wiring: GatewayClass/Gateway Programmed, HTTPRoute attached, endpoint reachable |
 | gateway-quick-start-smoke | `keystone-smoke` | `curl https://keystone.127-0-0-1.nip.io/v3` returns HTTP 200 with a Keystone v3 JSON body |
 | httproute | `keystone-httproute` | `spec.gateway` lifecycle: HTTPRoute created, updated, and removed with the spec block |

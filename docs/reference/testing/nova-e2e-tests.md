@@ -24,10 +24,11 @@ deployment automation, see
 The suites cover the reconciler lifecycle from a first deployment through
 scaling, the three optional HTTP front ends, a cross-release upgrade, the
 archive of soft-deleted rows and deletion. Each one creates its own `Nova` CR in
-the shared `openstack` namespace. Two sit outside it: `pod-security-restricted`
-owns a `nova-pss` namespace labelled with the restricted profile, and
+the shared `openstack` namespace. Three sit outside it: `pod-security-restricted`
+owns a `nova-pss` namespace labelled with the restricted profile,
 `nova-operator/metrics` installs a second nova-operator Helm release in
-`nova-system`.
+`nova-system`, and `nova-operator/env-key-material` reads the spec and the
+process environment of the operator pod there.
 
 ### Fixture tiers
 
@@ -281,6 +282,7 @@ a labelled namespace of its own.
 | [invalid-cr](#invalid-cr) | (rejected at admission) | `Nova` rejection corpus: the release pattern and the release floor, the image and database and cache and messaging union rules, the messaging TLS rule, the archive and scheduler bounds, the two cross-database rules, the cell0 name rules, both `extraConfig` guards, the two name rules, the URL fields, the console gateway path and the two `spec.remoteCompute` rules. See [Nova CRD](../nova/nova-crd.md#chainsaw-e2e-tests) |
 | [invalid-novacompute-cr](#invalid-novacompute-cr) | (rejected at admission) | `NovaCompute` rejection corpus: the novaRef, selector, name and target rules, the offboarding toleration by key and as a wildcard, the cpuModels rule both ways, the two libvirt enums, a rejected extraConfig key, maxUnavailable under OnDelete, the image pin and the custom-trait rules. See [NovaCompute CRD](../nova/novacompute-crd.md#defaulting-and-validation) |
 | [metrics](#metrics) | — (operator-level) | nova-operator chart renders and removes the ServiceMonitor |
+| [env-key-material](#env-key-material) | — (operator-level) | The nova-operator pod reads no Secret into env, and its manager's process environment holds no key material |
 
 ---
 
@@ -932,6 +934,38 @@ endpoint when `monitoring.serviceMonitor.enabled` is toggled.
 
 ---
 
+### env-key-material
+
+**File:** `tests/e2e/nova-operator/env-key-material/chainsaw-test.yaml`
+
+**Purpose:** The nova-operator pod in `nova-system` reads no Secret into env,
+and the process environment of its manager holds no variable named like key
+material and no value that looks like it, such as a PEM block.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | scan | `script` (180s) | `../../lib/assert-operator-env-clean.sh nova-system nova-operator ghcr.io/c5c3/nova:2026.1` checks the pod spec, then reads `/proc/<pid>/environ` of the manager from an ephemeral container |
+
+**Fixtures:** none. The suite reads the operator that `hack/ci-deploy-operator.sh`
+deployed.
+
+**Design notes:**
+
+- The operator image is a static binary without a shell. The ephemeral
+  container runs the `nova:2026.1` service image the leg loads for its other
+  suites, joins the manager's process namespace (`--target=manager`) and runs
+  as the pod's uid under the restricted profile.
+- A finding names the variable and never prints its value. The catch prints
+  the ephemeral containers' states and never reads their logs, which hold the
+  values the scan judged.
+- Each run adds one ephemeral container to the operator pod, which Kubernetes
+  cannot remove again.
+- The suite is not named in the shard list, so it runs in shard 1.
+
+---
+
 ## Assertion Patterns
 
 ### Resource assertion (`assert`)
@@ -1194,6 +1228,8 @@ tests/e2e/nova/
     └── 03-patch-scale-to-one.yaml     Patch to 1 replica
 
 tests/e2e/nova-operator/
+├── env-key-material/
+│   └── chainsaw-test.yaml             Operator pod spec and process environment free of key material
 └── metrics/
     └── chainsaw-test.yaml             nova-operator chart ServiceMonitor
 
