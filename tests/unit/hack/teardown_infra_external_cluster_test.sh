@@ -5,9 +5,10 @@
 
 # Verify the external-cluster teardown of hack/teardown-infra.sh
 # (EXTERNAL_CLUSTER=true):
-#   1. EXTERNAL_CLUSTER, EXTERNAL_OVERLAY and TEARDOWN_TIMEOUT default and pass
-#      through, and the default teardown still deletes the kind cluster without
-#      calling kubectl.
+#   1. EXTERNAL_CLUSTER, EXTERNAL_OVERLAY, TEARDOWN_TIMEOUT and
+#      TEARDOWN_POLL_SECONDS default and pass through, every wait loop sleeps
+#      TEARDOWN_POLL_SECONDS, and the default teardown still deletes the kind
+#      cluster without calling kubectl.
 #   2. The external teardown never calls kind or docker, deletes in the order
 #      that lets every finalizer run while its controller exists (Chaos Mesh
 #      before step 0: one CRD scope read, the schedules and workflows, the
@@ -1374,12 +1375,15 @@ STUB
 
 # run_teardown <stub_dir> [env_var=value...]
 # Runs hack/teardown-infra.sh with the stubs first on PATH and the given
-# overrides. Echoes combined output; returns the script's exit status.
+# overrides. Echoes combined output; returns the script's exit status. The wait
+# loops poll every second unless an override says otherwise, so a case that
+# runs a 1-second TEARDOWN_TIMEOUT out costs one second, not five.
 run_teardown() {
   local stub_dir="$1"
   shift
   (
     unset EXTERNAL_CLUSTER EXTERNAL_OVERLAY TEARDOWN_TIMEOUT PURGE_REGISTRY_CACHE
+    export TEARDOWN_POLL_SECONDS=1
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -1395,7 +1399,7 @@ resolve() {
   local expression="$1"
   shift
   (
-    unset EXTERNAL_CLUSTER EXTERNAL_OVERLAY TEARDOWN_TIMEOUT
+    unset EXTERNAL_CLUSTER EXTERNAL_OVERLAY TEARDOWN_TIMEOUT TEARDOWN_POLL_SECONDS
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -1436,12 +1440,19 @@ stack_namespace_names() {
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC2016 # resolve expands the expression after it sources the script
 test_knobs() {
-  echo "Test: EXTERNAL_CLUSTER, EXTERNAL_OVERLAY and TEARDOWN_TIMEOUT"
+  echo "Test: EXTERNAL_CLUSTER, EXTERNAL_OVERLAY, TEARDOWN_TIMEOUT and TEARDOWN_POLL_SECONDS"
 
   assert_eq "EXTERNAL_CLUSTER defaults to false" "false" "$(resolve '${EXTERNAL_CLUSTER}')"
   assert_eq "EXTERNAL_CLUSTER=yes is preserved verbatim" "yes" \
     "$(resolve '${EXTERNAL_CLUSTER}' EXTERNAL_CLUSTER=yes)"
   assert_eq "TEARDOWN_TIMEOUT defaults to 600" "600" "$(resolve '${TEARDOWN_TIMEOUT}')"
+  assert_eq "TEARDOWN_POLL_SECONDS defaults to 5" "5" "$(resolve '${TEARDOWN_POLL_SECONDS}')"
+  assert_eq "TEARDOWN_POLL_SECONDS=1 is preserved" "1" \
+    "$(resolve '${TEARDOWN_POLL_SECONDS}' TEARDOWN_POLL_SECONDS=1)"
+  assert_eq "the three wait loops sleep TEARDOWN_POLL_SECONDS" "3" \
+    "$(grep -cxF '    sleep "${TEARDOWN_POLL_SECONDS}"' "$TEARDOWN_SH")"
+  assert_eq "no line of the script sleeps a fixed number of seconds" "" \
+    "$(grep -nE '\bsleep [0-9]' "$TEARDOWN_SH" || true)"
   assert_eq "OVERLAY_ROOT resolves the default overlay against the repository" \
     "$PROJECT_ROOT/deploy/lab/metal-stack" "$(resolve '${OVERLAY_ROOT}')"
   assert_eq "an absolute EXTERNAL_OVERLAY is used unchanged" "/srv/overlays/lab" \
