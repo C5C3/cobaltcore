@@ -43,6 +43,10 @@ set -euo pipefail
 # and prints 0,0350, which RESULT_JSON cannot hold as a number.
 export LC_ALL=C
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=hack/perf-keystone-cr.sh
+source "${SCRIPT_DIR}/perf-keystone-cr.sh"
+
 CR_COUNTS="${CR_COUNTS:-1 5 25}"
 NAMESPACE="${NAMESPACE:-openstack}"
 OPERATOR_NAMESPACE="${OPERATOR_NAMESPACE:-keystone-system}"
@@ -97,41 +101,10 @@ cr_names() {
 # and a unique database name so parallel CRs never share a schema.
 gen_crs() {
   local count="$1" out="$2" i
-  : >"${out}"
   for ((i = 1; i <= count; i++)); do
-    cat >>"${out}" <<EOF
----
-apiVersion: keystone.openstack.c5c3.io/v1alpha1
-kind: Keystone
-metadata:
-  name: ${CR_PREFIX}-${i}
-  namespace: ${NAMESPACE}
-spec:
-  deployment:
-    replicas: 1
-  image:
-    repository: ${IMAGE_REPOSITORY}
-    tag: "${IMAGE_TAG}"
-  database:
-    clusterRef:
-      name: ${DB_CLUSTER_REF}
-    database: keystone_perf_${i}
-    secretRef:
-      name: keystone-db
-  cache:
-    clusterRef:
-      name: ${CACHE_CLUSTER_REF}
-    backend: dogpile.cache.pymemcache
-  fernet:
-    rotationSchedule: "0 0 * * 0"
-    maxActiveKeys: 3
-  bootstrap:
-    adminUser: admin
-    adminPasswordSecretRef:
-      name: keystone-admin
-    region: RegionOne
-EOF
-  done
+    printf -- '---\n'
+    perf_keystone_cr "${CR_PREFIX}-${i}" "keystone_perf_${i}"
+  done >"${out}"
 }
 
 # delete_crs removes every benchmark CR and waits for finalizers to complete so
