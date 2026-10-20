@@ -55,6 +55,15 @@ serviceImage {
   inherit env;
   description = "OpenStack nova service";
 
+  packages = [
+    # nova-api creates an x509 keypair (POST /os-keypairs with "type":
+    # "x509") by running `openssl req` and `openssl pkcs12`
+    # (generate_winrm_x509_cert in nova/crypto.py) and answers 500 with
+    # "[Errno 2] No such file or directory: 'openssl'" without the binary.
+    # The Docker image had /usr/bin/openssl through ca-certificates.
+    pkgs.openssl
+  ];
+
   # The exec readiness probe of the nova-scheduler and nova-conductor
   # processes: it reports ready when a process of this container holds a
   # socket established to the broker port. The nova-operator wires it as
