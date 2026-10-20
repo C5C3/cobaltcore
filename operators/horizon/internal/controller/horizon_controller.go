@@ -204,26 +204,39 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 	httpRouteGVK,
 }
 
-// +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons/status,verbs=get;update;patch
+// Unexercised by the e2e suites; used by internal/common/reconcile/finalizer.go:25 (EnsureFinalizer) to update horizons.
+// +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons/status,verbs=get;update
+// Unexercised by the e2e suites; used by internal/common/apply/apply.go:53 (EnsureObject) to update horizons/finalizers.
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=services;configmaps,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/deployment.go:53 (EnsureDeployment) to delete deployments.
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by operators/horizon/internal/controller/reconcile_deployment.go:125 (reconcileDeployment) to delete services.
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/config/config.go:517 (pruneImmutableObjects) to delete configmaps.
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
 // The Django SECRET_KEY Secret is ESO-managed; the operator only reads it to
 // gate readiness and digest the key material for the rollout annotation.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// Unexercised by the e2e suites; used by internal/common/config/ownership.go:154 (RecordExtraConfigHealth) to patch events.
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
-// Required to create/update/delete HTTPRoutes that expose the dashboard externally.
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// Unexercised by the e2e suites; used by operators/horizon/internal/controller/reconcile_deployment.go:130 (reconcileDeployment) to delete poddisruptionbudgets.
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/deployment.go:174 (EnsureHPA) to create and patch horizontalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/horizon/internal/controller/horizon_controller.go:592 (SetupWithManager) to list and watch verticalpodautoscalers.
+// +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
+// Required to create, patch and delete HTTPRoutes that expose the dashboard externally.
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;patch;delete
 // Required so the operator can observe the Accepted condition set by the
 // upstream Gateway controller and reflect it in HTTPRouteReady.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
 // The SECRET_KEY ExternalSecret is user/infrastructure-provided; the operator
 // only consults it to attribute a not-synced Secret in SecretsReady messages.
+// Unexercised by the e2e suites; used by internal/common/secrets/secrets.go:68 (WaitForExternalSecret) to list and watch externalsecrets.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch
 // Required so the operator can observe the selected store's Ready condition
 // and reflect upstream secret-backend (OpenBao) outages in SecretsReady. A
@@ -233,7 +246,8 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
 // Required for the webhook to validate that spec.priorityClassName references
 // an existing PriorityClass at admission time.
-// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
+// Unexercised by the e2e suites; used by internal/common/validation/validation.go:312 (PriorityClassExists) to get priorityclasses.
+// +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the Horizon CR.
 func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

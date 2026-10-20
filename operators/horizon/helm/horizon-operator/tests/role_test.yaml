@@ -43,7 +43,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should grant full CRUD on horizons
+  - it: should grant get, list, watch and update on horizons
     set:
       rbac:
         namespaceScoped: true
@@ -58,11 +58,8 @@ tests:
             resources:
               - horizons
             verbs:
-              - create
-              - delete
               - get
               - list
-              - patch
               - update
               - watch
 
