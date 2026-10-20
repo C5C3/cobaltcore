@@ -772,9 +772,10 @@ release, and the eleven console scripts declared in `[project.scripts]` of
 `pyproject.toml` (33.0.0): `nova-compute`, `nova-conductor`, `nova-manage`,
 `nova-novncproxy`, `nova-policy`, `nova-rootwrap`, `nova-rootwrap-daemon`,
 `nova-scheduler`, `nova-serialproxy`, `nova-spicehtml5proxy` and
-`nova-status`. `image.nix` adds the noVNC tree at `/usr/share/novnc`, the two
-state directories under `/var/lib/nova`, empty and owned by UID/GID 42424
-together with `/var/lib/nova` itself, and `nova-amqp-ready` at
+`nova-status`. `image.nix` adds `openssl` (see the runtime packages below),
+the noVNC tree at `/usr/share/novnc`, the two state directories under
+`/var/lib/nova`, empty and owned by UID/GID 42424 together with
+`/var/lib/nova` itself, and `nova-amqp-ready` at
 `/var/lib/openstack/bin/nova-amqp-ready` with mode 0555.
 
 The image stays config-free. The package data files `api-paste.ini`,
@@ -790,6 +791,7 @@ contract script asserts the three files.
 | Package | Purpose |
 | --- | --- |
 | `sudo` | The root helper `nova-rootwrap` is a compute-side tool, and the image carries no sudoers entry. `sudo` comes from `nix/lib/service-image.nix` |
+| `openssl` | `openssl`, which nova-api runs as `openssl req` and `openssl pkcs12` to create an x509 keypair (`generate_winrm_x509_cert` in `nova/crypto.py`); without it `POST /os-keypairs` with `"type": "x509"` answers 500 with `[Errno 2] No such file or directory: 'openssl'`. It comes from `nixpkgs-images` and is on the image's `PATH` |
 
 `qemu-utils` and `libvirt0` stay out (decision D14 of issue #1014). The
 control-plane roles convert no images, and the fake driver of issue #1018
@@ -880,6 +882,7 @@ are what a plain `docker run` gets.
 - No WSGI entry script; the two APIs are launched via the
   `nova.wsgi.osapi_compute:application` and `nova.wsgi.metadata:application`
   module paths
+- `openssl` on `PATH`, which nova-api runs to create an x509 keypair
 - The noVNC console assets under `/usr/share/novnc`
 - `sudo` present with no sudoers entry
 
@@ -896,7 +899,7 @@ runs counted 16,803 tests at 33.0.0, with 63 skips and 2 expected failures, and
 environment-dependent failure.
 
 **Image contract check:** `tests/container-images/verify_nova.sh` is the hard
-gate. Its 13 tests cover `nova-manage --version` and `nova-status --help`, the
+gate. Its 14 tests cover `nova-manage --version` and `nova-status --help`, the
 importability of `nova` and of `nova.virt.fake`, `os_vif`, `os_brick`,
 `websockify`, `oslo_privsep` and `oslo_limit`, together with the
 `ModuleNotFoundError` an `import libvirt` has to raise. Then come the three
@@ -920,19 +923,23 @@ a probe that read a row's local port would fail the ready checks.
 `uwsgi --version`, uwsgi importing `nova`, the absence of `qemu-img`,
 `sudo --version` and a refused
 `sudo -n true` prove the runtime wiring. The remaining tests check non-root
-execution, the absence of build tools, and the two state directories, empty
-and owned by 42424 along with their parent. The WSGI check inspects the two
-modules instead of importing them: an import runs
-`wsgi_app.init_application` at module level and dies with
+execution, the absence of build tools, the two state directories, empty
+and owned by 42424 along with their parent, and an x509 keypair: the test
+calls `generate_winrm_x509_cert` from `nova/crypto.py`, which runs
+`openssl req` and `openssl pkcs12` the way nova-api does for
+`POST /os-keypairs` with `"type": "x509"`, and expects a PEM certificate.
+The WSGI check inspects the two modules instead of importing them: an import
+runs `wsgi_app.init_application` at module level and dies with
 `ConfigFilesNotFoundError` in a bare image. So it pairs
 `importlib.util.find_spec` for each module path with an `ast.parse` of the
 module source, and rejects a module whose only module-level binding of
 `application` is the `None` sentinel.
-Both release images pass all 57 assertions.
-Pointed at a cinder image the script exits 1 with 37 of them failing: every
-test but the non-root and build-tool ones fails, while the wrong image still
-satisfies the uwsgi and sudo halves of the runtime test and the
-libvirt-absence half of the import test.
+Both release images pass all 62 assertions.
+Pointed at a cinder image the script exits 1 with 40 of them failing. The 22
+that pass are the non-root, build-tool, uwsgi and sudo checks, the absence of
+libvirt, the non-empty output of `nova-manage` and `nova-status` (an error
+message there), and six assertions of the probe test that hold without the
+probe.
 
 **Build and verify:**
 

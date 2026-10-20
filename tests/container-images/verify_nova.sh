@@ -516,6 +516,25 @@ print(" ".join(sorted({str(os.stat(p).st_uid) for p in paths})) + " ")' 2>&1) ||
   assert_eq "the state tree is owned by 42424 alone" "42424 " "$owners"
 }
 
+# --- Test 14: nova creates an x509 keypair ---
+test_x509_keypair() {
+  echo "Test: nova creates an x509 keypair"
+  # nova-api answers POST /os-keypairs with "type": "x509" by running
+  # `openssl req` and `openssl pkcs12` (generate_winrm_x509_cert in
+  # nova/crypto.py), and without openssl on the image's PATH every such
+  # request fails with a 500 ("[Errno 2] No such file or directory:
+  # 'openssl'"). Calling nova's own function runs both commands with the
+  # arguments nova passes.
+  local output exit_code=0
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'from nova import crypto
+print(crypto.generate_winrm_x509_cert("verify")[1])' 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $(tail -n 1 <<<"$output")"
+
+  assert_eq "generate_winrm_x509_cert exits 0" "0" "$exit_code"
+  assert_contains "it returns a PEM certificate" "$output" "-----BEGIN CERTIFICATE-----"
+}
+
 # --- Run all tests ---
 echo "=== nova container verification tests ==="
 echo "Image: $IMAGE"
@@ -545,6 +564,8 @@ echo ""
 test_no_build_tools_in_final_image
 echo ""
 test_state_directories
+echo ""
+test_x509_keypair
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
