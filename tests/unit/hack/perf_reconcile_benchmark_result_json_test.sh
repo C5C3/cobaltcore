@@ -15,7 +15,11 @@
 #   - a red GATE_P95_SECONDS still leaves the file behind;
 #   - the applied CR puts replicas under spec.deployment, the only place the
 #     Keystone CRD has it;
-#   - the CR is deleted after the scrapes.
+#   - the CR is deleted after the scrapes, and the keystone-perf-token CR of
+#     hack/perf-token-baseline.sh, which shares the name prefix, is neither
+#     waited for nor deleted;
+#   - the nightly's CR_COUNTS="1 3" writes the six quantiles of both counts
+#     into one file, and the second count waits for and deletes all three CRs.
 #
 # The fixture's end-to-end histogram has 5 reconciles in (0.005, 0.01] and 5
 # in (0.01, 0.025]; the sub-reconciler histogram has the same counts in both
@@ -43,8 +47,8 @@ STUB_BIN="$TMP_DIR/bin"
 mkdir -p "$STUB_BIN"
 
 # The stub kubectl keeps its state in $STUB_DIR: calls (one line per call),
-# applied.yaml (the last manifest applied) and applied (set while the CR
-# exists).
+# applied.yaml (the last manifest applied) and applied (set while its CRs
+# exist).
 cat >"$STUB_BIN/kubectl" <<'SH'
 #!/bin/bash
 echo "$*" >>"$STUB_DIR/calls"
@@ -61,8 +65,10 @@ case "$args" in
     touch "$STUB_DIR/applied"
     ;;
   *" get keystone -o name "*)
+    # The CR of hack/perf-token-baseline.sh shares the keystone-perf- prefix.
+    echo "keystone.keystone.openstack.c5c3.io/keystone-perf-token"
     if [ -f "$STUB_DIR/applied" ]; then
-      echo "keystone.keystone.openstack.c5c3.io/keystone-perf-1"
+      sed -n 's|^  name: \(keystone-perf-[0-9]*\)$|keystone.keystone.openstack.c5c3.io/\1|p' "$STUB_DIR/applied.yaml"
     fi
     ;;
   *" wait "*) exit 0 ;;
@@ -74,16 +80,17 @@ exit 0
 SH
 
 # The stub curl answers the readiness probe, then the before scrape, then the
-# after scrape; it counts its calls in $STUB_DIR/curl.calls.
+# after scrape, and starts over for the next count; it counts its calls in
+# $STUB_DIR/curl.calls.
 cat >"$STUB_BIN/curl" <<'SH'
 #!/bin/bash
 n=$(( $(cat "$STUB_DIR/curl.calls" 2>/dev/null || echo 0) + 1 ))
 echo "$n" >"$STUB_DIR/curl.calls"
 echo "curl" >>"$STUB_DIR/calls"
-case "$n" in
-  1) exit 0 ;;
-  2) cat "$STUB_DIR/before.txt" ;;
-  *) cat "$STUB_DIR/after.txt" ;;
+case "$(( (n - 1) % 3 ))" in
+  0) exit 0 ;;
+  1) cat "$STUB_DIR/before.txt" ;;
+  2) cat "$STUB_DIR/after.txt" ;;
 esac
 SH
 chmod +x "$STUB_BIN/kubectl" "$STUB_BIN/curl"
@@ -235,6 +242,8 @@ test_the_cr_is_deleted_after_the_scrapes() {
   calls="$(cat "$TMP_DIR/state/calls")"
   assert_contains "the CR is deleted with --wait" "$calls" \
     "-n openstack delete keystone.keystone.openstack.c5c3.io/keystone-perf-1 --wait=true --timeout=600s"
+  assert_not_contains "the token measurement's CR is neither waited for nor deleted" "$calls" \
+    "keystone.keystone.openstack.c5c3.io/keystone-perf-token"
   local last_curl first_delete
   last_curl="$(grep -n '^curl$' "$TMP_DIR/state/calls" | tail -1 | cut -d: -f1)"
   first_delete="$(grep -n ' delete ' "$TMP_DIR/state/calls" | head -1 | cut -d: -f1)"
@@ -248,12 +257,36 @@ test_the_cr_is_deleted_after_the_scrapes() {
   fi
 }
 
+test_result_json_merges_two_counts() {
+  echo "Test: the nightly's CR_COUNTS=\"1 3\" writes the quantiles of both counts"
+
+  local out="$TMP_DIR/two.json"
+  bench CR_COUNTS="1 3" RESULT_JSON="$out"
+  assert_eq "the benchmark exits 0" "0" "$BENCH_RC"
+  if [ ! -f "$out" ]; then
+    echo "  FAIL: $out was not written"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  assert_eq "the metrics are the six keys of each count" "true" \
+    "$(json_field "$out" 'sorted(d["metrics"]) == sorted("reconcile.%d.%s_p%d_s" % (c, h, q) for c in (1, 3) for h in ("e2e", "sub") for q in (50, 95, 99))')"
+  assert_eq "the second count has its own p95" "0.0235" "$(json_field "$out" 'd["metrics"]["reconcile.3.e2e_p95_s"]')"
+  assert_eq "meta.cr_counts is CR_COUNTS" '"1 3"' "$(json_field "$out" 'd["meta"]["cr_counts"]')"
+  local calls
+  calls="$(cat "$TMP_DIR/state/calls")"
+  assert_contains "the three CRs of the second count are waited for" "$calls" \
+    "wait --for=condition=Ready --timeout=600s keystone.keystone.openstack.c5c3.io/keystone-perf-1 keystone.keystone.openstack.c5c3.io/keystone-perf-2 keystone.keystone.openstack.c5c3.io/keystone-perf-3"
+  assert_contains "and deleted" "$calls" \
+    "delete keystone.keystone.openstack.c5c3.io/keystone-perf-1 keystone.keystone.openstack.c5c3.io/keystone-perf-2 keystone.keystone.openstack.c5c3.io/keystone-perf-3 --wait=true"
+}
+
 test_report_without_result_json_is_unchanged
 test_result_json_holds_the_six_quantiles
 test_a_red_gate_still_writes_the_file
 test_a_comma_decimal_locale_keeps_decimal_points
 test_the_cr_sets_replicas_under_spec_deployment
 test_the_cr_is_deleted_after_the_scrapes
+test_result_json_merges_two_counts
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -92,9 +92,10 @@ preflight() {
 }
 
 # cr_names prints the resource refs (keystone/<name>) of every benchmark CR
-# currently present, one per line.
+# currently present, one per line. The numeric suffix leaves out the
+# keystone-perf-token CR of hack/perf-token-baseline.sh.
 cr_names() {
-  kubectl -n "${NAMESPACE}" get keystone -o name 2>/dev/null | grep "/${CR_PREFIX}-" || true
+  kubectl -n "${NAMESPACE}" get keystone -o name 2>/dev/null | grep -E "/${CR_PREFIX}-[0-9]+$" || true
 }
 
 # gen_crs writes a manifest of $1 Keystone CRs to $2. Each CR gets a unique name
