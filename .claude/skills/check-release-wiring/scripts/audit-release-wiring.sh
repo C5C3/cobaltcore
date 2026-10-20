@@ -33,7 +33,9 @@
 #       directory, and the fake compute's nova tags equal the kind default
 #   L5  the Renovate regression tests and the per-release renovate.json
 #       packageRules reference only existing releases/ paths
-#   L6  every release-upgrade / upgrade-flow suite tests the newest sequential
+#   L6  every release-upgrade / upgrade-flow suite and every ControlPlane hop
+#       (a tests/e2e/c5c3/<suite>/ with one NN-patch-upgrade.yaml, read by
+#       openStackRelease) tests the newest sequential
 #       transition, the skip-level fixture targets a release that is neither
 #       wired nor sequential, and upgrade-abort wedges on the sequential
 #       successor of a wired release: pulled from a .invalid registry (holds
@@ -141,6 +143,31 @@ glob_one() {
   done
   if [[ "${n}" -eq 1 ]]; then echo "${hit}"; fi
   return 0
+}
+
+# pins_outside <dir> <from> <to> — the "<what>:<version>" release pins of the
+# files directly in <dir> that name neither <from> nor <to>, space-separated;
+# the skip-level fixture and the tempest client image are exempt.
+pins_outside() {
+  find "$1" -maxdepth 1 -type f ! -name '*-patch-skip-level.yaml' | release_pins_list \
+    | awk -v a="$2" -v b="$3" '$1 != "tempest" && $2 != a && $2 != b {print $1 ":" $2}' | sort -u | tr '\n' ' '
+}
+
+# check_transition <dir> <from> <to> — the L6 verdict and the stray-pin check
+# of one upgrade-path suite, against the globals prev and newest.
+check_transition() {
+  local bad
+  if [[ -z "${prev}" ]]; then
+    info "$1 tests $2 -> $3"
+  elif [[ "$2" == "${prev}" && "$3" == "${newest}" ]]; then
+    pass "$1 tests $2 -> $3 (newest transition)"
+  else
+    fail "$1 tests $2 -> $3 but the newest transition is ${prev} -> ${newest}"
+  fi
+  bad="$(pins_outside "$1" "$2" "$3")"
+  if [[ -n "${bad}" ]]; then
+    fail "$1: release pins outside $2 -> $3: ${bad}"
+  fi
 }
 
 # release_exists <version> — true when releases/<version>/ is a directory.
@@ -675,7 +702,8 @@ else
 fi
 # release-upgrade (every service) and upgrade-flow (keystone): the service's own
 # NN-<svc>-cr.yaml holds the from release, NN-patch-upgrade.yaml the to release;
-# helper CRs and chainsaw assertions may name only those two.
+# helper CRs and chainsaw assertions may name only those two. The ControlPlane
+# hop arm below holds a tests/e2e/c5c3/ suite to the same rule.
 shopt -s nullglob
 for base in tests/e2e/*/release-upgrade tests/e2e/*/upgrade-flow; do
   [[ -d "${base}" ]] || continue
@@ -696,17 +724,24 @@ for base in tests/e2e/*/release-upgrade tests/e2e/*/upgrade-flow; do
       fail "${f}: tag \"${pair##*:}\" but openStackRelease \"${osr}\""
     fi
   done
-  if [[ -z "${prev}" ]]; then
-    info "${base} tests ${from} -> ${to}"
-  elif [[ "${from}" == "${prev}" && "${to}" == "${newest}" ]]; then
-    pass "${base} tests ${from} -> ${to} (newest transition)"
-  else
-    fail "${base} tests ${from} -> ${to} but the newest transition is ${prev} -> ${newest}"
+  check_transition "${base}" "${from}" "${to}"
+done
+# The ControlPlane hop: a tests/e2e/c5c3/<suite>/ holding one
+# NN-patch-upgrade.yaml moves a live ControlPlane from the openStackRelease of
+# its NN-controlplane-cr.yaml to that of the patch. A ControlPlane has no image
+# tag, so the transition is read by openStackRelease; check_transition is the
+# one above. A suite without a patch is no hop and prints nothing.
+for base in tests/e2e/c5c3/*/; do
+  base="${base%/}"
+  to_f="$(glob_one "${base}" "[0-9][0-9]-patch-upgrade.yaml")"
+  [[ -n "${to_f}" ]] || continue
+  from="$(first_pin openStackRelease "$(glob_one "${base}" "[0-9][0-9]-controlplane-cr.yaml")")"
+  to="$(first_pin openStackRelease "${to_f}")"
+  if [[ -z "${from}" || -z "${to}" ]]; then
+    fail "${base}: cannot read the ControlPlane transition (NN-controlplane-cr.yaml openStackRelease -> NN-patch-upgrade.yaml openStackRelease) — shape changed, update this audit"
+    continue
   fi
-  bad="$(find "${base}" -maxdepth 1 -type f ! -name '*-patch-skip-level.yaml' | release_pins_list | awk -v a="${from}" -v b="${to}" '$1 != "tempest" && $2 != a && $2 != b {print $1 ":" $2}' | sort -u | tr '\n' ' ')"
-  if [[ -n "${bad}" ]]; then
-    fail "${base}: release pins outside ${from} -> ${to}: ${bad}"
-  fi
+  check_transition "${base}" "${from}" "${to}"
 done
 # The skip-level rejection test needs a target that is neither wired nor the
 # sequential successor of the release the suite upgraded to.

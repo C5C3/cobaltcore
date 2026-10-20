@@ -4,8 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the release-floor layer (L8) of the check-release-wiring audit, the
-# L3 exemption of the floor fixtures, and the L4 checks of the kind fake
-# compute and the ci-run-tempest.sh slug fallbacks.
+# L3 exemption of the floor fixtures, the L4 checks of the kind fake compute
+# and the ci-run-tempest.sh slug fallbacks, and the ControlPlane-hop arm of L6,
+# which reads a tests/e2e/c5c3/ suite with an NN-patch-upgrade.yaml by
+# openStackRelease.
 #
 # A retirement removes releases/<old>/ one pull request before it moves
 # release.MinimumSupported (docs/contributing/adding-a-new-release.md). A floor
@@ -355,6 +357,55 @@ test_repository_references_parse() {
 }
 
 # ---------------------------------------------------------------------------
+# Test J: a ControlPlane hop on the newest transition
+# ---------------------------------------------------------------------------
+test_controlplane_hop_on_newest_transition_passes() {
+  echo "Test: a tests/e2e/c5c3/ suite with a patch is a ControlPlane hop, and one on the newest transition passes L6"
+
+  local tmp output l6
+  tmp="$(mktemp -d)"
+  stage_tree "$tmp" 2026.1 2026.1 2026.2
+  write_fixture "$tmp" tests/e2e/c5c3/hop/00-controlplane-cr.yaml 2026.1 ""
+  write_fixture "$tmp" tests/e2e/c5c3/hop/08-patch-upgrade.yaml 2026.2 ""
+  write_fixture "$tmp" tests/e2e/c5c3/plain/00-controlplane-cr.yaml 2026.1 ""
+
+  output="$(run_audit "$tmp")"
+  l6="$(echo "$output" | sed -n '/^=== L6:/,/^=== L7:/p')"
+
+  assert_contains "the hop is read by openStackRelease" "$l6" \
+    "[PASS] tests/e2e/c5c3/hop tests 2026.1 -> 2026.2 (newest transition)"
+  assert_not_contains "a suite without a patch is no hop" "$l6" "tests/e2e/c5c3/plain"
+  assert_not_contains "L6 reports no failure" "$l6" "[FAIL]"
+  rm -rf "$tmp"
+}
+
+# ---------------------------------------------------------------------------
+# Test K: a ControlPlane hop on a stale pair, with a stray pin, or unreadable
+# ---------------------------------------------------------------------------
+test_controlplane_hop_stale_or_unreadable_fails() {
+  echo "Test: a ControlPlane hop on a stale pair, with a pin outside it, or without a readable transition fails L6"
+
+  local tmp output l6
+  tmp="$(mktemp -d)"
+  stage_tree "$tmp" 2026.1 2026.1 2026.2 2027.1
+  write_fixture "$tmp" tests/e2e/c5c3/hop/00-controlplane-cr.yaml 2026.1 ""
+  write_fixture "$tmp" tests/e2e/c5c3/hop/08-patch-upgrade.yaml 2026.2 ""
+  write_fixture "$tmp" tests/e2e/c5c3/hop/05-agent-cr.yaml 2025.2 ""
+  write_fixture "$tmp" tests/e2e/c5c3/hop-b/08-patch-upgrade.yaml "" 2027.1
+
+  output="$(run_audit "$tmp")"
+  l6="$(echo "$output" | sed -n '/^=== L6:/,/^=== L7:/p')"
+
+  assert_contains "a hop on the previous transition fails" "$l6" \
+    "[FAIL] tests/e2e/c5c3/hop tests 2026.1 -> 2026.2 but the newest transition is 2026.2 -> 2027.1"
+  assert_contains "a pin outside the hop fails" "$l6" \
+    "[FAIL] tests/e2e/c5c3/hop: release pins outside 2026.1 -> 2026.2: openStackRelease:2025.2"
+  assert_contains "a hop without a readable transition fails" "$l6" \
+    "[FAIL] tests/e2e/c5c3/hop-b: cannot read the ControlPlane transition (NN-controlplane-cr.yaml openStackRelease -> NN-patch-upgrade.yaml openStackRelease) — shape changed, update this audit"
+  rm -rf "$tmp"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_well_formed_floor_passes
@@ -368,6 +419,8 @@ test_floor_name_outside_invalid_corpus_is_swept
 test_fake_compute_off_default_fails
 test_tempest_fallbacks_on_removed_release_fail
 test_repository_references_parse
+test_controlplane_hop_on_newest_transition_passes
+test_controlplane_hop_stale_or_unreadable_fails
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
