@@ -312,7 +312,7 @@ export default defineConfig({
               { text: 'Chaos E2E Tests', link: '/reference/testing/chaos-e2e-tests' },
               { text: 'dizzy Chaos Testing', link: '/reference/testing/dizzy-chaos-testing' },
               { text: 'Tempest Test Infrastructure', link: '/reference/testing/tempest-test-infrastructure' },
-              { text: 'Reconcile Performance Benchmark', link: '/reference/testing/reconcile-performance-benchmark' },
+              { text: 'Performance Baselines', link: '/reference/testing/reconcile-performance-benchmark' },
               { text: 'Sizing Calibration', link: '/reference/testing/sizing-calibration' },
             ],
           },
