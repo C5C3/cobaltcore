@@ -1,0 +1,389 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a cross-release Horizon upgrade from 2026.1 to 2026.2.
+# Horizon carries no spec.openStackRelease and no status.installedRelease: the
+# image tag is the release. There is no database, no db-sync Job and no phase
+# machine. On the patch the operator re-renders local_settings.py into a new
+# immutable ConfigMap whose CACHES["default"]["KEY_PREFIX"] is "horizon-" plus
+# the first 12 hex characters of sha256(spec.image reference), applies the
+# Deployment with the new image and the new config volume, and keeps the
+# previous ConfigMap as history. What the hop can break is the dashboard: a
+# 2026.2 pod that reads the 2026.1 template fragment from the shared Memcached
+# raises OfflineGenerationError and answers HTTP 500 on every page (#1305).
+# Because there is no installedRelease to gate on, the settled end state is
+# asserted in the siblings' order: the Deployment first, the CR second.
+#   (1) A fresh Horizon at :2026.1 reaches Ready=True/AllReady and its
+#       Deployment mounts a local_settings.py with KEY_PREFIX
+#       horizon-e3b48cc65c6f
+#   (2) The login page renders over the Service before the hop
+#   (3) Patching spec.image.tag to 2026.2 rolls the Deployment onto :2026.2
+#       and the rollout completes
+#   (4) The Horizon is Ready=True/AllReady again with
+#       status.observedGeneration at the patched generation
+#   (5) The Deployment mounts a new ConfigMap whose KEY_PREFIX is
+#       horizon-bf42999233c3, the 2026.1 ConfigMap stays as history, and no
+#       other exists
+#   (6) The login page renders again on the new image
+#   (7) Horizon migrates nothing: no openStackRelease, no installedRelease,
+#       no Job
+#
+# The two KEY_PREFIX literals are pins the release-wiring audit does not see
+# (its regex reads tag:, openStackRelease:, installedRelease: and
+# ghcr.io/c5c3/<img>:<v> only). Recompute them at a release move with
+#   printf '%s' ghcr.io/c5c3/horizon:<v> | sha256sum | cut -c1-12
+# as docs/contributing/adding-a-new-release.md shows.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-release-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Horizon CR at 2026.1 ──────────────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+  # ── Step 2: Assert the 2026.1 steady state and the pre-hop prefix ───────
+  # The prefix script reads the ConfigMap the Deployment mounts, because the
+  # retention sweep keeps up to three historical ones beside it. The
+  # here-string keeps the grep -q match out of a pipe; grep -c runs under
+  # || true because it exits 1 on zero matches and set -e would turn that
+  # into the wrong failure.
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-release-upgrade
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'ConfigReady']):
+            - status: "True"
+              reason: ConfigRendered
+            (conditions[?type == 'HorizonAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: horizon-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: horizon
+                  image: ghcr.io/c5c3/horizon:2026.1
+          status:
+            (availableReplicas > `0`): true
+    - script:
+        shell: bash
+        timeout: 60s
+        content: |
+          set -euo pipefail
+          cm=$(kubectl get deploy horizon-release-upgrade -n openstack \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          if [ -z "$cm" ]; then echo "FAIL: the Deployment mounts no config ConfigMap"; exit 1; fi
+          settings=$(kubectl get cm -n openstack "$cm" -o jsonpath='{.data.local_settings\.py}')
+          if ! grep -qF '"KEY_PREFIX": "horizon-e3b48cc65c6f"' <<<"$settings"; then
+            echo "FAIL: $cm does not carry the 2026.1 KEY_PREFIX horizon-e3b48cc65c6f"; exit 1
+          fi
+          count=$(kubectl get cm -n openstack -o name | grep -c 'configmap/horizon-release-upgrade-config-' || true)
+          if [ "$count" != "1" ]; then
+            echo "FAIL: expected one horizon-release-upgrade-config-* ConfigMap before the hop, found $count"; exit 1
+          fi
+          echo "OK: $cm carries KEY_PREFIX horizon-e3b48cc65c6f and is the only config ConfigMap"
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-release-upgrade -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Deployment ==="
+          kubectl get deploy horizon-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== Config ConfigMaps ==="
+          kubectl get cm -n $NAMESPACE -o name 2>&1 | grep horizon-release-upgrade-config- || true
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep horizon-release-upgrade-config- || true); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data.local_settings\.py}' 2>&1 | grep -F KEY_PREFIX || true
+          done
+  # ── Step 3: Assert the login page renders before the hop ────────────────
+  # HTTP-level dashboard coverage: the probe pod runs the service image
+  # (python3, no curl) and retries connection-level failures, because
+  # kube-proxy's endpoint programming can trail the CR's Ready flip by a
+  # second or two. HTTP errors fail hard. Rendering the page also writes the
+  # 2026.1 template-cache fragment under this image's KEY_PREFIX, the entry
+  # the 2026.2 pods of step 5 must not read. The pod name is unique in the
+  # leg because the suites run in parallel; finally deletes it, because a
+  # kubectl run --rm killed on the step timeout leaves its pod behind and a
+  # re-run on the same cluster would fail with AlreadyExists.
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          kubectl run curl-test-horizon-release-pre -n $NAMESPACE --image=ghcr.io/c5c3/horizon:2026.1 --rm -i --restart=Never \
+            --command -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://horizon-release-upgrade.openstack.svc:8080/auth/login/')
+                  body = r.read().decode()
+                  assert r.status == 200, r.status
+                  assert 'static' in body, 'login page must reference pre-built static assets'
+                  print('login page OK, %d bytes' % len(body))
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET /auth/login/ -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('GET /auth/login/ retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('GET /auth/login/ never answered after retries: %r' % last)
+          "
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon Service ==="
+          kubectl get svc -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade 2>&1 || true
+          echo "=== Horizon Endpoints ==="
+          kubectl get endpoints -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade 2>&1 || true
+          echo "=== Horizon pod status ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o wide 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+    finally:
+    - script:
+        content: |
+          kubectl delete pod curl-test-horizon-release-pre -n $NAMESPACE --ignore-not-found 2>&1 || true
+  # ── Step 4: Patch the image tag to trigger the cross-release upgrade ────
+  - try:
+    - patch:
+        file: 01-patch-upgrade.yaml
+  # ── Step 5: Assert the settled 2026.2 end state ─────────────────────────
+  # The Deployment assert runs first: a Ready=True left over from before the
+  # patch would satisfy a CR assert that polls before the operator's first
+  # post-patch pass, while the Deployment cannot reach the 2026.2 template
+  # without that pass. The template alone does not prove the rollout: until
+  # the deployment controller observes the new generation, the Deployment
+  # status still describes the finished 2026.1 rollout and matches the
+  # status fields of the assert. kubectl rollout status waits for
+  # status.observedGeneration to reach the patched generation and for the
+  # 2026.1 ReplicaSet to retire, so step 6 cannot reach the old pod through
+  # the Service. The one-replica rolling update (maxSurge 1,
+  # maxUnavailable 0) keeps DeploymentReady False for one reconcile pass
+  # only, so "Ready again" is proven by the settled state plus
+  # status.observedGeneration == metadata.generation, read with kubectl
+  # because chainsaw's JMESPath cannot reach metadata.generation from inside
+  # a condition filter. Two config ConfigMaps is deterministic: the rendered
+  # settings are a function of the spec, the two specs render two contents,
+  # and the prune keeps three historical ConfigMaps beside the current one.
+  # The last script proves the hop migrated nothing: the instance label
+  # every child of the CR carries selects no Job, and the CR carries no
+  # release field.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: horizon-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: horizon
+                  image: ghcr.io/c5c3/horizon:2026.2
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          kubectl rollout status deploy/horizon-release-upgrade -n openstack --timeout=210s
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-release-upgrade
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'ConfigReady']):
+            - status: "True"
+              reason: ConfigRendered
+            (conditions[?type == 'HorizonAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 120 ))
+          while :; do
+            gen=$(kubectl get horizon horizon-release-upgrade -n openstack -o jsonpath='{.metadata.generation}')
+            obs=$(kubectl get horizon horizon-release-upgrade -n openstack -o jsonpath='{.status.observedGeneration}')
+            if [ -n "$gen" ] && [ "$gen" = "$obs" ]; then
+              echo "OK: status.observedGeneration=$obs matches metadata.generation=$gen after the hop"; exit 0
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: status.observedGeneration=$obs did not reach metadata.generation=$gen within 120s"; exit 1
+            fi
+            sleep 2
+          done
+    - script:
+        shell: bash
+        timeout: 60s
+        content: |
+          set -euo pipefail
+          cm=$(kubectl get deploy horizon-release-upgrade -n openstack \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          if [ -z "$cm" ]; then echo "FAIL: the Deployment mounts no config ConfigMap after the hop"; exit 1; fi
+          settings=$(kubectl get cm -n openstack "$cm" -o jsonpath='{.data.local_settings\.py}')
+          if ! grep -qF '"KEY_PREFIX": "horizon-bf42999233c3"' <<<"$settings"; then
+            echo "FAIL: $cm does not carry the 2026.2 KEY_PREFIX horizon-bf42999233c3"; exit 1
+          fi
+          if grep -qF 'horizon-e3b48cc65c6f' <<<"$settings"; then
+            echo "FAIL: $cm still carries the 2026.1 KEY_PREFIX horizon-e3b48cc65c6f"; exit 1
+          fi
+          count=$(kubectl get cm -n openstack -o name | grep -c 'configmap/horizon-release-upgrade-config-' || true)
+          if [ "$count" != "2" ]; then
+            echo "FAIL: expected the 2026.1 and the 2026.2 config ConfigMaps (2) after the hop, found $count"; exit 1
+          fi
+          echo "OK: $cm carries KEY_PREFIX horizon-bf42999233c3; the 2026.1 ConfigMap is retained as history"
+    - script:
+        shell: bash
+        timeout: 30s
+        content: |
+          set -euo pipefail
+          jobs=$(kubectl get jobs -n openstack -l app.kubernetes.io/instance=horizon-release-upgrade -o name)
+          if [ -n "$jobs" ]; then
+            echo "FAIL: the hop created Jobs for a Horizon that migrates nothing: $jobs"; exit 1
+          fi
+          rel=$(kubectl get horizon horizon-release-upgrade -n openstack \
+            -o jsonpath='{.spec.openStackRelease}{.status.installedRelease}')
+          if [ -n "$rel" ]; then
+            echo "FAIL: Horizon carries a release field after the hop: $rel"; exit 1
+          fi
+          echo "OK: no Job and no release field after the hop"
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-release-upgrade -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Rollout status ==="
+          kubectl rollout status deploy/horizon-release-upgrade -n $NAMESPACE --timeout=5s 2>&1 || true
+          echo "=== Dashboard pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Deployment ==="
+          kubectl get deploy horizon-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== Config ConfigMaps ==="
+          kubectl get cm -n $NAMESPACE -o name 2>&1 | grep horizon-release-upgrade-config- || true
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep horizon-release-upgrade-config- || true); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data.local_settings\.py}' 2>&1 | grep -F KEY_PREFIX || true
+          done
+  # ── Step 6: Assert the login page renders after the hop ─────────────────
+  # A 2026.2 pod that still rendered the 2026.1 prefix would read the
+  # fragment step 3 wrote, find no entry for it in its own offline manifest,
+  # and answer HTTP 500 to every render, its readiness probe included: the
+  # rollout of step 5 then never converges and that step's catch shows
+  # OfflineGenerationError in the new pod's log. This step is the proof on
+  # the other side of the hop: the dashboard answers through the Service on
+  # the new image against a Memcached that still holds the 2026.1 entries.
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          kubectl run curl-test-horizon-release-post -n $NAMESPACE --image=ghcr.io/c5c3/horizon:2026.2 --rm -i --restart=Never \
+            --command -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://horizon-release-upgrade.openstack.svc:8080/auth/login/')
+                  body = r.read().decode()
+                  assert r.status == 200, r.status
+                  assert 'static' in body, 'login page must reference pre-built static assets'
+                  print('login page OK, %d bytes' % len(body))
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET /auth/login/ -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('GET /auth/login/ retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('GET /auth/login/ never answered after retries: %r' % last)
+          "
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon Service ==="
+          kubectl get svc -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade 2>&1 || true
+          echo "=== Horizon Endpoints ==="
+          kubectl get endpoints -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade 2>&1 || true
+          echo "=== Horizon pod status ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o wide 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+    finally:
+    - script:
+        content: |
+          kubectl delete pod curl-test-horizon-release-post -n $NAMESPACE --ignore-not-found 2>&1 || true
