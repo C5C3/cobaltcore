@@ -1265,6 +1265,21 @@ func TestValidateUpdate_ServiceImageTagFloor(t *testing.T) {
 		g.Expect(err.Error()).To(ContainSubstring("must be 2026.1 or later"))
 	})
 
+	// The override carries no downgrade rule: an older tag at or above the
+	// floor is admitted and meets the Keystone controller's
+	// DowngradeNotSupported refusal instead.
+	t.Run("keystone override lowered at the floor admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := managedControlPlane()
+		oldCP.Spec.OpenStackRelease = "2026.2"
+		oldCP.Spec.Services.Keystone.Image = keystoneImage("2026.2")
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Keystone.Image.Tag = "2026.1"
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+
 	t.Run("horizon override changed below the floor rejected", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		oldCP := managedControlPlane()
