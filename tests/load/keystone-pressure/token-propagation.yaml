@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# dizzy `keystone pressure` profile for #1463: invalidate the tokens
+# keystonemiddleware caches on Keystone events instead of on a timer.
+#
+# Every 30 s the propagation probe revokes a pool token and polls one of Nova,
+# Neutron, Cinder and Glance with it once a second until the service answers
+# 401. Beside it, probe sends many distinct pool tokens to those services, so
+# each service caches many tokens. Compare the propagation delay: up to the
+# 300 s of keystonemiddleware's token_cache_time without the change, seconds
+# with it. A probe still polling when the run ends is not recorded, so the run
+# lasts well over 300 s.
+#
+# Needs a ControlPlane whose catalog lists at least one of the four services;
+# a standalone Keystone fails at priming. The propagation probe's revocations
+# are real revocation events, so this profile belongs on a lab or a kind
+# stack, never on a shared cloud.
+#
+# See docs/reference/testing/keystone-pressure-testing.md.
+name: token-propagation
+seed: 42
+
+resources:
+  domains:  1
+  roles:    2
+  projects: 20
+  users:    200
+
+distribution:
+  projects_per_domain:            { min: 1, max: 5 }
+  assignments_per_user:           { min: 1, max: 3 }
+  domain_scoped_assignment_ratio: 0.1
+  users_issuing_tokens_ratio:     0.5
+
+pressure:
+  duration: 15m
+  workers:  16
+  tokens:   500
+  churn_users: 0
+  mix:
+    validate:     0
+    effective:    0
+    revoke:       0
+    grant_churn:  0
+    issue:        0
+    probe:      100
+    bad_token:    0
+  propagation:
+    every:   30s
+    timeout: 10m

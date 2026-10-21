@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# dizzy `keystone pressure` profile for #1464: an in-process cache tier in
+# front of memcached in keystonemiddleware.
+#
+# probe sends a small pool of tokens to Nova, Neutron, Cinder and Glance at a
+# high rate, so every service sees the same few tokens over and over and
+# answers nearly every request from its token cache. Compare the probe p50 per
+# service in the Probes table: the change saves the 0.3 to 1.2 ms of the
+# memcached round trips, which shows over tens of thousands of samples.
+#
+# Needs a ControlPlane whose catalog lists at least one of the four services;
+# a standalone Keystone fails at priming.
+#
+# See docs/reference/testing/keystone-pressure-testing.md.
+name: middleware-cache
+seed: 42
+
+resources:
+  domains:  1
+  roles:    2
+  projects: 5
+  users:    10
+
+distribution:
+  projects_per_domain:            { min: 1, max: 3 }
+  assignments_per_user:           { min: 1, max: 3 }
+  domain_scoped_assignment_ratio: 0.1
+  users_issuing_tokens_ratio:     0.5
+
+pressure:
+  duration: 5m
+  workers:  32
+  tokens:   10
+  churn_users: 0
+  mix:
+    validate:     0
+    effective:    0
+    revoke:       0
+    grant_churn:  0
+    issue:        0
+    probe:      100
+    bad_token:    0

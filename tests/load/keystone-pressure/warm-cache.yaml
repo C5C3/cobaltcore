@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# dizzy `keystone pressure` profile for #1461: fewer cache round trips per
+# warm token validation and an in-process cache tier in Keystone.
+#
+# Every draw is a validate. revoke and grant_churn stay at weight 0, so
+# nothing flushes Keystone's token and role caches, and after the first pass
+# over the pool every validation is a warm one. Compare the validate p50 and
+# the throughput at the fixed worker count. Run it against a build with and a
+# build without the change, same seed, and compare the two run records with
+# `dizzy keystone report --compare` (make dizzy-keystone-compare, or the
+# A/B run of make keystone-pressure-ab).
+#
+# See docs/reference/testing/keystone-pressure-testing.md.
+name: warm-cache
+seed: 42
+
+resources:
+  domains:  1
+  roles:    2
+  projects: 10
+  users:    40
+
+distribution:
+  projects_per_domain:            { min: 1, max: 3 }
+  assignments_per_user:           { min: 1, max: 3 }
+  domain_scoped_assignment_ratio: 0.1
+  users_issuing_tokens_ratio:     0.5
+
+pressure:
+  duration: 5m
+  workers:  32
+  tokens:   100
+  churn_users: 0              # grant_churn is off, so no user is reserved for it
+  mix:
+    validate:    100
+    effective:     0
+    revoke:        0
+    grant_churn:   0
+    issue:         0

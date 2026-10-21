@@ -13,11 +13,17 @@
 #                      configMapGenerator.
 #   chaos <service>    Run the dizzy chaos soak against keystone or glance,
 #                      exporting per-operation metrics over OTLP.
+#   pressure <profile> Run dizzy's closed-loop Keystone token-path load with a
+#                      profile of tests/load/keystone-pressure/ and keep its
+#                      run record under _output/dizzy/pressure/.
+#   compare <base> <other>
+#                      Compare two pressure run records with
+#                      `dizzy keystone report --compare`.
 #
 # The dizzy version is pinned once via the DIZZY_VERSION variable. Every other
 # input is an optional environment override: DIZZY_SCENARIO, DIZZY_SECRET,
-# DIZZY_CP_NAMESPACE, DIZZY_AUTH_URL, DIZZY_ARGS, KIND_CLUSTER, and
-# EXTERNAL_CLUSTER.
+# DIZZY_CP_NAMESPACE, DIZZY_AUTH_URL, DIZZY_ARGS, DIZZY_PRESSURE_LABEL,
+# KIND_CLUSTER, and EXTERNAL_CLUSTER.
 
 set -euo pipefail
 
@@ -34,6 +40,11 @@ DIZZY_VERSION="${DIZZY_VERSION:-v0.6.0}"
 # git-ignored _output/ tree.
 DIZZY_CACHE_DIR="${REPO_ROOT}/_output/dizzy/${DIZZY_VERSION}"
 CLOUDS_FILE="${REPO_ROOT}/_output/dizzy/clouds.yaml"
+
+# The pressure profiles of the repository and the root of the run records the
+# pressure subcommand keeps, one directory per label and profile.
+PRESSURE_PROFILE_DIR="${REPO_ROOT}/tests/load/keystone-pressure"
+PRESSURE_OUTPUT_DIR="${REPO_ROOT}/_output/dizzy/pressure"
 
 # Selects the external-cluster mode, as in hack/deploy-infra.sh and
 # hack/teardown-infra.sh; only the value true does. The helper then calls no
@@ -68,11 +79,22 @@ Subcommands:
   chaos <keystone|glance>
                          Run the dizzy chaos soak against the named service
                          using the ControlPlane admin credentials.
+  pressure <profile>     Run dizzy keystone pressure with the profile
+                         tests/load/keystone-pressure/<profile>.yaml and keep
+                         the run record in
+                         _output/dizzy/pressure/<label>/<profile>/.
+  compare <base> <other> Compare two pressure run records; each argument is a
+                         run-*.json file or a directory whose newest
+                         run-*.json is taken.
 
 Environment overrides:
   DIZZY_VERSION          dizzy version to pin (default ${DIZZY_VERSION}).
   DIZZY_SCENARIO         Scenario file path (default the cached
-                         scenarios/<service>/small.yaml).
+                         scenarios/<service>/small.yaml for chaos, the
+                         profile's file for pressure).
+  DIZZY_PRESSURE_LABEL   Directory under _output/dizzy/pressure/ that a
+                         pressure run's record goes to, e.g. base or patched
+                         (default run).
   DIZZY_SECRET           ControlPlane admin Secret name
                          (default controlplane-keystone-admin-credentials).
   DIZZY_CP_NAMESPACE     Namespace of the admin Secret (default openstack).
@@ -330,6 +352,147 @@ run_chaos() {
 }
 
 # ---------------------------------------------------------------------------
+# list_pressure_profiles — Log the profile names under PRESSURE_PROFILE_DIR.
+# ---------------------------------------------------------------------------
+list_pressure_profiles() {
+  local file
+  for file in "${PRESSURE_PROFILE_DIR}"/*.yaml; do
+    [[ -f "${file}" ]] || continue
+    log "         $(basename "${file}" .yaml)"
+  done
+}
+
+# ---------------------------------------------------------------------------
+# run_pressure PROFILE — Run dizzy keystone pressure against the ControlPlane
+# Keystone with tests/load/keystone-pressure/PROFILE.yaml (or DIZZY_SCENARIO).
+#
+# dizzy writes its run record into its working directory, so the run starts
+# in _output/dizzy/pressure/<DIZZY_PRESSURE_LABEL>/<PROFILE>/; two labels such
+# as base and patched keep the records of two builds apart for compare. The
+# run exports over OTLP only when the dizzy stack is installed: pressure needs
+# no VictoriaMetrics, and its token-path numbers come from the run record.
+# ---------------------------------------------------------------------------
+run_pressure() {
+  local profile="${1:-}"
+  if [[ -z "${profile}" ]]; then
+    usage
+    exit 1
+  fi
+  if [[ ! "${profile}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    log "ERROR: pressure profile '${profile}' must be a name such as warm-cache."
+    exit 1
+  fi
+  local label="${DIZZY_PRESSURE_LABEL:-run}"
+  if [[ ! "${label}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    log "ERROR: DIZZY_PRESSURE_LABEL '${label}' must start with a letter or digit and hold only letters, digits, '.', '_' and '-'."
+    exit 1
+  fi
+
+  # Checked here, unlike the chaos scenario: a profile that names no file is
+  # a typo the list of profiles answers better than dizzy's error.
+  local scenario="${DIZZY_SCENARIO:-${PRESSURE_PROFILE_DIR}/${profile}.yaml}"
+  if [[ ! -f "${scenario}" ]]; then
+    log "ERROR: no pressure scenario at ${scenario}; the profiles are:"
+    list_pressure_profiles
+    exit 1
+  fi
+  # dizzy starts in the run directory, so a relative path is made absolute.
+  scenario="$(cd "$(dirname "${scenario}")" && pwd)/$(basename "${scenario}")"
+
+  ensure_binary
+  generate_clouds_yaml
+
+  local otel_args=()
+  if kubectl get namespace dizzy >/dev/null 2>&1; then
+    probe_ingest
+    otel_args=(--otel)
+  else
+    log "No dizzy stack (namespace dizzy); the run exports no metrics."
+  fi
+
+  local extra_args=()
+  read -r -a extra_args <<< "${DIZZY_ARGS:-}"
+
+  local run_dir="${PRESSURE_OUTPUT_DIR}/${label}/${profile}"
+  mkdir -p "${run_dir}"
+
+  log "Starting dizzy keystone pressure (profile: ${profile}, scenario: ${scenario}, run record in ${run_dir})..."
+  (
+    cd "${run_dir}"
+    OS_CACERT='' \
+    OS_CLIENT_CONFIG_FILE="${CLOUDS_FILE}" \
+    OTEL_EXPORTER_OTLP_METRICS_ENDPOINT="http://localhost:8428/opentelemetry/v1/metrics" \
+    OTEL_METRIC_EXPORT_INTERVAL=15000 \
+      "${REPO_ROOT}/bin/dizzy" keystone pressure \
+        --os-cloud devstack-c5c3 \
+        --scenario "${scenario}" \
+        ${otel_args[@]+"${otel_args[@]}"} \
+        ${extra_args[@]+"${extra_args[@]}"}
+  )
+}
+
+# ---------------------------------------------------------------------------
+# resolve_record PATH — Print PATH when it is a file, or the newest run-*.json
+# in the directory PATH. Exits 1 with an error on stderr otherwise.
+# ---------------------------------------------------------------------------
+resolve_record() {
+  local path="$1"
+  if [[ -f "${path}" ]]; then
+    printf '%s\n' "${path}"
+    return 0
+  fi
+  if [[ ! -d "${path}" ]]; then
+    log "ERROR: ${path} is neither a run record nor a directory." >&2
+    exit 1
+  fi
+  local file newest=""
+  for file in "${path}"/run-*.json; do
+    [[ -f "${file}" ]] || continue
+    if [[ -z "${newest}" || "${file}" -nt "${newest}" ]]; then
+      newest="${file}"
+    fi
+  done
+  if [[ -z "${newest}" ]]; then
+    log "ERROR: no run-*.json in ${path}." >&2
+    exit 1
+  fi
+  printf '%s\n' "${newest}"
+}
+
+# ---------------------------------------------------------------------------
+# run_compare BASE OTHER — Print the comparison of two keystone pressure run
+# records, BASE the build without the change, and keep it as text and HTML in
+# _output/dizzy/pressure/compare/. DIZZY_ARGS reaches dizzy, e.g.
+# --allow-mismatch.
+# ---------------------------------------------------------------------------
+run_compare() {
+  if [[ $# -ne 2 ]]; then
+    usage
+    exit 1
+  fi
+  local base other
+  base="$(resolve_record "$1")"
+  other="$(resolve_record "$2")"
+
+  ensure_binary
+
+  local extra_args=()
+  read -r -a extra_args <<< "${DIZZY_ARGS:-}"
+
+  local out_dir="${PRESSURE_OUTPUT_DIR}/compare"
+  local stem
+  stem="$(basename "${base}" .json)-vs-$(basename "${other}" .json)"
+  mkdir -p "${out_dir}"
+
+  log "Comparing ${base} (base) with ${other}..."
+  "${REPO_ROOT}/bin/dizzy" keystone report --run "${base}" --compare "${other}" \
+    ${extra_args[@]+"${extra_args[@]}"} | tee "${out_dir}/${stem}.txt"
+  "${REPO_ROOT}/bin/dizzy" keystone report --run "${base}" --compare "${other}" --format html \
+    ${extra_args[@]+"${extra_args[@]}"} > "${out_dir}/${stem}.html"
+  log "Comparison written to ${out_dir}/${stem}.txt and ${stem}.html."
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 main() {
@@ -341,6 +504,14 @@ main() {
     chaos)
       shift
       run_chaos "$@"
+      ;;
+    pressure)
+      shift
+      run_pressure "$@"
+      ;;
+    compare)
+      shift
+      run_compare "$@"
       ;;
     *)
       usage
