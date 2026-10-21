@@ -103,7 +103,7 @@ Deployment rollout, bootstrap Job).
 | [brownfield-database](#brownfield-database) | `keystone-brownfield` | Explicit database host (no MariaDB CRs created) |
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status |
 | [image-pull-policy](#image-pull-policy) | `keystone-ipp` | Without `spec.image.pullPolicy` every container of the Deployment and the db-sync Job carries the operator default `IfNotPresent`; `pullPolicy: Never` reaches every container of the Deployment and the CronJobs, re-runs db-sync and keeps the bootstrap Job |
-| [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2026.1 to 2026.2 via expand-migrate-contract, API accessibility before/after |
+| [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2026.1 to 2026.2 via expand-migrate-contract, API accessibility and admin authentication before/after, token continuity, fernet keys unchanged |
 | [concurrent-cr-conflicts](#concurrent-cr-conflicts) | `keystone-concurrent-a`, `keystone-concurrent-b` | Concurrent CR reconciliation with shared secrets, sub-resource isolation, deletion without cross-CR impact |
 | [config-pruning](#config-pruning) | `keystone-pruning` | Immutable ConfigMap pruning — stale ConfigMaps removed after multiple config changes, retain+1 cap, Ready=True preserved |
 | [events](#events) | `keystone-events` | Kubernetes event emission for BootstrapComplete, DatabaseSynced, FernetKeysGenerated, CredentialKeysGenerated |
@@ -398,7 +398,11 @@ expand-migrate-contract database migration path (keystone 29.0.0 → 30.0.0). De
 Keystone CR with tag 2026.1, verifies the Keystone API at `/v3` is accessible, patches
 `spec.image.tag` to 2026.2, then verifies the expand/migrate/contract Jobs are created,
 the Deployment image updates to 2026.2, the rollout completes, `installedRelease` reaches
-2026.2, and the Keystone API remains accessible post-upgrade.
+2026.2, and the Keystone API remains accessible post-upgrade. After the upgrade, the suite
+also issues an admin token scoped to the project `admin` (the authenticated request
+[#420](https://github.com/c5c3/cobaltcore/issues/420) asked for), validates a token issued
+before the upgrade, and checks that the fernet key Secret is unchanged unless a rotation
+applied in between.
 
 This differs from `image-upgrade`, which tests same-release tag swaps
 (2026.1→2026.1-upgraded) without database migration, and from `upgrade-flow`,
@@ -410,16 +414,20 @@ which focuses on internal state machine mechanics (skip-level rejection).
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR with tag 2026.1 | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-release-upgrade` in managed mode with tag 2026.1 |
 | 2 | Assert Ready and initial image | `assert` (5m) + `script` | Ready=True (AllReady), `installedRelease`=2026.1; script verifies Deployment `keystone-release-upgrade-api` container image ends with `2026.1` |
-| 3 | Verify API before upgrade | `script` (30s) | `kubectl run curl-test-release-pre` with python3 `urllib.request` — verifies GET `/v3` succeeds |
+| 3 | Verify API and admin token before upgrade | `script` (90s) + `script` (120s) | `kubectl run curl-test-release-pre` with python3 `urllib.request` verifies GET `/v3` through the Service. The second script runs `kubectl exec` into the API pod and sends `POST /v3/auth/tokens` to `localhost:5000` as user `admin`, scoped to the project `admin` in the domain `default`: HTTP 201, a non-empty `X-Subject-Token` and user, project and role `admin` in the body. It hashes `.data` of `keystone-release-upgrade-fernet-keys` and stores token, hash and the `cobaltcore.c5c3.io/rotation-completed-at` annotation of that Secret (`none` when absent) in the Secret `keystone-release-upgrade-pre-hop`, which a `cleanup` on this step deletes at the end of the test |
 | 4 | Patch image tag to 2026.2 | `patch` | Applies `01-patch-upgrade.yaml` — patches `spec.image.tag` to `2026.2` |
 | 5 | Assert upgrade completes | `assert` (5m) + `script` | `installedRelease`=2026.2, Ready=True (AllReady); scripts verify db-expand, db-migrate, db-contract Jobs exist and Deployment image ends with `2026.2`; assert verifies `updatedReplicas == replicas` and `availableReplicas > 0` |
-| 6 | Verify API after upgrade | `script` (30s) | `kubectl run curl-test-release-post` with python3 `urllib.request` — verifies GET `/v3` succeeds post-upgrade |
+| 6 | Verify API, admin token and token continuity after upgrade | `script` (90s) + `script` (120s) | `kubectl run curl-test-release-post` with python3 `urllib.request` verifies GET `/v3` post-upgrade. The second script issues a fresh admin token from a 2026.2 API pod with the checks of step 3, then validates the stashed token with `GET /v3/auth/tokens` (fresh token as `X-Auth-Token`, stashed token as `X-Subject-Token`): HTTP 200 naming user `admin`. Last, the hash of `.data` of `keystone-release-upgrade-fernet-keys` must equal the stashed one. A changed hash passes with a NOTE only when the `rotation-completed-at` annotation carries a timestamp other than the stashed one |
 
-**Fixtures:** `00-keystone-cr.yaml`, `01-patch-upgrade.yaml`
+**Fixtures:** `00-keystone-cr.yaml` (keystone-side caching off through
+`extraConfig.cache.enabled: "false"`), `01-patch-upgrade.yaml`
 
 **Diagnostics:** Steps 2 and 5 include `catch` blocks that capture pod logs (including
 `--previous`), Job logs, pod descriptions, Job status, and namespace events for
-debugging failures.
+debugging failures. The `catch` blocks of steps 3 and 6 capture the Keystone Service,
+Endpoints and pods, the events, the API pod log, and the Secret
+`keystone-release-upgrade-pre-hop` without its `token` key and without the
+`kubectl.kubernetes.io/last-applied-configuration` annotation, which holds the token too.
 
 **Design notes:**
 
@@ -427,6 +435,27 @@ debugging failures.
   direct curl, because the test pods use the Keystone service image which provides python3.
   The curl test pods use unique names (`curl-test-release-pre`, `curl-test-release-post`) to
   avoid conflicts during parallel execution.
+- The admin token probes run with `kubectl exec` in the API pod against `localhost:5000`:
+  the keystone image ships python3 and no curl, and the loopback request takes no
+  kube-proxy hop that a retry would have to cover. The `GET /v3` probes keep their
+  `kubectl run` form because they prove the Service path. The pre-upgrade token is a
+  credential, so step 3 stores it in a Secret, written with
+  `kubectl create --dry-run=client -o yaml | kubectl apply -f -` so a local re-run on the
+  same cluster passes. A `cleanup` on step 3 deletes that Secret. Chainsaw runs it at the
+  end of the test whether the test passed or any step failed; a `finally` on step 6
+  would not run once step 4 or 5 fails. The fixture turns keystone-side caching off like
+  every keystone suite that authenticates as `admin` by name: the keystone suites run
+  four at a time against one `openstack-memcached`, keystone's cache keys carry no
+  per-instance discriminator, and a neighbouring suite's cached `admin` user or project
+  would answer the token probes with 401 or 404
+  ([#227](https://github.com/c5c3/cobaltcore/issues/227) tracks per-instance keys).
+- The fixture's weekly fernet rotation runs at Sunday 00:00 UTC and can apply between
+  steps 3 and 6. The operator writes the rotated keys and a new
+  `cobaltcore.c5c3.io/rotation-completed-at` timestamp in one update, so step 6 reads
+  changed keys under a new timestamp as that rotation and changed keys under the
+  stashed timestamp as an upgrade defect. Both steps read keys and annotation from one
+  `kubectl get`. The pre-hop token still has to validate: with three active keys, one
+  rotation keeps the key that signed it. The `fernet-rotation` suite owns rotation.
 - The 5-minute assert timeout accommodates the full expand→migrate→rolling-update→contract
   cycle.
 - This test complements `upgrade-flow`: `upgrade-flow` validates internal state
