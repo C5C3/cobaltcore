@@ -8,10 +8,12 @@ overrides a library hook by defining a template of the same name here.
 */}}
 
 {{/*
-Identity of the barbican-operator (operator-library chart hook), rendered as the
-BARBICAN_OPERATOR_NAMESPACE and BARBICAN_OPERATOR_SERVICE_ACCOUNT environment
-variables: the subject of the TokenRequest grant this operator projects next to
-every dedicated OpenBao instance.
+Environment of the manager container (operator-library chart hook). The identity
+of the barbican-operator, rendered as BARBICAN_OPERATOR_NAMESPACE and
+BARBICAN_OPERATOR_SERVICE_ACCOUNT, is the subject of the TokenRequest grant this
+operator projects next to every dedicated OpenBao instance. The namespace of the
+openbao-operator, rendered as OPENBAO_OPERATOR_NAMESPACE, is where it creates the
+OpenBaoTenant that admits that instance's namespace.
 */}}
 {{- define "operator-library.chart.env" -}}
 {{- with .Values.barbicanOperator }}
@@ -19,6 +21,10 @@ every dedicated OpenBao instance.
   value: {{ .namespace | quote }}
 - name: BARBICAN_OPERATOR_SERVICE_ACCOUNT
   value: {{ .serviceAccount | quote }}
+{{- end }}
+{{- with .Values.openbaoOperator }}
+- name: OPENBAO_OPERATOR_NAMESPACE
+  value: {{ .namespace | quote }}
 {{- end }}
 {{- end }}
 
