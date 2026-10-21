@@ -15,7 +15,9 @@
 #
 # A setup-helm step without `version:` installs whatever helm release is newest
 # when the job starts, so the push path above could change under a run with no
-# commit to blame. Renovate moves the one pin in ci.yaml's env instead.
+# commit to blame. Renovate moves the pin in ci.yaml's env instead. A called
+# workflow does not inherit that env, so e2e-operator-upgrade.yaml repeats the
+# pin, and the copy must agree with ci.yaml's.
 #
 # Usage: bash tests/unit/ci/helm_wiring_test.sh
 
@@ -79,8 +81,20 @@ test_setup_helm_steps_pass_the_pin() {
   assert_gte "the workflows have setup-helm steps" "$count" 5
   assert_eq "every setup-helm step passes version: \${{ env.HELM_VERSION }}" \
     '${{ env.HELM_VERSION }}' "$(printf '%s\n' "$versions" | sort -u)"
-  assert_not_empty "ci.yaml pins HELM_VERSION" \
-    "$(sed -n 's/^  HELM_VERSION: \(v[0-9][0-9.]*\)$/\1/p' "$CI_YAML")"
+  local ci_helm f
+  ci_helm="$(helm_version_pin "$CI_YAML")"
+  assert_not_empty "ci.yaml pins HELM_VERSION" "$ci_helm"
+  # Every other workflow with a setup-helm step repeats the pin in its own env.
+  for f in "$PROJECT_ROOT"/.github/workflows/*.yaml; do
+    [ "$f" = "$CI_YAML" ] && continue
+    grep -q 'uses: azure/setup-helm@' "$f" || continue
+    assert_eq "$(basename "$f") pins the HELM_VERSION of ci.yaml" "$ci_helm" "$(helm_version_pin "$f")"
+  done
+}
+
+# helm_version_pin <workflow> — the workflow-level HELM_VERSION literal.
+helm_version_pin() {
+  sed -n 's/^  HELM_VERSION: \(v[0-9][0-9.]*\)$/\1/p' "$1" | head -1
 }
 
 test_chart_pushes_use_the_script

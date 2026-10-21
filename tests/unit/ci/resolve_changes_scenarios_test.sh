@@ -73,6 +73,7 @@ EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-ex
 
 SENTINEL_TARGETS='{"target":["__none__"]}'
 SENTINEL_OPERATORS='{"operator":["__none__"]}'
+ALL_OPERATOR_MATRIX='{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
 
 # ---------------------------------------------------------------------------
 # Per-operator and shared Go
@@ -87,8 +88,11 @@ test_operator_change() {
   expect changed-services '[]'
   expect build-e2e-images true
   expect tempest-services '[]'
+  # Every operator's upgrade suite follows that operator's code.
+  expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators '{"operator":["glance"]}'
   # shellcheck disable=SC2086 # deliberate: expand the job list
-  expect_all false $EXPENSIVE e2e-infra e2e-operator-upgrade actionlint noop
+  expect_all false $EXPENSIVE e2e-infra actionlint noop
 }
 
 test_c5c3_change_runs_the_controlplane_jobs() {
@@ -106,12 +110,13 @@ test_keystone_change_runs_the_upgrade_suite() {
   scenario "a keystone operator change" refs/heads/main FILTER_keystone=true
   expect e2e-operators '{"operator":["keystone"]}'
   expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators '{"operator":["keystone"]}'
   expect_all false e2e-controlplane tempest e2e-chaos
 }
 
 test_shared_go_change() {
   # Every operator's code is affected, so every unit, envtest and e2e leg runs
-  # and the upgrade suite with them. The ControlPlane trio, chaos, multicluster,
+  # and every upgrade suite with them. The ControlPlane trio, chaos, multicluster,
   # prometheus and tempest stay off: they are the most expensive jobs in the
   # pipeline and ci:full is how you ask for them.
   scenario "a shared Go change" refs/heads/main FILTER_go_common=true
@@ -120,6 +125,7 @@ test_shared_go_change() {
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]'
   expect changed-services '[]'
   expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators "$ALL_OPERATOR_MATRIX"
   expect e2e-infra false
   # shellcheck disable=SC2086 # deliberate: expand the job list
   expect_all false $EXPENSIVE
@@ -129,13 +135,15 @@ test_nova_chart_egress_change_runs_the_tests_that_read_it() {
   # The keystone and placement unit tests check the nova chart's Keystone and
   # Placement egress rules against their own Service ports and pod labels, so
   # an edit to that hook runs their test legs. Their e2e legs, image builds and
-  # the upgrade suite stay off: the hook ships in the nova chart.
+  # upgrade suites stay off: the hook ships in the nova chart, so only nova's
+  # upgrade suite runs.
   scenario "a nova chart egress hook change" refs/heads/main FILTER_nova=true FILTER_nova_chart_egress=true
   expect go true
   expect test-targets '{"target":["keystone","placement","nova"]}'
   expect e2e-operators '{"operator":["nova"]}'
   expect changed-operators '["nova"]'
-  expect e2e-operator-upgrade false
+  expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators '{"operator":["nova"]}'
 }
 
 # ---------------------------------------------------------------------------
@@ -228,8 +236,19 @@ test_special_suites_run_only_their_own_job() {
   expect e2e-prometheus true
   expect_all false e2e-chaos e2e-controlplane tempest
 
-  scenario "an operator-upgrade suite edit" refs/heads/main FILTER_tests_operator_upgrade=true
+  # tests_operator_upgrade lists the inputs every upgrade suite shares, so it
+  # runs all ten; one operator's suite runs that operator's alone.
+  scenario "a shared operator-upgrade input edit" refs/heads/main FILTER_tests_operator_upgrade=true
   expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators "$ALL_OPERATOR_MATRIX"
+  expect has-e2e-operators false
+  expect_all false e2e-chaos e2e-controlplane tempest
+
+  scenario "one operator's upgrade suite edit" refs/heads/main FILTER_tests_operator_upgrade_cinder=true
+  expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators '{"operator":["cinder"]}'
+  expect build-e2e-images true
+  expect has-e2e-operators false
   expect_all false e2e-chaos e2e-controlplane tempest
 
   scenario "a ControlPlane SSO suite edit" refs/heads/main FILTER_tests_controlplane_sso=true
@@ -290,6 +309,7 @@ test_makefile_change() {
   expect e2e-operators '{"operator":["keystone"]}'
   expect changed-operators '["keystone"]'
   expect e2e-operator-upgrade false
+  expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
 }
 
 test_docs_only_change() {
@@ -298,6 +318,8 @@ test_docs_only_change() {
   expect go false
   expect has-e2e-operators false
   expect e2e-operators "$SENTINEL_OPERATORS"
+  expect e2e-operator-upgrade false
+  expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
   expect build-e2e-images false
   expect e2e-infra false
   expect noop false
@@ -369,6 +391,7 @@ test_ci_full_runs_everything() {
   expect noop false
   expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
   expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
+  expect e2e-operator-upgrade-operators "$ALL_OPERATOR_MATRIX"
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]'
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder","nova"]'
   expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
@@ -483,6 +506,8 @@ test_non_ci_label_resolves_to_nothing() {
   expect e2e-autoscaling false
   expect test-targets "$SENTINEL_TARGETS"
   expect e2e-operators "$SENTINEL_OPERATORS"
+  expect e2e-operator-upgrade false
+  expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
   expect changed-operators '[]'
   expect tempest false
 }
@@ -525,6 +550,7 @@ test_tag_push_forces_everything() {
     e2e-operator-upgrade has-e2e-operators
   expect noop false
   expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
+  expect e2e-operator-upgrade-operators "$ALL_OPERATOR_MATRIX"
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]'
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder","nova"]'
   expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
@@ -568,6 +594,7 @@ test_no_filters_at_all() {
     build-e2e-images has-e2e-operators noop
   expect test-targets "$SENTINEL_TARGETS"
   expect e2e-operators "$SENTINEL_OPERATORS"
+  expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
   expect changed-operators '[]'
   expect changed-services '[]'
   expect tempest-services '[]'
@@ -611,7 +638,8 @@ test_outputs_are_complete() {
     keystone-pressure
     actionlint changed-tempest
     changed-proxy changed-ovn changed-libvirt build-e2e-images has-e2e-operators changed-operators
-    changed-services tempest-services test-targets e2e-operators"
+    changed-services tempest-services test-targets e2e-operators
+    e2e-operator-upgrade-operators"
   for key in $expected; do
     assert_not_empty "the resolver emits $key" \
       "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"

@@ -19,13 +19,15 @@
 # main, so no pull request run proves a new helm can still push a chart, and
 # its minor/patch rule must leave the merge to a human.
 #
-# KIND_VERSION carries one extra obligation. It is pinned three times — in ci.yaml
-# for the e2e clusters, in performance.yaml for the nightly's cluster and in
-# hack/install-test-deps.sh for local development — and the three must agree, or
-# CI, the nightly and a developer's kind enforce NetworkPolicy egress
-# differently. Renovate must therefore bump all three in ONE pull request, and
-# both kind packageRules must name every file; ungrouped it would open several,
-# each leaving the lockstep assertion below red.
+# KIND_VERSION carries one extra obligation. It is pinned four times — in ci.yaml
+# for the e2e clusters, in e2e-operator-upgrade.yaml for the operator upgrade
+# clusters (a called workflow does not inherit ci.yaml's env), in
+# performance.yaml for the nightly's cluster and in hack/install-test-deps.sh
+# for local development — and the four must agree, or CI, the nightly and a
+# developer's kind enforce NetworkPolicy egress differently. Renovate must
+# therefore bump all four in ONE pull request, and both kind packageRules must
+# name every file; ungrouped it would open several, each leaving the lockstep
+# assertion below red.
 #
 # Usage: bash tests/unit/renovate/workflow_pins_custommanager_test.sh
 
@@ -51,7 +53,9 @@ TOOLS=(
   "GOFUMPT_VERSION:mvdan/gofumpt:.github/workflows/ci.yaml"
   "GOLANGCI_LINT_VERSION:golangci/golangci-lint:.github/workflows/ci.yaml"
   "HELM_VERSION:helm/helm:.github/workflows/ci.yaml"
+  "HELM_VERSION:helm/helm:.github/workflows/e2e-operator-upgrade.yaml"
   "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/ci.yaml"
+  "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/e2e-operator-upgrade.yaml"
   "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/performance.yaml"
   "YQ_VERSION:mikefarah/yq:.github/workflows/verify-container-images.yaml"
   "ACTIONLINT_VERSION:rhysd/actionlint:.github/workflows/ci.yaml"
@@ -113,14 +117,16 @@ test_each_workflow_pin_has_manager() {
 }
 
 test_kind_version_is_pinned_in_lockstep() {
-  echo "Test: the kind pins in ci.yaml, performance.yaml and install-test-deps.sh agree, and bump together"
+  echo "Test: the kind pins in ci.yaml, e2e-operator-upgrade.yaml, performance.yaml and install-test-deps.sh agree, and bump together"
 
-  local ci_file perf_file install_file ci_kind perf_kind install_kind
+  local ci_file upgrade_file perf_file install_file ci_kind upgrade_kind perf_kind install_kind
   ci_file="$PROJECT_ROOT/.github/workflows/ci.yaml"
+  upgrade_file="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
   perf_file="$PROJECT_ROOT/.github/workflows/performance.yaml"
   install_file="$PROJECT_ROOT/hack/install-test-deps.sh"
 
   ci_kind="$(workflow_kind_pin "$ci_file")"
+  upgrade_kind="$(workflow_kind_pin "$upgrade_file")"
   perf_kind="$(workflow_kind_pin "$perf_file")"
   install_kind="$(sed -n 's/^KIND_VERSION="\(v[0-9.]*\)"$/\1/p' "$install_file" | head -1)"
 
@@ -130,6 +136,7 @@ test_kind_version_is_pinned_in_lockstep() {
   # that only holds on one of them reaches main unnoticed.
   assert_eq "the ci.yaml and install-test-deps.sh kind pins agree" "$install_kind" "$ci_kind"
   assert_eq "the ci.yaml and performance.yaml kind pins agree" "$ci_kind" "$perf_kind"
+  assert_eq "the ci.yaml and e2e-operator-upgrade.yaml kind pins agree" "$ci_kind" "$upgrade_kind"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (3 checks skipped)"
@@ -157,8 +164,8 @@ test_kind_version_is_pinned_in_lockstep() {
   files="$(jq -r '[.packageRules[]
     | select(((.matchPackageNames // []) | index("kubernetes-sigs/kind")) != null)
     | (.matchFileNames // []) | sort | join(",")] | unique | join(" ")' "$RENOVATE_FILE")"
-  assert_eq "both kind packageRules list the three pinning files" \
-    ".github/workflows/ci.yaml,.github/workflows/performance.yaml,hack/install-test-deps.sh" "$files"
+  assert_eq "both kind packageRules list the four pinning files" \
+    ".github/workflows/ci.yaml,.github/workflows/e2e-operator-upgrade.yaml,.github/workflows/performance.yaml,hack/install-test-deps.sh" "$files"
 }
 
 test_workflow_pins_share_a_package_rule() {

@@ -21,6 +21,10 @@
 # what that costs — every suite passed, the deletion lost a docker race, and the
 # job was reported failed.
 #
+# Both rules hold for ci.yaml and for the reusable workflow
+# e2e-operator-upgrade.yaml, which runs the operator upgrade jobs for ci.yaml
+# and operator-upgrade.yaml.
+#
 # Usage: bash tests/unit/ci/create_kind_cluster_wiring_test.sh
 
 set -uo pipefail
@@ -28,6 +32,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+UPGRADE_YAML="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
+# Every workflow whose jobs create a kind cluster.
+WORKFLOWS=("$CI_YAML" "$UPGRADE_YAML")
 ACTION_YAML="$PROJECT_ROOT/.github/actions/create-kind-cluster/action.yaml"
 CREATE_SH="$PROJECT_ROOT/hack/ci-create-kind-cluster.sh"
 RESET_SH="$PROJECT_ROOT/hack/ci-reset-kind-cluster.sh"
@@ -47,14 +54,14 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # ---------------------------------------------------------------------------
 
 # cluster_creating_steps — For every workflow step that passes a `cluster-name:`
-# input, echo the action it uses. Walks the file rather than matching step names,
-# so a new job that spells its step differently is covered too.
+# input, echo the action it uses. Walks the files rather than matching step
+# names, so a new job that spells its step differently is covered too.
 cluster_creating_steps() {
   awk '
     /^      - name: / || /^      - uses: / { uses = "" }
     /^        uses: / { uses = $2 }
     /^          cluster-name: / { print (uses == "" ? "<none>" : uses) }
-  ' "$CI_YAML"
+  ' "${WORKFLOWS[@]}"
 }
 
 # kind_config_inputs — Echo every `config:` value passed to a create-kind-cluster
@@ -64,7 +71,12 @@ kind_config_inputs() {
     $0 == "        uses: " ref { in_step = 1; next }
     in_step && /^        [a-z]/ && !/^        with:/ { in_step = 0 }
     in_step && /^          config: / { print $2 }
-  ' "$CI_YAML"
+  ' "${WORKFLOWS[@]}"
+}
+
+# count_lines <regex> — the number of lines matching <regex> across WORKFLOWS.
+count_lines() {
+  cat "${WORKFLOWS[@]}" | grep -c "$1" | tr -d ' '
 }
 
 # ---------------------------------------------------------------------------
@@ -74,9 +86,9 @@ test_no_direct_kind_action() {
   echo "Test: no job uses helm/kind-action directly"
 
   local direct
-  direct="$(grep -c "uses: helm/kind-action" "$CI_YAML" | tr -d ' ')"
+  direct="$(count_lines "uses: helm/kind-action")"
 
-  assert_eq "ci.yaml has no helm/kind-action step of its own" "0" "$direct"
+  assert_eq "no workflow has a helm/kind-action step of its own" "0" "$direct"
   assert_file_contains "the composite action is the one place it is used" \
     "$ACTION_YAML" "uses: helm/kind-action@"
 }
@@ -96,7 +108,7 @@ test_every_step_uses_the_action() {
   assert_eq "every one of them uses ${ACTION_REF}" "0" "$wrong"
 
   local uses
-  uses="$(grep -c "uses: ${ACTION_REF}$" "$CI_YAML" | tr -d ' ')"
+  uses="$(count_lines "uses: ${ACTION_REF}$")"
   assert_eq "no step uses the action without naming a cluster" "$count" "$uses"
 }
 
@@ -107,7 +119,7 @@ test_inputs_match() {
   echo "Test: the jobs pass the inputs the action declares"
 
   local version_inputs cluster_inputs
-  version_inputs="$(grep -c "^          version: \${{ env.KIND_VERSION }}$" "$CI_YAML" | tr -d ' ')"
+  version_inputs="$(count_lines "^          version: \${{ env.KIND_VERSION }}$")"
   cluster_inputs="$(cluster_creating_steps | sed '/^$/d' | wc -l | tr -d ' ')"
 
   assert_eq "each cluster-creating step pins the kind version from env.KIND_VERSION" \
@@ -210,10 +222,12 @@ test_every_job_tears_its_cluster_down() {
   echo "Test: every cluster-creating job ends with the teardown step"
 
   # Per job: does it create a cluster, does it run the teardown, is the teardown
-  # the last step, and does it carry `if: always()`.
+  # the last step, and does it carry `if: always()`. A job is named
+  # <workflow file>:<job>, so two workflows' jobs never merge.
   local report
   report="$(awk '
-    /^  [a-z0-9_-]+:$/ { job = $1; sub(/:$/, "", job) }
+    FNR == 1 { file = FILENAME; sub(/.*\//, "", file); job = "" }
+    /^  [a-z0-9_-]+:$/ { job = $1; sub(/:$/, "", job); job = file ":" job }
     /^      - / { last_step_job = job }
     /uses: \.\/\.github\/actions\/create-kind-cluster$/ { creates[job] = 1; jobs[job] = 1 }
     /^      - name: Delete kind cluster$/ { deletes[job] = 1; jobs[job] = 1; pending = job }
@@ -225,7 +239,7 @@ test_every_job_tears_its_cluster_down() {
         print j, (creates[j] ? 1 : 0), (deletes[j] ? 1 : 0), \
               (guarded[j] ? 1 : 0), (runs_script[j] ? 1 : 0), (last_delete[j] ? 1 : 0)
     }
-  ' "$CI_YAML" | sort)"
+  ' "${WORKFLOWS[@]}" | sort)"
 
   local job creates deletes guarded runs_script is_last
   local checked=0
@@ -240,6 +254,8 @@ test_every_job_tears_its_cluster_down() {
   done <<<"$report"
 
   assert_gte "at least the eleven e2e jobs were checked" "$checked" "11"
+  assert_contains "the operator upgrade job of the reusable workflow is among them" \
+    "$report" "e2e-operator-upgrade.yaml:upgrade 1 1 1 1 1"
 }
 
 # ---------------------------------------------------------------------------

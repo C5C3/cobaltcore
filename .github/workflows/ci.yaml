@@ -113,6 +113,7 @@ jobs:
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
       e2e-operator-legs: ${{ steps.e2e-operator-legs.outputs.legs }}
+      e2e-operator-upgrade-operators: ${{ steps.result.outputs.e2e-operator-upgrade-operators }}
       test-targets: ${{ steps.result.outputs.test-targets }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
       keystone-pressure-releases: ${{ steps.keystone-pressure-matrix.outputs.keystone-pressure-releases }}
@@ -390,10 +391,40 @@ jobs:
               - 'hack/keystone-pressure-ab.sh'
               - 'hack/dizzy.sh'
               - 'tests/load/keystone-pressure/**'
+            # The inputs every operator upgrade job shares: a change here runs
+            # all ten. Each operator's own suite (and the scripts only some
+            # suites call: the vhost script of cinder and nova, the CRD window
+            # check of keystone) runs that operator's job alone.
             tests_operator_upgrade:
-              - 'tests/e2e-operator-upgrade/**'
+              - 'tests/e2e-operator-upgrade/chainsaw-config.yaml'
               - 'hack/ci-fetch-released-operator.sh'
+              - 'hack/ci-read-chart-version.sh'
+              - 'hack/ci-operator-upgrade-leg.sh'
+              - 'hack/ci-deploy-operator.sh'
+              - '.github/workflows/e2e-operator-upgrade.yaml'
+            tests_operator_upgrade_keystone:
+              - 'tests/e2e-operator-upgrade/keystone-helm-upgrade/**'
               - 'hack/ci-operator-upgrade-crd-window.sh'
+            tests_operator_upgrade_c5c3:
+              - 'tests/e2e-operator-upgrade/c5c3-helm-upgrade/**'
+            tests_operator_upgrade_horizon:
+              - 'tests/e2e-operator-upgrade/horizon-helm-upgrade/**'
+            tests_operator_upgrade_glance:
+              - 'tests/e2e-operator-upgrade/glance-helm-upgrade/**'
+            tests_operator_upgrade_placement:
+              - 'tests/e2e-operator-upgrade/placement-helm-upgrade/**'
+            tests_operator_upgrade_barbican:
+              - 'tests/e2e-operator-upgrade/barbican-helm-upgrade/**'
+            tests_operator_upgrade_ovn:
+              - 'tests/e2e-operator-upgrade/ovn-helm-upgrade/**'
+            tests_operator_upgrade_neutron:
+              - 'tests/e2e-operator-upgrade/neutron-helm-upgrade/**'
+            tests_operator_upgrade_cinder:
+              - 'tests/e2e-operator-upgrade/cinder-helm-upgrade/**'
+              - 'tests/e2e/cinder/broker-vhost.sh'
+            tests_operator_upgrade_nova:
+              - 'tests/e2e-operator-upgrade/nova-helm-upgrade/**'
+              - 'tests/e2e/cinder/broker-vhost.sh'
             tests_prometheus:
               - 'tests/e2e/keystone/prometheus-stack/**'
               - 'deploy/kind/prometheus/**'
@@ -558,6 +589,16 @@ jobs:
           FILTER_tests_nova_libvirt: ${{ steps.filter.outputs.tests_nova_libvirt }}
           FILTER_keystone_pressure: ${{ steps.filter.outputs.keystone_pressure }}
           FILTER_tests_operator_upgrade: ${{ steps.filter.outputs.tests_operator_upgrade }}
+          FILTER_tests_operator_upgrade_keystone: ${{ steps.filter.outputs.tests_operator_upgrade_keystone }}
+          FILTER_tests_operator_upgrade_c5c3: ${{ steps.filter.outputs.tests_operator_upgrade_c5c3 }}
+          FILTER_tests_operator_upgrade_horizon: ${{ steps.filter.outputs.tests_operator_upgrade_horizon }}
+          FILTER_tests_operator_upgrade_glance: ${{ steps.filter.outputs.tests_operator_upgrade_glance }}
+          FILTER_tests_operator_upgrade_placement: ${{ steps.filter.outputs.tests_operator_upgrade_placement }}
+          FILTER_tests_operator_upgrade_barbican: ${{ steps.filter.outputs.tests_operator_upgrade_barbican }}
+          FILTER_tests_operator_upgrade_ovn: ${{ steps.filter.outputs.tests_operator_upgrade_ovn }}
+          FILTER_tests_operator_upgrade_neutron: ${{ steps.filter.outputs.tests_operator_upgrade_neutron }}
+          FILTER_tests_operator_upgrade_cinder: ${{ steps.filter.outputs.tests_operator_upgrade_cinder }}
+          FILTER_tests_operator_upgrade_nova: ${{ steps.filter.outputs.tests_operator_upgrade_nova }}
           FILTER_tests_prometheus: ${{ steps.filter.outputs.tests_prometheus }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_e2e_shared: ${{ steps.filter.outputs.e2e_shared }}
@@ -1929,14 +1970,16 @@ jobs:
         if: always()
         run: hack/ci-delete-kind-cluster.sh
 
-  # Operator helm-upgrade-in-place E2E: installs the last released
-  # keystone-operator chart+image from GHCR as the baseline, brings a Keystone
-  # CR to Ready, then `helm upgrade`s to the locally built chart+CRDs and asserts
-  # the deployed Keystone survives the operator upgrade (Ready persists,
-  # status.installedRelease unchanged, no re-bootstrap). Given the cross-release
-  # bootstrap history this is the highest-risk untested path. The suite manages
-  # the operator release itself, so it lives outside tests/e2e/ and runs in its
-  # own job rather than the per-CR e2e-operator matrix.
+  # Operator helm-upgrade-in-place E2E, one matrix job per operator whose code
+  # (go_common included, as for e2e-operator), whose suite under
+  # tests/e2e-operator-upgrade/<op>-helm-upgrade/, or whose shared upgrade
+  # input changed. Each job installs the chart and image the suite's
+  # baseline.yaml pins, brings the suite's CR to Ready, then `helm upgrade`s to
+  # the in-repo chart+CRDs and asserts the deployed CR is undisturbed by the
+  # upgrade (Ready after a new generation, status.installedRelease unchanged,
+  # workloads not re-created). The steps live in the reusable workflow
+  # e2e-operator-upgrade.yaml, which operator-upgrade.yaml also calls after
+  # every publish on main.
   e2e-operator-upgrade:
     needs: [changes, build-e2e-images]
     if: |
@@ -1946,89 +1989,13 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: self-hosted
-    timeout-minutes: 68
     permissions:
       contents: read
       packages: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # setup-helm guarantees `helm` (registry login + pull) regardless of the
-      # runner image, matching the helm-push job.
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
-        with:
-          version: ${{ env.HELM_VERSION }}
-      - name: Create kind cluster
-        uses: ./.github/actions/create-kind-cluster
-        with:
-          version: ${{ env.KIND_VERSION }}
-          config: hack/kind-config.yaml
-          cluster-name: ${{ env.KIND_CLUSTER }}
-      # Pull the run-scoped images from GHCR: the locally built operator (:dev,
-      # the upgrade target) and the 2026.1 service image the CR fixture uses.
-      # This step also `docker login`s GHCR, which the baseline image pull below
-      # reuses.
-      - name: Load E2E images
-        uses: ./.github/actions/load-e2e-images
-        with:
-          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
-          images: |
-            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
-      - name: Load images into kind
-        run: |
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
-      # `helm registry login` is separate from the `docker login` that
-      # load-e2e-images performs; the released chart is pulled via `helm pull`.
-      - name: Log in to GHCR for Helm
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
-      # Fetch the last released operator chart+image (the upgrade baseline) and
-      # load the released image into kind.
-      - name: Fetch released operator baseline
-        id: baseline
-        run: hack/ci-fetch-released-operator.sh
-        env:
-          OPERATOR: keystone
-          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
-      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
-      - name: Setup E2E infrastructure
-        uses: ./.github/actions/setup-e2e-infra
-      # Install the RELEASED operator (the pinned chart and image) as the
-      # upgrade baseline. CHART_DIR points at the untarred pulled chart so
-      # ci-deploy-operator.sh installs the released chart, not the in-repo one.
-      - name: Deploy released operator (baseline)
-        run: hack/ci-deploy-operator.sh
-        env:
-          OPERATOR: keystone
-          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
-          IMAGE_TAG: ${{ steps.baseline.outputs.image_tag }}
-          CHART_DIR: ${{ steps.baseline.outputs.chart_dir }}
-      - name: Run operator upgrade E2E
-        env:
-          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
-        run: |
-          mkdir -p _output/reports
-          chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml tests/e2e-operator-upgrade/
-      # Use shared diagnostic dump script.
-      - name: Dump diagnostic info
-        if: always()
-        run: hack/ci-dump-diagnostics.sh
-        env:
-          OPERATOR: keystone
-      - name: Upload JUnit report
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-operator-upgrade-junit-report
-          path: _output/reports/
-          retention-days: 14
-      # Last step of the job, so the dump above still had a cluster to read;
-      # `always()` covers the failed and timed-out runs.  Never fails the job
-      # (see hack/ci-delete-kind-cluster.sh).
-      - name: Delete kind cluster
-        if: always()
-        run: hack/ci-delete-kind-cluster.sh
+    uses: ./.github/workflows/e2e-operator-upgrade.yaml
+    with:
+      operators: ${{ needs.changes.outputs.e2e-operator-upgrade-operators }}
+      image-map: ${{ needs.build-e2e-images.outputs.image-map }}
 
   # End-to-end chaos tests using kind cluster, Chaos Mesh,
   # and Chainsaw.  Builds the keystone operator image, deploys it with Chaos
