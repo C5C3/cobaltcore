@@ -444,23 +444,23 @@ func barbicanOpenBaoProvisionerServiceAccount(name, namespace string) *corev1.Se
 	}
 }
 
-// barbicanOpenBaoAuthDelegatorName returns the name of the cluster-scoped
-// auth-delegator binding for the instance called name in namespace.
+// barbicanOpenBaoQualifiedName returns name, a hash of namespace and name, and
+// suffix, joined into the name of an object that objects from other namespaces
+// share a scope with.
 //
-// The namespace is part of the NAME, not just of the subject, because the object
-// is cluster-scoped while every other name in the ensemble is only namespace-
-// unique. Admission allows one ControlPlane per namespace, not one ControlPlane
-// name per cluster, so two ControlPlanes called "openstack" in different
-// namespaces derive the same instance name — and would collide here. The second
-// one would meet a binding it does not own, ensureUnownedOrOwned would refuse it
-// on every pass, and BarbicanReady would park on BarbicanOpenBaoError with no
-// recovery short of recreating the control plane (metadata.name is immutable).
+// The namespace is part of the NAME because admission allows one ControlPlane per
+// namespace, not one ControlPlane name per cluster, so two ControlPlanes called
+// "openstack" in different namespaces derive the same instance name. In a scope
+// both of them write to, the second one would meet an object it does not own,
+// ensureUnownedOrOwned would refuse it on every pass, and BarbicanReady would park
+// on BarbicanOpenBaoError with no recovery short of recreating the control plane
+// (metadata.name is immutable).
 //
 // It enters as a HASH of "namespace/name", not as a "namespace-name" prefix,
 // because "-" is legal inside both operands and concatenating them is therefore
 // ambiguous: ControlPlane "prod" in namespace "cloud-eu" and ControlPlane
-// "eu-prod" in namespace "cloud" would derive the very same binding name and hit
-// the collision this function exists to prevent. The separator inside the hashed
+// "eu-prod" in namespace "cloud" would derive the very same name and hit the
+// collision this function exists to prevent. The separator inside the hashed
 // string is "/", which no DNS-1123 name can contain, so the two inputs cannot be
 // re-parsed into each other.
 //
@@ -469,13 +469,21 @@ func barbicanOpenBaoProvisionerServiceAccount(name, namespace string) *corev1.Se
 // namespace names are free-form DNS-1123 labels, so in a cluster where tenants
 // self-serve their namespaces both operands are attacker-chosen and a colliding
 // one is an offline search away — seconds against 32 bits, infeasible against 64.
-// Whoever registers the binding first owns it, and the ControlPlane that arrives
+// Whoever registers the name first owns it, and the ControlPlane that arrives
 // second parks on BarbicanOpenBaoError with no recovery, exactly as above. Sixteen
-// hex characters still leave the binding name readable next to the instance it
-// belongs to.
-func barbicanOpenBaoAuthDelegatorName(name, namespace string) string {
+// hex characters still leave the name readable next to the instance it belongs
+// to.
+func barbicanOpenBaoQualifiedName(name, namespace, suffix string) string {
 	sum := sha256.Sum256([]byte(namespace + "/" + name))
-	return name + "-" + hex.EncodeToString(sum[:8]) + barbicanOpenBaoAuthDelegatorSuffix
+	return name + "-" + hex.EncodeToString(sum[:8]) + suffix
+}
+
+// barbicanOpenBaoAuthDelegatorName returns the name of the cluster-scoped
+// auth-delegator binding for the instance called name in namespace. The object is
+// cluster-scoped while every other name in the ensemble is only namespace-unique,
+// so the name is namespace-qualified (see barbicanOpenBaoQualifiedName).
+func barbicanOpenBaoAuthDelegatorName(name, namespace string) string {
+	return barbicanOpenBaoQualifiedName(name, namespace, barbicanOpenBaoAuthDelegatorSuffix)
 }
 
 // barbicanOpenBaoAuthDelegatorBinding builds the cluster-scoped binding that lets
