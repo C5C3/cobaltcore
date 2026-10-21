@@ -51,9 +51,10 @@ jobs:
   # loads, the suite it runs, the scripts it calls. Nothing runs because Go code
   # changed somewhere else.
   #
-  # Six labels add to that, and never subtract: ci:full runs everything,
-  # ci:tempest / ci:chaos / ci:controlplane / ci:multicluster switch on one area
-  # each (ci:multicluster runs e2e-multicluster and e2e-orders-multicluster),
+  # Seven labels add to that, and never subtract: ci:full runs everything,
+  # ci:tempest / ci:chaos / ci:controlplane / ci:multicluster / ci:pressure
+  # switch on one area each (ci:multicluster runs e2e-multicluster and
+  # e2e-orders-multicluster, ci:pressure the keystone-pressure job),
   # and ci:measure-sizing runs the VPA sizing measurement in e2e-controlplane,
   # e2e-controlplane-sso and every Tempest leg. run-chaos is kept as an alias of
   # ci:chaos.
@@ -91,6 +92,7 @@ jobs:
       e2e-orders-multicluster: ${{ steps.result.outputs.e2e-orders-multicluster }}
       e2e-ovn-overlay: ${{ steps.result.outputs.e2e-ovn-overlay }}
       e2e-nova-libvirt: ${{ steps.result.outputs.e2e-nova-libvirt }}
+      keystone-pressure: ${{ steps.result.outputs.keystone-pressure }}
       e2e-operator-upgrade: ${{ steps.result.outputs.e2e-operator-upgrade }}
       tempest: ${{ steps.result.outputs.tempest }}
       measure-sizing: ${{ steps.result.outputs.measure-sizing }}
@@ -107,6 +109,7 @@ jobs:
       e2e-operator-legs: ${{ steps.e2e-operator-legs.outputs.legs }}
       test-targets: ${{ steps.result.outputs.test-targets }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
+      keystone-pressure-releases: ${{ steps.keystone-pressure-matrix.outputs.keystone-pressure-releases }}
       cleanup-e2e-packages: ${{ steps.cleanup-matrix.outputs.cleanup-e2e-packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -374,6 +377,13 @@ jobs:
               - 'tests/e2e/nova/compute-node-pool/**'
               # The suite creates and deletes its vhost with this script.
               - 'tests/e2e/cinder/broker-vhost.sh'
+            # The harness of the keystone-pressure job: the A/B script, the
+            # dizzy pin it takes the client image from and the profiles. The
+            # Keystone image reaches the job through the image_keystone filter.
+            keystone_pressure:
+              - 'hack/keystone-pressure-ab.sh'
+              - 'hack/dizzy.sh'
+              - 'tests/load/keystone-pressure/**'
             tests_operator_upgrade:
               - 'tests/e2e-operator-upgrade/**'
               - 'hack/ci-fetch-released-operator.sh'
@@ -539,6 +549,7 @@ jobs:
           FILTER_tests_orders_multicluster: ${{ steps.filter.outputs.tests_orders_multicluster }}
           FILTER_tests_ovn_overlay: ${{ steps.filter.outputs.tests_ovn_overlay }}
           FILTER_tests_nova_libvirt: ${{ steps.filter.outputs.tests_nova_libvirt }}
+          FILTER_keystone_pressure: ${{ steps.filter.outputs.keystone_pressure }}
           FILTER_tests_operator_upgrade: ${{ steps.filter.outputs.tests_operator_upgrade }}
           FILTER_tests_prometheus: ${{ steps.filter.outputs.tests_prometheus }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
@@ -563,6 +574,15 @@ jobs:
         env:
           TEMPEST_SERVICES: ${{ join(fromJson(steps.result.outputs.tempest-services), ' ') }}
         run: hack/ci-generate-tempest-matrix.sh
+
+      # One keystone-pressure leg per release that ships a Keystone image, read
+      # from releases/*/source-refs.yaml for the same reason: adding a release
+      # must not require an edit here.
+      - name: Generate keystone-pressure release matrix
+        id: keystone-pressure-matrix
+        run: |
+          releases="$(OPERATOR=keystone hack/ci-service-image-releases.sh)"
+          echo "keystone-pressure-releases=$(jq -Rnc '{release: [inputs | select(length > 0)]}' <<<"${releases}")" >>"$GITHUB_OUTPUT"
 
       # Derive the GHCR package list from images/ and operators/ for the same
       # reason: onboarding a service must not require remembering to add it to
@@ -4353,6 +4373,131 @@ jobs:
         if: always()
         run: hack/ci-delete-kind-cluster.sh
 
+  # Keystone token-path load: dizzy's `keystone pressure` against two
+  # Keystones side by side, one on the keystone image main last published for
+  # the release (base) and one on the image this pull request built
+  # (patched), through hack/keystone-pressure-ab.sh, i.e.
+  # `make keystone-pressure-ab`. One leg per release that ships a Keystone
+  # image. Each profile of tests/load/keystone-pressure/ that a standalone
+  # Keystone can run goes against both builds with the same seed, and
+  # `dizzy keystone report --compare` puts the two side by side in the job
+  # summary and the keystone-pressure-<release> artifact.
+  #
+  # The legs report numbers, not a verdict: a latency delta never fails them,
+  # a failed deployment, run or comparison does, and the job does not block the
+  # pull request. A leg whose release image the pull request did not change
+  # compares main's image with itself, and its deltas show the noise of the
+  # runner. See docs/reference/testing/keystone-pressure-testing.md.
+  keystone-pressure:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. a pull request that only adds a patch under patches/keystone/).
+    # The explicit failure/cancelled guard still blocks if any upstream
+    # actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.keystone-pressure == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: self-hosted
+    timeout-minutes: 120
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.changes.outputs.keystone-pressure-releases) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - uses: ./.github/actions/registry-login
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The base: the keystone image main last published for the release.
+      # It is pulled and kept under a tag of its own before "Load E2E images"
+      # points the canonical reference at the image of the map, which is this
+      # run's build when the pull request changed the image and main's
+      # otherwise.
+      - name: Pull main's keystone image
+        env:
+          RELEASE: ${{ matrix.release }}
+        run: |
+          ref="${IMAGE_PREFIX}/keystone:${RELEASE}"
+          for attempt in 1 2 3; do
+            if docker pull "${ref}"; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::docker pull ${ref} failed after 3 attempts"
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
+          docker tag "${ref}" "${ref}-main"
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
+      # The harness loads the two Keystone images and the dizzy image itself,
+      # under tags of their own, so only the operator is loaded here.
+      - name: Load images into kind
+        run: kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name "${{ env.KIND_CLUSTER }}"
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      # Two minutes per run, and six for effective-fan: a Keystone on kind
+      # grants about 45 assignments a second, and the last of the profile's
+      # four stages makes 2000 of them before it measures. A leg takes about
+      # an hour, most of it the provisioning and teardown of effective-fan's
+      # 4000 projects on each build.
+      - name: Run keystone pressure
+        env:
+          KEYSTONE_PRESSURE_RELEASE: ${{ matrix.release }}
+          KEYSTONE_PRESSURE_BASE_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}-main
+          KEYSTONE_PRESSURE_PATCHED_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
+          KEYSTONE_PRESSURE_DURATION: 2m
+          KEYSTONE_PRESSURE_PROFILE_DURATIONS: effective-fan=6m
+          KEYSTONE_PRESSURE_OUTPUT: _output/keystone-pressure/${{ matrix.release }}
+        run: make keystone-pressure-ab
+      - name: Dump diagnostic info
+        if: failure()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: keystone
+      - name: Upload keystone pressure results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: keystone-pressure-${{ matrix.release }}
+          path: _output/keystone-pressure/${{ matrix.release }}/
+          if-no-files-found: ignore
+          retention-days: 30
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
+
   # Tempest API integration tests.
   # Deploys services into a kind cluster and runs the OpenStack Tempest test
   # suite against them.  One leg per service: keystone, glance, barbican,
@@ -5049,7 +5194,7 @@ jobs:
   # nightly cleanup-images workflow has a safety-net job that catches
   # tags that survive a cancelled run before this one fires.
   cleanup-e2e-tags:
-    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest]
+    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, keystone-pressure, tempest]
     if: |
       always() &&
       needs.build-e2e-images.result == 'success'

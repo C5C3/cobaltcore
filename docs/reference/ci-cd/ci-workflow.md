@@ -65,7 +65,8 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | --- | --- | --- |
 | `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
 | `nova_chart_egress` | `operators/nova/helm/nova-operator/templates/_helpers.tpl` | the `keystone` and `placement` `test` and `test-integration` legs, whose unit tests check the nova chart's Keystone and Placement egress rules |
-| `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**` | that service's `e2e-operator` leg |
+| `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**` | that service's `e2e-operator` leg; `image_keystone` also `keystone-pressure` |
+| `keystone_pressure` | `hack/keystone-pressure-ab.sh`, `hack/dizzy.sh`, `tests/load/keystone-pressure/**` | `keystone-pressure` |
 | `image_ovn`, `image_tempest` | the OVN and Tempest image sources (the Tempest locks included) | the ovn `e2e-operator` job; the Tempest image rebuild |
 | `image_proxy` | `images/keystone-federation-proxy/**`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | the keystone `e2e-operator` job and the federation proxy image rebuild |
 | `image_libvirt` | `images/libvirt/**`, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | `e2e-nova-libvirt` and the libvirt image rebuild |
@@ -88,7 +89,7 @@ label asks for the rest.
 
 ### Labels
 
-Six labels add jobs. None of them ever removes one.
+Seven labels add jobs. None of them ever removes one.
 
 | Label | Schedules |
 | --- | --- |
@@ -97,6 +98,7 @@ Six labels add jobs. None of them ever removes one.
 | `ci:chaos` | all four `e2e-chaos` legs. `run-chaos` is an alias |
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling`, `e2e-orders-multicluster` |
 | `ci:multicluster` | `e2e-multicluster`, `e2e-orders-multicluster` |
+| `ci:pressure` | `keystone-pressure`, one leg per release that ships a Keystone image |
 | `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all twelve Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
 
 The `labeled` trigger means a label applied after the last push starts a run that
@@ -182,7 +184,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 | Job | Additional Permissions | Reason |
 | --- | --- | --- |
 | `build-e2e-images` | `packages: write` | Push the E2E images to GHCR under run-scoped tags |
-| `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
+| `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
 | `cleanup-e2e-tags` | `packages: write` | Delete the run-scoped tags from GHCR |
 | `build-and-push` | `packages: write` | Push per-platform operator image digests to GHCR |
 | `merge-operator-images` | `packages: write` | Push final multi-arch operator image manifest list |
@@ -192,7 +194,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 38 jobs. `changes` and `test-shell` run on every event. The
+The workflow defines 39 jobs. `changes` and `test-shell` run on every event. The
 gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard, and
 `cleanup-e2e-tags` follows `build-e2e-images`, which runs on a pull request
 only. The publish and release jobs run on push events only.
@@ -201,7 +203,7 @@ The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay and e2e-nova-libvirt. e2e-chaos follows e2e-operator, tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -236,8 +238,9 @@ section that describes the job.
 | [`e2e-orders-multicluster`](#e2e-orders-multicluster) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-ovn-overlay`](#e2e-ovn-overlay) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-nova-libvirt`](#e2e-nova-libvirt) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`keystone-pressure`](#keystone-pressure) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
-| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `tempest` |
+| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
 | [`build-and-push`](#build-and-push) | Publish images | `changes` |
 | [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `build-and-push` |
 | [`helm-push`](#helm-push) | Publish charts | `changes` |
@@ -271,8 +274,9 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 | 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches |
 | 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets` and `e2e-operators` |
 | 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
-| 5 | `Generate cleanup package matrix` | Step id `cleanup-matrix`. Runs `hack/ci-generate-cleanup-matrix.sh`, which derives the GHCR package names from `images/*/` and from every `operators/*/` directory that holds a `go.mod`. It writes `cleanup-packages` and `cleanup-e2e-packages`. The job exports the second |
-| 6 | `Shard the e2e-operator matrix` | Step id `e2e-operator-legs`. A `jq` filter turns `e2e-operators` into an `include` list and splits `nova` into two entries, `shard: "1"` and `shard: "2"`. It writes `legs` |
+| 5 | `Generate keystone-pressure release matrix` | Step id `keystone-pressure-matrix`. Runs `hack/ci-service-image-releases.sh` with `OPERATOR=keystone` and writes `keystone-pressure-releases` with one entry per release whose `releases/<release>/source-refs.yaml` carries a Keystone ref |
+| 6 | `Generate cleanup package matrix` | Step id `cleanup-matrix`. Runs `hack/ci-generate-cleanup-matrix.sh`, which derives the GHCR package names from `images/*/` and from every `operators/*/` directory that holds a `go.mod`. It writes `cleanup-packages` and `cleanup-e2e-packages`. The job exports the second |
+| 7 | `Shard the e2e-operator matrix` | Step id `e2e-operator-legs`. A `jq` filter turns `e2e-operators` into an `include` list and splits `nova` into two entries, `shard: "1"` and `shard: "2"`. It writes `legs` |
 
 Step 3 has three special cases. A `labeled` event whose label is
 neither a `ci:*` label nor `run-chaos` resolves to `noop=true`: every other flag
@@ -287,8 +291,8 @@ class or `image_<op>` class changed.
 and the labels.
 
 The `outputs:` block of the job lists its keys in the order below. Step 3 writes
-all of them except `e2e-operator-legs`, `tempest-releases` and
-`cleanup-e2e-packages`.
+all of them except `e2e-operator-legs`, `tempest-releases`,
+`keystone-pressure-releases` and `cleanup-e2e-packages`.
 
 The flags come first. Each one is `true` or `false`:
 
@@ -310,6 +314,7 @@ The flags come first. Each one is `true` or `false`:
 | `e2e-orders-multicluster` | Gates `e2e-orders-multicluster` |
 | `e2e-ovn-overlay` | Gates `e2e-ovn-overlay` |
 | `e2e-nova-libvirt` | Gates `e2e-nova-libvirt` |
+| `keystone-pressure` | Gates `keystone-pressure` |
 | `e2e-operator-upgrade` | Gates `e2e-operator-upgrade` |
 | `tempest` | Gates `tempest` |
 | `measure-sizing` | `true` under the `ci:measure-sizing` label. `e2e-controlplane`, `e2e-controlplane-sso` and `tempest` read it for `WITH_VPA` and for their three sizing steps (see [Sizing measurement](#sizing-measurement)) |
@@ -326,7 +331,7 @@ four to `hack/ci-resolve-e2e-images.sh`:
 | `changed-proxy` | `true` when the `image_proxy` class changed. Passed as `CHANGED_PROXY` |
 | `changed-ovn` | `true` when the `image_ovn` class changed: the ovn and backup-shifter image sources, `flake.nix`, `flake.lock`, `nix/lib/**` or `hack/ci-nix-build-e2e-images.sh`. Passed as `CHANGED_OVN` |
 | `changed-libvirt` | `true` when the `image_libvirt` class changed: the libvirt image sources, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**` or `hack/ci-nix-build-e2e-images.sh`. Passed as `CHANGED_LIBVIRT` |
-| `build-e2e-images` | `true` when `has-e2e-operators`, `tempest` or an `e2e-*` flag other than `e2e-infra` is `true`. Gates `build-e2e-images` |
+| `build-e2e-images` | `true` when `has-e2e-operators`, `tempest`, `keystone-pressure` or an `e2e-*` flag other than `e2e-infra` is `true`. Gates `build-e2e-images` |
 | `has-e2e-operators` | `true` when `e2e-operators` holds at least one operator. Gates `e2e-operator`, `build-and-push` and `helm-push` |
 
 The matrices come last:
@@ -334,10 +339,11 @@ The matrices come last:
 | Output | Meaning |
 | --- | --- |
 | `e2e-operators` | `{"operator":[...]}`. The matrix of `merge-operator-images` and `helm-push` and the `operator` dimension of `build-and-push`. `github-release` loops over it to package the charts |
-| `e2e-operator-legs` | Written by step 6: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
+| `e2e-operator-legs` | Written by step 7: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
 | `test-targets` | `{"target":[...]}` with `common` and operator names. The matrix of `test` and `test-integration` |
 | `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release. The matrix of `tempest` |
-| `cleanup-e2e-packages` | Written by step 5: JSON array of the GHCR packages that may receive run-scoped tags, every published package. The `package` matrix of `cleanup-e2e-tags` |
+| `keystone-pressure-releases` | Written by step 5: `{"release":[...]}` with the releases that ship a Keystone image. The matrix of `keystone-pressure` |
+| `cleanup-e2e-packages` | Written by step 6: JSON array of the GHCR packages that may receive run-scoped tags, every published package. The `package` matrix of `cleanup-e2e-tags` |
 
 ### lint
 
@@ -1405,6 +1411,60 @@ its own libvirt. Diagnostics run with
 (`image_nova`), and the libvirt image's inputs (`image_libvirt`). A shared Go change does not schedule the job, and `ci:full`
 forces it on.
 
+### keystone-pressure
+
+Compares the Keystone service image a pull request built with the one `main`
+last published, under dizzy's closed-loop load on Keystone's token path
+(`dizzy keystone pressure`). It exists for the downstream Keystone patches of
+#1456: every leg puts the numbers of both builds side by side, so the reviewer
+of a patch reads its effect on a Keystone with MariaDB and Memcached rather
+than on the one-process profile the issue started from.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `keystone-pressure == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+
+The job runs one leg per release in `keystone-pressure-releases`, on
+`self-hosted` with `continue-on-error: true` and a wall of 120 minutes. Each
+leg first pulls `keystone:<release>` from GHCR and tags it
+`keystone:<release>-main`: that is the base. `load-e2e-images` then points
+`keystone:<release>` at the image of the map, which is this run's build when
+the pull request changed the Keystone image and `main`'s otherwise, and pulls
+`keystone-operator:dev`. `setup-e2e-infra` brings up the default stack and
+`hack/ci-deploy-operator.sh` installs the keystone-operator into
+`keystone-system`. `make keystone-pressure-ab`, the target a developer calls
+locally, then runs `hack/keystone-pressure-ab.sh` with
+`KEYSTONE_PRESSURE_DURATION=2m` and, for the four stages of `effective-fan`,
+`KEYSTONE_PRESSURE_PROFILE_DURATIONS=effective-fan=6m`:
+
+1. It tags both images for their side and loads them and the dizzy image of
+   the pin in `hack/dizzy.sh` into kind.
+2. It deploys `keystone-pressure-base` and `keystone-pressure-patched` in
+   `openstack`, each with a database of its own on `openstack-db` and a
+   Memcached of its own, and a client pod on the dizzy image beside them.
+3. For each of the four Keystone-only profiles of
+   `tests/load/keystone-pressure/`, it runs the profile against both
+   Keystones with the same seed, one after the other, and compares the two run
+   records with `dizzy keystone report --compare`.
+4. It copies the records and comparisons out, writes `summary.md` and
+   appends it to the job summary.
+
+The leg fails when a deployment, a run or a comparison fails, never on a
+latency delta. A leg whose Keystone image the pull request did not change
+compares `main`'s image with itself, and its deltas are the noise of the
+runner. Diagnostics run with `OPERATOR: keystone` on failure, and
+`_output/keystone-pressure/<release>/` is uploaded as the
+`keystone-pressure-<release>` artifact (30-day retention) with every run
+record, the comparison as text, HTML and JSON, and `summary.md`.
+`cleanup-e2e-tags` lists the job in its `needs`.
+
+**Path filter:** `images/keystone/**`, `nix/locks/*/keystone/**` and
+`patches/keystone/**` (`image_keystone`), and `hack/keystone-pressure-ab.sh`,
+`hack/dizzy.sh` and `tests/load/keystone-pressure/**` (the `keystone_pressure`
+class). A base image change or a keystone-operator change does not schedule
+the job. The `ci:pressure` label asks for it on any pull request, and
+`ci:full` forces it on.
+
 ### e2e-prometheus
 
 End-to-end kube-prometheus-stack tests using kind cluster, Flux-managed
@@ -2011,7 +2071,8 @@ intact for `merge-operator-images` (GH-312).
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-operator,
 e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane,
 e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster,
-e2e-ovn-overlay, e2e-nova-libvirt, tempest]`
+e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, keystone-pressure,
+tempest]`
 **Permissions:** `contents: read`, `packages: write`
 
 The job is `continue-on-error`: pruning is housekeeping, and a package whose only

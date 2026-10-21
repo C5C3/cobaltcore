@@ -1059,6 +1059,35 @@ dizzy-keystone-compare:
 	@[ -n "$${DIZZY_BASE:-}" ] && [ -n "$${DIZZY_OTHER:-}" ] || { echo 'name the two run records: make dizzy-keystone-compare DIZZY_BASE=<record or directory> DIZZY_OTHER=<record or directory>' >&2; exit 1; }
 	hack/dizzy.sh compare "$${DIZZY_BASE}" "$${DIZZY_OTHER}"
 
+.PHONY: keystone-pressure-ab
+# keystone-pressure-ab compares two Keystone service images under dizzy's
+# token-path load on the kind stack: hack/keystone-pressure-ab.sh deploys a
+# Keystone on each image side by side in openstack, each with a database and
+# a Memcached of its own, runs every profile against both from a dizzy pod in
+# the cluster, and compares the two run records per profile. Results and
+# summary.md land in _output/keystone-pressure/. A latency delta never fails
+# it; a failed deployment, run or comparison does.
+#
+# This target satisfies the CI-to-Makefile parity expected by
+# .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the keystone-pressure CI job locally. It asks of
+# the cluster the stack of `make deploy-infra` and the keystone-operator
+# (`OPERATOR=keystone IMAGE_REPO=ghcr.io/c5c3/keystone-operator
+# NAMESPACE=keystone-system hack/ci-deploy-operator.sh`), and of the
+# workstation the two images in the local docker, which it loads into kind.
+#
+# Variables (see hack/keystone-pressure-ab.sh for all of them):
+#   KEYSTONE_PRESSURE_BASE_IMAGE     image of the build without the change (required).
+#   KEYSTONE_PRESSURE_PATCHED_IMAGE  image of the build with it (required).
+#   KEYSTONE_PRESSURE_RELEASE        release of both images (default the newest).
+#   KEYSTONE_PRESSURE_PROFILES       profiles (default the four Keystone-only ones).
+#   KEYSTONE_PRESSURE_DURATION       dizzy --duration of every run (default each profile's).
+#   KEYSTONE_PRESSURE_PROFILE_DURATIONS  <profile>=<duration> pairs overriding it.
+keystone-pressure-ab:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get crd keystones.keystone.openstack.c5c3.io >/dev/null 2>&1 || { echo 'the keystone-operator is not installed; run `OPERATOR=keystone IMAGE_REPO=ghcr.io/c5c3/keystone-operator NAMESPACE=keystone-system hack/ci-deploy-operator.sh` first' >&2; exit 1; }
+	hack/keystone-pressure-ab.sh
+
 .PHONY: dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report
 # dizzy-soak-start, -status, -stop and -report drive the long-running dizzy
 # soak of the metal-stack lab: a Job in the namespace dizzy that runs

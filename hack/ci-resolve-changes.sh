@@ -12,11 +12,11 @@
 # images it loads, the suite it runs, and the scripts it calls.
 #
 # Labels only ever ADD jobs. ci:full runs everything, ci:tempest / ci:chaos /
-# ci:controlplane / ci:multicluster switch on one area each; ci:multicluster
-# runs e2e-multicluster and e2e-orders-multicluster. run-chaos is kept as an
-# alias of ci:chaos. ci:measure-sizing, the sixth label, adds the VPA
-# sizing measurement to e2e-controlplane, e2e-controlplane-sso and every
-# Tempest leg.
+# ci:controlplane / ci:multicluster / ci:pressure switch on one area each;
+# ci:multicluster runs e2e-multicluster and e2e-orders-multicluster, and
+# ci:pressure the keystone-pressure job. run-chaos is kept as an alias of
+# ci:chaos. ci:measure-sizing, the seventh label, adds the VPA sizing
+# measurement to e2e-controlplane, e2e-controlplane-sso and every Tempest leg.
 #
 # A `labeled` event for a label outside that set resolves to nothing at all
 # (noop=true), so adding a triage label to a pull request no longer cancels and
@@ -172,7 +172,7 @@ if [[ "${noop}" == "true" ]]; then
     e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
     e2e-external-keystone e2e-autoscaling e2e-multicluster \
     e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
-    changed-proxy changed-ovn changed-libvirt build-e2e-images actionlint; do
+    changed-proxy changed-ovn changed-libvirt build-e2e-images actionlint keystone-pressure; do
     emit "$out" false
   done
   for out in changed-operators changed-services tempest-services; do
@@ -362,6 +362,20 @@ cond=false
 if filter_on tests_operator_upgrade || op_is_changed keystone; then cond=true; fi
 e2e_operator_upgrade=$(or_force "$cond")
 
+# The Keystone token-path load (hack/keystone-pressure-ab.sh). Its inputs are
+# the Keystone service image it compares against main's, which a downstream
+# patch under patches/keystone/ changes, and its own harness: the script, the
+# dizzy pin in hack/dizzy.sh and the profiles. ci:pressure asks for it on any
+# pull request.
+#
+# Deliberately FILTER_image_keystone rather than membership of changed_services:
+# a change to the base images puts every service in that set, and each leg
+# spends the better part of an hour of a self-hosted runner on a measurement
+# whose subject is Keystone's own code.
+cond=false
+if filter_on image_keystone || filter_on keystone_pressure || has_label "ci:pressure"; then cond=true; fi
+keystone_pressure=$(or_force "$cond")
+
 cond=false
 if filter_on tempest_src || has_label "ci:tempest" || [[ "$measure" == "true" ]]; then cond=true; fi
 tempest=$(or_force "$cond")
@@ -496,7 +510,7 @@ if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" ||
   "$e2e_autoscaling" == "true" ||
   "$e2e_multicluster" == "true" || "$e2e_orders_multicluster" == "true" ||
   "$e2e_ovn_overlay" == "true" ||
-  "$e2e_nova_libvirt" == "true" ||
+  "$e2e_nova_libvirt" == "true" || "$keystone_pressure" == "true" ||
   "$e2e_operator_upgrade" == "true" || "$tempest" == "true" ]]; then
   build_e2e_images=true
 fi
@@ -525,6 +539,7 @@ emit e2e-ovn-overlay "$e2e_ovn_overlay"
 emit e2e-nova-libvirt "$e2e_nova_libvirt"
 emit e2e-operator-upgrade "$e2e_operator_upgrade"
 emit tempest "$tempest"
+emit keystone-pressure "$keystone_pressure"
 emit measure-sizing "$measure"
 emit actionlint "$actionlint"
 
