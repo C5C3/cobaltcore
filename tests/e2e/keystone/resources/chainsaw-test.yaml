@@ -63,10 +63,10 @@ spec:
                 # A partial match would accept a CPU limit beside the memory
                 # limit, so its absence is asserted on its own.
                 (length(containers[?name == 'keystone'].resources.limits.cpu) == `0`): true
-    # The same on a running API Pod: the namespace's LimitRange fills a default
-    # limit into a container at admission, so the template alone cannot show
-    # that openstack adds no CPU limit. A CPU request without a CPU limit is
-    # never Guaranteed. Running excludes the Job and CronJob pods.
+    # The same on a running API Pod: a Pod carries whatever the namespace's
+    # LimitRange adds to a container at admission, so the template alone
+    # cannot show that openstack adds no CPU limit. A CPU request without a
+    # CPU limit is never Guaranteed. Running excludes the Job and CronJob pods.
     - assert:
         resource:
           apiVersion: v1
@@ -82,7 +82,8 @@ spec:
             phase: Running
             qosClass: Burstable
     # The Job defaults, asserted on the Job template rather than on its Pod:
-    # the tenant LimitRange would fill a limit into a Pod that carried none.
+    # the tenant LimitRange adds a default request to a Pod that carries
+    # none, so only the template shows what the operator rendered.
     - assert:
         resource:
           apiVersion: batch/v1
