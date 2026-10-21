@@ -506,7 +506,6 @@ lf_up() {
   lf_log "up: run ${LAB_FAILOVER_RUN}, outputs in ${dir}"
 
   lf_step "create namespace ${NAMESPACE}" lf_create_namespace "$LAB_FAILOVER_RUN"
-  lf_step "apply OpenBaoTenant ${LF_TENANT_NAMESPACE}/${NAMESPACE}" lf_apply 00-openbao-tenant.yaml
   for name in $LF_COPIED_SECRETS; do
     lf_step "copy Secret ${name} from openstack" lf_copy_secret "$name"
   done
@@ -617,6 +616,29 @@ lf_run() {
   lf_log "run: ${#scenarios[@]} scenarios passed; summary ${summary}"
 }
 
+# lf_no_tenant_targets — Succeed when no OpenBaoTenant in LF_TENANT_NAMESPACE
+# targets the namespace; otherwise print the tenants that do, or the first
+# line of the failed kubectl or jq, and return 1. The c5c3-operator deletes the
+# tenant it created for the dedicated Barbican store of cp-ha when it releases
+# the ControlPlane, and the openbao-operator keeps a deleted tenant, and the
+# RBAC it granted in the namespace, until the OpenBao instance there is gone.
+lf_no_tenant_targets() {
+  local out names
+  out="$(kubectl get openbaotenants -n "$LF_TENANT_NAMESPACE" -o json 2>&1)" || {
+    lf_first_line "$out"
+    return 1
+  }
+  names="$(jq -r --arg ns "$NAMESPACE" \
+    '.items[] | select(.spec.targetNamespace == $ns) | .metadata.name' <<<"$out" 2>&1)" || {
+    lf_first_line "$names"
+    return 1
+  }
+  [[ -z "$names" ]] || {
+    echo "OpenBaoTenants still target ${NAMESPACE}: $(paste -sd, - <<<"$names")"
+    return 1
+  }
+}
+
 # lf_down_step <description> <command...> — Run one delete of down; on a
 # failure list what is left in the namespace and exit 1.
 lf_down_step() {
@@ -662,8 +684,18 @@ lf_down() {
     --ignore-not-found
   lf_down_step "delete ExternalSecret ${LF_CP}-horizon-secret-key" \
     kubectl delete externalsecret "${LF_CP}-horizon-secret-key" -n "$NAMESPACE" --ignore-not-found
-  lf_down_step "delete OpenBaoTenant ${LF_TENANT_NAMESPACE}/${NAMESPACE}" \
+  # An up from before the c5c3-operator admitted ${NAMESPACE} itself applied
+  # the tenant ${LF_TENANT_NAMESPACE}/${NAMESPACE}, and the c5c3-operator
+  # creates no tenant of its own beside it. That version's down deleted it
+  # here; the openbao-operator holds it until the ControlPlane's instance is
+  # gone.
+  lf_down_step "delete the OpenBaoTenant ${LF_TENANT_NAMESPACE}/${NAMESPACE} of an earlier up" \
     kubectl delete openbaotenant "$NAMESPACE" -n "$LF_TENANT_NAMESPACE" --ignore-not-found --wait --timeout="${LF_WAIT_GONE}s"
+  # The namespace goes last: deleted while a tenant still admits it, it takes
+  # the tenant RBAC with it, and the OpenBao instance's finalizer can no
+  # longer run. A tenant somebody made by hand stops down by name here.
+  lf_down_step "wait for the OpenBaoTenants of ${NAMESPACE} to be gone" \
+    lf_until "$LF_WAIT_GONE" "no OpenBaoTenant targets ${NAMESPACE}" lf_no_tenant_targets
   lf_down_step "delete namespace ${NAMESPACE}" \
     kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait --timeout="${LF_WAIT_NAMESPACE_GONE}s"
   lf_log "down: namespace ${NAMESPACE} and everything up created are gone"

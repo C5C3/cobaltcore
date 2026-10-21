@@ -22,11 +22,11 @@
 #      LAB_FAILOVER_GO_AHEAD and with another shoot's name, with no mutating
 #      call. up refuses an existing openstack-ha with nothing applied.
 #   4. up brings the plane up in order: the namespace with its labels, the
-#      tenant, the two Secret copies with type, data and the copy label only,
+#      two Secret copies with type, data and the copy label only,
 #      the OVNCentral, the seed, the ControlPlane, the ExternalSecret after
 #      ESOTenantStoreReady, the database tenant, the db-sync patch, the seed
 #      Job, the fake compute and its host mapping; it writes versions.txt and
-#      topology.txt.
+#      topology.txt. It applies no OpenBaoTenant.
 #   5. Across up, run and down no call but the two Secret reads names the
 #      namespace openstack.
 #   6. run runs the eleven suites in order, one summary.tsv row each, through
@@ -39,7 +39,12 @@
 #   7. down prints nothing to delete without the namespace, refuses a
 #      namespace without the run label with no delete call, deletes in order,
 #      every delete absent-tolerant, and on a namespace that does not go lists
-#      what is left and exits 1. It deletes the workload pods, then purges
+#      what is left and exits 1. Between the ControlPlane and the namespace it
+#      deletes the tenant openstack-ha an earlier up applied, then waits until
+#      no OpenBaoTenant targets openstack-ha; a tenant that stays,
+#      or a tenant list that keeps failing, stops it with exit 1 before the
+#      namespace delete, naming the tenant or the error. It deletes the
+#      workload pods, then purges
 #      the plane's volumes and images with Job cp-ha-purge before it deletes
 #      the seed Job and the ControlPlane,
 #      skips the purge without the seed Job, and stops before the seed Job and
@@ -91,6 +96,10 @@ ELEVEN="galera-member-loss galera-primary-loss rabbitmq-node-loss rabbitmq-minor
 #   KUBECTL_NS_STAYS        non-empty: the namespace delete times out
 #   KUBECTL_FALSE           the condition type that reads False
 #   KUBECTL_PURGE_FAILS     non-empty: Job cp-ha-purge does not complete
+#   KUBECTL_TENANT_STAYS    non-empty: the tenant stale targets openstack-ha
+#                           (beside openstack, which targets openstack)
+#   KUBECTL_TENANT_LIST_FAILS non-empty: listing the OpenBaoTenants is
+#                           Forbidden
 # The chainsaw stub appends its argv and the mode of $KUBECONFIG to
 # $CALL_LOG; the CHAINSAW_FAIL_AT-th call fails before verify, every other
 # prints two evaluate lines. The bootstrap scripts and discover-hosts.sh
@@ -192,6 +201,17 @@ case "$*" in
     ;;
   "logs job/cp-ha-purge -n openstack-ha --tail=50") echo 'ERROR: a volume of cp-ha did not delete:' ;;
   "api-resources --verbs=list --namespaced -o name") printf 'pods\npersistentvolumeclaims\n' ;;
+  "get openbaotenants -n openbao-operator-system -o json")
+    if [ -n "${KUBECTL_TENANT_LIST_FAILS:-}" ]; then
+      echo 'Error from server (Forbidden): openbaotenants.openbao.org is forbidden: User "lab" cannot list resource "openbaotenants"' >&2
+      exit 1
+    fi
+    if [ -n "${KUBECTL_TENANT_STAYS:-}" ]; then
+      echo '{"items":[{"metadata":{"name":"openstack"},"spec":{"targetNamespace":"openstack"}},{"metadata":{"name":"stale"},"spec":{"targetNamespace":"openstack-ha"}}]}'
+    else
+      echo '{"items":[]}'
+    fi
+    ;;
   "get pods,persistentvolumeclaims -n openstack-ha --ignore-not-found")
     echo 'NAME                                  STATUS'
     echo 'persistentvolumeclaim/storage-openstack-db-0   Terminating'
@@ -237,8 +257,8 @@ new_case() {
 # run_lf <tmp> <subcommand...> [-- env_var=value...] — Source the script with
 # the stubs first on PATH, the context garden-lab, the go-ahead newforge and
 # the given settings, point the output, the bootstrap scripts and
-# discover-hosts.sh at the stubs, set the waits of up and run to 0, and run
-# lf_main. stdout
+# discover-hosts.sh at the stubs, set the waits of up and run to 0, set
+# LF_WAIT_GONE to LF_TEST_WAIT_GONE when that is given, and run lf_main. stdout
 # goes to <tmp>/stdout, stderr to <tmp>/stderr; returns lf_main's status.
 run_lf() {
   local tmp="$1" args=() rc
@@ -268,6 +288,7 @@ run_lf() {
       LF_WAIT_OVN=0 LF_WAIT_INFRA=0 LF_WAIT_TENANT_STORE=0 LF_WAIT_MARIADB=0 LF_WAIT_KEYSTONE=0
       LF_WAIT_NOVA=0 LF_WAIT_DB_SYNC=0 LF_WAIT_SEED=0 LF_WAIT_COMPUTE=0 LF_WAIT_READY=0
       LF_WAIT_RUN_READY=0
+      [ -z "${LF_TEST_WAIT_GONE:-}" ] || LF_WAIT_GONE="$LF_TEST_WAIT_GONE"
     }
     lf_main ${args[@]+"${args[@]}"}
   ) >"$tmp/stdout" 2>"$tmp/stderr"
@@ -435,7 +456,7 @@ test_up() {
   run_lf "$tmp" up -- LAB_FAILOVER_RUN=20261019T120000Z
   rc=$?
   assert_eq "up exits 0" "0" "$rc"
-  order="$(order_of "kubectl create -f -" "apply -f $fixtures/00-openbao-tenant.yaml" \
+  order="$(order_of "kubectl create -f -" \
     "get secret garage-s3-credentials -n openstack -o json" "get secret ceph-client-cinder -n openstack -o json" \
     "apply -f $fixtures/01-ovncentral.yaml" "get ovncentral cp-ha-ovn" "write-bootstrap-secrets.sh" \
     "apply -f $fixtures/03-controlplane.yaml" "type=='InfrastructureReady'" "type=='ESOTenantStoreReady'" \
@@ -445,8 +466,10 @@ test_up() {
     "rollout status deploy/cp-ha-fake-compute" "discover-hosts.sh" \
     "get controlplane cp-ha -n openstack-ha -o jsonpath={.status.conditions[?(@.type=='Ready')].status}")"
   sorted="$(tr ' ' '\n' <<<"$order" | sort -n | xargs)"
-  assert_eq "every step ran" "22" "$(wc -w <<<"$order" | tr -d ' ')"
+  assert_eq "every step ran" "21" "$(wc -w <<<"$order" | tr -d ' ')"
   assert_eq "the steps ran in order" "$sorted" "$order"
+  assert_eq "up applies no OpenBaoTenant: the c5c3-operator admits the namespace" "" \
+    "$(mutations | grep -iE 'openbaotenant|00-openbao-tenant' || true)"
   assert_contains "the namespace carries the run label" "$(cat "$tmp/capture/namespace.yaml")" \
     'lab-failover.c5c3.io/run: "20261019T120000Z"'
   assert_contains "the namespace carries the apiserver-proxy label" "$(cat "$tmp/capture/namespace.yaml")" \
@@ -595,6 +618,14 @@ kubectl delete secret -n openstack-ha -l lab-failover.c5c3.io/copied=true --igno
 kubectl delete externalsecret cp-ha-horizon-secret-key -n openstack-ha --ignore-not-found
 kubectl delete openbaotenant openstack-ha -n openbao-operator-system --ignore-not-found --wait --timeout=300s
 kubectl delete namespace openstack-ha --ignore-not-found --wait --timeout=600s" "$deletes"
+  order="$(order_of "delete controlplane cp-ha" "delete openbaotenant openstack-ha -n openbao-operator-system" \
+    "get openbaotenants -n openbao-operator-system -o json" "delete namespace openstack-ha")"
+  sorted="$(tr ' ' '\n' <<<"$order" | sort -n | xargs)"
+  assert_eq "it deletes an earlier up's tenant, then reads the OpenBaoTenants, between the ControlPlane and the namespace" "4" \
+    "$(wc -w <<<"$order" | tr -d ' ')"
+  assert_eq "and in that order" "$sorted" "$order"
+  assert_eq "with no tenant targeting openstack-ha the wait returns after one read" "1" \
+    "$(grep -c '^kubectl get openbaotenants ' "$CALL_LOG")"
   order="$(order_of "delete deployment cp-ha-fake-compute" "delete pod -n openstack-ha -l app.kubernetes.io/name=chaos-workload" \
     "get job cp-ha-seed -n openstack-ha -o name" "delete job cp-ha-purge" "apply -f $fixtures/06-purge-job.yaml" \
     "wait job/cp-ha-purge -n openstack-ha --for=condition=complete --timeout=600s" "delete job cp-ha-seed" \
@@ -619,6 +650,22 @@ kubectl delete namespace openstack-ha --ignore-not-found --wait --timeout=600s" 
   assert_contains "it prints the Job's log" "$(cat "$tmp/stdout")" "ERROR: a volume of cp-ha did not delete:"
   assert_eq "it keeps the seed Job and the ControlPlane for another try" "" \
     "$(grep -E '^kubectl delete (job cp-ha-seed|controlplane) ' "$CALL_LOG" || true)"
+
+  new_case "$tmp"
+  run_lf "$tmp" down -- KUBECTL_NS=labelled KUBECTL_TENANT_STAYS=1 LF_TEST_WAIT_GONE=0
+  assert_eq "a tenant that stays fails down with 1" "1" "$?"
+  assert_contains "it names the step" "$(cat "$tmp/stdout")" \
+    "ERROR: down failed at: wait for the OpenBaoTenants of openstack-ha to be gone"
+  assert_contains "it names the tenant that targets openstack-ha, and only that one" "$(cat "$tmp/stdout")" \
+    "OpenBaoTenants still target openstack-ha: stale"$'\n'
+  assert_eq "it keeps the namespace" "" "$(grep '^kubectl delete namespace ' "$CALL_LOG" || true)"
+
+  new_case "$tmp"
+  run_lf "$tmp" down -- KUBECTL_NS=labelled KUBECTL_TENANT_LIST_FAILS=1 LF_TEST_WAIT_GONE=0
+  assert_eq "a tenant list that fails fails down with 1" "1" "$?"
+  assert_contains "it says the wait ran out" "$(cat "$tmp/stdout")" "did not hold within 0s"
+  assert_contains "it names the error" "$(cat "$tmp/stdout")" "Error from server (Forbidden)"
+  assert_eq "it keeps the namespace on a failed list too" "" "$(grep '^kubectl delete namespace ' "$CALL_LOG" || true)"
 
   new_case "$tmp"
   run_lf "$tmp" down -- KUBECTL_NS=labelled KUBECTL_NS_STAYS=1

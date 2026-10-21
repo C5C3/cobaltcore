@@ -25,8 +25,9 @@
 #   5. The fixtures: ControlPlane openstack-ha/cp-ha with profile Standard and
 #      no profileRef, gateway, publicEndpoint, hypervisorOperator or
 #      backupBackend, centralRef cp-ha-ovn and the Horizon key Secret; an
-#      OVNCentral without replicas; the tenant for openstack-ha with 100 pods
-#      and no limitRange; the ExternalSecret's remote key and tenant store;
+#      OVNCentral without replicas; no OpenBaoTenant, because the c5c3-operator
+#      admits openstack-ha itself; the ExternalSecret's remote key and tenant
+#      store;
 #      the seed image id and flavor of the seed Job, which the library's
 #      LF_SEED_IMAGE and LF_SEED_FLAVOR name, and the compute id of the lab;
 #      the purge Job cp-ha-purge runs on the seed Job's image, env and
@@ -238,8 +239,11 @@ test_fixtures() {
     "$(data_lines "$cp" | grep -E '^[[:space:]]*(profileRef|gateway|publicEndpoint|hypervisorOperator|backupBackend):' || true)"
   assert_eq "the OVNCentral sets no replicas" "" \
     "$(data_lines "$FIXTURES/01-ovncentral.yaml" | grep -E 'replicas:|northd:|storage' || true)"
-  assert_eq "the tenant sets no limitRange" "" \
-    "$(data_lines "$FIXTURES/00-openbao-tenant.yaml" | grep -E 'limitRange:' || true)"
+  # The c5c3-operator admits openstack-ha for the dedicated Barbican store of
+  # cp-ha, under the guardrail spec; a fixture tenant would make it skip.
+  assert_eq "no fixture is an OpenBaoTenant" "" \
+    "$(grep -lE '^kind: OpenBaoTenant$' "$FIXTURES"/*.yaml || true)"
+  assert_eq "the tenant fixture is gone" "" "$(find "$FIXTURES" -name 00-openbao-tenant.yaml)"
   assert_file_contains_fixed "the seed Job creates the lab's image id" "$FIXTURES/04-seed-job.yaml" \
     'SEED_ID="4e0a0000-0000-4000-8000-000000001393"'
   assert_file_contains_fixed "the seed Job creates m1.nano" "$FIXTURES/04-seed-job.yaml" \
@@ -265,9 +269,6 @@ test_fixtures() {
     "$(yq '.spec.services | keys | sort | join(" ")' "$cp")"
   assert_eq "the OVNCentral is openstack-ha/cp-ha-ovn on the lab's CA issuer" "openstack-ha/cp-ha-ovn openstack-ovn-ca-issuer" \
     "$(yq '.metadata.namespace + "/" + .metadata.name + " " + .spec.tls.issuerRef.name' "$FIXTURES/01-ovncentral.yaml")"
-  assert_eq "the tenant targets openstack-ha from the operator namespace with 100 pods" \
-    "openbao-operator-system openstack-ha 100 !!str" \
-    "$(yq '.metadata.namespace + " " + .spec.targetNamespace + " " + .spec.quota.hard.pods + " " + (.spec.quota.hard.pods | tag)' "$FIXTURES/00-openbao-tenant.yaml")"
   assert_eq "the ExternalSecret reads the plane's key through the tenant store" \
     "bootstrap/openstack-ha/cp-ha-horizon/secret-key secret-key openbao-tenant-store SecretStore cp-ha-horizon-secret-key" \
     "$(yq '.spec.data[0].remoteRef.key + " " + .spec.data[0].remoteRef.property + " " + .spec.secretStoreRef.name + " " + .spec.secretStoreRef.kind + " " + .spec.target.name' \
@@ -294,7 +295,7 @@ test_fixtures() {
   assert_gte "the purge Job's pods are gone before down stops waiting for it" \
     "$(($(bash -c '. "$1" && echo "$LF_WAIT_PURGE"' _ "$LF_SH") - deadline - grace))" 1
   assert_eq "every namespaced fixture is in openstack-ha" "" \
-    "$(yq 'select(.metadata.namespace != "openstack-ha" and .kind != "OpenBaoTenant") | filename + " " + .kind' "$FIXTURES"/*.yaml)"
+    "$(yq 'select(.metadata.namespace != "openstack-ha") | filename + " " + .kind' "$FIXTURES"/*.yaml)"
 }
 
 # --- Test 6 ---------------------------------------------------------------
