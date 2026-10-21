@@ -5536,13 +5536,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The operator upgrade suites install a baseline pinned to a chart
+      # version (tests/e2e-operator-upgrade/<op>-helm-upgrade/baseline.yaml),
+      # so main tags every operator image it publishes with the version its
+      # Chart.yaml names. hack/ghcr-prune-stale-versions.py keeps a bare
+      # X.Y.Z tag forever, and once Chart.yaml moves past a version no push
+      # writes that tag again. Any other version only warns: the step writes
+      # no version, the metadata action drops a raw tag with an empty value,
+      # and the index still gets its sha and latest tags.
+      - name: Read the chart version
+        id: chart
+        env:
+          OPERATOR: ${{ matrix.operator }}
+        run: |
+          chart="operators/${OPERATOR}/helm/${OPERATOR}-operator/Chart.yaml"
+          version="$(hack/ci-read-chart-version.sh "${chart}")"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::${chart} has no X.Y.Z version (got: '${version}'); the image gets no chart-version tag"
+            exit 0
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       # Generate OCI tags and index annotations via docker/metadata-action.
       # The image carries its four static labels and nothing that changes per
       # build, so the per-build metadata goes onto the index: the source,
       # url, version, created and revision annotations of the action, with the
       # title, description, licenses and vendor of the image labels in place
       # of the repository's. type=semver strips the v prefix
-      # (v0.1.0 -> 0.1.0).
+      # (v0.1.0 -> 0.1.0). The chart-version tag carries the enable rule of
+      # latest, so on main both name one digest and a v* tag push writes
+      # neither.
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
@@ -5554,6 +5577,7 @@ jobs:
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
+            type=raw,value=${{ steps.chart.outputs.version }},enable={{is_default_branch}}
           annotations: |
             org.opencontainers.image.title=${{ matrix.operator }}-operator
             org.opencontainers.image.description=CobaltCore ${{ matrix.operator }} operator

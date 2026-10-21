@@ -73,7 +73,9 @@ REGISTRY_ROOT = "https://ghcr.io"
 # not listed here is a build artifact with a successor.
 DEFAULT_KEEP_PATTERNS = (
     r"^latest$",
-    # 32.0.0, 2026.1, 0.9.0 -- upstream version, OpenStack release, chart semver
+    # 32.0.0, 2026.1, 0.9.0 -- upstream version, OpenStack release, chart
+    # semver, and the operator images merge-operator-images tags with their
+    # chart version
     r"^[0-9]+(\.[0-9]+)+$",
     # 1.2.0-rc1 -- semver prerelease from a v* tag push
     r"^[0-9]+(\.[0-9]+)+-(alpha|beta|rc)[0-9.]*$",
