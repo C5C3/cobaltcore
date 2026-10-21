@@ -1084,6 +1084,10 @@ func TestReconcileDelete_ReleasePathNamesTheESOPurgeWait(t *testing.T) {
 	ctx := context.Background()
 
 	s := korcTestScheme(t)
+	// The release path reads the OpenBaoTenant a dedicated Barbican store may have
+	// left in the openbao-operator namespace, on every ControlPlane, as the
+	// manager's scheme in main.go allows.
+	g.Expect(openbaov1alpha1.AddToScheme(s)).To(Succeed())
 	cp := deletingControlPlane(registrationTeardownStallTimeout + time.Minute)
 	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
 
@@ -2913,15 +2917,24 @@ func ownedBarbicanCertificate(cp *c5c3v1alpha1.ControlPlane, name string) *unstr
 }
 
 // ownedBarbicanEnsemble returns the label-owned ensemble objects that outlive the
-// dedicated OpenBao instance: the tenant admitting the namespace, both transport
-// Certificates, the provisioner account, the TokenRequest grant, the static-seal
-// Secret, and the cluster-scoped auth-delegator binding.
+// dedicated OpenBao instance: the two tenants that may admit the namespace (the
+// one in the openbao-operator namespace and the one an earlier operator created
+// in the service namespace), both transport Certificates, the provisioner
+// account, the TokenRequest grant, the static-seal Secret, and the
+// cluster-scoped auth-delegator binding.
 func ownedBarbicanEnsemble(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 	ns, name := cp.BarbicanNamespace(), barbicanOpenBaoName(cp)
 	return []client.Object{
 		&openbaov1alpha1.OpenBaoTenant{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: name + barbicanOpenBaoTenantSuffix, Namespace: ns, Labels: controlPlaneChildLabels(cp),
+				Name: barbicanOpenBaoSizedTenantName(name, ns), Namespace: defaultOpenBaoOperatorNamespace,
+				Labels: controlPlaneChildLabels(cp),
+			},
+			Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: ns},
+		},
+		&openbaov1alpha1.OpenBaoTenant{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: barbicanOpenBaoSelfServiceTenantName(name), Namespace: ns, Labels: controlPlaneChildLabels(cp),
 			},
 			Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: ns},
 		},
@@ -3004,10 +3017,10 @@ func TestCrossNamespaceServiceChildren_IncludesBarbicanEnsemble(t *testing.T) {
 
 // TestDeleteServiceChildrenIn_BarbicanEnsembleOrdersTheTenantAfterTheInstance is
 // the ordering guard on the ensemble sweep. While the instance is still finalizing
-// the tenant that admitted the namespace stays put — deleting it first strips the
-// RBAC the openbao-operator needs to finish, so the instance never goes and the
-// namespace never becomes deletable. Everything the instance does not depend on
-// comes down right away, including the cluster-scoped auth-delegator binding no
+// both tenants that may admit the namespace stay put — deleting one first strips
+// the RBAC the openbao-operator needs to finish, so the instance never goes and
+// the namespace never becomes deletable. Everything the instance does not depend
+// on comes down right away, including the cluster-scoped auth-delegator binding no
 // namespace deletion would ever reclaim.
 func TestDeleteServiceChildrenIn_BarbicanEnsembleOrdersTheTenantAfterTheInstance(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -3030,7 +3043,15 @@ func TestDeleteServiceChildrenIn_BarbicanEnsembleOrdersTheTenantAfterTheInstance
 		Finalizers: []string{openbaov1alpha1.OpenBaoClusterFinalizer},
 	}}
 	ensemble := ownedBarbicanEnsemble(cp)
-	tenant, rest := ensemble[0], ensemble[1:]
+	var tenants, rest []client.Object
+	for _, obj := range ensemble {
+		if _, ok := obj.(*openbaov1alpha1.OpenBaoTenant); ok {
+			tenants = append(tenants, obj)
+		} else {
+			rest = append(rest, obj)
+		}
+	}
+	g.Expect(tenants).NotTo(BeEmpty(), "the fixture must carry the tenants the gate holds back")
 	// The POSITIVE case of the undeclared-store sweep: an owned, prefix-matching
 	// store nobody names any more, which a spec edit landing moments before the
 	// delete leaves behind. Without it the sweep's Delete never runs in this suite.
@@ -3052,7 +3073,7 @@ func TestDeleteServiceChildrenIn_BarbicanEnsembleOrdersTheTenantAfterTheInstance
 	), "the child, the store, the instance, and the swept undeclared store gate the namespace deletion")
 	expectSwept(t, c, staleStore)
 
-	expectPresent(t, c, tenant)
+	expectPresent(t, c, tenants...)
 	expectSwept(t, c, rest...)
 
 	// The openbao-operator finishes: its finalizer goes and the instance leaves etcd.
@@ -3064,7 +3085,7 @@ func TestDeleteServiceChildrenIn_BarbicanEnsembleOrdersTheTenantAfterTheInstance
 	remaining, err = r.deleteServiceChildrenIn(ctx, cp, ns)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(remaining).To(BeEmpty(), "nothing gates the namespace deletion once the instance is gone")
-	expectSwept(t, c, tenant)
+	expectSwept(t, c, tenants...)
 }
 
 // TestDeleteServiceChildrenIn_BarbicanEnsembleToleratesAlreadyGoneObjects covers
@@ -3149,10 +3170,10 @@ func TestDeleteServiceChildrenIn_ReportsTheProjectedBarbicanStoreOnce(t *testing
 }
 
 // TestBarbicanTeardown_LeavesForeignEnsembleObjectsAlone is the blast-radius guard
-// on the two objects the sweep could destroy for somebody else. The OpenBaoTenant
-// admitting the namespace may predate this ControlPlane (in the kind stack the
-// proving instance's tenant already admits it), and the auth-delegator binding is
-// cluster-scoped, so a name collision reaches across the whole cluster. Neither is
+// on the objects the sweep could destroy for somebody else. An OpenBaoTenant at
+// either tenant key may predate this ControlPlane (in the kind stack the proving
+// instance's tenant already admits the namespace), and the auth-delegator binding
+// is cluster-scoped, so a name collision reaches across the whole cluster. None is
 // touched without the ownership labels — on either lifecycle path.
 func TestBarbicanTeardown_LeavesForeignEnsembleObjectsAlone(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -3163,21 +3184,42 @@ func TestBarbicanTeardown_LeavesForeignEnsembleObjectsAlone(t *testing.T) {
 	ns, name := barbicanTeardownNamespace, barbicanOpenBaoName(cp)
 
 	foreignTenant := &openbaov1alpha1.OpenBaoTenant{
-		ObjectMeta: metav1.ObjectMeta{Name: name + barbicanOpenBaoTenantSuffix, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: barbicanOpenBaoSelfServiceTenantName(name), Namespace: ns},
 		Spec:       openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: ns},
+	}
+	foreignSizedTenant := &openbaov1alpha1.OpenBaoTenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: barbicanOpenBaoSizedTenantName(name, ns), Namespace: defaultOpenBaoOperatorNamespace,
+		},
+		Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: ns},
 	}
 	foreignBinding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: barbicanOpenBaoAuthDelegatorName(name, ns)},
 	}
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreignTenant, foreignBinding).Build()
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, foreignTenant, foreignSizedTenant, foreignBinding).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
 	_, err := r.deleteServiceChildrenIn(ctx, cp, ns)
 	g.Expect(err).NotTo(HaveOccurred())
-	expectPresent(t, c, foreignTenant, foreignBinding)
+	expectPresent(t, c, foreignTenant, foreignSizedTenant, foreignBinding)
 
 	r.sweepExternalNamespaceResidue(ctx, c, cp, ns)
-	expectPresent(t, c, foreignTenant, foreignBinding)
+	expectPresent(t, c, foreignTenant, foreignSizedTenant, foreignBinding)
+}
+
+// colocatedBarbicanControlPlane returns a deleting ControlPlane whose Barbican
+// service declares no namespace block, so it shares the ControlPlane's namespace.
+func colocatedBarbicanControlPlane(g *WithT) *c5c3v1alpha1.ControlPlane {
+	cp := deletingControlPlane(time.Minute)
+	cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{
+		SecretStore: c5c3v1alpha1.ServiceBarbicanSecretStoreSpec{
+			Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
+		},
+	}
+	g.Expect(cp.DedicatedServiceNamespaces()).To(BeEmpty(),
+		"the fixture must be co-located, or the per-namespace sweep would cover the ensemble")
+	return cp
 }
 
 // TestReconcileDelete_RemovesTheColocatedAuthDelegatorBinding closes the hole no
@@ -3189,20 +3231,6 @@ func TestBarbicanTeardown_LeavesForeignEnsembleObjectsAlone(t *testing.T) {
 // somebody else has to survive that: the name is cluster-wide, so a collision is
 // not confined to one namespace.
 func TestReconcileDelete_RemovesTheColocatedAuthDelegatorBinding(t *testing.T) {
-	// colocatedBarbicanControlPlane returns a deleting ControlPlane whose Barbican
-	// service declares no namespace block, so it shares the ControlPlane's namespace.
-	colocatedBarbicanControlPlane := func(g *WithT) *c5c3v1alpha1.ControlPlane {
-		cp := deletingControlPlane(time.Minute)
-		cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{
-			SecretStore: c5c3v1alpha1.ServiceBarbicanSecretStoreSpec{
-				Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
-			},
-		}
-		g.Expect(cp.DedicatedServiceNamespaces()).To(BeEmpty(),
-			"the fixture must be co-located, or the per-namespace sweep would cover the binding")
-		return cp
-	}
-
 	t.Run("deletes the binding it owns", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		ctx := context.Background()
@@ -3829,6 +3857,158 @@ func TestDeleteBarbicanAuthDelegatorBinding_ReleasesWhenTheTargetDeniesTheDelete
 	g.Expect(events).To(ContainSubstring(name), "the event must name the binding left behind")
 	g.Expect(events).To(ContainSubstring("authDelegatorBinding=true"),
 		"and the grant that would have let the teardown reclaim it")
+}
+
+// TestDeleteBarbicanOpenBaoTenant pins the release step for the OpenBaoTenant in
+// the openbao-operator namespace. No owner reference reaches that namespace, and
+// a co-located Barbican has no dedicated namespace for the ensemble sweep to walk,
+// so this step is the only thing that reclaims the tenant. It deletes only what
+// this ControlPlane owns, in the namespace OpenBaoOperatorNamespace names, touches
+// nothing at home for a Barbican placed on a target cluster, releases a
+// ControlPlane on a cluster without the OpenBaoTenant CRD, and holds the finalizer
+// on a failed read or delete.
+func TestDeleteBarbicanOpenBaoTenant(t *testing.T) {
+	sizedTenant := func(
+		cp *c5c3v1alpha1.ControlPlane, namespace string, labels map[string]string,
+	) *openbaov1alpha1.OpenBaoTenant {
+		return &openbaov1alpha1.OpenBaoTenant{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      barbicanOpenBaoSizedTenantName(barbicanOpenBaoName(cp), cp.BarbicanNamespace()),
+				Namespace: namespace,
+				Labels:    labels,
+			},
+			Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: cp.BarbicanNamespace()},
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		// operatorNamespace is the reconciler's OpenBaoOperatorNamespace, and
+		// tenantNamespace the namespace the tenant lives in.
+		operatorNamespace, tenantNamespace string
+	}{
+		{"the release of a co-located Barbican deletes the tenant it owns", "", defaultOpenBaoOperatorNamespace},
+		{"the release deletes the tenant in a configured operator namespace", "bao-system", "bao-system"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			s := namespaceTeardownScheme(t)
+
+			cp := colocatedBarbicanControlPlane(g)
+			tenant := sizedTenant(cp, tc.tenantNamespace, controlPlaneChildLabels(cp))
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, tenant).Build()
+			r := &ControlPlaneReconciler{
+				Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10),
+				OpenBaoOperatorNamespace: tc.operatorNamespace,
+			}
+
+			key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+			g.Expect(c.Get(ctx, key, cp)).To(Succeed())
+
+			res, err := r.reconcileDelete(ctx, cp)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res).To(Equal(ctrl.Result{}), "nothing gates this teardown, so it releases in one pass")
+			g.Expect(apierrors.IsNotFound(c.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
+			expectSwept(t, c, tenant)
+		})
+	}
+
+	t.Run("an absent OpenBaoTenant CRD does not hold the release", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		s := namespaceTeardownScheme(t)
+
+		// No Barbican at all: the step reads the tenant for every ControlPlane.
+		cp := deletingControlPlane(time.Minute)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*openbaov1alpha1.OpenBaoTenant); ok {
+						return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "openbao.org", Kind: "OpenBaoTenant"}}
+					}
+					return cl.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+		key := client.ObjectKeyFromObject(cp)
+		g.Expect(c.Get(ctx, key, cp)).To(Succeed())
+
+		_, err := r.reconcileDelete(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(apierrors.IsNotFound(c.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue(),
+			"a cluster without the openbao-operator CRDs must still release the ControlPlane")
+	})
+
+	t.Run("a foreign tenant at the same key stays", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := namespaceTeardownScheme(t)
+
+		cp := colocatedBarbicanControlPlane(g)
+		foreign := sizedTenant(cp, defaultOpenBaoOperatorNamespace, nil)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		g.Expect(r.deleteBarbicanOpenBaoTenant(context.Background(), cp)).To(Succeed())
+		expectPresent(t, c, foreign)
+	})
+
+	t.Run("a placed Barbican deletes nothing on the management cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := namespaceTeardownScheme(t)
+
+		cp := deletingBarbicanControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+		cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: placedTeardownCluster}
+		atHome := sizedTenant(cp, defaultOpenBaoOperatorNamespace, controlPlaneChildLabels(cp))
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, atHome).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		g.Expect(r.deleteBarbicanOpenBaoTenant(context.Background(), cp)).To(Succeed())
+		expectPresent(t, c, atHome)
+	})
+
+	t.Run("a failed read holds the finalizer", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := namespaceTeardownScheme(t)
+
+		cp := colocatedBarbicanControlPlane(g)
+		tenant := sizedTenant(cp, defaultOpenBaoOperatorNamespace, controlPlaneChildLabels(cp))
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, tenant).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*openbaov1alpha1.OpenBaoTenant); ok {
+						return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+					}
+					return cl.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		err := r.deleteBarbicanOpenBaoTenant(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("for the Barbican ensemble teardown"))
+	})
+
+	t.Run("a failed delete holds the finalizer", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := namespaceTeardownScheme(t)
+
+		cp := colocatedBarbicanControlPlane(g)
+		tenant := sizedTenant(cp, defaultOpenBaoOperatorNamespace, controlPlaneChildLabels(cp))
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, tenant).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+					return apierrors.NewConflict(
+						schema.GroupResource{Group: "openbao.org", Resource: "openbaotenants"}, obj.GetName(), nil)
+				},
+			}).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		err := r.deleteBarbicanOpenBaoTenant(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(HavePrefix("deleting *v1alpha1.OpenBaoTenant "))
+	})
 }
 
 // Any other denial is a real failure the teardown may retry: only the cluster

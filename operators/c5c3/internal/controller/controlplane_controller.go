@@ -210,6 +210,14 @@ type ControlPlaneReconciler struct {
 	// is safe for programmatically constructed reconcilers.
 	BarbicanOperatorNamespace      string
 	BarbicanOperatorServiceAccount string
+
+	// OpenBaoOperatorNamespace is the namespace the openbao-operator runs in. The
+	// OpenBaoTenant that admits a dedicated Barbican store's namespace is created
+	// there, because the openbao-operator's admission policy accepts a quota and a
+	// LimitRange only on a tenant in its own namespace. It is threaded from the
+	// OPENBAO_OPERATOR_NAMESPACE environment (see main.go); an empty value falls
+	// back to openbao-operator-system, the namespace of the deploy stack's release.
+	OpenBaoOperatorNamespace string
 }
 
 // apiReader returns the uncached reader described on APIReader, falling back to
