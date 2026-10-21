@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The baseline the nova-operator-helm-upgrade suite upgrades from: the
+# chart oci://ghcr.io/c5c3/charts/nova-operator and the image
+# ghcr.io/c5c3/nova-operator at this version, read by
+# hack/ci-fetch-released-operator.sh. Renovate does not track the pin.
+# docs/reference/testing/operator-upgrade-e2e-tests.md gives the bump rule,
+# the reason Renovate leaves it alone, and the v* tag hazard.
+version: "0.5.0"
