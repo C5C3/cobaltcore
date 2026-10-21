@@ -50,6 +50,10 @@
 #   4. When the operator ships a service image, add a paths filter image_<op>
 #      listing images/<op>/** and patches/<op>/**, and add <op> to
 #      SERVICE_OPERATORS
+#   5. Add the operator's helm upgrade suite under
+#      tests/e2e-operator-upgrade/<op>-helm-upgrade/ with a baseline.yaml pin,
+#      a paths filter tests_operator_upgrade_<op> listing that directory, and a
+#      row in hack/ci-operator-upgrade-leg.sh
 #   The test matrices, the e2e matrix and the build set follow automatically;
 #   tests/unit/ci/change_classes_wiring_test.sh fails when a step is missed.
 
@@ -180,6 +184,7 @@ if [[ "${noop}" == "true" ]]; then
   done
   emit test-targets "$(matrix_of target "")"
   emit e2e-operators "$(matrix_of operator "")"
+  emit e2e-operator-upgrade-operators "$(matrix_of operator "")"
   exit 0
 fi
 emit noop false
@@ -358,9 +363,17 @@ if filter_on tests_nova_libvirt || filter_on nova || filter_on image_nova || fil
 fi
 e2e_nova_libvirt=$(or_force "$cond")
 
-cond=false
-if filter_on tests_operator_upgrade || op_is_changed keystone; then cond=true; fi
-e2e_operator_upgrade=$(or_force "$cond")
+# One upgrade job per operator whose code changed (go_common included, as for
+# the e2e-operator legs) or whose own suite changed, and every operator when an
+# input all the upgrade jobs share changed.
+upgrade_ops=""
+for op in $ALL_OPERATORS; do
+  if op_is_changed "$op" || filter_on "tests_operator_upgrade_${op}"; then
+    upgrade_ops=$(set_add "$upgrade_ops" "$op")
+  fi
+done
+{ [[ "$force" == "true" ]] || filter_on tests_operator_upgrade; } && upgrade_ops="$ALL_OPERATORS"
+e2e_operator_upgrade=$(yesno test -n "$upgrade_ops")
 
 # The Keystone token-path load (hack/keystone-pressure-ab.sh). Its inputs are
 # the Keystone service image it compares against main's, which a downstream
@@ -556,3 +569,4 @@ emit tempest-services "$(json_list "$(order_by "$TEMPEST_ALL_SERVICES" "$tempest
 
 emit test-targets "$(matrix_of target "$(order_by "common $ALL_OPERATORS" "$test_targets")")"
 emit e2e-operators "$(matrix_of operator "$(order_by "$ALL_OPERATORS" "$e2e_ops")")"
+emit e2e-operator-upgrade-operators "$(matrix_of operator "$(order_by "$ALL_OPERATORS" "$upgrade_ops")")"

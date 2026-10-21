@@ -1,0 +1,204 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# Operator helm-upgrade-in-place E2E, one matrix job per operator. Each job
+# installs the operator chart and image that
+# tests/e2e-operator-upgrade/<op>-helm-upgrade/baseline.yaml pins as the
+# baseline, brings the suite's CR to Ready under it, then `helm upgrade`s the
+# release to the in-repo chart, CRDs and :dev image and asserts the deployed
+# CR is undisturbed by the upgrade (Ready after a new generation,
+# status.installedRelease unchanged, workloads not re-created). The suites
+# manage the operator release themselves, so they live outside tests/e2e/ and
+# run here rather than in the per-CR e2e-operator matrix.
+#
+# Two workflows call this one:
+#   - ci.yaml, on a pull request, once per operator whose code, suite or shared
+#     upgrade input changed, with the image map build-e2e-images wrote;
+#   - operator-upgrade.yaml, after each successful CI or Build Images push run
+#     on main, once per operator whose image that commit published and whose
+#     baseline main no longer publishes, with the image map
+#     hack/ci-operator-upgrade-main-matrix.sh wrote.
+#
+# hack/ci-operator-upgrade-leg.sh names what each job loads and deploys. The
+# 68-minute budget is the one the keystone-only job had, and that job took 10
+# to 12 minutes in the pull-request runs of 2026-10-20 and 2026-10-21. The
+# other nine jobs have no CI duration on record yet.
+name: E2E Operator Upgrade
+
+"on":
+  workflow_call:
+    inputs:
+      operators:
+        description: The operator matrix, {"operator":[...]}.
+        type: string
+        required: true
+      image-map:
+        description: >
+          JSON object mapping each canonical image ref a job loads to the
+          reference to pull for it (see .github/actions/load-e2e-images).
+        type: string
+        required: true
+      ref:
+        description: The commit to check out; empty checks out the caller's.
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  packages: read
+
+# A called workflow does not inherit the caller's env, so the values every job
+# reads are repeated here.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/c5c3
+  KIND_CLUSTER: cobaltcore
+  # Held in lockstep with the KIND_VERSION of ci.yaml, performance.yaml and
+  # hack/install-test-deps.sh by
+  # tests/unit/renovate/workflow_pins_custommanager_test.sh.
+  KIND_VERSION: v0.33.0
+  # Held in lockstep with the HELM_VERSION of ci.yaml by
+  # tests/unit/ci/helm_wiring_test.sh.
+  HELM_VERSION: v4.3.1
+  # The barbican suite's managed BarbicanSecretStore needs the operator's
+  # TokenRequest grant in openstack; hack/ci-deploy-operator.sh ignores the
+  # value for every other operator. The value of the e2e-operator job.
+  BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner
+
+jobs:
+  upgrade:
+    name: e2e-operator-upgrade (${{ matrix.operator }})
+    runs-on: self-hosted
+    timeout-minutes: 68
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.operators) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.ref }}
+      # setup-helm guarantees `helm` (registry login + pull) regardless of the
+      # runner image, matching the helm-push job.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - name: Resolve the upgrade leg
+        id: leg
+        env:
+          OPERATOR: ${{ matrix.operator }}
+        run: hack/ci-operator-upgrade-leg.sh
+      # Pull the images the leg names through the caller's image map: the
+      # operator under test as :dev (the upgrade target) and the service and
+      # sibling images its suite runs. This step also `docker login`s GHCR,
+      # which the baseline image pull below reuses.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ inputs.image-map }}
+          images: ${{ steps.leg.outputs.refs }}
+      # One call, so the Nix store layers the images share are saved and
+      # imported once.
+      - name: Load images into kind
+        env:
+          REFS: ${{ steps.leg.outputs.refs }}
+        run: |
+          # shellcheck disable=SC2086 # deliberate: split the ref list
+          kind load docker-image ${REFS} --name "${KIND_CLUSTER}"
+      # `helm registry login` is separate from the `docker login` that
+      # load-e2e-images performs; the released chart is pulled via `helm pull`.
+      - name: Log in to GHCR for Helm
+        env:
+          HELM_TOKEN: ${{ github.token }}
+          HELM_USER: ${{ github.actor }}
+        run: echo "${HELM_TOKEN}" | helm registry login "${REGISTRY}" --username "${HELM_USER}" --password-stdin
+      # Fetch the pinned operator chart and image (the upgrade baseline) and
+      # load the image into kind.
+      - name: Fetch released operator baseline
+        id: baseline
+        run: hack/ci-fetch-released-operator.sh
+        env:
+          OPERATOR: ${{ matrix.operator }}
+      # Use composite action for shared Flux CLI + test deps + deploy-infra
+      # sequence. The leg table names the opt-ins; an empty value keeps
+      # deploy-infra.sh's default of leaving the component out.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_NFS: ${{ steps.leg.outputs.with-nfs }}
+          WITH_MESSAGING: ${{ steps.leg.outputs.with-messaging }}
+          WITH_OVN_KERNEL_MODULES: ${{ steps.leg.outputs.with-ovn-kernel-modules }}
+      # The ControlPlane controller's informers never sync without the CRDs of
+      # the kinds it watches; see the step of the same name in the
+      # e2e-operator job of ci.yaml.
+      - name: Install CRDs watched by the c5c3-operator
+        if: steps.leg.outputs.sibling-crds == 'true'
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          kubectl apply -f operators/keystone/helm/keystone-operator/crds/
+          kubectl apply -f operators/horizon/helm/horizon-operator/crds/
+          kubectl apply -f operators/glance/helm/glance-operator/crds/
+          kubectl apply -f operators/placement/helm/placement-operator/crds/
+          hack/ci-deploy-korc.sh
+      # The sibling operators run at the image under test, :dev, before the
+      # baseline: neutron's suite needs a live OVNCentral.
+      - name: Deploy sibling operators
+        if: steps.leg.outputs.siblings != ''
+        env:
+          SIBLINGS: ${{ steps.leg.outputs.siblings }}
+        run: |
+          for sibling in ${SIBLINGS}; do
+            OPERATOR="${sibling}" IMAGE_REPO="${IMAGE_PREFIX}/${sibling}-operator" \
+              NAMESPACE="${sibling}-system" hack/ci-deploy-operator.sh
+          done
+      # Install the RELEASED operator (the pinned chart and image) as the
+      # upgrade baseline. CHART_DIR points at the untarred pulled chart so
+      # ci-deploy-operator.sh installs the released chart, not the in-repo one.
+      - name: Deploy released operator (baseline)
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          IMAGE_TAG: ${{ steps.baseline.outputs.image_tag }}
+          CHART_DIR: ${{ steps.baseline.outputs.chart_dir }}
+          NAMESPACE: ${{ matrix.operator }}-system
+      - name: Run operator upgrade E2E
+        env:
+          OPERATOR: ${{ matrix.operator }}
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml "tests/e2e-operator-upgrade/${OPERATOR}-helm-upgrade/"
+      # Use shared diagnostic dump script, then the operator sections of every
+      # sibling, whose Namespaces the first dump never looks at.
+      - name: Dump diagnostic info
+        if: always()
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          SIBLINGS: ${{ steps.leg.outputs.siblings }}
+        run: |
+          hack/ci-dump-diagnostics.sh
+          for sibling in ${SIBLINGS}; do
+            OPERATOR="${sibling}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-operator-upgrade-${{ matrix.operator }}-junit-report
+          path: _output/reports/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs.  Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
