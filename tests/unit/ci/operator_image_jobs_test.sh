@@ -13,6 +13,10 @@
 #     hack/ci-resolve-e2e-images.sh reads to `docker buildx imagetools
 #     create`, with the tags and the per-platform digests, and fails without
 #     a digest or without the metadata annotations;
+#   - the `Read the chart version` step of merge-operator-images writes the
+#     X.Y.Z version of the operator's Chart.yaml, quoted or not, for the
+#     chart-version tag the upgrade suites pin, and only warns on anything
+#     else, so the sha and latest tags are still published;
 #   - verify-codegen checks the operator vendor hashes with
 #     `make nix-lock-check-operators`, which runs the generator's Nix-free
 #     check outside the lock-tools shell.
@@ -21,7 +25,8 @@
 # dropped --annotation or OCI format would leave the index without the
 # revision, and every e2e run would then rebuild every operator image
 # without a red check. The manifest step runs here from ci.yaml against a
-# stub docker that logs its arguments.
+# stub docker that logs its arguments, and the chart version step against a
+# scratch Chart.yaml.
 #
 # Usage: bash tests/unit/ci/operator_image_jobs_test.sh
 
@@ -165,6 +170,55 @@ ghcr.io/c5c3/keystone-operator@sha256:$DIGEST"
   assert_eq "it creates no index without them" "" "$ARGS"
 }
 
+# run_chart_version <Chart.yaml version line> runs the chart version step of
+# merge-operator-images for keystone in a scratch tree whose Chart.yaml holds
+# that line, beside the hack/ci-read-chart-version.sh the step calls. Stores
+# the combined output in OUTPUT, the exit status in RC and what the step wrote
+# to GITHUB_OUTPUT in WRITTEN.
+run_chart_version() {
+  local tree="$TMP_DIR/chart-tree" script
+  rm -rf "$tree"
+  mkdir -p "$tree/operators/keystone/helm/keystone-operator" "$tree/hack"
+  cp "$PROJECT_ROOT/hack/ci-read-chart-version.sh" "$tree/hack/"
+  printf 'apiVersion: v2\nname: keystone-operator\n%s\nappVersion: "0.1.0"\n' "$1" \
+    >"$tree/operators/keystone/helm/keystone-operator/Chart.yaml"
+  : >"$tree/github_output"
+  script=$(job_step merge-operator-images "Read the chart version" |
+    sed -n '/^        run: |$/,$p' | sed '1d; s/^          //')
+  RC=0
+  OUTPUT=$(
+    cd "$tree" && OPERATOR=keystone GITHUB_OUTPUT="$tree/github_output" \
+      bash --noprofile --norc -eo pipefail -c "$script" 2>&1
+  ) || RC=$?
+  WRITTEN=$(cat "$tree/github_output")
+}
+
+test_the_chart_version_step_reads_an_x_y_z_version() {
+  echo "Test: the chart version step writes the Chart.yaml version and only warns on anything else"
+
+  local form
+  for form in 'version: 0.14.0' 'version: "0.14.0"'; do
+    run_chart_version "$form"
+    [ "$RC" -eq 0 ] || echo "$OUTPUT"
+    assert_eq "'$form' exits 0" "0" "$RC"
+    assert_eq "'$form' writes version=0.14.0" "version=0.14.0" "$WRITTEN"
+  done
+
+  # A failed step would stop the one imagetools create that writes every tag.
+  for form in 'version: abc' 'version: 0.7.0-rc.1'; do
+    run_chart_version "$form"
+    assert_eq "'$form' exits 0" "0" "$RC"
+    assert_contains "'$form' warns with the chart and the value" "$OUTPUT" \
+      "::warning::operators/keystone/helm/keystone-operator/Chart.yaml has no X.Y.Z version (got: '${form#version: }'); the image gets no chart-version tag"
+    assert_eq "'$form' writes no version" "" "$WRITTEN"
+  done
+
+  run_chart_version 'description: no version line'
+  assert_eq "a Chart.yaml without a version line exits 0" "0" "$RC"
+  assert_contains "it warns with the empty value" "$OUTPUT" "has no X.Y.Z version (got: '')"
+  assert_eq "it writes no version" "" "$WRITTEN"
+}
+
 test_verify_codegen_checks_the_operator_vendor_hashes() {
   echo "Test: verify-codegen runs the Nix-free check of the operator vendor hashes"
 
@@ -189,6 +243,7 @@ fi
 test_build_and_push_publishes_through_build_nix_image
 test_metadata_annotations_go_onto_the_index
 test_the_manifest_step_writes_the_annotations
+test_the_chart_version_step_reads_an_x_y_z_version
 test_verify_codegen_checks_the_operator_vendor_hashes
 
 echo ""
