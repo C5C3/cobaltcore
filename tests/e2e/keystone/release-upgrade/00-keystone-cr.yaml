@@ -36,3 +36,17 @@ spec:
     adminPasswordSecretRef:
       name: keystone-admin
     region: RegionOne
+  # Disable dogpile.cache for this fixture. The e2e-operator Chainsaw suite
+  # runs four keystone suites in parallel against a single shared
+  # `openstack-memcached`, and keystone's cache keys carry no per-instance
+  # discriminator (function and arguments only), so every instance reads
+  # and writes the same keys for the `admin@default` user and the `admin`
+  # project. A neighbouring suite's entry can therefore answer the token
+  # probes of steps 3 and 6 with a 401 on the password lookup or a 404 on
+  # the project scope, although this instance's bootstrap Job created the
+  # admin user with the correct password. The upgrade path under test does
+  # not involve the cache; with it off, every lookup reads the migrated
+  # database. #227 tracks per-instance cache keys in the operator.
+  extraConfig:
+    cache:
+      enabled: "false"
