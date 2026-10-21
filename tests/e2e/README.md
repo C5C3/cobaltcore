@@ -104,9 +104,10 @@ edit the numbered fixtures by hand; change the generator and re-run it.
 - `tests/e2e-chaos/` — Chaos Mesh fault-injection suites (own config and
   conventions, see its README).
 - `tests/e2e-operator-upgrade/` — the operator helm-upgrade-in-place
-  suite lives **outside** `tests/e2e/` on purpose: it manages the
-  operator release itself and must run against a cluster without a
-  pre-deployed operator, so `make e2e` must not sweep it up.
+  suites, one per operator, live **outside** `tests/e2e/` on purpose:
+  each manages its operator's release itself and must run against a
+  cluster without a pre-deployed operator, so `make e2e` must not sweep
+  them up.
 - `tests/e2e-nova-libvirt/` — the suite that boots a server through
   Nova's libvirt driver lives **outside** `tests/e2e/` on purpose: it
   needs libvirtd on an amd64 node and runs in the non-blocking

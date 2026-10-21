@@ -394,8 +394,12 @@ are the record of the last retirement.
    it; the tempest client image of every e2e fixture Job; every pin under
    `tests/e2e*/` (the `invalid-*` corpora through their `_generate.py` and
    `make verify-invalid-cr-fixtures`); the placed-services pins and their
-   preloads; the `e2e-operator-upgrade` baseline CR; and the metadata-agent
-   memory phases. Re-pin the plain `basic-deployment` suites, and carry the
+   preloads; the release pins of the ten operator upgrade suites under
+   `tests/e2e-operator-upgrade/<op>-helm-upgrade/` (the copied fixtures and
+   their `installedRelease` asserts) and `RELEASE` in
+   `hack/ci-operator-upgrade-leg.sh`, which
+   `tests/unit/hack/ci_operator_upgrade_leg_test.sh` holds in lockstep; and the
+   metadata-agent memory phases. Re-pin the plain `basic-deployment` suites, and carry the
    release-specific assertions of the new default's `basic-deployment-<slug>`
    variants over before deleting those variants (decision D5 of #1321), with
    nova's `shard_two` entry and the shard list in

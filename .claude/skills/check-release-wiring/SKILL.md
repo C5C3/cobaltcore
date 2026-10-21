@@ -196,9 +196,12 @@ confirm by hand:
 3. That `ci.yaml`'s hard-coded `<svc>:<version>` tags (the image-upgrade
    re-tag in e2e-operator, the kind preloads of e2e-chaos,
    e2e-controlplane, e2e-controlplane-sso, e2e-external-keystone,
-   e2e-prometheus, e2e-operator-upgrade, e2e-multicluster) still name
-   the release the fixtures actually use — the script verifies
-   existence, not intent (L3 pairs only the e2e-multicluster side).
+   e2e-prometheus, e2e-multicluster) still name the release the
+   fixtures actually use — the script verifies existence, not intent
+   (L3 pairs only the e2e-multicluster side). `RELEASE` in
+   `hack/ci-operator-upgrade-leg.sh` needs no check by hand:
+   `tests/unit/hack/ci_operator_upgrade_leg_test.sh` fails when it
+   differs from the pins of the operator upgrade fixtures.
 4. That the Tempest per-release `exclude-tests.txt` entries were
    re-triaged (`re-evaluate-on:` comments name the plugin version).
 5. Docs that enumerate releases: `docs/reference/testing/tempest-test-infrastructure.md`
