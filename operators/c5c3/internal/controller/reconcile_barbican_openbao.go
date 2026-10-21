@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -130,6 +131,59 @@ const (
 	defaultBarbicanOperatorServiceAccount = "barbican-operator"
 	defaultOpenBaoOperatorNamespace       = "openbao-operator-system"
 )
+
+// The guardrails of the OpenBaoTenant that admits a dedicated Barbican store's
+// namespace: the ResourceQuota and the LimitRange the openbao-operator's
+// provisioner writes into that namespace. deploy/kind/infrastructure/
+// openbao-tenant.yaml carries the same spec for the kind and lab openstack
+// namespace, and tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh
+// compares the two, which is why each value is a single-line string literal.
+//
+// The figures fit a Standard ControlPlane: 55 long-running pods with a
+// three-member OVN central, and up to 77 with CronJobs and a rollout's surge. The
+// requests stay at the provisioner defaults. An override replaces the whole
+// default object, and the provisioner defaults that are left out here are left
+// out on purpose:
+//
+//   - No limits.cpu or limits.memory in the quota. A limits.* quota rejects every
+//     pod that sets no such limit.
+//   - No default limit in the LimitRange, so a container without resources of its
+//     own gets requests and no limits. The service operators set no CPU limit,
+//     the Standard profile sets no memory for MariaDB and Memcached, and
+//     production, which runs without a tenant, has no LimitRange either.
+const (
+	openBaoTenantQuotaPods            = "100"
+	openBaoTenantQuotaRequestsCPU     = "20"
+	openBaoTenantQuotaRequestsMemory  = "64Gi"
+	openBaoTenantDefaultRequestCPU    = "100m"
+	openBaoTenantDefaultRequestMemory = "128Mi"
+)
+
+// openBaoTenantQuota returns the ResourceQuota guardrail of the tenant, built
+// fresh on every call.
+func openBaoTenantQuota() *corev1.ResourceQuotaSpec {
+	return &corev1.ResourceQuotaSpec{
+		Hard: corev1.ResourceList{
+			corev1.ResourcePods:           resource.MustParse(openBaoTenantQuotaPods),
+			corev1.ResourceRequestsCPU:    resource.MustParse(openBaoTenantQuotaRequestsCPU),
+			corev1.ResourceRequestsMemory: resource.MustParse(openBaoTenantQuotaRequestsMemory),
+		},
+	}
+}
+
+// openBaoTenantLimitRange returns the LimitRange guardrail of the tenant, built
+// fresh on every call: one Container item that sets the default requests only.
+func openBaoTenantLimitRange() *corev1.LimitRangeSpec {
+	return &corev1.LimitRangeSpec{
+		Limits: []corev1.LimitRangeItem{{
+			Type: corev1.LimitTypeContainer,
+			DefaultRequest: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse(openBaoTenantDefaultRequestCPU),
+				corev1.ResourceMemory: resource.MustParse(openBaoTenantDefaultRequestMemory),
+			},
+		}},
+	}
+}
 
 // barbicanUnsealKeyRandRead is the randomness source for the static-seal key,
 // indirected through a package-level variable so a test can drive the failure
@@ -246,9 +300,22 @@ func openBaoClusterAvailable(instance *openbaov1alpha1.OpenBaoCluster) bool {
 // holds a finalizer over it. In the kind stack the proving instance's tenant
 // already targets the openstack namespace, so a second, ControlPlane-owned tenant
 // would leave teardown waiting behind a finalizer this operator does not own. A
-// pre-existing tenant is left exactly as it is. The list runs on the cluster the
-// tenant would be created on, which is the only cluster whose openbao-operator the
-// admission would apply to.
+// pre-existing tenant is left exactly as it is, and that includes the
+// self-service tenant an earlier version of this operator created in the
+// namespace itself: its spec cannot take a quota, and its deletion would hang
+// while the instance lives. The list runs on the cluster the tenant would be
+// created on, which is the only cluster whose openbao-operator the admission
+// would apply to.
+//
+// On the management cluster the tenant is barbicanOpenBaoSizedTenant: it lives in
+// the openbao-operator namespace and carries the guardrail spec, because the
+// openbao-operator's admission policy accepts spec.quota and spec.limitRange only
+// on a tenant there. It is applied on every pass, so a changed spec reaches a
+// live tenant, and a same-named tenant this ControlPlane did not create is
+// refused. A Barbican placed on a target cluster keeps the self-service tenant in
+// its own namespace on the provisioner defaults: a tenant in the target's
+// openbao-operator namespace needs a grant the target-cluster access chart does
+// not give.
 func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoTenant(
 	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
 ) error {
@@ -258,28 +325,60 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoTenant(
 	if err := c.List(ctx, tenants); err != nil {
 		return fmt.Errorf("listing OpenBaoTenants before admitting namespace %q: %w", namespace, err)
 	}
+	placed := targetClusterRefForNamespace(cp, namespace) != nil
+	sized := barbicanOpenBaoSizedTenant(cp, r.openBaoOperatorNamespace())
 	for i := range tenants.Items {
-		if tenants.Items[i].Spec.TargetNamespace == namespace {
-			log.FromContext(ctx).V(1).Info("namespace already admitted by an OpenBaoTenant, skipping creation",
-				"namespace", namespace, "tenant", client.ObjectKeyFromObject(&tenants.Items[i]))
-			return nil
+		tenant := &tenants.Items[i]
+		if tenant.Spec.TargetNamespace != namespace {
+			continue
 		}
+		if !placed && tenant.Namespace == sized.Namespace && tenant.Name == sized.Name {
+			continue
+		}
+		log.FromContext(ctx).V(1).Info("namespace already admitted by an OpenBaoTenant, skipping creation",
+			"namespace", namespace, "tenant", client.ObjectKeyFromObject(tenant))
+		return nil
 	}
 
-	tenant := &openbaov1alpha1.OpenBaoTenant{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      barbicanOpenBaoName(cp) + barbicanOpenBaoTenantSuffix,
-			Namespace: namespace,
-		},
-		Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: namespace},
+	if placed {
+		tenant := &openbaov1alpha1.OpenBaoTenant{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      barbicanOpenBaoSelfServiceTenantName(barbicanOpenBaoName(cp)),
+				Namespace: namespace,
+			},
+			Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: namespace},
+		}
+		if err := claimChildOwnership(c, cp, tenant, r.Scheme); err != nil {
+			return fmt.Errorf("claiming ownership of OpenBaoTenant %q: %w", tenant.Name, err)
+		}
+		if err := c.Create(ctx, tenant); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("creating OpenBaoTenant %q: %w", tenant.Name, err)
+		}
+		return nil
 	}
-	if err := claimChildOwnership(c, cp, tenant, r.Scheme); err != nil {
-		return fmt.Errorf("claiming ownership of OpenBaoTenant %q: %w", tenant.Name, err)
-	}
-	if err := c.Create(ctx, tenant); err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("creating OpenBaoTenant %q: %w", tenant.Name, err)
+
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, sized); err != nil {
+		return fmt.Errorf("ensuring OpenBaoTenant %s: %w", client.ObjectKeyFromObject(sized), err)
 	}
 	return nil
+}
+
+// barbicanOpenBaoSizedTenant builds the OpenBaoTenant that admits the Barbican
+// service namespace from operatorNamespace, the namespace the openbao-operator
+// runs in, under the guardrail spec (openBaoTenantQuota, openBaoTenantLimitRange).
+func barbicanOpenBaoSizedTenant(cp *c5c3v1alpha1.ControlPlane, operatorNamespace string) *openbaov1alpha1.OpenBaoTenant {
+	namespace := cp.BarbicanNamespace()
+	return &openbaov1alpha1.OpenBaoTenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      barbicanOpenBaoSizedTenantName(barbicanOpenBaoName(cp), namespace),
+			Namespace: operatorNamespace,
+		},
+		Spec: openbaov1alpha1.OpenBaoTenantSpec{
+			TargetNamespace: namespace,
+			Quota:           openBaoTenantQuota(),
+			LimitRange:      openBaoTenantLimitRange(),
+		},
+	}
 }
 
 // ensureBarbicanUnsealKey ensures the Secret carrying the instance's static-seal

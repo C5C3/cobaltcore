@@ -2924,14 +2924,10 @@ func ownedBarbicanCertificate(cp *c5c3v1alpha1.ControlPlane, name string) *unstr
 // cluster-scoped auth-delegator binding.
 func ownedBarbicanEnsemble(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 	ns, name := cp.BarbicanNamespace(), barbicanOpenBaoName(cp)
+	sized := barbicanOpenBaoSizedTenant(cp, defaultOpenBaoOperatorNamespace)
+	sized.Labels = controlPlaneChildLabels(cp)
 	return []client.Object{
-		&openbaov1alpha1.OpenBaoTenant{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: barbicanOpenBaoSizedTenantName(name, ns), Namespace: defaultOpenBaoOperatorNamespace,
-				Labels: controlPlaneChildLabels(cp),
-			},
-			Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: ns},
-		},
+		sized,
 		&openbaov1alpha1.OpenBaoTenant{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: barbicanOpenBaoSelfServiceTenantName(name), Namespace: ns, Labels: controlPlaneChildLabels(cp),
@@ -3187,12 +3183,7 @@ func TestBarbicanTeardown_LeavesForeignEnsembleObjectsAlone(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: barbicanOpenBaoSelfServiceTenantName(name), Namespace: ns},
 		Spec:       openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: ns},
 	}
-	foreignSizedTenant := &openbaov1alpha1.OpenBaoTenant{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: barbicanOpenBaoSizedTenantName(name, ns), Namespace: defaultOpenBaoOperatorNamespace,
-		},
-		Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: ns},
-	}
+	foreignSizedTenant := barbicanOpenBaoSizedTenant(cp, defaultOpenBaoOperatorNamespace)
 	foreignBinding := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: barbicanOpenBaoAuthDelegatorName(name, ns)},
 	}
@@ -3871,14 +3862,9 @@ func TestDeleteBarbicanOpenBaoTenant(t *testing.T) {
 	sizedTenant := func(
 		cp *c5c3v1alpha1.ControlPlane, namespace string, labels map[string]string,
 	) *openbaov1alpha1.OpenBaoTenant {
-		return &openbaov1alpha1.OpenBaoTenant{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      barbicanOpenBaoSizedTenantName(barbicanOpenBaoName(cp), cp.BarbicanNamespace()),
-				Namespace: namespace,
-				Labels:    labels,
-			},
-			Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: cp.BarbicanNamespace()},
-		}
+		tenant := barbicanOpenBaoSizedTenant(cp, namespace)
+		tenant.Labels = labels
+		return tenant
 	}
 
 	for _, tc := range []struct {

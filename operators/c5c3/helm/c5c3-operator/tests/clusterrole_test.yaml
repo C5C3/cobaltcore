@@ -548,6 +548,26 @@ tests:
             verbs:
               - create
 
+  # The OpenBaoTenant that admits a dedicated Barbican store's namespace is
+  # written by Server-Side Apply into the openbao-operator namespace, which is
+  # a patch, and a create when the tenant does not exist yet.
+  - it: should grant patch on openbaotenants for the tenant's Server-Side Apply
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - openbao.org
+            resources:
+              - openbaotenants
+            verbs:
+              - create
+              - delete
+              - get
+              - list
+              - patch
+              - watch
+
   - it: should grant get-only on endpointslices
     asserts:
       - contains:

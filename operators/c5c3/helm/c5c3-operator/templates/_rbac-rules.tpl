@@ -348,6 +348,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - delete
   - get
   - list
+  - patch
   - watch
 - apiGroups:
   - openstack.k-orc.cloud
