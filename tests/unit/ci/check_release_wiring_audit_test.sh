@@ -9,7 +9,9 @@
 # the release-upgrade and upgrade-flow transition read by tag, the
 # ControlPlane-hop arm, which reads a tests/e2e/c5c3/ suite with an
 # NN-patch-upgrade.yaml by openStackRelease, the skip-level target and the
-# upgrade-abort wedge.
+# upgrade-abort wedge. One case runs the audit against the repository itself
+# and requires every upgrade suite to test the newest sequential transition,
+# which makes make test-shell the CI gate for that rule.
 #
 # A retirement removes releases/<old>/ one pull request before it moves
 # release.MinimumSupported (docs/contributing/adding-a-new-release.md). A floor
@@ -19,10 +21,12 @@
 # rejection fixture must pin the field it is named for below the floor, and
 # every other pin it carries must name a wired release.
 #
-# The audit cds to the directory four levels above itself, so each case copies
-# it into a temporary tree that carries only the files the audit reads. The
-# layers a case does not target report findings on such a tree; the cases
-# assert on the lines they target.
+# The audit cds to the directory four levels above itself, so each staged case
+# copies it into a temporary tree that carries only the files the audit reads.
+# The layers a case does not target report findings on such a tree; the cases
+# assert on the lines they target. Test Q alone runs the audit in place, against
+# the checkout, and asserts on the L6 block only; Test I stages copies of the
+# repository's references like every other case.
 #
 # Usage: bash tests/unit/ci/check_release_wiring_audit_test.sh
 
@@ -124,7 +128,7 @@ write_image_fixture() {
   printf 'spec:\n  image:\n    repository: %s\n    tag: "%s"\n' "$3" "$4" >"$f"
 }
 
-# run_audit <dir> — Runs the staged audit; echoes its combined output.
+# run_audit <dir> — Runs the audit under <dir>; echoes its combined output.
 run_audit() {
   bash "$1/$AUDIT" 2>&1
 }
@@ -630,6 +634,67 @@ test_single_release_reports_no_transition() {
 }
 
 # ---------------------------------------------------------------------------
+# Test Q: the repository's upgrade suites on the newest transition
+# ---------------------------------------------------------------------------
+# The gate of the newest-transition rule. Every release, suite and
+# ControlPlane hop name comes from a glob over the checkout, so a suite the
+# audit stops reading fails its [PASS] assertion. The case reads the L6 block
+# only, not the exit code, which sums every layer. With one release there is
+# no transition to require, and any L6 [FAIL] still fails the case.
+test_repository_upgrade_suites_cover_newest_transition() {
+  echo "Test: every upgrade suite of the repository tests the newest sequential transition"
+
+  local out l6 d f rel prev="" newest="" n=0 suites=0
+  out="$(run_audit "$PROJECT_ROOT")"
+  l6="$(l6_section "$out")"
+  assert_not_empty "the L6 block ran" "$l6"
+  assert_not_contains "L6 reports no failure on the repository" "$l6" "[FAIL]"
+
+  # YYYY.N sorts lexicographically, so the glob order is the release order.
+  for d in "$PROJECT_ROOT"/releases/*/; do
+    [ -d "$d" ] || continue
+    d="${d%/}"
+    prev="$newest"
+    newest="${d##*/}"
+    n=$((n + 1))
+  done
+  if [ "$n" -lt 2 ]; then
+    assert_contains "L6 reports that there is no transition" "$l6" "[INFO] fewer than two releases"
+    echo "  SKIP: the newest-transition checks need two releases"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  assert_contains "L6 derives the newest transition from releases/" "$l6" \
+    "[INFO] newest transition: $prev -> $newest"
+  for d in "$PROJECT_ROOT"/tests/e2e/*/release-upgrade "$PROJECT_ROOT"/tests/e2e/*/upgrade-flow; do
+    [ -d "$d" ] || continue
+    rel="${d#"$PROJECT_ROOT"/}"
+    assert_contains "$rel tests the newest transition" "$l6" \
+      "[PASS] $rel tests $prev -> $newest (newest transition)"
+    suites=$((suites + 1))
+  done
+  assert_gte "the checkout holds a release-upgrade or upgrade-flow suite" "$suites" 1
+  for d in "$PROJECT_ROOT"/tests/e2e/c5c3/*/; do
+    d="${d%/}"
+    compgen -G "$d/[0-9][0-9]-patch-upgrade.yaml" >/dev/null || continue
+    rel="${d#"$PROJECT_ROOT"/}"
+    assert_contains "$rel hops the ControlPlane on the newest transition" "$l6" \
+      "[PASS] $rel tests $prev -> $newest (newest transition)"
+  done
+  for f in "$PROJECT_ROOT"/tests/e2e/*/upgrade-flow/*-patch-skip-level.yaml; do
+    [ -f "$f" ] || continue
+    rel="${f#"$PROJECT_ROOT"/}"
+    assert_contains "$rel targets a release neither wired nor sequential" "$l6" "[PASS] $rel targets "
+  done
+  for d in "$PROJECT_ROOT"/tests/e2e/*/upgrade-abort; do
+    [ -d "$d" ] || continue
+    rel="${d#"$PROJECT_ROOT"/}"
+    assert_contains "$rel wedges a sequential upgrade from a wired release" "$l6" "[PASS] $rel wedges "
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_well_formed_floor_passes
@@ -652,6 +717,7 @@ test_wired_skip_target_and_unrestored_abort_fail
 test_abort_on_stuck_tag_or_missing_fails
 test_unreadable_skip_and_unwedged_abort_fail
 test_single_release_reports_no_transition
+test_repository_upgrade_suites_cover_newest_transition
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
