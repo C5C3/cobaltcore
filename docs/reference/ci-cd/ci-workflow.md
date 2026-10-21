@@ -1419,6 +1419,8 @@ last published, under dizzy's closed-loop load on Keystone's token path
 #1456: every leg puts the numbers of both builds side by side, so the reviewer
 of a patch reads its effect on a Keystone with MariaDB and Memcached rather
 than on the one-process profile the issue started from.
+[Keystone Pressure Testing](../testing/keystone-pressure-testing.md) describes
+the profiles and how to read the comparison.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `keystone-pressure == 'true'`, the upstream

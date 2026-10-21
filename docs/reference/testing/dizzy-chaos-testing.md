@@ -17,7 +17,10 @@ running ControlPlane. `make dizzy-keystone` and `make dizzy-glance` drive it
 against the quick-start stack and export per-operation metrics into the dizzy
 VictoriaMetrics for the Grafana dashboards. On the metal-stack lab, the
 [in-cluster soak](#in-cluster-soak) runs `dizzy mix chaos` as a Job inside the
-cluster for hours and reports on it with the platform's view.
+cluster for hours and reports on it with the platform's view. dizzy's
+closed-loop load on Keystone's token path, `dizzy keystone pressure`, and the
+comparison of two Keystone builds under it have a page of their own:
+[Keystone Pressure Testing](keystone-pressure-testing.md).
 
 For the overlay that installs the VictoriaMetrics + Grafana backend, see
 [Infrastructure Manifests](../infrastructure/infrastructure-manifests.md#dizzy-load-chaos-stack-kind-only-opt-in)

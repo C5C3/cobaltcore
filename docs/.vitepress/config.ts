@@ -311,6 +311,7 @@ export default defineConfig({
               { text: 'Operator Upgrade E2E Tests', link: '/reference/testing/operator-upgrade-e2e-tests' },
               { text: 'Chaos E2E Tests', link: '/reference/testing/chaos-e2e-tests' },
               { text: 'dizzy Chaos Testing', link: '/reference/testing/dizzy-chaos-testing' },
+              { text: 'Keystone Pressure Testing', link: '/reference/testing/keystone-pressure-testing' },
               { text: 'Tempest Test Infrastructure', link: '/reference/testing/tempest-test-infrastructure' },
               { text: 'Performance Baselines', link: '/reference/testing/reconcile-performance-benchmark' },
               { text: 'RBAC Usage Audit', link: '/reference/testing/rbac-usage-audit' },
