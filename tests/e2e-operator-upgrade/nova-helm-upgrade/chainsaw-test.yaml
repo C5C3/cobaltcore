@@ -1,0 +1,320 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: nova-operator helm-upgrade-in-place.
+#
+# The job installs the nova-operator chart and image that baseline.yaml pins
+# before chainsaw runs. This suite brings the CR of
+# tests/e2e/nova/deletion-cleanup/ to Ready under that released operator,
+# upgrades the release in place to the in-repo chart, CRDs and :dev image
+# through hack/ci-deploy-operator.sh, and asserts what the upgrade has to leave
+# alone:
+#   - status.installedRelease stays "2026.1";
+#   - Deployment/nova-cleanup, Deployment/nova-cleanup-conductor,
+#     Deployment/nova-cleanup-scheduler keep their UIDs: the upgrade changes
+#     them in place and never deletes and re-creates them;
+#   - exactly one nova-cleanup-db-sync Job exists, and it completes;
+#   - Ready holds after the new operator processed a new generation
+#     (spec.api.deployment.replicas 1 -> 2), and Deployment/nova-cleanup runs the 2
+#     replicas that generation asks for.
+#
+# The UID of nova-cleanup-db-sync is not an invariant: RunJob re-creates a
+# completed Job whenever its pod template changes, an operator upgrade included
+# (internal/common/job/job.go).
+#
+# The fixtures are copies: each must stay valid under the baseline's older CRD,
+# and a basic-suite fixture that adopts a new field would break this suite if
+# it were referenced by path.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-operator-helm-upgrade
+spec:
+  namespace: openstack
+  steps:
+  # ── Step 1: CR to Ready under the RELEASED operator ────────────────────
+  # The CR takes its own vhost on the kind broker, as the e2e suite it is
+  # copied from does; see ../../e2e/cinder/broker-vhost.sh. The step cleanup
+  # runs at the end of the test.
+  # Ready lands about 8 minutes after the apply (the eight MariaDB CRs and the
+  # db-sync), measured by the suite the fixtures are copied from.
+  - name: deploy-cr-on-released-operator
+    timeouts:
+      assert: 10m
+    try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create nova-cleanup nova-cleanup-messaging openstack
+    - apply:
+        file: 00-metadata-secret.yaml
+    - apply:
+        file: 01-nova-cr.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). The `|| `[]``
+            # fallback lets the assert retry rather than raising a
+            # non-retryable JMESPath type error.
+            (contains(finalizers || `[]`, 'nova.openstack.c5c3.io/finalizer')): true
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &diagnostics
+    - script:
+        content: |
+          kubectl get nova nova-cleanup -n "${NAMESPACE}" -o yaml 2>&1 || true
+          kubectl get deploy,statefulset,job,pod -n "${NAMESPACE}" -o wide 2>&1 || true
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history nova-operator -n nova-system 2>&1 || true
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete nova-cleanup || true
+  # ── Step 2: Stash the UIDs of the CR's workloads ───────────────────────
+  # A ConfigMap carries them across steps, applied idempotently so a local
+  # re-run does not fail on AlreadyExists.
+  - name: capture-baseline
+    try:
+    - script:
+        shell: bash
+        timeout: 60s
+        content: |
+          set -euo pipefail
+          WORKLOADS="Deployment/nova-cleanup Deployment/nova-cleanup-conductor Deployment/nova-cleanup-scheduler"
+          literals=()
+          for ref in ${WORKLOADS}; do
+            kind="${ref%%/*}"
+            name="${ref#*/}"
+            uid="$(kubectl get "${kind}" "${name}" -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ -z "${uid}" ]; then
+              echo "FAIL: could not read the UID of ${ref} before the upgrade"
+              exit 1
+            fi
+            echo "Baseline UID of ${ref}: ${uid}"
+            literals+=(--from-literal="uid-$(tr '[:upper:]' '[:lower:]' <<<"${kind}")-${name}=${uid}")
+          done
+          kubectl create configmap nova-op-upgrade-baseline -n "${NAMESPACE}" \
+            "${literals[@]}" --dry-run=client -o yaml | kubectl apply -f -
+    catch: *diagnostics
+  # ── Step 3: helm upgrade to the in-repo chart + CRDs ───────────────────
+  # Chainsaw runs scripts with the test directory as CWD, so ../../.. is the
+  # repo root. hack/ci-deploy-operator.sh applies the new CRDs server-side
+  # first (Helm does not upgrade crds/), then upgrades the release with the
+  # values the baseline install passed; BARBICAN_SECRET_STORE_GRANTS reaches it
+  # from the environment.
+  - name: helm-upgrade-operator
+    try:
+    - script:
+        shell: bash
+        timeout: 300s
+        content: |
+          set -euo pipefail
+          cd ../../..
+          HELM_UPGRADE=true OPERATOR=nova IMAGE_REPO="${IMAGE_PREFIX:-ghcr.io/c5c3}/nova-operator" \
+            IMAGE_TAG=dev NAMESPACE=nova-system hack/ci-deploy-operator.sh
+          kubectl -n nova-system rollout status deploy/nova-operator --timeout=120s
+    catch:
+    - script:
+        content: |
+          kubectl get deploy nova-operator -n nova-system -o yaml 2>&1 || true
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history nova-operator -n nova-system 2>&1 || true
+          kubectl get events -n nova-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the operator Deployment actually rolled ─────────────
+  # Spec-only assertions are not proof: verify the rollout completed
+  # (updatedReplicas == replicas) and the manager container runs the :dev image.
+  - name: assert-operator-rolled
+    try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          IMG=$(kubectl get deploy nova-operator -n nova-system \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}')
+          echo "manager image: ${IMG}"
+          case "${IMG}" in
+            *:dev) echo "OK: manager runs the :dev image" ;;
+            *) echo "FAIL: manager image is not :dev (got ${IMG})"; exit 1 ;;
+          esac
+          UPD=$(kubectl get deploy nova-operator -n nova-system \
+            -o jsonpath='{.status.updatedReplicas}')
+          REP=$(kubectl get deploy nova-operator -n nova-system \
+            -o jsonpath='{.status.replicas}')
+          if [ -z "${UPD}" ] || [ "${UPD}" != "${REP}" ]; then
+            echo "FAIL: rollout incomplete (updatedReplicas=${UPD:-0} replicas=${REP:-0})"
+            exit 1
+          fi
+          echo "OK: rollout complete (updatedReplicas=${UPD} == replicas=${REP})"
+    catch: *diagnostics
+  # ── Step 5: Force one full reconcile by the NEW operator ───────────────
+  # Patch a real spec field (spec.api.deployment.replicas 1 -> 2) so
+  # metadata.generation advances; with the /status subresource an annotation
+  # would not. Step 6 then proves the NEW operator processed that generation.
+  - name: poke-reconcile
+    try:
+    - script:
+        shell: bash
+        # 2m budget: each failed patch attempt can block for the full 10s
+        # webhook timeout, and the retry loop below needs room for several
+        # attempts on top of the 30s chainsaw default.
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          GEN_BEFORE=$(kubectl get nova nova-cleanup -n "${NAMESPACE}" \
+            -o jsonpath='{.metadata.generation}')
+          # Retry the patch: it is the first webhook-gated request after the
+          # operator rollout, and the in-process webhook server just rolled
+          # with the operator pods. The apiserver may still hold a stale
+          # keep-alive connection to a terminated pod IP, which surfaces as a
+          # 10s context-deadline-exceeded InternalError on the first dial.
+          # Retrying forces a fresh connection to the new endpoints; the
+          # webhook being persistently down still fails via the deadline.
+          deadline=$(( $(date +%s) + 90 ))
+          until kubectl patch nova nova-cleanup -n "${NAMESPACE}" --type=merge \
+              -p '{"spec":{"api":{"deployment":{"replicas":2}}}}'; do
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: webhook-gated spec patch kept failing after the operator upgrade"
+              exit 1
+            fi
+            echo "patch rejected (webhook not reachable yet?); retrying in 3s ..."
+            sleep 3
+          done
+          GEN_AFTER=$(kubectl get nova nova-cleanup -n "${NAMESPACE}" \
+            -o jsonpath='{.metadata.generation}')
+          echo "generation before poke=${GEN_BEFORE} after poke=${GEN_AFTER}"
+          if [ -z "${GEN_AFTER}" ] || [ "${GEN_AFTER}" -le "${GEN_BEFORE:-0}" ]; then
+            echo "FAIL: spec patch did not advance metadata.generation (${GEN_BEFORE} -> ${GEN_AFTER})"
+            exit 1
+          fi
+    catch: *diagnostics
+  # ── Step 6: Assert the CR is undisturbed by the upgrade ────────────────
+  # The script runs first: Ready was already True at the pre-poke generation,
+  # so only after observedGeneration caught up does the Ready assert below
+  # describe the NEW operator's work.
+  - name: assert-after-upgrade
+    timeouts:
+      assert: 10m
+    try:
+    - script:
+        shell: bash
+        # 150s for observedGeneration, 30s for the Job count and 480s for a
+        # re-run db-sync, which runs six nova-manage invocations.
+        timeout: 14m
+        content: |
+          set -euo pipefail
+          # Polled via kubectl rather than a declarative assert because a
+          # chainsaw `(expr): value` under `status` cannot resolve
+          # metadata.generation (it is nesting-scoped to status).
+          deadline=$(( $(date +%s) + 150 ))
+          while :; do
+            GEN=$(kubectl get nova nova-cleanup -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.generation}')
+            OBS=$(kubectl get nova nova-cleanup -n "${NAMESPACE}" \
+              -o jsonpath='{.status.observedGeneration}')
+            if [ -n "${OBS}" ] && [ "${OBS}" = "${GEN}" ]; then
+              echo "OK: observedGeneration=${OBS} caught up to generation=${GEN}"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: observedGeneration (${OBS}) never caught up to generation (${GEN}): the new operator did not reconcile the new generation"
+              exit 1
+            fi
+            sleep 2
+          done
+          WORKLOADS="Deployment/nova-cleanup Deployment/nova-cleanup-conductor Deployment/nova-cleanup-scheduler"
+          for ref in ${WORKLOADS}; do
+            kind="${ref%%/*}"
+            name="${ref#*/}"
+            key="uid-$(tr '[:upper:]' '[:lower:]' <<<"${kind}")-${name}"
+            BASE=$(kubectl get configmap nova-op-upgrade-baseline -n "${NAMESPACE}" \
+              -o "jsonpath={.data.${key}}")
+            if [ -z "${BASE}" ]; then
+              echo "FAIL: no baseline UID of ${ref} stashed by the capture-baseline step"
+              exit 1
+            fi
+            CUR=$(kubectl get "${kind}" "${name}" -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+            if [ "${BASE}" != "${CUR}" ]; then
+              echo "FAIL: ${ref} was re-created across the operator upgrade (uid ${BASE} -> ${CUR:-<none>})"
+              exit 1
+            fi
+            echo "OK: ${ref} kept its UID ${CUR}"
+          done
+          # The upgrade re-creates nova-cleanup-db-sync when the new operator
+          # renders another pod template; between the delete and the create no
+          # Job exists, so the count is polled briefly.
+          count_deadline=$(( $(date +%s) + 30 ))
+          while :; do
+            COUNT=$(kubectl get jobs -n "${NAMESPACE}" -o name 2>/dev/null \
+              | grep -c '/nova-cleanup-db-sync$' || true)
+            [ "${COUNT}" = "1" ] && break
+            if [ "$(date +%s)" -ge "${count_deadline}" ]; then
+              echo "FAIL: expected exactly one nova-cleanup-db-sync Job, found ${COUNT}"
+              exit 1
+            fi
+            sleep 2
+          done
+          kubectl wait --for=condition=complete job/nova-cleanup-db-sync -n "${NAMESPACE}" --timeout=480s
+          echo "OK: exactly one nova-cleanup-db-sync Job, and it completed"
+    # observedGeneration is stamped on every status write, a pass that stopped
+    # early included, so only the workload shows that the NEW operator
+    # applied the new generation.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+          spec:
+            replicas: 2
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: Nova
+          metadata:
+            name: nova-cleanup
+            namespace: openstack
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). The `|| `[]``
+            # fallback lets the assert retry rather than raising a
+            # non-retryable JMESPath type error.
+            (contains(finalizers || `[]`, 'nova.openstack.c5c3.io/finalizer')): true
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          kubectl get nova nova-cleanup -n "${NAMESPACE}" -o yaml 2>&1 || true
+          kubectl get deploy,statefulset,job,pod -n "${NAMESPACE}" -o wide 2>&1 || true
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history nova-operator -n nova-system 2>&1 || true
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          kubectl get jobs -n "${NAMESPACE}" 2>&1 || true
+          kubectl get configmap nova-op-upgrade-baseline -n "${NAMESPACE}" -o yaml 2>&1 || true
+    finally:
+    - script:
+        content: |
+          # The baseline stash is script-created, so chainsaw does not track it
+          # for cleanup; remove it so a local re-run starts clean.
+          kubectl delete configmap nova-op-upgrade-baseline -n "${NAMESPACE}" --ignore-not-found 2>&1 || true

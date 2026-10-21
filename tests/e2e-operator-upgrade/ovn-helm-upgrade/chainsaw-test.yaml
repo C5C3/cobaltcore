@@ -1,0 +1,263 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: ovn-operator helm-upgrade-in-place.
+#
+# The job installs the ovn-operator chart and image that baseline.yaml pins
+# before chainsaw runs. This suite brings the CR of
+# tests/e2e/ovn/central-deletion-cleanup/ to Ready under that released
+# operator, upgrades the release in place to the in-repo chart, CRDs and :dev
+# image through hack/ci-deploy-operator.sh, and asserts what the upgrade has to
+# leave alone:
+#   - StatefulSet/ovn-deletion-nb, StatefulSet/ovn-deletion-sb,
+#     Deployment/ovn-deletion-northd keep their UIDs: the upgrade changes them
+#     in place and never deletes and re-creates them;
+#   - Ready holds after the new operator processed a new generation
+#     (spec.northd.deployment.replicas 1 -> 2), and Deployment/ovn-deletion-northd runs the 2
+#     replicas that generation asks for.
+#
+# The fixtures are copies: each must stay valid under the baseline's older CRD,
+# and a basic-suite fixture that adopts a new field would break this suite if
+# it were referenced by path.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-operator-helm-upgrade
+spec:
+  namespace: openstack
+  steps:
+  # ── Step 1: CR to Ready under the RELEASED operator ────────────────────
+  - name: deploy-cr-on-released-operator
+    try:
+    - apply:
+        file: 00-ovncentral-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-deletion
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &diagnostics
+    - script:
+        content: |
+          kubectl get ovncentral ovn-deletion -n "${NAMESPACE}" -o yaml 2>&1 || true
+          kubectl get deploy,statefulset,job,pod -n "${NAMESPACE}" -o wide 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history ovn-operator -n ovn-system 2>&1 || true
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Stash the UIDs of the CR's workloads ───────────────────────
+  # A ConfigMap carries them across steps, applied idempotently so a local
+  # re-run does not fail on AlreadyExists.
+  - name: capture-baseline
+    try:
+    - script:
+        shell: bash
+        timeout: 60s
+        content: |
+          set -euo pipefail
+          WORKLOADS="StatefulSet/ovn-deletion-nb StatefulSet/ovn-deletion-sb Deployment/ovn-deletion-northd"
+          literals=()
+          for ref in ${WORKLOADS}; do
+            kind="${ref%%/*}"
+            name="${ref#*/}"
+            uid="$(kubectl get "${kind}" "${name}" -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ -z "${uid}" ]; then
+              echo "FAIL: could not read the UID of ${ref} before the upgrade"
+              exit 1
+            fi
+            echo "Baseline UID of ${ref}: ${uid}"
+            literals+=(--from-literal="uid-$(tr '[:upper:]' '[:lower:]' <<<"${kind}")-${name}=${uid}")
+          done
+          kubectl create configmap ovn-op-upgrade-baseline -n "${NAMESPACE}" \
+            "${literals[@]}" --dry-run=client -o yaml | kubectl apply -f -
+    catch: *diagnostics
+  # ── Step 3: helm upgrade to the in-repo chart + CRDs ───────────────────
+  # Chainsaw runs scripts with the test directory as CWD, so ../../.. is the
+  # repo root. hack/ci-deploy-operator.sh applies the new CRDs server-side
+  # first (Helm does not upgrade crds/), then upgrades the release with the
+  # values the baseline install passed; BARBICAN_SECRET_STORE_GRANTS reaches it
+  # from the environment.
+  - name: helm-upgrade-operator
+    try:
+    - script:
+        shell: bash
+        timeout: 300s
+        content: |
+          set -euo pipefail
+          cd ../../..
+          HELM_UPGRADE=true OPERATOR=ovn IMAGE_REPO="${IMAGE_PREFIX:-ghcr.io/c5c3}/ovn-operator" \
+            IMAGE_TAG=dev NAMESPACE=ovn-system hack/ci-deploy-operator.sh
+          kubectl -n ovn-system rollout status deploy/ovn-operator --timeout=120s
+    catch:
+    - script:
+        content: |
+          kubectl get deploy ovn-operator -n ovn-system -o yaml 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history ovn-operator -n ovn-system 2>&1 || true
+          kubectl get events -n ovn-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the operator Deployment actually rolled ─────────────
+  # Spec-only assertions are not proof: verify the rollout completed
+  # (updatedReplicas == replicas) and the manager container runs the :dev image.
+  - name: assert-operator-rolled
+    try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          IMG=$(kubectl get deploy ovn-operator -n ovn-system \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}')
+          echo "manager image: ${IMG}"
+          case "${IMG}" in
+            *:dev) echo "OK: manager runs the :dev image" ;;
+            *) echo "FAIL: manager image is not :dev (got ${IMG})"; exit 1 ;;
+          esac
+          UPD=$(kubectl get deploy ovn-operator -n ovn-system \
+            -o jsonpath='{.status.updatedReplicas}')
+          REP=$(kubectl get deploy ovn-operator -n ovn-system \
+            -o jsonpath='{.status.replicas}')
+          if [ -z "${UPD}" ] || [ "${UPD}" != "${REP}" ]; then
+            echo "FAIL: rollout incomplete (updatedReplicas=${UPD:-0} replicas=${REP:-0})"
+            exit 1
+          fi
+          echo "OK: rollout complete (updatedReplicas=${UPD} == replicas=${REP})"
+    catch: *diagnostics
+  # ── Step 5: Force one full reconcile by the NEW operator ───────────────
+  # Patch a real spec field (spec.northd.deployment.replicas 1 -> 2) so
+  # metadata.generation advances; with the /status subresource an annotation
+  # would not. Step 6 then proves the NEW operator processed that generation.
+  - name: poke-reconcile
+    try:
+    - script:
+        shell: bash
+        # 2m budget: each failed patch attempt can block for the full 10s
+        # webhook timeout, and the retry loop below needs room for several
+        # attempts on top of the 30s chainsaw default.
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          GEN_BEFORE=$(kubectl get ovncentral ovn-deletion -n "${NAMESPACE}" \
+            -o jsonpath='{.metadata.generation}')
+          # Retry the patch: it is the first webhook-gated request after the
+          # operator rollout, and the in-process webhook server just rolled
+          # with the operator pods. The apiserver may still hold a stale
+          # keep-alive connection to a terminated pod IP, which surfaces as a
+          # 10s context-deadline-exceeded InternalError on the first dial.
+          # Retrying forces a fresh connection to the new endpoints; the
+          # webhook being persistently down still fails via the deadline.
+          deadline=$(( $(date +%s) + 90 ))
+          until kubectl patch ovncentral ovn-deletion -n "${NAMESPACE}" --type=merge \
+              -p '{"spec":{"northd":{"deployment":{"replicas":2}}}}'; do
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: webhook-gated spec patch kept failing after the operator upgrade"
+              exit 1
+            fi
+            echo "patch rejected (webhook not reachable yet?); retrying in 3s ..."
+            sleep 3
+          done
+          GEN_AFTER=$(kubectl get ovncentral ovn-deletion -n "${NAMESPACE}" \
+            -o jsonpath='{.metadata.generation}')
+          echo "generation before poke=${GEN_BEFORE} after poke=${GEN_AFTER}"
+          if [ -z "${GEN_AFTER}" ] || [ "${GEN_AFTER}" -le "${GEN_BEFORE:-0}" ]; then
+            echo "FAIL: spec patch did not advance metadata.generation (${GEN_BEFORE} -> ${GEN_AFTER})"
+            exit 1
+          fi
+    catch: *diagnostics
+  # ── Step 6: Assert the CR is undisturbed by the upgrade ────────────────
+  # The script runs first: Ready was already True at the pre-poke generation,
+  # so only after observedGeneration caught up does the Ready assert below
+  # describe the NEW operator's work.
+  - name: assert-after-upgrade
+    try:
+    - script:
+        shell: bash
+        # 150s for observedGeneration plus the UID reads.
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          # Polled via kubectl rather than a declarative assert because a
+          # chainsaw `(expr): value` under `status` cannot resolve
+          # metadata.generation (it is nesting-scoped to status).
+          deadline=$(( $(date +%s) + 150 ))
+          while :; do
+            GEN=$(kubectl get ovncentral ovn-deletion -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.generation}')
+            OBS=$(kubectl get ovncentral ovn-deletion -n "${NAMESPACE}" \
+              -o jsonpath='{.status.observedGeneration}')
+            if [ -n "${OBS}" ] && [ "${OBS}" = "${GEN}" ]; then
+              echo "OK: observedGeneration=${OBS} caught up to generation=${GEN}"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: observedGeneration (${OBS}) never caught up to generation (${GEN}): the new operator did not reconcile the new generation"
+              exit 1
+            fi
+            sleep 2
+          done
+          WORKLOADS="StatefulSet/ovn-deletion-nb StatefulSet/ovn-deletion-sb Deployment/ovn-deletion-northd"
+          for ref in ${WORKLOADS}; do
+            kind="${ref%%/*}"
+            name="${ref#*/}"
+            key="uid-$(tr '[:upper:]' '[:lower:]' <<<"${kind}")-${name}"
+            BASE=$(kubectl get configmap ovn-op-upgrade-baseline -n "${NAMESPACE}" \
+              -o "jsonpath={.data.${key}}")
+            if [ -z "${BASE}" ]; then
+              echo "FAIL: no baseline UID of ${ref} stashed by the capture-baseline step"
+              exit 1
+            fi
+            CUR=$(kubectl get "${kind}" "${name}" -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+            if [ "${BASE}" != "${CUR}" ]; then
+              echo "FAIL: ${ref} was re-created across the operator upgrade (uid ${BASE} -> ${CUR:-<none>})"
+              exit 1
+            fi
+            echo "OK: ${ref} kept its UID ${CUR}"
+          done
+    # observedGeneration is stamped on every status write, a pass that stopped
+    # early included, so only the workload shows that the NEW operator
+    # applied the new generation.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-deletion-northd
+            namespace: openstack
+          spec:
+            replicas: 2
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-deletion
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          kubectl get ovncentral ovn-deletion -n "${NAMESPACE}" -o yaml 2>&1 || true
+          kubectl get deploy,statefulset,job,pod -n "${NAMESPACE}" -o wide 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history ovn-operator -n ovn-system 2>&1 || true
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          kubectl get jobs -n "${NAMESPACE}" 2>&1 || true
+          kubectl get configmap ovn-op-upgrade-baseline -n "${NAMESPACE}" -o yaml 2>&1 || true
+    finally:
+    - script:
+        content: |
+          # The baseline stash is script-created, so chainsaw does not track it
+          # for cleanup; remove it so a local re-run starts clean.
+          kubectl delete configmap ovn-op-upgrade-baseline -n "${NAMESPACE}" --ignore-not-found 2>&1 || true
