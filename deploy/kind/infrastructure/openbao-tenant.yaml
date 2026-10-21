@@ -11,23 +11,36 @@
 #
 # This tenant is static because openstack is a fixture of the overlay. The
 # service namespaces a ControlPlane's dedicated instance lands in are created at
-# runtime, so the c5c3 operator creates their tenants itself; it skips any
-# namespace an OpenBaoTenant already targets, this one included, because a
-# namespace admitted twice carries the finalizer of two tenants.
+# runtime, so the c5c3 operator creates their tenants itself, in this same
+# namespace and with the same spec; it skips any namespace an OpenBaoTenant
+# already targets, this one included, because a namespace admitted twice
+# carries the finalizer of two tenants.
 #
 # The tenant lives in the operator namespace, openbao-operator-system, and
 # targets openstack from there. The chart's admission policy
 # (templates/admission/validate-openbao-tenant.yaml) accepts spec.quota and
 # spec.limitRange only on a tenant in the operator namespace, and a tenant
-# there may target any namespace. Without the overrides the provisioner writes
-# its default LimitRange into openstack, which gives every container without a
-# CPU limit a 500m one, and the service operators set no CPU limit. The
-# overrides are the provisioner defaults of chart 0.4.2
-# (internal/service/provisioner/quotas.go) minus the default CPU limit and
-# limits.cpu: a limits.cpu quota rejects every pod that sets no CPU limit. An
+# there may target any namespace.
+#
+# The spec is the guardrail spec of the c5c3 operator, the openBaoTenant* consts
+# in operators/c5c3/internal/controller/reconcile_barbican_openbao.go, and
+# tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh keeps the two
+# equal. It starts from the provisioner defaults of chart 0.4.2
+# (internal/service/provisioner/quotas.go). pods rises from 50 to 100: a
+# Standard ControlPlane with its three-member OVN central runs 55 pods, and up
+# to 77 with CronJobs and a rollout's surge. The requests stay. Every limit is
+# dropped: limits.cpu and limits.memory from the quota, because a limits.*
+# quota rejects every pod that sets no such limit, and the 500m CPU and 512Mi
+# memory default limits from the LimitRange, because the service operators set
+# no CPU limit and the Standard profile sets no memory for MariaDB and
+# Memcached. A container without resources of its own therefore gets the
+# default requests and no limit, as in production, which has no tenant. An
 # override replaces the whole default object, so every kept key is spelled out.
-# A kind cluster created before the move keeps its old openstack/openstack
-# tenant beside this one; recreate the cluster.
+#
+# The LimitRange shapes only the pods admitted after it changes: a running pod
+# keeps the limits it was admitted with until it restarts. A kind cluster
+# created before the move to openbao-operator-system keeps its old
+# openstack/openstack tenant beside this one; recreate the cluster.
 ---
 apiVersion: openbao.org/v1alpha1
 kind: OpenBaoTenant
@@ -38,15 +51,12 @@ spec:
   targetNamespace: openstack
   quota:
     hard:
-      pods: "50"
+      pods: "100"
       requests.cpu: "20"
       requests.memory: 64Gi
-      limits.memory: 128Gi
   limitRange:
     limits:
       - type: Container
-        default:
-          memory: 512Mi
         defaultRequest:
           cpu: 100m
           memory: 128Mi

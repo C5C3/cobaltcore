@@ -32,7 +32,8 @@
 #     the OpenBaoTenant that admits openstack. A namespace without a tenant
 #     never gets its instance reconciled. The tenant lives in
 #     openbao-operator-system, the only namespace whose tenants may override
-#     the default LimitRange and quota, and its overrides set no CPU limit.
+#     the default LimitRange and quota, its quota admits 100 pods, and its
+#     overrides set no limit.
 #
 # Usage: bash tests/unit/deploy/openbao_instance_overlay_test.sh
 
@@ -193,8 +194,8 @@ test_operator_release_runs_multi_tenant() {
     "$values" "WATCH_NAMESPACE"
 
   if ! command -v kustomize >/dev/null 2>&1; then
-    echo "  SKIP: kustomize not installed (5 checks skipped)"
-    SKIP=$((SKIP + 5))
+    echo "  SKIP: kustomize not installed (7 checks skipped)"
+    SKIP=$((SKIP + 7))
     return
   fi
 
@@ -202,7 +203,7 @@ test_operator_release_runs_multi_tenant() {
   if ! rendered="$(kustomize build "$KIND_INFRA_DIR" 2>&1)"; then
     echo "  FAIL: kustomize build $KIND_INFRA_DIR failed:"
     echo "$rendered" | head -20
-    FAIL=$((FAIL + 5))
+    FAIL=$((FAIL + 7))
     return
   fi
   tenant="$(printf '%s\n' "$rendered" | yq \
@@ -218,18 +219,24 @@ test_operator_release_runs_multi_tenant() {
   # a tenant in the operator namespace; anywhere else the apply is denied.
   assert_eq "the tenant lives in the operator namespace" "openbao-operator-system" \
     "$(printf '%s\n' "$tenant" | yq -r '.metadata.namespace' 2>/dev/null)"
+  # The provisioner's default quota of 50 pods refuses the pods of a Standard
+  # ControlPlane past the fiftieth.
+  assert_eq "the tenant quota admits 100 pods" "100" \
+    "$(printf '%s\n' "$tenant" | yq -r '.spec.quota.hard.pods' 2>/dev/null)"
   # The provisioner's default LimitRange gives every container without a CPU
   # limit a 500m one, which throttles each uWSGI cold start; the service
   # operators set no CPU limit.
   assert_eq "the tenant LimitRange sets no default CPU limit" "null" \
     "$(printf '%s\n' "$tenant" | yq -r '.spec.limitRange.limits[0].default.cpu' 2>/dev/null)"
-  # An override replaces the whole default LimitRange, so the memory default
-  # has to be spelled out to survive.
-  assert_eq "the tenant LimitRange keeps the 512Mi default memory limit" "512Mi" \
+  # Nor a 512Mi one for memory: Standard sets no MariaDB or Memcached memory,
+  # and production, which has no tenant, gives them no limit either.
+  assert_eq "the tenant LimitRange sets no default memory limit" "null" \
     "$(printf '%s\n' "$tenant" | yq -r '.spec.limitRange.limits[0].default.memory' 2>/dev/null)"
-  # A limits.cpu quota rejects every pod that sets no CPU limit.
+  # A limits.* quota rejects every pod that sets no such limit.
   assert_eq "the tenant quota carries no limits.cpu" "null" \
     "$(printf '%s\n' "$tenant" | yq -r '.spec.quota.hard["limits.cpu"]' 2>/dev/null)"
+  assert_eq "the tenant quota carries no limits.memory" "null" \
+    "$(printf '%s\n' "$tenant" | yq -r '.spec.quota.hard["limits.memory"]' 2>/dev/null)"
 }
 
 # --- Test 5: the deploy resolves the API-server egress and patches it with the un-pause ---

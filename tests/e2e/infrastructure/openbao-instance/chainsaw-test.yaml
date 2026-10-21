@@ -9,6 +9,9 @@
 #
 # Covers:
 #   - openbao-operator Deployment available + its HelmRelease Ready
+#   - The guardrails the provisioner wrote into openstack for the kind tenant:
+#     the tenant's quota with no limits.* key, and a LimitRange with the
+#     default requests and no default limit
 #   - The unseal-key ExternalSecret SecretSynced AND the instance's adoption of
 #     the Secret it materialized: the custody chain from the seed in the
 #     management OpenBao through the shared cluster store into the Secret the
@@ -64,13 +67,52 @@ spec:
           status:
             (conditions[?type == 'Ready']):
             - status: "True"
-  # ── Step 2: Unseal-key ExternalSecret + its adoption ────────────────────
+  # ── Step 2: The tenant guardrails in openstack ──────────────────────────
+  # The provisioner writes the spec of OpenBaoTenant
+  # openbao-operator-system/openstack (deploy/kind/infrastructure/
+  # openbao-tenant.yaml) into the namespace it admits, by Server-Side Apply,
+  # which prunes a key the spec drops. tests/unit/deploy/
+  # openbao_tenant_guardrails_contract_test.sh pins the file; this step reads
+  # what the provisioner wrote: the quota and the LimitRange carry the tenant's
+  # figures, the quota has no limits.* key, and the LimitRange sets the default
+  # requests and no default limit.
+  - try:
+    - script:
+        content: |
+          set -eu
+          TENANT="$(kubectl get openbaotenant openstack -n openbao-operator-system -o json)"
+          QUOTA="$(kubectl get resourcequota openbao-operator-tenant-quota -n openstack -o json)"
+          LIMITS="$(kubectl get limitrange openbao-operator-tenant-limits -n openstack -o json)"
+          KEYS="$(printf '%s' "${QUOTA}" | jq -r '.spec.hard | keys | join(" ")')"
+          if [ "${KEYS}" != "pods requests.cpu requests.memory" ]; then
+            echo "ERROR: ResourceQuota openbao-operator-tenant-quota sets '${KEYS}', not exactly pods, requests.cpu and requests.memory"
+            exit 1
+          fi
+          WANT="$(printf '%s' "${TENANT}" | jq -cS '.spec.quota.hard')"
+          GOT="$(printf '%s' "${QUOTA}" | jq -cS '.spec.hard')"
+          if [ "${GOT}" != "${WANT}" ]; then
+            echo "ERROR: ResourceQuota openbao-operator-tenant-quota has ${GOT}, the tenant asks for ${WANT}"
+            exit 1
+          fi
+          KEYS="$(printf '%s' "${LIMITS}" | jq -r '[.spec.limits[] | keys | join(" ")] | join(",")')"
+          if [ "${KEYS}" != "defaultRequest type" ]; then
+            echo "ERROR: LimitRange openbao-operator-tenant-limits has items with '${KEYS}', not one item with only defaultRequest and type"
+            exit 1
+          fi
+          WANT="$(printf '%s' "${TENANT}" | jq -cS '.spec.limitRange.limits')"
+          GOT="$(printf '%s' "${LIMITS}" | jq -cS '.spec.limits')"
+          if [ "${GOT}" != "${WANT}" ]; then
+            echo "ERROR: LimitRange openbao-operator-tenant-limits has ${GOT}, the tenant asks for ${WANT}"
+            exit 1
+          fi
+          echo "OK: openstack carries the tenant's quota and LimitRange: no limits.* key, default requests only"
+  # ── Step 3: Unseal-key ExternalSecret + its adoption ────────────────────
   # Reads bootstrap/openstack/openbao-instance/unseal-key from the management
   # OpenBao through the shared cluster store. SecretSynced proves the seed
   # reached a Secret; the ownership check below proves it reached THIS
   # instance's seal. Without it the suite would still pass on a Secret the
   # operator blind-created with a random key of its own, and every later step —
-  # including the restart survival in Step 5 — would pass with it.
+  # including the restart survival in Step 6 — would pass with it.
   - try:
     - assert:
         resource:
@@ -112,7 +154,7 @@ spec:
             exit 1
           fi
           echo "OK: the instance adopted the ESO-materialized unseal Secret (ESO-managed, controller ownerReference matches the CR)"
-  # ── Step 3: OpenBaoCluster instance CR ──────────────────────────────────
+  # ── Step 4: OpenBaoCluster instance CR ──────────────────────────────────
   - try:
     - assert:
         resource:
@@ -167,7 +209,7 @@ spec:
             esac
           done
           echo "OK: the instance allows API-server egress to '${RULE_CIDRS}' on the slice's port ${SLICE_PORT}"
-  # ── Step 4: Kubernetes auth to AppRole to KV round-trip ─────────────────
+  # ── Step 5: Kubernetes auth to AppRole to KV round-trip ─────────────────
   # Every OpenBao call runs through `kubectl exec` into the instance pod with
   # the CLI env the bootstrap scripts use against the shared instance
   # (BAO_ADDR, VAULT_CACERT on the mounted trust bundle). The server
@@ -278,7 +320,7 @@ spec:
             exit 1
           fi
           echo "OK: the AppRole token wrote and read back ${PROBE_PATH} on the barbican/ mount"
-  # ── Step 5: Restart survival ────────────────────────────────────────────
+  # ── Step 6: Restart survival ────────────────────────────────────────────
   # Replace the instance pod and prove the replacement comes back unsealed. The
   # step issues NO unseal command, and neither does anything else in this
   # suite: the static seal reads its key from the mounted Secret on its own.
