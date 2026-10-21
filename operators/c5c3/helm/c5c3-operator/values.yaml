@@ -109,3 +109,12 @@ serviceAccount:
 barbicanOperator:
   namespace: barbican-system
   serviceAccount: barbican-operator
+
+# Namespace of the openbao-operator, rendered as the OPENBAO_OPERATOR_NAMESPACE
+# environment variable. The OpenBaoTenant that admits a dedicated Barbican
+# store's namespace to the openbao-operator is created there, because the
+# openbao-operator accepts a quota and a LimitRange only on a tenant in its own
+# namespace. Keep it in sync with the release the openbao-operator chart is
+# installed as.
+openbaoOperator:
+  namespace: openbao-operator-system

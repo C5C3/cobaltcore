@@ -30,8 +30,8 @@ tests:
           path: spec.template.spec.containers[0].image
           value: "ghcr.io/c5c3/c5c3-operator:latest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-  # barbican-operator identity environment tests.
-  - it: should render the barbican-operator identity env from the defaults
+  # barbican-operator identity and openbao-operator namespace environment tests.
+  - it: should render the barbican-operator identity and openbao-operator namespace env from the defaults
     asserts:
       - equal:
           path: spec.template.spec.containers[0].env
@@ -40,6 +40,8 @@ tests:
               value: barbican-system
             - name: BARBICAN_OPERATOR_SERVICE_ACCOUNT
               value: barbican-operator
+            - name: OPENBAO_OPERATOR_NAMESPACE
+              value: openbao-operator-system
 
   - it: should render an overridden barbican-operator identity
     set:
@@ -58,12 +60,24 @@ tests:
             name: BARBICAN_OPERATOR_SERVICE_ACCOUNT
             value: barbican-controller-manager
 
-  # The env block is gated on the whole barbicanOperator key so the sibling
-  # operator charts, which never set it, keep rendering an env-less container.
-  # Nulling it here reproduces that render.
-  - it: should render no env block when barbicanOperator is unset
+  - it: should render an overridden openbao-operator namespace
+    set:
+      openbaoOperator:
+        namespace: bao-system
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: OPENBAO_OPERATOR_NAMESPACE
+            value: bao-system
+
+  # Each env entry is gated on its whole key (barbicanOperator,
+  # openbaoOperator) so the sibling operator charts, which never set them, keep
+  # rendering an env-less container. Nulling both here reproduces that render.
+  - it: should render no env block when barbicanOperator and openbaoOperator are unset
     set:
       barbicanOperator: null
+      openbaoOperator: null
     asserts:
       - isNull:
           path: spec.template.spec.containers[0].env

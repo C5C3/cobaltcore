@@ -17,6 +17,18 @@
           "default": "barbican-operator"
         }
       }
+    },
+    "openbaoOperator": {
+      "type": "object",
+      "description": "Namespace of the openbao-operator, rendered as the OPENBAO_OPERATOR_NAMESPACE environment variable on the manager container. The OpenBaoTenant that admits a dedicated Barbican store's namespace is created there, because the openbao-operator accepts a quota and a LimitRange only on a tenant in its own namespace, so it must match the release the openbao-operator chart is installed as",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "Namespace the openbao-operator runs in",
+          "default": "openbao-operator-system"
+        }
+      }
     }
   }
 }

@@ -2,7 +2,7 @@ apiVersion: v2
 name: c5c3-operator
 description: A Helm chart for deploying the c5c3 ControlPlane operator
 type: application
-version: 0.18.1
+version: 0.19.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for both operator
@@ -15,6 +15,10 @@ dependencies:
 annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
+    - kind: added
+      description: openbaoOperator.namespace (default openbao-operator-system), rendered as the OPENBAO_OPERATOR_NAMESPACE environment variable, names the namespace the openbao-operator runs in
+    - kind: changed
+      description: "A dedicated Barbican store on the management cluster is admitted by an OpenBaoTenant in the openbao-operator namespace, under the guardrail spec: a quota of 100 pods, 20 CPU and 64Gi of requests and no limits.*, and a LimitRange that sets only a 100m/128Mi default request. The ClusterRole regains patch on openbaotenants for that tenant's Server-Side Apply. A namespace an earlier version admitted keeps its tenant. A downgrade leaves the new tenant behind in the openbaoOperator.namespace namespace (default openbao-operator-system); remove it with kubectl delete openbaotenant -n <openbaoOperator.namespace> -l c5c3.io/controlplane-name=<cp>,c5c3.io/controlplane-namespace=<ns>"
     - kind: changed
       description: The ClusterRole drops every verb that neither the RBAC usage audit of the e2e suites nor a call site in the operator claims (docs/reference/testing/rbac-usage-audit.md), and the leader-election rule grants get, create and update on leases only
     - kind: removed
