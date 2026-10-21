@@ -20,7 +20,11 @@
 #     fetch script and the pinned baseline, and its c5c3 CRD list is the one
 #     of the e2e-operator and e2e-orders-multicluster jobs;
 #   - make e2e-operator-upgrade deploys the image tag and chart directory the
-#     fetch script wrote, with the barbican grants of the workflow.
+#     fetch script wrote, with the barbican grants of the workflow;
+#   - operator-upgrade.yaml runs after the CI and Build Images workflows
+#     complete on main, only for a successful push run of this repository,
+#     which alone joins the concurrency group that cancels the run in flight,
+#     and calls the reusable workflow at the commit that run built.
 #
 # A pin that drifts above its chart, or an operator that gains a chart without
 # a suite, would fail only on a pull request that happens to run that job;
@@ -34,6 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 UPGRADE_YAML="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
+MAIN_YAML="$PROJECT_ROOT/.github/workflows/operator-upgrade.yaml"
 SUITES_DIR="$PROJECT_ROOT/tests/e2e-operator-upgrade"
 
 PASS=0
@@ -320,6 +325,65 @@ test_the_make_target_deploys_what_the_fetch_wrote() {
   assert_contains "it runs the glance suite" "$recipe" "tests/e2e-operator-upgrade/glance-helm-upgrade/"
 }
 
+test_the_main_workflow_follows_the_publish_runs() {
+  echo "Test: operator-upgrade.yaml runs after main's publish runs and calls the reusable workflow"
+
+  local wf ci_name images_name resolve upgrade
+  wf="$(cat "$MAIN_YAML")"
+  ci_name="$(sed -n 's/^name: //p' "$CI_YAML")"
+  images_name="$(sed -n 's/^name: //p' "$PROJECT_ROOT/.github/workflows/build-images.yaml")"
+  assert_eq "ci.yaml is the workflow named CI" "CI" "$ci_name"
+  assert_eq "build-images.yaml is the workflow named Build Images" "Build Images" "$images_name"
+  assert_contains "it triggers on workflow_run" "$wf" "  workflow_run:"
+  assert_contains "it follows both publishing workflows by name" "$wf" \
+    "    workflows: [${ci_name}, ${images_name}]"
+  assert_contains "it runs when they complete" "$wf" "    types: [completed]"
+  assert_contains "it follows main only" "$wf" "    branches: [main]"
+  local concurrency guard
+  concurrency="$(sed -n '/^concurrency:$/,/^[a-z]/p' "$MAIN_YAML")"
+  assert_contains "a run that works joins the group operator-upgrade-main" "$concurrency" \
+    "'operator-upgrade-main' || format("
+  assert_contains "any other run gets a group of its own" "$concurrency" \
+    "format('operator-upgrade-skip-{0}', github.run_id)"
+  assert_contains "a newer completion cancels the run in flight" "$concurrency" "  cancel-in-progress: true"
+  # A run that skips its jobs must never cancel the run in flight, so the
+  # group takes the resolve job's guards.
+  for guard in \
+    "github.event.workflow_run.event == 'push'" \
+    "github.event.workflow_run.conclusion == 'success'" \
+    "github.event.workflow_run.head_repository.full_name == github.repository"; do
+    assert_contains "the group joins only a run that passes $guard" "$concurrency" "$guard"
+  done
+
+  resolve="$(workflow_job "$MAIN_YAML" resolve)"
+  assert_contains "resolve skips a pull-request run" "$resolve" \
+    "github.event.workflow_run.event == 'push'"
+  assert_contains "resolve skips a run that did not succeed" "$resolve" \
+    "github.event.workflow_run.conclusion == 'success'"
+  assert_contains "resolve skips a run of another repository" "$resolve" \
+    "github.event.workflow_run.head_repository.full_name == github.repository"
+  assert_contains "resolve checks out the commit the run built" "$resolve" \
+    'ref: ${{ github.event.workflow_run.head_sha }}'
+  assert_contains "resolve hands that commit to the matrix script" "$resolve" \
+    'HEAD_SHA: ${{ github.event.workflow_run.head_sha }}'
+  assert_contains "resolve runs the matrix script" "$resolve" "run: hack/ci-operator-upgrade-main-matrix.sh"
+  local output
+  for output in operators has-operators image-map; do
+    assert_contains "resolve exports $output" "$resolve" \
+      "${output}: \${{ steps.matrix.outputs.${output} }}"
+  done
+
+  upgrade="$(workflow_job "$MAIN_YAML" upgrade)"
+  assert_contains "upgrade gates on a published operator" "$upgrade" \
+    "if: needs.resolve.outputs.has-operators == 'true'"
+  assert_contains "upgrade calls the reusable workflow" "$upgrade" \
+    "uses: ./.github/workflows/e2e-operator-upgrade.yaml"
+  assert_contains "upgrade passes the matrix" "$upgrade" 'operators: ${{ needs.resolve.outputs.operators }}'
+  assert_contains "upgrade passes the image map" "$upgrade" 'image-map: ${{ needs.resolve.outputs.image-map }}'
+  assert_contains "upgrade runs the commit the run built" "$upgrade" \
+    'ref: ${{ github.event.workflow_run.head_sha }}'
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -330,6 +394,7 @@ test_merge_operator_images_tags_the_chart_version
 test_ci_yaml_calls_the_reusable_workflow
 test_the_reusable_workflow_runs_the_pinned_baseline
 test_the_make_target_deploys_what_the_fetch_wrote
+test_the_main_workflow_follows_the_publish_runs
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
