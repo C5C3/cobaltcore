@@ -12,7 +12,10 @@
 #   (4) db-expand, db-migrate, and db-contract Jobs are created
 #   (5) Deployment image updates to 2026.2 and rollout completes
 #   (6) Ready=True with installedRelease=2026.2 after upgrade
-#   (7) Keystone API at /v3 remains accessible after the upgrade
+#   (7) Keystone API at /v3 remains accessible after the upgrade, the admin
+#       user issues a project-scoped token (#420), the pre-upgrade token
+#       still validates, and the fernet key Secret is unchanged unless a
+#       rotation applied in between
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -310,6 +313,128 @@ spec:
           else:
               raise SystemExit('GET /v3 never answered after retries: %r' % last)
           "
+    # The second script is the authenticated POST /v3/auth/tokens #420 left
+    # untested, against a 2026.2 API pod in the shape of step 3's. It then
+    # validates the token step 3 stashed with the fresh one and compares the
+    # fernet key Secret with the stashed hash and rotation stamp. The step 3
+    # cleanup deletes the stash, so this step has no finally.
+    - script:
+        timeout: 120s
+        shell: bash
+        content: |
+          set -euo pipefail
+          OLD_TOKEN=$(kubectl get secret keystone-release-upgrade-pre-hop -n openstack \
+            -o jsonpath='{.data.token}' | base64 -d || true)
+          OLD_HASH=$(kubectl get secret keystone-release-upgrade-pre-hop -n openstack \
+            -o jsonpath='{.data.fernet-hash}' | base64 -d || true)
+          OLD_ROTATED_AT=$(kubectl get secret keystone-release-upgrade-pre-hop -n openstack \
+            -o jsonpath='{.data.rotation-completed-at}' | base64 -d || true)
+          if [ -z "$OLD_TOKEN" ] || [ -z "$OLD_HASH" ] || [ -z "$OLD_ROTATED_AT" ]; then
+            echo "FAIL: no pre-hop stash found (step 3 did not run or was cleaned up)"
+            exit 1
+          fi
+          ADMIN_PASS=$(kubectl get secret keystone-admin -n openstack \
+            -o jsonpath='{.data.password}' | base64 -d || true)
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "FAIL: keystone-admin Secret has empty or missing password field"
+            exit 1
+          fi
+          # Skip terminating pods: a 2026.1 pod keeps its labels for up to
+          # terminationGracePeriodSeconds after the rollout, and items[0] has
+          # no order guarantee.
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-release-upgrade,app.kubernetes.io/component=api \
+            -o json | jq -r '[.items[] | select(.metadata.deletionTimestamp == null and .status.phase == "Running")][0].metadata.name // empty' || true)
+          if [ -z "$POD" ]; then
+            echo "FAIL: no API pod of keystone-release-upgrade found"
+            exit 1
+          fi
+          echo "API pod: $POD ($(kubectl get pod "$POD" -n openstack -o jsonpath='{.spec.containers[0].image}' || true))"
+          NEW_TOKEN=$(kubectl exec -n openstack "$POD" -- python3 -c '
+          import json, sys, time, urllib.error, urllib.request
+          pw = sys.argv[1]
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          last = None
+          for _ in range(15):
+              try:
+                  with urllib.request.urlopen(req) as r:
+                      status = r.status
+                      token = r.headers.get("X-Subject-Token", "")
+                      doc = json.load(r).get("token", {})
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit("POST /v3/auth/tokens -> HTTP %d" % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print("POST /v3/auth/tokens retry: %s" % exc, file=sys.stderr)
+                  time.sleep(2)
+          else:
+              raise SystemExit("POST /v3/auth/tokens never answered after retries: %r" % last)
+          if status != 201:
+              raise SystemExit("POST /v3/auth/tokens -> HTTP %d, expected 201" % status)
+          if not token:
+              raise SystemExit("POST /v3/auth/tokens answered 201 without an X-Subject-Token header")
+          user = doc.get("user", {}).get("name")
+          project = doc.get("project", {}).get("name")
+          roles = [r["name"] for r in doc.get("roles", [])]
+          if user != "admin" or project != "admin" or "admin" not in roles:
+              raise SystemExit("token issued without the admin scope: user=%s project=%s roles=%s" % (user, project, roles))
+          sys.stdout.write(token)
+          ' "$ADMIN_PASS") || NEW_TOKEN=""
+          if [ -z "$NEW_TOKEN" ]; then
+            echo "FAIL: no token issued after the hop"
+            exit 1
+          fi
+          echo "OK: admin token issued after the hop (project admin, role admin)"
+          # Both tokens go over stdin, as in fernet-rotation. Keystone answers
+          # 404 for a subject token it cannot decrypt or does not know, and 401
+          # when the fresh token does not authorize the call. The status is
+          # written only after the user check, so a 200 naming another user
+          # leaves HTTP_CODE empty.
+          HTTP_CODE=$(printf '%s\n%s' "$NEW_TOKEN" "$OLD_TOKEN" | kubectl exec -i -n openstack "$POD" -- python3 -c '
+          import json, sys, urllib.error, urllib.request
+          new_tok, old_tok = sys.stdin.read().split("\n", 1)
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", headers={"X-Auth-Token": new_tok, "X-Subject-Token": old_tok})
+          try:
+              with urllib.request.urlopen(req) as r:
+                  status = r.status
+                  user = json.load(r).get("token", {}).get("user", {}).get("name")
+          except urllib.error.HTTPError as e:
+              sys.stdout.write(str(e.code))
+              raise SystemExit(0)
+          if user != "admin":
+              raise SystemExit("validated token names user %s, not admin" % user)
+          sys.stdout.write(str(status))
+          ') || HTTP_CODE=""
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "FAIL: pre-hop token validation on 2026.2 returned HTTP ${HTTP_CODE:-none} (expected 200)"
+            exit 1
+          fi
+          echo "OK: pre-hop token validates after the hop (HTTP 200)"
+          # Hashed in the form of step 3, from one read like there.
+          FERNET=$(kubectl get secret keystone-release-upgrade-fernet-keys -n openstack \
+            -o json || true)
+          FERNET_DATA=$(printf '%s' "$FERNET" | jq -c '.data // empty' || true)
+          if [ -z "$FERNET_DATA" ]; then
+            echo "FAIL: keystone-release-upgrade-fernet-keys has no data after the hop"
+            exit 1
+          fi
+          NEW_HASH=$(printf '%s' "$FERNET_DATA" | sha256sum | cut -d' ' -f1)
+          NEW_ROTATED_AT=$(printf '%s' "$FERNET" \
+            | jq -r '.metadata.annotations["cobaltcore.c5c3.io/rotation-completed-at"] // "none"')
+          # The fixture's weekly rotation can apply between steps 3 and 6. Its
+          # new stamp tells it apart from an upgrade that rewrote the keys. The
+          # token check above holds either way: with three active keys, one
+          # rotation keeps the key that signed the pre-hop token.
+          if [ "$NEW_HASH" = "$OLD_HASH" ]; then
+            echo "OK: fernet key Secret unchanged across the hop"
+          elif [ "$NEW_ROTATED_AT" != "none" ] && [ "$NEW_ROTATED_AT" != "$OLD_ROTATED_AT" ]; then
+            echo "NOTE: a fernet rotation applied at $NEW_ROTATED_AT during the hop; key equality not checked"
+          else
+            echo "FAIL: fernet key Secret changed across the hop without a rotation (before $OLD_HASH, after $NEW_HASH)"
+            exit 1
+          fi
     catch:
     - script:
         content: |
@@ -321,3 +446,10 @@ spec:
           kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=keystone -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+          echo "=== Keystone API pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-release-upgrade,app.kubernetes.io/component=api --tail=60 2>&1 || true
+          # Drop the token and the apply annotation, as in the step 3 catch.
+          echo "=== Pre-hop stash (token redacted) ==="
+          kubectl get secret keystone-release-upgrade-pre-hop -n $NAMESPACE 2>&1 || true
+          kubectl get secret keystone-release-upgrade-pre-hop -n $NAMESPACE -o json 2>/dev/null \
+            | jq 'del(.data.token, .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"])' 2>&1 || true
