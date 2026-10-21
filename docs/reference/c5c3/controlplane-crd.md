@@ -801,15 +801,46 @@ KMS unseal and a real replica count. See
 [reconcileBarbican](./controlplane-reconciler.md#reconcilebarbican) for the
 ensemble the reconciler projects around it.
 
-The `OpenBaoTenant` the operator creates to admit the service namespace is a
-self-service tenant in that namespace. The openbao-operator accepts quota and
-LimitRange overrides only from a tenant in its own namespace, so a namespace a
-ControlPlane-created tenant admits keeps the provisioner's default LimitRange:
-every container there without a CPU limit gets the openbao-operator's 500m
-default CPU limit, service containers included. The kind overlay's tenant for
-`openstack` lives in the operator namespace and drops that limit (see
-[OpenBao Proving Instance](../infrastructure/infrastructure-manifests.md#openbao-proving-instance)),
-and the operator creates no tenant of its own in a namespace one already admits.
+The operator admits the service namespace to the openbao-operator with an
+`OpenBaoTenant` named `{instance}-{hash}-tenant`, where the hash is the first 16
+hex digits of the SHA-256 of `{namespace}/{instance}`. The tenant lives in the
+namespace the openbao-operator runs in, which the c5c3-operator chart value
+`openbaoOperator.namespace` names (default `openbao-operator-system`), because
+the openbao-operator accepts quota and LimitRange overrides only from a tenant
+there. It carries the guardrail spec of the kind overlay's tenant (see the
+Tenant table under
+[OpenBao Proving Instance](../infrastructure/infrastructure-manifests.md#openbao-proving-instance)):
+a quota of 100 pods, 20 CPUs and 64Gi of requests with no `limits.*` key, and a
+LimitRange that sets only the `100m` CPU and `128Mi` memory default requests. A
+container without resources of its own therefore gets requests and no limit.
+The operator applies that spec on every reconcile and refuses a same-named
+tenant it did not create.
+
+A Barbican placed on a target cluster (`targetClusterRef`) gets a self-service
+tenant `{instance}-tenant` in the service namespace instead. It carries no
+overrides, so that namespace keeps the provisioner defaults, a 50-pod quota
+among them, and its LimitRange gives every container without a CPU limit the
+openbao-operator's 500m default CPU limit, service containers included.
+
+The operator creates no tenant of its own in a namespace one already admits,
+such as `openstack` in the kind overlay. That includes the self-service
+`{instance}-tenant` an earlier operator created in the service namespace: a
+namespace it admits keeps that tenant and the provisioner defaults. Only a
+dedicated store created after the upgrade gets the guardrail spec, and
+recreating a store deletes the secrets stored in it. To see which tenant admits
+a namespace:
+
+```bash
+kubectl get openbaotenants -A -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,TARGET:.spec.targetNamespace,PROVISIONED:.status.provisioned
+```
+
+A downgrade to an operator that predates this tenant leaves it behind in the
+openbao-operator namespace, the one `openbaoOperator.namespace` named (default
+`openbao-operator-system`). Remove it with:
+
+```bash
+kubectl delete openbaotenant -n <openbaoOperator.namespace> -l c5c3.io/controlplane-name=<cp>,c5c3.io/controlplane-namespace=<ns>
+```
 
 ### BarbicanExternalSecretStoreSpec
 

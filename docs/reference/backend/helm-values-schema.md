@@ -83,6 +83,7 @@ ships, so they are present only where they apply:
 | `rbac.secretStoreNamespaces` | barbican-operator | `values.schema.extras.json` |
 | `federation` | keystone-operator | `values.schema.extras.json` |
 | `barbicanOperator` | c5c3-operator | `values.schema.extras.json` |
+| `openbaoOperator` | c5c3-operator | `values.schema.extras.json` |
 
 - A key a chart does not carry is rejected there (`additionalProperties: false`).
 - `controller.maxConcurrentReconciles` is accepted by every chart, but only the

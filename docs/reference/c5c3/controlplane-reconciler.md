@@ -2028,7 +2028,7 @@ several of its own object names from that name:
 
 | Object | Name | Purpose |
 | --- | --- | --- |
-| `OpenBaoTenant` | `{instance}-tenant` | Admits the service namespace to the openbao-operator |
+| `OpenBaoTenant` | `{instance}-{hash}-tenant` in the openbao-operator namespace | Admits the service namespace to the openbao-operator under the guardrail spec: a quota of 100 pods, 20 CPUs and 64Gi of requests, and a LimitRange with only the `100m`/`128Mi` default requests. It lives in the namespace `OPENBAO_OPERATOR_NAMESPACE` names (default `openbao-operator-system`), the only one whose tenants may carry a quota and a LimitRange, and the hash is the one of the auth-delegator binding, because the tenants of every ControlPlane share that namespace. A Barbican placed on a target cluster gets the self-service `{instance}-tenant` in the service namespace instead. Neither is created when another tenant already targets the namespace |
 | `Secret` | `{instance}-unseal-key` | The static-seal key, under data key `key`. Written before the CR exists, or the operator blind-creates an immutable Secret of its own and the generated key is lost |
 | `Certificate` (cert-manager) | `{instance}-tls-server`, `{instance}-tls-ca` | The two fixed-name Secrets the instance's `External` TLS mode consumes |
 | `ServiceAccount` | `{instance}-provisioner` | The identity the Kubernetes-auth role `provisioner` binds to, which the barbican operator logs in with |
@@ -3922,7 +3922,8 @@ projected. On deletion it:
    `orcTeardownDeadline` the sweep stops waiting, emits a **Warning**
    `NamespaceTeardownStalled` naming what is stuck, and releases anyway — a wedged
    child must not make a namespace undeletable forever.
-5. **Removes the auth-delegator `ClusterRoleBinding` by hand.** A dedicated
+5. **Removes the auth-delegator `ClusterRoleBinding` and the `OpenBaoTenant`
+   in the openbao-operator namespace by hand.** A dedicated
    Barbican secret store places one cluster-scoped object,
    `{instance}-{hash}-auth-delegator`. A namespaced owner cannot own it, so no GC
    cascade collects it, and the per-namespace sweep in step 3 reaches it only
@@ -3936,6 +3937,19 @@ projected. On deletion it:
    `authDelegatorBinding` — leaves the binding standing with a **Warning**
    `AuthDelegatorBindingNotReclaimed` naming it, rather than holding the
    ControlPlane in `Terminating` for a grant the target withdrew.
+
+   Right after it, `deleteBarbicanOpenBaoTenant` deletes the
+   `{instance}-{hash}-tenant` the ensemble applied in the openbao-operator
+   namespace. No owner reference reaches that namespace, and a co-located
+   Barbican has no dedicated namespace for step 4 to sweep, so nothing else
+   reclaims it. It reads through the uncached API reader and deletes only a
+   tenant carrying this ControlPlane's ownership labels; a Barbican placed on a
+   target cluster has no such tenant, so it deletes nothing for one. A failed
+   read or delete holds the finalizer for the next pass. Deleting the tenant
+   while the co-located instance still exists is safe: the instance goes with
+   the GC cascade after the release, and the openbao-operator keeps a deleted
+   tenant, and the RBAC it granted in the namespace, until no `OpenBaoCluster`
+   is left there.
 6. **Deletes the co-located Keystone and the managed message bus by hand, then
    releases the finalizers once the ORC CRs, PushSecrets, cross-namespace
    children, the Keystone and the bus are gone**, letting GC cascade-delete the
@@ -4139,11 +4153,13 @@ only thing that makes the preserve branch a round trip.
 
 With both set the order is store, child, credentials, catalog rows, then the
 `OpenBaoCluster`. The sweep then **waits** for the instance to leave etcd before
-deleting the `OpenBaoTenant` and the rest of the ensemble. The tenant is what
-admits the namespace to the openbao-operator, and the instance's own finalizer
-runs under that admission, so removing it first would leave the instance
-unfinalizable. Each object is ownership-checked, and an object already gone is
-tolerated.
+deleting the rest of the ensemble, both tenant keys first: the
+`{instance}-{hash}-tenant` in the openbao-operator namespace, and the
+`{instance}-tenant` in the service namespace that an earlier operator created. A
+tenant is what admits the namespace to the openbao-operator, and the instance's
+own finalizer runs under that admission, so removing it first would leave the
+instance unfinalizable. Each object is ownership-checked, and an object already
+gone is tolerated.
 
 Both annotations are read from the live CR on every reconcile of that sweep, so
 the decision is not latched. Removing one while the instance is still finalizing
