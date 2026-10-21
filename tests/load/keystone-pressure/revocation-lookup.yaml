@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# dizzy `keystone pressure` profile for #1457: load only the revocation
+# events that can match a token, and stop flushing the token cache on every
+# revocation.
+#
+# validate runs while revoke keeps adding revocation events: each revoke
+# revokes a pool token and issues a fresh one for the same user and project.
+# Read the report's bucket table, which carries the cumulative revocations
+# next to each bucket's validate latency. Without the change the latency
+# climbs with the revocations, and on 2026.2 every revocation also flushes
+# the token validation cache; with it the line stays flat.
+#
+# Every revoke is a real revocation event for the whole Keystone, so this
+# profile belongs on a lab or a kind stack, never on a shared cloud.
+#
+# See docs/reference/testing/keystone-pressure-testing.md.
+name: revocation-lookup
+seed: 42
+
+resources:
+  domains:  1
+  roles:    2
+  projects: 10
+  users:    40
+
+distribution:
+  projects_per_domain:            { min: 1, max: 3 }
+  assignments_per_user:           { min: 1, max: 3 }
+  domain_scoped_assignment_ratio: 0.1
+  users_issuing_tokens_ratio:     0.5
+
+pressure:
+  duration: 5m
+  workers:  16
+  tokens:   100
+  churn_users: 0
+  mix:
+    validate:     60
+    effective:     0
+    revoke:       10
+    grant_churn:   0
+    issue:         0

@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# dizzy `keystone pressure` profile for #1459: expand implied roles in linear
+# time and look up roles in bulk when Keystone lists effective role
+# assignments.
+#
+# The scenario of dizzy's scenario schema reference, "A fan for
+# C5C3/cobaltcore#1459": one fan user starts with grants on 500 projects, and
+# four stages grow them to 1000, 2000 and 4000 while the workers draw
+# validate and effective. Read the report's Stages table: each stage's
+# effective latency at its grant count. #1459 measured about fourfold growth
+# per doubling on SQLite; on kind with MariaDB, main's 2026.2 image grows about
+# twofold, so compare the two builds stage by stage.
+#
+# The run provisions 4000 projects before the first worker starts and grows
+# the fan by 3500 grants while it runs. The grants of a stage come out of its
+# window, and a stage whose grants outlast it records nothing. A Keystone on
+# kind makes about 45 grants a second, so stage 4 spends about 45 s on its
+# 2000: keep --duration at 6m or more.
+#
+# See docs/reference/testing/keystone-pressure-testing.md.
+name: effective-fan
+seed: 42
+
+resources:
+  domains:  1
+  roles:    2
+  projects: 4000
+  users:    20
+
+distribution:
+  projects_per_domain:            { min: 1, max: 3 }
+  assignments_per_user:           { min: 1, max: 3 }
+  domain_scoped_assignment_ratio: 0.1
+  users_issuing_tokens_ratio:     0.5
+  fan_users:                      1
+  fan_assignments:                { min: 500, max: 500 }
+
+pressure:
+  duration: 20m
+  workers:  8
+  tokens:   20
+  churn_users: 0
+  mix:
+    validate:    10
+    effective:   20
+    revoke:       0
+    grant_churn:  0
+    issue:        0
+  stages:                     # four equal windows of the run duration
+    - fan_assignments: 500
+    - fan_assignments: 1000
+    - fan_assignments: 2000
+    - fan_assignments: 4000

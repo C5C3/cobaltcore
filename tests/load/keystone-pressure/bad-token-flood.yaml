@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# dizzy `keystone pressure` profile for #1465: validate token signature and
+# expiry offline with the public key of the JWS token provider.
+#
+# bad_token floods Nova, Neutron, Cinder and Glance with random tokens of a
+# pool token's length, which each service has to refuse with a 401, while
+# validate keeps measuring Keystone. Without the change every bad token costs
+# the service a validation round trip to Keystone; with it the service
+# refuses the token itself. Compare the Bad tokens table per service, about
+# 0.1 ms with the change, and the validate p50, which should not move under
+# the flood with it.
+#
+# Needs a ControlPlane whose catalog lists at least one of the four services;
+# a standalone Keystone fails at priming. The flood loads the services'
+# rejection path, so this profile belongs on a lab or a kind stack, never on
+# a shared cloud.
+#
+# See docs/reference/testing/keystone-pressure-testing.md.
+name: bad-token-flood
+seed: 42
+
+resources:
+  domains:  1
+  roles:    2
+  projects: 10
+  users:    40
+
+distribution:
+  projects_per_domain:            { min: 1, max: 3 }
+  assignments_per_user:           { min: 1, max: 3 }
+  domain_scoped_assignment_ratio: 0.1
+  users_issuing_tokens_ratio:     0.5
+
+pressure:
+  duration: 5m
+  workers:  16
+  tokens:   100
+  churn_users: 0
+  mix:
+    validate:    60
+    effective:    0
+    revoke:       0
+    grant_churn:  0
+    issue:        0
+    probe:        0
+    bad_token:   40

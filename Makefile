@@ -1028,6 +1028,37 @@ dizzy-keystone dizzy-glance: dizzy-%:
 	@kubectl get secret "$${DIZZY_SECRET:-controlplane-keystone-admin-credentials}" -n "$${DIZZY_CP_NAMESPACE:-openstack}" >/dev/null 2>&1 || { echo 'no ControlPlane admin Secret found; deploy the quick-start ControlPlane and wait for Ready first' >&2; exit 1; }
 	hack/dizzy.sh chaos $*
 
+.PHONY: dizzy-keystone-pressure dizzy-keystone-compare
+# dizzy-keystone-pressure runs dizzy's closed-loop load on Keystone's token
+# path, `dizzy keystone pressure`, against the quick-start ControlPlane with a
+# profile of tests/load/keystone-pressure/ and keeps the run record in
+# _output/dizzy/pressure/<label>/<profile>/. Run it once per build under two
+# labels, e.g. DIZZY_PRESSURE_LABEL=base and DIZZY_PRESSURE_LABEL=patched, and
+# compare the two with dizzy-keystone-compare. The run exports to the dizzy
+# VictoriaMetrics when the dizzy stack is installed and needs it otherwise
+# not. On the metal-stack lab (EXTERNAL_CLUSTER=true) it goes through the
+# Gateway port-forward, whose latency is larger than some of the deltas the
+# profiles look for; keystone-pressure-ab measures inside the cluster. See
+# docs/reference/testing/keystone-pressure-testing.md.
+#
+# Variables:
+#   DIZZY_PRESSURE_PROFILE  profile name (default warm-cache).
+#   DIZZY_PRESSURE_LABEL    directory of the run record (default run).
+#   DIZZY_BASE, DIZZY_OTHER the two records dizzy-keystone-compare compares,
+#                           each a run-*.json or a directory whose newest
+#                           run-*.json is taken; DIZZY_BASE is the build
+#                           without the change.
+#   DIZZY_SCENARIO, DIZZY_ARGS, DIZZY_VERSION, DIZZY_SECRET,
+#   DIZZY_CP_NAMESPACE, EXTERNAL_CLUSTER  as for dizzy-keystone.
+dizzy-keystone-pressure:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get secret "$${DIZZY_SECRET:-controlplane-keystone-admin-credentials}" -n "$${DIZZY_CP_NAMESPACE:-openstack}" >/dev/null 2>&1 || { echo 'no ControlPlane admin Secret found; deploy the quick-start ControlPlane and wait for Ready first' >&2; exit 1; }
+	hack/dizzy.sh pressure "$${DIZZY_PRESSURE_PROFILE:-warm-cache}"
+
+dizzy-keystone-compare:
+	@[ -n "$${DIZZY_BASE:-}" ] && [ -n "$${DIZZY_OTHER:-}" ] || { echo 'name the two run records: make dizzy-keystone-compare DIZZY_BASE=<record or directory> DIZZY_OTHER=<record or directory>' >&2; exit 1; }
+	hack/dizzy.sh compare "$${DIZZY_BASE}" "$${DIZZY_OTHER}"
+
 .PHONY: dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report
 # dizzy-soak-start, -status, -stop and -report drive the long-running dizzy
 # soak of the metal-stack lab: a Job in the namespace dizzy that runs

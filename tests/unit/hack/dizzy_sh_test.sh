@@ -31,11 +31,21 @@
 #   8. run_chaos under EXTERNAL_CLUSTER=true has dizzy verify Keystone against
 #      gateway-ca.pem even when the caller exports an OS_CACERT, which
 #      gophercloud would prefer to the cacert of clouds.yaml.
+#   9. run_pressure runs `dizzy keystone pressure` with the profile's file from
+#      _output/dizzy/pressure/<label>/<profile>/, where dizzy writes its run
+#      record; it exports with --otel only when the namespace dizzy exists, and
+#      refuses a missing profile (listing the profiles), a malformed profile
+#      name and a malformed label before it calls dizzy.
+#  10. run_compare takes a run record or the newest run-*.json of a directory
+#      for each side, hands DIZZY_ARGS to `dizzy keystone report --compare`
+#      and keeps the comparison as text and HTML; a directory without a record
+#      exits 1.
 #
 # The script is sourced in a subshell (its BASH_SOURCE guard keeps main() from
 # running) with stub kubectl, docker and curl first on PATH. CLOUDS_FILE,
-# REPO_ROOT and DIZZY_CACHE_DIR are pointed at a temporary directory after
-# sourcing, so a developer's _output/dizzy/ is never written.
+# REPO_ROOT, DIZZY_CACHE_DIR, PRESSURE_PROFILE_DIR and PRESSURE_OUTPUT_DIR are
+# pointed at a temporary directory after sourcing, so a developer's
+# _output/dizzy/ is never written.
 #
 # Usage: bash tests/unit/hack/dizzy_sh_test.sh
 
@@ -78,6 +88,7 @@ export TLS_SECRETS_JSON
 #   KUBECTL_PASSWORD   the password the Secret holds, which `get secret` prints
 #                      base64-encoded (default s3cr3t; empty: prints nothing)
 #   TLS_SECRETS_JSON   what `get secret --field-selector ...` prints
+#   KUBECTL_NO_DIZZY_NS non-empty: `get namespace dizzy` fails with NotFound
 #   DOCKER_PORT_OUT    what `docker port` prints (default nothing)
 #   DOCKER_PORT_RC     exit code of `docker port` (default 0)
 #   CURL_RC            exit code of curl (default 0)
@@ -87,6 +98,15 @@ make_stubs() {
   cat >"$dir/kubectl" <<'STUB'
 #!/bin/bash
 echo "kubectl $*" >>"$CALL_LOG"
+case " $* " in
+  *" get namespace dizzy "*)
+    if [ -n "${KUBECTL_NO_DIZZY_NS:-}" ]; then
+      echo 'Error from server (NotFound): namespaces "dizzy" not found' >&2
+      exit 1
+    fi
+    exit 0
+    ;;
+esac
 if [ -n "${KUBECTL_SECRET_RC:-}" ]; then
   echo 'Error from server (NotFound): secrets "controlplane-keystone-admin-credentials" not found' >&2
   exit 1
@@ -119,7 +139,8 @@ run_fn() {
   local tmp="$1" fn="$2"
   shift 2
   (
-    unset EXTERNAL_CLUSTER KIND_CLUSTER DIZZY_SECRET DIZZY_CP_NAMESPACE DIZZY_AUTH_URL DIZZY_VERSION
+    unset EXTERNAL_CLUSTER KIND_CLUSTER DIZZY_SECRET DIZZY_CP_NAMESPACE DIZZY_AUTH_URL DIZZY_VERSION \
+      DIZZY_SCENARIO DIZZY_ARGS DIZZY_PRESSURE_LABEL
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -130,6 +151,8 @@ run_fn() {
     CLOUDS_FILE="$tmp/clouds.yaml"
     REPO_ROOT="$tmp/repo"
     DIZZY_CACHE_DIR="$tmp/repo/_output/dizzy/${DIZZY_VERSION}"
+    PRESSURE_PROFILE_DIR="$tmp/repo/tests/load/keystone-pressure"
+    PRESSURE_OUTPUT_DIR="$tmp/repo/_output/dizzy/pressure"
     "$fn"
   ) 2>&1
 }
@@ -422,6 +445,153 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# Test 9: the pressure run
+# ---------------------------------------------------------------------------
+
+# make_dizzy_stubs <tmp> — a go that reports the pinned version, so
+# ensure_binary installs nothing, and a bin/dizzy that logs its working
+# directory and arguments to $CALL_LOG.
+make_dizzy_stubs() {
+  local tmp="$1"
+  cat >"$tmp/bin/go" <<'STUB'
+#!/bin/bash
+echo "dizzy ${DIZZY_VERSION}"
+STUB
+  mkdir -p "$tmp/repo/bin"
+  cat >"$tmp/repo/bin/dizzy" <<'STUB'
+#!/bin/bash
+echo "dizzy in $(pwd): $*" >>"$CALL_LOG"
+case " $* " in
+  *" --format html "*) echo "<html>comparison</html>" ;;
+  *" --compare "*) echo "Comparison table" ;;
+esac
+STUB
+  chmod +x "$tmp/bin/go" "$tmp/repo/bin/dizzy"
+}
+
+# The wrappers run_fn calls, since it passes its function no args.
+pressure_warm_cache() { run_pressure warm-cache; }
+pressure_missing() { run_pressure no-such-profile; }
+pressure_bad_name() { run_pressure ../warm-cache; }
+pressure_no_profile() { run_pressure; }
+
+test_pressure_run() {
+  echo "Test: run_pressure runs dizzy keystone pressure from the run record's directory"
+
+  local tmp output rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  make_dizzy_stubs "$tmp"
+  mkdir -p "$tmp/repo/tests/load/keystone-pressure"
+  : >"$tmp/repo/tests/load/keystone-pressure/warm-cache.yaml"
+  : >"$tmp/repo/tests/load/keystone-pressure/revocation-lookup.yaml"
+  export CALL_LOG="$tmp/calls.log"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" pressure_warm_cache DIZZY_VERSION=v0.0.0 DIZZY_PRESSURE_LABEL=base \
+    "DIZZY_ARGS=--duration 2m --seed 7")"
+  rc=$?
+  assert_eq "it exits 0" "0" "$rc"
+  assert_contains "dizzy runs the profile's file from the label's run directory" "$(cat "$CALL_LOG")" \
+    "dizzy in $tmp/repo/_output/dizzy/pressure/base/warm-cache: keystone pressure --os-cloud devstack-c5c3 --scenario $tmp/repo/tests/load/keystone-pressure/warm-cache.yaml --otel --duration 2m --seed 7"
+  assert_file_contains_fixed "with the generated clouds.yaml" "$tmp/clouds.yaml" "devstack-c5c3:"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" pressure_warm_cache DIZZY_VERSION=v0.0.0 KUBECTL_NO_DIZZY_NS=1)"
+  rc=$?
+  assert_eq "without the dizzy stack it exits 0" "0" "$rc"
+  assert_contains "and says it exports nothing" "$output" \
+    "No dizzy stack (namespace dizzy); the run exports no metrics."
+  assert_contains "the default label is run" "$(cat "$CALL_LOG")" \
+    "dizzy in $tmp/repo/_output/dizzy/pressure/run/warm-cache: keystone pressure"
+  assert_not_contains "and dizzy runs without --otel" "$(cat "$CALL_LOG")" "--otel"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" pressure_missing DIZZY_VERSION=v0.0.0)"
+  rc=$?
+  assert_eq "a missing profile exits 1" "1" "$rc"
+  assert_contains "and names the file it looked for" "$output" \
+    "ERROR: no pressure scenario at $tmp/repo/tests/load/keystone-pressure/no-such-profile.yaml; the profiles are:"
+  assert_contains "and lists the profiles" "$output" "revocation-lookup"
+  assert_not_contains "dizzy is not called" "$(cat "$CALL_LOG")" "dizzy in"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" pressure_bad_name DIZZY_VERSION=v0.0.0)"
+  rc=$?
+  assert_eq "a malformed profile name exits 1" "1" "$rc"
+  assert_contains "and says what a name looks like" "$output" "must be a name such as warm-cache"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" pressure_warm_cache DIZZY_VERSION=v0.0.0 DIZZY_PRESSURE_LABEL=../x)"
+  rc=$?
+  assert_eq "a malformed label exits 1" "1" "$rc"
+  assert_contains "and names the variable" "$output" "DIZZY_PRESSURE_LABEL '../x' must start with"
+  assert_not_contains "dizzy is not called" "$(cat "$CALL_LOG")" "dizzy in"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" pressure_no_profile DIZZY_VERSION=v0.0.0)"
+  rc=$?
+  assert_eq "no profile exits 1" "1" "$rc"
+  assert_contains "with the usage" "$output" "Usage: hack/dizzy.sh <subcommand>"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: the comparison
+# ---------------------------------------------------------------------------
+
+compare_dirs() { run_compare "$COMPARE_BASE" "$COMPARE_OTHER"; }
+
+test_compare() {
+  echo "Test: run_compare compares the newest records of two directories, or two files"
+
+  local tmp output rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  make_dizzy_stubs "$tmp"
+  export CALL_LOG="$tmp/calls.log"
+
+  mkdir -p "$tmp/base" "$tmp/patched" "$tmp/empty"
+  : >"$tmp/base/run-old.json"
+  : >"$tmp/base/run-new.json"
+  touch -t 202601010000 "$tmp/base/run-old.json"
+  touch -t 202602010000 "$tmp/base/run-new.json"
+  : >"$tmp/patched/run-p.json"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" compare_dirs DIZZY_VERSION=v0.0.0 "COMPARE_BASE=$tmp/base" \
+    "COMPARE_OTHER=$tmp/patched" DIZZY_ARGS=--allow-mismatch)"
+  rc=$?
+  assert_eq "it exits 0" "0" "$rc"
+  assert_contains "the newest record of each directory is compared" "$(cat "$CALL_LOG")" \
+    "keystone report --run $tmp/base/run-new.json --compare $tmp/patched/run-p.json --allow-mismatch"
+  assert_contains "the table goes to stdout" "$output" "Comparison table"
+  assert_file_contains_fixed "and is kept as text" \
+    "$tmp/repo/_output/dizzy/pressure/compare/run-new-vs-run-p.txt" "Comparison table"
+  assert_file_contains_fixed "and as HTML" \
+    "$tmp/repo/_output/dizzy/pressure/compare/run-new-vs-run-p.html" "<html>comparison</html>"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" compare_dirs DIZZY_VERSION=v0.0.0 "COMPARE_BASE=$tmp/base/run-old.json" \
+    "COMPARE_OTHER=$tmp/patched/run-p.json")"
+  rc=$?
+  assert_eq "two files exit 0" "0" "$rc"
+  assert_contains "and are compared as given" "$(cat "$CALL_LOG")" \
+    "keystone report --run $tmp/base/run-old.json --compare $tmp/patched/run-p.json"
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" compare_dirs DIZZY_VERSION=v0.0.0 "COMPARE_BASE=$tmp/empty" \
+    "COMPARE_OTHER=$tmp/patched")"
+  rc=$?
+  assert_eq "a directory without a record exits 1" "1" "$rc"
+  assert_contains "and says so" "$output" "ERROR: no run-*.json in $tmp/empty."
+  assert_not_contains "dizzy is not called" "$(cat "$CALL_LOG")" "dizzy in"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_external_auth_url
@@ -432,6 +602,8 @@ test_public_port_matches_deploy_infra
 test_usage
 test_stage_dashboards_download_fails
 test_chaos_ignores_os_cacert
+test_pressure_run
+test_compare
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

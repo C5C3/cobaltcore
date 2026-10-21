@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# dizzy `keystone pressure` profile for #1458: validate each token once per
+# Keystone request and resolve its roles once per validation.
+#
+# validate runs under grant_churn, which unassigns and reassigns the churn
+# users' grants and so keeps invalidating Keystone's computed role
+# assignments. Most validations then resolve their roles from the database,
+# the path the change cuts from nine role resolutions to one or two. Compare
+# the validate p50 and p95.
+#
+# See docs/reference/testing/keystone-pressure-testing.md.
+name: cold-role-cache
+seed: 42
+
+resources:
+  domains:  1
+  roles:    2
+  projects: 10
+  users:    40
+
+distribution:
+  projects_per_domain:            { min: 1, max: 3 }
+  assignments_per_user:           { min: 1, max: 3 }
+  domain_scoped_assignment_ratio: 0.1
+  users_issuing_tokens_ratio:     0.5
+
+pressure:
+  duration: 5m
+  workers:  16
+  tokens:   100
+  churn_users: 2              # taken from the end of the plan's users; never in the pool
+  mix:
+    validate:     60
+    effective:     0
+    revoke:        0
+    grant_churn:  10
+    issue:         0
