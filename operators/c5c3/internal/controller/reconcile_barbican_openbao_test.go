@@ -18,16 +18,21 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/cobaltcore/internal/common/apply"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
@@ -197,11 +202,21 @@ func barbicanOpenBaoReconcilerWithExactSeeds(
 	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
 ) *ControlPlaneReconciler {
 	t.Helper()
+	return barbicanOpenBaoReconcilerWith(t, cp, interceptor.Funcs{}, objs...)
+}
+
+// barbicanOpenBaoReconcilerWith is barbicanOpenBaoReconcilerWithExactSeeds with
+// funcs intercepting the fake client, so a test can fail one of its calls.
+func barbicanOpenBaoReconcilerWith(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, funcs interceptor.Funcs, objs ...client.Object,
+) *ControlPlaneReconciler {
+	t.Helper()
 	s := barbicanOpenBaoTestScheme(t)
 	seeded := append([]client.Object{cp}, objs...)
 	return &ControlPlaneReconciler{
 		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
-			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &openbaov1alpha1.OpenBaoCluster{}).Build(),
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &openbaov1alpha1.OpenBaoCluster{}).
+			WithInterceptorFuncs(funcs).Build(),
 		Scheme: s,
 	}
 }
@@ -888,23 +903,132 @@ func TestEnsureBarbicanOpenBao_HonoursOperatorIdentityOverride(t *testing.T) {
 		HaveKeyWithValue("kubernetes.io/metadata.name", "openstack-operators"))
 }
 
+// sizedTenantKey is where ensureBarbicanOpenBaoTenant writes the tenant of cp's
+// Barbican namespace when the reconciler names no openbao-operator namespace.
+func sizedTenantKey(cp *c5c3v1alpha1.ControlPlane) types.NamespacedName {
+	return client.ObjectKeyFromObject(barbicanOpenBaoSizedTenant(cp, defaultOpenBaoOperatorNamespace))
+}
+
+// earlierTenantKey is where an earlier operator created the self-service tenant
+// of cp's Barbican namespace, and where a placed Barbican still gets it.
+func earlierTenantKey(cp *c5c3v1alpha1.ControlPlane) types.NamespacedName {
+	return types.NamespacedName{
+		Namespace: cp.BarbicanNamespace(),
+		Name:      barbicanOpenBaoSelfServiceTenantName(barbicanOpenBaoName(cp)),
+	}
+}
+
 // TestEnsureBarbicanOpenBao_CreatesTenantForUnadmittedNamespace covers the plain
 // case: nothing has admitted the Barbican service namespace to the
-// openbao-operator yet, so the ControlPlane admits it.
+// openbao-operator yet, so the ControlPlane admits it from the openbao-operator
+// namespace, under the guardrail spec. The quota sets no limits.* key and the
+// LimitRange no default limit, because either one would refuse or cap the pods of
+// a Standard plane that set no limit of their own.
 func TestEnsureBarbicanOpenBao_CreatesTenantForUnadmittedNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
+	ctx := context.Background()
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	tenant := &openbaov1alpha1.OpenBaoTenant{}
-	g.Expect(r.Get(context.Background(), types.NamespacedName{
-		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-tenant",
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Namespace: "openbao-operator-system",
+		Name:      barbicanOpenBaoSizedTenantName("cp-barbican-bao", barbicanOpenBaoTestNamespace),
 	}, tenant)).To(Succeed())
 	g.Expect(tenant.Spec.TargetNamespace).To(Equal(barbicanOpenBaoTestNamespace))
-	g.Expect(isControlPlaneChild(tenant, cp)).To(BeTrue())
+
+	g.Expect(tenant.Spec.Quota).NotTo(BeNil())
+	hard := tenant.Spec.Quota.Hard
+	g.Expect(hard).To(HaveLen(3), "the quota carries pods and the two requests, and no limits.* key")
+	g.Expect(hard.Pods().String()).To(Equal("100"))
+	g.Expect(ptr.To(hard[corev1.ResourceRequestsCPU]).String()).To(Equal("20"))
+	g.Expect(ptr.To(hard[corev1.ResourceRequestsMemory]).String()).To(Equal("64Gi"))
+
+	g.Expect(tenant.Spec.LimitRange).NotTo(BeNil())
+	g.Expect(tenant.Spec.LimitRange.Limits).To(HaveLen(1))
+	item := tenant.Spec.LimitRange.Limits[0]
+	g.Expect(item.Type).To(Equal(corev1.LimitTypeContainer))
+	g.Expect(item.DefaultRequest).To(HaveLen(2))
+	g.Expect(item.DefaultRequest.Cpu().String()).To(Equal("100m"))
+	g.Expect(item.DefaultRequest.Memory().String()).To(Equal("128Mi"))
+	g.Expect(item.Default).To(BeNil(), "a default limit would cap every container that sets none")
+	g.Expect(item.Max).To(BeNil())
+	g.Expect(item.Min).To(BeNil())
+
+	g.Expect(tenant.Labels).To(Equal(controlPlaneChildLabels(cp)))
+	g.Expect(tenant.OwnerReferences).To(BeEmpty(), "no owner reference crosses into the operator namespace")
+
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, earlierTenantKey(cp), &openbaov1alpha1.OpenBaoTenant{}))).To(BeTrue(),
+		"no self-service tenant is created in the Barbican namespace")
+}
+
+// TestEnsureBarbicanOpenBao_CreatesTenantInConfiguredOperatorNamespace covers an
+// openbao-operator installed outside openbao-operator-system: the admission
+// policy accepts the guardrails only on a tenant in the namespace the operator
+// actually runs in.
+func TestEnsureBarbicanOpenBao_CreatesTenantInConfiguredOperatorNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := barbicanOpenBaoControlPlane()
+	r := barbicanOpenBaoReconciler(t, cp)
+	r.OpenBaoOperatorNamespace = "bao-system"
+
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	tenant := &openbaov1alpha1.OpenBaoTenant{}
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Namespace: "bao-system", Name: sizedTenantKey(cp).Name,
+	}, tenant)).To(Succeed())
+	g.Expect(tenant.Spec.TargetNamespace).To(Equal(barbicanOpenBaoTestNamespace))
+
+	var inDefault openbaov1alpha1.OpenBaoTenantList
+	g.Expect(r.List(ctx, &inDefault, client.InNamespace(defaultOpenBaoOperatorNamespace))).To(Succeed())
+	g.Expect(inDefault.Items).To(BeEmpty(), "nothing may be written to the default namespace")
+}
+
+// TestEnsureBarbicanOpenBao_ReappliesTenantGuardrails covers a tenant this
+// ControlPlane already applied under another spec, the 50-pod quota and 512Mi
+// default memory limit of the provisioner defaults among it. The apply runs on
+// every pass, so one pass brings the live tenant to the guardrail spec, and the
+// provisioner reconciles the namespace on the generation change.
+func TestEnsureBarbicanOpenBao_ReappliesTenantGuardrails(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := barbicanOpenBaoControlPlane()
+	r := barbicanOpenBaoReconciler(t, cp)
+
+	old := &openbaov1alpha1.OpenBaoTenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: sizedTenantKey(cp).Name, Namespace: sizedTenantKey(cp).Namespace, Labels: controlPlaneChildLabels(cp),
+		},
+		Spec: openbaov1alpha1.OpenBaoTenantSpec{
+			TargetNamespace: barbicanOpenBaoTestNamespace,
+			Quota: &corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+				corev1.ResourcePods:         resource.MustParse("50"),
+				corev1.ResourceLimitsMemory: resource.MustParse("128Gi"),
+			}},
+			LimitRange: &corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{
+				Type:    corev1.LimitTypeContainer,
+				Default: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
+			}}},
+		},
+	}
+	// Written under the operator's own field manager, as an earlier pass would.
+	g.Expect(apply.EnsureUnownedObject(ctx, r.Client, r.Scheme, old, apply.FieldManager)).To(Succeed())
+
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	live := &openbaov1alpha1.OpenBaoTenant{}
+	g.Expect(r.Get(ctx, sizedTenantKey(cp), live)).To(Succeed())
+	g.Expect(equality.Semantic.DeepEqual(live.Spec.Quota, openBaoTenantQuota())).To(BeTrue(),
+		"the quota must be the guardrail quota, got %v", live.Spec.Quota)
+	g.Expect(equality.Semantic.DeepEqual(live.Spec.LimitRange, openBaoTenantLimitRange())).To(BeTrue(),
+		"the LimitRange must be the guardrail LimitRange, got %v", live.Spec.LimitRange)
 }
 
 // TestEnsureBarbicanOpenBao_SkipsTenantWhenNamespaceAlreadyAdmitted covers the
@@ -914,31 +1038,158 @@ func TestEnsureBarbicanOpenBao_CreatesTenantForUnadmittedNamespace(t *testing.T)
 // The pre-existing tenant is left exactly as it is, under a name of its own.
 func TestEnsureBarbicanOpenBao_SkipsTenantWhenNamespaceAlreadyAdmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
+	ctx := context.Background()
 	cp := barbicanOpenBaoControlPlane()
 	existing := &openbaov1alpha1.OpenBaoTenant{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "proving-tenant",
 			Namespace: "shared-services",
 			UID:       types.UID("proving-tenant-uid"),
+			Labels:    map[string]string{"app.kubernetes.io/part-of": "proving"},
 		},
-		Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: barbicanOpenBaoTestNamespace},
+		Spec: openbaov1alpha1.OpenBaoTenantSpec{
+			TargetNamespace: barbicanOpenBaoTestNamespace,
+			Quota: &corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+				corev1.ResourcePods: resource.MustParse("50"),
+			}},
+		},
 	}
-	r := barbicanOpenBaoReconciler(t, cp, existing)
+	r := barbicanOpenBaoReconciler(t, cp, existing.DeepCopy())
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	ours := &openbaov1alpha1.OpenBaoTenant{}
-	g.Expect(r.Get(context.Background(), types.NamespacedName{
-		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-tenant",
-	}, ours)).NotTo(Succeed(),
-		"a namespace already admitted must not be admitted a second time")
+	for _, key := range []types.NamespacedName{sizedTenantKey(cp), earlierTenantKey(cp)} {
+		g.Expect(apierrors.IsNotFound(r.Get(ctx, key, &openbaov1alpha1.OpenBaoTenant{}))).To(BeTrue(),
+			"a namespace already admitted must not be admitted a second time, at %s", key)
+	}
 
 	after := &openbaov1alpha1.OpenBaoTenant{}
-	g.Expect(r.Get(context.Background(), types.NamespacedName{
+	g.Expect(r.Get(ctx, types.NamespacedName{
 		Namespace: "shared-services", Name: "proving-tenant",
 	}, after)).To(Succeed())
 	g.Expect(isControlPlaneChild(after, cp)).To(BeFalse(), "the pre-existing tenant must not be adopted")
+	g.Expect(equality.Semantic.DeepEqual(after.Spec, existing.Spec)).To(BeTrue(),
+		"the pre-existing tenant's spec must be left as it is")
+	g.Expect(after.Labels).To(Equal(existing.Labels))
+}
+
+// TestEnsureBarbicanOpenBao_LeavesEarlierTenantInPlace covers a namespace an
+// earlier version of this operator admitted with the self-service tenant in the
+// namespace itself. That tenant stays: its spec cannot take a quota, and deleting
+// it would hang while the instance lives. The rest of the ensemble is still
+// projected under it.
+func TestEnsureBarbicanOpenBao_LeavesEarlierTenantInPlace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := barbicanOpenBaoControlPlane()
+	earlier := &openbaov1alpha1.OpenBaoTenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: earlierTenantKey(cp).Name, Namespace: earlierTenantKey(cp).Namespace,
+			Labels: controlPlaneChildLabels(cp),
+		},
+		Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: barbicanOpenBaoTestNamespace},
+	}
+	r := barbicanOpenBaoReconciler(t, cp, earlier)
+
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, sizedTenantKey(cp), &openbaov1alpha1.OpenBaoTenant{}))).To(BeTrue(),
+		"the namespace is admitted already, so no second tenant may target it")
+	live := &openbaov1alpha1.OpenBaoTenant{}
+	g.Expect(r.Get(ctx, earlierTenantKey(cp), live)).To(Succeed())
+	g.Expect(live.Spec.Quota).To(BeNil())
+	g.Expect(live.Spec.LimitRange).To(BeNil())
+	g.Expect(getBarbicanOpenBaoCluster(t, r, cp)).NotTo(BeNil())
+}
+
+// TestEnsureBarbicanOpenBao_RefusesForeignTenantAtTheSizedName covers a tenant
+// somebody else created under the name this ControlPlane derives. Applying over
+// it would retarget it, and the ownership labels would have the teardown delete
+// it, so the ensure fails before anything else of the ensemble is written.
+func TestEnsureBarbicanOpenBao_RefusesForeignTenantAtTheSizedName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := barbicanOpenBaoControlPlane()
+	foreign := &openbaov1alpha1.OpenBaoTenant{
+		ObjectMeta: metav1.ObjectMeta{Name: sizedTenantKey(cp).Name, Namespace: sizedTenantKey(cp).Namespace},
+		Spec:       openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: "other-ns"},
+	}
+	r := barbicanOpenBaoReconciler(t, cp, foreign)
+
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
+
+	live := &openbaov1alpha1.OpenBaoTenant{}
+	g.Expect(r.Get(ctx, sizedTenantKey(cp), live)).To(Succeed())
+	g.Expect(live.Spec.TargetNamespace).To(Equal("other-ns"))
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, types.NamespacedName{
+		Namespace: barbicanOpenBaoTestNamespace, Name: barbicanOpenBaoName(cp),
+	}, &openbaov1alpha1.OpenBaoCluster{}))).To(BeTrue(), "no instance may be written behind a refused tenant")
+}
+
+// TestEnsureBarbicanOpenBao_TenantApplyErrorStopsTheEnsemble covers a tenant the
+// API server refuses, such as a ClusterRole without patch on openbaotenants or a
+// wrong OPENBAO_OPERATOR_NAMESPACE. The tenant is the first step of the ensemble,
+// so nothing after it is written, and the error names the tenant it was applying
+// and keeps the API server's reason.
+func TestEnsureBarbicanOpenBao_TenantApplyErrorStopsTheEnsemble(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := barbicanOpenBaoControlPlane()
+	r := barbicanOpenBaoReconcilerWith(t, cp, forbidTenantApply(), seedAPIServerObjects(nil)...)
+
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(HavePrefix("ensuring OpenBaoTenant openbao-operator-system/"))
+	g.Expect(apierrors.IsForbidden(err)).To(BeTrue(), "the API server's reason must survive the wrapping")
+
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, types.NamespacedName{
+		Namespace: barbicanOpenBaoTestNamespace, Name: barbicanOpenBaoName(cp) + barbicanOpenBaoUnsealSecretSuffix,
+	}, &corev1.Secret{}))).To(BeTrue(), "no unseal key may be minted behind a refused tenant")
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, types.NamespacedName{
+		Namespace: barbicanOpenBaoTestNamespace, Name: barbicanOpenBaoName(cp),
+	}, &openbaov1alpha1.OpenBaoCluster{}))).To(BeTrue())
+}
+
+// forbidTenantApply answers every Server-Side Apply of an OpenBaoTenant with the
+// RBAC denial a ClusterRole without patch on openbaotenants gets, and passes every
+// other apply through.
+func forbidTenantApply() interceptor.Funcs {
+	return interceptor.Funcs{
+		Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			if o, ok := obj.(client.Object); ok && o.GetObjectKind().GroupVersionKind().Kind == "OpenBaoTenant" {
+				return apierrors.NewForbidden(schema.GroupResource{Group: "openbao.org", Resource: "openbaotenants"},
+					o.GetName(), errors.New(`User "system:serviceaccount:c5c3-system:c5c3-operator" cannot patch resource "openbaotenants"`))
+			}
+			return cl.Apply(ctx, obj, opts...)
+		},
+	}
+}
+
+// TestEnsureBarbicanOpenBao_TenantListErrorStopsTheEnsemble covers the
+// cluster-wide list failing: without it the operator cannot tell whether
+// somebody else admits the namespace, so it writes no tenant at all.
+func TestEnsureBarbicanOpenBao_TenantListErrorStopsTheEnsemble(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := barbicanOpenBaoControlPlane()
+	r := barbicanOpenBaoReconcilerWith(t, cp, interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*openbaov1alpha1.OpenBaoTenantList); ok {
+				return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+			}
+			return cl.List(ctx, list, opts...)
+		},
+	}, seedAPIServerObjects(nil)...)
+
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("listing OpenBaoTenants before admitting namespace"))
+	g.Expect(apierrors.IsNotFound(r.Get(ctx, sizedTenantKey(cp), &openbaov1alpha1.OpenBaoTenant{}))).To(BeTrue(),
+		"no tenant may be applied without the list")
 }
 
 // TestEnsureBarbicanOpenBao_RefusesForeignInstance covers a same-named
@@ -1258,6 +1509,14 @@ func TestEnsureBarbicanOpenBao_PlacedEnsembleLandsOnTheTarget(t *testing.T) {
 	g.Expect(owner.Kind).To(Equal("OpenBaoCluster"))
 	g.Expect(owner.Name).To(Equal(instanceName))
 
+	// The tenant on the target is the self-service one, on the provisioner
+	// defaults: a sized tenant there would need a grant in the target's
+	// openbao-operator namespace.
+	tenant := &openbaov1alpha1.OpenBaoTenant{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{Namespace: ns, Name: instanceName + "-tenant"}, tenant)).To(Succeed())
+	g.Expect(tenant.Spec.Quota).To(BeNil())
+	g.Expect(tenant.Spec.LimitRange).To(BeNil())
+
 	// Nothing of the ensemble at home, the cluster-scoped binding included.
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: ns, Name: instanceName},
 		&openbaov1alpha1.OpenBaoCluster{})).NotTo(Succeed(),
@@ -1265,6 +1524,11 @@ func TestEnsureBarbicanOpenBao_PlacedEnsembleLandsOnTheTarget(t *testing.T) {
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: barbicanOpenBaoAuthDelegatorName(instanceName, ns)},
 		&rbacv1.ClusterRoleBinding{})).NotTo(Succeed(),
 		"the TokenReview grant belongs to the cluster the instance pods run on")
+	for _, c := range []client.Client{r.Client, remote} {
+		var tenants openbaov1alpha1.OpenBaoTenantList
+		g.Expect(c.List(ctx, &tenants, client.InNamespace(defaultOpenBaoOperatorNamespace))).To(Succeed())
+		g.Expect(tenants.Items).To(BeEmpty(), "a placed Barbican gets no tenant in the openbao-operator namespace")
+	}
 }
 
 // TestEnsureBarbicanOpenBao_ResolvesTheTargetAPIServerEndpoints verifies the

@@ -441,11 +441,46 @@ func TestReconcileBarbican_UnsetPreservesChildAndTearsDownDynamicGenerator(t *te
 // TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn verifies the
 // opt-in deletion sweep removes everything the projection placed: the child, its
 // secret store, every object of the dedicated OpenBao ensemble (down to the
-// cluster-scoped auth-delegator binding), and the DB-credential objects.
+// cluster-scoped auth-delegator binding), and the DB-credential objects. The
+// tenant goes whichever key it sits at: the one in the openbao-operator namespace
+// this operator creates, also when OpenBaoOperatorNamespace moves that namespace,
+// or the one an earlier operator created in the service namespace.
 func TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn(t *testing.T) {
+	t.Run("the tenant in the openbao-operator namespace", func(t *testing.T) {
+		cp := barbicanControlPlane()
+		expectBarbicanOptInRemovalSweepsTheEnsemble(t, cp, "", sizedTenantKey(cp))
+	})
+	t.Run("the tenant in a configured openbao-operator namespace", func(t *testing.T) {
+		cp := barbicanControlPlane()
+		key := types.NamespacedName{Namespace: "bao-system", Name: sizedTenantKey(cp).Name}
+		expectBarbicanOptInRemovalSweepsTheEnsemble(t, cp, "bao-system", key)
+	})
+	t.Run("an earlier operator's tenant in the service namespace", func(t *testing.T) {
+		cp := barbicanControlPlane()
+		earlier := &openbaov1alpha1.OpenBaoTenant{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: earlierTenantKey(cp).Name, Namespace: earlierTenantKey(cp).Namespace,
+				Labels: controlPlaneChildLabels(cp),
+			},
+			Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: cp.BarbicanNamespace()},
+		}
+		expectBarbicanOptInRemovalSweepsTheEnsemble(t, cp, "", earlierTenantKey(cp), earlier)
+	})
+}
+
+// expectBarbicanOptInRemovalSweepsTheEnsemble projects cp's Barbican over seeds
+// with a reconciler whose OpenBaoOperatorNamespace is operatorNamespace, checks
+// the tenant admitting its namespace sits at tenantKey, then unsets the service
+// with both opt-ins and asserts the sweep removed everything, tenantKey and both
+// default tenant keys included.
+func expectBarbicanOptInRemovalSweepsTheEnsemble(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, operatorNamespace string, tenantKey types.NamespacedName,
+	seeds ...client.Object,
+) {
+	t.Helper()
 	g := NewGomegaWithT(t)
-	cp := barbicanControlPlane()
-	r := newBarbicanTestReconciler(t, cp)
+	r := newBarbicanTestReconciler(t, append([]client.Object{cp}, seeds...)...)
+	r.OpenBaoOperatorNamespace = operatorNamespace
 	ctx := context.Background()
 
 	_, err := r.reconcileBarbican(ctx, cp)
@@ -453,8 +488,8 @@ func TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn(t *testing
 
 	instanceName := barbicanOpenBaoName(cp)
 	ns := cp.BarbicanNamespace()
-	g.Expect(r.Get(ctx, types.NamespacedName{Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns},
-		&openbaov1alpha1.OpenBaoTenant{})).To(Succeed(), "the ensemble was projected alongside the child")
+	g.Expect(r.Get(ctx, tenantKey, &openbaov1alpha1.OpenBaoTenant{})).To(Succeed(),
+		"the namespace was admitted alongside the child")
 
 	cp.Spec.Services.Barbican = nil
 	// BOTH opt-ins: the second one is what authorises destroying the stored
@@ -496,11 +531,9 @@ func TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn(t *testing
 			&corev1.ServiceAccount{},
 		},
 		{"OpenBaoCluster", types.NamespacedName{Name: instanceName, Namespace: ns}, &openbaov1alpha1.OpenBaoCluster{}},
-		{
-			"OpenBaoTenant",
-			types.NamespacedName{Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns},
-			&openbaov1alpha1.OpenBaoTenant{},
-		},
+		{"OpenBaoTenant admitting the namespace", tenantKey, &openbaov1alpha1.OpenBaoTenant{}},
+		{"OpenBaoTenant in the operator namespace", sizedTenantKey(cp), &openbaov1alpha1.OpenBaoTenant{}},
+		{"OpenBaoTenant in the service namespace", earlierTenantKey(cp), &openbaov1alpha1.OpenBaoTenant{}},
 		{
 			"provisioner ServiceAccount",
 			types.NamespacedName{Name: instanceName + barbicanOpenBaoProvisionerSuffix, Namespace: ns},
@@ -550,12 +583,8 @@ func TestReconcileBarbican_UnsetDeletionDefersTenantWhileInstanceFinalizes(t *te
 
 	instance := availableBarbicanOpenBaoCluster(cp)
 	instance.Finalizers = []string{"openbao.org/cluster-teardown"}
-	sized := &openbaov1alpha1.OpenBaoTenant{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      barbicanOpenBaoSizedTenantName(instanceName, ns),
-			Namespace: defaultOpenBaoOperatorNamespace, Labels: controlPlaneChildLabels(cp),
-		},
-	}
+	sized := barbicanOpenBaoSizedTenant(cp, defaultOpenBaoOperatorNamespace)
+	sized.Labels = controlPlaneChildLabels(cp)
 	earlier := &openbaov1alpha1.OpenBaoTenant{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: barbicanOpenBaoSelfServiceTenantName(instanceName), Namespace: ns, Labels: controlPlaneChildLabels(cp),
@@ -805,6 +834,32 @@ func TestReconcileBarbican_RegistrationNotFoundAfterEnsureHolds(t *testing.T) {
 	var list barbicanv1alpha1.BarbicanList
 	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
 	g.Expect(list.Items).To(BeEmpty())
+}
+
+// TestReconcileBarbican_TenantApplyErrorReportsBarbicanOpenBaoError covers the
+// API server refusing the OpenBaoTenant, which is where a missing grant or a
+// wrong OPENBAO_OPERATOR_NAMESPACE ends: BarbicanReady names the tenant it could
+// not apply, and the error goes back to the controller for a retry.
+func TestReconcileBarbican_TenantApplyErrorReportsBarbicanOpenBaoError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	s := barbicanTestScheme(t)
+	seeded := withBarbicanTenantStore(withReadyBarbicanRegistration(withBarbicanGatesPassed([]client.Object{cp})))
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(seedAPIServerObjects(seeded)...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(forbidTenantApply()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("BarbicanOpenBaoError"))
+	g.Expect(cond.Message).To(ContainSubstring("ensuring OpenBaoTenant"))
 }
 
 // TestReconcileBarbican_RegistrationReadFailureSurfaces covers the other half: a
@@ -2009,11 +2064,7 @@ func TestReconcileBarbican_UnsetDeletionPreservesTheStoreDataWithoutTheSecondOpt
 			types.NamespacedName{Name: instanceName + barbicanOpenBaoUnsealSecretSuffix, Namespace: ns},
 			&corev1.Secret{},
 		},
-		{
-			"OpenBaoTenant",
-			types.NamespacedName{Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns},
-			&openbaov1alpha1.OpenBaoTenant{},
-		},
+		{"OpenBaoTenant", sizedTenantKey(cp), &openbaov1alpha1.OpenBaoTenant{}},
 	}
 	for _, tc := range kept {
 		g.Expect(r.Get(ctx, tc.key, tc.obj)).To(Succeed(),

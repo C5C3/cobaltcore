@@ -1188,16 +1188,10 @@ func (r *ControlPlaneReconciler) deleteBarbicanEnsembleIn(
 // no tenant. A failed read or delete is returned, so the finalizer holds and the
 // next pass retries.
 func (r *ControlPlaneReconciler) deleteBarbicanOpenBaoTenant(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
-	namespace := cp.BarbicanNamespace()
-	if targetClusterRefForNamespace(cp, namespace) != nil {
+	if targetClusterRefForNamespace(cp, cp.BarbicanNamespace()) != nil {
 		return nil
 	}
-	return r.deleteOwnedEnsembleObject(ctx, cp, &openbaov1alpha1.OpenBaoTenant{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      barbicanOpenBaoSizedTenantName(barbicanOpenBaoName(cp), namespace),
-			Namespace: r.openBaoOperatorNamespace(),
-		},
-	})
+	return r.deleteOwnedEnsembleObject(ctx, cp, barbicanOpenBaoSizedTenant(cp, r.openBaoOperatorNamespace()))
 }
 
 // deleteBarbicanAuthDelegatorBinding removes the cluster-scoped ClusterRoleBinding

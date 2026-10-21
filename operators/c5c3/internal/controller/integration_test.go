@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -121,7 +122,7 @@ func startControlPlaneEnvTest(
 	t testing.TB, withRegistrationController bool,
 ) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
-	return testutil.SetupC5c3EnvTestWithController(
+	c, ctx, cancel := testutil.SetupC5c3EnvTestWithController(
 		t,
 		c5c3v1alpha1.AddToScheme,
 		func(mgr ctrl.Manager) error {
@@ -216,6 +217,15 @@ func startControlPlaneEnvTest(
 			}).setupWithOptions(mgr, controller.Options{SkipNameValidation: ptr.To(true)})
 		},
 	)
+	// The openbao-operator's namespace, which the OpenBaoTenant admitting a
+	// dedicated Barbican store's namespace is created in. In a cluster it is the
+	// release namespace of the openbao-operator chart.
+	if err := client.IgnoreAlreadyExists(c.Create(ctx, &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: defaultOpenBaoOperatorNamespace},
+	})); err != nil {
+		t.Fatalf("creating namespace %s: %v", defaultOpenBaoOperatorNamespace, err)
+	}
+	return c, ctx, cancel
 }
 
 // integrationManagedControlPlane returns a valid managed-mode ControlPlane CR:
@@ -2271,12 +2281,18 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(unsealOwner.Name).To(Equal(instanceName))
 
 	// The tenant that admits the namespace to the openbao-operator. Nothing else in
-	// this cluster admits it, so the ControlPlane creates one of its own.
+	// this cluster admits it, so the ControlPlane creates one of its own, in the
+	// openbao-operator namespace and under the guardrail spec. Reading it back
+	// through the API server proves the real CRD keeps both guardrails as written.
 	tenant := &openbaov1alpha1.OpenBaoTenant{}
 	g.Expect(c.Get(ctx, client.ObjectKey{
-		Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns.Name,
+		Name: barbicanOpenBaoSizedTenantName(instanceName, ns.Name), Namespace: defaultOpenBaoOperatorNamespace,
 	}, tenant)).To(Succeed(), "the OpenBaoTenant admitting the namespace must be projected")
 	g.Expect(tenant.Spec.TargetNamespace).To(Equal(ns.Name))
+	g.Expect(equality.Semantic.DeepEqual(tenant.Spec.Quota, openBaoTenantQuota())).To(BeTrue(),
+		"the tenant must carry the guardrail quota, got %v", tenant.Spec.Quota)
+	g.Expect(equality.Semantic.DeepEqual(tenant.Spec.LimitRange, openBaoTenantLimitRange())).To(BeTrue(),
+		"the tenant must carry the guardrail LimitRange, got %v", tenant.Spec.LimitRange)
 
 	// --- The instance gate. Until the instance serves requests, BarbicanReady parks
 	// on WaitingForOpenBaoInstance and NEITHER the secret store NOR the child is
@@ -7141,9 +7157,11 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 	instanceKey := client.ObjectKey{Name: instanceName, Namespace: keystoneNS}
 	simulateOpenBaoClusterAvailableWhenPresent(t, ctx, c, instanceKey)
 
-	tenantKey := client.ObjectKey{Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: keystoneNS}
+	tenantKey := client.ObjectKey{
+		Name: barbicanOpenBaoSizedTenantName(instanceName, keystoneNS), Namespace: defaultOpenBaoOperatorNamespace,
+	}
 	g.Expect(c.Get(ctx, tenantKey, &openbaov1alpha1.OpenBaoTenant{})).To(Succeed(),
-		"the OpenBaoTenant admitting the Barbican namespace must be projected into it")
+		"the OpenBaoTenant admitting the Barbican namespace must be projected into the openbao-operator namespace")
 
 	authDelegatorKey := client.ObjectKey{Name: barbicanOpenBaoAuthDelegatorName(instanceName, keystoneNS)}
 	g.Expect(c.Get(ctx, authDelegatorKey, &rbacv1.ClusterRoleBinding{})).To(Succeed(),
