@@ -790,11 +790,13 @@ func (r *ControlPlaneReconciler) deleteOrphanedBarbican(ctx context.Context, cp 
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}
 
-	// The rest of the ensemble. The unseal Secret is owned by the instance too, so
-	// the GC cascade usually reaps it first; deleting it explicitly covers the pass
-	// that created it before the instance existed. The auth-delegator binding is
+	// The rest of the ensemble, both tenants included: the one in the
+	// openbao-operator namespace and the one an earlier operator created in the
+	// service namespace. The unseal Secret is owned by the instance too, so the GC
+	// cascade usually reaps it first; deleting it explicitly covers the pass that
+	// created it before the instance existed. The auth-delegator binding is
 	// cluster-scoped, so no namespace deletion collects it.
-	for _, child := range barbicanOpenBaoEnsembleObjects(instanceName, barbicanNS) {
+	for _, child := range barbicanOpenBaoEnsembleObjects(instanceName, barbicanNS, r.openBaoOperatorNamespace()) {
 		if err := r.deleteOwnedEnsembleObject(ctx, cp, child); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -832,15 +834,23 @@ func (r *ControlPlaneReconciler) deleteOwnedEnsembleObject(
 }
 
 // barbicanOpenBaoEnsembleObjects addresses the objects the dedicated OpenBao
-// instance is projected with, in teardown order: the tenant that admits the
-// namespace, the two transport Certificates, the provisioner ServiceAccount, its
-// TokenRequest Role and RoleBinding, the static-seal Secret, and the
+// instance is projected with, in teardown order: the two tenants that may admit
+// the namespace, the two transport Certificates, the provisioner ServiceAccount,
+// its TokenRequest Role and RoleBinding, the static-seal Secret, and the
 // cluster-scoped auth-delegator binding. The instance itself is not in the list —
-// every caller sequences it separately, and one holds the tenant back with it.
-func barbicanOpenBaoEnsembleObjects(name, namespace string) []client.Object {
+// every caller sequences it separately, and one holds the tenants back with it.
+//
+// The first tenant is the one ensureBarbicanOpenBaoTenant creates in
+// operatorNamespace. The second is the self-service tenant in the service
+// namespace, which a placed Barbican still gets and an earlier operator created
+// for every namespace it admitted.
+func barbicanOpenBaoEnsembleObjects(name, namespace, operatorNamespace string) []client.Object {
 	return []client.Object{
 		&openbaov1alpha1.OpenBaoTenant{
-			ObjectMeta: metav1.ObjectMeta{Name: name + barbicanOpenBaoTenantSuffix, Namespace: namespace},
+			ObjectMeta: metav1.ObjectMeta{Name: barbicanOpenBaoSizedTenantName(name, namespace), Namespace: operatorNamespace},
+		},
+		&openbaov1alpha1.OpenBaoTenant{
+			ObjectMeta: metav1.ObjectMeta{Name: barbicanOpenBaoSelfServiceTenantName(name), Namespace: namespace},
 		},
 		barbicanOpenBaoCertificateObject(name+barbicanOpenBaoServerCertSuffix, namespace),
 		barbicanOpenBaoCertificateObject(name+barbicanOpenBaoCACertSuffix, namespace),

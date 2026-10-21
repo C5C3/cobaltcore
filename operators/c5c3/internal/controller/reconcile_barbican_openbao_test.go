@@ -1132,6 +1132,23 @@ func TestBarbicanOpenBaoQualifiedName(t *testing.T) {
 		MatchRegexp(`^cp-barbican-bao-[0-9a-f]{16}$`), "an empty namespace still hashes the separator")
 }
 
+// TestBarbicanOpenBaoSizedTenantName pins the name of the tenant in the
+// openbao-operator namespace. The tenants of every ControlPlane share that
+// namespace, so two ControlPlanes of the same name in different namespaces, which
+// derive the same instance name, must still derive different tenant names. The
+// teardown re-derives the name to find the tenant, so it stays stable.
+func TestBarbicanOpenBaoSizedTenantName(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(barbicanOpenBaoSizedTenantName("cp-barbican-bao", "barbican-a")).To(
+		MatchRegexp(`^cp-barbican-bao-[0-9a-f]{16}-tenant$`))
+	g.Expect(barbicanOpenBaoSizedTenantName("cp-barbican-bao", "barbican-a")).NotTo(
+		Equal(barbicanOpenBaoSizedTenantName("cp-barbican-bao", "barbican-b")),
+		"the same instance name in two namespaces must not share one tenant name")
+	g.Expect(barbicanOpenBaoSizedTenantName("cp-barbican-bao", "barbican")).To(
+		Equal("cp-barbican-bao-ed2cce0660bcb609-tenant"))
+}
+
 // --- per-service target clusters: the ensemble follows the service ---
 
 // placedBarbicanOpenBaoControlPlane places the Barbican service, and with it the

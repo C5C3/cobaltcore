@@ -61,6 +61,13 @@ const (
 	barbicanOperatorServiceAccountEnv = "BARBICAN_OPERATOR_SERVICE_ACCOUNT"
 )
 
+// openBaoOperatorNamespaceEnv names the environment the deploy stack sets to tell
+// the c5c3 operator where the openbao-operator runs. The OpenBaoTenant that
+// admits a dedicated Barbican store's namespace is created in that namespace.
+// A blank or unset value resolves to openbao-operator-system, the same fallback
+// a programmatically constructed reconciler gets.
+const openBaoOperatorNamespaceEnv = "OPENBAO_OPERATOR_NAMESPACE"
+
 var scheme = bootstrap.NewScheme(
 	// c5c3 own API types (ControlPlane, CredentialRotation).
 	c5c3v1alpha1.AddToScheme,
@@ -162,6 +169,7 @@ func main() {
 					MaxConcurrentReconciles:        opts.MaxConcurrentReconciles,
 					BarbicanOperatorNamespace:      strings.TrimSpace(os.Getenv(barbicanOperatorNamespaceEnv)),
 					BarbicanOperatorServiceAccount: strings.TrimSpace(os.Getenv(barbicanOperatorServiceAccountEnv)),
+					OpenBaoOperatorNamespace:       strings.TrimSpace(os.Getenv(openBaoOperatorNamespaceEnv)),
 					Resolver:                       mcMgr,
 				}).SetupWithManager(mcMgr); err != nil {
 					return err

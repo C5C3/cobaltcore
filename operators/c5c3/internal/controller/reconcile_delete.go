@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -527,14 +528,14 @@ func (r *ControlPlaneReconciler) reconcileDeleteRemoteChildren(
 
 // sweepNamespacesBeforeRelease is the cross-namespace teardown both release paths
 // gate on: every namespace the ControlPlane placed a service in is swept, on the
-// cluster it lives on, and the cluster-scoped auth-delegator binding no namespace
-// sweep can reach is deleted afterwards. It reports whether the ControlPlane may
-// be released.
+// cluster it lives on, and the cluster-scoped auth-delegator binding and the
+// OpenBaoTenant in the openbao-operator namespace, which no namespace sweep can
+// reach, are deleted afterwards. It reports whether the ControlPlane may be
+// released.
 //
-// The auth-delegator binding is cluster-scoped, so the sweep reaches it only when
-// Barbican runs in a namespace of its own. Co-located — the default — there is no
-// dedicated namespace at all, teardownDedicatedNamespaces returns at once, and
-// nothing else can collect it.
+// The sweep reaches those two only when Barbican runs in a namespace of its own.
+// Co-located — the default — there is no dedicated namespace at all,
+// teardownDedicatedNamespaces returns at once, and nothing else can collect them.
 func (r *ControlPlaneReconciler) sweepNamespacesBeforeRelease(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
 ) (bool, error) {
@@ -544,6 +545,9 @@ func (r *ControlPlaneReconciler) sweepNamespacesBeforeRelease(
 	}
 	r.sweepRegistrationTenantStores(ctx, cp)
 	if err := r.deleteBarbicanAuthDelegatorBinding(ctx, cp); err != nil {
+		return false, err
+	}
+	if err := r.deleteBarbicanOpenBaoTenant(ctx, cp); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -1119,14 +1123,15 @@ func (r *ControlPlaneReconciler) deleteServiceChildrenIn(
 // are in the wait set (crossNamespaceServiceChildren), so nothing here can outrun
 // them.
 //
-// The TENANT is the one gated object. It is what admits the namespace to the
-// openbao-operator, and the instance's own finalizer runs under that admission, so
-// it is held back while an instance this ControlPlane owns is still present. No
-// requeue is needed for that: the instance is in the wait set, so the surrounding
-// flow re-runs until it is gone and a later pass takes the tenant. A tenant this
-// ControlPlane did not create is never touched — in the kind stack a proving tenant
-// already admits the namespace, and deleting it would revoke an admission the
-// operator does not own.
+// The TENANTS are the gated objects: the one in the openbao-operator namespace and
+// the one an earlier operator created in the service namespace. A tenant is what
+// admits the namespace to the openbao-operator, and the instance's own finalizer
+// runs under that admission, so both are held back while an instance this
+// ControlPlane owns is still present. No requeue is needed for that: the instance
+// is in the wait set, so the surrounding flow re-runs until it is gone and a later
+// pass takes the tenants. A tenant this ControlPlane did not create is never
+// touched — in the kind stack a proving tenant already admits the namespace, and
+// deleting it would revoke an admission the operator does not own.
 //
 // The auth-delegator ClusterRoleBinding is cluster-scoped, so neither a namespace
 // deletion nor an owner-reference cascade ever reclaims it. It is deleted here for
@@ -1148,10 +1153,12 @@ func (r *ControlPlaneReconciler) deleteBarbicanEnsembleIn(
 		instanceHoldsTenant = isControlPlaneChild(instance, cp)
 	}
 
-	// The tenant leads the ensemble, so holding it back is dropping that entry.
-	objs := barbicanOpenBaoEnsembleObjects(name, namespace)
+	objs := barbicanOpenBaoEnsembleObjects(name, namespace, r.openBaoOperatorNamespace())
 	if instanceHoldsTenant {
-		objs = objs[1:]
+		objs = slices.DeleteFunc(objs, func(obj client.Object) bool {
+			_, tenant := obj.(*openbaov1alpha1.OpenBaoTenant)
+			return tenant
+		})
 	}
 
 	for _, obj := range objs {
@@ -1160,6 +1167,37 @@ func (r *ControlPlaneReconciler) deleteBarbicanEnsembleIn(
 		}
 	}
 	return nil
+}
+
+// deleteBarbicanOpenBaoTenant removes the OpenBaoTenant ensureBarbicanOpenBaoTenant
+// created in the openbao-operator namespace. No owner reference reaches across
+// namespaces, so for a Barbican co-located in the ControlPlane's own namespace
+// nothing else reclaims it: there is no dedicated namespace for the ensemble sweep
+// to walk. Under the Managed and External lifecycles the namespace sweep has
+// usually deleted it already, and the Get here is a NotFound.
+//
+// Deleting the tenant while the co-located instance still exists is safe. The
+// instance goes with the owner-reference cascade once the ControlPlane is
+// released, and the openbao-operator holds a deleted tenant, and the RBAC it
+// granted in the namespace, until no OpenBaoCluster is left there.
+//
+// A Barbican placed on a target cluster has no such tenant: its namespace is
+// admitted by a tenant in the namespace itself, which the sweep of that cluster
+// reaches. Only a tenant carrying this ControlPlane's ownership labels is deleted.
+// The step runs for every ControlPlane, so an absent OpenBaoTenant CRD counts as
+// no tenant. A failed read or delete is returned, so the finalizer holds and the
+// next pass retries.
+func (r *ControlPlaneReconciler) deleteBarbicanOpenBaoTenant(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+	namespace := cp.BarbicanNamespace()
+	if targetClusterRefForNamespace(cp, namespace) != nil {
+		return nil
+	}
+	return r.deleteOwnedEnsembleObject(ctx, cp, &openbaov1alpha1.OpenBaoTenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      barbicanOpenBaoSizedTenantName(barbicanOpenBaoName(cp), namespace),
+			Namespace: r.openBaoOperatorNamespace(),
+		},
+	})
 }
 
 // deleteBarbicanAuthDelegatorBinding removes the cluster-scoped ClusterRoleBinding
@@ -1398,7 +1436,7 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 		)
 	}
 	// Everything that follows the Barbican service: the child and its secret store,
-	// the dedicated OpenBao ensemble behind them (instance, tenant, transport
+	// the dedicated OpenBao ensemble behind them (instance, both tenants, transport
 	// Certificates, provisioner account, TokenRequest grant, static-seal Secret, and
 	// the cluster-scoped auth-delegator binding no namespace deletion reclaims), and
 	// the DB-credential material in the same four shapes as Glance's above.
@@ -1416,7 +1454,7 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 				Name: instance, Namespace: namespace,
 			}},
 		)
-		objs = append(objs, barbicanOpenBaoEnsembleObjects(instance, namespace)...)
+		objs = append(objs, barbicanOpenBaoEnsembleObjects(instance, namespace, r.openBaoOperatorNamespace())...)
 		objs = append(
 			objs,
 			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{

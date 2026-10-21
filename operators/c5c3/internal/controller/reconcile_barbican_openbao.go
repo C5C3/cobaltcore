@@ -79,7 +79,9 @@ const (
 	// instances of several ControlPlanes without collision.
 	barbicanOpenBaoNameSuffix = "-bao"
 	// barbicanOpenBaoTenantSuffix names the OpenBaoTenant that admits the service
-	// namespace to the openbao-operator.
+	// namespace to the openbao-operator, both the one in the openbao-operator
+	// namespace (barbicanOpenBaoSizedTenantName) and the one in the service
+	// namespace itself (barbicanOpenBaoSelfServiceTenantName).
 	barbicanOpenBaoTenantSuffix = "-tenant"
 	// barbicanOpenBaoUnsealSecretSuffix names the Secret holding the instance's
 	// static-seal key. The name is the operator's fixed contract
@@ -119,11 +121,14 @@ const (
 
 const (
 	// defaultBarbicanOperatorNamespace / defaultBarbicanOperatorServiceAccount are
-	// the barbican-operator's chart defaults. They are the fallback for a
-	// reconciler constructed without the BARBICAN_OPERATOR_* environment, which is
-	// every unit test and envtest run.
+	// the barbican-operator's chart defaults, and defaultOpenBaoOperatorNamespace
+	// is the namespace deploy/flux-system/releases/openbao-operator.yaml installs
+	// the openbao-operator into. They are the fallback for a reconciler
+	// constructed without the BARBICAN_OPERATOR_* and OPENBAO_OPERATOR_NAMESPACE
+	// environment, which is every unit test and envtest run.
 	defaultBarbicanOperatorNamespace      = "barbican-system"
 	defaultBarbicanOperatorServiceAccount = "barbican-operator"
+	defaultOpenBaoOperatorNamespace       = "openbao-operator-system"
 )
 
 // barbicanUnsealKeyRandRead is the randomness source for the static-seal key,
@@ -147,6 +152,16 @@ func (r *ControlPlaneReconciler) barbicanOperatorServiceAccount() string {
 		return r.BarbicanOperatorServiceAccount
 	}
 	return defaultBarbicanOperatorServiceAccount
+}
+
+// openBaoOperatorNamespace returns the namespace the openbao-operator runs in,
+// falling back to the release namespace of the deploy stack when the reconciler
+// carries no value.
+func (r *ControlPlaneReconciler) openBaoOperatorNamespace() string {
+	if r.OpenBaoOperatorNamespace != "" {
+		return r.OpenBaoOperatorNamespace
+	}
+	return defaultOpenBaoOperatorNamespace
 }
 
 // barbicanOpenBaoName returns the name of the dedicated OpenBao instance
@@ -476,6 +491,21 @@ func barbicanOpenBaoProvisionerServiceAccount(name, namespace string) *corev1.Se
 func barbicanOpenBaoQualifiedName(name, namespace, suffix string) string {
 	sum := sha256.Sum256([]byte(namespace + "/" + name))
 	return name + "-" + hex.EncodeToString(sum[:8]) + suffix
+}
+
+// barbicanOpenBaoSizedTenantName returns the name of the OpenBaoTenant that
+// admits namespace for the instance called name, in the openbao-operator
+// namespace. The tenants of every ControlPlane share that one namespace, so the
+// name is namespace-qualified (see barbicanOpenBaoQualifiedName).
+func barbicanOpenBaoSizedTenantName(name, namespace string) string {
+	return barbicanOpenBaoQualifiedName(name, namespace, barbicanOpenBaoTenantSuffix)
+}
+
+// barbicanOpenBaoSelfServiceTenantName returns the name of the OpenBaoTenant that
+// admits the service namespace from that namespace itself, for the instance
+// called name.
+func barbicanOpenBaoSelfServiceTenantName(name string) string {
+	return name + barbicanOpenBaoTenantSuffix
 }
 
 // barbicanOpenBaoAuthDelegatorName returns the name of the cluster-scoped

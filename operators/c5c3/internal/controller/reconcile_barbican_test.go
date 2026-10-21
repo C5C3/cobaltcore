@@ -539,9 +539,9 @@ func TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn(t *testing
 }
 
 // TestReconcileBarbican_UnsetDeletionDefersTenantWhileInstanceFinalizes pins the
-// one ordering constraint of the teardown: the OpenBaoTenant admits the namespace
+// one ordering constraint of the teardown: an OpenBaoTenant admits the namespace
 // to the openbao-operator, and the instance's own finalizer runs under that
-// admission, so the tenant only goes once the instance has left etcd.
+// admission, so neither tenant key goes before the instance has left etcd.
 func TestReconcileBarbican_UnsetDeletionDefersTenantWhileInstanceFinalizes(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := barbicanControlPlane()
@@ -550,9 +550,15 @@ func TestReconcileBarbican_UnsetDeletionDefersTenantWhileInstanceFinalizes(t *te
 
 	instance := availableBarbicanOpenBaoCluster(cp)
 	instance.Finalizers = []string{"openbao.org/cluster-teardown"}
-	tenant := &openbaov1alpha1.OpenBaoTenant{
+	sized := &openbaov1alpha1.OpenBaoTenant{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns, Labels: controlPlaneChildLabels(cp),
+			Name:      barbicanOpenBaoSizedTenantName(instanceName, ns),
+			Namespace: defaultOpenBaoOperatorNamespace, Labels: controlPlaneChildLabels(cp),
+		},
+	}
+	earlier := &openbaov1alpha1.OpenBaoTenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: barbicanOpenBaoSelfServiceTenantName(instanceName), Namespace: ns, Labels: controlPlaneChildLabels(cp),
 		},
 	}
 	cp.Spec.Services.Barbican = nil
@@ -560,7 +566,7 @@ func TestReconcileBarbican_UnsetDeletionDefersTenantWhileInstanceFinalizes(t *te
 		barbicanDeletionAllowedAnnotation:          "true",
 		barbicanStoreDataDeletionAllowedAnnotation: "true",
 	}
-	r := newBarbicanTestReconciler(t, cp, instance, tenant)
+	r := newBarbicanTestReconciler(t, cp, instance, sized, earlier)
 	ctx := context.Background()
 
 	res, err := r.reconcileBarbican(ctx, cp)
@@ -570,9 +576,10 @@ func TestReconcileBarbican_UnsetDeletionDefersTenantWhileInstanceFinalizes(t *te
 	live := &openbaov1alpha1.OpenBaoCluster{}
 	g.Expect(r.Get(ctx, types.NamespacedName{Name: instanceName, Namespace: ns}, live)).To(Succeed())
 	g.Expect(live.DeletionTimestamp).NotTo(BeNil(), "the instance teardown must have been started")
-	g.Expect(r.Get(ctx, types.NamespacedName{Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns},
-		&openbaov1alpha1.OpenBaoTenant{})).To(Succeed(),
-		"the tenant must outlive the instance it admits the namespace for")
+	for _, tenant := range []*openbaov1alpha1.OpenBaoTenant{sized, earlier} {
+		g.Expect(r.Get(ctx, client.ObjectKeyFromObject(tenant), &openbaov1alpha1.OpenBaoTenant{})).To(Succeed(),
+			"the tenant %s must outlive the instance it admits the namespace for", client.ObjectKeyFromObject(tenant))
+	}
 }
 
 // TestReconcileBarbican_UnsetPreservesForeignObjects proves the deletion sweep is
