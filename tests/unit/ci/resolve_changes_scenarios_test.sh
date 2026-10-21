@@ -69,7 +69,7 @@ expect_all() {
 }
 
 # The jobs a cheap change must never schedule.
-EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-orders-multicluster tempest"
+EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-orders-multicluster keystone-pressure tempest"
 
 SENTINEL_TARGETS='{"target":["__none__"]}'
 SENTINEL_OPERATORS='{"operator":["__none__"]}'
@@ -164,6 +164,28 @@ test_base_image_change_covers_every_service() {
   expect changed-tempest true
   expect e2e-operators '{"operator":["keystone","horizon","glance","placement","barbican","neutron","cinder","nova"]}'
   expect changed-operators '[]'
+  # Every service image is rebuilt, Keystone's among them, but the token-path
+  # load measures Keystone's own code: ci:pressure asks for it.
+  expect keystone-pressure false
+}
+
+test_keystone_image_change_runs_the_pressure_job() {
+  # A downstream patch under patches/keystone/ is an image_keystone change.
+  scenario "a keystone service image change" refs/heads/main FILTER_image_keystone=true
+  expect keystone-pressure true
+  expect build-e2e-images true
+  expect changed-services '["keystone"]'
+  expect_all false e2e-controlplane e2e-chaos tempest
+
+  scenario "a keystone-pressure harness edit" refs/heads/main FILTER_keystone_pressure=true
+  expect keystone-pressure true
+  expect build-e2e-images true
+  expect changed-services '[]'
+  expect e2e-operators "$SENTINEL_OPERATORS"
+  expect_all false e2e-controlplane e2e-chaos tempest
+
+  scenario "another service image change" refs/heads/main FILTER_image_glance=true
+  expect keystone-pressure false
 }
 
 test_federation_proxy_change() {
@@ -389,6 +411,22 @@ test_ci_controlplane_and_multicluster() {
   expect has-e2e-operators false
 }
 
+test_ci_pressure_runs_the_pressure_job() {
+  # The label alone has to switch the image build on too: the job gates on
+  # build-e2e-images, and nothing else here would schedule it.
+  scenario "ci:pressure on a docs-only pull request" refs/heads/main \
+    FILTER_docs=true PR_LABELS='["ci:pressure"]'
+  expect_all true keystone-pressure build-e2e-images
+  # shellcheck disable=SC2086 # deliberate: expand the job list
+  expect_all false ${EXPENSIVE/keystone-pressure/} has-e2e-operators noop
+
+  scenario "a ci:pressure label event" refs/heads/main \
+    FILTER_docs=true EVENT_ACTION=labeled EVENT_LABEL=ci:pressure \
+    PR_LABELS='["ci:pressure"]'
+  expect noop false
+  expect keystone-pressure true
+}
+
 test_ci_measure_sizing_runs_the_measurement_jobs() {
   # The measurement runs in the ControlPlane pair and in every Tempest leg,
   # whatever the pull request touches, and adds nothing else.
@@ -570,6 +608,7 @@ test_outputs_are_complete() {
   expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
     e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-operator-upgrade tempest measure-sizing
+    keystone-pressure
     actionlint changed-tempest
     changed-proxy changed-ovn changed-libvirt build-e2e-images has-e2e-operators changed-operators
     changed-services tempest-services test-targets e2e-operators"
@@ -599,6 +638,7 @@ test_nova_chart_egress_change_runs_the_tests_that_read_it
 test_suite_edit_runs_one_leg
 test_service_image_change
 test_base_image_change_covers_every_service
+test_keystone_image_change_runs_the_pressure_job
 test_federation_proxy_change
 test_ovn_image_change
 test_libvirt_image_change
@@ -616,6 +656,7 @@ test_ci_full_runs_everything
 test_ci_tempest_follows_the_touched_service
 test_ci_chaos_and_its_alias
 test_ci_controlplane_and_multicluster
+test_ci_pressure_runs_the_pressure_job
 test_ci_measure_sizing_runs_the_measurement_jobs
 test_measure_sizing_is_never_implied
 test_non_ci_label_resolves_to_nothing
