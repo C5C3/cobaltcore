@@ -1340,28 +1340,39 @@ on. All live in the `openstack` namespace except the cluster-scoped ClusterRoleB
 `OpenBaoTenant` `openstack` that admits the `openstack` namespace to the multi-tenant
 operator. It lives in `openbao-operator-system` and targets `openstack` from there,
 because the chart's admission policy accepts `spec.quota` and `spec.limitRange` only on
-a tenant in the operator namespace. Without those overrides the provisioner writes its
-default LimitRange into `openstack`, which gives every container without a CPU limit a
-500m one. The overrides are the provisioner defaults of chart 0.4.2 minus the CPU
-limits:
+a tenant in the operator namespace. Its spec is the guardrail spec the c5c3-operator
+also gives the tenant of a [dedicated Barbican store](../c5c3/controlplane-crd.md#barbicandedicatedsecretstorespec).
+The `openBaoTenant*` consts in `operators/c5c3/internal/controller/reconcile_barbican_openbao.go`
+hold the same figures, and `tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh`
+fails when the two differ:
 
 | Object | Setting | Value |
 | --- | --- | --- |
-| ResourceQuota | `pods` | `50` |
+| ResourceQuota | `pods` | `100` |
 | ResourceQuota | `requests.cpu` | `20` |
 | ResourceQuota | `requests.memory` | `64Gi` |
-| ResourceQuota | `limits.memory` | `128Gi` |
-| LimitRange (`Container`) | `default.memory` | `512Mi` |
 | LimitRange (`Container`) | `defaultRequest.cpu` | `100m` |
 | LimitRange (`Container`) | `defaultRequest.memory` | `128Mi` |
 
-The upstream default `default.cpu: 500m` and `limits.cpu: 40` are left out: the service
-operators set no CPU limit, and a `limits.cpu` quota rejects every pod that sets none.
-An override replaces the whole default object, so every kept key is spelled out.
-`hack/deploy-infra.sh` waits for `status.provisioned` on the tenant in
-`openbao-operator-system` before it waits for the instance. A kind cluster created
-before the tenant moved keeps its old `openstack/openstack` tenant beside the new one,
-so recreate it.
+The spec starts from the provisioner defaults of chart 0.4.2. `pods` rises from 50 to
+100: a `Standard` ControlPlane with its three-member OVN central runs 55 pods, and up to
+77 with CronJobs and a rollout's surge. The requests stay. Every limit of the defaults is
+left out. A `limits.cpu: 40` or `limits.memory: 128Gi` quota rejects every pod that sets
+no such limit. The default limits `default.cpu: 500m` and `default.memory: 512Mi` would
+cap every container that sets none, and the service operators set no CPU limit while
+`Standard` sets no memory for MariaDB and Memcached. A container without resources of
+its own therefore gets the default requests and no limit, as in production, which runs
+without a tenant. An override replaces the whole default object, so every kept key is
+spelled out.
+
+`hack/deploy-infra.sh` applies the tenant with `kubectl apply -k`, which removes a key
+dropped from the file, and waits for `status.provisioned` on the tenant in
+`openbao-operator-system` before it waits for the instance. The `openbao-instance` e2e
+suite then reads the quota and LimitRange the provisioner wrote into `openstack`, and
+fails on figures that differ from the tenant's, a `limits.*` key, or a default limit.
+The LimitRange shapes only the pods admitted after it changes: a running pod keeps the
+limits it was admitted with until it restarts. A kind cluster created before the tenant moved keeps its old
+`openstack/openstack` tenant beside the new one, so recreate it.
 
 The instance runs in every kind deploy, so the primitives a managed Barbican secret store
 needs are exercised with no Barbican attached: static-seal auto-unseal, cert-manager TLS
@@ -1522,7 +1533,8 @@ deployment that attaches Barbican to the shared instance instead of a dedicated 
 therefore differs only in which instance it points at.
 
 [`tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml`](https://github.com/c5c3/cobaltcore/blob/main/tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml)
-locks the whole path: the operator Deployment and its HelmRelease, the unseal-key
+locks the whole path: the operator Deployment and its HelmRelease, the quota and
+LimitRange the provisioner wrote into `openstack` for the tenant, the unseal-key
 ExternalSecret reporting `SecretSynced` **and** the instance's `ownerReference` adoption of
 the Secret it materialized, the CR reporting `Available`, a Kubernetes-auth login that reads
 the AppRole role ID and mints a secret ID, a rejected login with a wrong secret ID, and a
@@ -4236,7 +4248,7 @@ which it copies into `openstack-ha` with their type and data and the label
 | Object | From | Purpose |
 | --- | --- | --- |
 | Namespace `openstack-ha` | `up` | Carries the label `lab-failover.c5c3.io/run=<run>`, which `run` and `down` require, the lab's `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled` |
-| OpenBaoTenant `openbao-operator-system/openstack-ha` | `fixtures/00-openbao-tenant.yaml` | Admits `openstack-ha` with a quota of 100 pods, 40 CPUs and 128Gi of requests, and 80 CPUs and 256Gi of limits |
+| OpenBaoTenant `openbao-operator-system/cp-ha-barbican-bao-65f6358cc3ff8a10-tenant` | the c5c3-operator | Admits `openstack-ha` for the dedicated Barbican store of `cp-ha`, under the guardrail spec of the kind tenant ([Tenant](#openbao-proving-instance)) |
 | OVNCentral `cp-ha-ovn` | `fixtures/01-ovncentral.yaml` | Three Northbound and three Southbound Raft members and three northd replicas on the CA issuer `openstack-ovn-ca-issuer` |
 | ExternalSecret `cp-ha-horizon-secret-key` | `fixtures/02-horizon-secret-key-externalsecret.yaml` | The Horizon `SECRET_KEY` from `bootstrap/openstack-ha/cp-ha-horizon/secret-key`, through the tenant store `openbao-tenant-store` |
 | ControlPlane `cp-ha` | `fixtures/03-controlplane.yaml` | The data of `controlplane-lab.yaml` with `Standard`, `cp-ha-ovn` as its central, and no gateway, public endpoint, hypervisor operator or backup backend |
@@ -4244,16 +4256,15 @@ which it copies into `openstack-ha` with their type and data and the label
 | Deployment `cp-ha-fake-compute` | `fixtures/05-fake-compute.yaml` | A nova-compute on the fake driver under the name of its node, which `tests/e2e/nova/discover-hosts.sh` maps into cell1 |
 | Job `cp-ha-purge` | `fixtures/06-purge-job.yaml` | Applied by `down`: deletes every volume attachment, volume and image of the plane through its APIs |
 
-The tenant comes before the plane. With a dedicated Barbican store the
-c5c3-operator admits the namespace with an OpenBaoTenant of its own, which
-carries no quota, so the openbao-operator applies its default quota of 50
-pods. The eight-service `Standard` plane runs about 56 pods. The c5c3-operator
-creates no tenant when one already targets the namespace, so the pre-created
-tenant with twice the default quota admits `openstack-ha` instead. Its
-`spec.limitRange` stays unset, so the default LimitRange applies: `Standard`
-sets no MariaDB or Memcached resources, and their containers get a 512Mi
-memory limit, as in any tenant namespace. `up` writes what was admitted to
-`topology.txt`.
+The c5c3-operator admits `openstack-ha` itself. The dedicated Barbican store of
+`cp-ha` makes it create an OpenBaoTenant in `openbao-operator-system` with the
+spec of the kind tenant: a quota of 100 pods, 20 CPUs and 64Gi of requests,
+and a LimitRange that sets only the default requests. The eight-service
+`Standard` plane runs the 55 long-running pods counted under
+[OpenBao Proving Instance](#openbao-proving-instance), and the fake compute
+makes 56; its CronJobs and a rollout's surge add up to 22 more. `Standard` sets no MariaDB or Memcached resources, so their
+containers get the default requests and no limit, as in production. `up`
+writes what was admitted to `topology.txt`.
 
 Two steps of `up` follow from the code. The Horizon key reads through the
 namespaced store `openbao-tenant-store`, which the c5c3-operator creates in its
@@ -4306,9 +4317,17 @@ start and end in UTC, and the `observed failures` and `recovery` of each stream,
 or `none` when the suite ended before `verify`. It stops at the first `FAIL`.
 `down` deletes the fake compute, the workload pods, the volumes and images of
 the plane through Job `cp-ha-purge`, the seed Job, the ControlPlane, the
-OVNCentral, the Galera and broker claims, the copied Secrets, the
-ExternalSecret, the tenant and the namespace, in that order; a second `down`
-resumes a failed one. The plane's Cinder keeps its volumes in the lab's Ceph
+OVNCentral, the Galera and broker claims, the copied Secrets and the
+ExternalSecret, in that order. It then deletes the OpenBaoTenant
+`openbao-operator-system/openstack-ha` that an earlier version of `up` applied,
+waits up to five minutes until no OpenBaoTenant targets `openstack-ha`, and
+deletes the namespace last; a second
+`down` resumes a failed one. The c5c3-operator deletes its tenant when it
+releases `cp-ha`, and the openbao-operator keeps that tenant until the OpenBao
+instance in `openstack-ha` is gone. A namespace deleted before that takes the
+tenant RBAC the instance's finalizer runs under. A tenant still there after the
+wait, including one made by hand, stops `down` with
+`OpenBaoTenants still target openstack-ha: <names>`. The plane's Cinder keeps its volumes in the lab's Ceph
 pool `volumes` and its Glance keeps its images in the lab's Garage bucket
 `glance-images`, keyed by image id. The purge deletes them while the databases
 that name them still exist, also those of a suite that failed before the
@@ -5414,7 +5433,7 @@ requests and limits from these sources:
 | `lab-nova-compute` | `nova-compute`, `create-instances-dir`, `wait-for-chassis` | the Nova operator's default, `150m` CPU request and `768Mi` memory request and limit ([Resources](../nova/novacompute-crd.md#resources)) |
 | `lab-metadata-agent-metadata-agent` | `metadata-agent`, `wait-for-chassis` | the Neutron operator's default, `230m` CPU request and `2Gi` memory request and limit ([Memory sizing](../neutron/neutron-metadata-agent-crd.md#memory-sizing)) |
 | `libvirt` | `libvirtd`, `host-prepare`, `ceph-secret` | the DaemonSet's own: `100m`/`256Mi` request and `512Mi` limit for `libvirtd`, `10m`/`16Mi` request and `64Mi` limit for `host-prepare` and for `ceph-secret` |
-| `lab-chassis-ovs`, `lab-chassis-ovn-controller` | `ovsdb-server`, `ovs-vswitchd`, `host-prepare`; `ovn-controller`, `apply-node` | none of their own: the tenant LimitRange of `openstack` ([OpenBao Proving Instance](#openbao-proving-instance), Tenant) fills in a `100m` CPU and `128Mi` memory request and a `512Mi` memory limit; the lab read 11 to 23 MiB per container ([Recorded lab run](../testing/sizing-calibration.md#recorded-lab-run)) |
+| `lab-chassis-ovs`, `lab-chassis-ovn-controller` | `ovsdb-server`, `ovs-vswitchd`, `host-prepare`; `ovn-controller`, `apply-node` | none of their own: the tenant LimitRange of `openstack` ([OpenBao Proving Instance](#openbao-proving-instance), Tenant) fills in a `100m` CPU and `128Mi` memory request and no limit; the lab read 11 to 23 MiB per container ([Recorded lab run](../testing/sizing-calibration.md#recorded-lab-run)) |
 
 `OVNChassis` renders no resources by design
 ([OVNChassis CRD](../ovn/ovn-chassis-crd.md)), so a lab that changes the

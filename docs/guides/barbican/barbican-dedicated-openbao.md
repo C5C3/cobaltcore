@@ -202,7 +202,7 @@ Every object is named after the instance:
 | ServiceAccount | `controlplane-barbican-bao-provisioner` | The identity the barbican-operator's Kubernetes-auth login binds to |
 | Role + RoleBinding | `controlplane-barbican-bao-provisioner-token` | Lets the barbican-operator mint a bound token for that one account |
 | ClusterRoleBinding | `controlplane-barbican-bao-<hash>-auth-delegator` | Grants the instance pods the TokenReview every Kubernetes-auth login needs |
-| OpenBaoTenant | `controlplane-barbican-bao-tenant` | Admits the namespace to the multi-tenant openbao-operator |
+| OpenBaoTenant | `controlplane-barbican-bao-<hash>-tenant` in `openbao-operator-system` | Admits the namespace to the multi-tenant openbao-operator |
 
 ```bash
 kubectl get secret,serviceaccount,role,rolebinding -n openstack \
@@ -214,14 +214,15 @@ The auth-delegator binding is cluster-scoped, so its name carries a hash of
 `namespace/instance`: two ControlPlanes of the same name in different namespaces
 derive the same instance name and would otherwise collide on one binding.
 
-No `controlplane-barbican-bao-tenant` appears on this devstack. The kind overlay
-already ships an `OpenBaoTenant` admitting `openstack`, and the operator skips a
-namespace some tenant already targets, because a namespace admitted twice carries
-two finalizers. A ControlPlane whose Barbican lands in a fresh service namespace
-gets its own tenant there. That tenant is self-service, so the namespace keeps
-the openbao-operator's default LimitRange, and every container in it without a
-CPU limit gets a 500m default CPU limit. The kind overlay's tenant lives in the
-operator namespace and drops that limit for `openstack`.
+No `controlplane-barbican-bao-<hash>-tenant` appears on this devstack. The kind
+overlay already ships an `OpenBaoTenant` admitting `openstack`, and the operator
+skips a namespace some tenant already targets, because a namespace admitted twice
+carries two finalizers. A ControlPlane whose Barbican lands in a fresh service
+namespace gets its own tenant in `openbao-operator-system`, with the spec of the
+kind overlay's tenant: a quota of 100 pods, and a LimitRange that gives a
+container without resources of its own default requests and no limit (see the
+Tenant table under
+[OpenBao Proving Instance](../../reference/infrastructure/infrastructure-manifests.md#openbao-proving-instance)).
 
 ## Step 5 — Store and read a secret back
 
