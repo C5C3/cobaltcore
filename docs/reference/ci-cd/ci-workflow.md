@@ -53,6 +53,11 @@ already green, so the E2E suite is not re-run on push ("publish-only-on-merge").
 pushes the `changes` job forces all areas and all operators active, so every operator's
 images and charts are published regardless of which files the tagged commit touched.
 
+The operator upgrade suites run after a push to `main` from a workflow of their own.
+When the CI or the Build Images run of such a push succeeds,
+`.github/workflows/operator-upgrade.yaml` runs the suite of every operator whose image
+that commit published; see [e2e-operator-upgrade](#e2e-operator-upgrade).
+
 ## Change classes and labels
 
 A pull request runs the jobs whose inputs it changes. The `changes` job
@@ -63,19 +68,21 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 
 | Change class | Paths | What it schedules |
 | --- | --- | --- |
-| `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
+| `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg and its `e2e-operator-upgrade` job. `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
 | `nova_chart_egress` | `operators/nova/helm/nova-operator/templates/_helpers.tpl` | the `keystone` and `placement` `test` and `test-integration` legs, whose unit tests check the nova chart's Keystone and Placement egress rules |
 | `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**` | that service's `e2e-operator` leg; `image_keystone` also `keystone-pressure` |
 | `keystone_pressure` | `hack/keystone-pressure-ab.sh`, `hack/dizzy.sh`, `tests/load/keystone-pressure/**` | `keystone-pressure` |
 | `image_ovn`, `image_tempest` | the OVN and Tempest image sources (the Tempest locks included) | the ovn `e2e-operator` job; the Tempest image rebuild |
 | `image_proxy` | `images/keystone-federation-proxy/**`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | the keystone `e2e-operator` job and the federation proxy image rebuild |
 | `image_libvirt` | `images/libvirt/**`, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | `e2e-nova-libvirt` and the libvirt image rebuild |
-| `go_common` | `internal/**`, `go.work`, `.golangci.yml`, `flake.nix`, `flake.lock`, `nix/lib/operator-image.nix`, `nix/lib/static-image.nix`, `nix/lib/image-defaults.nix`, `hack/ci-nix-build-e2e-images.sh` | every operator's Go gates and operator image, every `e2e-operator` leg, `e2e-operator-upgrade`; a push publishes every operator image |
+| `go_common` | `internal/**`, `go.work`, `.golangci.yml`, `flake.nix`, `flake.lock`, `nix/lib/operator-image.nix`, `nix/lib/static-image.nix`, `nix/lib/image-defaults.nix`, `hack/ci-nix-build-e2e-images.sh` | every operator's Go gates and operator image, every `e2e-operator` leg, every `e2e-operator-upgrade` job; a push publishes every operator image |
 | `images_base` | `flake.nix`, `flake.lock`, `nix/lib/**`, `nix/pkgs/**`, `releases/**`, `scripts/**`, `overrides/**`, `hack/ci-nix-build-e2e-images.sh`, `hack/ci-service-image-releases.sh` | every service image, every Tempest image (one per release), every service operator's e2e leg |
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
 | `tests_e2e_<op>` | `tests/e2e/<op>/**` and `tests/e2e/<op>-operator/**` (`tests/e2e/c5c3/**` alone for c5c3); `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova), and `tests/e2e/lib/assert-operator-env-clean.sh` alone for c5c3, ovn and neutron, whose `env-key-material` suites run only that script | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
-| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**`, and `tests_operator_upgrade` also covers `hack/ci-fetch-released-operator.sh`, which fetches its baseline, and `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls | the job that runs it |
+| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
+| `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
+| `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`, keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls | that operator's `e2e-operator-upgrade` job |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
 | `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
@@ -159,9 +166,10 @@ cluster with, passed to the `create-kind-cluster` composite action, which hands 
 `helm/kind-action`'s `version` input. That action defaults to v0.31.0, whose kindnetd
 does not enforce NetworkPolicy egress against the post-DNAT destination; pinning it
 keeps CI on the enforcing build and in lockstep with the `KIND_VERSION` in
-`hack/install-test-deps.sh` that local development installs and the one of the
-nightly `.github/workflows/performance.yaml`. Renovate groups the three pins so
-they bump in one pull request, and
+`hack/install-test-deps.sh` that local development installs, the one of the
+nightly `.github/workflows/performance.yaml`, and the one of the reusable
+`.github/workflows/e2e-operator-upgrade.yaml`, which does not inherit this env.
+Renovate groups the four pins so they bump in one pull request, and
 `tests/unit/renovate/workflow_pins_custommanager_test.sh` asserts they agree.
 `CONTROLLER_GEN_VERSION` is used by `verify-codegen` to pin controller-gen to a specific
 version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specific
@@ -169,13 +177,14 @@ version; the same version is mirrored in the Makefile (`GOFUMPT_VERSION ?= v0.12
 that `make fmt` and `make format-check` use a consistent version locally.
 `GOLANGCI_LINT_VERSION` pins the golangci-lint binary installed by the `lint` job and
 keys its analysis cache. `HELM_VERSION` is the Helm CLI that every
-`azure/setup-helm` step installs (`helm-validate`, `e2e-operator-upgrade`,
-`helm-push`, `helm-push-target-cluster` and `github-release`). Without a version
-input the action installs the newest Helm release when the job starts. Renovate
-bumps the pin without automerge, because `helm-push` runs only after a merge and no
-pull request run pushes a chart with the new Helm.
-`tests/unit/ci/helm_wiring_test.sh` fails when a `setup-helm` step passes no
-`version`. The other E2E jobs use the Helm of the runner image. `setup-envtest` is installed via `@release-0.23` because the
+`azure/setup-helm` step installs (`helm-validate`, `helm-push`,
+`helm-push-target-cluster` and `github-release`, and the `upgrade` job of the
+reusable `.github/workflows/e2e-operator-upgrade.yaml`, which repeats the pin in its
+own env). Without a version input the action installs the newest Helm release when
+the job starts. Renovate bumps both copies in one pull request without automerge,
+because `helm-push` runs only after a merge and no pull request run pushes a chart
+with the new Helm. `tests/unit/ci/helm_wiring_test.sh` fails when a `setup-helm`
+step passes no `version` or when the two copies disagree. The other E2E jobs use the Helm of the runner image. `setup-envtest` is installed via `@release-0.23` because the
 sub-module does not publish its own release tags.
 
 ## Permissions
@@ -280,7 +289,7 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches |
-| 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets` and `e2e-operators` |
+| 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets`, `e2e-operators` and `e2e-operator-upgrade-operators` |
 | 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
 | 5 | `Generate keystone-pressure release matrix` | Step id `keystone-pressure-matrix`. Runs `hack/ci-service-image-releases.sh` with `OPERATOR=keystone` and writes `keystone-pressure-releases` with one entry per release whose `releases/<release>/source-refs.yaml` carries a Keystone ref |
 | 6 | `Generate cleanup package matrix` | Step id `cleanup-matrix`. Runs `hack/ci-generate-cleanup-matrix.sh`, which derives the GHCR package names from `images/*/` and from every `operators/*/` directory that holds a `go.mod`. It writes `cleanup-packages` and `cleanup-e2e-packages`. The job exports the second |
@@ -288,8 +297,8 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 
 Step 3 has three special cases. A `labeled` event whose label is
 neither a `ci:*` label nor `run-chaos` resolves to `noop=true`: every other flag
-is `false`, the change sets are `[]`, and `test-targets` and `e2e-operators`
-hold the placeholder `__none__`. The `ci:full` label and a `v*` tag push force
+is `false`, the change sets are `[]`, and `test-targets`, `e2e-operators` and
+`e2e-operator-upgrade-operators` hold the placeholder `__none__`. The `ci:full` label and a `v*` tag push force
 every job flag on and select every operator. `measure-sizing` is the exception:
 only the `ci:measure-sizing` label sets it. On a push to `main` the script sets
 `build-e2e-images` to `false`, and `e2e-operators` holds every operator when the
@@ -348,6 +357,7 @@ The matrices come last:
 | --- | --- |
 | `e2e-operators` | `{"operator":[...]}`. The matrix of `merge-operator-images` and `helm-push` and the `operator` dimension of `build-and-push`. `github-release` loops over it to package the charts |
 | `e2e-operator-legs` | Written by step 7: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
+| `e2e-operator-upgrade-operators` | `{"operator":[...]}` in `ALL_OPERATORS` order: every operator whose Go code is affected (`go_common` included) or whose `tests_operator_upgrade_<op>` class changed, every operator when `tests_operator_upgrade` changed or under `ci:full` and a `v*` tag, the `__none__` placeholder when none. The matrix `e2e-operator-upgrade` passes to the reusable workflow; the `e2e-operator-upgrade` flag is `true` when it names an operator |
 | `test-targets` | `{"target":[...]}` with `common` and operator names. The matrix of `test` and `test-integration` |
 | `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. The matrix of `tempest` |
 | `keystone-pressure-releases` | Written by step 5: `{"release":[...]}` with the releases that ship a Keystone image. The matrix of `keystone-pressure` |
@@ -1136,30 +1146,87 @@ no suite runs Nova against a real second cluster yet
 
 ### e2e-operator-upgrade
 
-Operator helm-upgrade-in-place E2E. Installs the last released keystone-operator
-chart+image from GHCR as the baseline and brings a Keystone CR to Ready. The
-suite then applies the locally built CRDs and checks the deployed Keystone while
-the released operator still runs it (the
-[CRD window](../testing/operator-upgrade-e2e-tests.md#the-crd-window)). After
-that it `helm upgrade`s the release to the locally built chart and asserts that
-the deployed Keystone keeps working across the operator upgrade (Ready persists,
-`status.installedRelease` unchanged, no re-bootstrap). See
-[Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md) for suite
-details.
+Operator helm-upgrade-in-place E2E, one matrix job per operator. Each job installs
+the chart and image that `tests/e2e-operator-upgrade/<op>-helm-upgrade/baseline.yaml`
+pins as the baseline, brings the suite's CR to Ready, then `helm upgrade`s the release
+to the in-repo chart, CRDs and `:dev` image. The suite asserts that the deployed CR
+keeps its workloads, its `status.installedRelease` and its Ready condition. The
+keystone suite also applies the in-repo CRDs before the upgrade and checks its
+Keystone while the released operator still runs it (the
+[CRD window](../testing/operator-upgrade-e2e-tests.md#the-crd-window)). See
+[Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md) for the suites.
 
 **Dependencies:** `needs: [changes, build-e2e-images]`
 **Condition:** Runs on `pull_request` when `e2e-operator-upgrade == 'true'`,
 `build-e2e-images` succeeded, and no dependency failed or was cancelled. The
-resolver sets that flag from the suite's own tree or a keystone code change.
+resolver sets that flag when `e2e-operator-upgrade-operators` names an operator.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
-Unlike the per-CR `e2e-operator` matrix, this suite manages the operator Helm
-release itself, so it runs in its own single job. The job pulls the run-scoped
-`:dev` operator and `2026.1` service images, `helm registry login`s GHCR,
-fetches the released baseline via `hack/ci-fetch-released-operator.sh`, deploys the
-infra stack, installs the baseline via `hack/ci-deploy-operator.sh` (with `CHART_DIR`
-pointing at the pulled chart and `IMAGE_TAG=latest`), and runs the suite from
-`tests/e2e-operator-upgrade/`. Blocking (no `continue-on-error`). Timeout: 68 minutes.
+The job has no steps of its own. It calls the reusable workflow
+`.github/workflows/e2e-operator-upgrade.yaml` with `operators` set to
+`e2e-operator-upgrade-operators` and `image-map` set to the output of
+`build-e2e-images`. Its checks therefore read
+`e2e-operator-upgrade / e2e-operator-upgrade (<op>)`. A pull request runs the job of
+every operator whose Go code is affected (`go_common` included, as for
+`e2e-operator`) or whose suite changed, and all ten when an input the suites share
+changed; see [Change classes and labels](#change-classes-and-labels).
+
+The reusable workflow takes three inputs: `operators` (the `{"operator":[...]}`
+matrix), `image-map`, and `ref`, the commit to check out (empty for the caller's).
+A called workflow does not inherit the caller's `env`, so it sets `REGISTRY`,
+`IMAGE_PREFIX`, `KIND_CLUSTER`, `KIND_VERSION`, `HELM_VERSION` and the
+`BARBICAN_SECRET_STORE_GRANTS` of `e2e-operator` itself. Its one job, `upgrade`,
+runs on `self-hosted` with `fail-fast: false` and a 68-minute timeout:
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out `ref` |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` for the registry login and the chart pull |
+| 3 | `create-kind-cluster` composite action | Creates the kind cluster |
+| 4 | `Resolve the upgrade leg` | Runs `hack/ci-operator-upgrade-leg.sh`, which writes the operator's image refs, its infrastructure opt-ins, its sibling operators and whether it needs the c5c3-operator's watched CRDs |
+| 5 | `load-e2e-images` composite action | Pulls the refs of step 4 through `image-map` |
+| 6 | `Load images into kind` | One `kind load docker-image` call for every ref |
+| 7 | `Log in to GHCR for Helm` | `helm registry login` with the job's token |
+| 8 | `Fetch released operator baseline` | Runs `hack/ci-fetch-released-operator.sh`, which pulls the pinned chart and image and writes `chart_dir` and `image_tag` |
+| 9 | `setup-e2e-infra` composite action | Deploys the infrastructure with the `WITH_NFS`, `WITH_MESSAGING` and `WITH_OVN_KERNEL_MODULES` of step 4 |
+| 10 | `Install CRDs watched by the c5c3-operator` | c5c3 only: the keystone, horizon, glance and placement CRDs and `hack/ci-deploy-korc.sh` |
+| 11 | `Deploy sibling operators` | neutron only: the ovn-operator at `:dev` through `hack/ci-deploy-operator.sh` |
+| 12 | `Deploy released operator (baseline)` | `hack/ci-deploy-operator.sh` with `CHART_DIR` and `IMAGE_TAG` from step 8, into `<op>-system` |
+| 13 | `Run operator upgrade E2E` | `chainsaw test` of `tests/e2e-operator-upgrade/<op>-helm-upgrade/` |
+| 14 | `Dump diagnostic info` | `hack/ci-dump-diagnostics.sh` for the operator, then `OPERATOR_ONLY=1` for each sibling (always) |
+| 15 | `actions/upload-artifact@v7` | Uploads `e2e-operator-upgrade-<op>-junit-report` (always) |
+| 16 | `Delete kind cluster` | `hack/ci-delete-kind-cluster.sh` (always) |
+
+Each suite's step 3 except keystone's upgrades the release through
+`hack/ci-deploy-operator.sh` with `HELM_UPGRADE=true`, so the upgrade passes the
+values the baseline install passed. The keystone suite runs its own `helm upgrade`
+with its own `--set` list.
+Blocking (no `continue-on-error`). The keystone job took 10 to 12 minutes in the pull
+request runs of 2026-10-20 and 2026-10-21.
+
+The same workflow runs after every publish on `main`.
+`.github/workflows/operator-upgrade.yaml`, named `Operator Upgrade`, triggers on
+`workflow_run` when the `CI` or the `Build Images` workflow completes on `main`. Its
+`resolve` job runs only when the triggering run was a `push`, succeeded, and came
+from this repository, since `workflow_run` also fires for pull-request runs, and a
+fork's branch may be named `main`. It checks out the commit that run built and runs
+`hack/ci-operator-upgrade-main-matrix.sh`, which asks the registry for each
+operator's `sha-<commit>` tag. The operators that have one form the matrix, except
+those whose `baseline.yaml` pin equals the commit's `Chart.yaml` version: the same
+publish tagged the commit's image and pushed its chart under that version, so the
+baseline is the commit itself, and the script leaves the operator out with a
+`::notice::` until a `Chart.yaml` bump freezes the pin. The image map sends every
+published operator's `:dev` ref to the published digest and every other operator's
+to `:latest`. Each further image their suites load maps to itself once the registry
+confirms it exists. A ref that is not published yet, typically an `ovn:<version>`
+that a push bumped before Build Images pushed it, drops the suites that need it
+with a warning; the run that the Build Images completion triggers covers them. A
+registry that keeps failing fails `resolve`. The `upgrade` job calls the reusable
+workflow with that matrix, that map and `ref` set to the commit. A run that passes
+the `resolve` guards joins the concurrency group `operator-upgrade-main`, which
+cancels the run in flight, so at most one runs. Every other run gets a group of its
+own, because the group is chosen before any job's `if`. Main's CI runs never wait for it, because they share a concurrency group that
+never cancels (see [Concurrency](#concurrency)).
 
 ### e2e-chaos
 
@@ -2212,9 +2279,10 @@ list, and pushes it with the final tags.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `docker/setup-buildx-action@v4` + `registry-login` composite action | Authenticates to GHCR |
-| 3 | `docker/metadata-action@v6` | Generates final image tags and, with `DOCKER_METADATA_ANNOTATIONS_LEVELS: index`, the index annotations (`created`, `revision`, `source`, `url`, `version`, and title, description, licenses and vendor as the image labels set them) |
-| 4 | Download digests | `actions/download-artifact@v8` | Downloads all `digests-operator-<operator>-*` artifacts |
-| 5 | Create and push manifest list | Shell | `docker buildx imagetools create` with the annotations from step 3 and `--annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}"` assembles per-platform digests under the final tags from step 3; `hack/ci-resolve-e2e-images.sh` reads the revision annotation |
+| 3 | `Read the chart version` | Step id `chart`. Reads the version of `operators/<op>/helm/<op>-operator/Chart.yaml` with `hack/ci-read-chart-version.sh` and writes it as `version`; a value that is not `X.Y.Z` writes nothing and logs a `::warning::`, so the index gets no chart-version tag but keeps `sha-<full-sha>` and `latest` |
+| 4 | `docker/metadata-action@v6` | Generates final image tags and, with `DOCKER_METADATA_ANNOTATIONS_LEVELS: index`, the index annotations (`created`, `revision`, `source`, `url`, `version`, and title, description, licenses and vendor as the image labels set them) |
+| 5 | Download digests | `actions/download-artifact@v8` | Downloads all `digests-operator-<operator>-*` artifacts |
+| 6 | Create and push manifest list | Shell | `docker buildx imagetools create` with the annotations from step 4 and `--annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}"` assembles per-platform digests under the final tags from step 4; `hack/ci-resolve-e2e-images.sh` reads the revision annotation |
 
 **Matrix strategy:** Same `operator` dimension as `build-and-push` (via `fromJson(needs.changes.outputs.e2e-operators)`).
 
@@ -2222,11 +2290,16 @@ list, and pushes it with the final tags.
 
 | Trigger | Tags Applied |
 | --- | --- |
-| Push to main | `sha-<full-sha>`, `latest` |
+| Push to main | `sha-<full-sha>`, `latest`, `<chart version>` (the operator's `Chart.yaml` version, e.g. `0.14.0`) |
 | Push v* tag (from main) | `sha-<full-sha>`, `latest`, `<version>` (e.g. `0.1.0`, v prefix stripped) |
 | Push v* tag (from non-main) | `sha-<full-sha>`, `<version>` (no `latest` — restricted to default branch) |
 
-Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`.
+Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`. The chart-version
+tag carries the `enable={{is_default_branch}}` rule of `latest`, so on `main` the two
+name one digest. `hack/ghcr-prune-stale-versions.py` keeps a version with a bare
+`X.Y.Z` tag forever, and once `Chart.yaml` moves past a version no push writes that
+tag again. The operator upgrade suites pin their baseline to it
+([Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md)).
 
 ### helm-push
 
@@ -2387,10 +2460,11 @@ deploying the operator via Helm with the specified container image.
 | `DEFAULT_IMAGE_PULL_POLICY` | No | `IfNotPresent` | The operator's default image pull policy (`Always`, `IfNotPresent` or `Never`), passed as `--set controller.defaultImagePullPolicy=<value>`. Any other value exits 1 with an `::error::` line before anything is applied. |
 | `E2E_COVERAGE` | No | `false` | `true` gives the operator a coverage counter volume and `GOCOVERDIR` (below). Empty means `false`; any other value exits 1 with an `::error::` line before anything is applied. |
 | `KIND_CLUSTER` | No | `cobaltcore` | The kind cluster whose nodes get the counter directory |
+| `HELM_UPGRADE` | No | `false` | `true` runs `helm upgrade` on the existing `<op>-operator` release instead of `helm install`, with the same CRD apply and `--set` list and without `--create-namespace`. Every operator upgrade suite except keystone's uses it. Any other value than `true` or `false` exits 1 with an `::error::` line before anything is applied. |
 
 The script runs `kubectl apply --server-side --force-conflicts -f <chart>/crds/`, waits for
-CRD establishment, then runs `helm install` with `image.pullPolicy=Never` (suitable for
-kind-loaded images) and `controller.defaultImagePullPolicy=IfNotPresent`, so the
+CRD establishment, then runs `helm install` (`helm upgrade` under `HELM_UPGRADE=true`)
+with `image.pullPolicy=Never` (suitable for kind-loaded images) and `controller.defaultImagePullPolicy=IfNotPresent`, so the
 workloads run the service images CI loaded into kind under the published tag.
 The script passes `controller.defaultImagePullPolicy` only when the chart's
 `values.schema.json` names it: a released chart installed through `CHART_DIR`
@@ -2836,6 +2910,13 @@ twenty seconds. A `ci:*` label (or `run-chaos`) stays in the branch's group and 
 meant to supersede the run in flight, since it asks for jobs that run did not
 schedule.
 
+The `Operator Upgrade` workflow (`.github/workflows/operator-upgrade.yaml`) has a
+group of its own, `operator-upgrade-main`, with `cancel-in-progress: true`: a newer
+successful completion of a CI or Build Images push run on `main` cancels the upgrade
+run in flight, and main's CI runs never wait for it. Every completion starts a run,
+so a run whose jobs the `resolve` guards skip (a failed run, a fork's run) gets a
+group keyed on its run id and cancels nothing.
+
 ## Action Pinning
 
 All GitHub Actions are referenced by full SHA hash with a trailing version
@@ -3052,6 +3133,9 @@ The CI workflow depends on the following artifacts:
 | `flake.nix`, `flake.lock`, `nix/locks/` | `build-e2e-images` job | The flake the e2e images are built from |
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
 | `hack/ci-deploy-operator.sh` | the `tempest` job and every `e2e-*` job except `e2e-infra` | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
+| `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-leg.sh` | `e2e-operator-upgrade.yaml` | Fetch the pinned baseline chart and image; name what an operator's upgrade suite loads and deploys |
+| `hack/ci-read-chart-version.sh` | `merge-operator-images`, `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-main-matrix.sh` | Prints the version a `Chart.yaml` or a `baseline.yaml` pin names |
+| `hack/ci-operator-upgrade-main-matrix.sh` | `operator-upgrade.yaml` | Selects the operators a push to `main` published whose pin is frozen, and maps the images their suites load |
 | `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |
 | `hack/ci-vpa-recommendations.sh` | `e2e-controlplane`, `e2e-controlplane-sso`, `tempest` jobs under `ci:measure-sizing`, and by hand in the [lab measurement](../testing/sizing-calibration.md#lab-measurement) | Records the VPA recommendations of the `openstack` workloads for the [sizing measurement](#sizing-measurement); its `prepare` subcommand removes the MariaDB scale subresource on the lab, which refuses `WITH_VPA=true` |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
