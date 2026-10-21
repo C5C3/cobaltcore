@@ -10,6 +10,8 @@
 #
 # Installs CRDs, waits for establishment, and deploys the operator via Helm
 # with the specified container image into NAMESPACE (default: keystone-system).
+# With HELM_UPGRADE=true it upgrades an existing release instead, after the
+# same CRD apply and with the same --set list.
 #
 # Required env vars:
 #   OPERATOR    — Operator name (e.g. keystone)
@@ -19,7 +21,21 @@
 #   IMAGE_TAG          — Image tag (default: dev)
 #   NAMESPACE          — Release Namespace for the operator (default:
 #                        keystone-system). The Namespace is created on demand
-#                        via `helm install --create-namespace`.
+#                        via `helm install --create-namespace`; an upgrade
+#                        (HELM_UPGRADE=true) expects the release's Namespace
+#                        to exist.
+#   HELM_UPGRADE       — "true" runs `helm upgrade` on the existing
+#                        ${OPERATOR}-operator release instead of `helm
+#                        install`, after the same server-side CRD apply and
+#                        with the same --set list (barbican grants included),
+#                        so an upgrade re-passes the values the install
+#                        passed. Empty or "false" (the default) installs.
+#                        Any other value fails before anything is applied. An
+#                        upgrade of a release that does not exist fails with
+#                        Helm's "has no deployed releases". The operator
+#                        upgrade suites under tests/e2e-operator-upgrade/ use
+#                        it, except keystone's, whose step 3 runs its own
+#                        `helm upgrade` with its own --set list.
 #   WITH_PROMETHEUS    — When "true", enables the chart's gated ServiceMonitor
 #                        template via --set monitoring.serviceMonitor.enabled=true
 #                        (default: false). Used by the e2e-prometheus CI job
@@ -116,6 +132,12 @@ OPERATOR_REPLICAS="${OPERATOR_REPLICAS:-}"
 # Checked before anything is applied, so an invalid count touches nothing.
 if [[ -n "${OPERATOR_REPLICAS}" ]] && [[ ! "${OPERATOR_REPLICAS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::OPERATOR_REPLICAS='${OPERATOR_REPLICAS}' is not a positive integer"
+  exit 1
+fi
+HELM_UPGRADE="${HELM_UPGRADE:-false}"
+# Checked before anything is applied, like the count above.
+if [[ "${HELM_UPGRADE}" != "true" ]] && [[ "${HELM_UPGRADE}" != "false" ]]; then
+  echo "::error::HELM_UPGRADE must be true or false (got: '${HELM_UPGRADE}')"
   exit 1
 fi
 DEFAULT_IMAGE_PULL_POLICY="${DEFAULT_IMAGE_PULL_POLICY:-IfNotPresent}"
@@ -224,6 +246,7 @@ fi
 echo "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to enable ServiceMonitor)"
 echo "Metadata allow CIDRs: ${FEDERATION_METADATA_ALLOW_CIDRS:-<none>} (set FEDERATION_METADATA_ALLOW_CIDRS to allow in-cluster IdP discovery)"
 echo "Operator replicas   : ${OPERATOR_REPLICAS:-<chart default>} (set OPERATOR_REPLICAS to override the chart's replicas)"
+echo "Helm upgrade        : ${HELM_UPGRADE} (set HELM_UPGRADE=true to upgrade the existing release)"
 # A released chart that predates controller.defaultImagePullPolicy rejects the
 # key, so the value is passed only where the chart's schema names it.
 chart_pull_policy=""
@@ -296,12 +319,22 @@ if [[ "${OPERATOR}" == "barbican" ]] && [[ -n "${BARBICAN_SECRET_STORE_GRANTS}" 
   done
 fi
 
-helm install "${OPERATOR}-operator" \
-  "${CHART_PATH}/" \
-  --namespace "${NAMESPACE}" \
-  --create-namespace \
-  "${helm_args[@]}" \
-  --wait --timeout 120s
+# An upgrade takes the same arguments as the install apart from
+# --create-namespace: the release, and with it its Namespace, already exists.
+if [[ "${HELM_UPGRADE}" == "true" ]]; then
+  helm upgrade "${OPERATOR}-operator" \
+    "${CHART_PATH}/" \
+    --namespace "${NAMESPACE}" \
+    "${helm_args[@]}" \
+    --wait --timeout 120s
+else
+  helm install "${OPERATOR}-operator" \
+    "${CHART_PATH}/" \
+    --namespace "${NAMESPACE}" \
+    --create-namespace \
+    "${helm_args[@]}" \
+    --wait --timeout 120s
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Wait for admission webhook to accept traffic
