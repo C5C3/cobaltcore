@@ -1116,6 +1116,22 @@ func TestBarbicanOpenBaoAuthDelegatorName_DisambiguatesTheNamespaceBoundary(t *t
 		"truncating the hash further puts the binding name within reach of a brute-force search")
 }
 
+// TestBarbicanOpenBaoQualifiedName pins the bytes of the shared hash. A live
+// auth-delegator binding is found at teardown by re-deriving its name, so a
+// change to the hash input, its separator or its length strands every binding
+// written under the old name.
+func TestBarbicanOpenBaoQualifiedName(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// sha256("barbican/cp-barbican-bao"), first eight bytes.
+	g.Expect(barbicanOpenBaoQualifiedName("cp-barbican-bao", "barbican", "-x")).To(
+		Equal("cp-barbican-bao-ed2cce0660bcb609-x"))
+	g.Expect(barbicanOpenBaoAuthDelegatorName("cp-barbican-bao", "barbican")).To(
+		Equal("cp-barbican-bao-ed2cce0660bcb609-auth-delegator"))
+	g.Expect(barbicanOpenBaoQualifiedName("cp-barbican-bao", "", "")).To(
+		MatchRegexp(`^cp-barbican-bao-[0-9a-f]{16}$`), "an empty namespace still hashes the separator")
+}
+
 // --- per-service target clusters: the ensemble follows the service ---
 
 // placedBarbicanOpenBaoControlPlane places the Barbican service, and with it the
