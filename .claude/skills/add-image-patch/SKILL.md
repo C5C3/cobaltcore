@@ -34,6 +34,7 @@ lists them.
 | `build-service-images` | `build-images.yaml`, `nix build .#<svc>-<rel_>-image` | builds the image from the patched source; on a PR it runs `tests/container-images/verify_<svc>.sh` against it (the `verify-script` input is PR-only) |
 | `test-service-images` | `nix build .#<svc>-<rel_>-test-run` | runs the **upstream** stestr suite (minus `releases/<release>/test-excludes/<svc>.txt`) against the patched tree |
 | `build-e2e-images` | `ci.yaml` via `hack/ci-nix-build-e2e-images.sh` | the same flake attribute, so e2e images match the published ones |
+| `keystone-pressure` | `ci.yaml` (`image_keystone`), `make keystone-pressure-ab` | keystone only: runs dizzy's token-path load against `main`'s image and the patched one and puts the comparison per profile into the job summary |
 | `verify-service-images` | `build-images.yaml`, push to main only | `verify_<svc>.sh` against the published image |
 | `derive-service-tags` | `.github/actions/derive-service-tags` | counts `*.patch` into the composite tag `<version>-p<N>-<branch>-<sha>` |
 
@@ -162,6 +163,12 @@ bash .claude/skills/add-image-patch/scripts/check-image-patches.sh --apply --ser
 Then run the affected upstream tests and, when it matters, the full suite
 and an image build: the recipes (including the macOS build workaround) are
 in [references/patch-conventions.md](references/patch-conventions.md).
+
+A Keystone patch that changes the token path (#1456, and the keystonemiddleware
+work of #1462) names its profile of `tests/load/keystone-pressure/` and quotes
+that profile's comparison in the pull request body: from the
+`keystone-pressure` job, or from `make keystone-pressure-ab` with the base and
+the patched image (docs/reference/testing/keystone-pressure-testing.md).
 
 ### 7. Commit
 
