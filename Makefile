@@ -825,14 +825,21 @@ e2e-autoscaling:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e-autoscaling/
 
 .PHONY: e2e-operator-upgrade
-# e2e-operator-upgrade runs the keystone-operator helm-upgrade-in-place suite:
-# it fetches the last released chart+image from GHCR, installs it as the
-# baseline, then `helm upgrade`s to the locally built chart+CRDs and asserts the
-# deployed Keystone survives (Ready persists, installedRelease unchanged, no
-# re-bootstrap). Because the suite manages the operator release itself, it lives
+# e2e-operator-upgrade runs one operator's helm-upgrade-in-place suite,
+# tests/e2e-operator-upgrade/<op>-helm-upgrade/ for OPERATOR (default
+# keystone): it fetches the chart and image the suite's baseline.yaml pins from
+# GHCR, installs them as the baseline, and the suite then upgrades the release
+# to the in-repo chart+CRDs and asserts the deployed CR is undisturbed by the
+# upgrade (each suite's header lists what it asserts). Because the suite
+# manages the operator release itself, it lives
 # OUTSIDE tests/e2e/ and must run against a cluster with the infra stack
-# deployed but NO keystone-operator release yet (this target installs the
-# baseline). The two preflights are kept separate so a kubectl/cluster
+# deployed but NO <op>-operator release yet (this target installs the
+# baseline). The infra opt-ins, the sibling operators and the sibling CRDs the
+# operator's suite needs are the caller's job, as the reusable workflow
+# .github/workflows/e2e-operator-upgrade.yaml prepares them: the table in
+# hack/ci-operator-upgrade-leg.sh lists them per operator. The suite upgrades
+# to ghcr.io/c5c3/<op>-operator:dev, so that image must be loaded into kind
+# first. The two preflights are kept separate so a kubectl/cluster
 # reachability failure is not conflated with a pre-existing-operator failure —
 # see review pattern
 # .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
@@ -841,16 +848,26 @@ e2e-autoscaling:
 # developers can reproduce the e2e-operator-upgrade CI job locally. Requires
 # `helm registry login ghcr.io` for the baseline chart/image pull; KIND_CLUSTER
 # (default cobaltcore) selects the kind cluster to load the baseline image into.
+UPGRADE_OPERATOR = $(or $(OPERATOR),keystone)
+# The fetch script writes the image tag and the chart directory it fetched
+# here, as it writes them to GITHUB_OUTPUT in CI, and the deploy reads them back.
+UPGRADE_FETCHED = _output/operator-upgrade/$(UPGRADE_OPERATOR).fetched
+UPGRADE_GRANTS = BARBICAN_SECRET_STORE_GRANTS=openstack=openbao-instance-provisioner
 e2e-operator-upgrade:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
-	@if helm status keystone-operator -n keystone-system >/dev/null 2>&1; then \
-		echo 'a keystone-operator release already exists in keystone-system; this suite installs the released operator itself and must run against a cluster without a pre-deployed keystone-operator (teardown the release or use a fresh kind cluster)' >&2; \
+	@if helm status $(UPGRADE_OPERATOR)-operator -n $(UPGRADE_OPERATOR)-system >/dev/null 2>&1; then \
+		echo 'a $(UPGRADE_OPERATOR)-operator release already exists in $(UPGRADE_OPERATOR)-system; this suite installs the released operator itself and must run against a cluster without a pre-deployed $(UPGRADE_OPERATOR)-operator (teardown the release or use a fresh kind cluster)' >&2; \
 		exit 1; \
 	fi
-	hack/ci-fetch-released-operator.sh
-	OPERATOR=keystone IMAGE_REPO=ghcr.io/c5c3/keystone-operator IMAGE_TAG=latest \
-		CHART_DIR=_output/operator-upgrade/keystone-operator hack/ci-deploy-operator.sh
-	chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml tests/e2e-operator-upgrade/
+	@rm -f $(UPGRADE_FETCHED)
+	GITHUB_OUTPUT=$(CURDIR)/$(UPGRADE_FETCHED) OPERATOR=$(UPGRADE_OPERATOR) hack/ci-fetch-released-operator.sh
+	OPERATOR=$(UPGRADE_OPERATOR) IMAGE_REPO=ghcr.io/c5c3/$(UPGRADE_OPERATOR)-operator \
+		IMAGE_TAG="$$(sed -n 's/^image_tag=//p' $(UPGRADE_FETCHED))" \
+		CHART_DIR="$$(sed -n 's/^chart_dir=//p' $(UPGRADE_FETCHED))" NAMESPACE=$(UPGRADE_OPERATOR)-system \
+		$(UPGRADE_GRANTS) hack/ci-deploy-operator.sh
+	@mkdir -p _output/reports
+	$(UPGRADE_GRANTS) chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml \
+		tests/e2e-operator-upgrade/$(UPGRADE_OPERATOR)-helm-upgrade/
 
 .PHONY: e2e-multicluster
 # e2e-multicluster runs the placed-services suite across two kind clusters: the

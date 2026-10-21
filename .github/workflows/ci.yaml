@@ -1989,11 +1989,12 @@ jobs:
         id: baseline
         run: hack/ci-fetch-released-operator.sh
         env:
+          OPERATOR: keystone
           KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
-      # Install the RELEASED operator (pulled chart + :latest image) as the
+      # Install the RELEASED operator (the pinned chart and image) as the
       # upgrade baseline. CHART_DIR points at the untarred pulled chart so
       # ci-deploy-operator.sh installs the released chart, not the in-repo one.
       - name: Deploy released operator (baseline)
@@ -2001,7 +2002,7 @@ jobs:
         env:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
-          IMAGE_TAG: latest
+          IMAGE_TAG: ${{ steps.baseline.outputs.image_tag }}
           CHART_DIR: ${{ steps.baseline.outputs.chart_dir }}
       - name: Run operator upgrade E2E
         env:
