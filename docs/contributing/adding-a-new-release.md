@@ -286,6 +286,21 @@ successor of the new release. That is what makes it a rejection test.
 target from `registry.invalid/…`, so it wedges whatever releases exist; it
 only has to start at a release that is still under `releases/`.
 
+CI holds these moves. `tests/unit/ci/check_release_wiring_audit_test.sh` runs
+the L6 layer of the `check-release-wiring` audit against the checkout under
+`make test-shell`, on every pull request and every push to `main`. The test
+fails when an upgrade suite or the ControlPlane hop tests another pair than
+`<prev> -> <version>` or pins a release outside its pair. It also fails when
+the skip-level target is under `releases/` or is the sequential successor of
+the suite's target, and when an `upgrade-abort` suite does not wedge a
+sequential upgrade that starts at a release under `releases/`. When the stuck
+patch points at a `.invalid` registry, the abort patch must restore the start
+tag, and the start repository where `NN-<svc>-cr.yaml` names one. The audit
+does not read the abort patch of a stuck patch on the real repository. The
+Horizon `KEY_PREFIX` literals, the launch-mode assertions and the
+`TestIsSequentialUpgrade` cases stay outside the test, because L6 reads only
+release pins and image repositories.
+
 The testing pages
 ([Keystone](../reference/testing/keystone-e2e-tests.md),
 [Cinder](../reference/testing/cinder-e2e-tests.md) and
