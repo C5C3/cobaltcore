@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Everything below this paragraph is a byte-for-byte copy of
+# tests/e2e/glance/basic-deployment/00-glance-cr.yaml.
+# It is copied, not referenced by path: this suite applies it under the
+# baseline operator's older CRD, so a field the e2e suite's fixture
+# adopts later must not reach it.
+
+# Glance CR fixture for the basic-deployment E2E test (2026.1 release).
+# Managed mode: database via clusterRef to openstack-db (schema glance_basic),
+# cache via clusterRef to openstack-memcached. The database credentials come
+# from the ESO-synced glance-db Secret and the service-user password from the
+# pre-seeded keystone-admin Secret (both deploy/kind/infrastructure). glance-api
+# cannot start without a default image store, so 01-glance-backend.yaml attaches
+# one before Ready can settle. From 2026.1 the API launches under uWSGI rather
+# than the eventlet glance-api server.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-basic
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_basic
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
