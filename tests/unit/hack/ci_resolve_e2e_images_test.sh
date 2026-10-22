@@ -676,7 +676,7 @@ test_the_outputs_have_the_shapes_the_workflow_reads() {
   assert_eq "the map parses as a JSON object" "true" "$(jq -e 'type == "object"' <<<"$MAP")"
 
   local block
-  for block in BUILD_OPERATORS BUILD_SERVICE_IMAGES BUILD_TEMPEST_RELEASES; do
+  for block in BUILD_OPERATORS BUILD_COVER_OPERATORS BUILD_SERVICE_IMAGES BUILD_TEMPEST_RELEASES; do
     assert_file_contains "$block is written as a heredoc block" "$ENV_FILE" "^$block<<EOF$"
   done
   assert_file_contains "BUILD_PROXY is written as a plain assignment" "$ENV_FILE" \
@@ -698,6 +698,75 @@ test_the_outputs_have_the_shapes_the_workflow_reads() {
     "ghcr.io/c5c3/glance-operator:dev -> ghcr.io/c5c3/glance-operator:e2e-test-dev (built)"
   assert_contains "a reused image says so" "$OUTPUT" \
     "ghcr.io/c5c3/keystone-operator:dev -> ghcr.io/c5c3/keystone-operator@sha256:"
+}
+
+# ---------------------------------------------------------------------------
+# Test: the coverage-instrumented operator images
+# ---------------------------------------------------------------------------
+# tree_operators — the operators/<op>/ with a go.mod, one per line.
+tree_operators() {
+  local dir
+  for dir in "$PROJECT_ROOT"/operators/*/; do
+    if [ -f "${dir}go.mod" ]; then
+      basename "$dir"
+    fi
+  done
+}
+
+test_cover_images_build_every_operator() {
+  echo "Test: BUILD_COVER_IMAGES=true builds the cover image of every operator, changed or not"
+
+  run_resolve BUILD_COVER_IMAGES=true
+
+  local op ops=()
+  while read -r op; do
+    ops+=("$op")
+  done < <(tree_operators)
+
+  assert_eq "the resolver exits 0" "0" "$RC"
+  assert_eq "the tree has ten operators" "10" "${#ops[@]}"
+  for op in "${ops[@]}"; do
+    assert_eq "$op: the cover image carries the run-scoped tag" \
+      "ghcr.io/c5c3/${op}-operator:e2e-test-cover" \
+      "$(map_value "ghcr.io/c5c3/${op}-operator:cover")"
+    assert_contains "$op: the dev image is still pulled by digest" \
+      "$(map_value "ghcr.io/c5c3/${op}-operator:dev")" "ghcr.io/c5c3/${op}-operator@sha256:"
+  done
+  assert_eq "every operator is a cover build, in tree order" "${ops[*]}" \
+    "$(env_block BUILD_COVER_OPERATORS)"
+  assert_eq "no production operator image is built" "" "$(env_block BUILD_OPERATORS)"
+  assert_eq "the Nix step runs for the cover images alone" "true" "$(env_value BUILD_NIX_IMAGES)"
+  assert_eq "the map holds one more key per operator" \
+    "$(($(expected_keys | wc -l) + ${#ops[@]}))" "$(jq -r 'length' <<<"$MAP")"
+  # main publishes no cover image, so there is nothing to look up.
+  assert_eq "no cover image is looked up in the registry" "0" \
+    "$(grep -c ':cover$' "$INSPECT_LOG")"
+}
+
+test_cover_images_are_off_unless_asked() {
+  echo "Test: unset, empty, false and any other value build no cover image"
+
+  local form
+  for form in "UNSET" "" "false" "yes"; do
+    if [ "$form" = "UNSET" ]; then
+      run_resolve
+    else
+      run_resolve BUILD_COVER_IMAGES="$form"
+    fi
+
+    local label="${form:-<empty>}"
+    assert_eq "form $label: the resolver exits 0" "0" "$RC"
+    assert_eq "form $label: the map has no :cover key" "0" \
+      "$(jq -r '[keys[] | select(endswith(":cover"))] | length' <<<"$MAP")"
+    assert_eq "form $label: the map's keys are the tree's images" \
+      "$(expected_keys | sort)" "$(jq -r 'keys[]' <<<"$MAP" | sort)"
+    assert_file_not_contains "form $label: GITHUB_ENV names no cover image" "$ENV_FILE" ":cover"
+    assert_file_contains "form $label: BUILD_COVER_OPERATORS is still written" "$ENV_FILE" \
+      "^BUILD_COVER_OPERATORS<<EOF$"
+    assert_eq "form $label: BUILD_COVER_OPERATORS is empty" "" \
+      "$(env_block BUILD_COVER_OPERATORS)"
+    assert_eq "form $label: no Nix image is built" "false" "$(env_value BUILD_NIX_IMAGES)"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -847,6 +916,8 @@ test_a_malformed_changed_list_is_fatal
 test_a_name_with_no_image_is_ignored
 test_missing_required_env_fails_loudly
 test_the_outputs_have_the_shapes_the_workflow_reads
+test_cover_images_build_every_operator
+test_cover_images_are_off_unless_asked
 test_an_operator_image_behind_its_sources_is_built
 test_a_commit_to_shared_go_code_makes_an_older_image_stale
 test_an_image_whose_revision_cannot_be_checked_is_built
