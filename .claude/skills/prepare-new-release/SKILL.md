@@ -26,9 +26,9 @@ checklist, and where it and this list disagree, the inventory and
 ## What auto-extends and what does not
 
 The repo carries eight services (`source-refs.yaml` keys), six
-Tempest-covered services (twelve legs across two releases), eight
-`release-upgrade` suites, and seven operators with option catalogs. Every
-hand-maintained row applies once per service.
+Tempest-covered services (twelve legs across two releases, plus the
+`keystone-upgrade` leg), eight `release-upgrade` suites, and seven operators
+with option catalogs. Every hand-maintained row applies once per service.
 
 | Touch point | Mechanism | Auto-extends? |
 |---|---|---|

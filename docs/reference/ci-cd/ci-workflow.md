@@ -99,7 +99,7 @@ Seven labels add jobs. None of them ever removes one.
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling`, `e2e-orders-multicluster` |
 | `ci:multicluster` | `e2e-multicluster`, `e2e-orders-multicluster` |
 | `ci:pressure` | `keystone-pressure`, one leg per release that ships a Keystone image |
-| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all twelve Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
+| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all thirteen Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
 
 The `labeled` trigger means a label applied after the last push starts a run that
 evaluates the new label set. A label outside this set resolves to nothing: the
@@ -273,7 +273,7 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches |
 | 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets` and `e2e-operators` |
-| 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
+| 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
 | 5 | `Generate keystone-pressure release matrix` | Step id `keystone-pressure-matrix`. Runs `hack/ci-service-image-releases.sh` with `OPERATOR=keystone` and writes `keystone-pressure-releases` with one entry per release whose `releases/<release>/source-refs.yaml` carries a Keystone ref |
 | 6 | `Generate cleanup package matrix` | Step id `cleanup-matrix`. Runs `hack/ci-generate-cleanup-matrix.sh`, which derives the GHCR package names from `images/*/` and from every `operators/*/` directory that holds a `go.mod`. It writes `cleanup-packages` and `cleanup-e2e-packages`. The job exports the second |
 | 7 | `Shard the e2e-operator matrix` | Step id `e2e-operator-legs`. A `jq` filter turns `e2e-operators` into an `include` list and splits `nova` into two entries, `shard: "1"` and `shard: "2"`. It writes `legs` |
@@ -341,7 +341,7 @@ The matrices come last:
 | `e2e-operators` | `{"operator":[...]}`. The matrix of `merge-operator-images` and `helm-push` and the `operator` dimension of `build-and-push`. `github-release` loops over it to package the charts |
 | `e2e-operator-legs` | Written by step 7: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
 | `test-targets` | `{"target":[...]}` with `common` and operator names. The matrix of `test` and `test-integration` |
-| `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release. The matrix of `tempest` |
+| `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. The matrix of `tempest` |
 | `keystone-pressure-releases` | Written by step 5: `{"release":[...]}` with the releases that ship a Keystone image. The matrix of `keystone-pressure` |
 | `cleanup-e2e-packages` | Written by step 6: JSON array of the GHCR packages that may receive run-scoped tags, every published package. The `package` matrix of `cleanup-e2e-tags` |
 
@@ -1991,7 +1991,8 @@ lists the commands of a job in order.
 `ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder nova)` with every
 `releases/<version>/` directory, writing the result to the `tempest-releases`
 output the job consumes as `matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}`.
-Two releases and six services make twelve legs. A service without a
+Two releases and six services make twelve legs, and one `keystone-upgrade`
+entry for the newest transition makes thirteen. A service without a
 `tests/tempest/<service>-<slug>` configuration directory fails the generator.
 `TEMPEST_SERVICES`, set from the change resolver, narrows the emitted entries to
 the services a pull request touches; the directory check still covers all six.
@@ -2005,7 +2006,10 @@ name the compute stack their legs bring up. Both carry `ovn-cr-name`,
 `neutron-cr-name`, `placement-cr-name`, `glance-cr-name` and
 `tempest-concurrency: "2"`; the cinder entries add `nova-cr-name`, which on a
 nova entry is the leg's own service CR. Steps read them as `matrix.release`,
-`matrix.config-dir`, `matrix.cr-name` and so on. For the names each leg ends up
+`matrix.config-dir`, `matrix.cr-name` and so on. The `keystone-upgrade` entry
+carries the five keys of the newest release's `keystone` entry plus
+`upgrade-from`, the second-newest release, which the leg deploys before it
+upgrades the Keystone in place to `release`. For the names each leg ends up
 with, see
 [Tempest Test Infrastructure](../testing/tempest-test-infrastructure.md).
 
@@ -2016,7 +2020,8 @@ with, see
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/source.json` holds the pin |
 | 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs, filling every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image (`operator-variant: cover`, also on the glance and barbican load steps; see [Operator coverage](#operator-coverage)); the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>`; the nova and cinder legs pull the four compute-stack operator images plus `neutron:<release>`, `placement:<release>`, `nova:<release>` and `ovn:<OVN_VERSION>` |
-| 6 | `kind load docker-image` | Loads keystone operator and service images into kind |
+| 6 | `kind load docker-image` | Loads keystone operator and service images into kind; on the keystone-upgrade leg `keystone:<release>` is the image the upgrade moves to |
+| 6a | `kind load docker-image` *(keystone-upgrade leg only)* | Loads `keystone:<upgrade-from>`, which step 5 pulled on that leg; without it the node would pull the published tag and upgrade main's image |
 | 7 | `kind load docker-image` *(neutron leg only)* | Loads the two operator images, the neutron and OVN service images, and the tempest image the catalog Job runs in-cluster |
 | 8 | `kind load docker-image` *(nova and cinder legs)* | Loads the eight compute-stack refs both legs share in one call, so the layers the service images and the operator images each share are saved and imported once; each leg's glance pair and tempest image come from a step above, the cinder leg's from its own and the nova leg's from the glance one |
 | 9 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack. `WITH_MESSAGING` is set on the cinder and nova legs, `WITH_NFS` on the cinder leg and `WITH_OVN_KERNEL_MODULES` on the nova leg |
@@ -2024,7 +2029,9 @@ with, see
 | 10 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm; the job-level `E2E_COVERAGE: "true"` gives this operator and those of steps 11 and 12 a coverage counter volume and `GOCOVERDIR` |
 | 11 | `hack/ci-deploy-operator.sh` ×2 *(neutron, nova and cinder legs)* | Deploys the ovn-operator into `ovn-system` and the neutron-operator into `neutron-system`; a Neutron never reaches Ready without a live OVNCentral, and all three legs run one |
 | 12 | `hack/ci-deploy-operator.sh` ×2 *(nova and cinder legs)* | Deploys the placement- and nova-operator, each into its own `<op>-system` Namespace; the glance-, ovn- and neutron-operator both legs also need come from the steps above |
-| 13 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
+| 13 | Deploy Keystone CR *(every leg but keystone-upgrade)* | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
+| 13a | Deploy Keystone CR at the previous release *(keystone-upgrade leg only)* | Applies `matrix.config-dir/00-keystone-cr.yaml` with `spec.image.tag` set to `matrix.upgrade-from` by `yq` `strenv()`, waits 300 s for Ready and 60 s for `status.installedRelease` to read `upgrade-from`; any other value fails the step, because Tempest would then test a fresh database |
+| 13b | Upgrade Keystone to the leg's release *(keystone-upgrade leg only)* | Patches `spec.image.tag` to `matrix.release`, waits 600 s for `status.installedRelease` to follow and 60 s for the `<cr>-db-expand`, `<cr>-db-migrate` and `<cr>-db-contract` Jobs. It then polls 300 s for the `<cr>-schema-check` Job to run at `:<release>` and waits 300 s for it to complete, 300 s for Ready and 300 s for the rollout, then checks that the Deployment's image ends in `:<release>`. The status write that moves `installedRelease` reports Ready before the operator re-runs `<cr>-db-sync` and `<cr>-schema-check` (`keystone-manage db_sync --check`) at the new image, so only a Ready after that check covers the upgraded schema |
 | 14 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `neutron-tempest-catalog-setup` Job to complete |
 | 15 | Deploy OVNCentral *(neutron leg only)* | Applies `02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/ovn-neutron-tempest-<slug>` Ready |
 | 16 | Deploy Neutron CR *(neutron leg only)* | Applies `04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready |

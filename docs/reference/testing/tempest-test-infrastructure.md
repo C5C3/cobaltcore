@@ -36,7 +36,7 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `tests/container-images/verify_tempest.sh` | Image verification script (PASS/FAIL counters) |
 | `hack/run-tempest.sh` | Local orchestration script for running Tempest against a kind cluster |
 | `hack/ci-run-tempest.sh` | CI-specific Tempest wrapper with port-forwarding and config generation |
-| `hack/ci-generate-tempest-matrix.sh` | Generates the `tempest` job matrix from `releases/*/`, emitting one leg per service (`keystone`, `glance`, `barbican`, `neutron`, `cinder`, `nova`) per release |
+| `hack/ci-generate-tempest-matrix.sh` | Generates the `tempest` job matrix from `releases/*/`, emitting one leg per service (`keystone`, `glance`, `barbican`, `neutron`, `cinder`, `nova`) per release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist |
 | `hack/tempest/extract-failed.py` | Print anchored regex patterns for failed testcases in a JUnit report (used to build the retry include-list) |
 | `hack/tempest/merge-retry-junit.py` | Merge a retry subunit stream into a JUnit report, rewriting resolved failures as flakes |
 | `hack/tempest/run-tests.sh` | Shared in-container runner invoked by both runners; holds the phase + retry + exit-code logic so it stays identical between CI and local runs |
@@ -599,8 +599,10 @@ port. "Compute stack" names those two legs everywhere below.
 **Release matrix:**
 
 The generator scans `releases/*/` and emits one `keystone`, one `glance`, one
-`barbican`, one `neutron`, one `cinder` and one `nova` leg per release, twelve
-entries across the two releases in the tree; each service requires a matching
+`barbican`, one `neutron`, one `cinder` and one `nova` leg per release. One
+`keystone-upgrade` entry for the newest release follows them (see
+[Keystone upgrade leg](#keystone-upgrade-leg)), which makes thirteen entries
+across the two releases in the tree. Each service requires a matching
 `tests/tempest/<service>-<slug>` directory or the generator fails the `changes` job.
 `service-k8s-name` always equals `cr-name` (the Keystone identity CR the job waits on
 and port-forwards on 5000). The glance legs additionally carry `glance-cr-name` (the
@@ -627,12 +629,15 @@ only legs that reach a console: the run step derives
 `<nova-cr-name>-novncproxy` and the runner forwards it on 6080, which is what
 `test_novnc_bad_token` dials. The neutron, cinder and nova legs all carry
 `tempest-concurrency` (`2`), which the run step passes to
-`hack/ci-run-tempest.sh` in place of its default of four workers.
+`hack/ci-run-tempest.sh` in place of its default of four workers. The
+`keystone-upgrade` entry carries the five keys of the newest `keystone` entry
+plus `upgrade-from`, the release its Keystone is deployed at before the upgrade.
 
 | Service | Release | Config directory | Keystone CR (`cr-name` = `service-k8s-name`) | Glance CR (`glance-cr-name`) | Barbican CR (`barbican-cr-name`) | Neutron CR (`neutron-cr-name`) | Cinder CR (`cinder-cr-name`) | Nova CR (`nova-cr-name`) | OVNCentral (`ovn-cr-name`) | Placement CR (`placement-cr-name`) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `keystone` | `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | — | — | — | — | — | — | — |
 | `keystone` | `2026.2` | `tests/tempest/keystone-2026-2` | `keystone-tempest-2026-2` | — | — | — | — | — | — | — |
+| `keystone-upgrade` | `2026.2` (from `2026.1`) | `tests/tempest/keystone-2026-2` | `keystone-tempest-2026-2` | — | — | — | — | — | — | — |
 | `glance` | `2026.1` | `tests/tempest/glance-2026-1` | `keystone-glance-tempest-2026-1` | `glance-tempest-2026-1` | — | — | — | — | — | — |
 | `glance` | `2026.2` | `tests/tempest/glance-2026-2` | `keystone-glance-tempest-2026-2` | `glance-tempest-2026-2` | — | — | — | — | — | — |
 | `barbican` | `2026.1` | `tests/tempest/barbican-2026-1` | `keystone-barbican-tempest-2026-1` | — | `barbican-tempest-2026-1` | — | — | — | — | — |
@@ -648,8 +653,9 @@ only legs that reach a console: the run step derives
 
 | Step | Description |
 | --- | --- |
-| Load E2E images | The `load-e2e-images` action pulls the images the `build-e2e-images` job pushed and re-tags them to their local references: the keystone-operator, `keystone:<release>` and the Tempest image, `ghcr.io/c5c3/tempest:<release>`, plus the operator and service images of the neutron, cinder and nova legs |
-| Load images into kind | Loads operator and release-specific service images |
+| Load E2E images | The `load-e2e-images` action pulls the images the `build-e2e-images` job pushed and re-tags them to their local references: the keystone-operator, `keystone:<release>` and the Tempest image, `ghcr.io/c5c3/tempest:<release>`, plus the operator and service images of the neutron, cinder and nova legs, and `keystone:<upgrade-from>` on the keystone-upgrade leg |
+| Load images into kind | Loads operator and release-specific service images. On the keystone-upgrade leg `keystone:<release>` is the image the upgrade moves to |
+| Load the previous release's Keystone image into kind *(keystone-upgrade leg only)* | Loads `keystone:<upgrade-from>`. kubelet skips the registry only for a tag already on the node, so without this load the node would pull the published `ghcr.io/c5c3/keystone:<upgrade-from>`, and the upgrade would start from main's image instead of this run's |
 | Load compute stack images into kind *(nova and cinder legs)* | One `kind load docker-image` call for the four compute-stack operator images, the `neutron`, `placement` and `nova` service images, and the `ovn` daemon image at the resolved pin. One call rather than eight: each is a `docker save` piped into the node's containerd, and the three service images share their Nix store layers while the four operator images share their own base. Each leg's glance pair and tempest image — the latter for the catalog-setup, image-seed and flavor-seed Jobs that run in-cluster — come from a step above: the cinder leg's from its own, the nova leg's from the one it shares with the glance leg |
 | Setup E2E infrastructure | The `setup-e2e-infra` action runs `make deploy-infra`. The `Deploy cinder operator` row names the `WITH_NFS`, `WITH_MESSAGING` and `WITH_OVN_KERNEL_MODULES` switches it sets per leg |
 | Deploy operator (keystone) | `hack/ci-deploy-operator.sh` with `OPERATOR=keystone` |
@@ -658,7 +664,9 @@ only legs that reach a console: the run step derives
 | Deploy ovn operator, Deploy neutron operator *(neutron, nova and cinder legs)* | Two `hack/ci-deploy-operator.sh` runs: `OPERATOR=ovn`, `NAMESPACE=ovn-system` and `OPERATOR=neutron`, `NAMESPACE=neutron-system`. A Neutron never reaches Ready without a live OVNCentral, whose published database addresses its controller reads before it renders `ml2_conf.ini`. Both compute-stack legs run a Neutron of their own, so the same two runs cover them |
 | Deploy cinder operator *(cinder leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=cinder`, `NAMESPACE=cinder-system`. The `Setup E2E infrastructure` step ahead of it sets `WITH_NFS` on this leg alone and `WITH_MESSAGING` on it and the nova leg, which is what puts the NFS export and the `shared-rabbitmq` broker on the cluster the CinderBackend, the Cinder and both legs' Nova need. `WITH_OVN_KERNEL_MODULES` is set on the nova leg alone, where a real OVN chassis opens a Geneve tunnel off the kind node |
 | Deploy placement operator, Deploy nova operator *(nova and cinder legs)* | Two `hack/ci-deploy-operator.sh` runs, into `placement-system` and `nova-system`. A Nova claims its inventory in a Placement, so both watch before the CRs below are applied. The glance-, ovn- and neutron-operator these legs also need come from the rows above, whose conditions cover them |
-| Deploy Keystone CR for Tempest | Applies `matrix.config-dir/00-keystone-cr.yaml`, waits for `matrix.cr-name` Ready |
+| Deploy Keystone CR for Tempest *(every leg but keystone-upgrade)* | Applies `matrix.config-dir/00-keystone-cr.yaml`, waits for `matrix.cr-name` Ready |
+| Deploy Keystone CR at the previous release *(keystone-upgrade leg only)* | Renders `matrix.config-dir/00-keystone-cr.yaml` with `spec.image.tag` set to `matrix.upgrade-from` (`yq` with `strenv()`, so the tag stays a string), applies it and waits 300 s for Ready. It then waits 60 s for `status.installedRelease` to read `upgrade-from` and otherwise fails with an `::error::` naming the value it found: a Keystone synced fresh at the newest release runs no upgrade, and Tempest would test a fresh database |
+| Upgrade Keystone to the leg's release *(keystone-upgrade leg only)* | Patches `spec.image.tag` to `matrix.release` and waits 600 s for `status.installedRelease` to follow, failing with an `::error::` that points at the `DatabaseReady` condition in the diagnostics dump. Then it waits 60 s for the `<cr>-db-expand`, `<cr>-db-migrate` and `<cr>-db-contract` Jobs to complete. The status write that moves `installedRelease` reports Ready before the operator re-runs the `<cr>-db-sync` and `<cr>-schema-check` Jobs at the new image, so the step polls 300 s for `<cr>-schema-check` to run at `:<release>` and waits 300 s for it to complete, each failing with an `::error::`. That Job runs `keystone-manage db_sync --check`, so a schema left behind a head fails the step before Tempest runs. Then the step waits 300 s for Ready and 300 s for the rollout of the three API replicas, and fails with an `::error::` when the Deployment's image does not end in `:<release>` |
 | Bootstrap image catalog *(glance leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `glance-tempest-catalog-setup` Job to complete (registers the image service + endpoints in Keystone that the Glance CR needs to reconcile) |
 | Deploy Glance CR for Tempest *(glance leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml`, `03-glancebackend-cr.yaml`, and `04-glancebackend2-cr.yaml`, waits for `matrix.glance-cr-name` Ready |
 | Bootstrap key-manager catalog *(barbican leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `barbican-tempest-catalog-setup` Job to complete (registers the key-manager service + endpoints in Keystone that the Barbican CR needs to reconcile, plus the `key-manager:service-admin` role the plugin's quota tests assign via dynamic credentials) |
@@ -699,7 +707,11 @@ of skipping it.
 120 on the cinder legs. Run 35083301017 measured the cinder 2025.2 leg at 56
 minutes, 40 of them bring-up, and the Phase-0 lab of #1015 ran the compute
 suite in 42 minutes at two workers. Both raised numbers are estimates;
-re-derive each from the first green run of its leg.
+re-derive each from the first green run of its leg. Run 39564032378 measured
+the fresh keystone 2026.2 leg at 45.6 minutes: 8.7 in `Setup E2E
+infrastructure`, 40 s in `Deploy Keystone CR for Tempest` and 33.1 in the
+Tempest run. The keystone-upgrade leg adds one image pull and kind load plus the
+upgrade, an estimated 5 minutes, which puts it near 51 of its 68.
 
 **CI-specific adaptations** (compared to local execution):
 
@@ -715,10 +727,45 @@ re-derive each from the first green run of its leg.
 | Placement endpoint | Not supported (local runs are keystone-only) | When `PLACEMENT_K8S_NAME` is set (nova and cinder legs), the script also forwards `svc/<placement-cr-name>` on 8778, polls its root path, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's placement endpoint resolves to the forwarded port. Placement registers no healthcheck middleware either, so the poll asks for `/`, the path the operator probes |
 | Credential injection | `sed` substitution into generated config copy | `sed` substitution into generated config copy |
 | Tempest image | Built locally from the flake (`nix build .#tempest-<rel_>-image`) | Built by the `Build Nix images` step of the `build-e2e-images` job, or pulled by the digest main published |
-| Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<service>-<release>-results` name |
+| Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<service>-<release>-results` name (`tempest-keystone-upgrade-2026.2-results` for the keystone-upgrade leg) |
 
-**Artifact name:** `tempest-<service>-<release>-results` (e.g., `tempest-keystone-2026.1-results`, `tempest-glance-2026.2-results`)
+**Artifact name:** `tempest-<service>-<release>-results` (e.g., `tempest-keystone-2026.1-results`, `tempest-glance-2026.2-results`, `tempest-keystone-upgrade-2026.2-results`)
 **Retention:** 14 days
+
+#### Keystone upgrade leg
+
+The `keystone-upgrade` entry runs the newest release's keystone suite against a
+Keystone that reached that release by an in-place upgrade. Its Keystone comes up
+at `upgrade-from`, so the previous release's `db_sync` and bootstrap write the
+database. The keystone-operator then moves it to `release` through the
+`<cr>-db-expand` and `<cr>-db-migrate` Jobs, a rolling update of the three API
+replicas and the `<cr>-db-contract` Job. The fresh `keystone` entries only see a
+database that `keystone-manage db_sync` created at one release. The
+[`release-upgrade`](./keystone-e2e-tests.md#release-upgrade) Chainsaw suite
+checks `/v3`, the admin token and the continuity of a token across the same
+hop, and does not exercise the identity API beyond that.
+
+No data is seeded before the upgrade. The rows that pass through the migration
+are the ones the operator's bootstrap writes: the `Default` domain, the `admin`
+user and project, the `admin`, `member` and `reader` roles, `RegionOne`, and the
+identity service with its admin, internal and public endpoints. Tempest's
+dynamic credentials create everything else after the upgrade, on the new
+schema.
+
+The generator takes the pair from the last two `releases/*/` directories in
+glob order. That is the newest transition, the one the L6 check of the
+`check-release-wiring` audit holds every upgrade suite to, and adding a release
+moves the entry to the new transition without a workflow edit. The entry reuses the newest
+release's `tests/tempest/keystone-<slug>/` directory and Keystone CR name, so
+both keystone entries of that release run the same `include-tests.txt` and
+`exclude-tests.txt`.
+
+A test that fails on `keystone-upgrade` and passes on the fresh `keystone` entry
+of the same release in the same run is a finding against the migration. Report
+it with the test id and the traceback from `tempest-results.xml` in the
+`tempest-keystone-upgrade-<release>-results` artifact. Keep it out of
+`exclude-tests.txt`: the fresh entry reads the same file and would lose the test
+too.
 
 ### build-images.yaml — build-tempest Job
 

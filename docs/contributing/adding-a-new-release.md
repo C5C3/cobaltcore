@@ -191,6 +191,11 @@ versions (the `re-evaluate-on:` comments name them), and list the new
 directories in
 [Tempest Test Infrastructure](../reference/testing/tempest-test-infrastructure.md).
 
+The `keystone-upgrade` leg needs no edit. The generator reads its pair from
+the last two `releases/*/` directories and reuses the newest
+`tests/tempest/keystone-<slug>/`, so the new release moves it to the upgrade
+from `<prev>` to `<version>`.
+
 ## Per-release e2e variants
 
 Every service with a `tests/e2e/<svc>/basic-deployment/` suite needs a
@@ -330,7 +335,7 @@ each gains the new release by hand:
   the number of images the nova e2e job loads and the number of nova Tempest
   jobs.
 - **Prose.** Run
-  `grep -rnE -i '(both|two|three|four) (releases|tags)|either release|neither release|(twelve|eighteen|twenty-four|12|18|24) (Tempest )?legs' README.md docs --include='*.md'`
+  `grep -rnE -i '(both|two|three|four) (releases|tags)|either release|neither release|(twelve|thirteen|eighteen|nineteen|twenty-four|12|13|18|19|24) (Tempest )?legs' README.md docs --include='*.md'`
   and read every hit, then grep for `<prev> and <version>` with the real
   versions substituted. When a release changes the count words, add the new
   ones to the pattern. The 2026.2 run rewrote `README.md` and these pages:
