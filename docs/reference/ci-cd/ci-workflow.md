@@ -1427,7 +1427,7 @@ the profiles and how to read the comparison.
 `build-e2e-images` job succeeded, and no dependency failed or was cancelled.
 
 The job runs one leg per release in `keystone-pressure-releases`, on
-`self-hosted` with `continue-on-error: true` and a wall of 120 minutes. Each
+`self-hosted` with `continue-on-error: true` and a wall of 150 minutes. Each
 leg first pulls `keystone:<release>` from GHCR and tags it
 `keystone:<release>-main`: that is the base. `load-e2e-images` then points
 `keystone:<release>` at the image of the map, which is this run's build when
@@ -1437,7 +1437,7 @@ the pull request changed the Keystone image and `main`'s otherwise, and pulls
 `keystone-system`. `make keystone-pressure-ab`, the target a developer calls
 locally, then runs `hack/keystone-pressure-ab.sh` with
 `KEYSTONE_PRESSURE_DURATION=2m` and, for the four stages of `effective-fan`,
-`KEYSTONE_PRESSURE_PROFILE_DURATIONS=effective-fan=6m`:
+`KEYSTONE_PRESSURE_PROFILE_DURATIONS=effective-fan=12m`:
 
 1. It tags both images for their side and loads them and the dizzy image of
    the pin in `hack/dizzy.sh` into kind.

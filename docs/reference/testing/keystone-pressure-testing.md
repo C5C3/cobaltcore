@@ -46,7 +46,7 @@ profile is one row of that table.
 | Profile | Patch | Load | What to compare | Needs |
 | --- | --- | --- | --- | --- |
 | `warm-cache` | #1461, fewer cache round trips and an in-process cache tier in Keystone | `validate` only, 32 workers; nothing flushes a cache | validate p50 and `ops/s` | Keystone |
-| `effective-fan` | #1459, linear implied-role expansion and one lookup per role | `validate` and `effective` for one fan user whose grants grow from 500 to 4000 in four stages | the `effective` rows of the `Stages` table, stage by stage, and their growth per doubling of the grants | Keystone; provisions 4000 projects |
+| `effective-fan` | #1459, linear implied-role expansion and one lookup per role | `validate`, `effective` and `grant_churn` for one fan user whose grants carry implied roles and grow from 500 to 4000 in four stages | the `effective` rows of the `Stages` table, stage by stage, and their growth per doubling of the grants | Keystone; provisions 4000 projects |
 | `cold-role-cache` | #1458, one validation and one role resolution per request | `validate` under `grant_churn`, which keeps the role caches cold | validate p50 and p95 | Keystone |
 | `revocation-lookup` | #1457, a narrow revocation lookup and no cache flush per logout | `validate` while `revoke` adds revocation events | validate latency per bucket against the cumulative revocations: a climb without the patch, flat with it | Keystone |
 | `token-propagation` | #1463, event-driven token eviction in keystonemiddleware | `probe` with 500 pool tokens and the propagation probe every 30 s, for 15 minutes | the `Propagation` table: up to 300 s without the patch, seconds with it | a ControlPlane with Nova, Neutron, Cinder or Glance |
@@ -60,18 +60,31 @@ run without one of them in the catalog stops at priming with
 `pressure probe needs at least one of nova, neutron, cinder, glance in the pool users' catalog`.
 
 A stage of `effective-fan` makes its grants inside its own window, and a stage
-whose grants outlast the window records nothing. A Keystone on kind makes
-about 45 grants a second, so the 2000 grants of the last stage take about
-45 s. Give the profile at least six minutes, four windows of 90 s; with one
-minute, stages 3 and 4 are missing from the `Stages` table.
+whose grants outlast the window records nothing. A Keystone on kind makes 16
+to 45 grants a second, a workstation the more and the self-hosted CI runner
+the fewer, so the 2000 grants of the last stage take up to two minutes. Give
+the profile at least twelve minutes, four windows of 180 s. With six, the
+CI runner left stage 4 out of all four runs of #1524's first pressure job.
+
+The profile reaches the code of #1459 through two settings, both from
+`resources.implied_roles` of dizzy v0.7.0 and its example for #1459. Its
+three roles form a chain, `role-0001` implies `role-0002` and `role-0002`
+implies `role-0003`, so each fan grant brings one implied assignment on
+average, and Keystone runs its implied-role expansion and duplicate check for
+every listing. `grant_churn` at the weight of `effective` keeps Keystone's
+computed-assignment cache cold: Keystone answers a repeated listing of the
+same user from that cache until the next assignment write, and a cached
+listing expands nothing. Without either, the comparison of #1524's first
+version moved the `effective` p50 by −2 % to +8 %, with no trend across the
+stages.
 
 #1459 measured about fourfold growth per doubling of the grants on SQLite.
-On kind with MariaDB, an A/A run of `main`'s 2026.2 image grew the
-`effective` p50 about twofold per doubling (0.36 s, 0.65 s, 1.18 s and 2.38 s
-at 500, 1000, 2000 and 4000 grants), so the database round trips per grant
-outweigh the quadratic expansion at these sizes. The patch's effect therefore
-shows in the base and patched latencies of each stage, which the comparison
-puts side by side.
+On kind with MariaDB, an A/A run of `main`'s 2026.2 image with the profile of
+dizzy v0.6.0, whose roles implied nothing and whose listings came mostly
+from the cache, grew the `effective` p50 about twofold per doubling (0.36 s,
+0.65 s, 1.18 s and 2.38 s at 500, 1000, 2000 and 4000 grants). The patch's
+effect shows in the base and patched latencies of each stage, which the
+comparison puts side by side.
 
 Every `revoke`, every revocation of the propagation probe and every
 `bad_token` affects every user of the Keystone or service it reaches. Run the
@@ -120,9 +133,10 @@ the image of the pull request. A matrix job whose release image the pull
 request did not change compares `main`'s image with itself: a 2026.2-only
 patch such as #1457 gets an A/A comparison for 2026.1, which shows the spread
 of the runner. Each matrix job runs the four Keystone-only profiles against
-both builds, two minutes per run and six for `effective-fan`. It takes about
-an hour, most of it spent provisioning and tearing down the 4000 projects of
-`effective-fan` on each build.
+both builds, two minutes per run and twelve for `effective-fan`, inside the
+job's timeout of 150 minutes. A matrix job took about 92 minutes with six for
+`effective-fan`, most of it spent provisioning and tearing down the 4000
+projects of `effective-fan` on each build; the twelve add about 12.
 
 The job summary carries each profile's comparison table. The
 `keystone-pressure-<release>` artifact holds every run record, the comparison
@@ -188,7 +202,7 @@ the end; the two databases stay and are migrated again by the next run.
 | `KEYSTONE_PRESSURE_RELEASE` | the newest release under `releases/` | The release both images ship |
 | `KEYSTONE_PRESSURE_PROFILES` | `warm-cache effective-fan cold-role-cache revocation-lookup` | The profiles to run, space-separated |
 | `KEYSTONE_PRESSURE_DURATION` | each profile's own | dizzy `--duration` of every run, such as `2m` |
-| `KEYSTONE_PRESSURE_PROFILE_DURATIONS` | none | `<profile>=<duration>` pairs, space-separated, that override `KEYSTONE_PRESSURE_DURATION` for one profile each, such as `effective-fan=6m` |
+| `KEYSTONE_PRESSURE_PROFILE_DURATIONS` | none | `<profile>=<duration>` pairs, space-separated, that override `KEYSTONE_PRESSURE_DURATION` for one profile each, such as `effective-fan=12m` |
 | `KEYSTONE_PRESSURE_ARGS` | none | Extra `dizzy keystone pressure` flags, such as `--workers 64` |
 | `KEYSTONE_PRESSURE_REPLICAS` | `1` | Keystone API replicas per build |
 | `KEYSTONE_PRESSURE_OUTPUT` | `_output/keystone-pressure/<release>-<UTC time>` | Output directory |
