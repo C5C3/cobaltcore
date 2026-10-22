@@ -103,6 +103,20 @@ logging:
 extraArgs: []
 extraEnv: []
 
+# Extra pod volumes and manager container volume mounts, appended verbatim
+# after the webhook certificate volume and its mount. Leave empty unless the
+# manager needs a file the chart does not mount, for example:
+#   extraVolumes:
+#     - name: extra-ca
+#       configMap:
+#         name: extra-ca
+#   extraVolumeMounts:
+#     - name: extra-ca
+#       mountPath: /etc/extra-ca
+#       readOnly: true
+extraVolumes: []
+extraVolumeMounts: []
+
 # Prometheus ServiceMonitor integration.
 # When enabled, renders a monitoring.coreos.com/v1 ServiceMonitor targeting the
 # operator's metrics port; prometheus-operator CRDs must be installed in-cluster.
