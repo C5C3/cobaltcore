@@ -13,7 +13,7 @@
 #      their explicit anchors
 #   4. every directory the page applies holds a kustomization.yaml, every
 #      deploy/, hack/ or tests/ file it names exists and each such script is
-#      executable, the three code imports resolve, and every #anchor it links
+#      executable, the four code imports resolve, and every #anchor it links
 #      resolves on the target page
 #   5. the page holds the deploy and teardown commands, the guide
 #      conventions list it as a devstack with the same deploy command, and
@@ -332,7 +332,7 @@ test_references_resolve() {
       FAIL=$((FAIL + 1))
     fi
   done <<<"$imports"
-  assert_eq "the page holds three code imports" "3" "$found"
+  assert_eq "the page holds four code imports" "4" "$found"
 
   links="$(grep -oE '\]\((\./[^)#[:space:]]+\.md)?#[^)[:space:]]+\)' "$QUICK_START_DOC" | sort -u || true)"
   while IFS= read -r link; do

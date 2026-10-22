@@ -2826,16 +2826,62 @@ The figure shows what those manifests add up to: the cluster-wide parts of
 
 ### Node probe
 
-**File:** `deploy/lab/metal-stack/probe/kustomization.yaml`
+**Runner:** `hack/lab-node-probe.sh`
+
+**Job:** `deploy/lab/metal-stack/probe/node-probe.yaml`
 
 The node probe is the prerequisite check of the lab. The
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-probe) has a
-reader run it first, against any metal-stack cluster, before anything else is
-deployed. It
-is one Job, `node-probe`, that prints the node facts the lab depends on under
-thirteen fixed headers. It exits 0 whatever it finds: a node that lacks something
-prints `absent`, `none` or `NOT FOUND`, and the Job still completes, so
-`kubectl wait --for=condition=complete` returns.
+reader run it first, before deploying the stack:
+
+```bash
+hack/lab-node-probe.sh
+```
+
+The workstation script checks worker readiness, zone labels, the default
+StorageClass and node-local DNS, then runs the read-only survey on each selected
+Ready worker. It evaluates the results and prints per-node tables and a
+cross-node CPU-model comparison. Every row includes its interpretation or next
+action: `PASS`, `BLOCK`, `WARN`, `AUTO` (provided by a later deployment step),
+`SKIP` (optional feature disabled), or `ERROR` (the probe could not complete).
+Colors appear only on a terminal and can be disabled with `NO_COLOR=1`.
+It exits 0 with no detected blockers, 1 for prerequisite blockers, or 2 for
+usage, API, probe or cleanup errors. Review warnings even after exit 0.
+
+| Setting | Default / effect |
+| --- | --- |
+| `WITH_NFS`, `WITH_CHAOS_MESH` | `false`; set the same flags as the intended deployment to check the optional modules and Chaos runtime socket |
+| `NODE_PROBE_NODE_SELECTOR` | `!node-role.kubernetes.io/control-plane,!node-role.kubernetes.io/master`; an explicit label selector replaces this, and an empty value selects all nodes |
+| `NODE_PROBE_NAMESPACE` | `default`; must already exist and permit privileged probe Jobs |
+| `NODE_PROBE_TIMEOUT` | `300` seconds per Job, also enforced by its active deadline |
+| `NODE_PROBE_OUTPUT_DIR` | A new temporary directory; a supplied path must not exist |
+| `--verbose` | Also print each node's raw survey; raw logs are always saved |
+
+The runner requires `kubectl`, `jq` and `yq` v4 on the workstation. It saves
+plain-text and TSV summaries, raw logs, manifests and command/error logs in
+the printed output directory. Each Job gets a unique name, so concurrent or
+interrupted runs cannot reuse another node's logs. Cleanup deletes only this
+run's Jobs, including on INT/TERM; a one-hour TTL handles completed Jobs if
+the workstation cannot finish cleanup. Failed waits save pod diagnostics
+before deletion, and failures on one worker do not hide results for the others.
+
+Missing host binaries are expected: Part 2 supplies libvirt/QEMU and OVS in
+containers. Available but unloaded modules are `AUTO`: Part 2 loads
+`vhost_net`, `openvswitch` and `geneve`, while the optional infrastructure
+stacks load NFS/Chaos Mesh modules. Missing required module files are `BLOCK`;
+deployment cannot install host kernel packages. NFS `not registered` is
+normal before loading the client modules; Ganesha does not require host
+`rpc.nfsd` or `nfsd`. Existing `/var/lib/rook` is a warning to check ownership
+before a fresh install, and is expected for a deployed Ceph.
+
+Capacity, the configured Nova CPU model, non-Calico/path MTUs, storage
+provisioning and network reachability still need review or later deployment
+checks. Identical CPU model names alone do not establish migration compatibility.
+
+The underlying survey still prints thirteen fixed raw headers and exits 0
+whatever it finds. Missing facts appear as `absent`, `none` or `NOT FOUND`;
+Job completion alone is not a prerequisite verdict. The wrapper provides that
+interpretation without changing the host survey's read-only behavior.
 
 The container runs privileged, because only a privileged container sees the
 host's `/dev/kvm`. The host root is mounted read-only at `/host`, with
@@ -2848,31 +2894,12 @@ installs nothing, so the probe needs no egress beyond the image pull.
 `sysctl`, `apt-get`, `apt`, `tee`, `dd`, `mknod` or `rm` to the script, or a
 redirection other than `2>/dev/null`.
 
-```bash
-kubectl apply -k deploy/lab/metal-stack/probe
-kubectl wait --for=condition=complete job/node-probe -n default --timeout=5m
-kubectl logs -n default job/node-probe
-kubectl delete job -n default node-probe
-```
-
-The Job runs on the node the scheduler picks. On a cluster with more than one
-worker, pin it to each node in turn, with the same wait, logs and delete after
-every run. The delete is needed because a Job's pod template is immutable:
-
-```bash
-yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/node-probe.yaml | kubectl apply -f -
-```
-
-`ttlSecondsAfterFinished: 3600` removes the Job, and its logs with it, an hour
-after it completes. A DaemonSet would cover every node in one run, but it
-never completes and has to be deleted by hand; the Job keeps each run bounded.
-
 | Property | Value |
 | --- | --- |
 | Target namespace | `default`. The probe runs before `deploy/flux-system/namespaces.yaml` has created `openstack` or `shared-services`, and the metal-stack shoot enforces no PodSecurity level on `default` |
 | Image | `docker.io/library/debian:bookworm-slim`, digest-pinned. A Renovate `customManager` refreshes the digest (automerged after 3 days); Renovate never moves the `bookworm-slim` codename tag, so a Debian release change is a manual edit |
 | Runs as | one Job with `backoffLimit: 0`, one privileged container, the host root read-only at `/host` |
-| Dependencies | none |
+| Dependencies | No in-cluster dependencies beyond image pull; the runner uses workstation `kubectl`, `jq` and `yq` |
 
 | Header | What it answers for the lab |
 | --- | --- |
