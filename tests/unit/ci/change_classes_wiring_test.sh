@@ -255,13 +255,14 @@ codecov_flag_block() {
 }
 
 test_codecov_flags_cover_every_target() {
-  echo "Test: .codecov.yml declares a unit and an integration flag per test target"
+  echo "Test: .codecov.yml declares a unit, integration, e2e, chaos and tempest flag per test target"
 
   # The test and test-integration jobs upload coverage under a flag named after
-  # the matrix target. Each declared flag scopes that coverage to the target's
-  # tree and carries it forward across pull requests that skip the target, so
-  # a target added to the matrices without both blocks uploads under a flag
-  # .codecov.yml does not describe, and nothing fails.
+  # the matrix target, and the e2e-operator, e2e-chaos and tempest jobs under
+  # <family>-<operator> and <family>-common. Each declared flag scopes that
+  # coverage to the target's tree and carries it forward across pull requests
+  # that skip the target, so a target added without all five blocks uploads
+  # under a flag .codecov.yml does not describe, and nothing fails.
   local name prefix flag block tree
   for name in common $(resolve_env_operators ALL_OPERATORS "$CI_YAML"); do
     if [ "$name" = "common" ]; then
@@ -269,7 +270,7 @@ test_codecov_flags_cover_every_target() {
     else
       tree="- operators/${name}/"
     fi
-    for prefix in unit integration; do
+    for prefix in unit integration e2e chaos tempest; do
       flag="${prefix}-${name}"
       block=$(codecov_flag_block "$flag")
       assert_not_empty "the ${flag} flag is declared" "$block"
@@ -282,6 +283,39 @@ test_codecov_flags_cover_every_target() {
     "$CI_YAML" 'flags: unit-${{ matrix.target }}'
   assert_file_contains_fixed "the integration job uploads under its target's flag" \
     "$CI_YAML" 'flags: integration-${{ matrix.target }}'
+}
+
+test_codecov_statuses_count_unit_and_integration_only() {
+  echo "Test: the Codecov statuses count the unit and integration flags alone"
+
+  # The e2e, chaos and Tempest flags report without gating: a leg that did not
+  # run, or a suite that reaches less code than before, must not turn a status
+  # red. An unscoped status counts every flag, so each status lists its flags.
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+  local codecov="$PROJECT_ROOT/.codecov.yml" expected name status listed
+  expected=$(for name in common $(resolve_env_operators ALL_OPERATORS "$CI_YAML"); do
+    echo "unit-${name}"
+    echo "integration-${name}"
+  done | LC_ALL=C sort)
+  assert_eq "there are 22 unit and integration flags" "22" "$(grep -c . <<<"$expected")"
+  for status in project patch; do
+    listed=$(yq ".coverage.status.${status}.default.flags[]" "$codecov" | LC_ALL=C sort)
+    assert_eq "the ${status} status lists the unit and integration flags" "$expected" "$listed"
+    assert_eq "the ${status} status names no e2e, chaos or tempest flag" "" \
+      "$(grep -E '^(e2e|chaos|tempest)-' <<<"$listed" || true)"
+  done
+
+  assert_eq "there are three components" "3" \
+    "$(yq '.component_management.individual_components | length' "$codecov")"
+  assert_eq "every component counts the unit and integration flags alone" \
+    "common ^unit-,^integration-
+controllers ^unit-,^integration-
+webhooks ^unit-,^integration-" \
+    "$(yq '.component_management.individual_components[] | .component_id + " " + ((.flag_regexes // []) | join(","))' "$codecov")"
 }
 
 test_every_job_gates_on_its_own_flag() {
@@ -438,6 +472,7 @@ test_service_operators_match_the_release_configs
 test_service_operators_catch_a_missing_operator
 test_all_operators_names_every_operator_module
 test_codecov_flags_cover_every_target
+test_codecov_statuses_count_unit_and_integration_only
 test_every_job_gates_on_its_own_flag
 test_label_handling_lives_in_the_resolver
 test_always_on_gates_skip_a_noop_run
