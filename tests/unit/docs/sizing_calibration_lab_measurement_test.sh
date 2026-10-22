@@ -204,7 +204,7 @@ test_position() {
   below="$(awk -F: '$2 == "## Lab measurement" { found = 1; next } found { sub(/^[0-9]+:/, ""); print }' <<<"$all")"
   assert_eq "the headings below it are the four subsections, in order" \
     "### What differs from CI|### Running the lab measurement|### Reading the lab report|### Recorded lab run" \
-    "$(paste -sd '|' <<<"$below")"
+    "$(paste -sd '|' - <<<"$below")"
 }
 
 # --- Test 2: the measurement's command lines and their order ---
@@ -295,7 +295,7 @@ test_name_sources() {
   # header the script writes.
   local script_cols pair
   script_cols="$(awk '/\| \(\["namespace", "kind"/,/as \$cols/' "$PROJECT_ROOT/hack/ci-vpa-recommendations.sh" |
-    { grep -o '"[a-z_]*"' || true; } | tr -d '"' | paste -sd ' ')"
+    { grep -o '"[a-z_]*"' || true; } | tr -d '"' | paste -sd ' ' -)"
   assert_eq "the fixture header is the report header of the script" "$script_cols" "$(tr '\t' ' ' <<<"$COLUMNS_LINE")"
   for pair in 3:workload 9:container 12:cpu_target_m 13:memory_target_mi 16:cpu_request_m 17:memory_request_mi; do
     assert_eq "column ${pair%%:*} of the report is ${pair#*:}" "${pair#*:}" "$(cut -d' ' -f"${pair%%:*}" <<<"$script_cols")"

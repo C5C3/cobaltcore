@@ -754,7 +754,7 @@ earlier run's lasted 22 minutes.
 The session of 2026-10-05 ran on shoot `newforge` from commit `d1f114f7`, on
 Kubernetes v1.35.6, with three workers of 16 CPUs each and the agent image
 `ghcr.io/c5c3/neutron:2025.2`. It ran Part 1, Steps 2 to 7 and Part 2, Steps 1
-to 5 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md),
+to 5 of the [Deploy on Bare Metal](../../quick-start-metal-stack.md),
 loaded the node `7znw9`, and tore the stack down again. Three things were done
 by hand. `make deploy-infra` left the `glance-operator` release and the `k-orc`
 Kustomization suspended, and both were resumed with `kubectl patch`. The
@@ -774,7 +774,7 @@ Every row above comes from pods that never ran a virtual machine. In the three
 jobs compute is Nova's fake driver: no chassis carries a server's traffic, and
 no libvirt runs. The lab measurement runs `hack/ci-vpa-recommendations.sh` by
 hand on the [metal-stack lab](../infrastructure/infrastructure-manifests.md#metal-stack-lab)
-while Part 2 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md#hypervisors)
+while Part 2 of the [Deploy on Bare Metal](../../quick-start-metal-stack.md#hypervisors)
 boots, migrates and evicts servers on KVM hypervisors. It measures the
 namespaces `openstack` and `hypervisor-system` with the recommender the
 Gardener shoot runs, and sets the readings of the compute workloads against
@@ -792,7 +792,7 @@ was for the metadata agent.
 | Updater and admission controller | not installed | Both run. A VPA in mode `Off` changes no pod; the run checks it |
 | MariaDB scale subresource | removed by `WITH_VPA=true make deploy-infra` | removed by `hack/ci-vpa-recommendations.sh prepare` |
 | Compute | Nova's fake driver | KVM on every worker, with one server each |
-| Load | the e2e suites and Tempest | Part 2 of the Quick Start (metal-stack), once |
+| Load | the e2e suites and Tempest | Part 2 of the Deploy on Bare Metal, once |
 | Report | `job=` names a CI job; input of the derivation | `job=lab`; `hack/derive-sizing-figures.py` refuses it, and no constant is derived from it |
 
 The Gardener figures come from `computeRecommenderArgs` in
@@ -805,7 +805,7 @@ states what the run showed.
 
 ### Running the lab measurement
 
-The measurement runs beside one pass of the Quick Start (metal-stack). It
+The measurement runs beside one pass of the Deploy on Bare Metal. It
 starts on a bare shoot, in bash in the root of the clone, with `KUBECONFIG`
 set as in [Part 1, Step 1](../../quick-start-metal-stack.md#cp-clone). Run
 the whole session in one bash shell: the third block uses the helpers, `out`

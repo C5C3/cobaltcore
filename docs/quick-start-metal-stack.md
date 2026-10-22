@@ -1,5 +1,5 @@
 ---
-title: Quick Start (metal-stack)
+title: Deploy on Bare Metal
 ---
 
 <!--
@@ -7,34 +7,25 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Quick Start (metal-stack): ControlPlane and KVM hypervisors on a metal-stack cluster
+# Deploy on Bare Metal
 
-This guide builds the metal-stack devstack of the
-[guide conventions](./contributing/guide-conventions.md#one-devstack-per-guide)
-on a Gardener shoot with two or more workers. Part 1 deploys the infrastructure
-stack, a Ceph for Cinder and the full ControlPlane, reached through a
-port-forward. Part 2 turns every worker into a KVM hypervisor of that
-ControlPlane and boots a server on each. One server gets a Cinder volume on
-Ceph and keeps it through a live migration and the eviction of its node. The
-volume is backed up after the detach and restored into a new volume, and the
-key of the Ceph user is rotated under the running servers. With the optional
-lab NFS stack, Part 3 adds an NFS volume backend beside Ceph. The teardown
-leaves the cluster as bare as it was. The ControlPlane CR is the one of the
-[Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
-block-storage block on Ceph and three lab settings; read Steps 3 and 4 there
-for its anatomy.
+Deploy an OpenStack cloud on an existing Gardener cluster backed by
+metal-stack, then run virtual machines on its KVM workers. Gardener manages
+Kubernetes and metal-stack provides the machines; CobaltCore manages OpenStack
+on that cluster.
 
-On the map of the five quick starts this page is the box Quick Start
-(metal-stack): the ControlPlane of the Quick Start (ControlPlane) on a cluster
-you bring, with servers on KVM.
+This lab uses at least two workers. Follow the parts in order:
 
-![A map of the five quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other three run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. The Quick Start (Orders) extends the ControlPlane devstack without a teardown: a second kind cluster joins it as a registered target, a service owner orders seven pieces from an assigned namespace on each cluster, and it ends with four Secrets on the target and four Jobs that use them. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Four of them begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack.](./diagrams/quickstart-map.svg)
+1. [Deploy the control plane](#control-plane), including Ceph block storage.
+2. [Connect compute hosts](#hypervisors), boot virtual machines, and verify storage and migration.
+3. Add the optional NFS backend if you need to test another storage option.
 
-The figure shows the lab after both parts: what runs once per cluster, what
-runs on every worker, the port-forward as the only way in, and the traffic
-between the workers.
+You access the cloud through a local port-forward. The configuration is for
+evaluation, with single-instance backing services and lab certificates. Review
+[Configure Your Deployment](./guides/advanced-configuration.md) before planning
+availability, capacity, and public access for your own environment.
 
-![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, the lab Ceph for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the Ceph inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](./diagrams/compute-metal-stack-lab.svg)
+![One Gardener cluster runs the OpenStack control plane and Ceph. Each worker runs KVM compute and OVN networking; a port-forward gives the workstation access to the API gateway.](./diagrams/compute-metal-stack-lab.svg)
 
 ## Prerequisites
 
@@ -53,13 +44,13 @@ The lab assumes a cluster of this shape:
 | No conflicting host libvirt, QEMU or OVS services; their binaries are supplied in Part 2's containers | probe: Host binaries flags installed binaries for review, without assuming a service is running |
 | A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe: Pod MTU checks the observed `cali*` interfaces; other CNIs need review |
 | A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | probe: StorageClass and Node-local DNS; deploy checks them again |
-| Room in that class for three 100Gi raw block volumes and one 10Gi volume of the Ceph, from a provisioner that serves `volumeMode: Block` | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
+| Room in that class for nine 100Gi raw block volumes and one 10Gi monitor volume with the checked-in Ceph manifest, from a provisioner that serves `volumeMode: Block` | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
 | Only with the optional `WITH_NFS=true` of Part 3: room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy, which exits 1 otherwise |
 | Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
 | TCP 16514 and 49152 to 49215 open between the workers | `hack/lab-node-ports.sh` |
 
 The shoot's kubeconfig is saved as `kubeconfig` in the root of the clone;
-`.gitignore` keeps that file out of git. The workstation needs `kubectl`, `jq`,
+`.gitignore` keeps that file out of git. The workstation needs Git, `kubectl`, `jq`,
 [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer, `make`, and the
 OpenStack CLI
 ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/))
@@ -248,7 +239,7 @@ kubectl wait ovncentral/controlplane-ovn -n openstack --for=condition=Ready --ti
 ```
 
 The directory holds the `OVNCentral` `controlplane-ovn` and the ControlPlane
-`controlplane` of the Quick Start (ControlPlane). The ControlPlane carries that
+`controlplane` of the Deploy a ControlPlane. The ControlPlane carries that
 page's block-storage block with the Ceph of Step 3 in place of its NFS shares:
 the RBD volume backend `ceph1` on the pool `volumes` and the RBD backup target
 `cephbk` on the pool `backups`, each with the key Secret of its Ceph user. It
@@ -290,7 +281,7 @@ unset BAO_TOKEN
 The first wait gives the c5c3-operator time to create the MariaDB: without it
 the Ready wait fails at once with `Error from server (NotFound)` while the
 MariaDB is missing.
-Step 5 of the [Quick Start (ControlPlane)](./quick-start-controlplane.md)
+Step 5 of the [Deploy a ControlPlane](./quick-start-controlplane.md)
 explains what the script sets up.
 
 ### Step 6: Wait for the chain and open the port-forward {#cp-access}
@@ -300,13 +291,13 @@ kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --time
 ```
 
 The wait covers the twenty-one conditions of the figure.
-[Step 6 of the Quick Start (ControlPlane)](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
+[Step 6 of the Deploy a ControlPlane](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
 lists what each one waits for.
 
 ![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations. RegistrationTenantStoresReady and NamespaceAssignmentsReady have no gate.](./diagrams/controlplane-gate-graph.svg)
 
 No image is preloaded on the lab, so the wait allows 30 minutes, twice the
-15 of the Quick Start (ControlPlane). Then open the port-forward to the Gateway
+15 of the Deploy a ControlPlane. Then open the port-forward to the Gateway
 in a second terminal, from the root of the clone, and keep it running for the
 rest of the page:
 
@@ -352,7 +343,7 @@ endpoint against the Gateway's certificates, so no command on this page takes
 their keys. A `certificate verify failed` error means the file predates a
 reissued certificate; write it again. On a host that cannot resolve
 `*.nip.io`, the tip in Step 7 of the
-[Quick Start (ControlPlane)](./quick-start-controlplane.md) gives the
+[Deploy a ControlPlane](./quick-start-controlplane.md) gives the
 `/etc/hosts` entries. Then list the catalog, the compute services and the
 hypervisors:
 
@@ -1284,5 +1275,5 @@ lists the steps that would prove it.
   and `make teardown-infra`, with every variable.
 - [NovaCompute CRD](./reference/nova/novacompute-crd.md): the compute pool, its
   aggregates, live migration and the node drain.
-- [Quick Start (ControlPlane)](./quick-start-controlplane.md): the same
+- [Deploy a ControlPlane](./quick-start-controlplane.md): the same
   ControlPlane on kind, with every block of the CR explained.

@@ -184,7 +184,7 @@ A local run needs one amd64 node, the stack's infrastructure
 six operators the nova leg deploys. `make e2e-nova-libvirt` checks the three
 preconditions and names the one that is missing. The guest operating system,
 KVM, networking and live migration are not part of this suite: the lab run of
-the Quick Start (metal-stack) proves them, in
+the Deploy on Bare Metal proves them, in
 [Check metadata and the tunnel from the console](../../quick-start-metal-stack.md#hv-console)
 and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate). See
 [CI Workflow](../ci-cd/ci-workflow.md#e2e-nova-libvirt).

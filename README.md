@@ -8,16 +8,12 @@ Kubernetes-native operators and deployment stack for OpenStack Hosted Control Pl
 
 ## Overview
 
-CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating Hosted Control Planes. The
-project website at [cobaltcore.dev](https://cobaltcore.dev) introduces CobaltCore as a whole. This repository
-holds its control-plane stack: the declarative infrastructure manifests, one operator per OpenStack service,
-and the c5c3-operator, which orchestrates the service operators as children of a single `ControlPlane`
-resource. The operators are written in Go with the Operator SDK, controller-runtime, and Kubebuilder.
+CobaltCore runs OpenStack on Kubernetes. Declare a `ControlPlane` with the services you need;
+CobaltCore deploys them, connects their databases and credentials, and maintains their configuration.
 
-The Keystone operator is the reference implementation. Its CRD layout, sub-reconciler chain, webhooks,
-finalizers, and instrumentation are the patterns every other service operator follows. How the pieces fit
-together, including the implemented management/target-cluster topology, is described in
-[the architecture documentation](docs/architecture/index.md).
+Start with identity and a dashboard on your computer, then add images, networking, compute, and storage.
+Kubernetes hosts the APIs; compute hosts provide capacity for virtual machines. See the
+[architecture documentation](docs/architecture/index.md) for how the components fit together.
 
 ## Services
 
@@ -31,7 +27,7 @@ together, including the implemented management/target-cluster topology, is descr
 | [Neutron](docs/reference/neutron/index.md) | Networking (ML2/OVN) | yes |
 | [OVN](docs/reference/ovn/index.md) | The SDN layer Neutron programs | referenced from the Neutron block |
 | [Cinder](docs/reference/cinder/index.md) | Block storage | yes |
-| [Nova](docs/reference/nova/index.md) | Compute control plane | not yet, tracked in [#1019](https://github.com/c5c3/cobaltcore/issues/1019) |
+| [Nova](docs/reference/nova/index.md) | Compute control plane | yes |
 
 The [c5c3-operator](docs/reference/c5c3/controlplane-crd.md) reconciles the `ControlPlane` and projects each
 enabled service block onto a child CR of the matching service operator.
@@ -41,33 +37,23 @@ The service images are built for every OpenStack release defined under [`release
 
 ## Getting started
 
-The first three quick starts and the fifth run on local kind clusters and need Docker Desktop or Podman;
-the fourth needs a metal-stack cluster:
+Follow the **[Quick Start](docs/quick-start.md)** to deploy a local CobaltCore cloud, verify API access,
+and sign in to the dashboard. It uses Docker, kind, and the `Minimal` sizing profile.
 
-- [Quick Start](docs/quick-start.md): from `git clone` to an authenticated Keystone API call.
-- [Quick Start (Extended)](docs/quick-start-extended.md): UI tours, the local-build path, the production
-  HelmRelease, E2E, and Tempest.
-- [Quick Start (ControlPlane)](docs/quick-start-controlplane.md): a full ControlPlane through the
-  c5c3-operator.
-- [Quick Start (metal-stack)](docs/quick-start-metal-stack.md): the ControlPlane on a metal-stack
-  cluster, with servers on two KVM hypervisors.
-- [Quick Start (Orders)](docs/quick-start-orders.md): the Keystone, MariaDB and RabbitMQ pieces of a
-  foreign service, ordered from an assigned namespace on the ControlPlane devstack and on a second
-  kind cluster.
+### Deployment guides
 
-The short path to the infrastructure stack:
+- [Deploy on Local Kubernetes (kind)](docs/deployment/local-kubernetes.md)
+- [Deploy on an Existing Kubernetes Cluster](docs/deployment/existing-kubernetes.md)
+- [Deploy on Bare Metal (Gardener / metal-stack)](docs/quick-start-metal-stack.md)
 
-```bash
-git clone https://github.com/c5c3/cobaltcore.git
-cd cobaltcore
-make install-test-deps
-export PATH="${HOME}/.local/bin:${PATH}"
-make deploy-infra
-```
+### Tutorials
 
-`make deploy-infra` creates the `cobaltcore` kind cluster and installs the infrastructure stack, including
-Flux, cert-manager, OpenBao, the MariaDB and Memcached operators, External Secrets, and the Envoy Gateway.
-`make teardown-infra` deletes the cluster again.
+- [Deploy a ControlPlane](docs/quick-start-controlplane.md): enable more OpenStack services.
+- [Provision Resources](docs/quick-start-orders.md): create service identities, databases, and credentials using Orders.
+- [Run E2E Tests](docs/tutorials/run-e2e-tests.md): verify deployment behavior.
+- [Configure Your Deployment](docs/guides/advanced-configuration.md): adjust sizing and connect existing infrastructure.
+
+For contributor setup and local image builds, see [Build and Test Locally](docs/contributing/build-and-test-locally.md).
 
 ## Repository layout
 

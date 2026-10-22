@@ -88,7 +88,7 @@ service is an operator of its own and one more block in `spec.services`
 that CobaltCore does not operate registers with a `KeystoneService` and orders
 its database, bus, and credentials from the ControlPlane
 ([Register a Service the ControlPlane Does Not Manage](../guides/register-a-foreign-service.md),
-[Order Resources from a ControlPlane](../guides/order-resources-from-a-controlplane.md)).
+[Manage Provisioned Resources](../guides/order-resources-from-a-controlplane.md)).
 
 ## Layering
 
@@ -164,7 +164,7 @@ the port mapping in front of it exists on kind only.
 [The request path, hop by hop](../quick-start-extended.md#request-path) names
 each hop.
 
-![The path of a request from the workstation to an OpenStack API on the kind devstack, in six numbered hops. Hop 1: the public nip.io service resolves {svc}.127-0-0-1.nip.io to 127.0.0.1. Hop 2: the client connects to 127.0.0.1 on the host port, which is 443 or the value of KIND_HOST_PORT. Hop 3: the extraPortMappings entry of hack/kind-config.yaml forwards the host port to port 31443 of the kind node, the NodePort of the Envoy proxy Service in envoy-gateway-system. Hop 4: the Service hands the connection to the Envoy proxy, which serves the Gateway openstack-gw in the namespace openstack, with one HTTPS listener per hostname and the certificate Secret {svc}-nip-io-tls. Hop 5: the HTTPRoute, which the service operator renders from spec.gateway of the service resource, sends the request to the Service by hostname and path. Hop 6: the Service reaches the pods over plain HTTP. The publicEndpoint of the service resource is the public URL in the catalog and has to carry the host port. Two paths leave hops out: a port-forward to the Service, started by hand, skips hops 1 to 5, and the metal-stack lab forwards local port 8443 to the Envoy proxy Service in place of hops 2 and 3.](../diagrams/quickstart-request-path.svg)
+![A request passes from the workstation through nip.io DNS, the kind host-port mapping, the Envoy Gateway, an HTTPRoute, and the Keystone Service to its pods. Direct service port-forwarding skips the Gateway path.](../diagrams/quickstart-request-path.svg)
 
 ## Multi-cluster placement
 
@@ -180,6 +180,12 @@ spread its services across clusters. See
 
 ## The multi-cluster target picture
 
+The product vision separates machine provisioning, Kubernetes management, and
+OpenStack operations. IronCore and Garden Linux in this diagram are planned
+layers; the current deployment guides use kind or Gardener on metal-stack.
+
+![The target platform layers: bare-metal provisioning, Kubernetes clusters, CobaltCore control planes, and OpenStack clouds.](../diagrams/cobaltcore-overview.svg)
+
 The implemented topology is the starting point for a picture in which every
 role runs in a Kubernetes cluster of its own. Each layer of that picture comes
 from an open-source project of its own. IronCore provisions the servers,
@@ -191,7 +197,7 @@ OpenStack control planes on those clusters, with one `ControlPlane` resource
 per control plane, and OpenStack provides the VMs, the storage, and the
 network. On metal-stack, the nodes run one of the operating system images
 metal-stack builds, such as Debian or Ubuntu. The
-[Quick Start (metal-stack)](../quick-start-metal-stack.md) runs CobaltCore on
+[Deploy on Bare Metal](../quick-start-metal-stack.md) runs CobaltCore on
 such a Gardener shoot today.
 
 ![The stack layer by layer, with the project behind each layer: IronCore or metal-stack for server provisioning, server lifecycle, and switch management; Garden Linux as the operating system on every node; Gardener for the Kubernetes clusters, created and managed via the IronCore or metal-stack provider extension; CobaltCore for the OpenStack control planes, Kubernetes operators with one ControlPlane resource per control plane; OpenStack for VMs (Nova on KVM or Cloud Hypervisor), storage (Cinder on Ceph), and network (Neutron on OVN).](../diagrams/cobaltcore-stack.svg)
@@ -292,7 +298,7 @@ cluster without a hand-over between teams.
 | Rotate a credential, or change what the compute nodes read | Control plane | The ControlPlane, or a rotation it runs | The ControlPlane rewrites the compute contract and hvo's auth Secret in place on every compute cluster ([Rotation](../guides/nova/connect-a-compute-cluster.md#rotation)) |
 | Hand over a Ceph client key | Storage | A `PushSecret` that writes the key into OpenBao | An `ExternalSecret` on the control plane reads the key, and both refresh every minute, as on the metal-stack lab ([Lab Ceph](../reference/infrastructure/infrastructure-manifests.md#lab-ceph)) |
 | Add network or gateway nodes | Network | A label on a Node of its cluster, and once per class of nodes an `OVNChassis` beside the ControlPlane | The ovn-operator copies the OVN client certificate onto the cluster, and the chassis registers its nodes with the Southbound database of the control plane ([Label a Node as a Compute or Network Node](../guides/ovn/label-a-chassis-node.md)) |
-| Give a service a database, a vhost, or credentials | Service | An order in the namespace the ControlPlane assigned to the team | The c5c3-operator creates the resource and delivers its credentials as a Secret beside the order ([Order Resources from a ControlPlane](../guides/order-resources-from-a-controlplane.md)) |
+| Give a service a database, a vhost, or credentials | Service | An order in the namespace the ControlPlane assigned to the team | The c5c3-operator creates the resource and delivers its credentials as a Secret beside the order ([Manage Provisioned Resources](../guides/order-resources-from-a-controlplane.md)) |
 
 The control plane team grants each team its place once. It registers the
 cluster of a site as a target cluster with a kubeconfig Secret
@@ -324,7 +330,7 @@ the original document and to the state in this repository:
 | --- | --- | --- | --- |
 | CobaltCore Operation and Monitoring | Management | GitOps hub, OpenBao, ESO, observability UI (Greenhouse, Aurora) | Collapsed into the single management cluster above; a dedicated cluster is a [sketch](../future/management-cluster.md) |
 | OpenStack Control Plane | Control Plane | OpenStack control-plane services, K-ORC, infrastructure | Implemented as the management cluster, with optional [target clusters](../reference/target-clusters.md) for workload placement. Several control planes are several `ControlPlane` CRs on that cluster, at most one per namespace |
-| OpenStack Compute | Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | The dedicated cluster is a [sketch](../future/hypervisor-cluster.md). The [Nova](../reference/nova/index.md) control plane, the [OVN](../reference/ovn/index.md) chassis layer and `NovaCompute` node pools are onboarded, and the [Quick Start (metal-stack)](../quick-start-metal-stack.md) runs them on KVM inside one cluster. Cloud Hypervisor is not integrated yet ([Cloud Hypervisor for VS-NfD](#cloud-hypervisor-for-vs-nfd)). A separate compute cluster attaches as [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) describes; no suite covers it across a cluster boundary yet ([What this repository tests](../guides/nova/connect-a-compute-cluster.md#what-this-repository-tests)) |
+| OpenStack Compute | Hypervisor | Compute virtualization on bare metal (LibVirt, OVN, node agents) | The dedicated cluster is a [sketch](../future/hypervisor-cluster.md). The [Nova](../reference/nova/index.md) control plane, the [OVN](../reference/ovn/index.md) chassis layer and `NovaCompute` node pools are onboarded, and the [Deploy on Bare Metal](../quick-start-metal-stack.md) runs them on KVM inside one cluster. Cloud Hypervisor is not integrated yet ([Cloud Hypervisor for VS-NfD](#cloud-hypervisor-for-vs-nfd)). A separate compute cluster attaches as [Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md) describes; no suite covers it across a cluster boundary yet ([What this repository tests](../guides/nova/connect-a-compute-cluster.md#what-this-repository-tests)) |
 | Ceph Storage | Storage | Ceph via Rook, storage observability | [Sketch](../future/storage-cluster.md); block storage itself is onboarded as the [Cinder](../reference/cinder/index.md) control-plane service on the management cluster |
 | OpenStack Network | None; the original runs the OVN operator on the control-plane cluster and `ovn-controller` on the hypervisors | OVN and the outbound path: load balancer, router, BGP | No dedicated cluster. The [OVN](../reference/ovn/index.md) chassis layer runs on labelled nodes, and the `openstack.c5c3.io/gateway` label makes a node a network node ([Label a Node as a Compute or Network Node](../guides/ovn/label-a-chassis-node.md)) |
 

@@ -82,7 +82,7 @@ pin them to an exact patch:
 
 - **Docker** is deliberately **not** provided by the flake — a running daemon
   cannot be nix-provisioned, and `kind` needs one. Install Docker separately
-  (see the [Quick Start (Extended)](../quick-start-extended.md) prerequisites).
+  (see the [Deploy Keystone Locally](../quick-start-extended.md) prerequisites).
 
 ## First entry and offline behavior
 
@@ -137,5 +137,5 @@ make test-integration OPERATOR=keystone   # uses the pinned envtest assets
 
 - [Dependency Management](./dependency-management.md) — how Renovate keeps the
   pinned versions (and `flake.lock`) fresh.
-- [Quick Start (Extended)](../quick-start-extended.md) — the
+- [Deploy Keystone Locally](../quick-start-extended.md) — the
   `make install-test-deps` path and the full prerequisites.

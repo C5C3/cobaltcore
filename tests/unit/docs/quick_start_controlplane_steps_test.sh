@@ -75,14 +75,14 @@ test_step_headings() {
   echo "Test: the page's '## Step' headings are the seven steps, in order"
   local want got
   want="$(printf '%s\n' \
-    'Step 1 — Clone' \
-    'Step 2 — Cluster + ControlPlane stack' \
-    'Step 3 — Deploy the OVN control plane' \
-    'Step 4 — Create the ControlPlane CR' \
-    'Step 5 — Onboard the OpenBao database-engine tenant' \
-    'Step 6 — Watch the chain reconcile' \
-    'Step 7 — Verify')"
-  got="$(grep '^## Step ' "$QUICK_START_DOC" | sed 's/^## //' || true)"
+    'Step 1 — Get the example files' \
+    'Step 2 — Prepare your local environment' \
+    'Step 3 — Enable networking' \
+    'Step 4 — Choose your services' \
+    'Step 5 — Enable database access' \
+    'Step 6 — Wait for readiness' \
+    'Step 7 — Verify your services')"
+  got="$(grep '^## Step ' "$QUICK_START_DOC" | sed -E 's/^## //; s/ \{#[^}]+\}$//' || true)"
   assert_eq "step headings" "$want" "$got"
 }
 
