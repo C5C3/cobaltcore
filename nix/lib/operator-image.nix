@@ -29,6 +29,14 @@
 # (make nix-lock). An empty vendorHash fails the module build with the hash
 # it got, which is how the generator learns it.
 #
+# With cover = true the expression builds the coverage-instrumented variant
+# the e2e, chaos and Tempest legs deploy: the manager is built with -cover
+# -covermode=atomic and a -coverpkg of the operator's module and
+# internal/common, and the image is tagged cover. Such a binary writes its
+# counters to GOCOVERDIR, which internal/common/bootstrap flushes every
+# minute. The flags change neither the source nor the module download, so
+# vendor.json's vendorHash holds for both variants.
+#
 # Arguments:
 #   pkgs          the nixpkgs-images package set
 #   staticImage   nix/lib/static-image.nix applied to pkgs
@@ -37,6 +45,7 @@
 #   name          the directory under operators/
 #   pin           an attrset with vendorHash; operators/<name>/vendor.json by
 #                 default, whose inputsHash only hack/nix-lock.sh reads
+#   cover         true for the coverage-instrumented variant; false by default
 {
   pkgs,
   staticImage,
@@ -48,6 +57,7 @@ let
 in
 {
   name,
+  cover ? false,
   pin ?
     let
       path = root + "/operators/${name}/vendor.json";
@@ -98,34 +108,55 @@ let
     fileset = fileset.difference included excluded;
   };
 
-  manager = pkgs.buildGo127Module {
-    pname = "${name}-operator";
-    version = "latest";
-    inherit src;
-    modRoot = "operators/${name}";
-    subPackages = [ "." ];
-    env = {
-      GOWORK = "off";
-      CGO_ENABLED = 0;
-    };
-    proxyVendor = true;
-    inherit (pin) vendorHash;
-    ldflags = [
-      "-s"
-      "-w"
-    ];
-    # The unit tests need the envtest binaries; make test runs them.
-    doCheck = false;
-    postInstall = ''
-      mv "$out/bin/${name}" "$out/bin/manager"
-    '';
-    passthru = { inherit siblings; };
-  };
+  coverPkgs = lib.concatStringsSep "," [
+    "github.com/c5c3/cobaltcore/operators/${name}/..."
+    "github.com/c5c3/cobaltcore/internal/common/..."
+  ];
+
+  manager = pkgs.buildGo127Module (
+    {
+      pname = "${name}-operator";
+      version = "latest";
+      inherit src;
+      modRoot = "operators/${name}";
+      subPackages = [ "." ];
+      env = {
+        GOWORK = "off";
+        CGO_ENABLED = 0;
+      };
+      proxyVendor = true;
+      inherit (pin) vendorHash;
+      ldflags = [
+        "-s"
+        "-w"
+      ];
+      # The unit tests need the envtest binaries; make test runs them.
+      doCheck = false;
+      postInstall = ''
+        mv "$out/bin/${name}" "$out/bin/manager"
+      '';
+      passthru = { inherit siblings; };
+    }
+    // lib.optionalAttrs cover {
+      pname = "${name}-operator-cover";
+      # The pinned buildGoModule reads no buildFlags and replaces a caller's
+      # env.GOFLAGS, so the coverage flags join GOFLAGS before go install.
+      preBuild = ''
+        export GOFLAGS="$GOFLAGS -cover -covermode=atomic -coverpkg=${coverPkgs}"
+      '';
+    }
+  );
 in
-staticImage {
-  name = "${name}-operator";
-  tag = "latest";
-  description = "CobaltCore ${name} operator";
-  inherit manager;
-  version = null;
-}
+staticImage (
+  {
+    name = "${name}-operator";
+    tag = "latest";
+    description = "CobaltCore ${name} operator";
+    inherit manager;
+    version = null;
+  }
+  // lib.optionalAttrs cover {
+    tag = "cover";
+    description = "CobaltCore ${name} operator, coverage-instrumented";
+  }
+)
