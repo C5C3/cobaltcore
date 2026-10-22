@@ -4403,7 +4403,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 120
+    timeout-minutes: 150
     continue-on-error: true
     permissions:
       contents: read
@@ -4464,18 +4464,20 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
           NAMESPACE: keystone-system
-      # Two minutes per run, and six for effective-fan: a Keystone on kind
-      # grants about 45 assignments a second, and the last of the profile's
-      # four stages makes 2000 of them before it measures. A leg takes about
-      # an hour, most of it the provisioning and teardown of effective-fan's
-      # 4000 projects on each build.
+      # Two minutes per run, and twelve for effective-fan: the last of the
+      # profile's four stages makes 2000 grants before it measures, and a
+      # Keystone on this runner grants 16 to 18 assignments a second, so a
+      # window of 180 s leaves stage 4 about a minute of draws. A leg took
+      # about 92 minutes with six; the twelve add about 12, most of a leg
+      # being the provisioning and teardown of effective-fan's 4000 projects
+      # on each build.
       - name: Run keystone pressure
         env:
           KEYSTONE_PRESSURE_RELEASE: ${{ matrix.release }}
           KEYSTONE_PRESSURE_BASE_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}-main
           KEYSTONE_PRESSURE_PATCHED_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
           KEYSTONE_PRESSURE_DURATION: 2m
-          KEYSTONE_PRESSURE_PROFILE_DURATIONS: effective-fan=6m
+          KEYSTONE_PRESSURE_PROFILE_DURATIONS: effective-fan=12m
           KEYSTONE_PRESSURE_OUTPUT: _output/keystone-pressure/${{ matrix.release }}
         run: make keystone-pressure-ab
       - name: Dump diagnostic info
