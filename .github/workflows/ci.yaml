@@ -1274,7 +1274,9 @@ jobs:
     # run builds those images (one nix call builds them side by side), plus
     # slack. Under 60 the job was killed before the
     # Tempest images were built, and every E2E job gates on its success, so
-    # the PR would have shipped with no E2E coverage at all.
+    # the PR would have shipped with no E2E coverage at all. The ten
+    # <op>-operator-cover-image attributes build in the same nix build call
+    # and take about 6 minutes of the slack above the 105.
     timeout-minutes: 120
     permissions:
       contents: read
@@ -1312,7 +1314,10 @@ jobs:
       # nothing here and still leaves every consumer with a working reference.
       # An operator image is reused only when its revision carries every commit
       # to that operator's sources, so a :latest that main's manifest merge left
-      # behind is built here instead.
+      # behind is built here instead. When e2e-operator, e2e-chaos or tempest
+      # will run, the resolver also adds the coverage-instrumented image of
+      # every operator (<op>-operator:cover), which those three jobs deploy;
+      # main publishes none, so all ten are built.
       - name: Resolve images
         id: images
         env:
@@ -1322,6 +1327,7 @@ jobs:
           CHANGED_PROXY: ${{ needs.changes.outputs.changed-proxy }}
           CHANGED_OVN: ${{ needs.changes.outputs.changed-ovn }}
           CHANGED_LIBVIRT: ${{ needs.changes.outputs.changed-libvirt }}
+          BUILD_COVER_IMAGES: ${{ needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.tempest == 'true' }}
         run: hack/ci-resolve-e2e-images.sh
 
       # The operator, service, nova-compute, Tempest, ovn, libvirt and
@@ -1342,14 +1348,16 @@ jobs:
           BUILD_LIBVIRT: ${{ env.BUILD_LIBVIRT }}
           BUILD_PROXY: ${{ env.BUILD_PROXY }}
           BUILD_OPERATORS: ${{ env.BUILD_OPERATORS }}
+          BUILD_COVER_OPERATORS: ${{ env.BUILD_COVER_OPERATORS }}
         with:
           entrypoint: bash
           args: hack/ci-nix-build-e2e-images.sh
 
       # docker load prints "Loaded image: <name>:<release>", the tag
       # nix/lib/service-image.nix gives the image, <op>-operator:latest for
-      # an operator image; the push step below and the consumers address it
-      # under IMAGE_PREFIX.
+      # an operator image and <op>-operator:cover for its
+      # coverage-instrumented variant; the push step below and the consumers
+      # address it under IMAGE_PREFIX.
       - name: Load Nix images
         if: env.BUILD_NIX_IMAGES == 'true'
         run: |
@@ -1379,11 +1387,15 @@ jobs:
 
       # Each operator image this run built carries the layout of
       # nix/lib/static-image.nix and the four static labels alone; build-and-push
-      # publishes the same flake attribute without loading it.
+      # publishes the same flake attribute without loading it. A cover image
+      # differs only in its description.
       - name: Verify operator images
         run: |
           for op in $BUILD_OPERATORS; do
             bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:dev" "${op}"
+          done
+          for op in $BUILD_COVER_OPERATORS; do
+            bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:cover" "${op}" cover
           done
 
       # GH-310: Push every E2E image this run built to GHCR under a run-scoped
@@ -1432,6 +1444,9 @@ jobs:
           fi
           for op in $BUILD_OPERATORS; do
             push_image "${IMAGE_PREFIX}/${op}-operator:dev"
+          done
+          for op in $BUILD_COVER_OPERATORS; do
+            push_image "${IMAGE_PREFIX}/${op}-operator:cover"
           done
           while read -r svc release image; do
             [ -n "$svc" ] || continue
