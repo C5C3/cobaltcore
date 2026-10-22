@@ -132,7 +132,10 @@ is_selected() {
   return 1
 }
 
-for d in "${dirs[@]}"; do
+# Bash before 4.4 reports an empty array as unbound under set -u, and
+# tests/unit/hack/ci_generate_tempest_matrix_test.sh runs this script under
+# whatever bash it finds, so a tree without releases needs the guard.
+for d in ${dirs[@]+"${dirs[@]}"}; do
   release="${d%/}"
   release="${release##*/}"
   slug="${release//./-}"
