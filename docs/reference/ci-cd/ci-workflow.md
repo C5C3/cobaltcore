@@ -816,7 +816,7 @@ each operator chart's own `tests/` suites cover what that chart adds.
 
 | Chart | Test File | Key Assertions |
 | --- | --- | --- |
-| testbed | `deployment_test.yaml` | Image, replicas, resources, `nodeSelector`/`tolerations`/`priorityClassName`, securityContext, probes, args (including the `webhook.standalone` args), `extraArgs`/`extraEnv`, conditional webhook volume mount |
+| testbed | `deployment_test.yaml` | Image, replicas, resources, `nodeSelector`/`tolerations`/`priorityClassName`, securityContext, probes, args (including the `webhook.standalone` args), `extraArgs`/`extraEnv`, conditional webhook volume mount, `extraVolumes`/`extraVolumeMounts` after it |
 | testbed | `networkpolicy_test.yaml`, `certificate_test.yaml`, `service_test.yaml`, `serviceaccount_test.yaml`, `clusterrolebinding_test.yaml`, `rolebinding_test.yaml`, `pdb_test.yaml`, `servicemonitor_test.yaml`, `release_namespace_test.yaml` | The shared manifests, their conditionals and the release-namespace threading |
 | testbed | `clusterrole_test.yaml`, `role_test.yaml` | The shared RBAC templates: rendering per scope, the webhook rule set under `webhook.standalone`, the webhook guard, the hook-less default |
 | testbed | `schema_validation_test.yaml` | The shared values schema: type, enum, range, quantity and conditional constraints, including the `webhook.standalone` rule |
@@ -889,13 +889,13 @@ guard.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) with full history, which the resolver's revision check reads, and with `persist-credentials: false`, so no token lies in `/github/runner_temp` for the build users of step 5 to read |
 | 2 | `docker/setup-buildx-action@v4` | Provides `docker buildx imagetools inspect`, which the resolver of step 4 reads digests and revision annotations with; the job runs no BuildKit build |
 | 3 | `registry-login` composite action | Authenticates to GHCR with `GITHUB_TOKEN` |
-| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy`, `changed-ovn` and `changed-libvirt`; writes the `BUILD_*` variables, `OVN_VERSION` and the `image-map` output |
-| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true, `libvirt-image` when `BUILD_LIBVIRT` is true, `keystone-federation-proxy-image` when `BUILD_PROXY` is true and `<op>-operator-image` for each name in `BUILD_OPERATORS` in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt, `keystone-federation-proxy-latest.tar` for the federation proxy, `<op>-operator-latest.tar` for an operator) |
-| 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>` (`<IMAGE_PREFIX>/<op>-operator:latest` for an operator), then the tar is removed |
+| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy`, `changed-ovn` and `changed-libvirt`, and with `BUILD_COVER_IMAGES` true when `e2e-operator`, `e2e-chaos` or `tempest` will run; writes the `BUILD_*` variables, `OVN_VERSION` and the `image-map` output |
+| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true, `libvirt-image` when `BUILD_LIBVIRT` is true, `keystone-federation-proxy-image` when `BUILD_PROXY` is true, `<op>-operator-image` for each name in `BUILD_OPERATORS` and `<op>-operator-cover-image` for each name in `BUILD_COVER_OPERATORS` in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt, `keystone-federation-proxy-latest.tar` for the federation proxy, `<op>-operator-latest.tar` for an operator, `<op>-operator-cover.tar` for its coverage-instrumented variant) |
+| 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>` (`<IMAGE_PREFIX>/<op>-operator:latest` for an operator, `<IMAGE_PREFIX>/<op>-operator:cover` for a cover image), then the tar is removed |
 | 7 | Tag federation proxy image | Only when `BUILD_PROXY` is true. Tags `<IMAGE_PREFIX>/keystone-federation-proxy:latest`, which step 6 loaded, as `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, the tag the keystone federation suites and step 10 address |
 | 8 | Tag operator images | Tags `<IMAGE_PREFIX>/<op>-operator:latest`, which step 6 loaded, as `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS`, the tag the suites and step 10 address |
-| 9 | Verify operator images | Runs `tests/container-images/verify_operator_image.sh` on `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS`: the layout of `nix/lib/static-image.nix`, `/usr/bin/manager` as `65532:65532`, and the four static labels alone |
-| 10 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`: the operator images under `<op>-operator:dev`, `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true, `<IMAGE_PREFIX>/libvirt:latest` only when `BUILD_LIBVIRT` is true |
+| 9 | Verify operator images | Runs `tests/container-images/verify_operator_image.sh` on `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS`: the layout of `nix/lib/static-image.nix`, `/usr/bin/manager` as `65532:65532`, and the four static labels alone. Each `<IMAGE_PREFIX>/<op>-operator:cover` of `BUILD_COVER_OPERATORS` runs with the third argument `cover`, which expects the description `CobaltCore <op> operator, coverage-instrumented` |
+| 10 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`: the operator images under `<op>-operator:dev`, the cover images under `<op>-operator:cover` (`e2e-${run_id}-cover`), `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true, `<IMAGE_PREFIX>/libvirt:latest` only when `BUILD_LIBVIRT` is true |
 
 `hack/ci-resolve-e2e-images.sh` derives the image set from the tree: an operator image
 per `operators/<op>/` with a `go.mod`, a service image per (operator, release) pair in
@@ -910,6 +910,17 @@ digest behind its published tag (`<op>-operator:latest`, `<svc>:<release>`,
 `libvirt:latest`), which the run pulls instead of rebuilding.
 A source that has never been published, the state of a new operator before its first
 merge, is built instead of failing the run.
+
+The coverage-instrumented operator images are keyed `<IMAGE_PREFIX>/<op>-operator:cover`.
+When `e2e-operator`, `e2e-chaos` or `tempest` will run, step 4 passes
+`BUILD_COVER_IMAGES=true`, and the resolver adds that key for all ten operators,
+whether or not the pull request changed one, so a pull request that only adds a
+suite is measured too. `main` never publishes a cover image, so each is built,
+mapped to `<op>-operator:e2e-${run_id}-cover` and listed in
+`BUILD_COVER_OPERATORS`, which also switches the Nix step on. `cleanup-e2e-tags`
+prunes the tags with the rest of the run's. Any other value of
+`BUILD_COVER_IMAGES` adds no key. The three jobs fill their operator `:dev`
+refs from these images ([Operator coverage](#operator-coverage)).
 
 An operator image is reused only when every commit in the checkout that touches the
 operator's sources is in the history of the commit its index annotation
@@ -952,7 +963,8 @@ Timeout: 120 minutes. The job needs 45 without the ovn and libvirt images. A run
 builds the ovn image without a cached build of the pin compiles Open vSwitch and OVN
 from source, and one that builds the libvirt image compiles libvirt and QEMU, which is
 what the `build-ovn` and `build-libvirt` jobs of `build-images.yaml` budget 60 minutes
-for; one `nix build` builds both side by side. Every E2E job gates on `build-e2e-images` succeeding, so a job killed at its
+for; one `nix build` builds both side by side. The ten cover images build in the same
+`nix build` and take about 6 minutes of the slack. Every E2E job gates on `build-e2e-images` succeeding, so a job killed at its
 timeout costs the pull request its whole E2E coverage.
 
 ### e2e-operator
@@ -971,18 +983,20 @@ Chainsaw E2E test suites.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` from `hack/kind-config-audit.yaml`, whose API server writes the audit log step 12 reads |
-| 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
+| 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
 | 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2026.1 and 2026.2 today) and the 2026.1-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2026.1 and 2026.2) and `ovn:<pin>`; the `c5c3` leg, which ships no service image, loads `keystone:2026.1` as the shell its `env-key-material` suite runs in |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
 | 7 | `hack/ci-deploy-operator.sh` (sibling operators) | `nova` leg: keystone-, placement- and glance-operator; `neutron` and `nova` legs: ovn-operator; `nova` leg: neutron-operator. Each goes into its `<op>-system` Namespace, ahead of the matrix operator |
-| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
+| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm; the job-level `E2E_COVERAGE: "true"` gives this operator and the siblings of step 7 a coverage counter volume and `GOCOVERDIR` |
 | 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` and `tests/e2e/<operator>-operator/`, among them the operator's `env-key-material` suite, which reads the operator pod's spec and process environment for key material; a `nova` shard runs its half of the suite directories |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, operator logs |
 | 11 | `hack/ci-dump-diagnostics.sh` (always, sibling operators) | The `neutron` leg dumps `ovn-system`; the `nova` leg dumps `keystone-system`, `placement-system`, `glance-system`, `ovn-system` and `neutron-system`, one call per operator under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again |
 | 12 | `hack/ci-rbac-usage-report.sh` (always, `continue-on-error`) | Diffs the requests of the operator's ServiceAccount in the kube-apiserver audit log against the ClusterRole its markers render and prints the [RBAC usage report](../testing/rbac-usage-audit.md); never fails the job |
 | 13 | Upload RBAC usage report (always) | Uploads `_output/rbac-usage/` as the `rbac-usage-<operator>` artifact, `rbac-usage-nova-<shard>` on a `nova` shard (14-day retention) |
 | 14 | Upload JUnit report | Uploads test results as the `e2e-<operator>-junit-report` artifact, `e2e-nova-<shard>-junit-report` on a `nova` shard (14-day retention) |
-| 15 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 15 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh e2e`: final flush, one profile per operator, the totals in the job summary |
+| 16 | Upload operator coverage | Only when step 15 found a profile. Uploads the profiles to Codecov under `e2e-<op>` and `e2e-common` |
+| 17 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Matrix strategy:**
 
@@ -1248,16 +1262,19 @@ green run with them.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
-| 4 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the seven nova-leg images (`nova`), and `c5c3-operator:dev` (`controlplane`) |
-| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs and `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane` |
-| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, the placement-operator on the `pod` and `network` legs; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator` |
-| 8 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
-| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` leg repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log |
-| 10 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
-| 11 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` for the `go tool covdata` of step 12 |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 4 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
+| 5 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
+| 6 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the seven nova-leg images (`nova`), and `c5c3-operator:dev` (`controlplane`) |
+| 7 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs and `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane` |
+| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, each with the coverage counter volume of the job-level `E2E_COVERAGE: "true"`, the placement-operator on the `pod` and `network` legs; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator` |
+| 9 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
+| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` leg repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log |
+| 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
+| 12 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh chaos`: final flush, one profile per operator, the totals in the job summary |
+| 13 | Upload operator coverage | Only when step 12 found a profile. Uploads the profiles to Codecov under `chaos-<op>` and `chaos-common` |
+| 14 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Key differences from `e2e-operator`:**
 
@@ -1998,13 +2015,13 @@ with, see
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/source.json` holds the pin |
-| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>`; the nova and cinder legs pull the four compute-stack operator images plus `neutron:<release>`, `placement:<release>`, `nova:<release>` and `ovn:<OVN_VERSION>` |
+| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs, filling every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image (`operator-variant: cover`, also on the glance and barbican load steps; see [Operator coverage](#operator-coverage)); the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>`; the nova and cinder legs pull the four compute-stack operator images plus `neutron:<release>`, `placement:<release>`, `nova:<release>` and `ovn:<OVN_VERSION>` |
 | 6 | `kind load docker-image` | Loads keystone operator and service images into kind |
 | 7 | `kind load docker-image` *(neutron leg only)* | Loads the two operator images, the neutron and OVN service images, and the tempest image the catalog Job runs in-cluster |
 | 8 | `kind load docker-image` *(nova and cinder legs)* | Loads the eight compute-stack refs both legs share in one call, so the layers the service images and the operator images each share are saved and imported once; each leg's glance pair and tempest image come from a step above, the cinder leg's from its own and the nova leg's from the glance one |
 | 9 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack. `WITH_MESSAGING` is set on the cinder and nova legs, `WITH_NFS` on the cinder leg and `WITH_OVN_KERNEL_MODULES` on the nova leg |
 | 9a | Start the sizing measurement *(`ci:measure-sizing` only)* | Starts the background watch of [Sizing measurement](#sizing-measurement); step 9 then also carries `WITH_VPA` |
-| 10 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
+| 10 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm; the job-level `E2E_COVERAGE: "true"` gives this operator and those of steps 11 and 12 a coverage counter volume and `GOCOVERDIR` |
 | 11 | `hack/ci-deploy-operator.sh` ×2 *(neutron, nova and cinder legs)* | Deploys the ovn-operator into `ovn-system` and the neutron-operator into `neutron-system`; a Neutron never reaches Ready without a live OVNCentral, and all three legs run one |
 | 12 | `hack/ci-deploy-operator.sh` ×2 *(nova and cinder legs)* | Deploys the placement- and nova-operator, each into its own `<op>-system` Namespace; the glance-, ovn- and neutron-operator both legs also need come from the steps above |
 | 13 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
@@ -2033,13 +2050,51 @@ with, see
 | 34b | Upload the sizing measurement (always) *(`ci:measure-sizing` only)* | Uploads `_output/sizing/` as `sizing-tempest-<service>-<release>` (14-day retention) |
 | 35 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
 | 36 | `hack/ci-dump-diagnostics.sh` ×5 or ×6 (always) *(nova and cinder legs)* | One `OPERATOR_ONLY=1` pass per extra operator: `nova`, `placement`, `ovn`, `neutron`, `glance`, and `cinder` on the cinder legs |
-| 37 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 37 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh tempest`: final flush, one profile per operator, the totals in the job summary |
+| 38 | Upload operator coverage | Only when step 37 found a profile. Uploads the profiles to Codecov under `tempest-<op>` and `tempest-common` |
+| 39 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 The compute-stack steps name their fixtures by suffix glob, because the numeric
 prefixes differ between `tests/tempest/nova-<slug>/` and
 `tests/tempest/cinder-<slug>/`.
 
 Timeout: 68 minutes, 150 for the `nova` legs and 120 for the `cinder` legs.
+
+### Operator coverage
+
+`e2e-operator`, `e2e-chaos` and `tempest` measure which operator code their
+suites reach. The other jobs that deploy operators keep the production image, so
+a pull request still exercises the binary that ships.
+
+1. Each of the three jobs sets `E2E_COVERAGE: "true"` in its job-level `env:`,
+   and its load steps pass `operator-variant: cover` to `load-e2e-images`. Every
+   `<op>-operator:dev` ref the job loads into kind is then the
+   `<op>-operator:cover` image `build-e2e-images` built: the manager compiled
+   with `-cover -covermode=atomic` and a `-coverpkg` of the operator's module
+   and `internal/common`
+   ([Operator images](./nix-image-build.md#operator-images)).
+2. `hack/ci-deploy-operator.sh` creates `/var/lib/cobaltcore-coverage/<op>` on
+   the kind node and gives the operator a hostPath volume of it at `/coverage`,
+   with `GOCOVERDIR=/coverage`. The manager writes its counters there every
+   minute (`internal/common/bootstrap/coverage.go`). A pod that a chaos pod-kill
+   deletes keeps the counters up to its last flush, which an `emptyDir` would
+   lose with the pod.
+3. "Collect operator coverage" runs `hack/ci-collect-e2e-coverage.sh` with the
+   job's family, `e2e`, `chaos` or `tempest`, right before "Delete kind
+   cluster". It scales the instrumented managers to 0 so each flushes once
+   more, merges the counters into one profile per operator and writes the
+   statements and coverage of each operator to the job summary. On a cancelled
+   run it skips the scale-down and copies what the last periodic flush wrote.
+4. "Upload operator coverage" sends the profiles to Codecov in one upload, under
+   the flags `<family>-<op>` and `<family>-common`, with `disable_search: true`
+   so the raw counter files stay behind. The flags report and gate no status
+   ([Codecov Configuration](#codecov-configuration)).
+
+The collect step runs with `continue-on-error` and the upload with
+`fail_ci_if_error: false`, so a coverage problem does not fail a job. The
+releases a suite installs with its own `helm install`, those of the `metrics`
+and `namespace-scoped-rbac` suites and of `network-policy-egress`, run the
+`:cover` binary without a counter volume and are not measured.
 
 ### cleanup-e2e-tags
 
@@ -2297,6 +2352,8 @@ deploying the operator via Helm with the specified container image.
 | `IMAGE_REPO` | Yes | - | Full image repository (e.g. `ghcr.io/c5c3/keystone-operator`) |
 | `IMAGE_TAG` | No | `dev` | Image tag |
 | `DEFAULT_IMAGE_PULL_POLICY` | No | `IfNotPresent` | The operator's default image pull policy (`Always`, `IfNotPresent` or `Never`), passed as `--set controller.defaultImagePullPolicy=<value>`. Any other value exits 1 with an `::error::` line before anything is applied. |
+| `E2E_COVERAGE` | No | `false` | `true` gives the operator a coverage counter volume and `GOCOVERDIR` (below). Empty means `false`; any other value exits 1 with an `::error::` line before anything is applied. |
+| `KIND_CLUSTER` | No | `cobaltcore` | The kind cluster whose nodes get the counter directory |
 
 The script runs `kubectl apply --server-side --force-conflicts -f <chart>/crds/`, waits for
 CRD establishment, then runs `helm install` with `image.pullPolicy=Never` (suitable for
@@ -2309,6 +2366,21 @@ policy anyway. The banner line `Image pull policy` shows the value, or
 `<chart has no such value>`. Server-side apply keeps the CRD out of the 262,144-byte
 `last-applied-configuration` annotation that client-side apply writes, which the Nova and
 Cinder CRDs exceed.
+
+Under `E2E_COVERAGE=true`, which the `e2e-operator`, `e2e-chaos` and `tempest` jobs
+set ([Operator coverage](#operator-coverage)), the script checks before it applies the
+CRDs that the chart's `values.schema.json` names `extraVolumes` (operator-library 0.12.0
+or later), lists the nodes with `kind get nodes --name "${KIND_CLUSTER}"` and creates
+`/var/lib/cobaltcore-coverage/<op>` with mode 1777 on each through `docker exec`. The
+manager runs as uid 65532, and a hostPath directory the kubelet creates belongs to
+root. A chart without the value, a cluster without nodes and a failing `docker exec`
+each exit 1 with an `::error::` line. `helm install` then gets three `--set-json`
+values: an `extraVolumes` entry `coverage`, a hostPath of that directory with
+`type: Directory`, so a missing directory fails the pod at start; an
+`extraVolumeMounts` entry at `/coverage`; and `extraEnv` with `GOCOVERDIR=/coverage`.
+The banner line `E2E coverage` shows the value.
+`tests/unit/hack/ci_deploy_operator_coverage_test.sh` covers it with stub `helm`,
+`kubectl`, `kind` and `docker` binaries.
 
 Usage:
 
@@ -2330,13 +2402,15 @@ image set `hack/ci-resolve-e2e-images.sh` wrote.
 | `OVN_VERSION` | With `BUILD_OVN` | (empty) | The pinned OVN version, the tag `docker load` prints for the ovn image; `hack/ci-resolve-e2e-images.sh` writes it |
 | `BUILD_LIBVIRT` | No | (empty) | `true` builds the libvirt image, the flake attribute `libvirt-image` |
 | `BUILD_OPERATORS` | No | (empty) | One operator name per line; each builds the flake attribute `<op>-operator-image` |
+| `BUILD_COVER_OPERATORS` | No | (empty) | One operator name per line; each builds the flake attribute `<op>-operator-cover-image`, the coverage-instrumented variant |
 | `GITHUB_WORKSPACE` | Yes | - | The checkout the flake is evaluated in; set by the runner |
 
 The script writes the group `e2ebld` (gid 40000) and one build user per CPU (uids
 from 40001) to the container's account files (`NIX_E2E_ETC`, `/etc` by default), then
 builds the flake attributes `<name>-<rel_>-image` of every image (`<name>` the third
 field of a line that has one), `ovn-image` with `BUILD_OVN`, `libvirt-image` with
-`BUILD_LIBVIRT` and `<op>-operator-image` for each name of `BUILD_OPERATORS`, in one
+`BUILD_LIBVIRT`, `<op>-operator-image` for each name of `BUILD_OPERATORS` and
+`<op>-operator-cover-image` for each name of `BUILD_COVER_OPERATORS`, in one
 `nix build` with `--option sandbox false`,
 `--option build-users-group e2ebld` and one job per CPU. The builders, which run the setup code of every sdist the locks build, run as
 those users: the runner mounts its Docker socket and the workspace into the container,
@@ -2344,7 +2418,7 @@ and a build user can neither open the socket nor write the workspace. Their uids
 those of a host Nix daemon's build users. It then writes each image stream to
 `.nix-e2e/<name>-<release>.tar` and appends `<name> <release>` to `.nix-e2e/images.txt`;
 the ovn image is listed as `ovn <OVN_VERSION>`, the libvirt image as `libvirt latest`
-and an operator image as `<op>-operator latest`, the tag `docker load` prints for it. A line with four fields exits 1
+an operator image as `<op>-operator latest` and a cover image as `<op>-operator cover`, the tag `docker load` prints for it. A line with four fields exits 1
 with `ci-nix-build-e2e-images.sh: malformed line '<line>'`, a `BUILD_OVN` without
 `OVN_VERSION` with `ci-nix-build-e2e-images.sh: BUILD_OVN is true but OVN_VERSION is
 empty`, both before nix runs, and a missing attribute or a
@@ -2355,6 +2429,49 @@ Before anything else it adds the workspace to git's `safe.directory`, because th
 container's root does not own the checkout, and its `EXIT` trap hands `.nix-e2e/` back
 to the owner of the workspace. `tests/unit/ci/nix_e2e_build_test.sh` drives it with
 stub `nix`, `git` and `nproc` binaries and scratch account files.
+
+### hack/ci-collect-e2e-coverage.sh
+
+Collects the operator coverage of an `e2e-operator`, `e2e-chaos` or `tempest` matrix
+entry before its kind cluster is deleted ([Operator coverage](#operator-coverage)). The only
+argument is the family, `e2e`, `chaos` or `tempest`, which names the profiles and
+the Codecov flags.
+
+| Environment Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `GITHUB_OUTPUT` | Yes | - | The output file `found`, `files` and `flags` go to |
+| `GITHUB_STEP_SUMMARY` | No | stdout | The file the coverage table goes to |
+| `KIND_CLUSTER` | No | `cobaltcore` | The kind cluster whose nodes hold the counters |
+| `SCALE_DOWN` | No | `true` | `true` makes every manager flush once more before the copy; the jobs pass `false` on a cancelled run |
+
+The script works in four steps:
+
+1. Final flush. Under `SCALE_DOWN=true` it scales every Deployment whose `manager`
+   container sets `GOCOVERDIR` to 0 replicas and waits up to 60 s per Deployment
+   for its pods, selected by `.spec.selector.matchLabels`, to be deleted. Each
+   manager flushes on SIGTERM. A failed `kubectl` call or a timeout prints a
+   `::warning::` and the script carries on.
+2. Copy. `docker cp` copies `/var/lib/cobaltcore-coverage` of every node
+   `kind get nodes` lists to `_output/coverage/raw/<node>/`. A node without it prints a
+   `::notice::` and is skipped.
+3. Merge. Each operator directory, whose name must match `^[a-z][a-z0-9-]*$`, is
+   gathered from every node and merged with `go tool covdata textfmt` into
+   `<family>-<op>.out`. A set without a `covcounters.*` file, a failed merge and a
+   profile with no line beyond `mode:` are skipped with a `::notice::` or
+   `::warning::`.
+4. Summary and outputs. The job summary gets `### Operator coverage (<family>)`
+   and a row per profile: statements, covered statements and coverage of the
+   blocks under `operators/<op>/`, without those of `internal/common`. With no
+   profile it says `No operator coverage counters were collected.`
+   `GITHUB_OUTPUT` gets `found=true|false`, `files` (the profiles, comma-joined,
+   sorted by operator) and `flags` (`<family>-<op>` in the same order, then
+   `<family>-common`).
+
+It exits 1 for a family other than the three or a missing `GITHUB_OUTPUT`, and 0
+in every other case. It removes the profiles and counters an earlier run left in
+`_output/coverage`, because a self-hosted runner reuses its workspace.
+`tests/unit/hack/ci_collect_e2e_coverage_test.sh` drives it with stub `kind`,
+`docker`, `kubectl` and `go` binaries.
 
 ### hack/ci-resolve-ovn-version.sh
 
@@ -2590,13 +2707,17 @@ unchanged. Shared between the `tempest` job and every `e2e-*` job except `e2e-in
 The map holds one of two forms per ref: `<repo>:e2e-<run-id>-<tag>` for an image this
 run built, or `<repo>@sha256:...` for one it reused from `main`. A ref the map does
 not carry falls back to the run-scoped tag, and so does every ref when `image-map` is
-left empty. A malformed map fails the step before the first pull.
+left empty. A malformed map fails the step before the first pull. With
+`operator-variant: cover`, a ref that ends in `-operator:dev` is looked up, with the
+same fallback, as the same repository's `cover` tag, and the pulled image is tagged
+as the `:dev` ref, so the job's `kind load` and deploy lines stay as they are.
 
 | Input | Default | Description |
 | --- | --- | --- |
 | `run-id` | `${{ github.run_id }}` | Run ID used as the tag prefix (`e2e-<run-id>-`) |
 | `images` | (required) | Multiline list of canonical local refs (e.g. `ghcr.io/c5c3/keystone:2026.1`); blank/comment lines are ignored |
 | `image-map` | `''` | The `image-map` output of `build-e2e-images`; empty means pull every ref by run-scoped tag |
+| `operator-variant` | `''` | Empty, or `cover` to fill every `<repo>-operator:dev` ref from `<repo>-operator:cover`; any other value fails the step before the first pull. `e2e-operator`, `e2e-chaos` and `tempest` pass `cover` |
 | `registry` | `ghcr.io` | Registry to authenticate against |
 | `username` | `${{ github.actor }}` | Login user |
 | `password` | `${{ github.token }}` | Login token |
@@ -2728,6 +2849,10 @@ This mirrors the lint exclusion of the same files (see the note above the
 | Project | `auto` (threshold: 1%) | Overall coverage must not decrease by more than 1% |
 | Patch | `90%` | New/changed lines in a PR must meet 90% coverage |
 
+Both statuses list their `flags`: the 22 `unit-*` and `integration-*` flags. The
+`e2e-*`, `chaos-*` and `tempest-*` flags show in the pull request comment and the flag
+and file views, and no status counts them.
+
 `fail_ci_if_error: false` is set on each `codecov/codecov-action` step in the workflow
 (not in `.codecov.yml`, where it is not a valid key) because fork PRs do not have access
 to `CODECOV_TOKEN`. This prevents CI from failing due to upload issues on forks.
@@ -2735,9 +2860,10 @@ to `CODECOV_TOKEN`. This prevents CI from failing due to upload issues on forks.
 ### Flag Management
 
 The `flag_management` section in `.codecov.yml` links CI-uploaded flags to coverage tracking
-rules. Flags follow the `[unit|integration]-<target>` naming convention, matching the CI
-matrix targets (`common`, `keystone`, `c5c3`, `horizon`, `glance`, `placement`, `barbican`,
-`ovn`, `neutron`, `cinder`, `nova`).
+rules. Flags follow the `<prefix>-<target>` naming convention with five prefixes, `unit`,
+`integration`, `e2e`, `chaos` and `tempest`, and the CI matrix targets (`common`,
+`keystone`, `c5c3`, `horizon`, `glance`, `placement`, `barbican`, `ovn`, `neutron`,
+`cinder`, `nova`).
 Each flag has `carryforward: true`, which ensures that when only a subset of flags is
 uploaded (e.g., only one operator changed), the missing flags carry forward their
 last-known coverage instead of reducing the total.
@@ -2768,6 +2894,15 @@ Defined flags:
 | `integration-neutron` | `operators/neutron/` | `test-integration` job, `neutron` matrix leg |
 | `integration-cinder` | `operators/cinder/` | `test-integration` job, `cinder` matrix leg |
 | `integration-nova` | `operators/nova/` | `test-integration` job, `nova` matrix leg |
+| `e2e-<target>` | `internal/common/` for `e2e-common`, `operators/<target>/` otherwise | `e2e-operator` job, one upload per matrix entry, naming every operator it deployed |
+| `chaos-<target>` | `internal/common/` for `chaos-common`, `operators/<target>/` otherwise | `e2e-chaos` job, one upload per matrix entry, naming every operator it deployed |
+| `tempest-<target>` | `internal/common/` for `tempest-common`, `operators/<target>/` otherwise | `tempest` job, one upload per matrix entry, naming every operator it deployed |
+
+An e2e, chaos or Tempest upload carries the profile of every operator a matrix entry
+deployed, and each profile holds the blocks of `internal/common` too. Every flag of
+the upload applies to all of its profiles, and the flag's `paths` keep the files of
+its own tree: `e2e-keystone` those under `operators/keystone/`, `e2e-common` those
+under `internal/common/`.
 
 ### Component Thresholds
 
@@ -2778,6 +2913,9 @@ Each component is tracked independently on the Codecov dashboard:
 | `common` | `internal/common/**` | 80% | Shared library code underpinning all operators |
 | `controllers` | `operators/*/internal/controller/**` | 70% | Controller reconciliation logic (envtest-dependent paths harder to cover) |
 | `webhooks` | `operators/*/api/**` | 90% | Webhook validation/defaulting (incorrect admission logic causes silent data corruption) |
+
+Each component sets `flag_regexes` `^unit-` and `^integration-`, so its status counts
+the unit and integration flags alone.
 
 ## Makefile Targets
 

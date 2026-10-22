@@ -129,8 +129,11 @@ bottom when scaffolding `operators/<op>/`:
   retention coverage from the directory you already created. The
   service-parity audit asserts the generator emits `<op>-operator` and
   `<op>`.
-- **`.codecov.yml`** — add the per-operator `unit-<op>`/`integration-<op>`
-  flag blocks; the components section auto-scales via `operators/*` globs.
+- **`.codecov.yml`** — add the five per-operator flag blocks, `unit-<op>`,
+  `integration-<op>`, `e2e-<op>`, `chaos-<op>` and `tempest-<op>`, and the
+  `unit-<op>` and `integration-<op>` names to the `flags` of the project and
+  patch statuses. The `e2e-`, `chaos-` and `tempest-` flags only report; the
+  components section auto-scales via `operators/*` globs.
 - **Dashboards** — ship `operators/<op>/dashboards/<op>-operator.json` with a
   `dashboard_test.go` asserting the JSON parses and every metric a panel
   references is registered by the operator. Only the keystone dashboard is
