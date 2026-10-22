@@ -95,6 +95,14 @@ for the supplied platform adaptations.
 
 ## Deploy the ControlPlane
 
+Start with a cluster that has no CobaltCore deployment. If the cluster already
+runs CobaltCore, keep its original deployment flags and ControlPlane manifest
+when retrying it. In particular, `WITH_CONTROLPLANE_CR=true` reapplies the
+bundled Keystone/Horizon-only definition and can remove services from an
+existing full ControlPlane. Changing a standalone service deployment to
+ControlPlane mode also requires a fresh deployment because the ownership of
+MariaDB and Memcached changes.
+
 ```bash
 EXTERNAL_CLUSTER=true \
 WITH_CONTROLPLANE=true \

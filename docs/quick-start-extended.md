@@ -147,6 +147,10 @@ running those tests.
 
 ## Step 4 — Open the Headlamp UI
 
+The UI sections are optional. Run each `kubectl port-forward` in a separate
+terminal and keep it running while using that UI. Continue deployment commands
+in your original repository shell, starting at Step 5.
+
 The kind overlay ships [Headlamp](https://headlamp.dev/) with the Flux plugin preloaded, so
 you can watch Steps 5 to 9 reconcile live (and, if you enabled `WITH_PROMETHEUS=true`, jump to
 [Step 4c](#step-4c-grafana-ui) for the Grafana UI). Wait for the HelmRelease to become Ready, then
@@ -270,9 +274,10 @@ the OS keychain / system certificate store, so the menu path differs:
    passphrase you chose above.
 3. *(Optional: removes the trust warning.)* Tab **Authorities → Import…** → select
    `openbao-ca.crt` → tick "Trust this CA to identify websites". The server cert carries
-   `IP:127.0.0.1` as a SAN, so `https://localhost:8200` then validates cleanly.
+   `IP:127.0.0.1` as a SAN, so use `https://127.0.0.1:8200`; it has no
+   `localhost` DNS SAN.
 
-Open `https://localhost:8200/ui/`. Firefox asks which client certificate to send: pick
+Open `https://127.0.0.1:8200/ui/`. Firefox asks which client certificate to send: pick
 **"OpenBao Client (kind)"**, then paste the root token to sign in.
 
 For the full token lifecycle, secret engines, auth methods, and the bootstrap sequence that

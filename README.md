@@ -11,6 +11,8 @@ Kubernetes-native operators and deployment stack for OpenStack Hosted Control Pl
 CobaltCore runs OpenStack on Kubernetes. Declare a `ControlPlane` with the services you need;
 CobaltCore deploys them, connects their databases and credentials, and maintains their configuration.
 
+The project website at [cobaltcore.dev](https://cobaltcore.dev) introduces CobaltCore as a whole.
+
 Start with identity and a dashboard on your computer, then add images, networking, compute, and storage.
 Kubernetes hosts the APIs; compute hosts provide capacity for virtual machines. See the
 [architecture documentation](docs/architecture/index.md) for how the components fit together.

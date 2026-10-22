@@ -44,19 +44,32 @@ The lab assumes a cluster of this shape:
 | No conflicting host libvirt, QEMU or OVS services; their binaries are supplied in Part 2's containers | probe: Host binaries flags installed binaries for review, without assuming a service is running |
 | A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe: Pod MTU checks the observed `cali*` interfaces; other CNIs need review |
 | A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | probe: StorageClass and Node-local DNS; deploy checks them again |
-| Room in that class for nine 100Gi raw block volumes and one 10Gi monitor volume with the checked-in Ceph manifest, from a provisioner that serves `volumeMode: Block` | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
+| Room in that class for one 100Gi raw block volume per OSD and one 10Gi monitor volume, from a provisioner that serves `volumeMode: Block`; the manifest starts with nine OSDs, and Step 3 describes fresh two-worker sizing | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
 | Only with the optional `WITH_NFS=true` of Part 3: room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy, which exits 1 otherwise |
 | Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
 | TCP 16514 and 49152 to 49215 open between the workers | `hack/lab-node-ports.sh` |
 
 The shoot's kubeconfig is saved as `kubeconfig` in the root of the clone;
 `.gitignore` keeps that file out of git. The workstation needs Git, `kubectl`, `jq`,
-[`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer, `make`, and the
+[`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer, `make`, Bash,
+the GNU coreutils commands `timeout` and `sha256sum`, and the
 OpenStack CLI
 ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/))
 with the [`osc-placement`](https://docs.openstack.org/osc-placement/latest/)
 plugin. Neither Docker nor kind is needed: the deploy creates no cluster and
 loads no image.
+
+Check the workstation commands before deploying. On macOS, install GNU
+coreutils and put its commands on `PATH`; the system tools do not include
+`timeout`.
+
+```bash
+(
+for tool in git make bash kubectl jq yq timeout sha256sum openstack; do
+  command -v "$tool" || { echo "Install $tool before continuing"; exit 1; }
+done
+)
+```
 
 ## Part 1: The control plane {#control-plane}
 
@@ -146,6 +159,14 @@ describes the read-only Job and its raw survey fields.
 
 ### Step 3: Deploy the stack {#cp-deploy}
 
+Choose the Ceph OSD count **before the first deployment**. The checked-in
+`deploy/lab/metal-stack/ceph/cluster/cluster.yaml` has a fixed count of `9`
+for three workers; deployment does not calculate it from the node count.
+For a fresh two-worker cluster, set
+`spec.storage.storageClassDeviceSets[0].count` to `6` (three per worker).
+If Ceph is already deployed, preserve its existing count and storage settings;
+do not reduce the count when retrying the installer.
+
 ```bash
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra
 ```
@@ -162,7 +183,7 @@ describes every step and variable.
 `WITH_CEPH=true` deploys the
 [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph)
 that holds Cinder's volumes and backups: the Rook operator and a Ceph with
-three OSDs per worker on raw block volumes of the default class, the RBD pools
+the configured OSD count on raw block volumes of the default class, the RBD pools
 `volumes` and `backups`, and the users `cinder` and `cinder-backup`, whose keys
 reach the Secrets `ceph-client-cinder` and `ceph-client-cinder-backup` in
 `openstack` through OpenBao. The deploy waits until the Ceph reports
@@ -172,8 +193,6 @@ Without the flag the script exits 1 before it applies anything, because the
 ControlPlane of Step 4 puts Cinder's volume backend and backup target on that
 Ceph.
 
-For a fresh two-worker cluster, set `storageClassDeviceSets[0].count` in
-`deploy/lab/metal-stack/ceph/cluster/cluster.yaml` to `6` (three per worker).
 On a Ceph timeout, check `ceph health detail` in the toolbox and
 `kubectl -n rook-ceph get pods -l app=rook-ceph-osd -o wide`.
 The pools need OSDs on two hosts. The spread rule does not move existing
