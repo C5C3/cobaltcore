@@ -41,6 +41,7 @@ Confirm that the context names your test cluster and the operator is running.
 Run one suite:
 
 ```bash
+mkdir -p _output/reports
 chainsaw test \
   --config tests/e2e/chainsaw-config.yaml \
   tests/e2e/keystone/basic-deployment/
