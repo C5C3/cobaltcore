@@ -14,6 +14,11 @@
 # that only runs for the selected ones, or a deleted config directory would sit
 # undetected until some later pull request happened to select that service.
 #
+# The keystone-upgrade entry is checked here as well: the generator appends it
+# beside a selected keystone when the tree holds two or more releases, it names
+# the newest release and the one before it, TEMPEST_SERVICES cannot select it by
+# name, and it adds no config directory requirement of its own.
+#
 # The generator resolves its repository root from its own location, so each case
 # runs against a throwaway tree with the script copied into it.
 #
@@ -79,6 +84,11 @@ services_in_matrix() {
   jq -r '.include[].service' <<<"$MATRIX" | sort | tr '\n' ' ' | sed 's/ *$//'
 }
 
+# count_service <service> — how many emitted entries carry that service.
+count_service() {
+  jq --arg s "$1" '[.include[] | select(.service == $s)] | length' <<<"$MATRIX"
+}
+
 require_jq() {
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed ($1 checks skipped)"
@@ -102,14 +112,14 @@ test_unset_selection_emits_every_service() {
   run_matrix "$tree"
   assert_eq "the generator succeeds" "0" "$RC"
   assert_eq "every service is emitted for every release" \
-    "barbican barbican cinder cinder glance glance keystone keystone neutron neutron nova nova" "$(services_in_matrix)"
+    "barbican barbican cinder cinder glance glance keystone keystone keystone-upgrade neutron neutron nova nova" "$(services_in_matrix)"
 
   # A skipped job still evaluates its matrix expression, so an empty include
   # would fail the run rather than skip it. Empty has to mean "all", not "none".
   run_matrix "$tree" ""
   assert_eq "an empty selection succeeds" "0" "$RC"
   assert_eq "an empty selection is not an empty matrix" \
-    "barbican barbican cinder cinder glance glance keystone keystone neutron neutron nova nova" "$(services_in_matrix)"
+    "barbican barbican cinder cinder glance glance keystone keystone keystone-upgrade neutron neutron nova nova" "$(services_in_matrix)"
 }
 
 test_selection_narrows_the_matrix() {
@@ -128,8 +138,8 @@ test_selection_narrows_the_matrix() {
 
   run_matrix "$tree" "keystone barbican"
   assert_eq "two services succeed" "0" "$RC"
-  assert_eq "both are emitted, once per release" \
-    "barbican barbican keystone keystone" "$(services_in_matrix)"
+  assert_eq "both are emitted, once per release, with the keystone upgrade leg" \
+    "barbican barbican keystone keystone keystone-upgrade" "$(services_in_matrix)"
 
   # A nova leg brings up a whole compute stack, so its entry names five CRs
   # besides the Nova itself. A key the generator drops reaches the workflow as
@@ -157,6 +167,82 @@ test_selection_narrows_the_matrix() {
     '"placement-cr-name":"placement-cinder-tempest-2025-2"'; do
     assert_contains "the cinder entry carries ${key}" "$MATRIX" "$key"
   done
+}
+
+# The keystone-upgrade leg deploys its Keystone at upgrade-from and upgrades it in
+# place to release, so the pair has to be the newest transition under releases/.
+# Its key order is the order GitHub lists the leg's values in the check name.
+test_keystone_upgrade_leg() {
+  echo "Test: the keystone-upgrade entry follows the newest release transition"
+
+  local tree expected missing
+  tree="$(make_tree upgrade 2026.1 2026.2)"
+
+  # The entry is emitted, never selected: keystone-upgrade has no config
+  # directory of its own, so it stays out of the selection vocabulary.
+  run_matrix "$tree" "keystone-upgrade"
+  assert_nonzero_exit "selecting keystone-upgrade by name fails the step" "$RC"
+  assert_contains "the error names keystone-upgrade as unknown" \
+    "$OUTPUT" "::error::Unknown tempest service: keystone-upgrade"
+  assert_eq "no matrix is emitted for it" "" "$MATRIX"
+
+  # The leg reads the newest keystone directory, which the per-release loop
+  # checks for every selection; the entry adds no requirement of its own.
+  missing="$(make_tree upgrade-missing 2026.1 2026.2)"
+  rm -rf "$missing/tests/tempest/keystone-2026-2"
+  expected="::error::Missing Tempest config directory: tests/tempest/keystone-2026-2 (for service keystone, release 2026.2)"
+  run_matrix "$missing"
+  assert_nonzero_exit "a missing newest keystone directory fails the run" "$RC"
+  assert_contains "the error names the keystone directory of the newest release" \
+    "$OUTPUT" "$expected"
+  assert_eq "no matrix is emitted without it" "" "$MATRIX"
+  run_matrix "$missing" "glance"
+  assert_nonzero_exit "narrowing to glance still fails the run" "$RC"
+  assert_contains "and reports the same missing keystone directory" \
+    "$OUTPUT" "$expected"
+  assert_eq "no matrix is emitted for the narrowed run either" "" "$MATRIX"
+
+  require_jq 16 || return
+
+  run_matrix "$tree"
+  assert_eq "a two-release tree succeeds" "0" "$RC"
+  assert_eq "it emits exactly one keystone-upgrade entry" "1" \
+    "$(count_service keystone-upgrade)"
+  assert_eq "the entry carries the newest keystone keys plus upgrade-from, in order" \
+    '{"service":"keystone-upgrade","release":"2026.2","config-dir":"tests/tempest/keystone-2026-2","cr-name":"keystone-tempest-2026-2","service-k8s-name":"keystone-tempest-2026-2","upgrade-from":"2026.1"}' \
+    "$(jq -c '.include[] | select(.service == "keystone-upgrade")' <<<"$MATRIX")"
+  # The leg has to run like the fresh keystone leg of its release, so a key the
+  # keystone entry gains, such as tempest-concurrency, has to reach it as well.
+  assert_eq "the entry mirrors the newest keystone entry apart from service and upgrade-from" \
+    "$(jq -c '.include[] | select(.service == "keystone" and .release == "2026.2") | del(.service)' <<<"$MATRIX")" \
+    "$(jq -c '.include[] | select(.service == "keystone-upgrade") | del(.service, ."upgrade-from")' <<<"$MATRIX")"
+  assert_eq "it comes after every per-release entry" "keystone-upgrade" \
+    "$(jq -r '.include[-1].service' <<<"$MATRIX")"
+
+  run_matrix "$(make_tree upgrade-three 2026.1 2026.2 2027.1)"
+  assert_eq "a three-release tree succeeds" "0" "$RC"
+  assert_eq "its one keystone-upgrade entry is the newest transition" \
+    "2027.1 2026.2 tests/tempest/keystone-2027-1" \
+    "$(jq -r '[.include[] | select(.service == "keystone-upgrade") | "\(.release) \(."upgrade-from") \(."config-dir")"] | join(",")' <<<"$MATRIX")"
+
+  run_matrix "$(make_tree upgrade-single 2026.1)"
+  assert_eq "a single-release tree succeeds" "0" "$RC"
+  assert_eq "it still emits its keystone entry" "1" "$(count_service keystone)"
+  assert_eq "it has no transition, so no keystone-upgrade entry" "0" \
+    "$(count_service keystone-upgrade)"
+
+  run_matrix "$tree" "glance"
+  assert_eq "a glance-only selection succeeds" "0" "$RC"
+  assert_eq "it emits no keystone-upgrade entry" "0" \
+    "$(count_service keystone-upgrade)"
+  run_matrix "$tree" "keystone"
+  assert_eq "a keystone-only selection succeeds" "0" "$RC"
+  assert_eq "it emits the keystone-upgrade entry once" "1" \
+    "$(count_service keystone-upgrade)"
+  run_matrix "$tree" ""
+  assert_eq "an empty selection succeeds" "0" "$RC"
+  assert_eq "it emits the keystone-upgrade entry once" "1" \
+    "$(count_service keystone-upgrade)"
 }
 
 test_unknown_service_is_rejected() {
@@ -225,6 +311,7 @@ test_no_releases_yields_an_empty_matrix() {
 # ---------------------------------------------------------------------------
 test_unset_selection_emits_every_service
 test_selection_narrows_the_matrix
+test_keystone_upgrade_leg
 test_unknown_service_is_rejected
 test_missing_config_directory_fails_whatever_is_selected
 test_missing_nova_directory_fails_for_one_release
