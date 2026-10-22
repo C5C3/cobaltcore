@@ -638,6 +638,26 @@ proposed; master replaced both tests when the backup service moved to native
 threads (`c07c49c586`). Cinder 29.0.0 carries that commit, so 2026.2 needs no
 twin.
 
+`patches/cinder/2026.2/0004-tests-collect-garbage-before-tpool-killall.patch`
+and its 2026.1 twin
+`patches/cinder/2026.1/0005-tests-collect-garbage-before-tpool-killall.patch`
+(the same hunks, cut from 28.0.0) are test-only as well. The base `TestCase`
+cleanup calls `tpool.killall()` after every test, so each test that uses the
+pool starts its threads again in `tpool.setup()`. When a garbage collection
+finalizes one of the leaked `RBDVolumeIOWrapper` objects during that setup,
+the wrapper's flush runs through `tpool.execute()` before the pool can answer
+it: on the thread in `setup()` the reply reader is not spawned yet, and on a
+pool thread that is still starting, the flush waits on an eventlet hub of its
+own. The stestr worker hangs, and `test-service-images (cinder, 2026.2)` ran
+into its 90-minute timeout in 6 of 48 runs between 2026-10-06 and 2026-10-22
+(2026.1: 3 of 91 since 2026-09-21). The patches run `gc.collect()` in the
+cleanup before `tpool.killall()` whenever the test started the pool, so such
+wrappers are finalized on the test's own thread while the pool still answers.
+The suite takes about 13 % longer (448 s against 397 s on four cores), and the
+patches change nothing at runtime. For 2026.1, `0003` stays, because the
+cleanup does not collect the garbage of tests that never start the pool.
+Upstream status: not yet proposed for 28.0.0 or 29.0.0.
+
 `patches/cinder/2026.1/0004-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch`
 and its 2026.2 twin
 `patches/cinder/2026.2/0003-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch`
