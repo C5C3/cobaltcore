@@ -318,6 +318,61 @@ webhooks ^unit-,^integration-" \
     "$(yq '.component_management.individual_components[] | .component_id + " " + ((.flag_regexes // []) | join(","))' "$codecov")"
 }
 
+# Echo the body of the step <name> of the ci.yaml job <job>: the lines after
+# its `      - name: <name>` line up to the next step or comment.
+job_step_body() {
+  job_block "$1" | awk -v key="      - name: $2" '
+    $0 == key { in_block = 1; next }
+    in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
+}
+
+test_coverage_legs_collect_and_upload_before_teardown() {
+  echo "Test: e2e-operator, e2e-chaos and tempest collect and upload their operator coverage before teardown"
+
+  # The collector needs the cluster, so it runs before "Delete kind cluster",
+  # which stays last. Each job names its own family, and the upload sends the
+  # profiles the collector names under their flags and nothing it finds.
+  local pair job family block collect upload
+  for pair in e2e-operator:e2e e2e-chaos:chaos tempest:tempest; do
+    job="${pair%%:*}"
+    family="${pair#*:}"
+    block=$(job_block "$job")
+    assert_contains "$job sets up Go for go tool covdata" "$block" \
+      "uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7"
+    assert_contains "$job takes the Go version from go.work" "$block" "go-version-file: go.work"
+    assert_eq "the last three steps of $job collect, upload and delete the cluster" \
+      "      - name: Collect operator coverage
+      - name: Upload operator coverage
+      - name: Delete kind cluster" \
+      "$(grep -E '^      - ' <<<"$block" | tail -n 3)"
+
+    collect=$(job_step_body "$job" "Collect operator coverage")
+    assert_contains "$job: the collect step has the id the upload reads" "$collect" "id: coverage"
+    assert_contains "$job: the collect step runs after a failure too" "$collect" "if: always()"
+    assert_contains "$job: the collect step never fails the job" "$collect" "continue-on-error: true"
+    assert_contains "$job: a cancelled run skips the scale-down" "$collect" \
+      "SCALE_DOWN: \${{ job.status != 'cancelled' }}"
+    assert_contains "$job: the collect step names the ${family} family" "$collect" \
+      "run: hack/ci-collect-e2e-coverage.sh ${family}"
+
+    upload=$(job_step_body "$job" "Upload operator coverage")
+    assert_contains "$job: the upload runs when the collector found a profile" "$upload" \
+      "if: always() && steps.coverage.outputs.found == 'true'"
+    assert_contains "$job: the upload uses the pinned Codecov action" "$upload" \
+      "uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7"
+    assert_contains "$job: the upload sends the collector's files" "$upload" \
+      'files: ${{ steps.coverage.outputs.files }}'
+    assert_contains "$job: the upload names the collector's flags" "$upload" \
+      'flags: ${{ steps.coverage.outputs.flags }}'
+    assert_contains "$job: the upload searches for nothing else" "$upload" "disable_search: true"
+    assert_contains "$job: a failed upload never fails the job" "$upload" "fail_ci_if_error: false"
+  done
+  assert_eq "no other job runs the collector" "3" \
+    "$(grep -c '^        run: hack/ci-collect-e2e-coverage.sh ' "$CI_YAML")"
+}
+
 test_every_job_gates_on_its_own_flag() {
   echo "Test: each job reads the output that belongs to it"
 
@@ -473,6 +528,7 @@ test_service_operators_catch_a_missing_operator
 test_all_operators_names_every_operator_module
 test_codecov_flags_cover_every_target
 test_codecov_statuses_count_unit_and_integration_only
+test_coverage_legs_collect_and_upload_before_teardown
 test_every_job_gates_on_its_own_flag
 test_label_handling_lives_in_the_resolver
 test_always_on_gates_skip_a_noop_run
