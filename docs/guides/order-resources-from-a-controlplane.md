@@ -34,7 +34,7 @@ with its Keystone instance running. Database and messaging requests also need
 the shared MariaDB database and managed RabbitMQ bus.
 
 ```bash
-KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 :::
 
@@ -45,16 +45,21 @@ CLI available. Configure your shell using
 
 Database requests need OpenBao roles and policies. `make deploy-infra` creates
 them automatically. When upgrading an older deployment, run these scripts
-before requesting its first database:
+before requesting its first database. For the local environment, load the
+bootstrap token and pass the ControlPlane's namespace and name:
 
 ```bash
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
+  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
 deploy/openbao/bootstrap/setup-auth.sh
 deploy/openbao/bootstrap/setup-policies.sh
-deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
+deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+unset BAO_TOKEN
 ```
 
-Until then the order reports `DatabaseReady=False/OpenBaoError` naming the three
-scripts.
+For an existing OpenBao deployment, use its authorized bootstrap token instead.
+Without this bootstrap the order reports `DatabaseReady=False/OpenBaoError`
+naming the three scripts.
 
 ## Find resources and credentials {#background-what-lands-where}
 
@@ -264,11 +269,13 @@ kubectl patch keystoneuser workflow -n workflow --type merge \
 kubectl get keystoneuser workflow -n workflow -o jsonpath='{.status.passwordGeneration}{"\n"}'
 ```
 
-The operator generates a new password and K-ORC applies it in Keystone. While
-it does, the Secret keeps the old password, which still authenticates. Once
-`status.passwordGeneration` reads the raised generation, the Secret holding the
-previous one is gone from `openstack`. The new password goes to OpenBao first;
-once ESO has pushed it, the Secret carries it and the order is `Ready` again.
+The operator generates a new password and K-ORC applies it in Keystone. The old
+password stops working at that point, even if the delivered Secret still holds
+it. The new password goes to OpenBao before delivery; once ESO has pushed it,
+the Secret carries it and the order is `Ready` again. Consumers can briefly
+fail authentication during this handover. `status.passwordGeneration` reports
+the generation applied in Keystone, so also wait for `Ready` before using the
+delivered password.
 The schedule starts the same steps once `status.nextPasswordRotation` has
 passed.
 
@@ -440,17 +447,19 @@ numbers:
 3. When `status.previousCredentialDeleteAt` has passed, generation N is
    deleted.
 
-The grace period between steps 2 and 3 is 24 hours, so the Secret never names
-an invalid credential. During it the status names the superseded credential:
+The grace period between steps 2 and 3 is 24 hours, giving consumers time to
+pick up the new Secret. Delivery and consumers must catch up before that
+period ends. During it the status names the superseded credential:
 
 ```bash
 kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
   -o jsonpath='{.status.previousCredentialID}{" "}{.status.previousCredentialDeleteAt}{"\n"}'
 ```
 
-A service reads the Secret again within that grace period. Every credential
-expires in Keystone at its creation time plus the interval plus the grace
-period, so one the operator fails to delete stops working on its own.
+A service reads the Secret again within that grace period. A credential minted
+with scheduled rotation enabled expires in Keystone at its creation time plus
+the interval plus the grace period, so one the operator fails to delete stops
+working on its own.
 `spec.rotation.interval` and `spec.rotation.gracePeriod` change the schedule;
 the grace period stays shorter than the interval.
 
