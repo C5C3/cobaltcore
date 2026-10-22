@@ -2653,7 +2653,7 @@ All Go-based jobs use `actions/setup-go@v7` with:
 go-version-file: go.work
 ```
 
-This reads the Go version from `go.work` (currently Go 1.27.2) rather than hardcoding a
+This reads the Go version from `go.work` (currently Go 1.27.3) rather than hardcoding a
 `go-version` value. The repository root contains `go.work` (not `go.mod`) because the
 project uses a Go Workspace with multiple modules (`internal/common`, `operators/keystone`,
 `operators/c5c3`). Module dependency caching is enabled by default in

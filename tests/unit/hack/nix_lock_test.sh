@@ -169,14 +169,14 @@ make_tree() {
   printf '%s\n' '--- a/placement/api.py' '+++ b/placement/api.py' \
     >"$tree/patches/placement/2026.1/0001-fix.patch"
 
-  printf '%s\n' 'module github.com/c5c3/cobaltcore/internal/common' '' 'go 1.27.2' \
+  printf '%s\n' 'module github.com/c5c3/cobaltcore/internal/common' '' 'go 1.27.3' \
     >"$tree/internal/common/go.mod"
   echo 'example.com/common v1.0.0 h1:common=' >"$tree/internal/common/go.sum"
-  printf '%s\n' 'module github.com/c5c3/cobaltcore/operators/alpha' '' 'go 1.27.2' '' \
+  printf '%s\n' 'module github.com/c5c3/cobaltcore/operators/alpha' '' 'go 1.27.3' '' \
     'replace github.com/c5c3/cobaltcore/internal/common => ../../internal/common' \
     >"$tree/operators/alpha/go.mod"
   echo 'example.com/alpha v1.0.0 h1:alpha=' >"$tree/operators/alpha/go.sum"
-  printf '%s\n' 'module github.com/c5c3/cobaltcore/operators/beta' '' 'go 1.27.2' '' \
+  printf '%s\n' 'module github.com/c5c3/cobaltcore/operators/beta' '' 'go 1.27.3' '' \
     'replace github.com/c5c3/cobaltcore/internal/common => ../../internal/common' '' \
     'replace github.com/c5c3/cobaltcore/operators/alpha => ../alpha' >"$tree/operators/beta/go.mod"
   echo 'example.com/beta v1.0.0 h1:beta=' >"$tree/operators/beta/go.sum"
