@@ -56,13 +56,20 @@ Build the release used by your Keystone resource:
 
 ```bash
 RELEASE=2026.1
+LOCAL_TAG="${RELEASE}-dev-$(date +%s)"
 nix build ".#keystone-${RELEASE//./_}-image"
 ./result | docker load
-docker tag "keystone:${RELEASE}" "ghcr.io/c5c3/keystone:${RELEASE}"
-kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name cobaltcore
+docker tag "keystone:${RELEASE}" "ghcr.io/c5c3/keystone:${LOCAL_TAG}"
+kind load docker-image "ghcr.io/c5c3/keystone:${LOCAL_TAG}" --name cobaltcore
+printf 'Local service image tag: %s\n' "$LOCAL_TAG"
 ```
 
-The image tag must match `spec.image.tag` in your Keystone manifest. The
+In the Keystone manifest from Step 7 of the standalone guide, set
+`spec.image.tag` to the printed local tag and add `spec.image.pullPolicy: Never`.
+The operator otherwise defaults tagged service images to `Always`, which pulls
+from the registry even after `kind load`. The unique tag also makes each rebuild
+change the workload template and trigger a rollout when you reapply the manifest.
+Load the image on every kind node before applying it. The
 [image build reference](../reference/ci-cd/nix-image-build.md)
 describes the release attributes and image-loading process.
 

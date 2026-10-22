@@ -44,7 +44,7 @@ Complete [Deploy a ControlPlane](./quick-start-controlplane.md), including its
 verification step. This tutorial uses its local kind environment:
 
 ```bash
-KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 Before continuing, the `controlplane` resource in `openstack` must be `Ready`,
@@ -323,8 +323,9 @@ If the status still shows generation 1, inspect
 `kubectl describe keystoneapplicationcredential workflow-appcred -n workflow`.
 Fix the reported problem and repeat the commands above before continuing.
 
-To start a fresh grace period, copy the current credential and rotate it
-manually with the following commands. The first loop waits for the Secret to
+Only if the original grace period has ended, start a fresh one by copying the
+current credential and rotating it manually with the following commands.
+Otherwise skip this block. The first loop waits for the Secret to
 match the status, because CobaltCore updates the status before the Secret.
 If either wait times out, inspect the Order and resolve the problem before
 continuing. An existing grace period can delay the new rotation until it ends.
@@ -621,6 +622,8 @@ The registration Secret carries a kubeconfig with the chart's token and the
 target's address on the docker network both clusters share:
 
 ```bash
+kubectl --context kind-cobaltcore-target -n c5c3-access wait \
+  --for=jsonpath='{.data.token}' secret/target-cluster-access-token --timeout=2m
 kubectl --context kind-cobaltcore-target -n c5c3-access get secret target-cluster-access-token \
   -o jsonpath='{.data.token}' | base64 -d > "$workdir/token"
 kubectl --context kind-cobaltcore-target -n c5c3-access get secret target-cluster-access-token \
@@ -761,18 +764,26 @@ refresh.
 
 ### Step 6: Allow resource requests from the target {#tc-assign}
 
-The entry names the cluster in `targetClusterRef`. It is a second entry beside
-any for `workflow` on the management cluster, because an entry is the pair of
-namespace and cluster:
+The entry names the cluster in `targetClusterRef`. An entry is the pair of
+namespace and cluster. Create the list when Part 1 removed its last entry;
+otherwise append to preserve any other assignments:
 
 ```bash
-kubectl patch controlplane controlplane -n openstack --type json \
-  -p '[{"op":"add","path":"/spec/namespaceAssignments/-","value":{"namespace":"workflow","targetClusterRef":{"name":"cobaltcore-target"},"allowedRoles":["member"],"allowCatalogEntries":true}}]'
+patch=$(kubectl get controlplane controlplane -n openstack -o json | jq -c '
+  {namespace: "workflow", targetClusterRef: {name: "cobaltcore-target"},
+   allowedRoles: ["member"], allowCatalogEntries: true} as $entry |
+  [{op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
+   if .spec.namespaceAssignments == null then
+     {op: "add", path: "/spec/namespaceAssignments", value: [$entry]}
+   else
+     {op: "add", path: "/spec/namespaceAssignments/-", value: $entry}
+   end]')
+kubectl patch controlplane controlplane -n openstack --type json -p "$patch"
 kubectl wait --for=condition=NamespaceAssignmentsReady controlplane/controlplane -n openstack --timeout=5m
 ```
 
-On a ControlPlane that assigns no namespace any more, create the list as in
-Part 1 Step 2, with this entry.
+If the resource-version test fails because another update happened, rerun the
+block to read the current assignments before patching.
 
 ### Step 7: Request the service resources {#tc-orders}
 
@@ -1022,6 +1033,7 @@ kubectl delete secret cobaltcore-target -n c5c3-clusters
 helm uninstall --kube-context kind-cobaltcore-target target-cluster-access -n c5c3-access
 kind delete cluster --name cobaltcore-target
 kind get clusters
+rm -rf "$workdir"
 ```
 
 The entry goes before the registration Secret: an entry whose cluster does not
@@ -1034,7 +1046,8 @@ Part 2's teardown leaves the devstack as Part 1 found it. Remove the devstack
 with:
 
 ```bash
-make teardown-infra
+kubectl config use-context kind-cobaltcore
+EXTERNAL_CLUSTER=false make teardown-infra
 ```
 
 ## Run the related tests {#tested-by}
