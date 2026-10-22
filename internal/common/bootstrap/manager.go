@@ -375,6 +375,14 @@ func run(cfg ManagerConfig, opts runOptions) error {
 		return fmt.Errorf("unable to start manager: %w", err)
 	}
 
+	// GOCOVERDIR is set only on the coverage-instrumented images of the e2e
+	// legs; a production pod adds no flusher.
+	if f := coverageFlusherFromEnv(); f != nil {
+		if err := mgr.GetLocalManager().Add(f); err != nil {
+			return fmt.Errorf("unable to add coverage flusher: %w", err)
+		}
+	}
+
 	// The provider's engagement machinery has to be registered before the
 	// controllers, so that cluster engagement precedes the first reconcile.
 	if clusters != nil {
