@@ -26,7 +26,7 @@ and [The key Secret](../../reference/cinder/cinder-backend-crd.md#the-key-secret
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (metal-stack)](../../quick-start-metal-stack.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy on Bare Metal](../../quick-start-metal-stack.md)** devstack. Stand it up first:
 
 ```bash
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra

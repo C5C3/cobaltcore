@@ -301,7 +301,7 @@ by default `ghcr.io/c5c3/tempest:2026.1`). `make e2e-nova-libvirt` checks each
 precondition and names the one that is missing.
 
 KVM, live migration, north-south traffic and the lab's faults F3 to F5 are not
-part of these suites. The lab run of the Quick Start (metal-stack) proves the
+part of these suites. The lab run of Deploy on Bare Metal proves the
 guest's uplink and its migration, in
 [Check metadata and the tunnel from the console](../../quick-start-metal-stack.md#hv-console)
 and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate), and

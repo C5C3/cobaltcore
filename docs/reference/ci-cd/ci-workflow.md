@@ -1694,7 +1694,7 @@ the volume. The suite then kills libvirt and nova-compute under the running
 guest with a Chaos Mesh PodChaos (the lab's faults F1 and F2), reads the
 volume's counter on the backend, and runs four `tempest.scenario` tests. KVM,
 live migration and north-south traffic are proven by the lab run of
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md). See
+[Deploy on Bare Metal](../../quick-start-metal-stack.md). See
 [Nova E2E Test Suites](../testing/nova-e2e-tests.md#the-libvirt-leg).
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`

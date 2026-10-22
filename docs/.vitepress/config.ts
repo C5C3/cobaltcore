@@ -6,19 +6,17 @@ import sidebar from './sidebar'
 
 export default defineConfig({
   title: 'CobaltCore',
-  description: 'A Kubernetes-native OpenStack distribution — reference documentation',
+  description: 'Deploy and operate OpenStack on Kubernetes with CobaltCore',
   base: '/cobaltcore/',
   // Port-forward URLs (e.g. http://localhost:9080 for Flux Web UI) are
   // documented for reader use and never resolve during the build.
   ignoreDeadLinks: [/^https?:\/\/localhost(:\d+)?/],
   themeConfig: {
     nav: [
-      { text: 'Home', link: '/' },
-      { text: 'Architecture', link: '/architecture/' },
-      { text: 'Quick Start', link: '/quick-start' },
-      { text: 'Guides', link: '/guides/observability' },
+      { text: 'Getting Started', link: '/quick-start' },
+      { text: 'Deployment Guides', link: '/deployment/local-kubernetes' },
+      { text: 'Tutorials', link: '/quick-start-controlplane' },
       { text: 'Reference', link: '/reference/keystone/' },
-      { text: 'Future', link: '/future/' },
       { text: 'Contributing', link: '/contributing/adding-a-new-operator' },
     ],
     sidebar,

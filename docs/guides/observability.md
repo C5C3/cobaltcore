@@ -15,11 +15,10 @@ To read what a CobaltCore service operator is doing, start with the CR status, t
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (Extended)](../quick-start-extended.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy Keystone Locally](../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
-kind create cluster --name cobaltcore --config hack/kind-config.yaml
-make deploy-infra
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=false WITH_CONTROLPLANE_CR=false make deploy-infra
 ```
 
 Follow that tutorial through to its final Verify step, so the Keystone CR named
