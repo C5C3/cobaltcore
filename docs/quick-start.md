@@ -27,7 +27,7 @@ after verifying this deployment.
 - Allow at least 4 CPU cores, 16 GB of memory, and 10 GB of free disk for the lab.
 - Install Git, Make, `jq`, [Mike Farah's `yq`](https://github.com/mikefarah/yq)
   v4.40.1 or newer, and the [OpenStack CLI](https://docs.openstack.org/python-openstackclient/latest/).
-- Use an available local port `8443` and an internet connection for image downloads.
+- Keep local ports `8443` and `8428` free and allow internet access for image downloads.
 
 Start with no existing kind cluster named `cobaltcore`. If you already have a
 local deployment, follow [Deploy on Local Kubernetes](./deployment/local-kubernetes.md)

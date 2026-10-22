@@ -659,11 +659,18 @@ volume. Leave the console with `Ctrl+]`.
 
 ```bash
 openstack server migrate --live-migration --wait lab-0
+timeout 300 bash -c 'until openstack server migration list --server lab-0 -f json | jq -e "max_by(.Id) | .Status == \"completed\"" >/dev/null; do sleep 5; done'
 openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value
 openstack server migration list --server lab-0
 ```
 
-`lab-0` now runs on another node, which the second command prints, and the
+The server can return to `ACTIVE` before Nova finishes migration cleanup, so
+`--wait` may return while the migration row still says `running`. The bounded
+wait checks the latest migration of `lab-0`; continue only once it completes.
+If the wait times out, inspect the migration list before starting another
+migration or eviction.
+
+`lab-0` now runs on another node, which the host lookup prints, and the
 migration list shows the migration `completed`. libvirt carried it over TLS
 between the nodes, with the CPU model that `cpuModels` names in
 `deploy/lab/metal-stack/hypervisor/compute.yaml`, which every node provides.
