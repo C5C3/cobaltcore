@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # dizzy `keystone pressure` profile for #1459: expand implied roles in linear
-# time and look up roles in bulk when Keystone lists effective role
+# time and look up each role once when Keystone lists effective role
 # assignments.
 #
 # The scenario of dizzy's scenario schema reference, "A fan for

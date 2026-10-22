@@ -46,7 +46,7 @@ profile is one row of that table.
 | Profile | Patch | Load | What to compare | Needs |
 | --- | --- | --- | --- | --- |
 | `warm-cache` | #1461, fewer cache round trips and an in-process cache tier in Keystone | `validate` only, 32 workers; nothing flushes a cache | validate p50 and `ops/s` | Keystone |
-| `effective-fan` | #1459, linear implied-role expansion and a bulk role lookup | `validate` and `effective` for one fan user whose grants grow from 500 to 4000 in four stages | the `effective` rows of the `Stages` table, stage by stage, and their growth per doubling of the grants | Keystone; provisions 4000 projects |
+| `effective-fan` | #1459, linear implied-role expansion and one lookup per role | `validate` and `effective` for one fan user whose grants grow from 500 to 4000 in four stages | the `effective` rows of the `Stages` table, stage by stage, and their growth per doubling of the grants | Keystone; provisions 4000 projects |
 | `cold-role-cache` | #1458, one validation and one role resolution per request | `validate` under `grant_churn`, which keeps the role caches cold | validate p50 and p95 | Keystone |
 | `revocation-lookup` | #1457, a narrow revocation lookup and no cache flush per logout | `validate` while `revoke` adds revocation events | validate latency per bucket against the cumulative revocations: a climb without the patch, flat with it | Keystone |
 | `token-propagation` | #1463, event-driven token eviction in keystonemiddleware | `probe` with 500 pool tokens and the propagation probe every 30 s, for 15 minutes | the `Propagation` table: up to 300 s without the patch, seconds with it | a ControlPlane with Nova, Neutron, Cinder or Glance |

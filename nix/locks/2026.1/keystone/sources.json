@@ -3,5 +3,7 @@
   "rev": "3526925ae34a66e626bec985628a421a7694168e",
   "hash": "sha256-QrbLn7uH/BrKM6jhFjQ2fIGeA1O2BOo6sLsTvPAT21E=",
   "project": "keystone",
-  "patches": []
+  "patches": [
+    "patches/keystone/2026.1/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch"
+  ]
 }

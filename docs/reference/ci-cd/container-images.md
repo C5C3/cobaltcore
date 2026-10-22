@@ -91,6 +91,47 @@ bash tests/container-images/verify_keystone.sh keystone:2026.1
 [Labels and reproducibility](./nix-image-build.md#labels-and-reproducibility);
 `org.opencontainers.image.version` is the keystone ref of the lock.
 
+**Source patch:**
+`patches/keystone/2026.2/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch`
+and its 2026.1 twin
+`patches/keystone/2026.1/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch`
+remove the two costs of listing effective role assignments in
+`keystone/assignment/core.py` (issue #1459). `add_implied_roles` checks
+every implied ref against a list of the refs it has already expanded, so
+its time grows with the square of the result: 0.22 s for 4,000 member
+assignments that each imply reader, in the published images of both
+releases. `_strip_domain_roles` then calls `get_role` once per resulting
+assignment, which is two SQL statements each when no cache answers. The
+listing backs `GET /v3/role_assignments?effective`,
+`GET /v3/users/{user_id}/projects`, `GET /v3/auth/projects` and
+`GET /v3/auth/domains`, and `add_implied_roles` also runs in every token's
+role resolution. Keystone caches the computed assignments until the next
+role grant, project change or group membership change flushes them, and
+CobaltCore creates role assignments from namespace orders (#1329), so
+their number grows with every tenant. The patches keep the checked refs as
+a set of hashable keys, which takes the 4,000 assignments to 0.017 s with
+the same output in the same order, and call `get_role` once per distinct
+role ID of a listing, where upstream calls it once per assignment.
+`get_role` reads through the role cache, which a role grant does not flush,
+and resolves an ID the way MariaDB does, without regard to letter case; a
+role that does not exist still raises `RoleNotFound`. A first version read
+the roles with one `list_roles_from_ids` call, which no cache answers, so a
+validation that recomputes its roles made two SQL statements where upstream
+reads the role cache; under the `cold-role-cache` profile of the
+`keystone-pressure` job its validate p50 was 8 to 13 % above `main`'s in
+both releases. No existing upstream test moves; the patches add eight tests
+to `ImpliedRoleTests` in `keystone/tests/unit/assignment/test_backends.py`
+for the expansion order through a cycle, the empty inputs, the
+`NotImplemented` and lookup-error paths, the lookups of an effective
+listing, the unknown role and the lookup once per spelled role ID.
+`test_implied_role_patch_applied` in `tests/container-images/verify_keystone.sh`
+counts the ref comparisons and role lookups in the built image. The patches
+need no operator configuration and reach the image as the
+[glance](#glance) section describes. Upstream status: not yet proposed.
+They retire once a keystone tag carries the change, which
+`.claude/skills/add-image-patch/scripts/check-image-patches.sh --apply`
+reports as reverse-applying.
+
 ### horizon
 
 **Location:** `images/horizon/image.nix`, built from the lock
