@@ -126,7 +126,7 @@ for its objects and posture.
   `EXTERNAL_CLUSTER=true`, which declares the namespace `dizzy` and runs the
   VictoriaMetrics the run exports to.
 - A Ready ControlPlane in `openstack`, as Part 1 of the
-  [Quick Start (metal-stack)](../../quick-start-metal-stack.md) leaves it, and
+  [Deploy on Bare Metal](../../quick-start-metal-stack.md) leaves it, and
   the Secret `k-orc-clouds-yaml` that K-ORC uses there.
 - The hypervisor fixtures and the hypervisors of Part 2, so the image
   `cirros-kvm` and the flavor `hvo-smoke-test` exist and servers boot. `start`

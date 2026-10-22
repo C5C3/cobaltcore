@@ -31,7 +31,7 @@ for details.
 
 ::: info Devstack
 This guide is written against the
-[Quick Start (ControlPlane)](../../quick-start-controlplane.md).
+[Deploy a ControlPlane](../../quick-start-controlplane.md).
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra

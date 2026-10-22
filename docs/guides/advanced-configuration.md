@@ -1,5 +1,5 @@
 ---
-title: Advanced Configuration
+title: Configure Your Deployment
 quadrant: operator
 ---
 
@@ -8,42 +8,33 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Advanced Configuration
+# Configure Your Deployment {#advanced-configuration}
 
-Beyond the minimal control plane from the
-[Quick Start (ControlPlane)](../quick-start-controlplane.md), the operators
-support a number of configuration options for real cluster deployments. This
-guide covers the ones the `ControlPlane` CR exposes and points to the reference
-for the rest. See [Standalone Keystone](#standalone-keystone-without-a-controlplane)
-for knobs that live only on a Keystone CR you own.
+Adjust a running cloud's sizing and service settings, or plan its connections
+to existing infrastructure. Each section is an independent recipe; apply only
+what your deployment needs.
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+Complete [Deploy a ControlPlane](../quick-start-controlplane.md) through its
+verification step. It extends the Quick Start with the services used below:
 
 ```bash
-KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through to its final **Verify** step, so a `ControlPlane`
-CR named `controlplane` is `Ready` in the `openstack` namespace and its projected
-`controlplane-keystone` Keystone child is running. Every resource name in the
-examples below is one that devstack produces.
+Use the `controlplane` resource in `openstack`.
 :::
 
-::: warning The Keystone child is operator-owned
-On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
-**projected** by the c5c3-operator; the projected fields are re-asserted on every
-reconcile, so editing them on the child is reverted. Configure the knobs the
-`ControlPlane` CRD exposes on the `ControlPlane` CR. Set a knob the CRD does not
-expose on a Keystone CR you own, in the
-[Standalone Keystone](#standalone-keystone-without-a-controlplane) section. See
-the [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for
-the projection contract.
-:::
+Change settings on the `ControlPlane` resource. CobaltCore regenerates its
+service resources, so edits to its `controlplane-keystone` child are reverted.
+The [standalone Keystone recipes](#standalone-keystone-without-a-controlplane)
+cover settings available only on a Keystone resource you manage directly.
 
-Each section covers an independent recipe. Apply only what you need.
+Database sizing and the choice of managed or existing infrastructure must be
+set at creation. Those fields are immutable; review the relevant recipe before
+creating a new ControlPlane.
 
 ---
 
@@ -71,7 +62,7 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2026.1"
-  # services.keystone and korc as in the Quick Start (ControlPlane)
+  # services.keystone and korc as in the Deploy a ControlPlane
   infrastructure:
     database:
       # brownfield: explicit host/port, no clusterRef
@@ -108,7 +99,7 @@ The Secret referenced by `secretRef` must contain matching `username` and
 with only `password` leaves `controlplane-keystone` at `SecretsReady=False`.
 After the database, user, grants, and Secret exist, `db_sync` creates the
 Keystone schema on first reconcile. Step 5 of the
-[Quick Start (ControlPlane)](../quick-start-controlplane.md) applies only to
+[Deploy a ControlPlane](../quick-start-controlplane.md) applies only to
 managed mode's engine-issued database credentials. Brownfield mode does not use
 the OpenBao database engine.
 :::
@@ -354,8 +345,8 @@ on a Keystone CR you own, as shown in the
 
 ## Standalone Keystone, without a ControlPlane
 
-The [Quick Start](../quick-start.md) and [Quick Start (Extended)](../quick-start-extended.md)
-devstacks create a standalone Keystone CR named `keystone`. The recipes below
+The [Deploy Keystone Locally](../quick-start-extended.md) guide creates a
+standalone Keystone CR named `keystone`. The recipes below
 apply to that CR. `spec.networkPolicy` is not exposed through the `ControlPlane`
 CRD, so configure it on a standalone Keystone CR.
 

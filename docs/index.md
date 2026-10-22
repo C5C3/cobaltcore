@@ -4,102 +4,53 @@ title: Overview
 
 # CobaltCore
 
-CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating
-Hosted Control Planes. The project website at
-[cobaltcore.dev](https://cobaltcore.dev) introduces CobaltCore as a whole.
-This documentation covers the
-[c5c3/cobaltcore](https://github.com/C5C3/cobaltcore) repository, which
-delivers everything needed for a self-contained OpenStack control-plane stack:
-from the declarative infrastructure manifests, through the service operators,
-to the c5c3-operator orchestration layer — built with the Operator SDK (Go),
-controller-runtime, and Kubebuilder. The [Architecture](./architecture/)
-section shows how the pieces fit together, from the implemented
-management/target-cluster topology to the
-[multi-cluster target picture](./architecture/index.md#the-multi-cluster-target-picture).
+CobaltCore runs OpenStack on Kubernetes. Use it to provide a cloud with
+identity, a dashboard, images, networking, compute, and block storage, managed
+through Kubernetes resources.
 
-![What CobaltCore does: a layer stack from bare metal provisioned and managed by IronCore or metal-stack, through Garden Linux on every node and Kubernetes clusters managed by Gardener, to CobaltCore operating the OpenStack control planes and the OpenStack clouds whose API serves users and tools. Why it matters: Kubernetes-native OpenStack, one resource per cloud, growth with demand, built-in day-2 operations, and open building blocks.](./diagrams/cobaltcore-overview.svg)
+Declare a `ControlPlane` with the OpenStack services you want. CobaltCore
+deploys those services, connects them to their databases and credentials, and
+keeps the running configuration aligned with your declaration.
 
-The layers below CobaltCore in this picture belong to the target picture.
-No deployment in this repository runs on IronCore or Garden Linux yet: the
-stack runs on a local kind cluster, or on a Gardener shoot on metal-stack in
-the [Quick Start (metal-stack)](./quick-start-metal-stack.md). There,
-metal-stack takes the place of IronCore at the bare-metal layer.
+Kubernetes hosts the control plane: the APIs and supporting services that
+manage your cloud. Compute hosts provide the capacity to run virtual machines.
+You can evaluate the APIs locally before connecting real compute infrastructure.
 
-The Keystone operator is the reference implementation that establishes the
-patterns — CRD layout, sub-reconciler chain, webhooks, finalizers,
-instrumentation — replicated by every other service operator. Horizon, Glance,
-Placement, Barbican, Cinder, Nova, and Neutron with its OVN layer are onboarded
-on the same scaffolding. The c5c3-operator ties the services together into a
-single ControlPlane resource, which projects Nova through `services.nova`.
-Compute nodes join it through `NovaCompute` pools, which the
-[Quick Start (metal-stack)](./quick-start-metal-stack.md) runs on KVM, and
-[Connect a Compute Cluster](./guides/nova/connect-a-compute-cluster.md)
-attaches a separate compute cluster.
+## Getting started
 
-## Start here
+**[Quick Start: deploy CobaltCore and verify it works](./quick-start.md)**
+creates a local cloud with identity and a dashboard. Follow one path from
+installation to a successful sign-in.
 
-- **[Quick Start](./quick-start.md)** — from `git clone` to an authenticated
-  Keystone API call on a local kind cluster.
-- **[Quick Start (Extended)](./quick-start-extended.md)** — UI tours, the
-  local-build path, the production HelmRelease, E2E, and Tempest.
-- **[Quick Start (ControlPlane)](./quick-start-controlplane.md)** — bring up a
-  full ControlPlane through the c5c3-operator.
-- **[Quick Start (metal-stack)](./quick-start-metal-stack.md)** — the same
-  ControlPlane on a metal-stack cluster, where every worker is a KVM hypervisor
-  and runs a server.
-- **[Quick Start (Orders)](./quick-start-orders.md)** — the Keystone, MariaDB
-  and RabbitMQ pieces of a foreign service, ordered from an assigned namespace
-  on the management cluster and on a target cluster.
+## Deployment guides
 
-The map shows what each quick start deploys, what it ends with, and how the
-five relate. Four of them begin at `git clone`; the Quick Start (Orders) begins
-on the ControlPlane devstack.
+Choose a guide when you need to configure the deployment environment.
 
-![A map of the five quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other three run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. The Quick Start (Orders) extends the ControlPlane devstack without a teardown: a second kind cluster joins it as a registered target, a service owner orders seven pieces from an assigned namespace on each cluster, and it ends with four Secrets on the target and four Jobs that use them. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Four of them begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack.](./diagrams/quickstart-map.svg)
+| Environment | Guide |
+| --- | --- |
+| Your computer | [Deploy on Local Kubernetes (kind)](./deployment/local-kubernetes.md) |
+| A Kubernetes cluster you already manage | [Deploy on an Existing Kubernetes Cluster](./deployment/existing-kubernetes.md) |
+| KVM workers on a Gardener / metal-stack cluster | [Deploy on Bare Metal](./quick-start-metal-stack.md) |
 
-## What's inside
+## Tutorials
 
-- **Operators.** Service operators following a shared sub-reconciler pattern,
-  with [Keystone](./reference/keystone/) as the reference implementation and the
-  [c5c3-operator](./reference/c5c3/controlplane-crd.md) as the ControlPlane
-  orchestration layer. [Horizon](./reference/horizon/),
-  [Glance](./reference/glance/), [Placement](./reference/placement/),
-  [Barbican](./reference/barbican/), [Cinder](./reference/cinder/),
-  [Nova](./reference/nova/), and [Neutron](./reference/neutron/) are onboarded
-  on the same conventions; the [OVN operator](./reference/ovn/) runs the SDN
-  layer Neutron programs.
-- **Shared library.** Common types, conditions, config rendering, and
-  Kubernetes helpers in `internal/common/`, plus the Helm chart, operator
-  packaging, and rotation scripts. See the
-  [Backend reference](./reference/backend/helm-values-schema.md).
-- **Infrastructure stack.** Declarative FluxCD manifests for OpenBao HA,
-  External Secrets Operator, MariaDB, Memcached, the Envoy Gateway, and the
-  RabbitMQ Cluster Operator behind the message bus. See
-  [Infrastructure Manifests](./reference/infrastructure/infrastructure-manifests.md).
-- **CI/CD & container images.** GitHub Actions for CI and image builds, and
-  Nix builds for the OpenStack service images, nova-compute, libvirt and
-  Tempest. See the
-  [CI Workflow](./reference/ci-cd/ci-workflow.md) and
-  [Nix Image Build](./reference/ci-cd/nix-image-build.md).
-- **Test suites.** Unit, envtest integration, Chainsaw E2E, Tempest, and Chaos
-  Mesh coverage across the stack — see the
-  [Testing reference](./reference/testing/keystone-e2e-tests.md).
+- [Deploy a ControlPlane](./quick-start-controlplane.md): enable and verify more OpenStack services.
+- [Provision Resources](./quick-start-orders.md): give a service its own identity, database, and messaging credentials. CobaltCore calls these resource requests **Orders**.
+- [Run E2E Tests](./tutorials/run-e2e-tests.md): check deployment behavior with the test suites.
+- [Configure Your Deployment](./guides/advanced-configuration.md): adjust sizing, connect existing infrastructure, and configure service behavior.
 
-## Go deeper
+## Operate your cloud
 
-- **[Architecture](./architecture/)** — the implemented topology, the layering
-  from Flux stack to ControlPlane orchestration, and the
-  [Core Components](./architecture/core-components.md) catalog.
-- **[Guides](./guides/observability.md)** — day-2 operations, key rotation,
-  multi-tenant deployment, identity and storage backends, target clusters, and
-  advanced configuration.
-- **[Reference](./reference/keystone/)** — CRDs, reconciler architecture,
-  controller events, metrics, and the infrastructure, CI/CD, and testing
-  internals.
-- **[Future](./future/)** — idea sketches for where the operators could go next.
-- **[Contributing](./contributing/adding-a-new-operator.md)** — onboard a new
-  operator or release, follow the guide conventions, and set up the development
-  environment.
+- [Diagnose a Deployment](./guides/observability.md): inspect readiness, logs, and metrics.
+- [Maintain Your Cloud](./guides/day-2-operations.md): scale services, upgrade, and rotate credentials.
+- [Connect a Compute Cluster](./guides/nova/connect-a-compute-cluster.md): attach compute capacity.
 
-For an AI-assisted tour of the codebase, browse the repository on
-[DeepWiki](https://deepwiki.com/C5C3/cobaltcore).
+Read the [architecture](./architecture/) to understand how CobaltCore manages
+services across clusters. The [API reference](./reference/c5c3/controlplane-crd.md)
+describes the available configuration fields.
+
+## Contribute to CobaltCore
+
+For operator development, start with [Build and Test Locally](./contributing/build-and-test-locally.md)
+or [Add an Operator](./contributing/adding-a-new-operator.md).
+Product background is available at [cobaltcore.dev](https://cobaltcore.dev).

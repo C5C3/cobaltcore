@@ -1710,7 +1710,7 @@ describes each numbered step, and
 [Steps and phases](e2e-deployment.md#steps-and-phases) maps the step and phase
 numbers of the two pages.
 
-![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](../../diagrams/deploy-infra-run.svg)
+![The run of make deploy-infra as eight numbered steps, from cluster creation through Flux installation, infrastructure readiness, OpenBao bootstrap, and secret synchronization. Side branches show the optional components and the changes made in ControlPlane or external-cluster mode.](../../diagrams/deploy-infra-run.svg)
 
 ### Step 1: Apply base resources
 
@@ -2262,7 +2262,7 @@ This is the prerequisite for `make e2e-prometheus` (see
 [CI / e2e-prometheus job](../ci-cd/ci-workflow#e2e-prometheus) for the workflow). For the kind UI
 walkthrough — port-forward, default Grafana credentials, the bundled
 `Keystone Operator` dashboard, and a Prometheus targets sanity-check — see
-[Extended Quick Start — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui).
+[Deploy Keystone Locally — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui).
 
 **Posture summary.** Reviewers checking new kind-only opt-ins should treat
 this entry as a parallel of the `Chaos Mesh (kind-only opt-in)` example
@@ -2814,7 +2814,7 @@ as well, Part 3 of the quick start applies `controlplane-nfs/` by hand after
 those (see [Lab ControlPlane](#lab-controlplane)). The ControlPlane's opt-in
 autoscaling blocks use the VPA and the metrics-server of the platform (see
 [Lab autoscaling](#lab-autoscaling)). The
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
+[Deploy on Bare Metal](../../quick-start-metal-stack.md) is the
 walkthrough that runs them in order, from a bare cluster to a migrated server
 and back.
 
@@ -2822,7 +2822,7 @@ The figure shows what those manifests add up to: the cluster-wide parts of
 `base/`, `infrastructure/`, `ceph/` and `controlplane/`, and the parts
 `hypervisor/` and `migration-ports/` put on every worker.
 
-![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, the lab Ceph for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the Ceph inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](../../diagrams/compute-metal-stack-lab.svg)
+![One Gardener cluster runs the OpenStack control plane and Ceph. Each worker runs KVM compute and OVN networking; a port-forward gives the workstation access to the API gateway.](../../diagrams/compute-metal-stack-lab.svg)
 
 ### Node probe
 
@@ -2831,7 +2831,7 @@ The figure shows what those manifests add up to: the cluster-wide parts of
 **Job:** `deploy/lab/metal-stack/probe/node-probe.yaml`
 
 The node probe is the prerequisite check of the lab. The
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-probe) has a
+[Deploy on Bare Metal](../../quick-start-metal-stack.md#cp-probe) has a
 reader run it first, before deploying the stack:
 
 ```bash
@@ -3275,7 +3275,7 @@ RBD backends of
 authenticates with from the key in `openstack/ceph-client-cinder`. The
 [Lab ControlPlane](#lab-controlplane) puts the lab's Cinder on it: the RBD
 volume backend `ceph1` and the RBD backup target `cephbk`, which the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md) uses from Part 1
+[Deploy on Bare Metal](../../quick-start-metal-stack.md) uses from Part 1
 on. `hack/deploy-infra.sh` applies both kustomizations when `WITH_CEPH=true`
 is set beside `EXTERNAL_CLUSTER=true`, and its preflight refuses the Lab
 ControlPlane without the flag. The flag has no kind overlay, and the kind mode
@@ -3444,7 +3444,7 @@ lab ([#1221](https://github.com/c5c3/cobaltcore/issues/1221)): the
 namespaces the lab declares. `hack/deploy-infra.sh` applies the directory in
 Step 3 when `WITH_CHAOS_MESH=true` is set beside `EXTERNAL_CLUSTER=true`, in
 place of `deploy/kind/chaos-mesh`. The flag composes onto the deploy command
-of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md), which
+of the [Deploy on Bare Metal](../../quick-start-metal-stack.md), which
 does not need it:
 
 ```bash
@@ -3563,7 +3563,7 @@ NFS outages and killed hypervisor pods, are under
 #### Proving run
 
 The run starts from a bare `forge`, deploys with the command above, and runs
-Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md)
+Part 1 of the [Deploy on Bare Metal](../../quick-start-metal-stack.md)
 through Step 6, with the port-forward open. Then, from the root of the clone:
 
 ```bash
@@ -3750,7 +3750,7 @@ action. The outputs are on
 #### Lab fault runs
 
 The block below runs five faults that kind cannot show, each under the running
-server `lab-0` of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md)
+server `lab-0` of the [Deploy on Bare Metal](../../quick-start-metal-stack.md)
 ([#1222](https://github.com/c5c3/cobaltcore/issues/1222)). F1 to F3 are a
 PodChaos `pod-kill` of the libvirt pod, of the `nova-compute` pod and of the
 `ovn-controller` pod on `lab-0`'s node. F4 is a `pod-kill` of the NFS server
@@ -4440,7 +4440,7 @@ VictoriaMetrics and Grafana of the
 metrics on a volume. `hack/deploy-infra.sh` applies the directory in Step 3
 when `WITH_DIZZY=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
 `deploy/kind/dizzy`. The flag composes onto the deploy command of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
+[Deploy on Bare Metal](../../quick-start-metal-stack.md), which does not
 need it:
 
 ```bash
@@ -4591,7 +4591,7 @@ with the command above, then runs
 [Step 4](../../quick-start-metal-stack.md#cp-apply),
 [Step 5](../../quick-start-metal-stack.md#cp-tenant) and
 [Step 6](../../quick-start-metal-stack.md#cp-access) of Part 1 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md). The Gateway
+[Deploy on Bare Metal](../../quick-start-metal-stack.md). The Gateway
 port-forward of Step 6 stays open, and step 3 below opens the
 VictoriaMetrics port-forward in another terminal. Steps 6 and 7 run within an
 hour of the soak's end, because their queries read the last hour. From the
@@ -4682,7 +4682,7 @@ dashboard for openstack-hypervisor-operator (hvo). `hack/deploy-infra.sh`
 applies the directory in Step 3 when `WITH_PROMETHEUS=true` is set beside
 `EXTERNAL_CLUSTER=true`, in place of `deploy/kind/prometheus`. The flag
 composes onto the deploy command of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
+[Deploy on Bare Metal](../../quick-start-metal-stack.md), which does not
 need it:
 
 ```bash
@@ -4759,7 +4759,7 @@ kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
 Prometheus then answers on `http://localhost:9090` and Grafana on
 `http://localhost:3000`, where it signs in `admin` with the chart's default
 password `prom-operator`, as on kind (see
-[Extended Quick Start, Step 4c](../../quick-start-extended.md#step-4c-grafana-ui)).
+[Deploy Keystone Locally, Step 4c](../../quick-start-extended.md#step-4c-grafana-ui)).
 A port-forward ends with the pod it reached and is restarted by hand.
 
 **Storage.** The claim names no storage class and binds to the default class,
@@ -4803,7 +4803,7 @@ command above, then runs
 [Step 6](../../quick-start-metal-stack.md#cp-access) of Part 1 and
 [Step 1](../../quick-start-metal-stack.md#hv-nodes) to
 [Step 4](../../quick-start-metal-stack.md#hv-onboarding) of Part 2 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md). Step 3 below
+[Deploy on Bare Metal](../../quick-start-metal-stack.md). Step 3 below
 runs at least ten minutes after the deploy and opens the Prometheus
 port-forward in another terminal; step 5 opens the Grafana one. From the root
 of the clone:
@@ -4916,7 +4916,7 @@ No lab run of this stack is recorded yet.
 
 The kustomization is the `OVNCentral` of Step 3 and the ControlPlane CR of
 Step 4 of the
-[Quick Start (ControlPlane)](../../quick-start-controlplane.md), and the CR
+[Deploy a ControlPlane](../../quick-start-controlplane.md), and the CR
 carries the `cinder` block of that page's optional `# block-storage.yaml`
 fragment with the [Lab Ceph](#lab-ceph) in place of its NFS shares: the RBD
 volume backend `ceph1` and the RBD backup target `cephbk`. Apart from those
@@ -4944,7 +4944,7 @@ in every directory.
 | `spec.services.neutron.extraConfig.DEFAULT.global_physnet_mtu` | `"1460"` | Tenant networks are Geneve. Neutron 27.0.3 computes their MTU as `global_physnet_mtu` minus 20 (the IPv4 header, `get_mtu` in `neutron/plugins/ml2/drivers/type_tunnel.py`) minus `[ml2_type_geneve] max_header_size`, which the Neutron operator owns at 38 (`operators/neutron/internal/controller/reconcile_config.go`): 1460 - 20 - 38 = 1402 for every tenant network. 1460 is the pod network's MTU (the `cali*` lines of the [node probe](#node-probe)). The chassis tunnels over the node network, whose uplinks `lan0` and `lan1` carry 9000, so 1460 is a bound, not a match: it holds without a path-MTU measurement between the two racks, and none exists yet. The value is a string, because `extraConfig` is `map[string]map[string]string` |
 | `spec.services.nova.hypervisorOperator` | `{}` | Provisions the Keystone user `hypervisor-operator` (project `service-hypervisor-operator`, role `admin`) and writes the Secret `controlplane-nova-hypervisor-operator-auth` into `openstack` (see [`ServiceNovaHypervisorOperatorSpec`](../c5c3/controlplane-crd.md#servicenovahypervisoroperatorspec)), which [Lab hypervisors](#lab-hypervisors) feeds into the hypervisor operator's chart |
 
-Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-deploy)
+Part 1 of the [Deploy on Bare Metal](../../quick-start-metal-stack.md#cp-deploy)
 applies the directory and checks the ControlPlane, from the deploy in its
 Step 3 to the [checks](../../quick-start-metal-stack.md#cp-verify) of its Step 7.
 
@@ -5067,7 +5067,7 @@ mode `Off` and neither block (see
 The [Lab ControlPlane](#lab-controlplane) sets neither block. The block below
 patches the live ControlPlane, records what the platform did, and removes the
 patch again. It starts on a lab where Part 1 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md#control-plane)
+[Deploy on Bare Metal](../../quick-start-metal-stack.md#control-plane)
 ran through [Step 7](../../quick-start-metal-stack.md#cp-verify), and runs in
 bash, in the shell of that step in the root of the clone, with the
 port-forward of Part 1, Step 6 open in a second terminal. Part 2 is not needed.
@@ -5357,7 +5357,7 @@ Kubernetes v1.35.6, from commit `d34fde24`
 (`d34fde24334c2809ba2225654c206af9f217eee9`), in the session of
 [#1224](https://github.com/C5C3/cobaltcore/issues/1224). The VPA CRD admitted
 `["Off","Initial","Recreate","InPlaceOrRecreate","Auto"]`. The block started
-from Part 2 of the Quick Start (metal-stack) with its servers, volume, backup
+from Part 2 of the Deploy on Bare Metal with its servers, volume, backup
 and network deleted by the first five lines of the
 [Teardown](../../quick-start-metal-stack.md#teardown), and it was pasted a
 section at a time, each case in two parts split at its `hold` line. The
@@ -5433,7 +5433,7 @@ with the settings that carry both on a Debian node under Gardener. Both are
 applied by hand once the ControlPlane is `Ready`. `hypervisor/` pulls in
 `migration-ports/`, which reserves QEMU's migration ports on every node and
 which Part 2, Step 1 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hv-nodes) applies
+[Deploy on Bare Metal](../../quick-start-metal-stack.md#hv-nodes) applies
 on its own before the [node port check](#node-port-check).
 `hack/deploy-infra.sh` applies none of the three.
 `tests/unit/deploy/metal_stack_hypervisor_test.sh` pins the three renders.
@@ -6009,7 +6009,7 @@ lab.
 The run of 2026-10-01 on the lab ran upstream's kna v0.2.0 image and chart,
 with uid 0 set in the release, on two Xeon D-2141I workers on Debian 12 with
 kernel 6.1. It passed every step of the sequence that is now Part 2 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hypervisors) and
+[Deploy on Bare Metal](../../quick-start-metal-stack.md#hypervisors) and
 of the checks above, but the kna image check, which came with the image of
 [#1178](https://github.com/c5c3/cobaltcore/issues/1178), and the console-log
 part of the restart check, which came with
@@ -6034,7 +6034,7 @@ pod, a `virsh reset` of the guest left the QEMU PID unchanged, `console.log`
 grew, and `openstack console log show` returned the new boot output.
 
 A second run on 2026-10-02 executed the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md) from commit
+[Deploy on Bare Metal](../../quick-start-metal-stack.md) from commit
 `715eafd3`, from a bare cluster through the teardown, on the same two workers.
 Every block of the page exited 0, two of them after repeats: Part 1, Step 4,
 which named a repeat then, and Part 2, Step 3. The kna pods ran
@@ -6097,7 +6097,7 @@ Docker-built keeper to the first Nix keeper, once `main` has minted it:
    the composite tag of the image under test, and wait for its DaemonSet to
    roll. The new nova-compute then talks to the old libvirt.
 2. Boot a server on each node (Part 2, Step 5 of the
-   [Quick Start (metal-stack)](../../quick-start-metal-stack.md)) and
+   [Deploy on Bare Metal](../../quick-start-metal-stack.md)) and
    live-migrate one (Step 8).
 3. Apply the overlay with the pull request's pins,
    `kubectl apply -k deploy/lab/metal-stack/hypervisor`. The DaemonSet is
@@ -6215,7 +6215,7 @@ runs again. Both run the node probe's pinned debian image, and Renovate moves
 the pins in one group.
 
 Part 2, Step 1 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hv-nodes) applies
+[Deploy on Bare Metal](../../quick-start-metal-stack.md#hv-nodes) applies
 the directory in front of the check. The hypervisor overlay takes it as a
 resource, so `EXTERNAL_CLUSTER=true make teardown-infra` removes the DaemonSet
 with that overlay. The reserved ports stay on a node until it reboots.

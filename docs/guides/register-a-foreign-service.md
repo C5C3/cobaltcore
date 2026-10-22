@@ -19,7 +19,7 @@ the same name.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy a ControlPlane](../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -538,7 +538,7 @@ entries through the identity API directly.
 - [Deploy Services into Dedicated Namespaces](./dedicated-service-namespaces.md#registering-a-service-in-the-dedicated-namespace): registering from a namespace the ControlPlane owns, which needs no consent.
 - [Adopt an External Keystone](./keystone/adopt-external-keystone.md): the same CR against a brownfield installation.
 - [ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#keystone-service-foreign-namespace): the suite behind this guide.
-- [Quick Start (ControlPlane)](../quick-start-controlplane.md): the devstack this guide builds on.
+- [Deploy a ControlPlane](../quick-start-controlplane.md): the devstack this guide builds on.
 
 ## Tested by
 

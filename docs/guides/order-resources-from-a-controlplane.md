@@ -1,5 +1,5 @@
 ---
-title: Order Resources from a ControlPlane
+title: Manage Provisioned Resources
 quadrant: operator
 ---
 
@@ -8,47 +8,44 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# How-to: Order Resources from a ControlPlane
+# Manage Provisioned Resources
 
-A service owner whose namespace a ControlPlane assigns can order a Keystone user
-there with a `KeystoneUser` CR. The c5c3-operator creates the user, backs its
-password up to OpenBao, and writes the credentials into a Secret beside the
-order. Nothing in the owner's namespace can reach OpenBao: the owner receives a
-Secret and nothing else.
+Provision identity, database and messaging resources for a service, then manage
+its credentials and access. CobaltCore represents each request as an **Order**:
+a Kubernetes custom resource in a namespace assigned to your service. The
+ControlPlane provisions the requested resource and delivers any credentials as
+a Secret in that namespace.
 
-Beside the user the owner can order a project, a role for the user on it, a
-catalog entry and an application credential, each as a CR of its own. The
-user's Secret scopes a token to the project once the role is assigned. The
-operator rotates the user's password on a schedule. Of the further orders only
-the application credential delivers a Secret, and the operator rotates it on a
-schedule too. A `MariaDBDatabase` orders a database on the
-ControlPlane's MariaDB, whose user OpenBao replaces every day. Apart from
-Keystone, the owner can order a vhost of their own on the ControlPlane's
-message bus with a `RabbitMQVhost`; its Secret carries a broker user the
-operator rotates the same way.
+Orders cover Keystone users, projects, roles, catalog entries and application
+credentials, plus MariaDB databases and RabbitMQ virtual hosts for messaging.
+Use the OpenStack APIs to provision virtual machines and other cloud workloads.
 
-The example orders a user for a fictional `workflow` service from a namespace
-of the same name.
+For a complete walkthrough, start with
+[Provision Resources](../quick-start-orders.md). This guide adds credential
+rotation, access policies, recovery and deletion behavior. Its examples use a
+service and namespace named `workflow`.
 
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand it up first:
+Complete [Deploy a ControlPlane](../quick-start-controlplane.md) and its
+verification step. The examples assume `controlplane` is `Ready` in `openstack`,
+with its Keystone instance running. Database and messaging requests also need
+the shared MariaDB database and managed RabbitMQ bus.
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
-
-Follow that tutorial through to its final **Verify** step, so a `ControlPlane`
-CR named `controlplane` is `Ready` in the `openstack` namespace and its projected
-`controlplane-keystone` Keystone child is running. Every resource name in the
-examples below is one that devstack produces.
 :::
 
-A database order also needs the OpenBao roles and policies the bootstrap writes
-for it. `make deploy-infra` runs the scripts, so the devstack has them. A
-deployment brought up before this operator version runs them once more before
-its first database order:
+Run the commands from the repository root with `kubectl`, `jq` and the OpenStack
+CLI available. Configure your shell using
+[Connect to the ControlPlane](../quick-start-orders.md#shell) before running
+`openstack` commands.
+
+Database requests need OpenBao roles and policies. `make deploy-infra` creates
+them automatically. When upgrading an older deployment, run these scripts
+before requesting its first database:
 
 ```bash
 deploy/openbao/bootstrap/setup-auth.sh
@@ -59,9 +56,7 @@ deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
 Until then the order reports `DatabaseReady=False/OpenBaoError` naming the three
 scripts.
 
----
-
-## Background: what lands where
+## Find resources and credentials {#background-what-lands-where}
 
 | Description | Namespace | Why |
 | --- | --- | --- |
@@ -81,12 +76,12 @@ The objects in `openstack` cannot carry an owner reference to an order in
 another namespace, so they carry the labels `c5c3.io/keystoneuser-name`,
 `c5c3.io/keystoneuser-namespace` and `c5c3.io/keystoneuser-cluster` instead.
 
-The figure draws the table: the children in `openstack`, the order and its
-Secret in `workflow`, and the same order on a target cluster.
+The same resource and Secret placement applies when the service namespace is
+on a target cluster:
 
 ![An order and its Secret on two clusters. On the management cluster the ControlPlane in the namespace openstack assigns the owner's namespace, and the c5c3-operator writes the order's children into openstack: the K-ORC User, Project, RoleAssignment, Endpoints and ApplicationCredential, the Database, the Vhost, User and Permission, the password and source Secrets, the PushSecret and the ExternalSecret with its generator, all owned by label because no owner reference crosses a namespace. K-ORC creates the pieces in Keystone, the mariadb-operator creates the schema in MariaDB, the topology operator creates the user on RabbitMQ, and OpenBao holds the backup every credential goes to before it is delivered. The delivered Secret sits beside the order in the owner's namespace with a controller owner reference and carries the in-cluster addresses. On a target cluster the access chart's ServiceAccount and Role let the c5c3-operator reach the owner's namespace over the registration Secret's kubeconfig; the children stay on the management cluster, and the Secret beside the order carries the published addresses instead.](../diagrams/controlplane-order-flow.svg)
 
-## Steps
+## Create a service user {#steps}
 
 ### 1. Create the service's namespace
 
@@ -94,11 +89,11 @@ Secret in `workflow`, and the same order on a target cluster.
 kubectl create namespace workflow
 ```
 
-### 2. Assign the namespace on the ControlPlane
+### 2. Allow resource requests from the namespace {#_2-assign-the-namespace-on-the-controlplane}
 
-The assignment is the only consent an order reads. The list is atomic, and a
-merge patch replaces every entry in it, so change it with a JSON patch. On a
-ControlPlane that assigns no namespace yet, create the list:
+Authorize the `workflow` namespace to request resources. Use a JSON patch to
+avoid replacing existing namespace assignments. If there are no assignments
+yet:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type json \
@@ -115,7 +110,7 @@ kubectl patch controlplane controlplane -n openstack --type json \
 The entry lists no roles: the ordered user has no project and no role, so the
 entry's `allowedRoles` plays no part.
 
-### 3. Order the user
+### 3. Request a user {#_3-order-the-user}
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -135,7 +130,7 @@ The user name defaults to `metadata.name` and the password generation to 1.
 `controlPlaneRef.namespace` is set because the order lives in another namespace
 than the ControlPlane.
 
-### 4. Wait for the order to converge
+### 4. Wait for the user to be ready {#_4-wait-for-the-order-to-converge}
 
 K-ORC creates the user in Keystone, and ESO pushes the password to OpenBao
 before anything is delivered:
@@ -152,9 +147,9 @@ DeliveryReady=True (Delivered)
 Ready=True (AllReady)
 ```
 
-If it does not converge, the reason names the step that holds it. The table
-under [Conditions](../reference/c5c3/keystoneuser-crd.md#conditions) lists every
-reason; `NamespaceNotAssigned` means Step 2 did not take effect.
+If the user is not ready, inspect the condition reasons.
+`NamespaceNotAssigned` means Step 2 did not take effect. See
+[Conditions](../reference/c5c3/keystoneuser-crd.md#conditions) for other causes.
 
 ### 5. Read the credentials
 
@@ -190,7 +185,7 @@ The namespace holds no secret store, no client certificate and no ESO object:
 kubectl get secretstore,certificate,pushsecret,externalsecret -n workflow
 ```
 
-## Verification
+## Verify the credentials {#verification}
 
 Authenticate with the Secret from inside the namespace it was delivered to:
 
@@ -230,11 +225,11 @@ kubectl logs -n workflow job/workflow-verify
 kubectl delete job workflow-verify -n workflow
 ```
 
-The log shows a token table without a project. A failing `token issue` means
-the password in the Secret is not the one Keystone holds.
+The log shows a token table without a project. If `token issue` fails, inspect
+the Job logs for authentication, connectivity or TLS errors.
 
-From the host, with the `OS_*` variables from the Quick Start's token-issue step
-still exported, the user is visible from the admin's side:
+From the host, use the admin credentials configured in the prerequisites to
+check the user:
 
 ```bash
 openstack --insecure user show workflow
@@ -277,7 +272,7 @@ once ESO has pushed it, the Secret carries it and the order is `Ready` again.
 The schedule starts the same steps once `status.nextPasswordRotation` has
 passed.
 
-## Order a project
+## Create a project {#order-a-project}
 
 The user has no project yet. Order one from the same namespace:
 
@@ -369,13 +364,11 @@ The token table now names the project. Taking the role off the list later
 freezes the order and revokes nothing: the assignment stays in Keystone until
 the order is deleted.
 
-## Order an application credential
+## Create an application credential {#order-an-application-credential}
 
-An application credential lets the service authenticate without the user's
-password, and the operator replaces it on a schedule without an outage. The
-operator creates it as the user, with a token scoped to the project, and that
-token needs the role of the previous section. Order it for the user on the
-project:
+An application credential lets the service authenticate without storing the
+user's password. CobaltCore rotates it with an overlap, giving the service time
+to read the new credential. Create it after assigning the user's project role:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -483,13 +476,12 @@ The live credential keeps its expiry and is rotated once it expires. Raise the
 generation once more to replace it right away with a credential that does not
 expire.
 
-## Order a message-bus vhost
+## Set up messaging {#order-a-message-bus-vhost}
 
-A service that talks over the ControlPlane's message bus gets a vhost of its
-own, with a user that reaches that vhost and nothing else. The devstack
-ControlPlane declares the managed bus `openstack-rabbitmq` (`messaging: {}`),
-which is the only kind of bus that serves the order. Order a vhost from the
-assigned namespace:
+Give the service a RabbitMQ virtual host (vhost) and a user restricted to it.
+The service can create queues and exchange messages within that vhost. This
+request requires a managed RabbitMQ bus, such as the local environment's
+`openstack-rabbitmq` (`messaging: {}`). Apply it in the assigned namespace:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -529,20 +521,23 @@ both from the broker pod:
 vhost=$(kubectl get rabbitmqvhost workflow-bus -n workflow -o jsonpath='{.status.vhost}')
 user=$(kubectl get secret workflow-bus-credentials -n workflow -o jsonpath='{.data.username}' | base64 -d)
 password=$(kubectl get secret workflow-bus-credentials -n workflow -o jsonpath='{.data.password}' | base64 -d)
-kubectl exec -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
-  rabbitmqctl authenticate_user "$user" "$password"
+printf '%s\n' "$password" | kubectl exec -i -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
+  sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user "$1" "$pw"' _ "$user"
 kubectl exec -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
   rabbitmqctl list_user_permissions "$user"
 ```
 
 The first command reports `Success`, and the second lists `$vhost` with `.*`
-for configure, write and read.
+for configure, write and read. Passing the password through standard input
+keeps it out of the `kubectl exec` arguments recorded in API audit logs.
 
 The user rotates on the schedule the application credential follows: every 720
 hours the operator creates the successor user `<vhost>-v2`, switches the Secret
 once the broker holds it, and deletes the superseded user 24 hours later. The
 three steps are the ones of [the figure above](#order-an-application-credential),
-with a broker user in place of a credential. The superseded user keeps working
+with a broker user in place of a credential.
+
+The superseded user keeps working
 through those 24 hours, so a service reads the Secret again within them.
 `spec.rotation.interval` and `spec.rotation.gracePeriod` change the schedule,
 `interval: 0s` turns it off, and raising `spec.passwordGeneration` above
@@ -610,11 +605,11 @@ did not create is refused with `ServiceCollision`. The endpoints may change
 later, and an interface the spec no longer declares is removed. The type and
 the name are frozen.
 
-## Order a database
+## Create a database {#order-a-database}
 
-A `MariaDBDatabase` orders a schema on the ControlPlane's shared MariaDB, the
-one its Keystone uses, and a user that reaches that schema and nothing else.
-It needs only the namespace assignment of Step 2:
+A `MariaDBDatabase` requests a database on the ControlPlane's shared MariaDB
+and credentials restricted to it. Apply it after assigning the namespace in
+Step 2:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -682,8 +677,8 @@ the ControlPlane's own services may still use.
 
 The order refuses a ControlPlane whose shared database the OpenBao engine does
 not issue for (External mode, a brownfield or dedicated Keystone database, or
-`credentialsMode: Static`) with `DynamicCredentialsUnavailable`, and a schema
-that already exists on the MariaDB with `DatabaseCollision`; the table under
+`credentialsMode: Static`) with `DynamicCredentialsUnavailable`. A schema claimed by another Database
+resource on the same MariaDB reports `DatabaseCollision`. The table under
 [Conditions](../reference/c5c3/mariadbdatabase-crd.md#conditions) lists every
 other reason the order reports.
 
@@ -699,10 +694,10 @@ kubectl patch mariadbdatabase workflow-db -n workflow --type merge \
 kubectl delete mariadbdatabase workflow-db -n workflow
 ```
 
-## Edit or delete the Secret
+## Recover changed or deleted credentials {#edit-or-delete-the-secret}
 
-The operator owns the two keys it writes. Overwrite the password, then delete
-the Secret, and watch it come back each time:
+CobaltCore restores the credential keys it manages. To verify recovery in this
+tutorial environment, overwrite the password, then delete the Secret:
 
 ```bash
 kubectl patch secret workflow-credentials -n workflow --type merge \
@@ -717,9 +712,9 @@ Within seconds the password is the generated one again, and the deleted Secret
 is back with an owner reference to the order. A key you add yourself is left in
 place, because the operator owns only `password` and `clouds.yaml`.
 
-## Withdrawing the assignment freezes the order
+## Stop managing resources in a namespace {#withdrawing-the-assignment-freezes-the-order}
 
-::: warning An assignment is consent, not a revocation tool
+::: warning Existing access remains active
 Removing the entry stops the operator from acting on the order. It revokes
 nothing: the Keystone user keeps authenticating and the Secret stays until the
 order is deleted.
@@ -760,13 +755,14 @@ Assign the namespace again with the Step 2 patch, and the order recovers:
 kubectl wait --for=condition=Ready keystoneuser/workflow -n workflow --timeout=10m
 ```
 
-## Revoking the user
+## Revoke access and remove resources {#revoking-the-user}
 
-Deleting the order is what revokes. Delete the application credential first,
-then the role assignment. A user, a project or an assignment that a credential
-order uses holds its deletion and reports `ReferencedByApplicationCredentials`,
-and a user or a project that an assignment names reports
-`ReferencedByRoleAssignments`, until the order that uses it is gone.
+Delete Orders to revoke access. Remove application credentials first, followed
+by role assignments, projects and users.
+
+If another Order still references a resource, deletion waits with
+`ReferencedByApplicationCredentials` or `ReferencedByRoleAssignments` until
+you remove that dependency.
 
 ```bash
 kubectl delete keystoneapplicationcredential workflow-appcred -n workflow
@@ -793,7 +789,7 @@ kubectl get users.openstack.k-orc.cloud,secrets,pushsecrets -n openstack \
 The first command reports `NotFound` and the second reports no resources. See
 [Deletion Semantics](../reference/c5c3/keystoneuser-crd.md#deletion-semantics).
 
-## On a target cluster
+## Provision resources from another cluster {#on-a-target-cluster}
 
 An owner whose namespace lives on a registered target cluster orders the same
 way, on that cluster. The ControlPlane's entry names the cluster in
@@ -802,7 +798,7 @@ and the registration Secret's `assignedNamespaces` key name the namespace, and
 the ControlPlane publishes the addresses of Keystone, the database and the bus
 that a pod on that cluster can reach; without them the orders report
 `KeystoneNotPublished`, `DatabaseNotPublished` or `MessagingNotPublished`.
-[Part 2 of the Quick Start (Orders)](../quick-start-orders.md#target-cluster)
+[Provision Resources, Part 2](../quick-start-orders.md#target-cluster)
 runs all of it on two kind clusters. See
 [Assigned namespaces](../reference/target-clusters.md#assigned-namespaces).
 
@@ -812,7 +808,7 @@ six hops.
 
 ![The path from a pod on the target cluster to the devstack in six numbered hops. Hop 1: the Job's pod resolves keystone.127-0-0-1.nip.io, and a CoreDNS rewrite on the target answers with the ClusterIP of the selector-less Service keystone-public in the owner's namespace. Hop 2: the pod sends the HTTPS request to that Service, keeping the hostname and with it the SNI and the Host header. Hop 3: the Service's EndpointSlice points at the devstack node's InternalIP on NodePort 31443, reached over the docker network kind. Hop 4: the Envoy proxy Service on the devstack terminates TLS with the Gateway's self-signed certificate, which the Job trusts through a ConfigMap copied by hand. Hop 5: the Gateway's listener for the hostname and the HTTPRoute hand the request to the Keystone Service on port 5000. Hop 6: the database and the bus are dialed at the node's IP and the NodePorts of two twin Services, which the ControlPlane publishes as its database and messaging endpoints, set by hand because the operator publishes nothing. Every part marked kind only stands in for what a production target cluster has: a DNS name that resolves, a CA, and published addresses a certificate carries.](../diagrams/controlplane-orders-target-path.svg)
 
-## Standalone Keystone, without a ControlPlane
+## Use a standalone Keystone instance {#standalone-keystone-without-a-controlplane}
 
 There is no ordering path for a standalone Keystone. `spec.controlPlaneRef` is
 required, and the order relies on what only a ControlPlane has: the admin
@@ -834,8 +830,8 @@ through the identity API directly.
 - [ControlPlane CRD: NamespaceAssignmentSpec](../reference/c5c3/controlplane-crd.md#namespaceassignmentspec): the assignment field and its validation.
 - [Register a Service the ControlPlane Does Not Manage](./register-a-foreign-service.md): a KeystoneService with a catalog entry and roles.
 - [ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#keystone-user): the suites behind this guide.
-- [Quick Start (ControlPlane)](../quick-start-controlplane.md): the devstack this guide builds on.
-- [Quick Start (Orders)](../quick-start-orders.md): the seven order kinds, one step each, on the devstack and on a target cluster.
+- [Deploy a ControlPlane](../quick-start-controlplane.md): the devstack this guide builds on.
+- [Provision Resources](../quick-start-orders.md): the seven order kinds, one step each, on the devstack and on a target cluster.
 
 ## Tested by
 
@@ -845,30 +841,13 @@ The flow above mirrors the following end-to-end suite:
 chainsaw test --test-dir tests/e2e/c5c3/keystone-user
 ```
 
-It orders a user from an assigned namespace and authenticates with the Secret
-from a Job there, repairs an edited and a deleted Secret, and rotates the
-password by hand to generation 2 and on a one-minute schedule to generation 3.
-It then orders a project, a role assignment and a catalog entry, sees
-the role and the entry refused, admits both, scopes a token to the project and
-reads the entry out of the catalog. It orders an application credential, sees
-it refused before the role is assigned, authenticates with it, and observes a
-scheduled rotation on a three-minute interval, authenticates with the
-superseded credential inside its two-minute grace period and sees it fail after
-it, and rotates by hand. It orders a database, writes and reads a row from a
-Job with its Secret, repairs the Secret, and forces an ESO refresh that
-delivers a new user. It refuses an order from an unassigned namespace, freezes
-every order by withdrawing the assignment, restores it, and deletes the orders:
-the database first, whose last credential stops working and whose schema stays
-under `Retain` and goes after a re-order with `Delete`, then the assignment to
-see it hold on the credential order, and the user to see it hold on the
-assignment. Against a full ControlPlane stack, run the suite with
-`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`.
+The suite verifies user and project access, catalog entries, application
+credentials and database requests. It also checks credential rotation, Secret
+recovery, namespace authorization and deletion policies.
 
-The suite brings up a Keystone-only ControlPlane of its own in chainsaw's
-ephemeral namespace, so its fixtures are isolation-named where the walkthrough
-is devstack-named: the plane is `cp` instead of `controlplane`, and the
-`@TENANT_NS@` and `@CP_NS@` tokens are substituted per run so that parallel
-suites never collide.
+Against a full ControlPlane stack, run
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`. The fixtures use a
+ControlPlane named `cp` and substitute namespaces per run to avoid collisions.
 
 ::: details The ControlPlane fixture the suite applies
 <<< @/../tests/e2e/c5c3/keystone-user/00-controlplane-cr.yaml#controlplane
@@ -908,15 +887,10 @@ The vhost order mirrors a second suite, the one with a live managed bus:
 chainsaw test --test-dir tests/e2e/c5c3/messaging
 ```
 
-It orders a vhost from an assigned namespace, checks the six keys and the
-OpenBao backup, and proves with `rabbitmqctl` in the broker pod that the user
-authenticates and holds `.*` on its vhost alone. It repairs an edited and a
-deleted Secret, observes a rotation on a three-minute interval with both users
-valid during the one-minute grace period and the superseded one refused
-afterwards, and rotates by hand with the schedule off. It deletes one order
-under `Retain`, whose vhost stays on the broker, and one under `Delete`, whose
-vhost goes, and freezes an order by withdrawing the assignment. The suite runs
-on the `e2e-operator (c5c3)` job; its plane is `cp` and its order `workflow`.
+The messaging suite checks vhost permissions, credential rotation, Secret
+recovery and both deletion policies. It also verifies that withdrawing the
+namespace assignment stops reconciliation. The `e2e-operator (c5c3)` CI job
+runs this suite.
 
 ::: details The vhost order the messaging suite applies
 <<< @/../tests/e2e/c5c3/messaging/01-rabbitmqvhost-tenant.yaml#rabbitmqvhost-workflow
