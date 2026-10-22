@@ -87,6 +87,9 @@ runs:
     # day; rewrap-nvd-feed.py checks each file against the sha256 of its
     # .meta and moves the items into the wrapper vulnix parses, under the
     # file names vulnix requests from a mirror.
+    # GitHub's release downloads answer 502 for seconds at a time. Every curl
+    # call retries any error six times with curl's doubling back-off, about a
+    # minute in all; three retries gave up after 7 s of 502s on PR #1523.
     - name: Fetch the NVD feeds
       id: nvd-feeds
       shell: bash
@@ -95,7 +98,7 @@ runs:
         rm -rf "${mirror}"
         mkdir -p "${mirror}/src"
         releases=https://github.com/fkie-cad/nvd-json-data-feeds/releases
-        tag_url=$(curl -fsS -o /dev/null -w '%{redirect_url}' "${releases}/latest/download/CVE-all.meta")
+        tag_url=$(curl -fsS --retry 6 --retry-all-errors -o /dev/null -w '%{redirect_url}' "${releases}/latest/download/CVE-all.meta")
         tag=${tag_url#"${releases}/download/"}
         tag=${tag%/CVE-all.meta}
         if [[ "${tag_url}" != "${releases}/download/"*"/CVE-all.meta" || -z "${tag}" || "${tag}" == */* ]]; then
@@ -107,7 +110,7 @@ runs:
         for ((y = year - 5; y <= year; y++)); do years+=("${y}"); done
         for y in "${years[@]}"; do
           for ext in json.xz meta; do
-            curl -fsSL --retry 3 --retry-all-errors -o "${mirror}/src/CVE-${y}.${ext}" \
+            curl -fsSL --retry 6 --retry-all-errors -o "${mirror}/src/CVE-${y}.${ext}" \
               "${releases}/download/${tag}/CVE-${y}.${ext}"
           done
         done

@@ -291,6 +291,8 @@ test_nvd_feeds() {
     "$(grep -c "releases/latest/download/" "$CURL_LOG" || true)"
   assert_eq "twelve assets are fetched from the resolved tag" "12" \
     "$(grep -c -- "-o .* https://github.com/fkie-cad/nvd-json-data-feeds/releases/download/v2026.10.15-000015/CVE-" "$CURL_LOG" || true)"
+  assert_eq "the tag lookup and every download retry any error six times" "13" \
+    "$(grep -c -- " --retry 6 --retry-all-errors " "$CURL_LOG" || true)"
   assert_eq "the feeds cover the current year and the five before it" \
     "$(for ((y = THIS_YEAR - 5; y <= THIS_YEAR; y++)); do echo "nvdcve-2.0-$y.json.gz"; done)" \
     "$(ls "$MIRROR")"
