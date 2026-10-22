@@ -14,7 +14,8 @@
 #
 # Each emitted entry carries:
 #   service          — service under test
-#                      (keystone|glance|barbican|neutron|cinder|nova)
+#                      (keystone|glance|barbican|neutron|cinder|nova), or
+#                      keystone-upgrade (below)
 #   release          — OpenStack release (e.g. 2026.1)
 #   config-dir       — tests/tempest/<service>-<slug>
 #   cr-name          — Keystone CR the CI job waits on and port-forwards
@@ -53,6 +54,16 @@
 #   nova-cr-name, ovn-cr-name, neutron-cr-name, placement-cr-name and
 #   tempest-concurrency. On a nova entry nova-cr-name is the leg's own service
 #   CR, and its servers do carry a NIC, so a port is bound on that Neutron.
+#
+# After every per-release entry, and only when keystone is selected and
+# releases/ holds two or more releases, one keystone-upgrade entry follows. It
+# carries the five keys of the newest release's keystone entry, with service
+# set to keystone-upgrade, plus:
+#   upgrade-from     — the release before the newest one; the leg deploys its
+#                      Keystone at this release and upgrades it in place to
+#                      release before Tempest runs
+# keystone-upgrade is not in ALL_TEMPEST_SERVICES: it has no config directory of
+# its own, so TEMPEST_SERVICES cannot name it, and selecting keystone selects it.
 #
 # For keystone the cr-name/service-k8s-name are keystone-tempest-<slug>; the
 # glance leg runs against its own keystone-glance-tempest-<slug> identity CR and
@@ -225,6 +236,23 @@ for d in ${dirs[@]+"${dirs[@]}"}; do
     entries+=("{\"service\":\"${service}\",\"release\":\"${release}\",\"config-dir\":\"${config_dir}\",\"cr-name\":\"${cr_name}\",\"service-k8s-name\":\"${cr_name}\"${extra_keys}}")
   done
 done
+
+# The keystone-upgrade leg: the newest release's keystone suite, run against a
+# Keystone that reached that release by an in-place upgrade from the release
+# before it. dirs is in glob order, which is ascending, the order the
+# release-wiring audit's L6 reads the newest transition from. The indices are
+# computed rather than written as ${dirs[-1]}, which needs Bash 4.3. The entry
+# reuses the newest release's keystone config directory, which the loop above
+# has already checked, and comes after every per-release entry, so those keep
+# their order.
+if is_selected keystone && [[ ${#dirs[@]} -ge 2 ]]; then
+  newest="${dirs[$((${#dirs[@]} - 1))]%/}"
+  newest="${newest##*/}"
+  prev="${dirs[$((${#dirs[@]} - 2))]%/}"
+  prev="${prev##*/}"
+  slug="${newest//./-}"
+  entries+=("{\"service\":\"keystone-upgrade\",\"release\":\"${newest}\",\"config-dir\":\"tests/tempest/keystone-${slug}\",\"cr-name\":\"keystone-tempest-${slug}\",\"service-k8s-name\":\"keystone-tempest-${slug}\",\"upgrade-from\":\"${prev}\"}")
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Emit matrix JSON to GITHUB_OUTPUT
