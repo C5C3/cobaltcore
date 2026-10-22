@@ -722,7 +722,10 @@ with `python3 -m http.server` on `127.0.0.1:18765`, passes it to vulnix as
 run depends on a cache and none asks for the `modified` feed, which the
 reconstruction does not publish. The step summary gets the line
 `nvd-feeds: <tag>, <first year> to <last year>`. Both steps use the `curl`
-and `python3` of the runner image.
+and `python3` of the runner image. The tag lookup and every download retry
+any error six times with curl's doubling back-off (1 s up to 32 s, about a
+minute in all), because GitHub's release downloads answer 502 for seconds at
+a time.
 
 Then the action takes one of two paths:
 
