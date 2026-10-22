@@ -4592,6 +4592,10 @@ jobs:
   # suite against them.  One leg per service: keystone, glance, barbican,
   # neutron, cinder and nova.
   # Matrix over OpenStack releases to validate each release independently.
+  # One more leg, keystone-upgrade, brings a Keystone up at the release before
+  # the newest, upgrades it in place to the newest through
+  # expand-migrate-contract, and runs the newest release's keystone suite
+  # against that database.
   #
   # Runs only after every E2E job has finished without failure: a failed
   # E2E job skips tempest, a path-filter-skipped one does not block it
@@ -4661,6 +4665,10 @@ jobs:
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
+            # The keystone-upgrade leg deploys its Keystone at the release before
+            # matrix.release and upgrades it in place, so it also pulls that
+            # release's service image. The other legs render a blank line here.
+            ${{ matrix.service == 'keystone-upgrade' && format('{0}/keystone:{1}', env.IMAGE_PREFIX, matrix.upgrade-from) || '' }}
             ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
             # The neutron leg brings up an OVNCentral next to its Neutron, so it
             # pulls both operator images and both service images. The other legs
@@ -4690,6 +4698,14 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+      # The keystone-upgrade leg brings its Keystone up at the previous release
+      # first. kubelet only skips the registry for a tag already on the node, so
+      # without this load the node would pull the published
+      # ghcr.io/c5c3/keystone:<upgrade-from> and the leg would upgrade main's
+      # image instead of this run's.
+      - name: Load the previous release's Keystone image into kind
+        if: matrix.service == 'keystone-upgrade'
+        run: kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.upgrade-from }} --name ${{ env.KIND_CLUSTER }}
       # -- Glance ----------------------------------------------------------
       # The glance leg additionally pulls the glance-operator and the matching
       # glance service image; the keystone leg needs neither. The cinder leg
@@ -4904,12 +4920,80 @@ jobs:
           NAMESPACE: nova-system
       # Every service deploys the Keystone CR from its own config-dir (the
       # glance and barbican legs run against their own
-      # keystone-<service>-tempest identity CR).
+      # keystone-<service>-tempest identity CR). The keystone-upgrade leg
+      # deploys it at the previous release in the step below instead.
       - name: Deploy Keystone CR for Tempest
+        if: matrix.service != 'keystone-upgrade'
         run: |
           kubectl apply -f ${{ matrix.config-dir }}/00-keystone-cr.yaml
           kubectl wait keystone/${{ matrix.cr-name }} -n openstack \
             --for=condition=Ready --timeout=300s
+      # The keystone-upgrade leg applies the newest release's own fixture with
+      # spec.image.tag swapped to the previous release, so the CR name, the
+      # database and the sizing match the fresh keystone leg of the same release,
+      # and the database is written by the previous release's db-sync and
+      # bootstrap. Without an installedRelease of upgrade-from, the step below
+      # would run no upgrade and Tempest would test a fresh database.
+      - name: Deploy Keystone CR at the previous release
+        if: matrix.service == 'keystone-upgrade'
+        env:
+          CR: ${{ matrix.cr-name }}
+          UPGRADE_FROM: ${{ matrix.upgrade-from }}
+        run: |
+          yq '.spec.image.tag = strenv(UPGRADE_FROM)' ${{ matrix.config-dir }}/00-keystone-cr.yaml | kubectl apply -f -
+          kubectl wait keystone/"$CR" -n openstack --for=condition=Ready --timeout=300s
+          if ! kubectl wait keystone/"$CR" -n openstack --for=jsonpath='{.status.installedRelease}'="$UPGRADE_FROM" --timeout=60s; then
+            echo "::error::keystone/$CR reports installedRelease '$(kubectl get keystone/"$CR" -n openstack -o jsonpath='{.status.installedRelease}')', not $UPGRADE_FROM: the leg would run Tempest on a fresh database"
+            exit 1
+          fi
+      # The hop under test: expand, migrate, a rolling update of the three API
+      # replicas, contract. installedRelease moves to the target only when the
+      # contract Job has finished, so it is the first thing to wait for; the Job
+      # check then proves the database went through expand-migrate-contract and
+      # was not synced fresh. The status write that moves installedRelease also
+      # reports Ready. The operator's next pass re-runs the <cr>-db-sync and
+      # <cr>-schema-check Jobs at the new image, and Ready reads False until
+      # both finish. schema-check runs keystone-manage db_sync --check and starts
+      # only after that db-sync completed, so the step waits for it at
+      # :<release> before it waits for Ready. A schema left behind a head fails
+      # the step here, before Tempest runs.
+      - name: Upgrade Keystone to the leg's release
+        if: matrix.service == 'keystone-upgrade'
+        env:
+          CR: ${{ matrix.cr-name }}
+          RELEASE: ${{ matrix.release }}
+          HOP_TIMEOUT: "600"
+        run: |
+          kubectl patch keystone/"$CR" -n openstack --type merge -p "{\"spec\":{\"image\":{\"tag\":\"${RELEASE}\"}}}"
+          if ! kubectl wait keystone/"$CR" -n openstack --for=jsonpath='{.status.installedRelease}'="$RELEASE" --timeout="${HOP_TIMEOUT}s"; then
+            echo "::error::keystone/$CR did not reach installedRelease $RELEASE within ${HOP_TIMEOUT} s; the DatabaseReady condition in the diagnostics dump names the phase it stopped in"
+            exit 1
+          fi
+          kubectl wait job/"$CR"-db-expand job/"$CR"-db-migrate job/"$CR"-db-contract -n openstack --for=condition=complete --timeout=60s
+          # kubectl get fails while the operator swaps the completed Job for the
+          # one at the new image. The loop is bounded, and the check after it
+          # fails the step with the image it last read.
+          check_image=""
+          for _ in $(seq 1 60); do
+            check_image="$(kubectl get job "$CR"-schema-check -n openstack -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+            [[ "$check_image" == *":${RELEASE}" ]] && break
+            sleep 5
+          done
+          if [[ "$check_image" != *":${RELEASE}" ]]; then
+            echo "::error::job/$CR-schema-check runs '$check_image', not a :${RELEASE} image: the operator did not re-run db-sync and schema-check after the upgrade; the DatabaseReady condition in the diagnostics dump names the Job it stopped at"
+            exit 1
+          fi
+          if ! kubectl wait job/"$CR"-schema-check -n openstack --for=condition=complete --timeout=300s; then
+            echo "::error::job/$CR-schema-check (keystone-manage db_sync --check at :${RELEASE}) did not complete: the upgraded schema is not at head, or the check never finished; the Job logs in the diagnostics dump carry its output"
+            exit 1
+          fi
+          kubectl wait keystone/"$CR" -n openstack --for=condition=Ready --timeout=300s
+          kubectl rollout status deploy/"$CR" -n openstack --timeout=300s
+          image="$(kubectl get deploy "$CR" -n openstack -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          case "$image" in
+            *":${RELEASE}") ;;
+            *) echo "::error::deploy/$CR runs $image after the upgrade, not a :${RELEASE} image"; exit 1 ;;
+          esac
       # The glance leg bootstraps the image catalog (Keystone service +
       # endpoints via a setup Job) before its Glance + GlanceBackend CRs, which
       # depend on that catalog entry to reconcile.
