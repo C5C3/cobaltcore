@@ -83,12 +83,12 @@ STUB
   chmod +x "$dir/docker"
 }
 
-# run_step <images> <image-map>
+# run_step <images> <image-map> [operator-variant]
 # Runs the extracted step with the docker stub prepended to PATH (so jq and
 # coreutils still resolve) and a fresh log. Stores the combined stdout/stderr in
 # OUTPUT, the exit status in RC and the recorded argv in LOG.
 run_step() {
-  local images="$1" image_map="$2"
+  local images="$1" image_map="$2" variant="${3:-}"
   RC=0
   : >"$DOCKER_LOG"
   OUTPUT="$(
@@ -97,6 +97,7 @@ run_step() {
       IMAGES="$images" \
       RUN_ID="12345" \
       IMAGE_MAP="$image_map" \
+      OPERATOR_VARIANT="$variant" \
       bash "$STEP_SH" 2>&1
   )" || RC=$?
   LOG="$(cat "$DOCKER_LOG")"
@@ -220,6 +221,62 @@ ghcr.io/c5c3/keystone-operator:dev
   assert_eq "only that one ref is pulled" "2" "$(grep -c . <<<"$LOG")"
 }
 
+test_cover_variant_pulls_the_cover_entry() {
+  echo "Test: operator-variant cover fills an operator's :dev ref from the map's :cover entry"
+
+  local digest="ghcr.io/c5c3/keystone@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  run_step "ghcr.io/c5c3/keystone-operator:dev
+ghcr.io/c5c3/keystone:2026.1" \
+    "{\"ghcr.io/c5c3/keystone-operator:cover\": \"ghcr.io/c5c3/keystone-operator:e2e-12345-cover\",
+      \"ghcr.io/c5c3/keystone-operator:dev\": \"ghcr.io/c5c3/keystone-operator@sha256:abc\",
+      \"ghcr.io/c5c3/keystone:2026.1\": \"${digest}\"}" cover
+
+  assert_eq "the step succeeds" "0" "$RC"
+  assert_contains "it pulls the cover image" "$LOG" \
+    "docker pull ghcr.io/c5c3/keystone-operator:e2e-12345-cover"
+  assert_contains "it tags the cover image as the :dev ref" "$LOG" \
+    "docker tag ghcr.io/c5c3/keystone-operator:e2e-12345-cover ghcr.io/c5c3/keystone-operator:dev"
+  assert_not_contains "it leaves the production :dev entry alone" "$LOG" \
+    "keystone-operator@sha256:abc"
+  assert_contains "a service image keeps its own entry" "$LOG" "docker pull ${digest}"
+  assert_contains "and its own ref" "$LOG" "docker tag ${digest} ghcr.io/c5c3/keystone:2026.1"
+}
+
+test_cover_variant_falls_back_to_the_run_tag() {
+  echo "Test: under operator-variant cover a map without the :cover key falls back to e2e-<run>-cover"
+
+  run_step "ghcr.io/c5c3/keystone-operator:dev" \
+    '{"ghcr.io/c5c3/keystone-operator:dev": "ghcr.io/c5c3/keystone-operator@sha256:abc"}' cover
+
+  assert_eq "the step succeeds" "0" "$RC"
+  assert_contains "it says the map had no cover entry" "$OUTPUT" \
+    "no image-map entry for ghcr.io/c5c3/keystone-operator:cover; pulling ghcr.io/c5c3/keystone-operator:e2e-12345-cover"
+  assert_contains "it pulls the run-scoped cover tag" "$LOG" \
+    "docker pull ghcr.io/c5c3/keystone-operator:e2e-12345-cover"
+  assert_contains "it tags it as the :dev ref" "$LOG" \
+    "docker tag ghcr.io/c5c3/keystone-operator:e2e-12345-cover ghcr.io/c5c3/keystone-operator:dev"
+
+  run_step "ghcr.io/c5c3/keystone-operator:dev" "" cover
+  assert_contains "an empty map pulls the run-scoped cover tag too" "$LOG" \
+    "docker pull ghcr.io/c5c3/keystone-operator:e2e-12345-cover"
+
+  # Only an operator's :dev ref has a cover variant.
+  run_step "ghcr.io/c5c3/keystone-federation-proxy:dev" "" cover
+  assert_contains "a :dev ref that is no operator keeps its own tag" "$LOG" \
+    "docker pull ghcr.io/c5c3/keystone-federation-proxy:e2e-12345-dev"
+}
+
+test_an_unknown_variant_fails_before_pulling() {
+  echo "Test: an operator-variant other than empty or cover fails before the first pull"
+
+  run_step "ghcr.io/c5c3/keystone-operator:dev" "" debug
+
+  assert_nonzero_exit "the step fails" "$RC"
+  assert_contains "it names the value" "$OUTPUT" \
+    "::error::operator-variant must be empty or cover, got 'debug'"
+  assert_eq "nothing was pulled" "" "$LOG"
+}
+
 # Echo one line per load-e2e-images consumer in ci.yaml outside
 # build-e2e-images: "OK <job> <line>" when the step's image-map: line follows
 # before the next step, "MISS <job> <line>" otherwise.
@@ -300,6 +357,9 @@ test_an_empty_map_keeps_the_old_behaviour
 test_a_malformed_map_fails_before_pulling
 test_a_ref_without_a_tag_still_fails
 test_blank_and_comment_lines_are_skipped
+test_cover_variant_pulls_the_cover_entry
+test_cover_variant_falls_back_to_the_run_tag
+test_an_unknown_variant_fails_before_pulling
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

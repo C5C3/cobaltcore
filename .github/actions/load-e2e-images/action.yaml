@@ -11,6 +11,10 @@
 # unchanged. Replaces the previous download-artifact + zstd | docker
 # load path, which timed out at the 5-minute mark for the 355 MB
 # single-blob artifact.
+#
+# With operator-variant: cover, every <repo>-operator:dev ref is filled
+# from the coverage-instrumented <repo>-operator:cover image instead, still
+# tagged as the :dev ref the job loads into kind and deploys.
 
 name: Load E2E images
 description: >
@@ -45,6 +49,16 @@ inputs:
       every ref when the input is left empty.
     required: false
     default: ''
+  operator-variant:
+    description: >
+      Empty, or cover. With cover, a ref that ends in -operator:dev is
+      looked up in the image-map, and pulled from the run-scoped tag
+      when the map lacks it, as the same repository's cover tag, and
+      the pulled image is tagged as the original :dev ref. Every other
+      ref is pulled as without it. Any other value fails the step
+      before the first pull.
+    required: false
+    default: ''
   registry:
     description: Container registry to authenticate against.
     required: false
@@ -76,9 +90,17 @@ runs:
         IMAGES: ${{ inputs.images }}
         RUN_ID: ${{ inputs.run-id }}
         IMAGE_MAP: ${{ inputs.image-map }}
+        OPERATOR_VARIANT: ${{ inputs.operator-variant }}
       run: |
         set -euo pipefail
         run_tag="e2e-${RUN_ID}"
+        case "${OPERATOR_VARIANT:-}" in
+          "" | cover) ;;
+          *)
+            echo "::error::operator-variant must be empty or cover, got '${OPERATOR_VARIANT}'"
+            exit 1
+            ;;
+        esac
         # Reject a malformed map before the first pull rather than halfway
         # through the list, where half the images are already re-tagged.
         if [[ -n "${IMAGE_MAP}" ]] && ! jq -e 'type == "object"' <<<"${IMAGE_MAP}" >/dev/null 2>&1; then
@@ -96,15 +118,21 @@ runs:
             exit 1
           fi
           repo="${ref%:*}"
-          tag="${ref##*:}"
+          # The ref the image is looked up as: an operator's :dev ref under
+          # the cover variant is filled from the same repository's cover tag.
+          lookup="${ref}"
+          if [[ "${OPERATOR_VARIANT:-}" == "cover" && "${ref}" == *-operator:dev ]]; then
+            lookup="${repo}:cover"
+          fi
+          tag="${lookup##*:}"
           src=""
           if [[ -n "${IMAGE_MAP}" ]]; then
-            src=$(jq -r --arg ref "${ref}" '.[$ref] // empty' <<<"${IMAGE_MAP}")
+            src=$(jq -r --arg ref "${lookup}" '.[$ref] // empty' <<<"${IMAGE_MAP}")
           fi
           if [[ -z "${src}" ]]; then
             src="${repo}:${run_tag}-${tag}"
             if [[ -n "${IMAGE_MAP}" ]]; then
-              echo "no image-map entry for ${ref}; pulling ${src}"
+              echo "no image-map entry for ${lookup}; pulling ${src}"
             fi
           fi
           echo "::group::Pull ${src} → ${ref}"
