@@ -73,6 +73,84 @@ test_runtime_libraries_present() {
   assert_uwsgi_imports keystone
 }
 
+# --- Test 5: the implied-role patch is applied ---
+test_implied_role_patch_applied() {
+  echo "Test: implied roles expand in linear time and each role is looked up once"
+  # Proves the image build applied
+  # patches/keystone/<release>/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch
+  # (#1459), which the lock lists and nix/lib/python-env.nix applies.
+  # Upstream's add_implied_roles checks every implied ref against a list of
+  # the refs it has already checked, one dict comparison per entry, which
+  # grows with the square of the result; _strip_domain_roles calls get_role
+  # once per ref. The check counts operations instead of timing them, so a
+  # slow runner cannot flip it: 4,000 refs whose member role implies reader
+  # expand to 8,000 with fewer ref comparisons than refs (upstream makes
+  # millions), and stripping the domain-specific reader takes one get_role
+  # call per role, two for 8,000 refs, and no uncached list_roles_from_ids
+  # call. The role API is mocked, so neither a database nor a configuration
+  # file is needed. Stderr is echoed on failure so the reason is named rather
+  # than collapsed into a bare exit code.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+from keystone.assignment import core
+
+ROLES = {
+    "member": {"id": "member", "domain_id": None},
+    "reader": {"id": "reader", "domain_id": "d"},
+}
+COMPARISONS = [0]
+
+
+class CountingRef(dict):
+    """A ref that counts how often it is compared with ==."""
+
+    def __eq__(self, other):
+        COMPARISONS[0] += 1
+        return dict.__eq__(self, other)
+
+    __hash__ = None
+
+
+def implied_roles(role_id):
+    if role_id == "member":
+        return [{"prior_role_id": "member", "implied_role_id": "reader"}]
+    return []
+
+
+manager = object.__new__(core.Manager)
+with mock.patch.object(core, "PROVIDERS") as providers:
+    role_api = providers.role_api
+    role_api.list_implied_roles.side_effect = implied_roles
+    role_api.get_role.side_effect = lambda role_id: ROLES[role_id]
+
+    refs = [CountingRef(user_id="u", project_id="p%d" % i, role_id="member")
+            for i in range(4000)]
+    expanded = manager.add_implied_roles(refs)
+    if len(expanded) != 8000:
+        sys.exit("add_implied_roles returned %d refs, expected 8000"
+                 % len(expanded))
+    if COMPARISONS[0] >= len(refs):
+        sys.exit("add_implied_roles compared refs %d times for %d refs: the "
+                 "cycle check still scans a list" % (COMPARISONS[0], len(refs)))
+    kept = manager._strip_domain_roles(expanded)
+    if len(kept) != 4000:
+        sys.exit("_strip_domain_roles kept %d refs, expected 4000" % len(kept))
+    lookups = sorted(c.args[0] for c in role_api.get_role.call_args_list)
+    if lookups != ["member", "reader"]:
+        sys.exit("_strip_domain_roles called get_role %d times for 8000 refs, "
+                 "expected once each for member and reader" % len(lookups))
+    if role_api.list_roles_from_ids.call_count:
+        sys.exit("_strip_domain_roles calls list_roles_from_ids, which no "
+                 "cache answers")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "implied roles expand in linear time and each role is looked up once" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== keystone container verification tests ==="
 echo "Image: $IMAGE"
@@ -84,6 +162,8 @@ echo ""
 test_no_build_tools_in_final_image
 echo ""
 test_runtime_libraries_present
+echo ""
+test_implied_role_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
