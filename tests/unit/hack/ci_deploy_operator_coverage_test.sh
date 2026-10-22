@@ -10,7 +10,9 @@
 #   - unset or false passes none of them and never calls docker;
 #   - an invalid value, a chart without extraVolumes, a cluster without nodes
 #     and a failing docker exec each exit 1 with an ::error:: line before
-#     helm runs.
+#     helm runs;
+#   - e2e-operator, e2e-chaos and tempest set E2E_COVERAGE=true, and no other
+#     job sets it.
 #
 # Follows tests/unit/hack/ci_deploy_operator_replicas_test.sh.
 #
@@ -21,6 +23,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_SH="$PROJECT_ROOT/hack/ci-deploy-operator.sh"
+CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 PASS=0
 FAIL=0
@@ -259,6 +262,25 @@ test_node_dir_creation_fails() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 7: the three coverage jobs set E2E_COVERAGE=true, no other job does
+# ---------------------------------------------------------------------------
+test_ci_wiring() {
+  echo "Test: e2e-operator, e2e-chaos and tempest set E2E_COVERAGE to true"
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
+    return
+  fi
+  local job
+  for job in e2e-operator e2e-chaos tempest; do
+    assert_eq "the job-level env of ${job} sets E2E_COVERAGE to true" "true" \
+      "$(yq ".jobs[\"${job}\"].env.E2E_COVERAGE" "$CI_YAML")"
+  done
+  assert_eq "no other job sets E2E_COVERAGE" "e2e-operator,e2e-chaos,tempest" \
+    "$(yq '[.jobs | to_entries[] | select(.value.env.E2E_COVERAGE != null or (.value.steps // [] | map(.env.E2E_COVERAGE != null) | any)) | .key] | join(",")' "$CI_YAML")"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_coverage_on
@@ -267,6 +289,7 @@ test_coverage_invalid
 test_chart_without_extra_volumes
 test_no_kind_nodes
 test_node_dir_creation_fails
+test_ci_wiring
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

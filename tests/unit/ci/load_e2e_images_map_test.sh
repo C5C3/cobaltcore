@@ -330,10 +330,51 @@ test_every_consumer_passes_the_map() {
     "run: hack/ci-resolve-e2e-images.sh"
 }
 
+# Echo one "<job> <cover|plain>" line per load-e2e-images consumer in ci.yaml
+# outside build-e2e-images: cover when the step passes operator-variant: cover
+# before the next step begins.
+variant_scan() {
+  awk '
+    /^jobs:$/ { in_jobs = 1; next }
+    !in_jobs { next }
+    /^  [a-z0-9-]+:$/ {
+      if (pending) print pjob " plain"
+      pending = 0; job = $0; gsub(/[ :]/, "", job); next
+    }
+    job == "build-e2e-images" { next }
+    /^      (- |  )uses: \.\/\.github\/actions\/load-e2e-images$/ {
+      if (pending) print pjob " plain"
+      pending = 1; pjob = job; next
+    }
+    pending && /^      - / { print pjob " plain"; pending = 0 }
+    pending && $0 == "          operator-variant: cover" { print pjob " cover"; pending = 0 }
+    END { if (pending) print pjob " plain" }
+  ' "$CI_YAML"
+}
+
+test_the_coverage_legs_pull_the_cover_operator() {
+  echo "Test: the load steps of e2e-operator, e2e-chaos and tempest pass operator-variant: cover, no other does"
+
+  # The three coverage jobs deploy the instrumented operators; every other
+  # job keeps the production binary that ships.
+  local scan
+  scan=$(variant_scan)
+  assert_eq "e2e-operator has one cover load step" "1" "$(grep -cx 'e2e-operator cover' <<<"$scan")"
+  assert_eq "e2e-chaos has two cover load steps" "2" "$(grep -cx 'e2e-chaos cover' <<<"$scan")"
+  assert_eq "tempest has three cover load steps" "3" "$(grep -cx 'tempest cover' <<<"$scan")"
+  assert_eq "every load step of the three jobs passes it" "0" \
+    "$(grep -cE '^(e2e-operator|e2e-chaos|tempest) plain$' <<<"$scan")"
+  assert_eq "ci.yaml passes operator-variant: cover six times in all" "6" \
+    "$(grep -c '^          operator-variant: cover$' "$CI_YAML")"
+  assert_eq "the scan judges every load-e2e-images consumer in ci.yaml" \
+    "$(consumer_scan | grep -c .)" "$(grep -c . <<<"$scan")"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_every_consumer_passes_the_map
+test_the_coverage_legs_pull_the_cover_operator
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "SKIP: jq not installed (the pull-step checks are skipped)"

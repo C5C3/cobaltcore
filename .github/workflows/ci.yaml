@@ -1497,6 +1497,13 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # The operators run the coverage-instrumented :cover images, which the
+    # load steps fetch with operator-variant: cover, and
+    # hack/ci-deploy-operator.sh gives each a counter volume and GOCOVERDIR.
+    # "Collect operator coverage" reads the counters back before the cluster
+    # is deleted.
+    env:
+      E2E_COVERAGE: "true"
     # e2e-operators with the nova leg split into shards 1 and 2 (see "Shard
     # the e2e-operator matrix" in the changes job). A leg without a shard is
     # named as before, e2e-operator (<operator>).
@@ -1594,6 +1601,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: ${{ steps.e2e-images.outputs.refs }}
       - name: Load images into kind
         env:
@@ -1880,6 +1888,31 @@ jobs:
           name: e2e-${{ matrix.operator }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-junit-report
           path: _output/reports/
           retention-days: 14
+      # Scales the coverage-instrumented operators to 0 so each flushes its
+      # counters once more, copies the counters off the kind nodes and merges
+      # them into one profile per operator, with the totals in the job summary
+      # (hack/ci-collect-e2e-coverage.sh). It reports and never fails the job.
+      # A cancelled run skips the scale-down, so the step does not eat the
+      # grace window "Delete kind cluster" needs; cancelled() is allowed in an
+      # if: alone, so the env reads job.status.
+      - name: Collect operator coverage
+        id: coverage
+        if: always()
+        continue-on-error: true
+        env:
+          SCALE_DOWN: ${{ job.status != 'cancelled' }}
+        run: hack/ci-collect-e2e-coverage.sh e2e
+      # One upload per leg: every profile, each scoped to its tree by its
+      # flag in .codecov.yml, and no status gates on these flags.
+      # disable_search keeps the raw counter files out of the upload.
+      - name: Upload operator coverage
+        if: always() && steps.coverage.outputs.found == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: ${{ steps.coverage.outputs.files }}
+          flags: ${{ steps.coverage.outputs.flags }}
+          disable_search: true
+          fail_ci_if_error: false
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job
       # (see hack/ci-delete-kind-cluster.sh).
@@ -2188,8 +2221,20 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # The operators run the coverage-instrumented :cover images, which the
+    # load steps fetch with operator-variant: cover, and
+    # hack/ci-deploy-operator.sh gives each a counter volume and GOCOVERDIR.
+    # "Collect operator coverage" reads the counters back before the cluster
+    # is deleted.
+    env:
+      E2E_COVERAGE: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # go tool covdata merges the operator coverage counters in "Collect
+      # operator coverage".
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
       - name: Create kind cluster
         uses: ./.github/actions/create-kind-cluster
         with:
@@ -2209,6 +2254,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2026.1
@@ -2229,6 +2275,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             # placement-operator-pod-kill and placement-keystone-outage run on
             # the pod leg, placement-mariadb-outage on the network leg (see the
@@ -2579,6 +2626,31 @@ jobs:
           name: e2e-chaos-junit-report-${{ matrix.suite }}
           path: _output/reports/
           retention-days: 14
+      # Scales the coverage-instrumented operators to 0 so each flushes its
+      # counters once more, copies the counters off the kind nodes and merges
+      # them into one profile per operator, with the totals in the job summary
+      # (hack/ci-collect-e2e-coverage.sh). It reports and never fails the job.
+      # A cancelled run skips the scale-down, so the step does not eat the
+      # grace window "Delete kind cluster" needs; cancelled() is allowed in an
+      # if: alone, so the env reads job.status.
+      - name: Collect operator coverage
+        id: coverage
+        if: always()
+        continue-on-error: true
+        env:
+          SCALE_DOWN: ${{ job.status != 'cancelled' }}
+        run: hack/ci-collect-e2e-coverage.sh chaos
+      # One upload per leg: every profile, each scoped to its tree by its
+      # flag in .codecov.yml, and no status gates on these flags.
+      # disable_search keeps the raw counter files out of the upload.
+      - name: Upload operator coverage
+        if: always() && steps.coverage.outputs.found == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: ${{ steps.coverage.outputs.files }}
+          flags: ${{ steps.coverage.outputs.flags }}
+          disable_search: true
+          fail_ci_if_error: false
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job
       # (see hack/ci-delete-kind-cluster.sh).
@@ -4552,6 +4624,13 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # The operators run the coverage-instrumented :cover images, which the
+    # load steps fetch with operator-variant: cover, and
+    # hack/ci-deploy-operator.sh gives each a counter volume and GOCOVERDIR.
+    # "Collect operator coverage" reads the counters back before the cluster
+    # is deleted.
+    env:
+      E2E_COVERAGE: "true"
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}
@@ -4578,6 +4657,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
@@ -4621,6 +4701,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }}
@@ -4644,6 +4725,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
             ${{ env.IMAGE_PREFIX }}/barbican:${{ matrix.release }}
@@ -5197,6 +5279,31 @@ jobs:
           for op in ${ops}; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
+      # Scales the coverage-instrumented operators to 0 so each flushes its
+      # counters once more, copies the counters off the kind nodes and merges
+      # them into one profile per operator, with the totals in the job summary
+      # (hack/ci-collect-e2e-coverage.sh). It reports and never fails the job.
+      # A cancelled run skips the scale-down, so the step does not eat the
+      # grace window "Delete kind cluster" needs; cancelled() is allowed in an
+      # if: alone, so the env reads job.status.
+      - name: Collect operator coverage
+        id: coverage
+        if: always()
+        continue-on-error: true
+        env:
+          SCALE_DOWN: ${{ job.status != 'cancelled' }}
+        run: hack/ci-collect-e2e-coverage.sh tempest
+      # One upload per leg: every profile, each scoped to its tree by its
+      # flag in .codecov.yml, and no status gates on these flags.
+      # disable_search keeps the raw counter files out of the upload.
+      - name: Upload operator coverage
+        if: always() && steps.coverage.outputs.found == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: ${{ steps.coverage.outputs.files }}
+          flags: ${{ steps.coverage.outputs.flags }}
+          disable_search: true
+          fail_ci_if_error: false
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job
       # (see hack/ci-delete-kind-cluster.sh).
