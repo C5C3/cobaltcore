@@ -141,6 +141,13 @@ Without the flag the script exits 1 before it applies anything, because the
 ControlPlane of Step 4 puts Cinder's volume backend and backup target on that
 Ceph.
 
+For a fresh two-worker cluster, set `storageClassDeviceSets[0].count` in
+`deploy/lab/metal-stack/ceph/cluster/cluster.yaml` to `6` (three per worker).
+On a Ceph timeout, check `ceph health detail` in the toolbox and
+`kubectl -n rook-ceph get pods -l app=rook-ceph-osd -o wide`.
+The pools need OSDs on two hosts. The spread rule does not move existing
+pinned OSDs; recover their placement before retrying deployment.
+
 `WITH_NFS=true` is optional, and only [Part 3](#nfs) needs it. Added to the
 deploy command, it deploys the
 [Lab NFS stack](./reference/infrastructure/infrastructure-manifests.md#lab-nfs-stack):
