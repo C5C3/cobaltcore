@@ -43,16 +43,16 @@ The lab assumes a cluster of this shape:
 | The lab assumes | Where it shows |
 | --- | --- |
 | A Gardener shoot on metal-stack with two or more Ready workers that carry the same `topology.kubernetes.io/zone` label | `kubectl get nodes -L topology.kubernetes.io/zone` |
-| `/dev/kvm` on every worker and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
-| The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
-| Only with the optional `WITH_NFS=true` of Part 3: the module files `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
-| Only with the optional `WITH_CHAOS_MESH=true`: the module files `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` for the running kernel | probe, `== module files for <kernel>` |
-| No `/var/lib/rook` on any node, which a Ceph deployed there before leaves behind | probe, `== rook` |
-| cgroup v2 | probe, `== cgroup` |
-| `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe, `== disks` |
-| No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
-| A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe, `== nics`, the `cali*` lines |
-| A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | Step 1 of `EXTERNAL_CLUSTER=true make deploy-infra` exits 1 otherwise |
+| `/dev/kvm` on every worker and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe: KVM, CPU and cross-node checks; review Nova CPU configuration |
+| The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel, or built-in equivalents; Part 2 loads them | probe: KVM / OVN modules |
+| Only with the optional `WITH_NFS=true` of Part 3: the module files `nfs` and `nfsv4`, or built-in equivalents; deployment loads them | probe with `WITH_NFS=true`: NFS client modules |
+| Only with the optional `WITH_CHAOS_MESH=true`: the module files `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf`, or built-in equivalents; deployment loads them | probe with `WITH_CHAOS_MESH=true`: Chaos Mesh modules and runtime socket |
+| Before a fresh Ceph install, no stale `/var/lib/rook` from a previous cluster; this directory is expected after deployment | probe: Ceph host data; review existing data before reuse |
+| cgroup v2 | probe: cgroup v2 |
+| `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe: Capacity shows RAM and available disk space for review |
+| No conflicting host libvirt, QEMU or OVS services; their binaries are supplied in Part 2's containers | probe: Host binaries flags installed binaries for review, without assuming a service is running |
+| A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe: Pod MTU checks the observed `cali*` interfaces; other CNIs need review |
+| A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | probe: StorageClass and Node-local DNS; deploy checks them again |
 | Room in that class for three 100Gi raw block volumes and one 10Gi volume of the Ceph, from a provisioner that serves `volumeMode: Block` | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
 | Only with the optional `WITH_NFS=true` of Part 3: room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy, which exits 1 otherwise |
 | Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
@@ -89,29 +89,69 @@ directory with `KUBECONFIG` set this way.
 
 ### Step 2: Probe the nodes {#cp-probe}
 
-The [node probe](./reference/infrastructure/infrastructure-manifests.md#node-probe)
-is a read-only Job that prints the node facts the lab depends on under
-thirteen fixed headers. The loop pins it to each node in turn, under a `=== <node>`
-line, and deletes it before and after every run: a Job's pod template is
-immutable, so a Job left over from an interrupted run would make the apply
-fail and print another node's facts:
+Run the complete probe workflow from the repository:
 
 ```bash
-for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-  echo "=== ${node}"
-  kubectl delete job -n default node-probe --ignore-not-found
-  yq ".spec.template.spec.nodeName = \"${node}\"" deploy/lab/metal-stack/probe/node-probe.yaml | kubectl apply -f - || continue
-  kubectl wait --for=condition=complete job/node-probe -n default --timeout=5m
-  kubectl logs -n default job/node-probe
-  kubectl delete job -n default node-probe
-done
+hack/lab-node-probe.sh
 ```
 
-Compare each node's output with the [Prerequisites](#prerequisites) table and
-with the expected output in the header of
-`deploy/lab/metal-stack/probe/node-probe.yaml`, which a lab-ready node printed
-on 2026-10-04. The probe completes whatever it finds, so a missing piece shows
-up as `absent`, `none` or `NOT FOUND` in the output and not as a failed Job.
+The script checks the cluster and each worker, prints a table with findings
+and next steps, and removes its temporary Jobs, including on interruption.
+Each Job reads host data without changing it. The script uses the current
+kubeconfig context and excludes nodes labelled as control-plane or master by
+default. No manual comparison with another page is needed.
+
+A shortened example for a worker before deployment:
+
+```text
+STATUS  CHECK                   FINDING / NEXT STEP
+PASS    /dev/kvm                KVM character device present.
+AUTO    KVM / OVN modules       Available, not loaded: vhost_net openvswitch. Part 2 loads them.
+AUTO    Host binaries          libvirt, QEMU and OVS run in Part 2 containers; absent host binaries are expected.
+SKIP    NFS                    Optional; enable checks with WITH_NFS=true if deploying Part 3.
+PASS    Ceph host data         No existing /var/lib/rook; make deploy-infra WITH_CEPH=true installs Rook/Ceph.
+WARN    Capacity               32.0 GiB RAM; 180G free / 192G total at /var/lib. Size VM disks and workload requests.
+```
+
+`PASS` is green, `BLOCK`/`ERROR` red, `WARN` yellow and `AUTO` cyan in a
+terminal. Labels also appear in plain logs; `NO_COLOR=1` disables colors.
+Resolve `BLOCK` rows before proceeding, and review `WARN` rows. `AUTO` names
+the later step that supplies a component or loads an available module;
+`SKIP` means an optional feature is not selected. The command exits **1** for
+prerequisite blockers, **2** for probe/API/cleanup errors, and **0** when it
+finds no blockers. Exit 0 still requires reviewing the warnings.
+
+Use the same optional flags you plan to give the deploy command. For example,
+if enabling both NFS and Chaos Mesh:
+
+```bash
+WITH_NFS=true WITH_CHAOS_MESH=true hack/lab-node-probe.sh
+```
+
+`make deploy-infra` installs shared infrastructure and operators, Rook/Ceph
+with `WITH_CEPH=true`, and the NFS server/CSI or Chaos Mesh with their flags.
+The NFS and Chaos Mesh stacks also load their kernel modules. **Module files
+must already exist on the host** (or be built into its kernel); deployment
+cannot install missing host kernel packages. Unregistered NFS filesystems
+before deployment are expected. Part 2 supplies libvirt/QEMU, the OVN chassis
+and nova-compute, and loads `vhost_net`, `openvswitch` and `geneve`. Host
+`rpc.nfsd` is not required: the optional NFS server uses Ganesha.
+
+The probe prints the directory containing `summary.txt`, `summary.tsv`, raw
+per-node logs, Job manifests and command/error logs. Use `--verbose` to also
+print the raw survey, or `--help` for node selection, namespace, timeout and
+output-directory settings. Its checks do not prove storage provisioning,
+workload capacity, libvirt CPU-model compatibility or end-to-end connectivity;
+the table identifies the remaining checks and when to run them. Existing
+`/var/lib/rook` needs review before a fresh install and is expected on an
+already deployed cluster; the probe never deletes host data.
+
+::: details Complete runner source
+<<< @/../hack/lab-node-probe.sh
+:::
+
+The [node probe reference](./reference/infrastructure/infrastructure-manifests.md#node-probe)
+describes the read-only Job and its raw survey fields.
 
 ### Step 3: Deploy the stack {#cp-deploy}
 

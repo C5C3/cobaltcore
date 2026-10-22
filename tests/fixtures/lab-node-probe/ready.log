@@ -1,0 +1,50 @@
+== kvm device
+crw-rw---- 1 root 103 10, 232 Oct 4 15:06 /dev/kvm
+== cpu
+Model name: Intel(R) Xeon(R) D-2141I CPU @ 2.20GHz
+cpus with vmx|svm: 16
+== loaded modules
+kvm
+kvm_intel
+== module files for 6.1.0-test
+vhost_net: /host/lib/modules/6.1.0-test/kernel/vhost_net.ko
+openvswitch: /host/lib/modules/6.1.0-test/kernel/openvswitch.ko
+geneve: builtin
+nfs: NOT FOUND
+nfsv4: NOT FOUND
+ip_set: NOT FOUND
+ip_set_hash_ip: NOT FOUND
+ip_set_hash_net: NOT FOUND
+xt_set: NOT FOUND
+sch_netem: NOT FOUND
+sch_tbf: NOT FOUND
+== filesystems
+nfs4: not registered
+nfsd: not registered
+== nested / iommu
+kvm_intel nested=Y
+iommu groups: 79
+== memory
+MemTotal: 33554432 kB
+HugePages_Total: 0
+== disks
+Filesystem Size Used Avail Use% Mounted on
+/dev/mapper/varlib 192G 12G 180G 7% /host/var/lib
+== cgroup
+cgroup2fs
+== host os / binaries
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+usr/sbin/libvirtd: absent
+usr/bin/qemu-system-x86_64: absent
+usr/sbin/ovs-vswitchd: absent
+usr/sbin/rpc.nfsd: absent
+== containerd socket
+run/containerd/containerd.sock: socket
+run/k3s/containerd/containerd.sock: absent
+config.toml [grpc] address: "/run/containerd/containerd.sock"
+== nics
+calia: mtu=1460 operstate=up
+calib: mtu=1500 operstate=up
+lan0: mtu=9000 operstate=up
+== rook
+/var/lib/rook: absent
