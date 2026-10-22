@@ -16,6 +16,7 @@ export default defineConfig({
       { text: 'Deployment Guides', link: '/deployment/local-kubernetes' },
       { text: 'Tutorials', link: '/quick-start-controlplane' },
       { text: 'Reference', link: '/reference/keystone/' },
+      { text: 'Future', link: '/future/' },
       { text: 'Contributing', link: '/contributing/adding-a-new-operator' },
     ],
     sidebar: [
