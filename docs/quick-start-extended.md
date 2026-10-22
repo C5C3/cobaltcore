@@ -475,8 +475,9 @@ kubectl apply -f keystone.yaml
 ## Step 8 — Wait for Keystone to become Ready
 
 The operator reconciles the CR through sixteen sub-conditions before the
-aggregate `Ready` condition is set. All are always reported; conditions tied to
-an optional spec field carry a "not required" / "disabled" reason when that
+aggregate `Ready` condition is set. The table also includes
+`ExtraConfigHealthy`, which is advisory and does not gate readiness. Conditions
+tied to an optional spec field carry a "not required" / "disabled" reason when that
 field is unset:
 
 | Condition | What it waits for |
@@ -487,6 +488,7 @@ field is unset:
 | `DatabaseReady` | `db_sync` Job completed successfully |
 | `DatabaseTLSReady` | Database TLS client certificate issued, or `NotRequired` when `spec.database.tls` is unset |
 | `PolicyValidReady` | `spec.policyOverrides` validated against `oslo.policy` |
+| `ExtraConfigHealthy` | Reports whether `spec.extraConfig` overrides operator-owned keys; overrides emit a warning but are still applied |
 | `DeploymentReady` | Keystone API Deployment has available replicas |
 | `KeystoneAPIReady` | Keystone API is responding to `/v3` health probes |
 | `HPAReady` | HorizontalPodAutoscaler created (if `spec.autoscaling` is set) |
@@ -538,17 +540,15 @@ kubectl get cm -n openstack | grep keystone-config-
 
 ### Query the Keystone API
 
-Run a one-shot pod inside the cluster to reach the API service:
+Run a request from a ready Keystone pod to reach the API service:
 
 ```bash
-kubectl run curl-test \
-  --image="ghcr.io/c5c3/keystone:${RELEASE}" \
-  --rm -i --restart=Never \
-  --command -- python3 -c \
+kubectl exec -n openstack deployment/keystone -- python3 -c \
   "import urllib.request; print(urllib.request.urlopen('http://keystone.openstack.svc:5000/v3').read().decode())"
 ```
 
-A successful response returns a JSON document beginning with `{"version": {"id": "v3", ...}}`.
+A successful response is a JSON document with a `version` object and an API
+version such as `v3.14`.
 
 ### Inspect conditions in detail
 
@@ -592,7 +592,8 @@ curl -k https://keystone.127-0-0-1.nip.io:8443/v3
 openstack --insecure token issue
 ```
 
-A successful `curl` response begins with `{"version": {"id": "v3", ...}}`. A successful
+A successful `curl` response contains a `version` object with an API version
+such as `v3.14`. A successful
 `openstack token issue` prints a table with the issued token and its expiry.
 
 This deployment exposes only Keystone. Deploy a
