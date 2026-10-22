@@ -359,6 +359,45 @@
       },
       "default": []
     },
+    "extraVolumes": {
+      "type": "array",
+      "description": "Extra pod volumes, each a Kubernetes Volume, appended verbatim after the webhook certificate volume",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "default": []
+    },
+    "extraVolumeMounts": {
+      "type": "array",
+      "description": "Extra volume mounts for the manager container, each a Kubernetes VolumeMount, appended verbatim after the webhook certificate mount",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "mountPath"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mountPath": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "default": []
+    },
     "barbicanOperator": {
       "type": "object",
       "description": "Identity of the barbican-operator, rendered as the BARBICAN_OPERATOR_NAMESPACE and BARBICAN_OPERATOR_SERVICE_ACCOUNT environment variables on the manager container. It is the subject of the TokenRequest grant (Role/RoleBinding) the operator projects next to every dedicated OpenBao instance, and the NetworkPolicy peer that instance admits, so both fields must match the release the barbican-operator chart is installed as",
