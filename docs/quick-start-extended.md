@@ -395,21 +395,19 @@ keystone-operator-6d7f9f4d5b-xyz99   1/1     Running   0          30s
 
 ---
 
-## Step 6 — Prepare and load the Keystone service image
+## Step 6 — Choose the Keystone service image {#step-6-—-prepare-and-load-the-keystone-service-image}
 
-Load the published Keystone service image into kind. Use the same release
-in the image tag and the resource manifest in Step 7:
+Choose the release for the resource manifest in Step 7:
 
 ```bash
 RELEASE=2026.1
 ```
 
-### Pull the service image {#option-a-—-pull-from-ghcr-recommended}
+### Use the published image {#option-a-—-pull-from-ghcr-recommended}
 
-```bash
-docker pull ghcr.io/c5c3/keystone:"${RELEASE}"
-kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name cobaltcore
-```
+The kind node pulls `ghcr.io/c5c3/keystone:2026.1` directly when you create
+the Keystone resource. No host-side image load is needed. This also avoids
+multi-platform image import failures with Docker's containerd image store.
 
 ### Build locally {#option-b-—-build-locally}
 
@@ -419,7 +417,7 @@ To test changes to Keystone itself, use the
 ## Step 7 — Create a Keystone CR
 
 Save the following as `keystone.yaml`. Replace `<RELEASE>` with `2026.1`,
-the image loaded in Step 6. The operator creates Keystone's database in
+the release selected in Step 6. The operator creates Keystone's database in
 `openstack-db` and uses `openstack-memcached` for caching. The namespaced
 `openbao-tenant-store` supplies its tenant credentials.
 
@@ -441,7 +439,7 @@ spec:
     replicas: 3
   image:
     repository: ghcr.io/c5c3/keystone
-    tag: "<RELEASE>"   # e.g. 2026.1, must match the image loaded in Step 6
+    tag: "<RELEASE>"   # e.g. 2026.1, selected in Step 6
   database:
     clusterRef:
       name: openstack-db

@@ -47,7 +47,7 @@ helm install keystone-operator \
   --wait --timeout=120s
 ```
 
-Return to [load the service image](../quick-start-extended.md#step-6-—-prepare-and-load-the-keystone-service-image)
+Return to [choose the service image](../quick-start-extended.md#step-6-—-prepare-and-load-the-keystone-service-image)
 and create the Keystone resource.
 
 ## Run a changed service image {#build-service-image}
