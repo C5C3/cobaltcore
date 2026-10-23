@@ -1,0 +1,214 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Probe pods for the network-policy E2E test. Step 3 of chainsaw-test.yaml
+# runs ../../lib/assert-networkpolicy-enforced.sh from them.
+#
+# keystone-netpol-probe-target carries the two selector labels of the
+# keystone-netpol NetworkPolicy, so the policy judges its connections as it
+# judges those of the Keystone pods. It has no app.kubernetes.io/component
+# label, so the API Service, once narrowed to the api component, does not
+# select it. While that Service still uses its wide selector, the target is
+# one of its endpoints. The suite asserts neither Ready nor the health check,
+# so that changes nothing it checks. The target has no pod-template-hash or
+# job-name label, so no ReplicaSet or Job adopts it. It listens on the
+# admitted ingress port 5000 and on 9999, which no ingress rule admits.
+#
+# keystone-netpol-probe-sink carries a name no policy selects. It listens on
+# the target's admitted TCP egress ports other than 53 and 443, then on 9999,
+# which no egress rule of the policy admits. keystone-netpol-probe-inside runs
+# in keystone-system, the operator namespace the policy admits.
+# keystone-netpol-probe-outside runs in keystone-netpol-outside, which the
+# policy admits only once the update patch adds it as a source.
+#
+# The pods are bare: fixed names, no controller to adopt them, and chainsaw
+# deletes the Namespace and the four pods when the test ends. kind already
+# holds the keystone image for the Keystone CR. The listener binds each port
+# in its main thread, so a bind error ends the container and the probe fails
+# instead of a port silently staying closed.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keystone-netpol-outside
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: keystone-netpol-probe-target
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: keystone
+    app.kubernetes.io/instance: keystone-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/keystone:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "5000"
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: keystone-netpol-probe-sink
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: netpol-probe-sink
+    app.kubernetes.io/instance: keystone-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/keystone:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "3306"
+        - "6443"
+        - "11211"
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: keystone-netpol-probe-inside
+  namespace: keystone-system
+  labels:
+    app.kubernetes.io/name: netpol-probe-client
+    app.kubernetes.io/instance: keystone-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/keystone:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: keystone-netpol-probe-outside
+  namespace: keystone-netpol-outside
+  labels:
+    app.kubernetes.io/name: netpol-probe-client
+    app.kubernetes.io/instance: keystone-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/keystone:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
