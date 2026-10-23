@@ -387,6 +387,7 @@ jobs:
             tests_operator_upgrade:
               - 'tests/e2e-operator-upgrade/**'
               - 'hack/ci-fetch-released-operator.sh'
+              - 'hack/ci-operator-upgrade-crd-window.sh'
             tests_prometheus:
               - 'tests/e2e/keystone/prometheus-stack/**'
               - 'deploy/kind/prometheus/**'
