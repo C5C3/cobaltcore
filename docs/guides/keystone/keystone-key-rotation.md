@@ -78,6 +78,19 @@ cron schedule by default (both default to `0 0 * * 0` — weekly, Sunday 00:00 U
 To pause scheduled rotation during an incident without deleting the CronJob or
 any sibling resource, set `spec.fernet.suspend: true` (or
 `spec.credentialKeys.suspend: true`); clearing the flag resumes the schedule.
+
+Scheduled rotations never overlap: both CronJobs carry `concurrencyPolicy: Forbid`,
+so a scheduled run does not start while an earlier scheduled run is still active.
+The policy does not govern a Job you create with `kubectl create job --from`, and
+such a Job can run at the same time as a scheduled one, so check
+`kubectl -n openstack get jobs` for a running rotation first. A skipped scheduled
+rotation shows as a `JobAlreadyActive` event on the CronJob and as a rising
+`keystone_operator_key_rotation_age_seconds`. A rotation Job that never finishes,
+for example with its pod stuck in `ImagePullBackOff`, blocks later scheduled
+rotations until its `activeDeadlineSeconds` of one hour fails it. The next
+scheduled run then starts a fresh Job. To resume sooner, delete the stuck Job with
+`kubectl -n openstack delete job <name>`.
+
 To trigger one on demand, create a one-shot Job from the CronJob template:
 
 ```bash
@@ -323,7 +336,9 @@ identical.
 ## Tested by
 
 This guide's happy path and the RBAC verb split are asserted end-to-end on the
-CI e2e kind cluster by these chainsaw suites:
+CI e2e kind cluster by these chainsaw suites. The `fernet-rotation` suite also
+asserts pruning past `maxActiveKeys`, deletion of the staging Secret between
+rotations, and the CronJob's concurrency policy:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/fernet-rotation

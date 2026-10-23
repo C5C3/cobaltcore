@@ -95,7 +95,7 @@ Deployment rollout, bootstrap Job).
 | [ldap-domain-backend](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-ldap` | Full LDAP attach cycle against an in-suite OpenLDAP fixture: domain provisioning, config projection + rollout, LDAP user listing and token issuance, detach with deletionPolicy Delete |
 | [oidc-federation](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-oidc` | Full OIDC federation cycle against an in-suite two-realm Keycloak fixture: federation-object provisioning, mod_auth_openidc sidecar rollout + Service targetPort switch, bearer/CLI flow via introspection, browser websso round trip, mapping-driven group membership, multi-realm issuer pinning, clean detach. The multi-realm coverage exercises both discovery shapes: the second backend reaches Ready via discovery-mode `.well-known` metadata fetch against the in-cluster IdP (the e2e-operator job allowlists kind's Service CIDR through `federation.metadataAllowCidrs`), while the first keeps explicit `spec.oidc.endpoints` |
 | [saml-federation](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-saml` | Full SAML federation cycle against an in-suite Keycloak SAML realm: IdP-metadata Secret from the live descriptor, federation-object provisioning, mod_auth_mellon sidecar rollout + Service targetPort switch, SP-metadata export, OIDC/SAML coexistence on one sidecar, clean detach |
-| [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation |
+| [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule and `concurrencyPolicy: Forbid`, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation, staging-Secret recreation after an out-of-band delete, pruning past `maxActiveKeys` (a pruned token gets a 401), a held scheduled rotation skipped under Forbid (`JobAlreadyActive`) |
 | [scale](#scale) | `keystone-scale` | Replica scaling up (3→5) and down (5→2) |
 | [deletion-cleanup](#deletion-cleanup) | `keystone-cleanup` | Owner reference cascading deletion of all owned resources |
 | [policy-overrides](#policy-overrides) | `keystone-policy` | oslo.policy integration via ConfigMap reference |
@@ -211,10 +211,15 @@ resource. The ESO controller then syncs the actual Secret.
 **File:** `tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml`
 
 **Purpose:** Validates the CronJob-based Fernet key rotation mechanism end-to-end.
-Deploys a Keystone CR, verifies the CronJob schedule matches `spec.fernet.rotationSchedule`,
-triggers a manual rotation via `kubectl create job --from=cronjob`, and verifies
-that Secret data changes, pod UIDs remain stable (no Deployment rollout), and a
-fernet token obtained before rotation still validates after rotation.
+Deploys a Keystone CR, verifies the CronJob schedule matches `spec.fernet.rotationSchedule`
+and the CronJob carries `concurrencyPolicy: Forbid`, triggers a manual rotation via
+`kubectl create job --from=cronjob`, and verifies that Secret data changes, pod UIDs remain
+stable (no Deployment rollout), and a fernet token obtained before rotation still validates
+after rotation. The suite then deletes the staging Secret between rotations and checks that
+the operator recreates it empty and commits nothing from it. A second rotation past
+`maxActiveKeys: 3` purges the key that signed the pre-rotation token: that token gets a 401,
+and tokens signed by surviving keys validate. Last, an admission policy holds a scheduled
+rotation Job, and the CronJob controller skips the next tick with `JobAlreadyActive`.
 
 **Steps:**
 
@@ -222,21 +227,55 @@ fernet token obtained before rotation still validates after rotation.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-fernet` |
 | 2 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
-| 3 | Assert CronJob schedule matches spec | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` schedule is `"0 0 * * 0"` |
-| 4 | Trigger rotation, verify no rollout, validate token | `script` (180s) | Records pod UIDs and Secret hash before rotation, obtains a fernet token, creates manual Job from CronJob, verifies Secret data hash changed, asserts pod UIDs are unchanged (no rollout), validates the pre-rotation token still works |
+| 3 | Assert CronJob schedule, suspend and concurrency policy | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` has schedule `"0 0 * * 0"`, `suspend: false` and `concurrencyPolicy: Forbid` |
+| 4 | Trigger rotation, verify no rollout, validate token | `script` (180s) | Records pod UIDs and Secret hash before rotation, obtains a fernet token and stores it in the Secret `keystone-fernet-pre-rotation-token` for step 7, creates manual Job from CronJob, verifies Secret data hash changed, asserts pod UIDs are unchanged (no rollout), validates the pre-rotation token still works. The token reaches `kubectl` over stdin, and server-side apply keeps it out of the `kubectl.kubernetes.io/last-applied-configuration` annotation. A step `cleanup` deletes the token Secret at the end of the test; the `catch` lists it without its `token` key |
 | 4.5 | Assert rotation Role RBAC split | `script` | Role `keystone-fernet-fernet-rotate` grants `patch` on the staging Secret `keystone-fernet-fernet-keys-rotation` and never on the production Secret `keystone-fernet-fernet-keys` |
 | 5 | Assert Ready=True maintained | `assert` (5m) | Ready=True with reason AllReady after rotation |
-| 6 | Pause rotation via spec.fernet.suspend | `patch` | Applies `01-patch-suspend-fernet.yaml` — `spec.fernet.suspend: true` |
-| 7 | Assert CronJob preserved, suspended, schedule unchanged | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` keeps schedule `"0 0 * * 0"` with `suspend: true` |
-| 8 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `keystone-operator` release, with the `keystone_operator_key_rotation_age_seconds{key_type="fernet"}` sample of `keystone-fernet` that the rotation of step 4 set |
+| 6 | Delete the staging Secret between rotations | `script` (180s) + `assert` (5m) | Waits up to 60 s for `keystone-fernet-fernet-keys-rotation` and records its UID, the production Secret's data hash and `cobaltcore.c5c3.io/rotation-completed-at` annotation, and the `FernetKeysRotated` event count. Deletes the staging Secret. Within 60 s a Secret of that name with a new UID must appear, with the label `cobaltcore.c5c3.io/rotation-target=fernet-keys`, a controller owner reference to Keystone `keystone-fernet`, no data and no completion annotation. After 20 s the hash, the annotation and the event count are unchanged and no `RotationRejected` event exists. The `assert` requires `FernetKeysReady=True` with reason `FernetKeysAvailable` and `Ready=True` with reason `AllReady` |
+| 7 | Prune a key past maxActiveKeys | `script` (600s) | Reads the stored token `T0`, waits up to 150 s until the API pod projects the production key set `B`, issues `T1`, and computes `E = {0, max(B), max(B)+1}` and the keys to purge, `P = B \ E`. Runs the manual Job `keystone-fernet-manual-rotate-2`, requires the production keys to equal `E` with 3 keys (`{0,3,4}` on an unrotated week), and waits for the projection of `E`. Then `T0` must get HTTP 401 within 60 s, and `T1` and a freshly issued `T2` must get HTTP 200 |
+| 8 | Hold a scheduled rotation under Forbid | `apply` + `script` (60s) + `patch` + `assert` + `script` (240s) + `patch` + `assert` + `script` (60s) | Applies `02-hold-scheduled-rotation.yaml` and waits up to 30 s until a server-side dry run of a probe pod with the rotation labels is refused with the policy message. Patches the schedule to `* * * * *` (`03-patch-schedule-every-minute.yaml`) and asserts it with `concurrencyPolicy: Forbid`. Expects one unfinished Job named `keystone-fernet-fernet-rotate-<minutes>`, listed in the CronJob's `status.active` and without a pod, then a `JobAlreadyActive` event on the CronJob, then still that one Job and an unchanged production key hash. Restores `"0 0 * * 0"` (`04-patch-schedule-weekly.yaml`), deletes the held Job and waits for an empty `status.active`. A step `finally` restores `"0 0 * * 0"` and then deletes Jobs with the scheduled name |
+| 9 | Pause rotation via spec.fernet.suspend | `patch` | Applies `01-patch-suspend-fernet.yaml` — `spec.fernet.suspend: true` |
+| 10 | Assert CronJob preserved, suspended, schedule unchanged | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` keeps schedule `"0 0 * * 0"` with `suspend: true` |
+| 11 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `keystone-operator` release, with the `keystone_operator_key_rotation_age_seconds{key_type="fernet"}` sample of `keystone-fernet` that the rotations of steps 4 and 7 set |
 
-**Fixtures:** `00-keystone-cr.yaml`, `01-patch-suspend-fernet.yaml`
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-suspend-fernet.yaml`, `02-hold-scheduled-rotation.yaml`,
+`03-patch-schedule-every-minute.yaml`, `04-patch-schedule-weekly.yaml`
 
 **Rotation verification approach:** The script step verifies in-place key delivery
 by asserting that pod UIDs remain unchanged after rotation. The Secret
 data hash comparison confirms the rotation actually occurred, while the token
 validation confirms that Keystone can still decrypt tokens issued with the
 previous key set.
+
+**Design notes:**
+
+- Step 8 holds a scheduled Job with the ValidatingAdmissionPolicy
+  `keystone-fernet-hold-rotation`. It refuses every pod in `openstack` that carries
+  `app.kubernetes.io/instance=keystone-fernet` and
+  `app.kubernetes.io/component=fernet-rotation`. A refused pod creation does not count as
+  a pod failure, so the Job does not fail before its one-hour `activeDeadlineSeconds` and
+  stays in the CronJob's `status.active`, where
+  the next tick meets Forbid. The step waits for the dry-run probe to be refused before it
+  moves the schedule to every minute, so the first tick cannot run a real rotation.
+  Chainsaw deletes the policy and its binding at the end of the test, before it runs any
+  step `cleanup`. The step `finally` therefore runs while the policy is still in force,
+  pass or fail: it restores the weekly schedule, so no tick starts a new Job, and then
+  deletes Jobs with the scheduled name. A failed run leaves no held Job that starts once
+  the policy is gone.
+- `kubectl create job --from=cronjob/...` names the CronJob as the Job's controller, but
+  the CronJob controller never adds such a Job to `status.active` and records
+  `UnexpectedJob` for it while it runs. Forbid therefore never counts the manual Jobs
+  `keystone-fernet-manual-rotate` and `keystone-fernet-manual-rotate-2`, and step 8 counts
+  only Jobs named `keystone-fernet-fernet-rotate-<minutes>`, the name the CronJob
+  controller gives a scheduled Job. Step 8 also skips finished Jobs, because a completed
+  weekly run carries the same name.
+- The fixture's `extraConfig.cache.enabled: "false"` must stay. Keystone reads the key
+  repository on every token operation, and with caching on, a token cached on issue can
+  keep validating after its key is purged, so step 7 would see HTTP 200 for `T0`.
+- The weekly schedule (Sunday 00:00 UTC) can add a rotation between steps 4 and 7.
+  Step 7 derives `E` from the key set it reads first, so an extra rotation before it
+  shifts `E` and the checks still hold. A rotation inside the 20 s window of step 6
+  changes the production hash and fails that step.
 
 ---
 
@@ -1064,7 +1103,11 @@ tests/e2e/keystone/
 │   └── 00-keystone-cr.yaml             Keystone CR for event test
 ├── fernet-rotation/
 │   ├── chainsaw-test.yaml              Fernet key rotation
-│   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+│   ├── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+│   ├── 01-patch-suspend-fernet.yaml    Patch to suspend rotation
+│   ├── 02-hold-scheduled-rotation.yaml Admission policy that refuses rotation pods
+│   ├── 03-patch-schedule-every-minute.yaml Patch to rotate every minute
+│   └── 04-patch-schedule-weekly.yaml   Patch to restore the weekly schedule
 ├── gateway-quick-start/
 │   ├── chainsaw-test.yaml              Envoy Gateway quick-start wiring
 │   ├── 00-namespace.yaml               Test namespace
