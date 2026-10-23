@@ -21,6 +21,8 @@
 #     rejects an unauthenticated /v2.0/networks request with exactly 401
 #   - the neutron-operator release exports its reconcile families and the
 #     db_sync counter and duration count of neutron-basic
+#   - a Ready, unchanged neutron-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
 # The two config assertions are what #904 owes this suite: the RPC worker
 # counts, the noop notification driver and the uwsgi.ini start-time marker were
@@ -431,6 +433,22 @@ spec:
           ../../lib/assert-operator-metric-families.sh neutron-system neutron-operator neutron_operator \
             'neutron_operator_db_sync_total{neutron="neutron-basic",namespace="openstack",result="succeeded"}' \
             'neutron_operator_db_sync_duration_seconds_count{neutron="neutron-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/instance=neutron-operator
+        tail: 200
+  # ── Step 7: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the Neutron from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack neutrons.neutron.openstack.c5c3.io neutron-basic
     catch:
     - podLogs:
         namespace: neutron-system

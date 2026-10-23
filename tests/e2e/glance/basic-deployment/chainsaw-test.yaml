@@ -20,6 +20,8 @@
 #   - The glance-operator release exports its reconcile families and the
 #     db_sync and db_purge counters and duration counts of glance-basic,
 #     the latter from the manual purge run of Step 7
+#   - A Ready, unchanged glance-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -351,6 +353,22 @@ spec:
             'glance_operator_db_sync_duration_seconds_count{glance="glance-basic",namespace="openstack"}' \
             'glance_operator_db_purge_total{glance="glance-basic",namespace="openstack",result="succeeded"}' \
             'glance_operator_db_purge_duration_seconds_count{glance="glance-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/instance=glance-operator
+        tail: 200
+  # ── Step 9: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the Glance from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack glances.glance.openstack.c5c3.io glance-basic
     catch:
     - podLogs:
         namespace: glance-system

@@ -18,6 +18,9 @@
 #   - a missing or empty argument exits 2 with the usage line
 #   - an edit to the script runs the e2e-operator jobs of every operator but
 #     c5c3, whose suites do not call it
+#   - the nine basic-deployment suites call it in their last step with the
+#     arguments of their table row and a 4m step timeout, and no other suite
+#     calls it
 # Usage: bash tests/unit/ci/assert_steady_state_events_test.sh
 
 set -uo pipefail
@@ -145,6 +148,36 @@ run_check() {
       bash "$SCRIPT" "$@" 2>"$STUBS/stderr"
   )"
   RUN_RC=$?
+}
+
+# The nine basic-deployment suites that end with the budget, each with the
+# arguments it passes after the script's path.
+EVENT_CALLERS="$(cat <<'CALLS'
+barbican/basic-deployment|openstack barbicans.barbican.openstack.c5c3.io barbican-basic
+cinder/basic-deployment|openstack cinders.cinder.openstack.c5c3.io cinder-basic
+glance/basic-deployment|openstack glances.glance.openstack.c5c3.io glance-basic
+horizon/basic-deployment|openstack horizons.horizon.openstack.c5c3.io horizon-basic
+keystone/basic-deployment|openstack keystones.keystone.openstack.c5c3.io keystone-basic
+neutron/basic-deployment|openstack neutrons.neutron.openstack.c5c3.io neutron-basic
+nova/basic-deployment|openstack novas.nova.openstack.c5c3.io nova-basic
+ovn/central-basic-deployment|openstack ovncentrals.ovn.openstack.c5c3.io ovn-basic
+placement/basic-deployment|openstack placements.placement.openstack.c5c3.io placement-basic
+CALLS
+)"
+
+# last_step_calls <file>
+# The calls of the script in the last step of <file>, one "<timeout>|<call>"
+# line each: the last timeout: value since the last step opener "  - try:",
+# and a line after that opener whose first text is the script's relative
+# path, with the leading blanks dropped.
+last_step_calls() {
+  awk '
+    /^  - try:$/ { n = 0; timeout = ""; delete calls; next }
+    /^[[:space:]]+timeout:[[:space:]]/ { timeout = $2 }
+    /^[[:space:]]*\.\.\/\.\.\/lib\/assert-steady-state-events\.sh / {
+      line = $0; sub(/^[[:space:]]+/, "", line); calls[++n] = timeout "|" line
+    }
+    END { for (i = 1; i <= n; i++) print calls[i] }' "$1"
 }
 
 make_kubectl_stub "$STUBS"
@@ -374,6 +407,29 @@ test_the_filters_name_the_shared_scripts() {
   assert_not_contains "tests_e2e_c5c3 leaves $script out" "$block" "$script"
 }
 
+# --- Test 8: the callers ---
+test_the_nine_suites_end_with_the_budget() {
+  echo "Test: the nine basic-deployment suites end with the budget, and no other suite calls it"
+
+  local suite args expected found calls
+  while IFS='|' read -r suite args; do
+    calls="$(last_step_calls "$PROJECT_ROOT/tests/e2e/$suite/chainsaw-test.yaml")"
+    assert_eq "the $suite suite calls the script in its last step, with its tabled arguments" \
+      "../../lib/assert-steady-state-events.sh $args" "${calls#*|}"
+    # The script sleeps 120 s between its snapshots; chainsaw's exec default
+    # is 30s.
+    assert_eq "the $suite suite gives that step a 4m timeout" "4m" "${calls%%|*}"
+  done <<<"$EVENT_CALLERS"
+
+  assert_eq "the table names nine suites" "9" "$(grep -c . <<<"$EVENT_CALLERS")"
+  expected="$(cut -d'|' -f1 <<<"$EVENT_CALLERS" | LC_ALL=C sort)"
+  # Any line that is not a comment and names the script counts as a call.
+  found="$(grep -rlE --include=chainsaw-test.yaml \
+    '^[[:space:]]*[^#[:space:]].*assert-steady-state-events\.sh' "$PROJECT_ROOT/tests" |
+    sed -e "s|^$PROJECT_ROOT/tests/e2e/||" -e 's|/chainsaw-test.yaml$||' | LC_ALL=C sort)"
+  assert_eq "the suites that call the script are the tabled ones" "$expected" "$found"
+}
+
 # --- Run ---
 test_a_quiet_cr_passes
 test_a_vanished_event_passes
@@ -390,6 +446,7 @@ test_wrong_arguments_exit_2
 test_the_script_parses
 
 test_the_filters_name_the_shared_scripts
+test_the_nine_suites_end_with_the_budget
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

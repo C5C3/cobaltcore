@@ -12,6 +12,8 @@
 #   - Keystone API at /v3 is accessible via curl
 #   - The keystone-operator release exports its reconcile families and the
 #     db_sync counter and duration count of keystone-basic
+#   - A Ready, unchanged keystone-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -249,6 +251,22 @@ spec:
           ../../lib/assert-operator-metric-families.sh keystone-system keystone-operator keystone_operator \
             'keystone_operator_db_sync_total{keystone="keystone-basic",namespace="openstack",result="succeeded"}' \
             'keystone_operator_db_sync_duration_seconds_count{keystone="keystone-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/instance=keystone-operator
+        tail: 200
+  # ── Step 9: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the Keystone from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack keystones.keystone.openstack.c5c3.io keystone-basic
     catch:
     - podLogs:
         namespace: keystone-system
