@@ -9,6 +9,8 @@
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
 #   - Pod UIDs remain unchanged after rotation (no Deployment rollout)
 #   - A fernet token obtained before rotation validates after rotation
+#   - A staging Secret deleted between rotations comes back empty with its
+#     label and controller owner reference, and nothing commits from it
 #   - The keystone-operator release exports
 #     keystone_operator_key_rotation_age_seconds for the fernet keys once
 #     the rotation is applied
@@ -282,11 +284,158 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
-  # ── Step 6: Pause rotation via spec.fernet.suspend: true (escape hatch) ──
+  # ── Step 6: Delete the staging Secret between rotations ────────────────
+  # Between rotations the staging Secret holds no data. Deleting it by hand
+  # wakes the operator through the Secret watch's owner-reference fallback,
+  # and the operator must recreate it empty, with its label and controller
+  # owner reference, and commit nothing from it. Step 7's rotation then
+  # commits through the recreated Secret.
+  - try:
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          STAGING=keystone-fernet-fernet-keys-rotation
+          KS_UID=$(kubectl get keystone keystone-fernet -n openstack -o jsonpath='{.metadata.uid}')
+
+          # prod_state: "<sha256 of .data> <rotation-completed-at or none>" of
+          # the production Secret, from one read. sha256sum of empty input is
+          # a non-empty digest, so a missing .data fails instead of hashing.
+          prod_state() {
+            local secret data
+            secret=$(kubectl get secret keystone-fernet-fernet-keys -n openstack -o json)
+            data=$(printf '%s' "$secret" | jq -c '.data // empty')
+            if [ -z "$data" ]; then
+              echo "FAIL: keystone-fernet-fernet-keys has no data" >&2
+              return 1
+            fi
+            printf '%s %s\n' "$(printf '%s' "$data" | sha256sum | cut -d' ' -f1)" \
+              "$(printf '%s' "$secret" | jq -r '.metadata.annotations["cobaltcore.c5c3.io/rotation-completed-at"] // "none"')"
+          }
+          # rotated_count: the summed count of FernetKeysRotated events on the
+          # Keystone CR. The recorder raises an event's count on a repeat; an
+          # event without count counts as 1.
+          rotated_count() {
+            kubectl get events -n openstack \
+              --field-selector "involvedObject.uid=$KS_UID,reason=FernetKeysRotated" -o json \
+              | jq '[.items[] | .count // 1] | add // 0'
+          }
+
+          # The commit of step 4 deleted the staging Secret, and the next
+          # reconcile recreates it.
+          deadline=$((SECONDS + 60))
+          OLD_UID=""
+          until [ -n "$OLD_UID" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: staging Secret $STAGING does not exist after 60s"
+              exit 1
+            fi
+            sleep 2
+            OLD_UID=$(kubectl get secret "$STAGING" -n openstack -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+          done
+          PROD0=$(prod_state)
+          # The recorder sends step 4's FernetKeysRotated event asynchronously;
+          # wait for it so a late write cannot pass for a new commit.
+          COUNT0=$(rotated_count)
+          until [ "$COUNT0" -ge 1 ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: no FernetKeysRotated event on keystone-fernet after the rotation of step 4"
+              exit 1
+            fi
+            sleep 2
+            COUNT0=$(rotated_count)
+          done
+          echo "OK: staging Secret $STAGING exists (uid $OLD_UID); FernetKeysRotated count $COUNT0"
+
+          kubectl delete secret "$STAGING" -n openstack --wait=true
+
+          deadline=$((SECONDS + 60))
+          NEW=""
+          NEW_UID=""
+          until [ -n "$NEW_UID" ] && [ "$NEW_UID" != "$OLD_UID" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: staging Secret $STAGING was not recreated within 60s"
+              exit 1
+            fi
+            sleep 2
+            NEW=$(kubectl get secret "$STAGING" -n openstack -o json 2>/dev/null || true)
+            NEW_UID=$(printf '%s' "$NEW" | jq -r '.metadata.uid // empty' 2>/dev/null || true)
+          done
+          echo "OK: staging Secret $STAGING recreated (uid $NEW_UID)"
+
+          LABEL=$(printf '%s' "$NEW" | jq -r '.metadata.labels["cobaltcore.c5c3.io/rotation-target"] // "none"')
+          if [ "$LABEL" != "fernet-keys" ]; then
+            echo "FAIL: recreated $STAGING has rotation-target label $LABEL, expected fernet-keys"
+            exit 1
+          fi
+          OWNERS=$(printf '%s' "$NEW" | jq '[.metadata.ownerReferences // [] | .[]
+            | select(.kind == "Keystone" and .name == "keystone-fernet" and .controller == true)] | length')
+          if [ "$OWNERS" != "1" ]; then
+            echo "FAIL: recreated $STAGING has $OWNERS controller owner references to Keystone keystone-fernet, expected 1"
+            printf '%s' "$NEW" | jq '.metadata.ownerReferences'
+            exit 1
+          fi
+          DATA_KEYS=$(printf '%s' "$NEW" | jq '.data // {} | length')
+          if [ "$DATA_KEYS" != "0" ]; then
+            echo "FAIL: recreated $STAGING holds $DATA_KEYS data keys, expected none"
+            exit 1
+          fi
+          if printf '%s' "$NEW" | jq -e '.metadata.annotations // {} | has("cobaltcore.c5c3.io/rotation-completed-at")' >/dev/null; then
+            echo "FAIL: recreated $STAGING carries the rotation-completed-at annotation"
+            exit 1
+          fi
+          echo "OK: recreated $STAGING is empty, labelled fernet-keys and controlled by Keystone keystone-fernet"
+
+          # Longer than RequeueSecretPolling (15s), so a spurious commit from
+          # the recreated Secret would have happened by now.
+          sleep 20
+
+          PROD1=$(prod_state)
+          if [ "$PROD1" != "$PROD0" ]; then
+            echo "FAIL: production Secret changed after the staging Secret was deleted: hash and rotation-completed-at were [$PROD0], are [$PROD1]"
+            exit 1
+          fi
+          COUNT1=$(rotated_count)
+          if [ "$COUNT1" != "$COUNT0" ]; then
+            echo "FAIL: FernetKeysRotated count rose from $COUNT0 to $COUNT1 after the staging Secret was deleted"
+            exit 1
+          fi
+          REJECTED=$(kubectl get events -n openstack \
+            --field-selector "involvedObject.uid=$KS_UID,reason=RotationRejected" -o name)
+          if [ -n "$REJECTED" ]; then
+            echo "FAIL: RotationRejected event on keystone-fernet: $REJECTED"
+            exit 1
+          fi
+          echo "OK: production keys, rotation-completed-at and FernetKeysRotated count unchanged; no RotationRejected event"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-fernet
+            namespace: openstack
+          status:
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+              reason: FernetKeysAvailable
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Staging Secret (data removed) ==="
+          kubectl get secret keystone-fernet-fernet-keys-rotation -n $NAMESPACE -o json 2>/dev/null | jq 'del(.data)' 2>&1 || true
+          echo "=== Production Secret (data removed) ==="
+          kubectl get secret keystone-fernet-fernet-keys -n $NAMESPACE -o json 2>/dev/null | jq 'del(.data)' 2>&1 || true
+          echo "=== Events of keystone-fernet ==="
+          kubectl get events -n $NAMESPACE --field-selector involvedObject.name=keystone-fernet --sort-by='.lastTimestamp' 2>&1 || true
+  # ── Step 9: Pause rotation via spec.fernet.suspend: true (escape hatch) ──
   - try:
     - patch:
         file: 01-patch-suspend-fernet.yaml
-  # ── Step 7: Assert CronJob preserved, suspended, schedule unchanged ─────
+  # ── Step 10: Assert CronJob preserved, suspended, schedule unchanged ────
   # suspend pauses rotation without deleting the CronJob and without changing
   # the rotation cadence, so an SRE can resume without churn.
   - try:
@@ -300,7 +449,7 @@ spec:
           spec:
             schedule: "0 0 * * 0"
             suspend: true
-  # ── Step 8: Assert the operator's metric families ──────────────────────
+  # ── Step 11: Assert the operator's metric families ─────────────────────
   # The header of ../../lib/assert-operator-metric-families.sh lists the
   # checks it runs against the cluster-wide release.
   # The rotation of Step 4 set the age gauge, which no fresh deployment
