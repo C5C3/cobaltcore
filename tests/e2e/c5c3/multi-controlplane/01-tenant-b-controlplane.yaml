@@ -24,14 +24,17 @@
 #
 # DECISION one ControlPlane per namespace is enforced by the
 # validating webhook, so this CR carries its own Namespace.
-# The per-tenant prerequisite wiring (admin password Secret + managed infra) is
-# the same documented fast-follow as tenant-a — see the DECISION block in
-# 00-tenant-a-controlplane.yaml. Behind the presence guard this test SKIPs when
-# the stack/prerequisites are absent.
+# The suite seeds and onboards this tenant the same way as tenant-a, runs on
+# the e2e-controlplane job, and deletes this ControlPlane and then the bundled
+# Namespace in its finally block when the Namespace carries the
+# c5c3.io/e2e-suite label set below; see the DECISION block in
+# 00-tenant-a-controlplane.yaml.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: tenant-b
+  labels:
+    c5c3.io/e2e-suite: multi-controlplane
 ---
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
