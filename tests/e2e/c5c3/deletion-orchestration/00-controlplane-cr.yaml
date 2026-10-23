@@ -6,9 +6,9 @@
 #
 # Managed mode: database and cache reference managed clusters by clusterRef, so
 # the c5c3-operator projects an owned MariaDB ("openstack-db") and Memcached
-# ("openstack-memcached") in the ControlPlane's own namespace (openstack) — the
-# same cluster names the deploy stack and the full-controlplane-keystone suite
-# use, so this test exercises the production-shaped infrastructure.
+# ("openstack-memcached") in the ControlPlane's own namespace, under the same
+# cluster names the deploy stack and the full-controlplane-keystone suite use,
+# so this test exercises the production-shaped infrastructure.
 #
 # This CR exists to be DELETED: the suite drives it far enough to mint the K-ORC
 # admin ApplicationCredential and stand the Barbican ensemble up, takes Keystone
@@ -18,15 +18,15 @@
 # ApplicationCredential whose K-ORC finalizer can never revoke against a dead
 # Keystone).
 #
-# The name "deletion-orch" is distinct from the canonical "controlplane" /
-# "controlplane-keystone" CRs so the suite never clobbers them; the c5c3 suite
-# runs serially (one ControlPlane per namespace, enforced by the webhook), and
-# this CR is removed by the test itself.
+# The CR carries no namespace: the suite applies it into chainsaw's ephemeral
+# namespace with `kubectl apply -n`, where it is the only ControlPlane. That is
+# what keeps it clear of the webhook's one-ControlPlane-per-namespace rule on a
+# cluster whose openstack namespace already holds a plane. The test removes the
+# CR itself.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
   name: deletion-orch
-  namespace: openstack
 spec:
   openStackRelease: "2026.1"
   region: RegionOne
