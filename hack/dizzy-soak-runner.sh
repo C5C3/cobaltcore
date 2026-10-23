@@ -10,8 +10,9 @@
 # It names the run after its UTC start and works in /reports/<run>/ on the
 # claim dizzy-soak-reports. It starts `dizzy <service> chaos` in the
 # background and samples the platform beside it: the containers of every pod
-# of the platform's namespaces and their usage, every
-# DIZZY_SOAK_SAMPLE_INTERVAL seconds, and the conditions of the ControlPlanes
+# of the platform's namespaces and their usage, and the Go runtime of every
+# operator pod from its /metrics endpoint, every DIZZY_SOAK_SAMPLE_INTERVAL
+# seconds, and the conditions of the ControlPlanes
 # and the CobaltCore service kinds at the start and at the end. A TERM or INT
 # goes to dizzy once; dizzy then tears its resources down and prints its leak
 # check, and the runner waits for it. Then it renders dizzy's report, derives
@@ -68,6 +69,12 @@ ovnchassis.ovn.openstack.c5c3.io"
 # run-tagged resources (mix, nova, neutron, cinder), run-tagged images
 # (glance) and run-named resources (keystone).
 LEAK_CHECK_CLEAN_RE='^leak check: no run-(tagged|named) (resources|images) remain$'
+# The chart names, the label app.kubernetes.io/name, of the operator pods.
+OPERATOR_NAMES="keystone-operator horizon-operator glance-operator placement-operator barbican-operator ovn-operator neutron-operator cinder-operator nova-operator c5c3-operator"
+# The seconds one scrape of an operator pod may take, curl's --max-time.
+OPERATOR_SCRAPE_TIMEOUT=10
+# The seconds of it the connection may take, curl's --connect-timeout.
+OPERATOR_CONNECT_TIMEOUT=3
 
 # ---------------------------------------------------------------------------
 # Settings, from the ConfigMap dizzy-soak-config.
@@ -91,6 +98,7 @@ DIZZY_RC=""
 TEE_PID=""
 DIZZY_FIFO=""
 SAMPLER_PID=""
+OPERATOR_PODS=""
 WAIT_RC=""
 STOP_REQUESTED=""
 TERM_SENT=""
@@ -138,9 +146,13 @@ words_json() {
 # time, owner kind, container, restartCount, last terminated reason and its
 # finishedAt, with - for an absent value. A read that succeeds appends its
 # timestamp to platform/pod-samples.log, also when it lists no container.
+# It sets OPERATOR_PODS to one line per Running operator pod with a pod IP
+# and a container port named metrics: timestamp, namespace, pod, creation
+# time, pod IP and that port, and appends them to platform/operator-pods.tsv.
 # ---------------------------------------------------------------------------
 sample_pods() {
-  local ts out err lines
+  local ts out err lines operators
+  OPERATOR_PODS=""
   ts="$(now)"
   err="$(mktemp)"
   if ! out="$(kubectl get pods -A -o json 2>"${err}")"; then
@@ -163,8 +175,27 @@ sample_pods() {
     record_error pods "cannot parse the pod list: ${lines}"
     return 1
   fi
+  if ! operators="$(printf '%s' "${out}" | jq -r --arg ts "${ts}" \
+      --argjson listed "$(words_json "${DIZZY_SOAK_NAMESPACES}")" \
+      --argjson excluded "$(words_json "${EXCLUDED_NAMESPACES}")" \
+      --argjson operators "$(words_json "${OPERATOR_NAMES}")" \
+      "$(namespace_filter)"'
+      .items[] | select(keep)
+      | select(.status.phase == "Running" and (.status.podIP // "") != ""
+          and ((.metadata.labels["app.kubernetes.io/name"] // "") | IN($operators[])))
+      | ([.spec.containers[]?.ports[]? | select(.name == "metrics") | .containerPort] | first) as $port
+      | select($port != null)
+      | [$ts, .metadata.namespace, .metadata.name, .metadata.creationTimestamp, .status.podIP, ($port | tostring)]
+      | @tsv' 2>&1)"; then
+    record_error pods "cannot parse the pod list: ${operators}"
+    return 1
+  fi
   if [[ -n "${lines}" ]]; then
     printf '%s\n' "${lines}" >>platform/containers.tsv
+  fi
+  if [[ -n "${operators}" ]]; then
+    OPERATOR_PODS="${operators}"
+    printf '%s\n' "${operators}" >>platform/operator-pods.tsv
   fi
   printf '%s\n' "${ts}" >>platform/pod-samples.log
 }
@@ -236,6 +267,63 @@ sample_usage() {
 }
 
 # ---------------------------------------------------------------------------
+# sample_operators — Fetch http://<pod IP>:<port>/metrics of every operator
+# pod of OPERATOR_PODS with curl and append one line per pod to
+# platform/operators.tsv: timestamp, namespace, pod, go_goroutines,
+# go_memstats_heap_inuse_bytes and process_resident_memory_bytes as whole
+# numbers, and the leader: 1 when the sum of leader_election_master_status
+# is above 0, 0 when it is 0, - without the gauge. A failed fetch, or a body
+# in which one of the three series is absent or not a number, is logged to
+# platform/errors.log and its line left out. A stop of the sampler,
+# platform/.sampler-stop, ends the scrape after the pod at hand; main's
+# final sample scrapes every pod.
+# ---------------------------------------------------------------------------
+sample_operators() {
+  local ts ns pod ip port host body msg rc row
+  [[ -n "${OPERATOR_PODS}" ]] || return 0
+  ts="$(now)"
+  while IFS=$'\t' read -r _ ns pod _ ip port; do
+    host="${ip}"
+    if [[ "${ip}" == *:* ]]; then
+      host="[${ip}]"
+    fi
+    body="$(mktemp "${TMPDIR:-/tmp}/dizzy-soak-metrics.XXXXXX")"
+    msg="$(curl -sS --fail --connect-timeout "${OPERATOR_CONNECT_TIMEOUT}" --max-time "${OPERATOR_SCRAPE_TIMEOUT}" \
+      -o "${body}" "http://${host}:${port}/metrics" 2>&1)"
+    rc=$?
+    if ((rc != 0)); then
+      record_error operators "${ns}/${pod}: ${msg:-curl exited ${rc}}"
+    elif row="$(awk -v ts="${ts}" -v ns="${ns}" -v pod="${pod}" '
+        $1 == "go_goroutines" || $1 == "go_memstats_heap_inuse_bytes" || $1 == "process_resident_memory_bytes" { v[$1] = $2 }
+        index($1, "leader_election_master_status{") == 1 { leader += $2; seen = 1 }
+        END {
+          split("go_goroutines go_memstats_heap_inuse_bytes process_resident_memory_bytes", names, " ")
+          for (i = 1; i <= 3; i++) {
+            if (!(names[i] in v) || v[names[i]] !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/) {
+              missing = missing (missing == "" ? "" : " ") names[i]
+            }
+          }
+          if (missing != "") {
+            print "metrics missing or not a number: " missing
+            exit 1
+          }
+          printf "%s\t%s\t%s\t%.0f\t%.0f\t%.0f\t%s\n", ts, ns, pod, v[names[1]], v[names[2]], v[names[3]],
+            (seen ? (leader > 0 ? 1 : 0) : "-")
+        }' "${body}")"; then
+      printf '%s\n' "${row}" >>platform/operators.tsv
+    else
+      record_error operators "${ns}/${pod}: ${row}"
+    fi
+    rm -f "${body}"
+    # A metrics port that drops packets would otherwise hold the report back
+    # by a timeout per pod.
+    if [[ -e platform/.sampler-stop ]]; then
+      break
+    fi
+  done <<<"${OPERATOR_PODS}"
+}
+
+# ---------------------------------------------------------------------------
 # sampler_loop — Sample until platform/.sampler-stop exists. It sleeps in
 # one-second slices, so a stop takes effect within a second of the sample.
 # ---------------------------------------------------------------------------
@@ -244,6 +332,7 @@ sampler_loop() {
   while [[ ! -e platform/.sampler-stop ]]; do
     sample_pods
     sample_usage
+    sample_operators
     waited=0
     while ((waited < DIZZY_SOAK_SAMPLE_INTERVAL)) && [[ ! -e platform/.sampler-stop ]]; do
       sleep 1
@@ -787,6 +876,8 @@ main() {
   log "Soak run ${RUN_NAME}: dizzy ${DIZZY_VERSION} ${DIZZY_SOAK_SERVICE} chaos for ${DIZZY_SOAK_DURATION} (0 runs until stopped), report in ${REPORTS_DIR}/${RUN_NAME}."
   : >platform/containers.tsv
   : >platform/usage.tsv
+  : >platform/operator-pods.tsv
+  : >platform/operators.tsv
   : >platform/errors.log
   cp "${SCENARIO_FILE}" scenario.yaml
   write_meta
@@ -815,6 +906,7 @@ main() {
   rm -f platform/.sampler-stop
   sample_pods
   sample_usage
+  sample_operators
   read_conditions platform/conditions-end.json
   jq --arg end "$(now)" --argjson rc "${DIZZY_RC:-null}" '. + {endTime: $end, dizzyExitCode: $rc}' \
     meta.json >meta.json.new && mv meta.json.new meta.json
