@@ -1,0 +1,266 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Probe pods for the network-policy E2E test. Step 3 of chainsaw-test.yaml
+# runs ../../lib/assert-networkpolicy-enforced.sh from them.
+#
+# nova-netpol-probe-target carries the two selector labels of the nova-netpol
+# NetworkPolicy, so the policy judges its connections as it judges those of
+# the Nova pods. It has no app.kubernetes.io/component label, so the three
+# Services, once narrowed to their components, do not select it, and neither
+# does the console proxy's own policy, which selects the novncproxy component.
+# While those Services still use their wide selectors, the target is one of
+# their endpoints. The suite asserts neither Ready nor the health check, so
+# that changes nothing it checks. The target has no pod-template-hash or
+# job-name label, so no ReplicaSet or Job adopts it. It listens on the
+# admitted ingress ports 8774, 8775 and 6080 and on 9999, which no ingress
+# rule admits.
+#
+# nova-netpol-probe-sink carries a name no policy selects. It listens on the
+# target's admitted TCP egress ports other than 53, then on 5900 and 9999,
+# which no egress rule of the main policy admits and the display range of the
+# console proxy's policy does. nova-netpol-probe-inside runs in nova-system,
+# the operator namespace the policy admits. nova-netpol-probe-outside runs in
+# nova-netpol-outside, which the policy admits only once the update patch adds
+# it as a source.
+#
+# nova-netpol-probe-vnc carries the three selector labels of the console
+# proxy's policy, nova-netpol-novncproxy, so both policies select it, as they
+# select the console proxy pods. It is an endpoint of the console proxy
+# Service, which the suite never calls, and like the target it has no
+# pod-template-hash label, so no ReplicaSet adopts it. It sleeps.
+#
+# The pods are bare: fixed names, no controller to adopt them, and chainsaw
+# deletes the Namespace and the five pods when the test ends. kind already
+# holds the nova image for the Nova CR. The listener binds each port in its
+# main thread, so a bind error ends the container and the probe fails instead
+# of a port silently staying closed.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nova-netpol-outside
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-netpol-probe-target
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova
+    app.kubernetes.io/instance: nova-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "8774"
+        - "8775"
+        - "6080"
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-netpol-probe-sink
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: netpol-probe-sink
+    app.kubernetes.io/instance: nova-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "3306"
+        - "5000"
+        - "5672"
+        - "8778"
+        - "9292"
+        - "9696"
+        - "11211"
+        - "5900"
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-netpol-probe-inside
+  namespace: nova-system
+  labels:
+    app.kubernetes.io/name: netpol-probe-client
+    app.kubernetes.io/instance: nova-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-netpol-probe-outside
+  namespace: nova-netpol-outside
+  labels:
+    app.kubernetes.io/name: netpol-probe-client
+    app.kubernetes.io/instance: nova-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-netpol-probe-vnc
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova
+    app.kubernetes.io/instance: nova-netpol
+    app.kubernetes.io/component: novncproxy
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
