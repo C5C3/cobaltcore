@@ -4,41 +4,32 @@
 
 # ControlPlane CR fixture for the db-credential-scoping E2E test
 #
-# This is the canonical kind ControlPlane ("controlplane" in namespace
-# "openstack") — spec-equivalent to deploy/kind/controlplane/controlplane.yaml.
-# Its name/namespace are LOAD-BEARING for this suite: the c5c3-operator's
-# reconcileDBCredentials derives the per-ControlPlane DB-credential
-# ExternalSecret/Secret name
+# A minimal managed-mode ControlPlane named "controlplane". It carries no
+# namespace: the suite applies it into chainsaw's ephemeral namespace with
+# `kubectl apply -n`. Its name is LOAD-BEARING for this suite: the
+# c5c3-operator's reconcileDBCredentials derives the per-ControlPlane
+# DB-credential ExternalSecret/Secret name
 #   keystoneName(cp) + "-db-credentials" = "controlplane-keystone-db-credentials"
 # and the per-tenant dynamic engine creds path
-#   database/mariadb/creds/keystone-{cp.Namespace}
-#     = database/mariadb/creds/keystone-openstack
+#   database/mariadb/creds/keystone-{cp.KeystoneNamespace()}
+#     = database/mariadb/creds/keystone-<namespace>
 # (dbDynamicRoleFor, keyed on the namespace alone), whose engine role the test
 # onboards via deploy/openbao/bootstrap/setup-database-tenant.sh.
 #
-# ── DECISION: reuse the canonical "controlplane" CR (idempotent apply) ───────
-# Ambiguity: the assertions pin the DB-credential names to
-# "controlplane-keystone-db-credentials" / "database/mariadb/creds/
-# keystone-openstack", which ONLY the ControlPlane name="controlplane",
-# namespace="openstack" produces. Chose: ship that exact CR (spec-equivalent to deploy's, gateway block
-# included) so that on a cluster where deploy-infra already applied it
-# (WITH_CONTROLPLANE_CR=true) the chainsaw `kubectl apply` is a no-op rather than
-# a disruptive 3-way-merge prune, and on a cluster where it was not applied the
-# suite creates it. Behind the presence guard this only runs on a full c5c3 +
-# OpenBao stack. Reviewer: please verify the spec stays equivalent to deploy's CR.
+# ── DECISION: a fresh CR in the suite's own namespace ───────────────────────
+# The suite seeds the plane's admin-password path itself with
+# write-bootstrap-secrets.sh before it applies this CR, so nothing depends on
+# what deploy-infra seeded or onboarded. The CR omits spec.infrastructure, which
+# the defaulting webhook fills with the well-known managed clusters
+# (openstack-db, openstack-memcached), and it omits a gateway block: Gateway
+# openstack-gw admits routes from its own namespace only.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
   name: controlplane
-  namespace: openstack
 spec:
   openStackRelease: "2026.1"
   services:
-    keystone:
-      gateway:
-        parentRef:
-          name: openstack-gw
-        hostname: keystone.127-0-0-1.nip.io
-        path: /
+    keystone: {}
   sizing:
     profile: Minimal
