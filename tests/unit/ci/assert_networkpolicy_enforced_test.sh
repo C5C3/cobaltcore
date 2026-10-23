@@ -20,6 +20,9 @@
 #   - host and ports reach the program as arguments after its text, never in
 #     it, and the overrides reach it the same way
 #   - the script is executable, parses, and make shellcheck lints it
+#   - an edit to the script runs the e2e-operator jobs of the eight service
+#     operators, through tests/e2e/lib/** for seven of them and by name for
+#     neutron, and neither the c5c3 nor the ovn job
 #
 # The kubectl stub runs the program the script hands to kubectl exec with the
 # local python3, behind a prelude that replaces socket.create_connection,
@@ -32,6 +35,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+# shellcheck disable=SC2034 # read by tests/lib/ci_yaml.sh
+CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 PASS=0
 FAIL=0
@@ -39,6 +44,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 SCRIPT="$PROJECT_ROOT/tests/e2e/lib/assert-networkpolicy-enforced.sh"
 USAGE="usage: assert-networkpolicy-enforced.sh <namespace> <pod> <expect> <host> [<port>...]"
@@ -377,6 +384,26 @@ test_the_script_parses_and_is_linted() {
     "@shellcheck --severity=warning tests/e2e/lib/*.sh"
 }
 
+# --- Test 8: the path filters ---
+test_the_filters_name_the_probe() {
+  echo "Test: an edit to the probe runs the leg of every service operator and no other"
+
+  local op block
+  for op in keystone horizon glance placement barbican cinder nova; do
+    block="$(filter_block "tests_e2e_$op")"
+    assert_contains "tests_e2e_$op lists the shared directory" "$block" "'tests/e2e/lib/**'"
+  done
+  assert_contains "tests_e2e_neutron names the probe" "$(filter_block tests_e2e_neutron)" \
+    "'tests/e2e/lib/assert-networkpolicy-enforced.sh'"
+  # c5c3 and ovn run no network-policy suite.
+  for op in c5c3 ovn; do
+    block="$(filter_block "tests_e2e_$op")"
+    assert_not_empty "tests_e2e_$op exists" "$block"
+    assert_not_contains "tests_e2e_$op leaves the probe out" "$block" "assert-networkpolicy-enforced.sh"
+    assert_not_contains "tests_e2e_$op leaves the shared directory out" "$block" "tests/e2e/lib/**"
+  done
+}
+
 # --- Run ---
 test_wrong_arguments_exit_2
 test_open
@@ -385,6 +412,7 @@ test_resolves
 test_an_exec_failure_is_reported
 test_host_and_ports_arrive_as_argv
 test_the_script_parses_and_is_linted
+test_the_filters_name_the_probe
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
