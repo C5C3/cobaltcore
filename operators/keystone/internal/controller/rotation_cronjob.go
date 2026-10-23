@@ -20,8 +20,9 @@ import (
 // keyRotationParams captures the per-flavour differences between the Fernet and
 // credential key-rotation CronJobs. Everything else — the init container that
 // copies keys into a writable emptyDir, the FSGroup, the security contexts, the
-// staging-Secret PATCH target, the config and script mounts, and the
-// sibling-key read-only mount — is identical and lives in keyRotationCronJob.
+// staging-Secret PATCH target, the config and script mounts, the
+// sibling-key read-only mount, the Forbid concurrency policy, and the Job
+// deadline — is identical and lives in keyRotationCronJob.
 type keyRotationParams struct {
 	// keyKind is the rotated key kind ("fernet" or "credential"). It drives the
 	// production Secret name (<keystone>-<keyKind>-keys), the SA/CronJob name
@@ -44,6 +45,16 @@ type keyRotationParams struct {
 	maxActiveKeysEnv string
 	maxActiveKeys    int
 }
+
+// keyRotationActiveDeadlineSeconds caps how long one rotation Job may stay
+// active. Under the Forbid concurrency policy a Job that never reaches Complete
+// or Failed holds the CronJob's only slot, and every later tick skips with
+// JobAlreadyActive. A pod stuck in ImagePullBackOff, which backoffLimit does
+// not count, or a PATCH hung on a dead API server connection reaches neither
+// on its own. The deadline fails such a Job within the hour, so the next tick
+// starts a fresh Job from the current template. An hour is far above the
+// runtime of a key rotation.
+const keyRotationActiveDeadlineSeconds int64 = 3600
 
 // keyRotationCronJob builds the CronJob that rotates a key repository and
 // persists the result back to a staging Secret via the K8s API. The CronJob:
@@ -196,7 +207,7 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 	podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, extraMounts...)
 	keystoneJobPod(keystone).Apply(&podSpec)
 
-	return rotation.BuildCronJob(rotation.CronJobParams{
+	cronJob := rotation.BuildCronJob(rotation.CronJobParams{
 		Name:      name,
 		Namespace: keystone.Namespace,
 		Labels:    commonLabels(keystone),
@@ -204,4 +215,16 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		PodLabels: componentLabels(keystone, p.keyKind+"-rotation"),
 		PodSpec:   podSpec,
 	})
+	// A scheduled rotation never starts while an earlier scheduled rotation is
+	// still active, so two runs cannot rotate the same key set and race on the
+	// staging-Secret PATCH. A Job created with
+	// `kubectl create job --from=cronjob/...` is not governed: the CronJob
+	// controller never adds it to status.active (upstream
+	// pkg/controller/cronjob/cronjob_controllerv2.go emits UnexpectedJob for it
+	// and does not adopt it). The policy is a keystone decision, so it is set
+	// here and rotation.BuildCronJob stays generic; both key kinds get it
+	// through this shared builder.
+	cronJob.Spec.ConcurrencyPolicy = batchv1.ForbidConcurrent
+	cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds = ptr.To(keyRotationActiveDeadlineSeconds)
+	return cronJob
 }

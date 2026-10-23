@@ -261,6 +261,8 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 		Data: map[string][]byte{"0": []byte("key")},
 	}
 
+	// The pre-created CronJob carries no concurrency policy, as the CronJob of
+	// an older operator did.
 	oldCronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-keystone-fernet-rotate",
@@ -307,6 +309,8 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 		Name:      "test-keystone-fernet-rotate",
 	}, &cronJob)).To(Succeed())
 	g.Expect(cronJob.Spec.Schedule).To(Equal("0 */6 * * *"))
+	g.Expect(cronJob.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent),
+		"a CronJob created without a policy must gain Forbid on the next reconcile")
 }
 
 func TestReconcileFernetKeys_GeneratedKeysAreValid(t *testing.T) {
@@ -1094,6 +1098,32 @@ func TestFernetRotationCronJob_SuspendTrue(t *testing.T) {
 	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
 	g.Expect(cronJob.Spec.Schedule).To(Equal(ks.Spec.Fernet.RotationSchedule),
 		"toggling suspend must not change the rotation schedule")
+}
+
+// TestFernetRotationCronJob_ConcurrencyPolicyForbid verifies that the
+// rotation CronJob forbids overlapping scheduled runs, and bounds each run so
+// a stuck one cannot hold the only slot, whether or not
+// spec.fernet.suspend is set.
+func TestFernetRotationCronJob_ConcurrencyPolicyForbid(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		suspend bool
+	}{
+		{name: "not suspended", suspend: false},
+		{name: "suspended", suspend: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := fernetTestKeystone()
+			ks.Spec.Fernet.Suspend = tc.suspend
+
+			cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
+
+			g.Expect(cronJob.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
+			g.Expect(cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds).To(HaveValue(Equal(int64(3600))),
+				"a Job that never finishes must fail, or Forbid skips every later rotation")
+		})
+	}
 }
 
 // findRuleForResource returns the first PolicyRule whose ResourceNames matches
