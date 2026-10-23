@@ -55,9 +55,9 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/c5c3
   KIND_CLUSTER: cobaltcore
-  # Held in lockstep with the KIND_VERSION of ci.yaml, performance.yaml and
-  # hack/install-test-deps.sh by
-  # tests/unit/renovate/workflow_pins_custommanager_test.sh.
+  # Held in lockstep with every other kind pin; the list of pins lives in
+  # tests/unit/renovate/workflow_pins_custommanager_test.sh, which asserts
+  # they match, and the Renovate kind group bumps them in one pull request.
   KIND_VERSION: v0.33.0
   # Held in lockstep with the HELM_VERSION of ci.yaml by
   # tests/unit/ci/helm_wiring_test.sh.

@@ -813,6 +813,7 @@
         "hack/install-test-deps.sh",
         ".github/workflows/ci.yaml",
         ".github/workflows/e2e-operator-upgrade.yaml",
+        ".github/workflows/flux-path.yaml",
         ".github/workflows/performance.yaml"
       ],
       "matchPackageNames": ["kubernetes-sigs/kind"],
@@ -825,6 +826,7 @@
         "hack/install-test-deps.sh",
         ".github/workflows/ci.yaml",
         ".github/workflows/e2e-operator-upgrade.yaml",
+        ".github/workflows/flux-path.yaml",
         ".github/workflows/performance.yaml"
       ],
       "matchPackageNames": ["kubernetes-sigs/kind"],
