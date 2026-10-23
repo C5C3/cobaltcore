@@ -52,17 +52,28 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/<suite>
   `tests/e2e/nova/compute-node-pool/` also labels the node with the zone
   and the pool label its `NovaCompute` selects.
 - **Shared scripts.** `tests/e2e/lib/` holds scripts that the suites of
-  several operators run: `assert-namespace-scoped-operator.sh`, the proof
-  every `namespace-scoped-rbac` suite runs against the operator release it
-  installed, and `assert-operator-env-clean.sh`, the scan every
-  `env-key-material` suite runs to show that the operator's pod spec and
-  process environment hold no key material. Chainsaw runs script steps in
-  the suite directory, so a suite calls them by relative path
-  (`../../lib/<script>.sh`). Each script is unit-tested under
-  `tests/unit/ci/` against a stubbed `kubectl`. The `tests_e2e_<op>` path
-  filter of every operator whose suites run a script lists it, so an edit
-  to a script runs those `e2e-operator` jobs: the seven operators that run
-  both list `tests/e2e/lib/**`, and c5c3, ovn and neutron list the scan
+  several operators run:
+  - `assert-namespace-scoped-operator.sh`, the proof every
+    `namespace-scoped-rbac` suite runs against the operator release it
+    installed;
+  - `assert-operator-env-clean.sh`, the scan every `env-key-material`
+    suite runs to show that the operator's pod spec and process
+    environment hold no key material;
+  - `assert-operator-metric-families.sh`, which 17 suites run to read the
+    operator release's own Prometheus families through the API server's
+    pod proxy, with the per-CR samples their Jobs, rotations or re-mints
+    record;
+  - `assert-steady-state-events.sh`, which ends each of the nine
+    `basic-deployment` suites: the Ready CR may gain no event in a
+    120-second window.
+
+  Chainsaw runs script steps in the suite directory, so a suite calls them
+  by relative path (`../../lib/<script>.sh`). Each script is unit-tested
+  under `tests/unit/ci/` against a stubbed `kubectl`. The `tests_e2e_<op>`
+  path filter of every operator whose suites run a script lists it, so an
+  edit to a script runs those `e2e-operator` jobs. The seven operators
+  that run the proof list `tests/e2e/lib/**`. ovn and neutron list the
+  scan, the metric check and the event budget, and c5c3 lists the scan
   alone.
 
 ## Configuration

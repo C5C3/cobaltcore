@@ -23,7 +23,7 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **53 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **54 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
@@ -121,8 +121,9 @@ Deployment rollout, bootstrap Job).
 | autoscaling | `keystone-autoscaling` | HPA create/update/delete driven by `spec.autoscaling` (CPU and memory targets); the API PodDisruptionBudget follows the HPA minimum: `minAvailable: 1` with `minReplicas` unset, `maxUnavailable: 1` at `minReplicas: 1`, `minAvailable: 1` again after autoscaling is removed; a CPU target of 150 and a `scaleDown` behavior reach the HPA as `averageUtilization: 150` and `spec.behavior.scaleDown` |
 | basic-deployment-2026-2 | `keystone-basic-2026-2` | Happy-path deployment pinned to the 2026.2 release image |
 | configmap-no-secrets | `keystone-cc0080` | No secrets leak into the ConfigMap: placeholder URL in `keystone.conf`, real DSN only in the derived `<name>-db-connection` Secret |
-| credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step |
+| credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step; after the rotation the keystone-operator release exports the `keystone_operator_key_rotation_age_seconds{key_type="credential"}` sample |
 | database-tls | `keystone-dbtls` | `spec.database.tls` up to `verify-full`: `DatabaseTLSReady=True`, cert-manager client cert, encrypted MariaDB connection |
+| [db-expand-failure](#db-expand-failure) | `keystone-db-expand-failure` | A 2026.1 → 2026.2 upgrade whose expand Job is OOM-killed until `BackoffLimitExceeded`: `DatabaseReady=False/ExpandFailed` naming the failed Job while `upgradePhase` stays `Expanding`, a Warning `ExpandFailed` event, the `keystone_operator_db_sync_total{result="failed"}` sample, and the Deployment still on 2026.1 |
 | env-key-material | — (operator-level) | The keystone-operator pod in `keystone-system` reads no Secret into env, and its manager's process environment, read from an ephemeral container on the `keystone:2026.1` image by `tests/e2e/lib/assert-operator-env-clean.sh`, holds no variable named like key material and no value such as a PEM block; a finding names the variable, never its value |
 | gateway-quick-start | `keystone-gateway-qs` | Envoy Gateway quick-start wiring: GatewayClass/Gateway Programmed, HTTPRoute attached, endpoint reachable |
 | gateway-quick-start-smoke | `keystone-smoke` | `curl https://keystone.127-0-0-1.nip.io/v3` returns HTTP 200 with a Keystone v3 JSON body |
@@ -158,7 +159,8 @@ a Keystone CR with `clusterRef` and verifies that the five sub-conditions it ass
 `BootstrapReady`) progress to True,
 the aggregate Ready condition reaches True with reason `AllReady`, all owned resources
 exist, a ConfigMap with the expected prefix exists, and the Keystone API at `/v3` is
-accessible.
+accessible. It then reads the keystone-operator's own metric families and holds the Ready
+CR to a budget of zero events over 120 seconds.
 
 **Steps:**
 
@@ -168,8 +170,11 @@ accessible.
 | 2 | Assert all sub-conditions and Ready | `assert` (5m) | Verifies SecretsReady=True (SecretsAvailable), DatabaseReady=True (DatabaseSynced), FernetKeysReady=True (FernetKeysAvailable), DeploymentReady=True, BootstrapReady=True (BootstrapComplete), Ready=True (AllReady). Condition order follows the `subConditionTypes` display order. |
 | 3 | Assert Deployment and Service | `assert` (5m) | Deployment `keystone-basic-api` has `availableReplicas > 0`; Service `keystone-basic-api` has port 5000 |
 | 4 | Assert Fernet resources | `assert` (5m) | CronJob `keystone-basic-fernet-rotate`, Secret `keystone-basic-fernet-keys`, ServiceAccount/Role/RoleBinding `keystone-basic-fernet-rotate`, PushSecret `keystone-basic-fernet-keys-backup` all exist |
-| 5 | Assert ConfigMap exists | `script` | `kubectl get cm -n openstack -o name \| grep keystone-basic-config-` — verifies a ConfigMap with content-hash suffix exists |
-| 6 | Assert API accessibility | `script` | `curl -sf http://keystone-basic-api.openstack.svc:5000/v3` — verifies the Keystone API responds |
+| 5 | Assert OpenBao PushSecret sync | `assert` (5m) | PushSecrets `keystone-basic-fernet-keys-backup` and `keystone-basic-credential-keys-backup` report `Ready=True`, so ESO wrote both key sets to OpenBao |
+| 6 | Assert ConfigMap exists | `script` | `kubectl get cm -n openstack -o name \| grep keystone-basic-config-` — verifies a ConfigMap with content-hash suffix exists |
+| 7 | Assert API accessibility | `script` | `curl -sf http://keystone-basic-api.openstack.svc:5000/v3` — verifies the Keystone API responds |
+| 8 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `keystone-operator` release: a reconcile is counted, no error carries `condition_type="UNKNOWN"`, and the `keystone_operator_db_sync_total{result="succeeded"}` and `keystone_operator_db_sync_duration_seconds_count` samples of `keystone-basic` are exported |
+| 9 | Assert the steady state emits no event | `script` (4m) | `tests/e2e/lib/assert-steady-state-events.sh`: no event on `keystone-basic` appears or raises its count in 120 seconds, and the CR stays Ready at the same generation |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
@@ -219,9 +224,13 @@ fernet token obtained before rotation still validates after rotation.
 | 2 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
 | 3 | Assert CronJob schedule matches spec | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` schedule is `"0 0 * * 0"` |
 | 4 | Trigger rotation, verify no rollout, validate token | `script` (180s) | Records pod UIDs and Secret hash before rotation, obtains a fernet token, creates manual Job from CronJob, verifies Secret data hash changed, asserts pod UIDs are unchanged (no rollout), validates the pre-rotation token still works |
+| 4.5 | Assert rotation Role RBAC split | `script` | Role `keystone-fernet-fernet-rotate` grants `patch` on the staging Secret `keystone-fernet-fernet-keys-rotation` and never on the production Secret `keystone-fernet-fernet-keys` |
 | 5 | Assert Ready=True maintained | `assert` (5m) | Ready=True with reason AllReady after rotation |
+| 6 | Pause rotation via spec.fernet.suspend | `patch` | Applies `01-patch-suspend-fernet.yaml` — `spec.fernet.suspend: true` |
+| 7 | Assert CronJob preserved, suspended, schedule unchanged | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` keeps schedule `"0 0 * * 0"` with `suspend: true` |
+| 8 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `keystone-operator` release, with the `keystone_operator_key_rotation_age_seconds{key_type="fernet"}` sample of `keystone-fernet` that the rotation of step 4 set |
 
-**Fixtures:** `00-keystone-cr.yaml`
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-suspend-fernet.yaml`
 
 **Rotation verification approach:** The script step verifies in-place key delivery
 by asserting that pod UIDs remain unchanged after rotation. The Secret
@@ -869,6 +878,36 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
 
 ---
 
+### db-expand-failure
+
+**File:** `tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml`
+
+**Purpose:** Drives a release upgrade into the failure branch of the expand phase. The
+patch that moves `spec.image.tag` from 2026.1 to 2026.2 also sets a 16Mi memory limit in
+`spec.jobs.resources`. The expand Job runs the real 2026.2 image, the kernel OOM-kills its
+container on all five attempts, and the Job ends `Failed/BackoffLimitExceeded`.
+`upgrade-flow` covers a successful upgrade only, and `upgrade-abort` wedges its expand Job
+in `ImagePullBackOff`, which never exhausts the backoff limit.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR with initial release 2026.1 | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-db-expand-failure` at tag `"2026.1"` |
+| 2 | Assert Ready and installedRelease set | `assert` (8m) | `installedRelease: "2026.1"`, `Ready=True/AllReady` |
+| 3 | Patch the tag and a 16Mi Job memory limit | `patch` | `01-patch-expand-failure.yaml` sets tag `"2026.2"` and `spec.jobs.resources.limits.memory: 16Mi` |
+| 4 | Assert the expand phase failed for good | `assert` (8m) + `script` | `installedRelease: "2026.1"`, `targetRelease: "2026.2"`, `upgradePhase: Expanding`, `DatabaseReady=False/ExpandFailed`; Job `keystone-db-expand-failure-db-expand` has `Failed=True/BackoffLimitExceeded`; the `DatabaseReady` message contains `Expand job keystone-db-expand-failure-db-expand failed: job has permanently failed`. The script also prints how each Job pod terminated |
+| 5 | Assert the Warning ExpandFailed event | `script` (90s) | Polls `kubectl get events` on the CR's UID with `reason=ExpandFailed,type=Warning` |
+| 6 | Assert the failed phase Job is counted | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `keystone-operator` release, with the `keystone_operator_db_sync_total{result="failed"}` sample of `keystone-db-expand-failure` |
+| 7 | Assert the Deployment keeps the 2026.1 image | `assert` (8m) | Container `keystone` of Deployment `keystone-db-expand-failure` runs `ghcr.io/c5c3/keystone:2026.1`, because the Database step fails before the Deployment step runs |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-expand-failure.yaml`
+
+Chainsaw's cleanup deletes the CR while the upgrade is still in `Expanding`. The
+finalizer does not depend on the upgrade state.
+
+---
+
 ### vertical-autoscaling
 
 **File:** `tests/e2e/keystone/vertical-autoscaling/chainsaw-test.yaml`
@@ -1013,6 +1052,10 @@ tests/e2e/keystone/
 ├── database-tls/
 │   ├── chainsaw-test.yaml              Keystone ↔ MariaDB TLS (verify-full)
 │   └── 00-keystone-cr.yaml             Keystone CR with database.tls
+├── db-expand-failure/
+│   ├── chainsaw-test.yaml              Expand phase fails with ExpandFailed
+│   ├── 00-keystone-cr.yaml             Keystone CR at release 2026.1
+│   └── 01-patch-expand-failure.yaml    Tag 2026.2 with a 16Mi Job memory limit
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Garbage collection
 │   └── 00-keystone-cr.yaml             Keystone CR for cleanup test
