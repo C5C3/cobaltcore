@@ -745,6 +745,10 @@ outputs only status messages (e.g., `Writing kv-v2/bootstrap/openstack/controlpl
 path. If the secret already exists, the write is skipped to prevent overwriting
 existing credentials. This is critical — overwriting would create a mismatch between
 the credentials stored in OpenBao and those already provisioned to consuming services.
+The script writes only when `bao` reports the path missing (`No value found at`). A
+read that fails for any other reason, such as a dropped `kubectl exec` or an OpenBao
+error, says nothing about the path. The script retries it twice, 2 seconds apart, and
+on a third failure logs the error and exits 1.
 
 **ESO PushSecret adoption marker:** After seeding, the script stamps
 `custom_metadata.managed-by=external-secrets` onto the per-ControlPlane admin
