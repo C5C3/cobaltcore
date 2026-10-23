@@ -269,7 +269,7 @@ a labelled namespace of its own.
 | [healthcheck](#healthcheck) | `nova-health` | `NovaAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
 | [namespace-scoped-rbac](#namespace-scoped-rbac) | `nova-ns-scoped` | A nova-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile |
 | [httproute](#httproute) | `nova-route` | The three gateway blocks: routes for the API on 8774, the metadata API on 8775 and the console proxy on 6080, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec blocks |
-| [network-policy](#network-policy) | `nova-netpol` | Two rendered NetworkPolicies: one covering every pod of the CR with the auto-derived egress order, one carrying the console proxy's display range, updated and deleted |
+| [network-policy](#network-policy) | `nova-netpol` | Two rendered NetworkPolicies: one covering every pod of the CR with the auto-derived egress order, one carrying the console proxy's display range, updated and deleted; probe pods then find TCP 5900 and 9999 dropped from the target and open from a console proxy stand-in, the target's egress ports and the three API ports open, and a foreign namespace dropped until the update admits it |
 | [deletion-cleanup](#deletion-cleanup) | `nova-cleanup` | Finalizer cleanup of every owned child and of the eight MariaDB CRs, the two cell0 objects included |
 | [pod-security-restricted](#pod-security-restricted) | `nova-pss` | Every Pod the reconciler projects admits under `pod-security.kubernetes.io/enforce=restricted`, on brownfield database wiring and with zero `FailedCreate` violations |
 | [gateway-quick-start-smoke](#gateway-quick-start-smoke) | `nova-smoke` | The three external URLs the quick start names answer 200 through `openstack-gw` |
@@ -489,9 +489,14 @@ arrives.
 **Purpose:** The NetworkPolicy sub-reconciler renders two policies. The main one
 carries no component key in its selector, so it covers every pod of the CR; the
 second belongs to the console proxy alone, which dials the VNC server of
-whichever hypervisor an instance runs on. The default CI CNI (kindnet) does not
-enforce NetworkPolicy, so the suite validates the rendered objects and their
-lifecycle rather than traffic.
+whichever hypervisor an instance runs on. The kindnetd of kind v0.32 and later,
+which CI pins through `KIND_VERSION`, enforces NetworkPolicy, and step 3 probes
+both policies from five pods through
+`tests/e2e/lib/assert-networkpolicy-enforced.sh`. The probe target has no
+component label, so only the main policy selects it, and its TCP 5900 is
+dropped: the display range belongs to the console proxy's policy. A fifth pod
+carries the console proxy's selector labels, so both policies select it, and it
+reaches TCP 5900 and 9999 through that range.
 
 **Steps:**
 
@@ -499,11 +504,13 @@ lifecycle rather than traffic.
 | --- | --- | --- | --- |
 | 1 | Give the suite its vhost, then apply the CR | `script` (2m) + `apply` | `broker-vhost.sh create nova-netpol nova-netpol-messaging openstack`, then the metadata Secret and `nova-netpol` |
 | 2 | Assert both policies carry the expected rules | `assert` (10m) | `NetworkPolicyReady=True/NetworkPolicyReady`; the main policy with ingress on 8774, 8775 and 6080 and the auto-derived egress order DNS, api-database 3306, database 3306, cache 11211, Keystone 5000, the siblings 8778/9292/9696 and messaging 5672, plus a check that its selector carries no `app.kubernetes.io/component` key; the console policy egress on TCP 5900 through 65535 |
-| 3 | Add a second ingress source and assert it lands | `patch` + `assert` | The operator appends one peer per declared source plus one for its own Namespace, so `length(spec.ingress[0].from) >= 3` is what separates the patched policy from the unchanged one |
-| 4 | Disable networkPolicy and assert both are deleted | `patch` + `assert` | `NetworkPolicyReady=True/NetworkPolicyNotRequired` and `error` assertions on both policies |
+| 3 | Probe the enforced policy | `apply` + `script` (8m) | `04-probe-pods.yaml` creates the namespace `nova-netpol-outside` and five probe pods. `assert-networkpolicy-enforced.sh` finds the target, which carries the main policy's selector labels, dropped on sink ports 5900 and 9999, resolving a cluster name and reaching the sink on 3306, 5000, 5672, 8778, 9292, 9696 and 11211; a pod with the console proxy's selector labels reaching the sink on 5900 and 9999; a `nova-system` client dropped on 9999 and reaching 8774, 8775 and 6080; a `nova-netpol-outside` client dropped on all three |
+| 4 | Add a second ingress source and assert it lands | `patch` + `assert` + `script` (2m) | The operator appends one peer per declared source plus one for its own Namespace, so `length(spec.ingress[0].from) >= 3` is what separates the patched policy from the unchanged one. The patch adds `nova-netpol-outside`, whose client then reaches 8774, 8775 and 6080 |
+| 5 | Disable networkPolicy and assert both are deleted | `patch` + `assert` | `NetworkPolicyReady=True/NetworkPolicyNotRequired` and `error` assertions on both policies |
 
 **Fixtures:** `00-metadata-secret.yaml`, `01-nova-cr.yaml`,
-`02-patch-update-ingress.yaml`, `03-patch-disable-networkpolicy.yaml`
+`02-patch-update-ingress.yaml`, `03-patch-disable-networkpolicy.yaml`,
+`04-probe-pods.yaml`
 
 ---
 
@@ -1205,7 +1212,8 @@ tests/e2e/nova/
 │   ├── 00-metadata-secret.yaml        The metadata shared secret
 │   ├── 01-nova-cr.yaml                Nova CR nova-netpol
 │   ├── 02-patch-update-ingress.yaml   Patch adding a second ingress source
-│   └── 03-patch-disable-networkpolicy.yaml Patch removing spec.networkPolicy
+│   ├── 03-patch-disable-networkpolicy.yaml Patch removing spec.networkPolicy
+│   └── 04-probe-pods.yaml             Probe pods: target, sink, inside and outside clients, console stand-in
 ├── pod-security-restricted/
 │   ├── chainsaw-test.yaml             Reconciliation under the restricted PSS profile
 │   ├── 00-namespace.yaml              Labelled namespace nova-pss and its two ExternalSecrets

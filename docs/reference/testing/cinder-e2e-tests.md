@@ -163,7 +163,7 @@ deletions.
 | [healthcheck](#healthcheck) | `cinder-health` | `CinderAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
 | [namespace-scoped-rbac](#namespace-scoped-rbac) | `cinder-ns-scoped` | A cinder-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile of the Cinder and of its backend |
 | [httproute](#httproute) | `cinder-route` | `spec.gateway` lifecycle: HTTPRoute created, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec block |
-| [network-policy](#network-policy) | `cinder-netpol` | Rendered NetworkPolicy: ingress on 8776, auto-derived DNS, database, cache, messaging and export egress, update and delete |
+| [network-policy](#network-policy) | `cinder-netpol` | Rendered NetworkPolicy: ingress on 8776, auto-derived DNS, database, cache, messaging and export egress, update and delete; probe pods then find TCP 5000 and 9999 dropped from the target, its egress ports and the API port open, and a foreign namespace dropped until the update admits it |
 | [deletion-cleanup](#deletion-cleanup) | `cinder-cleanup` | Finalizer cleanup of every owned child and the MariaDB CRs; both satellites survive the parent; the `CinderBackend` releases its finalizer on `ServiceRemoveSkipped`, the `CinderBackupBackend` holds none |
 | [pod-security-restricted](#pod-security-restricted) | `cinder-pss` | Every Pod the reconciler projects admits under `pod-security.kubernetes.io/enforce=restricted`, with zero `FailedCreate` violations |
 | [release-upgrade](#release-upgrade) | `cinder-upgrade` | Cross-release upgrade 2026.1 to 2026.2: phase progression, the three phase Jobs, the three Deployments, the API on the new release, the upgrade-check event read without a pod informer |
@@ -547,7 +547,8 @@ proves traffic reaches the Cinder API. That is what
 
 **Purpose:** The NetworkPolicy sub-reconciler renders ingress on the Cinder API
 port 8776 and a deterministic auto-derived egress set, and follows
-`spec.networkPolicy` through an update and a removal.
+`spec.networkPolicy` through an update and a removal. Probe pods show that the
+cluster enforces the rendered policy.
 
 **Steps:**
 
@@ -555,18 +556,21 @@ port 8776 and a deterministic auto-derived egress set, and follows
 | --- | --- | --- | --- |
 | 1 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-netpol …`, then `00-cinder-cr.yaml` (`cinder-netpol`) and `01-cinderbackend-cr.yaml` (`netpol-nfs1`) |
 | 2 | Assert the NetworkPolicy carries the expected rules | `assert` (5m) | `NetworkPolicyReady=True/NetworkPolicyReady` and NetworkPolicy `cinder-netpol` with ingress on 8776 and egress DNS (UDP and TCP 53), database (TCP 3306), cache (TCP 11211), messaging (TCP 5672) and export (TCP 2049), in that order |
-| 3 | Add a second ingress source and assert it lands | `patch` + `assert` (5m) | `02-patch-update-ingress.yaml` adds a source and the rendered policy follows |
-| 4 | Disable networkPolicy and assert deletion | `patch` + `assert` (5m) + `script` | `03-patch-disable-networkpolicy.yaml` leaves `NetworkPolicyReady=True/NetworkPolicyNotRequired` and no NetworkPolicy |
+| 3 | Probe the enforced policy | `apply` + `script` (8m) | `04-probe-pods.yaml` creates the namespace `cinder-netpol-outside` and four probe pods. `assert-networkpolicy-enforced.sh` finds the target, which carries the policy's selector labels, dropped on sink ports 5000 and 9999, resolving a cluster name and reaching the sink on 2049, 3306, 5672 and 11211; a `cinder-system` client dropped on 9999 and reaching 8776; a `cinder-netpol-outside` client dropped on 8776 |
+| 4 | Add a second ingress source and assert it lands | `patch` + `assert` (5m) + `script` (2m) | `02-patch-update-ingress.yaml` adds `cinder-netpol-outside` as a source, the rendered policy follows, and the outside client then reaches 8776 |
+| 5 | Disable networkPolicy and assert deletion | `patch` + `assert` (5m) + `script` | `03-patch-disable-networkpolicy.yaml` leaves `NetworkPolicyReady=True/NetworkPolicyNotRequired` and no NetworkPolicy |
 
-**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `02-patch-update-ingress.yaml`, `03-patch-disable-networkpolicy.yaml`
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`, `02-patch-update-ingress.yaml`, `03-patch-disable-networkpolicy.yaml`, `04-probe-pods.yaml`
 
-**Scope:** The default CI CNI (kindnet) does not enforce NetworkPolicy, so the
-suite validates the rendered policy object and its lifecycle. Traffic enforcement
-is out of its reach. The
-export rule is what separates Cinder from the sibling suites: every attached
-backend contributes TCP 2049, and a Cinder with no backend opens nothing. The
-absent rule carries as much, since this CR sets no `spec.keystoneEndpoint` and
-gets no Keystone rule.
+**Scope:** The kindnetd of kind v0.32 and later, which CI pins through
+`KIND_VERSION`, enforces NetworkPolicy. Step 3 probes the policy through
+`tests/e2e/lib/assert-networkpolicy-enforced.sh`, which counts only a timeout as
+a drop, so on a CNI that does not enforce the first probe fails. TCP 53 is
+probed by name resolution. The export rule is what separates Cinder from the
+sibling suites: every attached backend contributes TCP 2049, and a Cinder with
+no backend opens nothing. The absent rule carries as much, since this CR sets no
+`spec.keystoneEndpoint` and gets no Keystone rule, and the target's TCP 5000 is
+dropped.
 
 ---
 
@@ -965,7 +969,8 @@ tests/e2e/cinder/
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-netpol
 │   ├── 01-cinderbackend-cr.yaml        Backend netpol-nfs1
 │   ├── 02-patch-update-ingress.yaml    Patch adding a second ingress source
-│   └── 03-patch-disable-networkpolicy.yaml Patch removing spec.networkPolicy
+│   ├── 03-patch-disable-networkpolicy.yaml Patch removing spec.networkPolicy
+│   └── 04-probe-pods.yaml              Probe pods: target, sink, inside and outside clients
 ├── nfs-backend/
 │   ├── chainsaw-test.yaml              Volume data path: create, extend, clone, delete
 │   ├── 00-cinder-cr.yaml               Cinder CR cinder-nfs
