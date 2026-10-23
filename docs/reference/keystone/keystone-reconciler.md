@@ -1609,6 +1609,8 @@ and disaster recovery backup to OpenBao.
 | Pod labels | `commonLabels(keystone)` + `app.kubernetes.io/component=fernet-rotation` |
 | Schedule | `spec.fernet.rotationSchedule` |
 | Suspend | `spec.fernet.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
+| Concurrency policy | `Forbid`: a scheduled run never starts while an earlier scheduled run is active; a manual Job (`kubectl create job --from=cronjob/...`) is not governed |
+| Active deadline | `activeDeadlineSeconds: 3600` on each Job: a Job still active after an hour fails, so a stuck run cannot block later scheduled runs under `Forbid` |
 | ServiceAccount | `{name}-fernet-rotate` |
 | Init container | Copies keys from `fernet-keys-src` (Secret) to `fernet-keys` (emptyDir) |
 | Command | `/scripts/fernet_rotate.sh` |
@@ -1808,6 +1810,8 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Pod labels | `commonLabels(keystone)` + `app.kubernetes.io/component=credential-rotation` |
 | Schedule | `spec.credentialKeys.rotationSchedule` |
 | Suspend | `spec.credentialKeys.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
+| Concurrency policy | `Forbid`: a scheduled run never starts while an earlier scheduled run is active; a manual Job (`kubectl create job --from=cronjob/...`) is not governed |
+| Active deadline | `activeDeadlineSeconds: 3600` on each Job: a Job still active after an hour fails, so a stuck run cannot block later scheduled runs under `Forbid` |
 | ServiceAccount | `{name}-credential-rotate` |
 | Init container | Copies keys from `credential-keys-src` (Secret) to `credential-keys` (emptyDir) |
 | Command | `/scripts/credential_rotate.sh` |
