@@ -145,6 +145,7 @@ env:
   CONTROLLER_GEN_VERSION: v0.22.0
   GOFUMPT_VERSION: v0.12.0
   GOLANGCI_LINT_VERSION: v2.14.0
+  HELM_VERSION: v4.3.1
 ```
 
 `REGISTRY` and `IMAGE_PREFIX` are referenced by `build-e2e-images`, by the jobs
@@ -167,7 +168,14 @@ version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specifi
 version; the same version is mirrored in the Makefile (`GOFUMPT_VERSION ?= v0.12.0`) so
 that `make fmt` and `make format-check` use a consistent version locally.
 `GOLANGCI_LINT_VERSION` pins the golangci-lint binary installed by the `lint` job and
-keys its analysis cache. `setup-envtest` is installed via `@release-0.23` because the
+keys its analysis cache. `HELM_VERSION` is the Helm CLI that every
+`azure/setup-helm` step installs (`helm-validate`, `e2e-operator-upgrade`,
+`helm-push`, `helm-push-target-cluster` and `github-release`). Without a version
+input the action installs the newest Helm release when the job starts. Renovate
+bumps the pin without automerge, because `helm-push` runs only after a merge and no
+pull request run pushes a chart with the new Helm.
+`tests/unit/ci/helm_wiring_test.sh` fails when a `setup-helm` step passes no
+`version`. The other E2E jobs use the Helm of the runner image. `setup-envtest` is installed via `@release-0.23` because the
 sub-module does not publish its own release tags.
 
 ## Permissions
@@ -787,7 +795,7 @@ validated without editing the job.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI (SHA-pinned) |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` (SHA-pinned) |
 | 3 | `helm plugin install helm-unittest` | Installs helm-unittest plugin (pinned to `v1.0.3`) |
 | 4 | `make verify-helm-schema` | Fails if any chart's `values.schema.json` has drifted from the shared generator |
 | 5 | `make verify-helm-rbac` | Fails if any chart's `templates/_rbac-rules.tpl` or `templates/_webhook-rbac-rules.tpl` has drifted from its committed `config/rbac/role.yaml`, or if a webhook rule grants a read the manager rules do not |
@@ -2234,7 +2242,7 @@ push without re-running the E2E suite.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` |
 | 3 | Helm registry login | Authenticates to GHCR via `helm registry login` |
 | 4 | Package and push | Packages chart and pushes it to `oci://ghcr.io/c5c3/charts/` with `hack/ci-helm-push.sh` |
 
@@ -2288,7 +2296,7 @@ on for a `v*` tag push.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` |
 | 3 | `Login to GHCR` | Authenticates to `ghcr.io` via `helm registry login` with `github.actor` and `secrets.GITHUB_TOKEN` |
 | 4 | `Package and push Helm chart` | Removes stale `target-cluster-access-*.tgz` files, runs `make helm-package-target-cluster` and pushes the tarball to `oci://ghcr.io/c5c3/charts` with `hack/ci-helm-push.sh` (see [push retry](#helm-push)) |
 
@@ -2322,7 +2330,7 @@ Creates a GitHub Release with auto-generated release notes on v* tag pushes.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI for chart packaging |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` for chart packaging |
 | 3 | Package Helm charts | Packages operator Helm charts with release version |
 | 4 | `softprops/action-gh-release@v3` | Creates release with `generate_release_notes: true` and attaches chart tarballs |
 

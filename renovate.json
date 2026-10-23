@@ -363,6 +363,19 @@
         "/\\.github/workflows/.*\\.yaml$/"
       ],
       "matchStrings": [
+        "HELM_VERSION:\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "helm/helm",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "helm/helm",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/\\.github/workflows/.*\\.yaml$/"
+      ],
+      "matchStrings": [
         "KIND_VERSION:\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
       ],
       "depNameTemplate": "kubernetes-sigs/kind",
@@ -861,6 +874,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "Go build tooling"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [".github/workflows/**.yaml"],
+      "matchPackageNames": ["helm/helm"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "description": "The setup-helm jobs' HELM_VERSION pin. No automerge: helm-push runs only on a push to main, so a pull request run never exercises the new helm's chart push",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [".github/workflows/**.yaml"],
+      "matchPackageNames": ["helm/helm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days"
     },
     {
       "matchManagers": ["pip_requirements"],

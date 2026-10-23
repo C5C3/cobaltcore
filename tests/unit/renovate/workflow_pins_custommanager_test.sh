@@ -3,17 +3,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json has customManagers for the six GitHub Actions env-var
+# Verify renovate.json has customManagers for the seven GitHub Actions env-var
 # tool pins:
 #   - CONTROLLER_GEN_VERSION → kubernetes-sigs/controller-tools
 #   - GOFUMPT_VERSION        → mvdan/gofumpt
 #   - GOLANGCI_LINT_VERSION  → golangci/golangci-lint
+#   - HELM_VERSION           → helm/helm
 #   - KIND_VERSION           → kubernetes-sigs/kind
 #   - YQ_VERSION             → mikefarah/yq
 #   - ACTIONLINT_VERSION     → rhysd/actionlint
 #
 # For each: regex must capture the literal in the workflow file that pins it,
 # and the paired packageRule must disable majors and automerge minor/patch.
+# helm is the exception to the automerge: helm-push runs only on a push to
+# main, so no pull request run proves a new helm can still push a chart, and
+# its minor/patch rule must leave the merge to a human.
 #
 # KIND_VERSION carries one extra obligation. It is pinned three times — in ci.yaml
 # for the e2e clusters, in performance.yaml for the nightly's cluster and in
@@ -46,6 +50,7 @@ TOOLS=(
   "CONTROLLER_GEN_VERSION:kubernetes-sigs/controller-tools:.github/workflows/ci.yaml"
   "GOFUMPT_VERSION:mvdan/gofumpt:.github/workflows/ci.yaml"
   "GOLANGCI_LINT_VERSION:golangci/golangci-lint:.github/workflows/ci.yaml"
+  "HELM_VERSION:helm/helm:.github/workflows/ci.yaml"
   "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/ci.yaml"
   "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/performance.yaml"
   "YQ_VERSION:mikefarah/yq:.github/workflows/verify-container-images.yaml"
@@ -160,13 +165,13 @@ test_workflow_pins_share_a_package_rule() {
   echo "Test: workflow tool pins share a major-disable + minor-automerge packageRule"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (5 checks skipped)"
-    SKIP=$((SKIP + 5))
+    echo "  SKIP: jq not installed (6 checks skipped)"
+    SKIP=$((SKIP + 6))
     return
   fi
 
   local pkg
-  for pkg in kubernetes-sigs/controller-tools golangci/golangci-lint mikefarah/yq rhysd/actionlint; do
+  for pkg in kubernetes-sigs/controller-tools golangci/golangci-lint helm/helm mikefarah/yq rhysd/actionlint; do
     local major_rule
     major_rule="$(jq -c --arg pkg "$pkg" '.packageRules[]
       | select(
@@ -202,9 +207,36 @@ test_workflow_pins_share_a_package_rule() {
     "$(jq -r '.minimumReleaseAge' <<<"$minor_rule")"
 }
 
+test_helm_pin_is_not_automerged() {
+  echo "Test: helm minor/patch bumps wait for a human"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (2 checks skipped)"
+    SKIP=$((SKIP + 2))
+    return
+  fi
+
+  # Every rule that lets Renovate open a helm pull request; one of them saying
+  # automerge: true is enough to merge a helm that cannot push a chart.
+  local automerge
+  automerge="$(jq -r '[.packageRules[]
+    | select(((.matchPackageNames // []) | index("helm/helm")) != null)
+    | select(((.matchUpdateTypes // []) | index("minor")) != null)
+    | (.automerge | tostring)] | unique | join(",")' "$RENOVATE_FILE")"
+  assert_eq "every helm minor/patch rule sets automerge: false" "false" "$automerge"
+
+  local age
+  age="$(jq -r '[.packageRules[]
+    | select(((.matchPackageNames // []) | index("helm/helm")) != null)
+    | select(((.matchUpdateTypes // []) | index("minor")) != null)
+    | .minimumReleaseAge] | unique | join(",")' "$RENOVATE_FILE")"
+  assert_eq "helm minor/patch updates wait minimumReleaseAge=3 days" "3 days" "$age"
+}
+
 test_each_workflow_pin_has_manager
 test_kind_version_is_pinned_in_lockstep
 test_workflow_pins_share_a_package_rule
+test_helm_pin_is_not_automerged
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
