@@ -24,6 +24,8 @@
 #   - One manual run of the db-clean CronJob completes
 #   - The barbican-operator release exports its reconcile families and the
 #     db_sync and db_clean counters and duration counts of barbican-basic
+#   - A Ready, unchanged barbican-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -395,6 +397,22 @@ spec:
             'barbican_operator_db_sync_duration_seconds_count{barbican="barbican-basic",namespace="openstack"}' \
             'barbican_operator_db_clean_total{barbican="barbican-basic",namespace="openstack",result="succeeded"}' \
             'barbican_operator_db_clean_duration_seconds_count{barbican="barbican-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: barbican-system
+        selector: app.kubernetes.io/instance=barbican-operator
+        tail: 200
+  # ── Step 9: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the Barbican from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack barbicans.barbican.openstack.c5c3.io barbican-basic
     catch:
     - podLogs:
         namespace: barbican-system

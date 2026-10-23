@@ -29,6 +29,8 @@
 #     processes up, and an empty volume list
 #   - the cinder-operator release exports its reconcile families and the
 #     db_sync counter and duration count of cinder-basic
+#   - a Ready, unchanged cinder-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -674,6 +676,22 @@ spec:
           ../../lib/assert-operator-metric-families.sh cinder-system cinder-operator cinder_operator \
             'cinder_operator_db_sync_total{cinder="cinder-basic",namespace="openstack",result="succeeded"}' \
             'cinder_operator_db_sync_duration_seconds_count{cinder="cinder-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/instance=cinder-operator
+        tail: 200
+  # ── Step 8: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the Cinder from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack cinders.cinder.openstack.c5c3.io cinder-basic
     catch:
     - podLogs:
         namespace: cinder-system

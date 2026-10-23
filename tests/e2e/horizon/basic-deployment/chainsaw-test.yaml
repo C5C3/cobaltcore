@@ -14,6 +14,8 @@
 #     a live Keystone
 #   - The horizon-operator release exports its reconcile families, with no
 #     error under an unmapped condition type
+#   - A Ready, unchanged horizon-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -189,6 +191,22 @@ spec:
         timeout: 120s
         content: |
           ../../lib/assert-operator-metric-families.sh horizon-system horizon-operator horizon_operator
+    catch:
+    - podLogs:
+        namespace: horizon-system
+        selector: app.kubernetes.io/instance=horizon-operator
+        tail: 200
+  # ── Step 7: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the Horizon from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack horizons.horizon.openstack.c5c3.io horizon-basic
     catch:
     - podLogs:
         namespace: horizon-system

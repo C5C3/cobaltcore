@@ -26,6 +26,8 @@
 #     three reports itself the leader
 #   - the ovn-operator release exports its reconcile families, with no error
 #     under an unmapped condition type
+#   - a Ready, unchanged ovn-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
 # The Raft check is what separates this suite from the envtest coverage under
 # operators/ovn/internal/controller/: a StatefulSet with three ready pods says
@@ -591,6 +593,22 @@ spec:
         timeout: 120s
         content: |
           ../../lib/assert-operator-metric-families.sh ovn-system ovn-operator ovn_operator
+    catch:
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/instance=ovn-operator
+        tail: 200
+  # ── Step 8: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the OVNCentral from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack ovncentrals.ovn.openstack.c5c3.io ovn-basic
     catch:
     - podLogs:
         namespace: ovn-system
