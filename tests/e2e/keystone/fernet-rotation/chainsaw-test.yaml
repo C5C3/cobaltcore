@@ -11,9 +11,12 @@
 #   - A fernet token obtained before rotation validates after rotation
 #   - A staging Secret deleted between rotations comes back empty with its
 #     label and controller owner reference, and nothing commits from it
+#   - A second rotation past maxActiveKeys prunes the key that signed the
+#     pre-rotation token, so that token gets a 401 while tokens signed by
+#     surviving keys validate
 #   - The keystone-operator release exports
 #     keystone_operator_key_rotation_age_seconds for the fernet keys once
-#     the rotation is applied
+#     a rotation is applied
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -431,6 +434,205 @@ spec:
           kubectl get secret keystone-fernet-fernet-keys -n $NAMESPACE -o json 2>/dev/null | jq 'del(.data)' 2>&1 || true
           echo "=== Events of keystone-fernet ==="
           kubectl get events -n $NAMESPACE --field-selector involvedObject.name=keystone-fernet --sort-by='.lastTimestamp' 2>&1 || true
+  # ── Step 7: Prune a key past maxActiveKeys ─────────────────────────────
+  # keystone-manage fernet_rotate renames key 0 to max+1, writes a new 0 and
+  # purges the lowest indices until maxActiveKeys (3) keys remain. Step 4
+  # left {0,2,3}; this rotation leaves {0,3,4} and purges 2, the primary key
+  # that signed the stashed token T0. The kubelet projects the Secret into
+  # the API pod in place, and keystone reads the key repository on every
+  # token operation (the fixture turns caching off), so T0 must get a 401
+  # while T1, signed by the surviving key 3, and a fresh T2 validate.
+  - try:
+    - script:
+        timeout: 600s
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          ADMIN_PASS=$(kubectl get secret keystone-admin -n openstack \
+            -o jsonpath='{.data.password}' | base64 -d)
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "FAIL: keystone-admin Secret has empty or missing password field"
+            exit 1
+          fi
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet,pod-template-hash \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          T0=$(kubectl get secret keystone-fernet-pre-rotation-token -n openstack \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || true)
+          if [ -z "$T0" ]; then
+            echo "FAIL: no pre-rotation token stash (step 4 did not run or was cleaned up)"
+            exit 1
+          fi
+
+          # prod_keys: the key indices of the production Secret, ascending.
+          prod_keys() {
+            kubectl get secret keystone-fernet-fernet-keys -n openstack -o json \
+              | jq -r '.data // {} | keys | sort_by(tonumber) | join(" ")'
+          }
+          # pod_keys: the digit-named entries of the API pod's key directory,
+          # ascending. The kubelet projection adds ..data entries, which the
+          # filter drops; python3 lists the directory because the image does
+          # not promise ls.
+          pod_keys() {
+            kubectl exec -n openstack "$POD" -- python3 -c 'import os; print(" ".join(sorted((n for n in os.listdir("/etc/keystone/fernet-keys") if n.isdigit()), key=int)))'
+          }
+          # wait_projection <keys> <seconds>: poll until the pod projects <keys>.
+          # A token issued before the projection completes would be signed
+          # with the old primary key.
+          wait_projection() {
+            local want="$1" limit="$2" have=""
+            local until_s=$((SECONDS + limit))
+            while :; do
+              have=$(pod_keys || true)
+              [ "$have" = "$want" ] && return 0
+              if [ "$SECONDS" -ge "$until_s" ]; then
+                echo "FAIL: pod $POD projects keys [$have], Secret holds [$want] after ${limit}s"
+                return 1
+              fi
+              sleep 2
+            done
+          }
+          # issue_token: an admin token, the request of step 4. The password
+          # goes over stdin, never into an argument.
+          issue_token() {
+            printf '%s' "$ADMIN_PASS" | kubectl exec -i -n openstack "$POD" -- python3 -c '
+          import json, sys, urllib.request
+          pw = sys.stdin.read()
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req) as r:
+              sys.stdout.write(r.headers.get("X-Subject-Token", ""))
+          '
+          }
+          # validate <token>: the HTTP code of GET /v3/auth/tokens with the
+          # token as both X-Auth-Token and X-Subject-Token, the request of
+          # step 4. The token goes over stdin, never into an argument.
+          validate() {
+            printf '%s' "$1" | kubectl exec -i -n openstack "$POD" -- python3 -c '
+          import sys, urllib.request, urllib.error
+          tok = sys.stdin.read()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", headers={"X-Auth-Token": tok, "X-Subject-Token": tok})
+          try:
+              with urllib.request.urlopen(req) as r:
+                  sys.stdout.write(str(r.status))
+          except urllib.error.HTTPError as e:
+              sys.stdout.write(str(e.code))
+          '
+          }
+
+          wait_projection "$(prod_keys)" 150
+          T1=$(issue_token)
+          if [ -z "$T1" ]; then
+            echo "FAIL: no token issued before the second rotation"
+            exit 1
+          fi
+          echo "OK: token T1 issued under the projected key set"
+
+          # E is the set keystone leaves for max_active_keys 3; P holds the
+          # keys the rotation must purge.
+          B=$(prod_keys)
+          MAXB=${B##* }
+          E="0 $MAXB $((MAXB + 1))"
+          P=""
+          for k in $B; do
+            case " $E " in
+              *" $k "*) ;;
+              *) P="${P:+$P }$k" ;;
+            esac
+          done
+          if [ -z "$P" ]; then
+            echo "FAIL: no key would be pruned: B=[$B] E=[$E]"
+            exit 1
+          fi
+          echo "OK: keys before the second rotation [$B], expected after [$E], to be pruned [$P]"
+
+          BEFORE_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
+            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          kubectl create job keystone-fernet-manual-rotate-2 \
+            --from=cronjob/keystone-fernet-fernet-rotate -n openstack
+          kubectl wait --for=condition=complete \
+            job/keystone-fernet-manual-rotate-2 -n openstack --timeout=120s
+          AFTER_HASH="$BEFORE_HASH"
+          for _ in $(seq 1 60); do
+            AFTER_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
+              -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+            [ "$BEFORE_HASH" != "$AFTER_HASH" ] && break
+            sleep 1
+          done
+          if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
+            echo "FAIL: fernet Secret data did not change within 60s of the second rotation"
+            exit 1
+          fi
+
+          A=$(prod_keys)
+          read -ra A_KEYS <<<"$A"
+          if [ "$A" != "$E" ] || [ "${#A_KEYS[@]}" -ne 3 ]; then
+            echo "FAIL: key set after the second rotation is [$A], expected [$E] (before: [$B])"
+            exit 1
+          fi
+          echo "OK: second rotation left keys [$A] and pruned [$P]"
+
+          wait_projection "$E" 150
+          echo "OK: pod $POD projects keys [$E]"
+
+          until_s=$((SECONDS + 60))
+          CODE=""
+          while :; do
+            CODE=$(validate "$T0" || true)
+            [ "$CODE" = "401" ] && break
+            if [ "$SECONDS" -ge "$until_s" ]; then
+              echo "FAIL: pre-rotation token still returns HTTP $CODE after 60s; pruning kept its key (pruned candidates: P=[$P])"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: pre-rotation token T0 rejected with HTTP 401 after key [$P] was pruned"
+
+          CODE=$(validate "$T1")
+          if [ "$CODE" != "200" ]; then
+            echo "FAIL: token T1, signed by key $MAXB, returns HTTP $CODE; pruning dropped a surviving key"
+            exit 1
+          fi
+          echo "OK: token T1 signed by surviving key $MAXB validates (HTTP 200)"
+
+          T2=$(issue_token)
+          if [ -z "$T2" ]; then
+            echo "FAIL: no token issued after the second rotation"
+            exit 1
+          fi
+          CODE=$(validate "$T2")
+          if [ "$CODE" != "200" ]; then
+            echo "FAIL: token T2, issued after the second rotation, returns HTTP $CODE"
+            exit 1
+          fi
+          echo "OK: token T2 issued after the second rotation validates (HTTP 200)"
+    catch:
+    - script:
+        content: |
+          echo "=== Second rotation Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-fernet-manual-rotate-2 -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-fernet-manual-rotate-2 -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Production key names ==="
+          kubectl get secret keystone-fernet-fernet-keys -n $NAMESPACE -o json 2>/dev/null \
+            | jq -r '.data // {} | keys | join(" ")' 2>&1 || true
+          echo "=== API pod key directory ==="
+          for pod in $(kubectl get pods -n $NAMESPACE \
+              -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet,pod-template-hash \
+              -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl exec -n $NAMESPACE "$pod" -- python3 -c 'import os; print(" ".join(sorted(os.listdir("/etc/keystone/fernet-keys"))))' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 9: Pause rotation via spec.fernet.suspend: true (escape hatch) ──
   - try:
     - patch:
@@ -452,8 +654,8 @@ spec:
   # ── Step 11: Assert the operator's metric families ─────────────────────
   # The header of ../../lib/assert-operator-metric-families.sh lists the
   # checks it runs against the cluster-wide release.
-  # The rotation of Step 4 set the age gauge, which no fresh deployment
-  # exports.
+  # The rotations of steps 4 and 7 set the age gauge, which no fresh
+  # deployment exports.
   - try:
     - script:
         shell: bash
