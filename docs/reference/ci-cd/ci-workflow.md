@@ -1699,8 +1699,23 @@ Keystone-only plane reaches `Ready=True/AllReady` with no PodSecurity violation
 event. Each brings up a plane of its own, stays a separate step for the same
 `failFast` reason, and writes its JUnit XML as
 `chainsaw-report-controlplane-healthcheck` and
-`chainsaw-report-controlplane-pod-security-restricted`, so the uploaded artifact
-carries six report files.
+`chainsaw-report-controlplane-pod-security-restricted`.
+
+Steps seven to ten run the per-ControlPlane scoping and teardown suites, each
+in a step of its own for the same `failFast` reason and under a report name of
+its own, so the uploaded artifact carries ten report files:
+`tests/e2e/c5c3/admin-password-scoping/` as
+`chainsaw-report-admin-password-scoping`, `tests/e2e/c5c3/db-credential-scoping/`
+as `chainsaw-report-db-credential-scoping`, `tests/e2e/c5c3/multi-controlplane/`
+as `chainsaw-report-multi-controlplane`, and
+`tests/e2e/c5c3/deletion-orchestration/` as
+`chainsaw-report-deletion-orchestration`. They prove that a plane's admin
+password and dynamic DB credential sit on paths of its own, that two planes in
+`tenant-a` and `tenant-b` cannot read or rotate each other's credentials, and
+that deleting a plane after its Keystone is gone still completes and reclaims
+its Barbican ensemble. Each brings up its own planes outside `openstack`, where
+the full-chain plane stays, seeds their OpenBao paths and onboards their
+database-engine roles itself, and deletes its planes before the next step.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
@@ -1733,31 +1748,42 @@ fails the step above 4000m CPU or 16Gi memory. The job-level `env` sets
 `hack/ci-deploy-operator.sh`, so every operator runs one replica, as in the kind
 devstack, and the gate counts that footprint. The other e2e jobs keep the chart
 default of two. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 400-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 540-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
-OpenBao + ESO + K-ORC on one node is resource-heavy, and its six chainsaw
+OpenBao + ESO + K-ORC on one node is resource-heavy, and its ten chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
 overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
-and the `cleanup` budget runs after all three. Each of the six suites
+and the `cleanup` budget runs after all three. Each of the ten suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 140, 80, 110, 90, 65 and 65 minutes. The job wall has to outlast the bring-up plus
-the suites that pass plus the full ceiling of the one that stalls, or a stalled
-suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML. The 400 minutes cover roughly 45 minutes of bring-up, the
-140-minute ceiling of the full-chain suite, roughly 25 minutes for the
-foreign-namespace pass, 55 for the keystone-user pass and 10 each for the
-healthcheck and pod-security-restricted passes, and the 110-minute ceiling of
-the keystone-user suite, the largest of the other five, for the suite that
-stalls: 45+140+25+55+10+10+110 = 395 minutes in all. The bring-up and the four
-pass terms are estimates, so confirm them against the first green run of the
-leg and re-derive the wall if one overruns.
+ceilings at 140, 80, 110 and 90 minutes for the first four, at 65 minutes each
+for healthcheck and pod-security-restricted, and at 50
+(admin-password-scoping), 50 (db-credential-scoping), 100 (multi-controlplane)
+and 75 minutes (deletion-orchestration) for steps seven to ten. The job wall
+has to outlast the bring-up plus the suites that pass plus the full ceiling of
+the one that stalls, or a stalled suite is killed before its own timeout fires
+and reports as a cancelled job with no JUnit XML.
+
+The 540 minutes cover roughly 45 minutes of bring-up, the 140-minute ceiling of
+the full-chain suite, the passes of eight of the nine other suites, and the
+110-minute ceiling of the keystone-user suite, still the largest of the nine
+others, for the suite that stalls. The eight passes leave out the smallest, the
+roughly 10 minutes of healthcheck or pod-security-restricted, and add up to 235
+minutes: about 55 for keystone-user, 45 for multi-controlplane, 40 for
+deletion-orchestration, 25 each for the foreign-namespace and own-namespace
+suites, 20 for db-credential-scoping, 15 for admin-password-scoping and 10 for
+the other Keystone-only suite. That makes 45+140+235+110 = 530 minutes in all.
+The pass estimates of the other three earlier suites stand because their
+measured passes in run 39853183141 (4.3, 14.6 and 6.6 minutes for
+foreign-namespace, keystone-user and own-namespace) sit well under them; the
+full-chain suite enters the sum at its ceiling. The six newer pass terms and the
+bring-up are estimates, so confirm them against the first green run of the leg
+and re-derive the wall if one overruns.
 
 Under `ci:measure-sizing` the job runs the
 [sizing measurement](#sizing-measurement): the watch starts after
 `Setup E2E infrastructure`, and the collect and upload steps follow
-`Run ControlPlane pod-security-restricted E2E test` and publish
-`sizing-e2e-controlplane`.
+`Run deletion-orchestration E2E test` and publish `sizing-e2e-controlplane`.
 
 The job creates its cluster from `hack/kind-config-audit.yaml`, so the API
 server writes an audit log. After the diagnostics dumps, the `Report RBAC usage`
