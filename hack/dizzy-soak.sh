@@ -38,8 +38,9 @@ case "${EXTERNAL_OVERLAY}" in
 esac
 SOAK_DIR="${OVERLAY_ROOT}/dizzy-soak"
 
-# Settings. A DIZZY_SOAK_DURATION that is set but empty is refused, so its
-# default applies only when it is unset.
+# Settings. A DIZZY_SOAK_DURATION, DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT
+# or DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH that is set but empty is
+# refused, so its default applies only when it is unset.
 DIZZY_SOAK_SERVICE="${DIZZY_SOAK_SERVICE:-mix}"
 DIZZY_SOAK_DURATION="${DIZZY_SOAK_DURATION-6h}"
 DIZZY_SCENARIO="${DIZZY_SCENARIO:-}"
@@ -51,6 +52,8 @@ DIZZY_SOAK_NAMESPACES="${DIZZY_SOAK_NAMESPACES:-}"
 DIZZY_SOAK_SAMPLE_INTERVAL="${DIZZY_SOAK_SAMPLE_INTERVAL:-60}"
 DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE:-}"
 DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS:-}"
+DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT-10}"
+DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH-10}"
 
 # The objects of the soak, the local report directory and the waits. Plain
 # variables, so the unit test can point them elsewhere after sourcing.
@@ -106,6 +109,10 @@ Settings (environment):
                               (default empty: no check).
   DIZZY_SOAK_MAX_P95_SECONDS  maximum overall p95 latency in seconds
                               (default empty: no check).
+  DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT  maximum heap growth of an
+                              operator pod in percent (default 10).
+  DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH  maximum goroutine growth of an
+                              operator pod (default 10).
 EOF
 }
 
@@ -250,6 +257,12 @@ soak_preflight() {
   if [[ -n "${DIZZY_SOAK_MAX_P95_SECONDS}" ]] && ! soak_number_in "${DIZZY_SOAK_MAX_P95_SECONDS}" 'v > 0'; then
     soak_fail "DIZZY_SOAK_MAX_P95_SECONDS must be empty or a positive number of seconds"
   fi
+  if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" 'v > 0'; then
+    soak_fail "DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT must be a positive number"
+  fi
+  if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" 'v > 0'; then
+    soak_fail "DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH must be a positive number"
+  fi
   if [[ ! "${DIZZY_VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
     soak_fail "DIZZY_VERSION must be an image tag of letters, digits, '.', '_' and '-'"
   fi
@@ -372,7 +385,9 @@ soak_start() {
     --from-literal=DIZZY_SOAK_NAMESPACES="${DIZZY_SOAK_NAMESPACES}" \
     --from-literal=DIZZY_SOAK_SAMPLE_INTERVAL="${DIZZY_SOAK_SAMPLE_INTERVAL}" \
     --from-literal=DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE}" \
-    --from-literal=DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS}"
+    --from-literal=DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS}" \
+    --from-literal=DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" \
+    --from-literal=DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}"
 
   log "Creating the Job ${SOAK_NAMESPACE}/${SOAK_JOB} (dizzy ${DIZZY_VERSION}, ${DIZZY_SOAK_SERVICE}, ${DIZZY_SOAK_DURATION})..."
   if ! sed "s#ghcr.io/b42labs/dizzy:DIZZY_VERSION#ghcr.io/b42labs/dizzy:${DIZZY_VERSION}#" "${SOAK_DIR}/job.yaml" |
