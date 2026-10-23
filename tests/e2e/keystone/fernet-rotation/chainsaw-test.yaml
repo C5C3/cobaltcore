@@ -4,7 +4,8 @@
 
 # Chainsaw E2E test for fernet key rotation.
 # Verifies:
-#   - CronJob schedule matches spec.fernet.rotationSchedule
+#   - CronJob schedule matches spec.fernet.rotationSchedule, and the CronJob
+#     carries concurrencyPolicy: Forbid
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
 #   - Pod UIDs remain unchanged after rotation (no Deployment rollout)
 #   - A fernet token obtained before rotation validates after rotation
@@ -66,7 +67,9 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Assert CronJob schedule matches spec; not suspended by default ─
+  # ── Step 3: Assert CronJob schedule, suspend and concurrency policy ────
+  # The schedule matches spec, rotation is not suspended by default, and a
+  # scheduled rotation never overlaps an earlier one.
   - try:
     - assert:
         resource:
@@ -78,6 +81,7 @@ spec:
           spec:
             schedule: "0 0 * * 0"
             suspend: false
+            concurrencyPolicy: Forbid
   # ── Step 4: Trigger rotation, verify no rollout, validate token ─────────
   - try:
     - script:
@@ -122,6 +126,16 @@ spec:
             exit 1
           fi
           echo "OK: Obtained fernet token before rotation"
+          # Stash the token for step 7, which expects it to fail once a second
+          # rotation prunes its key. The stash is a Secret because the token is
+          # a credential. The apply form lets a local re-run on the same
+          # cluster pass instead of failing on AlreadyExists. The token goes
+          # over stdin, never into an argument, and server-side apply keeps it
+          # out of the last-applied-configuration annotation.
+          printf '%s' "$TOKEN" | kubectl create secret generic keystone-fernet-pre-rotation-token -n openstack \
+            --from-file=token=/dev/stdin \
+            --dry-run=client -o yaml | kubectl apply --server-side -f -
+          echo "OK: pre-rotation token stashed"
 
           # Trigger manual fernet key rotation.
           kubectl create job keystone-fernet-manual-rotate \
@@ -199,6 +213,19 @@ spec:
             -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+          echo "=== Pre-rotation token stash (token redacted) ==="
+          kubectl get secret keystone-fernet-pre-rotation-token -n $NAMESPACE 2>&1 || true
+          kubectl get secret keystone-fernet-pre-rotation-token -n $NAMESPACE -o json 2>/dev/null \
+            | jq 'del(.data.token, .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"])' 2>&1 || true
+    # The token stash is created by a script, so chainsaw does not track it.
+    # This is a step cleanup and not a finally on step 7: chainsaw runs a
+    # step's finally at the end of that step and skips every later step once
+    # one fails, while the cleanups of the steps that did run fire at the end
+    # of the test. So the token is deleted whichever step failed.
+    cleanup:
+    - script:
+        content: |
+          kubectl delete secret keystone-fernet-pre-rotation-token -n openstack --ignore-not-found 2>&1 || true
   # ── Step 4.5: Assert rotation Role RBAC split ─────────
   # Verifies the `keystone-fernet-fernet-rotate` Role grants `patch` ONLY on
   # the staging Secret (`keystone-fernet-fernet-keys-rotation`) and NEVER on
