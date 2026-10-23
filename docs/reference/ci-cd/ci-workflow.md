@@ -75,7 +75,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
 | `tests_e2e_<op>` | `tests/e2e/<op>/**` and `tests/e2e/<op>-operator/**` (`tests/e2e/c5c3/**` alone for c5c3); `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova), and `tests/e2e/lib/assert-operator-env-clean.sh` alone for c5c3, ovn and neutron, whose `env-key-material` suites run only that script | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
-| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
+| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**`, and `tests_operator_upgrade` also covers `hack/ci-fetch-released-operator.sh`, which fetches its baseline, and `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls | the job that runs it |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
 | `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
@@ -1129,9 +1129,12 @@ no suite runs Nova against a real second cluster yet
 ### e2e-operator-upgrade
 
 Operator helm-upgrade-in-place E2E. Installs the last released keystone-operator
-chart+image from GHCR as the baseline, brings a Keystone CR to Ready, then
-`helm upgrade`s the release to the locally built chart+CRDs and asserts the
-deployed Keystone survives the operator upgrade (Ready persists,
+chart+image from GHCR as the baseline and brings a Keystone CR to Ready. The
+suite then applies the locally built CRDs and checks the deployed Keystone while
+the released operator still runs it (the
+[CRD window](../testing/operator-upgrade-e2e-tests.md#the-crd-window)). After
+that it `helm upgrade`s the release to the locally built chart and asserts that
+the deployed Keystone keeps working across the operator upgrade (Ready persists,
 `status.installedRelease` unchanged, no re-bootstrap). See
 [Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md) for suite
 details.
