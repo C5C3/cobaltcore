@@ -4541,7 +4541,13 @@ because dizzy's Legacy persona skips live migration without it. Its password
 lives in the Secret `dizzy-soak-user-password`, never in Git, an argument or a
 ConfigMap, and reaches Keystone over plain HTTP inside the cluster. The pods
 run as 65534 without privilege escalation or capabilities, and the reader pod
-mounts no ServiceAccount token.
+mounts no ServiceAccount token. The runner fetches each operator pod's
+`/metrics` over the pod network, over plain HTTP and without a credential. An
+operator release with `networkPolicy.enabled: true` must admit the runner in
+`networkPolicy.allowMetricsFrom`, one peer with the namespaceSelector
+`kubernetes.io/metadata.name: dizzy` and the podSelector
+`batch.kubernetes.io/job-name: dizzy-soak`, or `operator-leak` fails with
+curl's timeout.
 
 **Teardown.** `EXTERNAL_CLUSTER=true make teardown-infra` removes the soak
 after the Chaos Mesh step and before the hypervisors (see
