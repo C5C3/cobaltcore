@@ -1308,6 +1308,119 @@ The script's budget is `exec: 45m`, with `catch` 5m, `finally` 15m and
 `e2e-orders-multicluster` CI job, which reports it as
 `chainsaw-orders-multicluster-report`.
 
+## Scheduled Flux path run
+
+`.github/workflows/flux-path.yaml` brings up the devstack of the
+[ControlPlane quick start](../../quick-start-controlplane.md) against `main`
+every night, the way the page tells a user to. It runs
+`WITH_CONTROLPLANE=true make deploy-infra` on its default
+`CONTROLPLANE_OPERATORS=flux` path, so the operators come from the charts and
+images `main` published and K-ORC from its Flux source. Then
+`hack/ci-quick-start-controlplane.sh up` runs Steps 3 to 6 of the page with the
+page's full CR: Keystone, Horizon, Glance, Placement, Barbican, Neutron and Nova
+over a referenced OVNCentral. The run fails when the ControlPlane
+`controlplane` in `openstack` does not become `Ready`.
+
+The `e2e-controlplane` job proves the same chain on operators built from the
+checkout. Only this run installs what `main` published, so it is the one that
+sees a chart that no longer installs, an operator digest that no longer
+resolves, an expired K-ORC tag or a quick start CR the published operators
+reject.
+
+### Triggers and jobs
+
+| Trigger | When |
+| --- | --- |
+| `schedule` | Every night at 02:45 UTC, after the 01:30 start and 75-minute wall of the [performance nightly](./reconcile-performance-benchmark.md) |
+| `workflow_dispatch` | By hand, from the Actions tab or with `gh workflow run flux-path.yaml` |
+| `pull_request` | A pull request from a branch of this repository that changes the workflow, `hack/ci-quick-start-controlplane.sh` or `hack/ci-report-red-run.sh`. GitHub dispatches `workflow_dispatch` only for a workflow on the default branch, so this trigger lets such a change prove itself before it merges. A fork's pull request skips the job |
+
+The concurrency group is `flux-path-<event>-<ref>`, so a night never shares a
+group with a dispatch. GitHub replaces a pending run with the next one queued in
+its group, and in a shared group a second dispatch would cancel a night that
+waits behind the first. A newer push cancels the run of a pull request.
+
+| Job | Runner | Wall | Permissions | Steps |
+| --- | --- | --- | --- | --- |
+| `controlplane` | `self-hosted` | 90 minutes | `contents: read` | Creates the kind cluster from `hack/kind-config.yaml`, runs `setup-e2e-infra` with `WITH_CONTROLPLANE: "true"` as its only env, then `up`. On failure it writes the summary below into the job summary and into the artifact `flux-path-summary`, kept for 14 days, and dumps diagnostics with `OPERATOR: c5c3`. Its last step deletes the cluster under `always()` |
+| `report` | `ubuntu-latest` | 5 minutes | `contents: read`, `issues: write` | Runs after a scheduled `controlplane` that did not succeed. Downloads `flux-path-summary`, if the job uploaded it, and runs `hack/ci-report-red-run.sh` |
+
+The quick start asks for 16 GB of memory for the container runtime alone, which
+is why `controlplane` runs on a self-hosted runner. A green night is estimated
+at 40 to 45 minutes. The job does not log in to GHCR: a user pulls the public
+images anonymously, and the night does the same.
+
+### Stages of `up`
+
+`up` applies the page's `# controlplane-ovn.yaml` block and its first
+`# controlplane.yaml` block, so an edit to either block changes what the next
+night applies. `tests/unit/hack/ci_quick_start_controlplane_test.sh` runs `up`
+against the page on every pull request with a stubbed `kubectl`, and a
+structural edit fails it: a missing marker, or a CR of another kind, name or
+namespace.
+
+Before each stage `up` writes the stage's name to `_output/flux-path/stage`, and
+after the last one it writes `done`. It stops at the first failure with exit 1.
+A failing `kubectl apply` or `kubectl wait` prints
+`ERROR: <stage>: kubectl <arguments> failed (exit <code>)` below kubectl's own
+message.
+
+| Stage | What it does | Timeout |
+| --- | --- | --- |
+| `extract` | Copies the two blocks to `_output/flux-path/`. Fails with `ERROR: <doc> has no yaml block that starts with '<marker>'` when a block is missing, and with `ERROR: <copy>: <field> is '<value>', expected '<expected>'` unless the copies are an `OVNCentral` and the `ControlPlane` `controlplane`, both in `openstack`. On port 443 it deletes every `publicEndpoint` from the CR copy, as the CR's comments say | None |
+| `ovn` | Applies the OVNCentral and waits for `Ready` | 600 s (`OVN_TIMEOUT`) |
+| `apply` | Applies the ControlPlane | None |
+| `mariadb` | Waits for `mariadb/openstack-db` to exist with `kubectl wait --for=create`, then waits for `Ready` | 600 s for both (`MARIADB_TIMEOUT`) |
+| `onboard` | Reads the root token from Secret `openbao-init-keys` in `shared-services` and runs `deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane` with the token in `BAO_TOKEN`. Fails with `ERROR: cannot read Secret shared-services/openbao-init-keys` or `ERROR: Secret shared-services/openbao-init-keys carries no root_token` before the script runs | None |
+| `ready` | Waits for the ControlPlane's `Ready` | 1800 s (`READY_TIMEOUT`) |
+
+The `mariadb` stage waits for the MariaDB to exist first because the page's
+`kubectl wait` fails with NotFound when it runs before the c5c3-operator has
+created the MariaDB. A user typing it seconds after the apply never sees that,
+and a script does. The `ready` timeout is twice the page's 15 minutes, because
+a CI node cold-starts a service about four times slower than a workstation.
+The token reaches the onboarding script through its environment only and
+appears in no argument and no output.
+
+When a step of `controlplane` fails,
+`hack/ci-quick-start-controlplane.sh summary _output/flux-path/summary.md` writes
+a Markdown report: the stage the run stopped in (`deploy-infra` when `up` never
+started), the ControlPlane's conditions as a table, the OVNCentral's `Ready`
+condition, `kubectl get helmrelease -A` and the Flux sources in `flux-system`. A
+read that fails writes `(unavailable: <error>)` in its place. The report reads
+no Secret, because it goes into a public issue.
+
+### Tracking issue
+
+A scheduled run whose `controlplane` job did not succeed files one tracking
+issue titled `Scheduled Flux path run is red`. The `report` job runs
+`hack/ci-report-red-run.sh`, which creates the issue on the first red night and
+comments on it on every later one. It takes only an open issue that
+`github-actions[bot]` opened: the repository is public, so anyone can open an
+issue of that title, and the script ignores such an issue. The body names the
+result (a night a person cancelled reports `cancelled`), links the run, names
+the commit and carries the summary, cut at 60000 bytes because GitHub rejects a
+body over 65536 characters. A night that hit its wall uploaded no summary, and
+the body says to read the run log instead. The script reads every page of the
+open issues and adds no label. A failed listing files nothing, so a transient
+API error does not open a duplicate.
+
+A maintainer closes the issue once the cause is fixed. A green night leaves it
+open, because a lucky green would close an issue whose cause nobody fixed. A
+dispatch or a pull request run never reports.
+
+### Reproducing a night locally
+
+```bash
+WITH_CONTROLPLANE=true make deploy-infra
+hack/ci-quick-start-controlplane.sh up
+```
+
+On macOS pass `KIND_HOST_PORT=8443` to both commands; `up` then keeps the CR's
+`publicEndpoint` lines. Keep `CONTROLPLANE_NAME` at its default: deploy-infra
+seeds the admin password for that name, and `up` fails in `extract` when the
+page's CR carries another one. The header of the script lists its other
+environment variables, among them `STATE_DIR` and the three timeouts.
 
 ## File Layout
 

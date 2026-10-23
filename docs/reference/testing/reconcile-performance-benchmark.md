@@ -251,8 +251,9 @@ with a 75-minute wall and read-only `contents` and `packages` permissions:
 
 A red night fails the run. GitHub notifies the user who last changed the cron
 schedule of the workflow file; the workflow opens no issue. The workflow pins
-`KIND_VERSION` like `ci.yaml` and `hack/install-test-deps.sh`, and Renovate's
-`kind` group moves the three pins in one pull request
+`KIND_VERSION` like `ci.yaml`, `e2e-operator-upgrade.yaml`, `flux-path.yaml`
+and `hack/install-test-deps.sh`, and Renovate's `kind` group moves the five
+pins in one pull request
 (`tests/unit/renovate/workflow_pins_custommanager_test.sh` asserts they agree).
 
 ## Re-baselining
