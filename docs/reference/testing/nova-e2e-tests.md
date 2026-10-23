@@ -311,6 +311,8 @@ the `openstack` client.
 | 6 | Start the fake-driver compute | `apply` + `assert` | `11-fake-compute.yaml`, applied only now because it mounts the compute-contract Secret; `nova-basic-fake-compute` reaches `availableReplicas: 1` |
 | 7 | Wait for the scheduler to map the compute into cell1 | `script` (10m) | Polls `nova-manage cell_v2 list_hosts` in the conductor for `fake-1`, 84 times 5 s apart, then greps `Discovered 1 new hosts` out of the scheduler log |
 | 8 | Boot, resize and delete a server | `script` + `assert` | `12-verify-job.yaml`, waited 10m; the log is read once and `NOVA-VERIFY-OK` grepped out of it; `succeeded: 1` |
+| 9 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `nova-operator` release: a reconcile is counted, no error carries `condition_type="UNKNOWN"`, and the `nova_operator_db_sync_total{result="succeeded"}` and `nova_operator_db_sync_duration_seconds_count` samples of `nova-basic` are exported |
+| 10 | Assert the steady state emits no event | `script` (4m) | `tests/e2e/lib/assert-steady-state-events.sh`: no event on `nova-basic` appears or raises its count in 120 seconds, and the CR stays Ready at the same generation |
 
 The two config scripts in step 5 resolve the content-hashed ConfigMap through
 the API Deployment's `config` volume and match
@@ -642,6 +644,7 @@ row behind in the live table.
 | 8 | Boot and delete a server | `script` + `assert` | `12-verify-job.yaml` to `NOVA-VERIFY-OK`; the delete leaves the rows the next step waits on |
 | 9 | Wait for a run that saw the delete, then read the tables | `script` (5m) | Stamps the time, polls up to 3 minutes for an archive Job created after it that succeeded, then reads `shadow_instances` and the soft-deleted rows left in `instances` with the `mariadb` client in `openstack-db-0`: at least one shadow row and zero left behind |
 | 10 | The operator reports the schedule and no failed run | `assert` + `script` (2m) | `DBArchiveReady=True/DBArchiveScheduled` and no `DBArchiveJobFailed` event on the CR, which the condition alone would not catch after a failed run followed by a successful one |
+| 11 | Assert the archive runs are counted | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `nova-operator` release, with the `nova_operator_db_archive_total{result="succeeded"}` sample of `nova-archive` |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-catalog-setup-job.yaml`,
 `02-messaging-secret.yaml`, `03-ovncentral-cr.yaml`, `04-neutron-cr.yaml`,

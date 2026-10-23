@@ -199,6 +199,8 @@ single-writer shape the NFS drivers require, and the API answers over HTTP.
 | 4 | Assert the rendered cinder.conf | `script` | Resolves the content-hashed ConfigMap through the API Deployment's `config` volume, then matches `auth_strategy = noauth`, `host = cinder-basic`, `api_paste_config`, `resource_query_filters_file` and `driver = noop`, and fails on a `[keystone_authtoken]` section or an `enabled_backends` key. A second script cuts `[privsep_osbrick]` out and matches the helper command and an empty capabilities list |
 | 5 | Assert the rendered backend Secret | `script` | Resolves the content-hashed Secret through the volume Deployment's `backend` volume, then matches `[basic-nfs1]`, `volume_driver = cinder.volume.drivers.nfs.NfsDriver`, `backend_host = cinder-basic`, `nfs_shares_config`, `nas_secure_file_operations = true` and `nfs_snapshot_support = false`. The `shares` key and the `volume.conf` overlay are diffed in full against one export line and `enabled_backends = basic-nfs1` |
 | 6 | Assert the Cinder API answers over HTTP | `script` (6m) | Probe pod: version document 300 with v3.0 `CURRENT`, `/healthcheck` 200 `OK`, `/v3/resource_filters` at microversion `volume 3.33`, `/v3/os-services` with `cinder-scheduler` and `cinder-basic@basic-nfs1` both `up`, an empty `/v3/volumes`, and 404 for `/v3/admin/volumes`. Sentinel `BASIC-PROBE-OK` |
+| 7 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `cinder-operator` release: a reconcile is counted, no error carries `condition_type="UNKNOWN"`, and the `cinder_operator_db_sync_total{result="succeeded"}` and `cinder_operator_db_sync_duration_seconds_count` samples of `cinder-basic` are exported |
+| 8 | Assert the steady state emits no event | `script` (4m) | `tests/e2e/lib/assert-steady-state-events.sh`: no event on `cinder-basic` appears or raises its count in 120 seconds, and the CR stays Ready at the same generation |
 
 **Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`
 
@@ -624,6 +626,7 @@ service-remove Job.
 | 4 | Run the db-purge CronJob by hand under the profile | `script` (3m) + `assert` (5m) | `kubectl create job cinder-pss-purge-now --from=cronjob/cinder-pss-db-purge` copies the rendered jobTemplate, and the Job succeeds |
 | 5 | Detach the volume backend and let the service-remove Job run | `delete` (6m) + `assert` (5m) | Deleting `pss-nfs1` runs Job `cinder-pss-pss-nfs1-service-remove` to success and leaves `VolumeServicesReady=False/NoBackends` |
 | 6 | Assert zero PSS-violation FailedCreate events | `script` | Scans the `FailedCreate` events of `cinder-pss` for the literal `violates PodSecurity "restricted:latest"` and requires a zero count |
+| 7 | Assert both manual runs are counted | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `cinder-operator` release, with the `cinder_operator_db_purge_total` and `cinder_operator_service_remove_total` samples of `cinder-pss` at `result="succeeded"` |
 
 **Fixtures:** `00-namespace.yaml`, `00-brownfield-db-setup.yaml`, `01-cinderbackend-cr.yaml`, `02-cinderbackupbackend-cr.yaml`, `03-cinder-cr.yaml`
 
