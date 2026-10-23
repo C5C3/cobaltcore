@@ -8,4 +8,4 @@
 # hack/ci-fetch-released-operator.sh. Renovate does not track the pin.
 # docs/reference/testing/operator-upgrade-e2e-tests.md gives the bump rule,
 # the reason Renovate leaves it alone, and the v* tag hazard.
-version: "0.6.0"
+version: "0.6.1"
