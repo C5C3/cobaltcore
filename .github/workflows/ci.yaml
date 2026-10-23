@@ -302,8 +302,10 @@ jobs:
               # placement, barbican, cinder and nova run the shared proof
               # script under tests/e2e/lib/, and their env-key-material suites
               # the environment scan beside it, so those seven filters list the
-              # directory. c5c3, ovn and neutron run the scan alone and list
-              # that one script, so an edit to the proof does not run them.
+              # directory. ovn and neutron run the scan, the metric-family
+              # check and the event budget, and list those three scripts. c5c3
+              # runs the scan alone and lists that one script, so an edit to
+              # the proof runs none of the three.
               - 'tests/e2e/lib/**'
             tests_e2e_c5c3:
               - 'tests/e2e/c5c3/**'
@@ -328,10 +330,14 @@ jobs:
               - 'tests/e2e/ovn/**'
               - 'tests/e2e/ovn-operator/**'
               - 'tests/e2e/lib/assert-operator-env-clean.sh'
+              - 'tests/e2e/lib/assert-operator-metric-families.sh'
+              - 'tests/e2e/lib/assert-steady-state-events.sh'
             tests_e2e_neutron:
               - 'tests/e2e/neutron/**'
               - 'tests/e2e/neutron-operator/**'
               - 'tests/e2e/lib/assert-operator-env-clean.sh'
+              - 'tests/e2e/lib/assert-operator-metric-families.sh'
+              - 'tests/e2e/lib/assert-steady-state-events.sh'
             tests_e2e_cinder:
               - 'tests/e2e/cinder/**'
               - 'tests/e2e/cinder-operator/**'

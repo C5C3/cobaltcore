@@ -23,6 +23,8 @@
 #   - fewer than three arguments, an empty argument or a malformed sample
 #     exits 2 with the usage line
 #   - the metrics port it reads matches the nine charts
+#   - an edit to the script runs the e2e-operator jobs of every operator but
+#     c5c3, whose suites do not call it
 # Usage: bash tests/unit/ci/assert_operator_metric_families_test.sh
 
 set -uo pipefail
@@ -563,6 +565,26 @@ test_the_port_matches_the_charts() {
   done
 }
 
+# --- Test 10: the path filters ---
+test_the_filters_name_the_shared_scripts() {
+  echo "Test: an edit to the script runs every leg but c5c3"
+
+  local op block script=assert-operator-metric-families.sh
+  # These seven list the whole directory.
+  for op in barbican cinder glance horizon keystone nova placement; do
+    block="$(filter_block "tests_e2e_$op")"
+    assert_contains "tests_e2e_$op lists the shared directory" "$block" "'tests/e2e/lib/**'"
+  done
+  # ovn and neutron name the script; c5c3 does not call it.
+  for op in ovn neutron; do
+    block="$(filter_block "tests_e2e_$op")"
+    assert_contains "tests_e2e_$op names $script" "$block" "'tests/e2e/lib/$script'"
+  done
+  block="$(filter_block tests_e2e_c5c3)"
+  assert_not_empty "tests_e2e_c5c3 exists" "$block"
+  assert_not_contains "tests_e2e_c5c3 leaves $script out" "$block" "$script"
+}
+
 # --- Run ---
 test_a_two_pod_release_passes_on_the_union
 test_a_release_without_samples_passes
@@ -593,6 +615,8 @@ test_a_restarted_pod_is_named_when_a_sample_is_missing
 test_wrong_arguments_exit_2
 test_the_script_parses
 test_the_port_matches_the_charts
+
+test_the_filters_name_the_shared_scripts
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
