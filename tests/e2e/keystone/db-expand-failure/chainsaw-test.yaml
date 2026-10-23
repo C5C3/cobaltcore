@@ -1,0 +1,205 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a release upgrade whose expand phase fails for good.
+# Verifies:
+#   (1) Fresh deployment at 2026.1 reaches Ready and sets installedRelease
+#   (2) A sequential upgrade to 2026.2 whose expand Job is OOM-killed on every
+#       attempt ends with the Job Failed/BackoffLimitExceeded, and the CR
+#       reports DatabaseReady=False/ExpandFailed with the Job's error while
+#       upgradePhase stays Expanding between installedRelease 2026.1 and
+#       targetRelease 2026.2
+#   (3) The failure emits a Warning ExpandFailed event on the CR
+#   (4) The operator counts the failed phase Job as
+#       keystone_operator_db_sync_total{result="failed"}, read through
+#       ../../lib/assert-operator-metric-families.sh
+#   (5) The Database step runs before the Deployment step, so the API
+#       Deployment keeps the 2026.1 image
+# upgrade-abort wedges its expand Job in ImagePullBackOff, which never
+# exhausts the backoffLimit, so this is the only suite that reaches the
+# failure branch of the upgrade flow. Chainsaw's cleanup deletes the CR in the
+# middle of the upgrade; the finalizer path does not depend on the upgrade
+# state.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-db-expand-failure
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 8m
+  steps:
+  # ── Step 1: Apply Keystone CR with initial release 2026.1 ─────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and installedRelease set ─────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-db-expand-failure
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Patch the tag and a 16Mi Job memory limit ─────────────────
+  - try:
+    - patch:
+        file: 01-patch-expand-failure.yaml
+  # ── Step 4: Assert the expand phase failed for good ───────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-db-expand-failure
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            targetRelease: "2026.2"
+            upgradePhase: Expanding
+            (conditions[?type == 'DatabaseReady']):
+            - status: "False"
+              reason: ExpandFailed
+    # Five attempts with the Job controller's backoff between them take
+    # about three minutes, inside the 8m assert timeout.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-db-expand-failure-db-expand
+            namespace: openstack
+          status:
+            (conditions[?type == 'Failed']):
+            - status: "True"
+              reason: BackoffLimitExceeded
+    - script:
+        content: |
+          set -eu
+          MESSAGE="$(kubectl get keystone keystone-db-expand-failure -n $NAMESPACE \
+            -o jsonpath='{.status.conditions[?(@.type=="DatabaseReady")].message}')"
+          echo "DatabaseReady message: $MESSAGE"
+          case "$MESSAGE" in
+            *"Expand job keystone-db-expand-failure-db-expand failed: job has permanently failed"*)
+              echo "OK: DatabaseReady names the failed expand Job" ;;
+            *)
+              echo "ERROR: DatabaseReady does not name the failed expand Job"
+              exit 1 ;;
+          esac
+          # For diagnosis only: how each attempt ended (OOMKilled, or a
+          # StartError when the container's init already hit the limit).
+          echo "=== Expand Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-db-expand-failure-db-expand \
+            -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.containerStatuses[0].state.terminated.reason}{" exit "}{.status.containerStatuses[0].state.terminated.exitCode}{"\n"}{end}' || true
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Expand Job ==="
+          kubectl get job keystone-db-expand-failure-db-expand -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== Expand Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-db-expand-failure-db-expand -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-db-expand-failure-db-expand -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Assert the Warning ExpandFailed event ─────────────────────
+  # The event leaves the controller through the asynchronous event recorder,
+  # so it is polled.
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          set -eu
+          CR_UID="$(kubectl get keystone keystone-db-expand-failure -n $NAMESPACE -o jsonpath='{.metadata.uid}')"
+          i=0
+          until [ -n "$(kubectl get events -n $NAMESPACE \
+                 --field-selector involvedObject.uid=$CR_UID,reason=ExpandFailed,type=Warning \
+                 -o name 2>/dev/null)" ]; do
+            i=$((i + 1))
+            if [ "$i" -ge 40 ]; then
+              echo "ERROR: no Warning ExpandFailed event found for keystone-db-expand-failure"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: Warning ExpandFailed event present"
+    catch:
+    - script:
+        content: |
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert the failed phase Job is counted ────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh keystone-system keystone-operator keystone_operator \
+            'keystone_operator_db_sync_total{keystone="keystone-db-expand-failure",namespace="openstack",result="failed"}'
+    catch:
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/instance=keystone-operator
+        tail: 200
+  # ── Step 7: Assert the Deployment keeps the 2026.1 image ──────────────
+  # The Database step fails before the Deployment step runs.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-db-expand-failure
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (containers[?name == 'keystone']):
+                - image: ghcr.io/c5c3/keystone:2026.1
+    catch:
+    - script:
+        content: |
+          echo "=== Deployment image ==="
+          kubectl get deployment keystone-db-expand-failure -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[*].image}' 2>&1 || true
