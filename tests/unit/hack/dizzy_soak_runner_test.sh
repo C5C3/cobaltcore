@@ -39,9 +39,19 @@
 #      datasource reads.
 #   9. When the pinned dizzy's source is cached in _output/dizzy/<pin>/,
 #      leak-check passes on every clean leak line it prints.
+#  10. sample_pods lists the Running operator pod with a pod IP and a port
+#      named metrics in a sampled namespace, and no other pod. sample_operators
+#      fetches http://<pod IP>:<port>/metrics with curl into a temporary file
+#      it removes, brackets an IPv6 address, and writes the three series and
+#      the leader (1, 0, or - without the gauge, 1 for one of two leases). A
+#      failed pod read scrapes nothing, also after a good one, and so does a
+#      read without an operator pod; a stop of the sampler ends the scrape
+#      after the pod at hand; a refused scrape, a missing series, a NaN and an
+#      empty body write no line and one errors.log line naming the reason.
+#      OPERATOR_NAMES names every operator chart.
 #
 # The runner is sourced in a subshell (its BASH_SOURCE guard keeps main()
-# from running) with stub kubectl and df and a fake dizzy first on PATH;
+# from running) with stub kubectl, df and curl and a fake dizzy first on PATH;
 # REPORTS_DIR, DIZZY_BIN, SCENARIO_FILE and CLOUDS_FILE are pointed at a
 # temporary directory after sourcing.
 #
@@ -67,8 +77,8 @@ CLEAN_LEAK_LINE="leak check: no run-tagged resources remain"
 # ---------------------------------------------------------------------------
 
 # make_stubs <dir>
-# A kubectl stub, a df stub and a fake dizzy. kubectl appends its argv to
-# $CALL_LOG and answers from the environment:
+# A kubectl stub, a df stub, a curl stub and a fake dizzy. kubectl appends its
+# argv to $CALL_LOG and answers from the environment:
 #   KUBECTL_PODS_RC       non-empty: `get pods` fails with Forbidden
 #   KUBECTL_PODS_FIRST    file answering the first `get pods` (default
 #                         pods.json beside the stub)
@@ -84,6 +94,9 @@ CLEAN_LEAK_LINE="leak check: no run-tagged resources remain"
 # that file exists, otherwise an empty list, keystones one Keystone with a
 # transition inside the run.
 # df prints DF_FREE_KIB (default 10 GiB) as the available KiB.
+# curl appends its argv to $CALL_LOG and copies CURL_METRICS (default
+# operator-metrics.prom beside the stub) to the file of its -o; with CURL_RC
+# non-empty it prints curl's refused connection to stderr and exits 7.
 # dizzy appends `<argv>` and the three settings of its environment to
 # $DIZZY_CALLS and, for chaos, runs FAKE_DIZZY_SECONDS (default 0) unless a
 # TERM comes, which it records in $DIZZY_SIGNALS and answers after a second
@@ -97,9 +110,14 @@ make_stubs() {
   cat >"$dir/pods.json" <<'JSON'
 {"items":[
  {"metadata":{"namespace":"openstack","name":"keystone-0","uid":"uid-keystone","creationTimestamp":"2026-01-01T00:00:00Z",
-   "ownerReferences":[{"kind":"StatefulSet","name":"keystone"}]},
-  "status":{"containerStatuses":[{"name":"keystone","restartCount":1,
+   "labels":{"app.kubernetes.io/name":"keystone"},"ownerReferences":[{"kind":"StatefulSet","name":"keystone"}]},
+  "spec":{"containers":[{"name":"keystone","ports":[{"name":"metrics","containerPort":9090}]}]},
+  "status":{"phase":"Running","podIP":"10.0.0.4","containerStatuses":[{"name":"keystone","restartCount":1,
    "lastState":{"terminated":{"reason":"Error","finishedAt":"2026-01-02T00:00:00Z"}}}]}},
+ {"metadata":{"namespace":"keystone-system","name":"keystone-operator-0","uid":"uid-operator","creationTimestamp":"2026-01-01T00:00:00Z",
+   "labels":{"app.kubernetes.io/name":"keystone-operator"},"ownerReferences":[{"kind":"ReplicaSet","name":"keystone-operator"}]},
+  "spec":{"containers":[{"name":"manager","ports":[{"name":"metrics","containerPort":8080},{"name":"health","containerPort":8081}]}]},
+  "status":{"phase":"Running","podIP":"10.0.0.5","containerStatuses":[{"name":"manager","restartCount":0}]}},
  {"metadata":{"namespace":"kube-system","name":"coredns-1","uid":"uid-coredns","creationTimestamp":"2026-01-01T00:00:00Z"},
   "status":{"containerStatuses":[{"name":"coredns","restartCount":7}]}},
  {"metadata":{"namespace":"openstack","name":"keystone-db-sync","uid":"uid-sync","creationTimestamp":"2026-01-01T00:00:00Z",
@@ -189,6 +207,33 @@ STUB
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
 echo "/dev/claim 5242880 0 ${DF_FREE_KIB:-10485760} 0% $2"
 STUB
+  cat >"$dir/operator-metrics.prom" <<'PROM'
+# HELP go_goroutines Number of goroutines that currently exist.
+# TYPE go_goroutines gauge
+go_goroutines 152
+# HELP go_memstats_heap_inuse_bytes Number of heap bytes that are in use.
+# TYPE go_memstats_heap_inuse_bytes gauge
+go_memstats_heap_inuse_bytes 1.048576e+08
+# HELP process_resident_memory_bytes Resident memory size in bytes.
+# TYPE process_resident_memory_bytes gauge
+process_resident_memory_bytes 1.572864e+08
+# HELP leader_election_master_status Gauge of if the reporting system is master of the relevant lease, 0 indicates backup, 1 indicates master. 'name' is the string used to identify the lease. Please make sure to group by name.
+# TYPE leader_election_master_status gauge
+leader_election_master_status{name="keystone-operator.c5c3.io"} 1
+PROM
+  cat >"$dir/curl" <<'STUB'
+#!/bin/bash
+echo "curl $*" >>"$CALL_LOG"
+if [ -n "${CURL_RC:-}" ]; then
+  echo "curl: (7) Failed to connect to 10.0.0.5 port 8080 after 0 ms: Couldn't connect to server" >&2
+  exit 7
+fi
+while [ $# -gt 0 ]; do
+  if [ "$1" = "-o" ]; then cp "${CURL_METRICS:-$(dirname "$0")/operator-metrics.prom}" "$2"; fi
+  shift
+done
+exit 0
+STUB
   cat >"$dir/dizzy" <<'STUB'
 #!/bin/bash
 echo "dizzy $* | OS_CLIENT_CONFIG_FILE=${OS_CLIENT_CONFIG_FILE:-} OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=${OTEL_EXPORTER_OTLP_METRICS_ENDPOINT:-} OTEL_METRIC_EXPORT_INTERVAL=${OTEL_METRIC_EXPORT_INTERVAL:-}" >>"$DIZZY_CALLS"
@@ -213,7 +258,7 @@ if [ "${FAKE_DIZZY_RECORD:-1}" = 2 ]; then echo '{}' >run-y.json; fi
 if [ "${FAKE_DIZZY_LEAK:-}" != none ]; then echo "${FAKE_DIZZY_LEAK:-leak check: no run-tagged resources remain}"; fi
 exit "${FAKE_DIZZY_RC:-0}"
 STUB
-  chmod +x "$dir/kubectl" "$dir/df" "$dir/dizzy"
+  chmod +x "$dir/kubectl" "$dir/df" "$dir/curl" "$dir/dizzy"
 }
 
 # new_case <tmp> — A fresh stub directory, report claim and logs under <tmp>.
@@ -540,7 +585,7 @@ test_clean_run() {
   for f in scenario.yaml meta.json dizzy.log run-x.json dizzy-report.json dizzy-report.html dizzy-report.txt \
     verdict.json report.md platform/containers.tsv platform/usage.tsv platform/errors.log platform/pod-samples.log \
     platform/conditions-start.json platform/conditions-end.json platform/restarts.tsv platform/usage-summary.tsv \
-    platform/conditions.tsv; do
+    platform/conditions.tsv platform/operator-pods.tsv platform/operators.tsv; do
     [[ -f "$RUN_DIR/$f" ]] || missing="$missing $f"
   done
   assert_eq "the run directory holds every file" "" "$missing"
@@ -577,6 +622,8 @@ test_clean_run() {
   assert_contains "usage lines carry millicores and bytes" "$(cat "$RUN_DIR/platform/usage.tsv")" \
     $'\topenstack\tkeystone-0\tkeystone\t1.5\t1048576'
   assert_gte "at least two pod samples were taken" "$(grep -c . "$RUN_DIR/platform/pod-samples.log")" 2
+  assert_eq "each pod sample scrapes the operator pod once" "$(grep -c . "$RUN_DIR/platform/pod-samples.log")" \
+    "$(grep -c . "$RUN_DIR/platform/operators.tsv")"
 }
 
 test_namespaces_setting() {
@@ -771,7 +818,7 @@ test_restart_checks() {
   run_runner "$tmp" KUBECTL_PODS_LATER="$tmp/pods-later.json"
   assert_contains "restarts.tsv shows the 2 restarts" "$(cat "$RUN_DIR/platform/restarts.tsv")" \
     $'openstack\tkeystone-0\tkeystone\tuid-keystone\tStatefulSet\t2\t0'
-  assert_eq "no-restarts fails" "false 2 restart(s) and 0 OOM kill(s) in 3 containers observed" "$(check_of no-restarts)"
+  assert_eq "no-restarts fails" "false 2 restart(s) and 0 OOM kill(s) in 4 containers observed" "$(check_of no-restarts)"
   assert_contains "report.md lists the container" "$(cat "$RUN_DIR/report.md")" "| openstack | keystone-0 | keystone |"
 
   new_case "$tmp"
@@ -925,7 +972,7 @@ test_report_md() {
     '## Leak check' \
     "$CLEAN_LEAK_LINE" \
     '## Restarts and OOM kills' \
-    'No container restarted or was OOM-killed during the run (5 containers observed).' \
+    'No container restarted or was OOM-killed during the run (6 containers observed).' \
     '## Pods created during the run' \
     '| openstack | 1 |' \
     'The 15 containers with the largest memory growth:' \
@@ -981,6 +1028,181 @@ test_leak_lines_of_the_pinned_dizzy() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 10: the operator pods and their metrics
+# ---------------------------------------------------------------------------
+# operator_run <tmp> — A fresh <tmp>/run, an empty <tmp>/tmpdir and call
+# log, and the pod reads of the kubectl stub counted from 0.
+operator_run() {
+  rm -rf "$1/run" "$1/tmpdir" "$1/bin/pods.count"
+  mkdir -p "$1/run/platform" "$1/tmpdir"
+  : >"$1/run/platform/errors.log"
+  : >"$1/run/platform/operator-pods.tsv"
+  : >"$1/run/platform/operators.tsv"
+  : >"$CALL_LOG"
+}
+
+# operator_sample <tmp> [env_var=value...] — sample_pods and then
+# sample_operators in a fresh <tmp>/run with the given settings, TMPDIR
+# pointing at the empty directory <tmp>/tmpdir.
+operator_sample() {
+  local tmp="$1"
+  shift
+  operator_run "$tmp"
+  (
+    in_runner "$tmp" TMPDIR="$tmp/tmpdir" "$@"
+    cd "$tmp/run" || exit 1
+    sample_pods
+    sample_operators
+  )
+}
+
+# operator_pod_variant <tmp> <name> <jq update> — <tmp>/<name>.json: pods.json
+# with <jq update> applied to the operator pod.
+operator_pod_variant() {
+  jq "(.items[] | select(.metadata.name == \"keystone-operator-0\")) |= ($3)" "$1/bin/pods.json" >"$1/$2.json"
+}
+
+# errors_of <tmp> — platform/errors.log without the timestamps.
+errors_of() {
+  sed 's/^[^ ]* //' "$1/run/platform/errors.log"
+}
+
+test_operator_sampling() {
+  echo "Test: sample_pods lists the operator pods, sample_operators scrapes their metrics"
+
+  local tmp pods
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  new_case "$tmp"
+
+  operator_sample "$tmp"
+  pods="$tmp/run/platform/operator-pods.tsv"
+  assert_eq "operator-pods.tsv holds the one operator pod" \
+    $'keystone-system\tkeystone-operator-0\t2026-01-01T00:00:00Z\t10.0.0.5\t8080' "$(cut -f 2- "$pods")"
+  assert_eq "after the sample's timestamp" "1" \
+    "$(grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'$'\t' "$pods")"
+  assert_not_contains "a pod with another app.kubernetes.io/name is not listed" "$(cat "$pods")" "keystone-0"
+  assert_eq "operators.tsv gains the scraped series and the leader" \
+    $'keystone-system\tkeystone-operator-0\t152\t104857600\t157286400\t1' \
+    "$(cut -f 2- "$tmp/run/platform/operators.tsv")"
+  assert_eq "curl fetches the pod's metrics port directly, bounded by 3 seconds to connect and 10 in all" \
+    "curl -sS --fail --connect-timeout 3 --max-time 10 -o <file> http://10.0.0.5:8080/metrics" \
+    "$(grep '^curl ' "$CALL_LOG" | sed "s# -o $tmp/tmpdir/[^ ]* # -o <file> #")"
+  assert_eq "the body goes to a temporary file that is removed" "" "$(ls -A "$tmp/tmpdir")"
+  assert_eq "nothing is logged as an error" "" "$(cat "$tmp/run/platform/errors.log")"
+
+  # The port named metrics, also when another port comes first.
+  operator_pod_variant "$tmp" health-first '.spec.containers[0].ports |= reverse'
+  operator_sample "$tmp" KUBECTL_PODS_FIRST="$tmp/health-first.json"
+  assert_eq "the port named metrics is used, not the first" "8080" "$(cut -f 6 "$pods")"
+
+  # A pod that is not Running, one without a pod IP, one without a port
+  # named metrics, one in an excluded namespace, and one outside the listed
+  # namespaces are not listed.
+  operator_pod_variant "$tmp" pending '.status.phase = "Pending"'
+  operator_pod_variant "$tmp" no-ip 'del(.status.podIP)'
+  operator_pod_variant "$tmp" no-metrics-port '.spec.containers[0].ports |= map(select(.name != "metrics"))'
+  operator_pod_variant "$tmp" excluded '.metadata.namespace = "kube-system"'
+  local variant
+  for variant in "KUBECTL_PODS_FIRST=$tmp/pending.json" "KUBECTL_PODS_FIRST=$tmp/no-ip.json" \
+    "KUBECTL_PODS_FIRST=$tmp/no-metrics-port.json" "KUBECTL_PODS_FIRST=$tmp/excluded.json" \
+    DIZZY_SOAK_NAMESPACES=openstack; do
+    operator_sample "$tmp" "$variant"
+    assert_eq "with $variant operator-pods.tsv stays empty" "" "$(cat "$pods")"
+    assert_eq "with $variant curl is not called" "" "$(grep '^curl ' "$CALL_LOG" || true)"
+  done
+
+  # A failed pod read scrapes nothing.
+  operator_sample "$tmp" KUBECTL_PODS_RC=1
+  assert_eq "after a failed pod read curl is not called" "" "$(grep '^curl ' "$CALL_LOG" || true)"
+  assert_eq "and operators.tsv stays empty" "" "$(cat "$tmp/run/platform/operators.tsv")"
+
+  # Nor does a failed read, or one without an operator pod, after a good
+  # one: the sampler does not scrape the earlier pod list again.
+  jq 'del(.items[] | select(.metadata.name == "keystone-operator-0"))' "$tmp/bin/pods.json" >"$tmp/no-operator.json"
+  for variant in KUBECTL_PODS_RC=1 "KUBECTL_PODS_LATER=$tmp/no-operator.json"; do
+    operator_run "$tmp"
+    (
+      in_runner "$tmp" TMPDIR="$tmp/tmpdir"
+      cd "$tmp/run" || exit 1
+      sample_pods
+      sample_operators
+      export "${variant?}"
+      sample_pods
+      sample_operators
+    )
+    assert_eq "with $variant after a good read curl is called once" "1" "$(grep -c '^curl ' "$CALL_LOG")"
+  done
+
+  # A stop of the sampler ends the scrape after the pod at hand.
+  jq '.items += [.items[] | select(.metadata.name == "keystone-operator-0")
+    | .metadata.name = "keystone-operator-1" | .status.podIP = "10.0.0.6"]' "$tmp/bin/pods.json" >"$tmp/two-operators.json"
+  operator_sample "$tmp" KUBECTL_PODS_FIRST="$tmp/two-operators.json"
+  assert_eq "two operator pods are scraped" "2" "$(grep -c '^curl ' "$CALL_LOG")"
+  operator_run "$tmp"
+  (
+    in_runner "$tmp" TMPDIR="$tmp/tmpdir" KUBECTL_PODS_FIRST="$tmp/two-operators.json"
+    cd "$tmp/run" || exit 1
+    sample_pods
+    : >platform/.sampler-stop
+    sample_operators
+  )
+  assert_eq "with platform/.sampler-stop only the first" "http://10.0.0.5:8080/metrics" \
+    "$(grep '^curl ' "$CALL_LOG" | sed 's/.* //')"
+
+  # The leader gauge absent, at 0, and summed over two leases.
+  grep -v '^leader_election_master_status' "$tmp/bin/operator-metrics.prom" >"$tmp/no-leader.prom"
+  operator_sample "$tmp" CURL_METRICS="$tmp/no-leader.prom"
+  assert_eq "without the leader gauge the leader is -" "-" "$(cut -f 7 "$tmp/run/platform/operators.tsv")"
+  sed 's/^\(leader_election_master_status{.*}\) 1$/\1 0/' "$tmp/bin/operator-metrics.prom" >"$tmp/standby.prom"
+  operator_sample "$tmp" CURL_METRICS="$tmp/standby.prom"
+  assert_eq "with the gauge at 0 the leader is 0" "0" "$(cut -f 7 "$tmp/run/platform/operators.tsv")"
+  {
+    cat "$tmp/bin/operator-metrics.prom"
+    echo 'leader_election_master_status{name="other.c5c3.io"} 0'
+  } >"$tmp/two-leases.prom"
+  operator_sample "$tmp" CURL_METRICS="$tmp/two-leases.prom"
+  assert_eq "holding the first of two leases makes the pod the leader" "1" "$(cut -f 7 "$tmp/run/platform/operators.tsv")"
+
+  # A body that lacks a series or holds no number writes no line.
+  grep -v '^go_goroutines ' "$tmp/bin/operator-metrics.prom" >"$tmp/no-goroutines.prom"
+  sed 's/^go_memstats_heap_inuse_bytes .*/go_memstats_heap_inuse_bytes NaN/' "$tmp/bin/operator-metrics.prom" >"$tmp/nan.prom"
+  : >"$tmp/empty.prom"
+  local case_ names
+  for case_ in "no-goroutines:go_goroutines" "nan:go_memstats_heap_inuse_bytes" \
+    "empty:go_goroutines go_memstats_heap_inuse_bytes process_resident_memory_bytes"; do
+    names="${case_#*:}"
+    operator_sample "$tmp" CURL_METRICS="$tmp/${case_%%:*}.prom"
+    assert_eq "${case_%%:*}.prom writes no line" "" "$(cat "$tmp/run/platform/operators.tsv")"
+    assert_eq "${case_%%:*}.prom logs the series it misses" \
+      "operators: keystone-system/keystone-operator-0: metrics missing or not a number: $names" "$(errors_of "$tmp")"
+  done
+
+  # A failed scrape writes no line and logs curl's message.
+  operator_sample "$tmp" CURL_RC=1
+  assert_eq "a refused scrape writes no line" "" "$(cat "$tmp/run/platform/operators.tsv")"
+  assert_eq "and logs curl's message" \
+    "operators: keystone-system/keystone-operator-0: curl: (7) Failed to connect to 10.0.0.5 port 8080 after 0 ms: Couldn't connect to server" \
+    "$(errors_of "$tmp")"
+  assert_eq "the temporary file is removed after a failed scrape too" "" "$(ls -A "$tmp/tmpdir")"
+
+  # An IPv6 pod IP is written in brackets.
+  operator_pod_variant "$tmp" ipv6 '.status.podIP = "fd00::5"'
+  operator_sample "$tmp" KUBECTL_PODS_FIRST="$tmp/ipv6.json"
+  assert_contains "an IPv6 pod IP is bracketed in the URL" "$(grep '^curl ' "$CALL_LOG")" " http://[fd00::5]:8080/metrics"
+}
+
+test_operator_names() {
+  echo "Test: OPERATOR_NAMES names every operator chart"
+
+  local charts listed
+  charts="$(awk '/^name:/ { print $2 }' "$PROJECT_ROOT"/operators/*/helm/*-operator/Chart.yaml | sort)"
+  # shellcheck source=/dev/null
+  listed="$( (source "$RUNNER_SH" && tr ' ' '\n' <<<"$OPERATOR_NAMES") | sort)"
+  assert_eq "the chart names, no more and no fewer" "$charts" "$listed"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if ! command -v jq >/dev/null 2>&1; then
@@ -993,6 +1215,8 @@ fi
 test_quantities
 test_derive_restarts
 test_derive_usage_summary
+test_operator_sampling
+test_operator_names
 test_conditions
 test_conditions_beyond_one_argument
 test_clean_run
