@@ -34,6 +34,12 @@ env:
   CONTROLLER_GEN_VERSION: v0.22.0
   GOFUMPT_VERSION: v0.12.0
   GOLANGCI_LINT_VERSION: v2.14.0
+  # Helm CLI of every job that installs it with azure/setup-helm. Without a
+  # version input the action installs the newest helm release when the job
+  # starts, so a helm release changes how helm-push talks to ghcr.io without a
+  # commit (hack/ci-helm-push.sh retries the one push failure known so far).
+  # Renovate bumps it without automerge: helm-push runs only after a merge.
+  HELM_VERSION: v4.3.1
 
 # A `labeled` event for a label that does not steer CI gets a group of its own,
 # so adding `bug` or `documentation` to a pull request no longer cancels the
@@ -1010,6 +1016,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       - name: Install helm-unittest plugin
         # NOTE: --verify=false because helm-unittest does not publish GPG signatures for plugin releases.
         run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3 --verify=false
@@ -1948,6 +1956,8 @@ jobs:
       # setup-helm guarantees `helm` (registry login + pull) regardless of the
       # runner image, matching the helm-push job.
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       - name: Create kind cluster
         uses: ./.github/actions/create-kind-cluster
         with:
@@ -5601,6 +5611,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
       - name: Package and push Helm chart
@@ -5634,6 +5646,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
       - name: Package and push Helm chart
@@ -5663,6 +5677,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       # Package Helm chart tarballs to attach as release assets.
       - name: Package Helm charts
         run: |
