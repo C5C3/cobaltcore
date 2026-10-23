@@ -21,9 +21,10 @@
 # what that costs — every suite passed, the deletion lost a docker race, and the
 # job was reported failed.
 #
-# Both rules hold for ci.yaml and for the reusable workflow
+# Both rules hold for ci.yaml, for the reusable workflow
 # e2e-operator-upgrade.yaml, which runs the operator upgrade jobs for ci.yaml
-# and operator-upgrade.yaml.
+# and operator-upgrade.yaml, and for the two nightlies flux-path.yaml and
+# performance.yaml.
 #
 # Usage: bash tests/unit/ci/create_kind_cluster_wiring_test.sh
 
@@ -33,8 +34,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 UPGRADE_YAML="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
+FLUX_PATH_YAML="$PROJECT_ROOT/.github/workflows/flux-path.yaml"
+PERF_YAML="$PROJECT_ROOT/.github/workflows/performance.yaml"
 # Every workflow whose jobs create a kind cluster.
-WORKFLOWS=("$CI_YAML" "$UPGRADE_YAML")
+WORKFLOWS=("$CI_YAML" "$UPGRADE_YAML" "$FLUX_PATH_YAML" "$PERF_YAML")
 ACTION_YAML="$PROJECT_ROOT/.github/actions/create-kind-cluster/action.yaml"
 CREATE_SH="$PROJECT_ROOT/hack/ci-create-kind-cluster.sh"
 RESET_SH="$PROJECT_ROOT/hack/ci-reset-kind-cluster.sh"
@@ -256,6 +259,10 @@ test_every_job_tears_its_cluster_down() {
   assert_gte "at least the eleven e2e jobs were checked" "$checked" "11"
   assert_contains "the operator upgrade job of the reusable workflow is among them" \
     "$report" "e2e-operator-upgrade.yaml:upgrade 1 1 1 1 1"
+  assert_contains "the job of the Flux path nightly is among them" \
+    "$report" "flux-path.yaml:controlplane 1 1 1 1 1"
+  assert_contains "the job of the performance nightly is among them" \
+    "$report" "performance.yaml:baseline 1 1 1 1 1"
 }
 
 # ---------------------------------------------------------------------------
