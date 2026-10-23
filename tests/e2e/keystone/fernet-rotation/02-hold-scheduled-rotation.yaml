@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Admission policy that holds the scheduled Fernet rotation of keystone-fernet
+# in step 8. It refuses every fernet-rotation pod of that Keystone in
+# openstack. A refused pod creation never fails a Job, so the first scheduled
+# Job stays in the CronJob's status.active and the next tick meets
+# concurrencyPolicy: Forbid. Chainsaw deletes both objects at the end of the
+# test.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: keystone-fernet-hold-rotation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["CREATE"]
+      resources: ["pods"]
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: openstack
+    objectSelector:
+      matchLabels:
+        app.kubernetes.io/instance: keystone-fernet
+        app.kubernetes.io/component: fernet-rotation
+  validations:
+  - expression: "false"
+    message: fernet-rotation e2e holds the scheduled rotation Job
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: keystone-fernet-hold-rotation
+spec:
+  policyName: keystone-fernet-hold-rotation
+  validationActions: [Deny]
