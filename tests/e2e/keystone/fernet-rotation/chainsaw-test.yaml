@@ -8,6 +8,9 @@
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
 #   - Pod UIDs remain unchanged after rotation (no Deployment rollout)
 #   - A fernet token obtained before rotation validates after rotation
+#   - The keystone-operator release exports
+#     keystone_operator_key_rotation_age_seconds for the fernet keys once
+#     the rotation is applied
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -270,3 +273,20 @@ spec:
           spec:
             schedule: "0 0 * * 0"
             suspend: true
+  # ── Step 8: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # The rotation of Step 4 set the age gauge, which no fresh deployment
+  # exports.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh keystone-system keystone-operator keystone_operator \
+            'keystone_operator_key_rotation_age_seconds{keystone="keystone-fernet",namespace="openstack",key_type="fernet"}'
+    catch:
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/instance=keystone-operator
+        tail: 200

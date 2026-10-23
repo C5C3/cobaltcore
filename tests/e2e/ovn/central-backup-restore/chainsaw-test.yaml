@@ -12,9 +12,11 @@
 # replay deleted it: a restore that only inserted would pass the round trip and
 # still lose nothing, which is not what the operator has to plan against.
 #
-# The five steps are the five observation points. Nothing about the snapshot
-# format or the restore invocation can be settled from the CRD alone, and the
-# backup CronJob's own success says only that a file was written.
+# The first five steps are the five observation points. Nothing about the
+# snapshot format or the restore invocation can be settled from the CRD alone,
+# and the backup CronJob's own success says only that a file was written. The
+# sixth reads the backup run of step 2 off the ovn-operator release as
+# ovn_operator_backup_total.
 #
 # ── ASSUMPTION under test: restore against a clustered server ────────
 # The Phase-0 lab verified `ovsdb-client --force restore` against a standalone
@@ -426,3 +428,26 @@ spec:
           echo "${OUT}" | grep -q 'RESTORE-OK'
           echo "OK: the replay brought restore-probe back and deleted post-snapshot-probe"
     catch: *restore-dump
+  # ── Step 6: Assert the backup run is counted ───────────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # The manual run of Step 2 is controlled by the CronJob, so the operator
+  # counts it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          ../../lib/assert-operator-metric-families.sh ovn-system ovn-operator ovn_operator \
+            'ovn_operator_backup_total{ovncentral="ovn-restore",namespace="openstack",result="succeeded"}'
+    catch:
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/instance=ovn-operator
+        tail: 200

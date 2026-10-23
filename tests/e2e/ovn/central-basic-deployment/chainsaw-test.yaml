@@ -24,8 +24,10 @@
 #   - both Raft clusters really formed: each member's built-in _Server database
 #     reports the schema as clustered and connected, and exactly one of the
 #     three reports itself the leader
+#   - the ovn-operator release exports its reconcile families, with no error
+#     under an unmapped condition type
 #
-# The last point is what separates this suite from the envtest coverage under
+# The Raft check is what separates this suite from the envtest coverage under
 # operators/ovn/internal/controller/: a StatefulSet with three ready pods says
 # nothing about whether ovsdb-server negotiated a Raft cluster over TLS.
 #
@@ -578,3 +580,19 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # No backup has run yet, so the reconcile families are all this suite
+  # reads.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh ovn-system ovn-operator ovn_operator
+    catch:
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/instance=ovn-operator
+        tail: 200

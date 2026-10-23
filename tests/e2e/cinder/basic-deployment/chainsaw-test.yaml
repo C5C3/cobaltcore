@@ -27,6 +27,8 @@
 #   - the Cinder API answers over HTTP: the version document, the healthcheck,
 #     the microversioned resource filters, the service registry with both
 #     processes up, and an empty volume list
+#   - the cinder-operator release exports its reconcile families and the
+#     db_sync counter and duration count of cinder-basic
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -661,3 +663,19 @@ spec:
         tail: 200
     - events:
         namespace: openstack
+  # ── Step 7: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh cinder-system cinder-operator cinder_operator \
+            'cinder_operator_db_sync_total{cinder="cinder-basic",namespace="openstack",result="succeeded"}' \
+            'cinder_operator_db_sync_duration_seconds_count{cinder="cinder-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/instance=cinder-operator
+        tail: 200

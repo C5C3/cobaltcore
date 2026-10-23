@@ -11,6 +11,8 @@
 #   - the operator reports the schedule as
 #     DBArchiveReady=True/DBArchiveScheduled and records no DBArchiveJobFailed
 #     event on the CR
+#   - the nova-operator release counts a succeeded archive run in
+#     nova_operator_db_archive_total
 #
 # The fixtures are the full-stack tier of ../basic-deployment, because a server
 # has to boot and be deleted before there is anything to archive: the suite
@@ -588,3 +590,18 @@ spec:
           fi
           echo "OK: no DBArchiveJobFailed event on nova-archive"
     catch: *nova-dump
+  # ── Step 11: Assert the archive runs are counted ───────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh nova-system nova-operator nova_operator \
+            'nova_operator_db_archive_total{nova="nova-archive",namespace="openstack",result="succeeded"}'
+    catch:
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/instance=nova-operator
+        tail: 200

@@ -19,6 +19,8 @@
 #     notifications, and carries no transport_url line
 #   - the Neutron API answers the unauthenticated version document with 200 and
 #     rejects an unauthenticated /v2.0/networks request with exactly 401
+#   - the neutron-operator release exports its reconcile families and the
+#     db_sync counter and duration count of neutron-basic
 #
 # The two config assertions are what #904 owes this suite: the RPC worker
 # counts, the noop notification driver and the uwsgi.ini start-time marker were
@@ -418,3 +420,19 @@ spec:
           kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=neutron-basic 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh neutron-system neutron-operator neutron_operator \
+            'neutron_operator_db_sync_total{neutron="neutron-basic",namespace="openstack",result="succeeded"}' \
+            'neutron_operator_db_sync_duration_seconds_count{neutron="neutron-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/instance=neutron-operator
+        tail: 200

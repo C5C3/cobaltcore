@@ -10,6 +10,8 @@
 #     RBAC, PushSecret)
 #   - ConfigMap with keystone-basic-config- prefix exists
 #   - Keystone API at /v3 is accessible via curl
+#   - The keystone-operator release exports its reconcile families and the
+#     db_sync counter and duration count of keystone-basic
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -236,3 +238,19 @@ spec:
           else:
               raise SystemExit('GET /v3 never answered after retries: %r' % last)
           "
+  # ── Step 8: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh keystone-system keystone-operator keystone_operator \
+            'keystone_operator_db_sync_total{keystone="keystone-basic",namespace="openstack",result="succeeded"}' \
+            'keystone_operator_db_sync_duration_seconds_count{keystone="keystone-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/instance=keystone-operator
+        tail: 200

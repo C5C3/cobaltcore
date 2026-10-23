@@ -12,6 +12,8 @@
 #   - The dashboard login page renders (HTTP 200) — this exercises Django
 #     URL routing, templates, and the offline-compression manifest without
 #     a live Keystone
+#   - The horizon-operator release exports its reconcile families, with no
+#     error under an unmapped condition type
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -177,3 +179,18 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # Horizon runs no Job, so the reconcile families are all it exports.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh horizon-system horizon-operator horizon_operator
+    catch:
+    - podLogs:
+        namespace: horizon-system
+        selector: app.kubernetes.io/instance=horizon-operator
+        tail: 200

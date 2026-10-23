@@ -18,6 +18,8 @@
 #   - The Placement API answers the unauthenticated version document with 200,
 #     and rejects an unauthenticated /resource_providers request with exactly
 #     401 — the token-validation path is wired, not disabled
+#   - The placement-operator release exports its reconcile families and the
+#     db_sync counter and duration count of placement-basic
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -292,3 +294,19 @@ spec:
           kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=placement-basic 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh placement-system placement-operator placement_operator \
+            'placement_operator_db_sync_total{placement="placement-basic",namespace="openstack",result="succeeded"}' \
+            'placement_operator_db_sync_duration_seconds_count{placement="placement-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: placement-system
+        selector: app.kubernetes.io/instance=placement-operator
+        tail: 200
