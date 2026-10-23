@@ -14,6 +14,8 @@
 #   - A second rotation past maxActiveKeys prunes the key that signed the
 #     pre-rotation token, so that token gets a 401 while tokens signed by
 #     surviving keys validate
+#   - A held scheduled rotation makes the next tick skip with
+#     JobAlreadyActive
 #   - The keystone-operator release exports
 #     keystone_operator_key_rotation_age_seconds for the fernet keys once
 #     a rotation is applied
@@ -633,6 +635,239 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 8: Hold a scheduled rotation under concurrencyPolicy Forbid ───
+  # The policy of 02-hold-scheduled-rotation.yaml refuses the rotation pods
+  # of keystone-fernet. A refused pod creation never fails a Job, so the
+  # first scheduled Job stays in the CronJob's status.active, and Forbid
+  # skips the next tick with the Normal event JobAlreadyActive. Scheduled
+  # Jobs are named <cronjob>-<minutes>; the manual Jobs of steps 4 and 7 do
+  # not match that name, and the CronJob controller never lists them as
+  # active.
+  - try:
+    - apply:
+        file: 02-hold-scheduled-rotation.yaml
+    # Without this wait, a policy not yet in force when the first tick fires
+    # would let that tick run a real rotation. A server-side dry run passes
+    # admission without creating the probe or pulling its image.
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -uo pipefail
+          MESSAGE="fernet-rotation e2e holds the scheduled rotation Job"
+          probe() {
+            cat <<'PROBE'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: keystone-fernet-hold-probe
+            namespace: openstack
+            labels:
+              app.kubernetes.io/instance: keystone-fernet
+              app.kubernetes.io/component: fernet-rotation
+          spec:
+            containers:
+            - name: probe
+              image: ghcr.io/c5c3/keystone:2026.1
+              command: ["true"]
+          PROBE
+          }
+          deadline=$((SECONDS + 30))
+          while :; do
+            if OUT=$(probe | kubectl create --dry-run=server -f - 2>&1); then
+              : # admitted: the policy is not in force yet
+            elif grep -qF "$MESSAGE" <<<"$OUT"; then
+              echo "OK: the hold policy refuses rotation pods of keystone-fernet"
+              exit 0
+            else
+              echo "FAIL: the probe dry-run was refused for another reason:"
+              echo "$OUT"
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: the hold policy did not refuse the probe within 30s"
+              exit 1
+            fi
+            sleep 2
+          done
+    - patch:
+        file: 03-patch-schedule-every-minute.yaml
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-fernet-fernet-rotate
+            namespace: openstack
+          spec:
+            schedule: "* * * * *"
+            concurrencyPolicy: Forbid
+    # Scripts share no variables, so the production hash is taken and
+    # compared inside this one script, which spans both ticks.
+    - script:
+        timeout: 240s
+        shell: bash
+        content: |
+          set -euo pipefail
+          CRONJOB=keystone-fernet-fernet-rotate
+          CJ_UID=$(kubectl get cronjob "$CRONJOB" -n openstack -o jsonpath='{.metadata.uid}')
+
+          # scheduled_jobs: the unfinished Jobs with a scheduled name. A
+          # finished weekly run carries the same name pattern, so Jobs with a
+          # Complete or Failed condition are left out.
+          scheduled_jobs() {
+            kubectl get jobs -n openstack -o json | jq -r '[.items[]
+              | select(.metadata.name | test("^keystone-fernet-fernet-rotate-[0-9]+$"))
+              | select([.status.conditions // [] | .[]
+                  | select((.type == "Complete" or .type == "Failed") and .status == "True")] | length == 0)
+              | .metadata.name] | sort | join(" ")'
+          }
+          prod_hash() {
+            local data
+            data=$(kubectl get secret keystone-fernet-fernet-keys -n openstack -o json | jq -c '.data // empty')
+            if [ -z "$data" ]; then
+              echo "FAIL: keystone-fernet-fernet-keys has no data" >&2
+              return 1
+            fi
+            printf '%s' "$data" | sha256sum | cut -d' ' -f1
+          }
+          HASH0=$(prod_hash)
+
+          deadline=$((SECONDS + 90))
+          HELD=""
+          while :; do
+            JOBS=$(scheduled_jobs)
+            ACTIVE=$(kubectl get cronjob "$CRONJOB" -n openstack -o json \
+              | jq -r '[.status.active // [] | .[].name] | join(" ")')
+            read -ra JOB_LIST <<<"$JOBS"
+            if [ "${#JOB_LIST[@]}" -gt 1 ]; then
+              echo "FAIL: more than one scheduled rotation Job: $JOBS"
+              exit 1
+            fi
+            if [ "${#JOB_LIST[@]}" -eq 1 ] && [[ " $ACTIVE " == *" $JOBS "* ]]; then
+              HELD="$JOBS"
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: no scheduled rotation Job listed in status.active of CronJob $CRONJOB within 90s (scheduled Jobs: [$JOBS], status.active: [$ACTIVE])"
+              exit 1
+            fi
+            sleep 2
+          done
+          PODS=$(kubectl get pods -n openstack -l "job-name=$HELD" -o name)
+          if [ -n "$PODS" ]; then
+            echo "FAIL: held Job $HELD has pods: $PODS"
+            exit 1
+          fi
+          echo "OK: scheduled rotation Job $HELD is listed in status.active and has no pod"
+
+          deadline=$((SECONDS + 90))
+          while :; do
+            SKIPPED=$(kubectl get events -n openstack \
+              --field-selector "involvedObject.uid=$CJ_UID,reason=JobAlreadyActive" -o name)
+            [ -n "$SKIPPED" ] && break
+            for job in $(scheduled_jobs); do
+              if [ "$job" != "$HELD" ]; then
+                echo "FAIL: a second scheduled rotation Job $job started while $HELD was active; concurrencyPolicy is not Forbid"
+                exit 1
+              fi
+            done
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: no JobAlreadyActive event on CronJob $CRONJOB within 90s"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: the next tick was skipped with JobAlreadyActive"
+
+          JOBS=$(scheduled_jobs)
+          if [ "$JOBS" != "$HELD" ]; then
+            echo "FAIL: scheduled rotation Jobs are [$JOBS] after JobAlreadyActive, expected only $HELD"
+            exit 1
+          fi
+          if [ "$(prod_hash)" != "$HASH0" ]; then
+            echo "FAIL: production keys changed while the scheduled rotation was held"
+            exit 1
+          fi
+          echo "OK: $HELD is still the only scheduled rotation Job; production keys unchanged"
+    - patch:
+        file: 04-patch-schedule-weekly.yaml
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-fernet-fernet-rotate
+            namespace: openstack
+          spec:
+            schedule: "0 0 * * 0"
+    # The weekly schedule is back, so deleting the held Job starts no new
+    # one. The CronJob controller drops a deleted Job from status.active.
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -euo pipefail
+          JOBS=$(kubectl get jobs -n openstack -o json | jq -r \
+            '[.items[].metadata.name | select(test("^keystone-fernet-fernet-rotate-[0-9]+$"))] | join(" ")')
+          for job in $JOBS; do
+            kubectl delete job "$job" -n openstack --wait=true
+          done
+          deadline=$((SECONDS + 30))
+          ACTIVE=""
+          while :; do
+            ACTIVE=$(kubectl get cronjob keystone-fernet-fernet-rotate -n openstack -o json \
+              | jq -r '[.status.active[]?.name] | join(" ")')
+            [ -z "$ACTIVE" ] && break
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: CronJob keystone-fernet-fernet-rotate still lists [$ACTIVE] in status.active 30s after the scheduled Jobs were deleted"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: scheduled rotation Jobs [$JOBS] deleted; status.active is empty"
+    catch:
+    - script:
+        content: |
+          echo "=== CronJob keystone-fernet-fernet-rotate ==="
+          kubectl get cronjob keystone-fernet-fernet-rotate -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Jobs ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null | grep -E '^job.batch/keystone-fernet-fernet-rotate-[0-9]+$'); do
+            echo "--- $job describe ---"
+            kubectl describe -n $NAMESPACE "$job" 2>&1 | tail -30 || true
+          done
+          echo "=== CronJob events ==="
+          kubectl get events -n $NAMESPACE \
+            --field-selector involvedObject.kind=CronJob,involvedObject.name=keystone-fernet-fernet-rotate \
+            --sort-by='.lastTimestamp' 2>&1 || true
+          echo "=== Hold policy ==="
+          kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding keystone-fernet-hold-rotation 2>&1 || true
+    # A failed run must not leave a held Job behind: once chainsaw deletes
+    # the hold policy at the end of the test, the Job controller would start
+    # its pod and run a real rotation. Chainsaw deletes the policy before it
+    # runs a step cleanup, so this is a finally: it runs at the end of this
+    # step, pass or fail, while the policy is still in force. It restores the
+    # weekly schedule first, so no tick starts a new Job once the held one is
+    # deleted.
+    finally:
+    - script:
+        timeout: 90s
+        content: |
+          kubectl patch keystone keystone-fernet -n openstack --type=merge \
+            -p '{"spec":{"fernet":{"rotationSchedule":"0 0 * * 0"}}}' 2>&1 || true
+          SCHEDULE=""
+          for _ in $(seq 1 30); do
+            SCHEDULE=$(kubectl get cronjob keystone-fernet-fernet-rotate -n openstack -o jsonpath='{.spec.schedule}' 2>/dev/null || true)
+            [ "$SCHEDULE" = "0 0 * * 0" ] && break
+            sleep 2
+          done
+          if [ "$SCHEDULE" != "0 0 * * 0" ]; then
+            echo "WARNING: CronJob keystone-fernet-fernet-rotate has schedule [$SCHEDULE] after 60s, not 0 0 * * 0"
+          fi
+          for job in $(kubectl get jobs -n openstack -o name 2>/dev/null | grep -E '^job.batch/keystone-fernet-fernet-rotate-[0-9]+$'); do
+            kubectl delete "$job" -n openstack --ignore-not-found 2>&1 || true
+          done
   # ── Step 9: Pause rotation via spec.fernet.suspend: true (escape hatch) ──
   - try:
     - patch:
