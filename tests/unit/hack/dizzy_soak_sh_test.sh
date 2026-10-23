@@ -15,6 +15,9 @@
 #      settings and a soak that already runs, also one whose pod terminates
 #      after an eviction. DIZZY_SOAK_DURATION accepts 6h, 90m, 1h30m and 0
 #      and refuses 6, six, -1h, 0h and the empty string.
+#      DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT and
+#      DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH accept 2.5 and 25 and refuse
+#      0, -1, abc and the empty string.
 #   3. start deletes a finished Job, creates the password Secret only when
 #      it is absent, from stdin, stops with the identity's state when K-ORC
 #      does not make it Available, and otherwise applies the clouds.yaml (the
@@ -278,7 +281,8 @@ run_soak() {
   (
     unset DIZZY_SOAK_SERVICE DIZZY_SOAK_DURATION DIZZY_SCENARIO DIZZY_ARGS DIZZY_VERSION DIZZY_AUTH_URL \
       DIZZY_CP_NAME DIZZY_CP_NAMESPACE EXTERNAL_OVERLAY DIZZY_SOAK_NAMESPACES DIZZY_SOAK_SAMPLE_INTERVAL \
-      DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS EXTERNAL_CLUSTER
+      DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT \
+      DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH EXTERNAL_CLUSTER
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -335,7 +339,8 @@ test_usage() {
   done
   for setting in DIZZY_SOAK_SERVICE DIZZY_SOAK_DURATION DIZZY_SCENARIO DIZZY_ARGS DIZZY_VERSION DIZZY_AUTH_URL \
     DIZZY_CP_NAME DIZZY_CP_NAMESPACE EXTERNAL_OVERLAY DIZZY_SOAK_NAMESPACES DIZZY_SOAK_SAMPLE_INTERVAL \
-    DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS; do
+    DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT \
+    DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH; do
     assert_contains "the usage names $setting" "$usage" "  $setting "
   done
 
@@ -426,13 +431,22 @@ test_settings() {
     preflight_fails "$tmp" "DIZZY_SOAK_MAX_P95_SECONDS='$value'" \
       "DIZZY_SOAK_MAX_P95_SECONDS must be empty or a positive number of seconds" DIZZY_SOAK_MAX_P95_SECONDS="$value"
   done
+  local setting
+  for setting in DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH; do
+    for value in 0 -1 abc ""; do
+      preflight_fails "$tmp" "$setting='$value'" "$setting must be a positive number" "$setting=$value"
+    done
+  done
   preflight_fails "$tmp" "DIZZY_VERSION with a slash" \
     "DIZZY_VERSION must be an image tag of letters, digits, '.', '_' and '-'" DIZZY_VERSION="v1/evil"
 
   new_case "$tmp"
-  run_soak "$tmp" start -- DIZZY_SOAK_MAX_ERROR_RATE=0 DIZZY_SOAK_MAX_P95_SECONDS=0.5 DIZZY_SOAK_SAMPLE_INTERVAL=30
+  run_soak "$tmp" start -- DIZZY_SOAK_MAX_ERROR_RATE=0 DIZZY_SOAK_MAX_P95_SECONDS=0.5 DIZZY_SOAK_SAMPLE_INTERVAL=30 \
+    DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=2.5 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=25
   rc=$?
-  assert_eq "an error rate of 0, a p95 of 0.5 and an interval of 30 start the soak" "0" "$rc"
+  assert_eq "an error rate of 0, a p95 of 0.5, an interval of 30 and leak bounds of 2.5 and 25 start the soak" "0" "$rc"
+  assert_contains "the leak bounds reach the runner" "$(cat "$tmp/capture/dizzy-soak-config.literals")" \
+    "$(printf '%s\n' DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=2.5 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=25)"
 }
 
 # ---------------------------------------------------------------------------
@@ -500,7 +514,8 @@ test_start() {
     "$(cat "$tmp/capture/dizzy-soak-scenario.scenario.yaml")"
   assert_eq "the settings reach the runner with their defaults and an empty DIZZY_ARGS" "$(printf '%s\n' \
     DIZZY_SOAK_SERVICE=mix DIZZY_SOAK_DURATION=6h DIZZY_ARGS= "DIZZY_VERSION=$(pinned_version)" DIZZY_SOAK_NAMESPACES= \
-    DIZZY_SOAK_SAMPLE_INTERVAL=60 DIZZY_SOAK_MAX_ERROR_RATE= DIZZY_SOAK_MAX_P95_SECONDS=)" \
+    DIZZY_SOAK_SAMPLE_INTERVAL=60 DIZZY_SOAK_MAX_ERROR_RATE= DIZZY_SOAK_MAX_P95_SECONDS= \
+    DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=10 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=10)" \
     "$(cat "$tmp/capture/dizzy-soak-config.literals")"
 
   # The Job.

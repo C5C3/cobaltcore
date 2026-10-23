@@ -1129,6 +1129,8 @@ keystone-pressure-ab:
 #   DIZZY_SOAK_SAMPLE_INTERVAL  seconds between samples (default 60).
 #   DIZZY_SOAK_MAX_ERROR_RATE   error-rate threshold in percent (default none).
 #   DIZZY_SOAK_MAX_P95_SECONDS  p95 latency threshold (default none).
+#   DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT  operator heap growth bound in percent (default 10).
+#   DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH     operator goroutine growth bound (default 10).
 dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report: dizzy-soak-%:
 	hack/dizzy-soak.sh $*
 
