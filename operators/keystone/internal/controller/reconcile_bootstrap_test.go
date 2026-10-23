@@ -251,6 +251,79 @@ func TestReconcileBootstrap_JobComplete(t *testing.T) {
 	expectEvent(g, r, "Normal BootstrapComplete")
 }
 
+// TestReconcileBootstrap_SteadyPassEmitsNoEvent pins the quiet steady state: a
+// second pass over the completed Job keeps BootstrapReady True and emits no
+// second BootstrapComplete event.
+func TestReconcileBootstrap_SteadyPassEmitsNoEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+
+	r := newBootstrapTestReconciler(s, ks, completedBootstrapJob(ks), bootstrapAdminSecret(ks))
+
+	_, err := r.reconcileBootstrap(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	expectEvent(g, r, "Normal BootstrapComplete")
+
+	result, err := r.reconcileBootstrap(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(BeZero())
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("BootstrapComplete"))
+	expectNoEvent(g, r)
+}
+
+// TestReconcileBootstrap_RotationRerunEmitsBootstrapComplete pins that a
+// rotated admin password reports its re-run: the stale Job's replacement takes
+// BootstrapReady through BootstrapInProgress, and its completion emits
+// BootstrapComplete again, once.
+func TestReconcileBootstrap_RotationRerunEmitsBootstrapComplete(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := bootstrapTestScheme()
+	ks := bootstrapKeystone()
+	ks.Status.Conditions = []metav1.Condition{{
+		Type:   "BootstrapReady",
+		Status: metav1.ConditionTrue,
+		Reason: "BootstrapComplete",
+	}}
+	stale := completedBootstrapJob(ks)
+	stale.Annotations[job.PodSpecHashAnnotation] = "stale-key-from-previous-password"
+
+	r := newBootstrapTestReconciler(s, ks, stale, bootstrapAdminSecret(ks))
+
+	_, err := r.reconcileBootstrap(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal("BootstrapInProgress"))
+	expectNoEvent(g, r)
+
+	// Mark the recreated Job Complete.
+	var created batchv1.Job
+	g.Expect(r.Client.Get(context.Background(), client.ObjectKey{
+		Name:      "test-keystone-bootstrap",
+		Namespace: "default",
+	}, &created)).To(Succeed())
+	now := metav1.Now()
+	created.Status.Succeeded = 1
+	created.Status.CompletionTime = &now
+	created.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+	g.Expect(r.Client.Status().Update(context.Background(), &created)).To(Succeed())
+
+	_, err = r.reconcileBootstrap(context.Background(), r.Client, ks, "keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	cond = meta.FindStatusCondition(ks.Status.Conditions, "BootstrapReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("BootstrapComplete"))
+	expectEvent(g, r, "Normal BootstrapComplete")
+	expectNoEvent(g, r)
+}
+
 func TestReconcileBootstrap_JobRunning(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := bootstrapTestScheme()
