@@ -351,6 +351,10 @@ jobs:
               - 'tests/e2e/c5c3/keystone-service/**'
               - 'tests/e2e/c5c3/keystone-service-foreign-namespace/**'
               - 'tests/e2e/c5c3/keystone-user/**'
+              - 'tests/e2e/c5c3/admin-password-scoping/**'
+              - 'tests/e2e/c5c3/db-credential-scoping/**'
+              - 'tests/e2e/c5c3/multi-controlplane/**'
+              - 'tests/e2e/c5c3/deletion-orchestration/**'
               # The full-chain suite applies this overlay's fixtures.yaml.
               - 'deploy/kind/hypervisor-operator-fixtures/**'
             tests_controlplane_sso:
@@ -2757,19 +2761,32 @@ jobs:
   # Keystone-only plane of its own and stays separate for the same failFast
   # reason.
   #
+  # Steps five to eight run the per-ControlPlane scoping and teardown suites:
+  # admin-password-scoping and db-credential-scoping (one plane's admin
+  # password and dynamic DB credential), multi-controlplane (two planes in
+  # tenant-a and tenant-b that must not read or rotate each other's
+  # credentials) and deletion-orchestration (a plane with a dedicated Barbican
+  # store deleted after its Keystone is gone). Each seeds its own OpenBao
+  # paths, onboards its own database-engine roles and removes its planes
+  # before the next step, and each runs in a step of its own for the same
+  # failFast reason.
+  #
   # A real MariaDB + Memcached + Keystone + three operators + OpenBao + ESO +
   # K-ORC + cert-manager + Envoy on one node is heavy, so this is a dedicated job
   # with an extended timeout on the larger runner (matching tempest).
   #
-  # The four suites run in sequence against one node, so their wall clocks add
+  # The eight suites run in sequence against one node, so their wall clocks add
   # rather than overlap. A suite's ceiling is NOT its exec budget alone: chainsaw
   # applies that budget to every script operation, so try, catch and finally each
-  # get one, and the cleanup runs after all three. Each of the four therefore
+  # get one, and the cleanup runs after all three. Each of the eight therefore
   # pins its catch and its finally explicitly, which puts the ceilings at
   # 100+5+5+5+2+3 = 120m (full-chain, where the compute leg added a third
   # finally script and the release hop lengthened the exec budget),
   # 40+5+20+15 = 80m (foreign-namespace),
-  # 70+5+20+15 = 110m (keystone-user) and 50+5+20+15 = 90m (own-namespace).
+  # 70+5+20+15 = 110m (keystone-user), 50+5+20+15 = 90m (own-namespace),
+  # 30+5+10+5 = 50m (admin-password-scoping), 30+5+10+5 = 50m
+  # (db-credential-scoping), 70+5+20+5 = 100m (multi-controlplane) and
+  # 55+5+5+10 = 75m (deletion-orchestration).
   # Unpinned, catch and finally would inherit the exec budget and the
   # own-namespace ceiling alone would be 165m.
   #
@@ -2801,10 +2818,20 @@ jobs:
   # 40+85+25+55+110 = 315m. Link 8 of the full-chain suite raised its exec
   # budget from 65m to 100m and its ceiling to 120m, and the bring-up grew
   # eight image loads (about 5 minutes), so the wall moved to 360m:
-  # 45+120+25+55+110 = 355m. The bring-up and the two pass terms are the
-  # estimates in that sum —
-  # confirm them against the first green run of this leg and re-derive if one
-  # overruns. The worst case holds the runner for over five hours, which
+  # 45+120+25+55+110 = 355m.
+  #
+  # Steps five to eight moved the wall to 490m. The rule stays: the bring-up,
+  # the full-chain ceiling, the passes of the other suites but one, and the
+  # largest other ceiling. The passes are those of six of the seven other
+  # suites, leaving out the smallest (admin-password-scoping, ~15m): ~55m
+  # keystone-user, ~45m multi-controlplane, ~40m deletion-orchestration,
+  # ~25m foreign-namespace, ~25m own-namespace and ~20m db-credential-scoping,
+  # 210m in all. The keystone-user ceiling of 110m is still the largest of the
+  # seven others, so 45+120+210+110 = 485m. The estimates of the existing
+  # suites stand because their measured passes in run 39853183141 (4.3, 14.6
+  # and 6.6 minutes for foreign-namespace, keystone-user and own-namespace)
+  # sit well under them; the four new ones are estimates until a green run
+  # measures them. The worst case holds the runner for over eight hours, which
   # is the price of a stalled suite reporting as a failure rather than a
   # cancellation.
   e2e-controlplane:
@@ -2821,7 +2848,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 360
+    timeout-minutes: 490
     continue-on-error: false
     permissions:
       contents: read
@@ -3085,13 +3112,50 @@ jobs:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
       # The own-namespace registration suite runs fourth, again in its own
       # invocation for the failFast reason above, under a report name of its own
-      # so all four JUnit files survive in the uploaded artifact.
+      # so every JUnit file survives in the uploaded artifact.
       - name: Run own-namespace registration E2E test
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml \
             --report-name chainsaw-report-keystone-service-own-namespace \
             tests/e2e/c5c3/keystone-service/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # Steps five to eight run the per-ControlPlane scoping and teardown
+      # suites, each in its own invocation for the failFast reason above and
+      # under a report name of its own. Each brings up its own planes away from
+      # openstack, which still holds the full-chain plane, and removes them in
+      # its finally block before the next step starts.
+      - name: Run admin-password scoping E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-admin-password-scoping \
+            tests/e2e/c5c3/admin-password-scoping/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run DB-credential scoping E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-db-credential-scoping \
+            tests/e2e/c5c3/db-credential-scoping/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run multi-ControlPlane isolation E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-multi-controlplane \
+            tests/e2e/c5c3/multi-controlplane/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run deletion-orchestration E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-deletion-orchestration \
+            tests/e2e/c5c3/deletion-orchestration/
         env:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
       # Stops the watch, takes a last snapshot and writes the report. A

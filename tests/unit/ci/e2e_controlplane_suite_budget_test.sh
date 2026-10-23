@@ -9,14 +9,14 @@
 # Chainsaw applies a test's `exec` budget to EVERY script operation, not just to
 # the one in `try`. A suite whose `catch` and `finally` scripts carry no explicit
 # timeout therefore has a ceiling of exec x 3 + cleanup, not exec + cleanup — and
-# the three suites run in sequence on one node, so an unbounded diagnostic dump
+# the suites run in sequence on one node, so an unbounded diagnostic dump
 # against a wedged apiserver (where a kubectl call blocks instead of erroring,
 # and `2>&1 || true` bounds the exit status rather than the duration) can carry
 # the job past its wall. GitHub then SIGKILLs the runner process mid-catch, no
 # JUnit report is written, and a stalled suite is reported as a cancelled job
 # with nothing to read it out of — the outcome the wall was raised to prevent.
 #
-# The suite list is read out of ci.yaml rather than hardcoded, so a fourth
+# The suite list is read out of ci.yaml rather than hardcoded, so a new
 # chainsaw step is covered the day it lands.
 #
 # Usage: bash tests/unit/ci/e2e_controlplane_suite_budget_test.sh
