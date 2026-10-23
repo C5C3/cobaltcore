@@ -4,11 +4,24 @@
 
 # Chainsaw E2E test for the NetworkPolicy sub-reconciler.
 #
-# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy,
-# so this suite validates the rendered policy object (ingress on the Barbican
-# API port 9311, auto-derived DNS/database/keystone/cache/OpenBao egress) and its
-# lifecycle, not actual traffic enforcement — same scope as the
-# keystone/horizon/glance/placement network-policy suites.
+# ENFORCEMENT: the kindnetd of kind v0.32 and later (CI pins KIND_VERSION)
+# enforces NetworkPolicy. The suite asserts the rendered policy object
+# (ingress on the Barbican API port 9311, auto-derived
+# DNS/database/keystone/cache/OpenBao egress) and its lifecycle, and probes
+# the policy with the four pods of 04-probe-pods.yaml through
+# ../../lib/assert-networkpolicy-enforced.sh (Step 3):
+#   - the target, which carries the policy's selector labels, is dropped on
+#     sink port 9999, which no egress rule admits;
+#   - it resolves a cluster name, which the DNS rule admits;
+#   - it reaches the sink on TCP 3306, 5000, 8200 and 11211, every TCP egress
+#     port the policy admits but 53;
+#   - a client in barbican-system, the operator namespace, is dropped on
+#     target port 9999, which no ingress rule admits, and reaches TCP 9311;
+#   - a client in barbican-netpol-outside is dropped on TCP 9311 until the
+#     update patch admits its namespace (Step 4).
+# On a CNI that does not enforce NetworkPolicy the first probe fails with "was
+# never dropped". TCP 53 is not probed: the sink listens on unprivileged ports
+# only, DNS is probed by resolution, and Step 2 pins the rule.
 #
 # The auto-derived egress order is deterministic (DNS, database, keystone, cache,
 # OpenBao):
@@ -104,7 +117,58 @@ spec:
           kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 --previous 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # ── Step 3: Probe the enforced policy ──────────────────────────────────
+  # The pods of 04-probe-pods.yaml stand in for the Barbican pods (see
+  # ENFORCEMENT above). kindnet adds a new pod to its policy set a moment
+  # after the pod starts, so the first dropped probe polls until the target's
+  # connection times out. The inside client's open probe then shows that
+  # kindnet knows the clients, which start together, so the outside client's
+  # drop comes from the policy. The trailing dot keeps the resolver off the
+  # search list.
+  - try:
+    - apply:
+        file: 04-probe-pods.yaml
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready --timeout=120s -n openstack \
+            pod/barbican-netpol-probe-target pod/barbican-netpol-probe-sink
+          kubectl wait --for=condition=Ready --timeout=120s -n barbican-system pod/barbican-netpol-probe-inside
+          kubectl wait --for=condition=Ready --timeout=120s -n barbican-netpol-outside pod/barbican-netpol-probe-outside
+          TARGET="$(kubectl get pod barbican-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          SINK="$(kubectl get pod barbican-netpol-probe-sink -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ] || [ -z "${SINK}" ]; then
+            echo "ERROR: a probe pod has no pod IP (target '${TARGET}', sink '${SINK}')"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          # Egress of the pod the policy selects. The first drop proves kindnet holds it.
+          "${PROBE}" openstack barbican-netpol-probe-target dropped "${SINK}" 9999
+          "${PROBE}" openstack barbican-netpol-probe-target resolves kubernetes.default.svc.cluster.local.
+          "${PROBE}" openstack barbican-netpol-probe-target open "${SINK}" 3306 5000 8200 11211
+          # Ingress into it: a port no rule admits, then the API port from an admitted
+          # and from a foreign namespace.
+          "${PROBE}" barbican-system barbican-netpol-probe-inside dropped "${TARGET}" 9999
+          "${PROBE}" barbican-system barbican-netpol-probe-inside open "${TARGET}" 9311
+          "${PROBE}" barbican-netpol-outside barbican-netpol-probe-outside dropped "${TARGET}" 9311
+    catch:
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Probe pods ==="
+          kubectl get pods -A -l app.kubernetes.io/instance=barbican-netpol -o wide --show-labels 2>&1 || true
+          for ref in openstack/barbican-netpol-probe-target openstack/barbican-netpol-probe-sink \
+            barbican-system/barbican-netpol-probe-inside barbican-netpol-outside/barbican-netpol-probe-outside; do
+            echo "--- ${ref} ---"
+            kubectl logs -n "${ref%%/*}" "${ref#*/}" 2>&1 || true
+            kubectl describe pod -n "${ref%%/*}" "${ref#*/}" 2>&1 | tail -20 || true
+          done
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n openstack -l app.kubernetes.io/instance=barbican-netpol -o yaml 2>&1 || true
+          echo "=== Events (barbican-netpol-outside) ==="
+          kubectl get events -n barbican-netpol-outside 2>&1 || true
+  # ── Step 4: Add a second ingress source and assert it lands ────────────
   # Peer arithmetic: the operator appends one peer per declared ingress source
   # plus one for its own Namespace (so the operator's health check reaches the
   # API). One source therefore renders 2 peers and the patched two sources
@@ -123,6 +187,20 @@ spec:
           spec:
             ingress:
             - (length(from) >= `3`): true
+    # The patch admits barbican-netpol-outside, so its client, which Step 3
+    # saw dropped, now reaches the API port. That proves the patched policy is
+    # enforced and the earlier drop came from the policy.
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          TARGET="$(kubectl get pod barbican-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ]; then
+            echo "ERROR: the probe target has no pod IP"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          "${PROBE}" barbican-netpol-outside barbican-netpol-probe-outside open "${TARGET}" 9311
     catch:
     - script:
         content: |
@@ -134,7 +212,7 @@ spec:
           kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  # ── Step 5: Disable networkPolicy and assert deletion ──────────────────
   - try:
     - patch:
         file: 03-patch-disable-networkpolicy.yaml
