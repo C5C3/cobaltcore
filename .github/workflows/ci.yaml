@@ -5614,7 +5614,9 @@ jobs:
           else
             make helm-package OPERATOR="${OPERATOR}"
           fi
-          helm push "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
+          # ghcr.io now and then 404s the manifest helm has just uploaded when
+          # helm fetches it back to tag it; the script retries that one error.
+          hack/ci-helm-push.sh "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
 
   # Package and push the target-cluster-access chart to the GHCR OCI registry.
   # It is a job of its own rather than a step in helm-push because that job is a
@@ -5643,7 +5645,8 @@ jobs:
           else
             make helm-package-target-cluster
           fi
-          helm push target-cluster-access-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
+          # Retries ghcr.io's 404 on the tag step, as in helm-push.
+          hack/ci-helm-push.sh target-cluster-access-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
 
   # Create GitHub release with auto-generated release notes
   # on v* tag pushes, after images and charts are published.
