@@ -2236,7 +2236,7 @@ push without re-running the E2E suite.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI |
 | 3 | Helm registry login | Authenticates to GHCR via `helm registry login` |
-| 4 | Package and push | Packages chart and pushes to `oci://ghcr.io/c5c3/charts/` |
+| 4 | Package and push | Packages chart and pushes it to `oci://ghcr.io/c5c3/charts/` with `hack/ci-helm-push.sh` |
 
 **Chart version derivation:**
 
@@ -2251,6 +2251,21 @@ packaged and pushed.
 
 The `make helm-package` target packages `operators/<operator>/helm/<operator>-operator/`.
 When `CHART_VERSION` is set (for tag pushes), it overrides the version in `Chart.yaml`.
+
+**Push retry:** `helm push` uploads the chart manifest by digest, fetches that
+digest back and uploads it again under the chart version. ghcr.io now and then
+answers the fetch with 404, and helm fails with `Error: failed to perform "Tag"
+on destination: sha256:<digest>: not found`. The manifest is in the registry by
+then, but the chart version still points at the previous push. Runs 39266486878
+(`helm-push (horizon)`) and 39922685226 (`helm-push (placement)`) failed this
+way. `hack/ci-helm-push.sh` retries this one error, up to three attempts in
+total with a 5 s and a 15 s pause, the backoff `hack/ci-merge-manifest.sh` uses
+for the same ghcr.io behaviour. Helm stamps the archive's modification time as
+the manifest's creation time, so the retry builds the same manifest, skips what
+the registry already serves and repeats the tag step. Every other error fails on
+the first attempt. `tests/unit/hack/ci_helm_push_test.sh` covers the script, and
+`tests/unit/ci/helm_wiring_test.sh` fails when a workflow runs `helm push`
+directly.
 
 ### helm-push-target-cluster
 
@@ -2275,7 +2290,7 @@ on for a `v*` tag push.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI |
 | 3 | `Login to GHCR` | Authenticates to `ghcr.io` via `helm registry login` with `github.actor` and `secrets.GITHUB_TOKEN` |
-| 4 | `Package and push Helm chart` | Removes stale `target-cluster-access-*.tgz` files, runs `make helm-package-target-cluster` and pushes the tarball to `oci://ghcr.io/c5c3/charts` |
+| 4 | `Package and push Helm chart` | Removes stale `target-cluster-access-*.tgz` files, runs `make helm-package-target-cluster` and pushes the tarball to `oci://ghcr.io/c5c3/charts` with `hack/ci-helm-push.sh` (see [push retry](#helm-push)) |
 
 **Chart version derivation:**
 
