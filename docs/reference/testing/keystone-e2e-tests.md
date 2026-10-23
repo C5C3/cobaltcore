@@ -134,7 +134,7 @@ Deployment rollout, bootstrap Job).
 | maintenance-endpoint-isolation | `keystone-endpoint-isolation` | Maintenance pods never become API Service backends: the non-terminating EndpointSlice address count for the API Service stays at exactly the live replica count — never above, never empty — across a sampling window that observes a live trust-flush pod holding a pod IP |
 | metrics | — (operator-level) | keystone-operator chart renders and removes the ServiceMonitor; metrics endpoint scrapeable |
 | namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` beside a standalone webhook release (`webhook.standalone=true`): the standalone release's ClusterRole carries only the two webhook reads, the CR is defaulted at admission and reconciles to Ready, an invalid cron expression is rejected at admission, and the standalone pod's `controller_runtime_webhook_requests_total` counters show that it admitted both. With the CR Ready, the operator installed with `rbac.namespaceScoped=true` and `webhook.enabled=false` has started in namespace-scoped mode, logged no forbidden watch, never restarted, and recorded a successful reconcile on its own metrics endpoint |
-| network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
+| network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources; probe pods then find the target dropped on 9999, resolving a cluster name and reaching 3306, 6443 and 11211, a `keystone-system` client dropped on 9999 and reaching 5000, and a `keystone-netpol-outside` client dropped on 5000 until the update admits its namespace |
 | prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
 | resources | `keystone-resources` | Render-time per-resource defaults on the Deployment and a running Pod (no CPU limit, Burstable), the Job defaults on the db-sync Job template (70m CPU and 368Mi memory requests, a 368Mi memory limit, no CPU limit), propagation of a patched `spec.deployment.resources`, and default memory that follows `spec.uwsgi.processes` once the block is removed |
 | rolling-update-zero-downtime | `keystone-rolling-update` | Full graceful-termination chain keeps the API serving during an image-tag rolling update |
@@ -1138,7 +1138,8 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              NetworkPolicy reconciliation
 │   ├── 00-keystone-cr.yaml             Keystone CR with ingress policy
 │   ├── 01-patch-update-ingress.yaml    Patch ingress rule
-│   └── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
+│   ├── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
+│   └── 03-probe-pods.yaml              Probe pods: target, sink, inside and outside clients
 ├── node-placement/
 │   ├── chainsaw-test.yaml              spec.deployment node placement, inherited by the Jobs
 │   └── 00-keystone-cr.yaml             Keystone CR with nodeSelector, tolerations and affinity
