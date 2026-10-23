@@ -1105,7 +1105,7 @@ survives while it carries a **keeper** tag:
 | Version | `keystone:29.0.0` | Names an upstream release |
 | Release | `keystone:2026.1` | Names an OpenStack release |
 | Semver prerelease | `keystone-operator:1.2.0-rc1` | Tagged operator build |
-| Operator chart version | `keystone-operator:0.14.0` | `merge-operator-images` tags each operator image it publishes from `main` with its `Chart.yaml` version; the [operator upgrade suites](../testing/operator-upgrade-e2e-tests.md) pin their baseline to it |
+| Operator chart version | `keystone-operator:0.14.1` | `merge-operator-images` tags each operator image it publishes from `main` with its `Chart.yaml` version; the [operator upgrade suites](../testing/operator-upgrade-e2e-tests.md) pin their baseline to it |
 | Pinned upstream commit | `openstack-hypervisor-operator:upstream-<commit>`, `kvm-node-agent:upstream-<commit>` | A chart of that commit names the image |
 | Libvirt keeper | `libvirt:12.2.0-r57`, and `libvirt:10.0.0-2ubuntu8.19-r2` of the Docker-built image | The lab manifests pin that build by digest; the Docker-built keepers are the lab's rollback target |
 

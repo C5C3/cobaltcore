@@ -51,7 +51,7 @@ that tag again, so the chart and the image of a past version stay fixed.
 Each suite directory holds a `baseline.yaml` with one key:
 
 ```yaml
-version: "0.14.0"
+version: "0.14.1"
 ```
 
 The pin names two artifacts: the chart `oci://ghcr.io/c5c3/charts/<op>-operator` at
@@ -75,13 +75,13 @@ It also says whether the baseline is fixed. A pin equal to the checkout's
 move with every push until `Chart.yaml` moves past it:
 
 ```text
-::notice::baseline keystone-operator 0.14.0 is the version main still publishes; its chart and image move with every push until Chart.yaml moves past 0.14.0
+::notice::baseline keystone-operator 0.15.0 is the version main still publishes; its chart and image move with every push until Chart.yaml moves past 0.15.0
 ```
 
 Any lower pin is fixed:
 
 ```text
-Baseline keystone-operator 0.13.0 is frozen (main publishes 0.14.0)
+Baseline keystone-operator 0.14.1 is frozen (main publishes 0.15.0)
 ```
 
 `tests/unit/ci/operator_upgrade_wiring_test.sh` fails when a chart has no suite, or
@@ -107,18 +107,25 @@ pin uses.
 
 The chart-version tags exist only for pushes made since the tagging step was added,
 so the pull request that introduced the suites needed the ten tags created once by
-hand. For each operator, the person with a `write:packages` login:
+hand. Before it merged, `main` had moved every chart past the version the suites
+first pinned (e60973db4 released operator-library 0.12.0 to every chart), and the
+nightly `cleanup-images` sweep had deleted every image of those versions, because
+it removes a `sha-<sha40>` tag a day after its push. The ten pins therefore name
+the versions of 8d01ec302, the last push before e60973db4, whose `sha-<sha40>` tags
+still existed. For each operator, the person with a `write:packages` login:
 
-1. reads the `org.opencontainers.image.revision` annotation of
-   `ghcr.io/c5c3/<op>-operator:latest` (`docker buildx imagetools inspect --raw`);
-2. checks that `git show <revision>:operators/<op>/helm/<op>-operator/Chart.yaml`
-   names the pinned version;
-3. runs `docker buildx imagetools create -t ghcr.io/c5c3/<op>-operator:<version> ghcr.io/c5c3/<op>-operator:latest`.
+1. picks the newest `sha-<sha40>` tag of `ghcr.io/c5c3/<op>-operator` whose
+   commit's `operators/<op>/helm/<op>-operator/Chart.yaml` names the pinned version
+   (`git show <sha40>:operators/<op>/helm/<op>-operator/Chart.yaml`);
+2. runs `docker buildx imagetools create -t ghcr.io/c5c3/<op>-operator:<version> ghcr.io/c5c3/<op>-operator:sha-<sha40>`
+   before the next sweep deletes the source tag.
 
 A single-source `imagetools create` copies the index, so the new tag names the same
-digest, and running the command again writes the same digest under the same tag. A
-revision that names another version stops the bootstrap for that operator: nothing
-is tagged by guess. The merge push of that pull request then tags all ten itself.
+digest, and running the command again writes the same digest under the same tag. The
+bare `X.Y.Z` tag is a keeper, so the sweep keeps the image from then on. Without a
+`sha-<sha40>` tag of the pinned version, nothing is tagged by guess: pin a version
+that still has one. The merge push of that pull request tags only the versions its
+`Chart.yaml` files name, which are newer than the pins.
 
 ## Suite contract
 
