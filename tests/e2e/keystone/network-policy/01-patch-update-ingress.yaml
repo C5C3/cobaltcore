@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to update ingress sources — add a second source.
+# Patch to update ingress sources: add a second source, the
+# keystone-netpol-outside namespace of the outside probe client.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
@@ -16,4 +17,4 @@ spec:
           kubernetes.io/metadata.name: envoy-gateway-system
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monitoring
+          kubernetes.io/metadata.name: keystone-netpol-outside

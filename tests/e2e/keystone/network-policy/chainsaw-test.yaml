@@ -7,15 +7,29 @@
 # based on spec.networkPolicy:
 #   - Initial deployment with ingress from envoy-gateway-system namespace, the
 #     auto-whitelisted operator namespace, and auto-derived egress (issue #461)
-#   - Update ingress sources (add monitoring namespace)
+#   - The rendered policy is enforced: probe pods are dropped and admitted as
+#     its rules say (Step 3)
+#   - Update ingress sources (add the keystone-netpol-outside namespace), after
+#     which its client reaches TCP 5000 (Step 5)
 #   - Disable networkPolicy (NetworkPolicy deleted)
 #
-# SCOPE CAVEAT: the CI cluster runs kindnet, which does NOT enforce
-# NetworkPolicy. This suite therefore asserts the NetworkPolicy *spec* the
-# operator renders (ingress peers and egress ports), not runtime enforcement.
-# The egress/operator-namespace fixes in issue #461 only manifest as failures
-# under an enforcing CNI (Calico/Cilium); an enforcing-CNI e2e leg
-# (kind+Calico/Cilium), proposed in issue #461, is out of scope for this suite.
+# ENFORCEMENT: the kindnetd of kind v0.32 and later (CI pins KIND_VERSION)
+# enforces NetworkPolicy. The suite asserts the policy the operator renders
+# and then probes it with the four pods of 03-probe-pods.yaml through
+# ../../lib/assert-networkpolicy-enforced.sh (Step 3):
+#   - the target, which carries the policy's selector labels, is dropped on
+#     sink port 9999, which no egress rule admits;
+#   - it resolves a cluster name, which the DNS rule admits;
+#   - it reaches the sink on TCP 3306, 6443 and 11211, every TCP egress port
+#     the policy admits but 53 and 443;
+#   - a client in keystone-system, the operator namespace, is dropped on
+#     target port 9999, which no ingress rule admits, and reaches TCP 5000;
+#   - a client in keystone-netpol-outside is dropped on TCP 5000 until the
+#     update patch admits its namespace (Step 5).
+# On a CNI that does not enforce NetworkPolicy the first probe fails with "was
+# never dropped". TCP 53 and 443 are not probed: the sink listens on
+# unprivileged ports only, DNS is probed by resolution, and Step 2 pins both
+# rules.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -142,11 +156,62 @@ spec:
           kubectl get networkpolicy -n $NAMESPACE -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Update ingress sources ───────────────────────────────────────
+  # ── Step 3: Probe the enforced policy ────────────────────────────────────
+  # The pods of 03-probe-pods.yaml stand in for the Keystone pods (see
+  # ENFORCEMENT above). kindnet adds a new pod to its policy set a moment
+  # after the pod starts, so the first dropped probe polls until the target's
+  # connection times out. The inside client's open probe then shows that
+  # kindnet knows the clients, which start together, so the outside client's
+  # drop comes from the policy. The trailing dot keeps the resolver off the
+  # search list.
+  - try:
+    - apply:
+        file: 03-probe-pods.yaml
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready --timeout=120s -n openstack \
+            pod/keystone-netpol-probe-target pod/keystone-netpol-probe-sink
+          kubectl wait --for=condition=Ready --timeout=120s -n keystone-system pod/keystone-netpol-probe-inside
+          kubectl wait --for=condition=Ready --timeout=120s -n keystone-netpol-outside pod/keystone-netpol-probe-outside
+          TARGET="$(kubectl get pod keystone-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          SINK="$(kubectl get pod keystone-netpol-probe-sink -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ] || [ -z "${SINK}" ]; then
+            echo "ERROR: a probe pod has no pod IP (target '${TARGET}', sink '${SINK}')"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          # Egress of the pod the policy selects. The first drop proves kindnet holds it.
+          "${PROBE}" openstack keystone-netpol-probe-target dropped "${SINK}" 9999
+          "${PROBE}" openstack keystone-netpol-probe-target resolves kubernetes.default.svc.cluster.local.
+          "${PROBE}" openstack keystone-netpol-probe-target open "${SINK}" 3306 6443 11211
+          # Ingress into it: a port no rule admits, then the API port from an admitted
+          # and from a foreign namespace.
+          "${PROBE}" keystone-system keystone-netpol-probe-inside dropped "${TARGET}" 9999
+          "${PROBE}" keystone-system keystone-netpol-probe-inside open "${TARGET}" 5000
+          "${PROBE}" keystone-netpol-outside keystone-netpol-probe-outside dropped "${TARGET}" 5000
+    catch:
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Probe pods ==="
+          kubectl get pods -A -l app.kubernetes.io/instance=keystone-netpol -o wide --show-labels 2>&1 || true
+          for ref in openstack/keystone-netpol-probe-target openstack/keystone-netpol-probe-sink \
+            keystone-system/keystone-netpol-probe-inside keystone-netpol-outside/keystone-netpol-probe-outside; do
+            echo "--- ${ref} ---"
+            kubectl logs -n "${ref%%/*}" "${ref#*/}" 2>&1 || true
+            kubectl describe pod -n "${ref%%/*}" "${ref#*/}" 2>&1 | tail -20 || true
+          done
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n openstack -l app.kubernetes.io/instance=keystone-netpol -o yaml 2>&1 || true
+          echo "=== Events (keystone-netpol-outside) ==="
+          kubectl get events -n keystone-netpol-outside 2>&1 || true
+  # ── Step 4: Update ingress sources ───────────────────────────────────────
   - try:
     - patch:
         file: 01-patch-update-ingress.yaml
-  # ── Step 4: Assert NetworkPolicy updated with both ingress sources ───────
+  # ── Step 5: Assert NetworkPolicy updated with both ingress sources ───────
   - try:
     - assert:
         resource:
@@ -161,22 +226,37 @@ spec:
               - protocol: TCP
                 port: 5000
               from:
-              # User-declared sources (envoy-gateway-system + monitoring) plus
-              # the auto-whitelisted operator namespace, in build order.
+              # User-declared sources (envoy-gateway-system +
+              # keystone-netpol-outside) plus the auto-whitelisted operator
+              # namespace, in build order.
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: envoy-gateway-system
               - namespaceSelector:
                   matchLabels:
-                    kubernetes.io/metadata.name: monitoring
+                    kubernetes.io/metadata.name: keystone-netpol-outside
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: keystone-system
-  # ── Step 5: Disable networkPolicy ────────────────────────────────────────
+    # The patch admits keystone-netpol-outside, so its client, which Step 3
+    # saw dropped, now reaches the API port. That proves the patched policy is
+    # enforced and the earlier drop came from the policy.
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          TARGET="$(kubectl get pod keystone-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ]; then
+            echo "ERROR: the probe target has no pod IP"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          "${PROBE}" keystone-netpol-outside keystone-netpol-probe-outside open "${TARGET}" 5000
+  # ── Step 6: Disable networkPolicy ────────────────────────────────────────
   - try:
     - patch:
         file: 02-patch-disable-networkpolicy.yaml
-  # ── Step 6: Assert NetworkPolicy deleted and condition updated ───────────
+  # ── Step 7: Assert NetworkPolicy deleted and condition updated ───────────
   - try:
     - assert:
         resource:
