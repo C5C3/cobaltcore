@@ -740,7 +740,7 @@ e2e-prometheus:
 # E2E_REQUIRE_CONTROLPLANE_STACK=true to make the suite's presence guard fail
 # loudly (as the CI job does) rather than SKIP.
 #
-# The six suites run as separate invocations, as they do in CI: the shared
+# The ten suites run as separate invocations, as they do in CI: the shared
 # chainsaw config sets failFast, so a red registration suite would otherwise
 # abort the full-chain suite, and running them in sequence also keeps their
 # identity planes from converging on one node at the same time.
@@ -753,6 +753,10 @@ e2e-controlplane:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-keystone-service-own-namespace tests/e2e/c5c3/keystone-service/
 	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-controlplane-healthcheck tests/e2e/c5c3/healthcheck/
 	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-controlplane-pod-security-restricted tests/e2e/c5c3/pod-security-restricted/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-admin-password-scoping tests/e2e/c5c3/admin-password-scoping/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-db-credential-scoping tests/e2e/c5c3/db-credential-scoping/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-multi-controlplane tests/e2e/c5c3/multi-controlplane/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-deletion-orchestration tests/e2e/c5c3/deletion-orchestration/
 
 .PHONY: e2e-external-keystone
 # e2e-external-keystone runs the External-mode ControlPlane suite against a plain
