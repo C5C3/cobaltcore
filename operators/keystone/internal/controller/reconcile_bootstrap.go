@@ -141,6 +141,11 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, children cl
 		return ctrl.Result{RequeueAfter: RequeueBootstrapWait}, nil
 	}
 
+	// The event marks the transition into BootstrapComplete, not every pass
+	// over the completed Job. A rotated admin password passes through
+	// BootstrapInProgress first, so its re-run is reported again.
+	prev := conditions.GetCondition(keystone.Status.Conditions, "BootstrapReady")
+	complete := prev != nil && prev.Status == metav1.ConditionTrue && prev.Reason == "BootstrapComplete"
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 		Type:               "BootstrapReady",
 		Status:             metav1.ConditionTrue,
@@ -148,7 +153,9 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, children cl
 		Reason:             "BootstrapComplete",
 		Message:            "Keystone bootstrap completed successfully",
 	})
-	r.Recorder.Event(keystone, corev1.EventTypeNormal, "BootstrapComplete", "Keystone bootstrap completed successfully")
+	if !complete {
+		r.Recorder.Event(keystone, corev1.EventTypeNormal, "BootstrapComplete", "Keystone bootstrap completed successfully")
+	}
 	return ctrl.Result{}, nil
 }
 
