@@ -18,7 +18,7 @@
 #      object without a Ready condition.
 #   3. A run whose dizzy exits 0 with one run record and the clean leak line,
 #      with a Ready ControlPlane and no restart, writes the full report
-#      directory and verdict.json PASS with four passing checks, and exits 0.
+#      directory and verdict.json PASS with five passing checks, and exits 0.
 #      dizzy gets the arguments and environment of the soak, and an empty
 #      DIZZY_ARGS adds no argument.
 #   4. A TERM sent twice while dizzy runs reaches dizzy once; the runner
@@ -27,9 +27,9 @@
 #   5. Every way a check fails: dizzy exits 3, dizzy writes no record or
 #      two, the leak check finds resources or prints nothing, the
 #      ControlPlane is not Ready, gone at the end, absent or forbidden, a
-#      container restarts, every pod read fails; and the ways it passes: the
-#      clean leak line of glance and keystone, no container observed, no
-#      metrics API.
+#      container restarts, every pod read fails, no operator pod is listed;
+#      and the ways it passes: the clean leak line of glance and keystone,
+#      no container observed, no metrics API.
 #   6. The error-rate and p95 checks run only when their setting is set, and
 #      decide against it. A json report that fails to render leaves no
 #      dizzy-report.json, and error-rate fails for want of it.
@@ -49,6 +49,15 @@
 #      after the pod at hand; a refused scrape, a missing series, a NaN and an
 #      empty body write no line and one errors.log line naming the reason.
 #      OPERATOR_NAMES names every operator chart.
+#  11. derive_operators_summary averages the first and the last tenth of an
+#      operator pod's samples and judges only a pod that existed at the start,
+#      has 20 samples and kept its leadership. operator-leak fails on a heap
+#      growth above 10 % and a goroutine growth above 10, or the settings'
+#      bounds, passes at the bound, fails a pod without a sample, also one
+#      created during the run, and a pod listed in more than 20 pod samples
+#      without a sample in more than one and more than a tenth of them with
+#      its last scrape error, and fails when no operator pod is listed or the
+#      pod read failed. A run whose scrapes are refused fails.
 #
 # The runner is sourced in a subshell (its BASH_SOURCE guard keeps main()
 # from running) with stub kubectl, df and curl and a fake dizzy first on PATH;
@@ -282,7 +291,8 @@ in_runner() {
   local tmp="$1"
   shift
   unset DIZZY_SOAK_SERVICE DIZZY_SOAK_DURATION DIZZY_ARGS DIZZY_VERSION DIZZY_SOAK_NAMESPACES \
-    DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS
+    DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT \
+    DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH
   export DIZZY_SOAK_SAMPLE_INTERVAL=1 DIZZY_VERSION=v0.3.0
   local assignment
   for assignment in "$@"; do
@@ -572,8 +582,12 @@ test_clean_run() {
   rc=$?
   assert_eq "the runner exits 0" "0" "$rc"
   assert_eq "the verdict is PASS" "PASS" "$(jq -r .verdict "$RUN_DIR/verdict.json" 2>/dev/null)"
-  assert_eq "four checks ran and passed" "dizzy-exit=true leak-check=true controlplane-ready=true no-restarts=true" \
+  assert_eq "five checks ran and passed" \
+    "dizzy-exit=true leak-check=true controlplane-ready=true no-restarts=true operator-leak=true" \
     "$(jq -r '[.checks[] | .name + "=" + (.pass | tostring)] | join(" ")' "$RUN_DIR/verdict.json" 2>/dev/null)"
+  assert_eq "operator-leak does not judge the operator pod of a few samples" \
+    "true 0 of 1 operator pods judged; not judged: keystone-system/keystone-operator-0 (fewer than 20 samples)" \
+    "$(check_of operator-leak)"
   if [[ "$(basename "${RUN_DIR:-x}")" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
     echo "  PASS: the run directory is named after the UTC start ($(basename "$RUN_DIR"))"
     PASS=$((PASS + 1))
@@ -585,7 +599,7 @@ test_clean_run() {
   for f in scenario.yaml meta.json dizzy.log run-x.json dizzy-report.json dizzy-report.html dizzy-report.txt \
     verdict.json report.md platform/containers.tsv platform/usage.tsv platform/errors.log platform/pod-samples.log \
     platform/conditions-start.json platform/conditions-end.json platform/restarts.tsv platform/usage-summary.tsv \
-    platform/conditions.tsv platform/operator-pods.tsv platform/operators.tsv; do
+    platform/conditions.tsv platform/operator-pods.tsv platform/operators.tsv platform/operators-summary.tsv; do
     [[ -f "$RUN_DIR/$f" ]] || missing="$missing $f"
   done
   assert_eq "the run directory holds every file" "" "$missing"
@@ -595,6 +609,8 @@ test_clean_run() {
     "$(jq -r '[.dizzyVersion, .service, .duration, .sampleIntervalSeconds, (.namespaces | join(",")),
       (.endTime != null), .dizzyExitCode] | map(tostring) | join(" ")' "$RUN_DIR/meta.json")"
   assert_eq "and no threshold" "null null" "$(jq -r '"\(.maxErrorRatePercent) \(.maxP95Seconds)"' "$RUN_DIR/meta.json")"
+  assert_eq "but the operator leak bounds, as numbers" "10 10" \
+    "$(jq -r '"\(.maxOperatorHeapGrowthPercent | tojson) \(.maxOperatorGoroutineGrowth | tojson)"' "$RUN_DIR/meta.json")"
   assert_eq "the scenario is copied into the run" "name: lab-soak" "$(cat "$RUN_DIR/scenario.yaml")"
   assert_contains "dizzy.log holds dizzy's output" "$(cat "$RUN_DIR/dizzy.log")" "$CLEAN_LEAK_LINE"
   assert_contains "and so does the pod log" "$(cat "$tmp/runner.log")" "churn finished"
@@ -825,7 +841,13 @@ test_restart_checks() {
   echo '{"items":[]}' >"$tmp/empty.json"
   run_runner "$tmp" KUBECTL_PODS_FIRST="$tmp/empty.json"
   assert_eq "zero containers pass" "true 0 containers observed" "$(check_of no-restarts)"
-  assert_eq "the verdict is PASS" "PASS" "$(jq -r .verdict "$RUN_DIR/verdict.json")"
+  assert_eq "no operator pod fails operator-leak" "false no operator pod found in the sampled namespaces" \
+    "$(check_of operator-leak)"
+  assert_eq "the only failing check" "operator-leak" \
+    "$(jq -r '[.checks[] | select(.pass | not) | .name] | join(" ")' "$RUN_DIR/verdict.json")"
+  assert_eq "the verdict is FAIL" "FAIL" "$(jq -r .verdict "$RUN_DIR/verdict.json")"
+  assert_contains "report.md says no operator pod was listed" "$(cat "$RUN_DIR/report.md")" \
+    $'## Operator goroutines and heap\n\nNo operator pod was listed in the sampled namespaces.'
 
   new_case "$tmp"
   run_runner "$tmp" KUBECTL_PODS_RC=1
@@ -833,6 +855,7 @@ test_restart_checks() {
   last="$(tail -n 1 "$RUN_DIR/platform/errors.log")"
   assert_contains "the last line of errors.log is the failed pod read" "$last" " pods: Error from server (Forbidden): pods is forbidden"
   assert_eq "no-restarts fails with that line" "false pod state could not be read: $last" "$(check_of no-restarts)"
+  assert_eq "and so does operator-leak" "false operator pods could not be listed: $last" "$(check_of operator-leak)"
   assert_eq "containers.tsv stays empty" "" "$(cat "$RUN_DIR/platform/containers.tsv")"
   assert_contains "report.md counts the errors" "$(cat "$RUN_DIR/report.md")" "platform/errors.log holds "
 }
@@ -867,6 +890,11 @@ test_thresholds() {
   run_runner "$tmp"
   assert_eq "without DIZZY_SOAK_MAX_ERROR_RATE error-rate is absent" "absent" "$(check_of error-rate)"
   assert_eq "without DIZZY_SOAK_MAX_P95_SECONDS p95 is absent" "absent" "$(check_of p95)"
+
+  new_case "$tmp"
+  run_runner "$tmp" DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=2.5 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=25
+  assert_eq "meta.json holds each operator leak bound under its own key" "2.5 25" \
+    "$(jq -r '"\(.maxOperatorHeapGrowthPercent | tojson) \(.maxOperatorGoroutineGrowth | tojson)"' "$RUN_DIR/meta.json")"
 
   new_case "$tmp"
   run_runner "$tmp" DIZZY_SOAK_MAX_ERROR_RATE=5 \
@@ -978,6 +1006,9 @@ test_report_md() {
     'The 15 containers with the largest memory growth:' \
     'The 15 containers with the highest mean CPU:' \
     '| openstack | keystone-0 | keystone |' \
+    '## Operator goroutines and heap' \
+    '| namespace | pod | samples | leader |' \
+    '| keystone-system | keystone-operator-0 | ' \
     '## Conditions' \
     '| controlplanes.c5c3.io | openstack | controlplane | True | True | - |' \
     'platform/errors.log holds 0 lines.'; do
@@ -1203,6 +1234,277 @@ test_operator_names() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 11: the operator-leak check
+# ---------------------------------------------------------------------------
+OPERATOR_POD="keystone-system/keystone-operator-0"
+
+# leak_case <tmp> — A fresh <tmp>/run whose platform files are empty but for
+# one successful pod sample.
+leak_case() {
+  rm -rf "$1/run"
+  mkdir -p "$1/run/platform"
+  : >"$1/run/platform/operator-pods.tsv"
+  : >"$1/run/platform/operators.tsv"
+  : >"$1/run/platform/errors.log"
+  echo "2026-01-02T00:00:00Z" >"$1/run/platform/pod-samples.log"
+}
+
+# operator_pod <tmp> <namespace/pod> [created] — List the pod in
+# operator-pods.tsv, created at [created] (default before the run).
+operator_pod() {
+  printf '2026-01-02T00:00:00Z\t%s\t%s\t%s\t10.0.0.5\t8080\n' "${2%/*}" "${2#*/}" "${3:-2026-01-01T00:00:00Z}" \
+    >>"$1/run/platform/operator-pods.tsv"
+}
+
+# operator_listings <tmp> <namespace/pod> <times> [created] — List the pod
+# <times> times.
+operator_listings() {
+  local i
+  for ((i = 1; i <= $3; i++)); do
+    operator_pod "$1" "$2" "${4:-}"
+  done
+}
+
+# operator_samples <tmp> <namespace/pod> <from> <to> <goroutines> <heap MiB>
+# <leader> — Samples <from> to <to> of the pod in operators.tsv, with an RSS
+# of 150 MiB.
+operator_samples() {
+  local i
+  for ((i = $3; i <= $4; i++)); do
+    printf '2026-01-02T00:%02d:00Z\t%s\t%s\t%d\t%d\t%d\t%s\n' "$i" "${2%/*}" "${2#*/}" "$5" $(($6 * 1048576)) \
+      $((150 * 1048576)) "$7"
+  done >>"$1/run/platform/operators.tsv"
+}
+
+# growth_case <tmp> <goroutines> <heap MiB> [namespace/pod] — A fresh case
+# with the pod (default OPERATOR_POD) at 50 goroutines and 100 MiB, leader,
+# in samples 1 to 20 and at <goroutines> and <heap MiB> in 21 to 40.
+growth_case() {
+  local pod="${4:-$OPERATOR_POD}"
+  leak_case "$1"
+  operator_pod "$1" "$pod"
+  operator_samples "$1" "$pod" 1 20 50 100 1
+  operator_samples "$1" "$pod" 21 40 "$2" "$3" 1
+}
+
+# leak_check <tmp> [env_var=value...] — derive_operators_summary and
+# check_operator_leak in <tmp>/run with the run started at
+# 2026-01-02T00:00:00Z; prints the check as "pass detail".
+leak_check() {
+  local tmp="$1"
+  shift
+  (
+    in_runner "$tmp" "$@"
+    cd "$tmp/run" || exit 1
+    # shellcheck disable=SC2034 # read by the sourced derive_operators_summary
+    RUN_START="2026-01-02T00:00:00Z"
+    derive_operators_summary
+    check_operator_leak
+  ) | jq -r '"\(.pass) \(.detail)"'
+}
+
+# summary_row <tmp> — The rows of operators-summary.tsv below its header.
+summary_row() {
+  awk 'NR > 1' "$1/run/platform/operators-summary.tsv"
+}
+
+test_operator_leak_check() {
+  echo "Test: operator-leak judges the heap and goroutine growth of the operator pods present for the run"
+
+  local tmp result
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  new_case "$tmp"
+
+  # The heap grows from 100 to 120 MiB: 20 %.
+  growth_case "$tmp" 50 120
+  result="$(leak_check "$tmp")"
+  assert_eq "the header names the columns" \
+    $'namespace\tpod\tsamples\tleader\tgoroutines_first\tgoroutines_last\tgoroutines_growth\theap_first_mib\theap_last_mib\theap_growth_mib\theap_growth_percent\trss_last_mib\tjudged' \
+    "$(head -n 1 "$tmp/run/platform/operators-summary.tsv")"
+  assert_eq "the row averages the first and the last four of 40 samples" \
+    $'keystone-system\tkeystone-operator-0\t40\t1\t50.0\t50.0\t0.0\t100.0\t120.0\t20.0\t20.0\t150.0\tyes' \
+    "$(summary_row "$tmp")"
+  assert_eq "a heap growth of 20 % fails" \
+    "false $OPERATOR_POD: heap growth 20.0 % (100.0 to 120.0 MiB), goroutine growth 0.0 (50.0 to 50.0)" "$result"
+
+  growth_case "$tmp" 50 105
+  assert_eq "a heap growth of 5 % passes" \
+    "true 1 of 1 operator pods judged; largest heap growth 5.0 % ($OPERATOR_POD); largest goroutine growth 0.0 ($OPERATOR_POD)" \
+    "$(leak_check "$tmp")"
+  growth_case "$tmp" 50 110
+  assert_eq "a heap growth of exactly 10 % passes" "true" "$(leak_check "$tmp" | cut -d' ' -f1)"
+
+  growth_case "$tmp" 61 100
+  assert_contains "a goroutine growth of 11 fails" "$(leak_check "$tmp")" \
+    "false $OPERATOR_POD: heap growth 0.0 % (100.0 to 100.0 MiB), goroutine growth 11.0 (50.0 to 61.0)"
+  growth_case "$tmp" 60 100
+  assert_eq "a goroutine growth of exactly 10 passes" "true" "$(leak_check "$tmp" | cut -d' ' -f1)"
+
+  growth_case "$tmp" 61 100
+  assert_eq "DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=20 passes a growth of 11" "true" \
+    "$(leak_check "$tmp" DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=20 | cut -d' ' -f1)"
+  growth_case "$tmp" 50 120
+  assert_eq "DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=25 passes a growth of 20 %" "true" \
+    "$(leak_check "$tmp" DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=25 | cut -d' ' -f1)"
+
+  # A heap of 0 in the first tenth has no percentage, which is never above
+  # the bound.
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD"
+  operator_samples "$tmp" "$OPERATOR_POD" 1 20 50 0 1
+  operator_samples "$tmp" "$OPERATOR_POD" 21 40 50 50 1
+  result="$(leak_check "$tmp")"
+  assert_eq "a first heap of 0 shows - as the percentage" "-" "$(summary_row "$tmp" | cut -f 11)"
+  assert_eq "and passes" "true" "${result%% *}"
+  operator_pod "$tmp" "nova-system/nova-operator-0"
+  operator_samples "$tmp" "nova-system/nova-operator-0" 1 20 50 100 1
+  operator_samples "$tmp" "nova-system/nova-operator-0" 21 40 50 105 1
+  assert_contains "a later pod's percentage is the largest heap growth, not the first pod's -" "$(leak_check "$tmp")" \
+    "largest heap growth 5.0 % (nova-system/nova-operator-0)"
+
+  # Two pods with the same growth: the first in sort order is the largest.
+  growth_case "$tmp" 55 105 "nova-system/nova-operator-0"
+  operator_pod "$tmp" "$OPERATOR_POD"
+  operator_samples "$tmp" "$OPERATOR_POD" 1 20 50 100 1
+  operator_samples "$tmp" "$OPERATOR_POD" 21 40 55 105 1
+  assert_eq "a tie names the first pod in sort order" \
+    "true 2 of 2 operator pods judged; largest heap growth 5.0 % ($OPERATOR_POD); largest goroutine growth 5.0 ($OPERATOR_POD)" \
+    "$(leak_check "$tmp")"
+
+  # The pods operator-leak does not judge.
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD"
+  operator_samples "$tmp" "$OPERATOR_POD" 1 12 50 100 1
+  result="$(leak_check "$tmp")"
+  assert_eq "12 samples are too few" "fewer than 20 samples" "$(summary_row "$tmp" | cut -f 13)"
+  assert_eq "and pass unjudged" "true 0 of 1 operator pods judged; not judged: $OPERATOR_POD (fewer than 20 samples)" "$result"
+
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD" 2026-01-03T00:00:00Z
+  operator_samples "$tmp" "$OPERATOR_POD" 1 20 50 100 1
+  operator_samples "$tmp" "$OPERATOR_POD" 21 40 80 200 1
+  result="$(leak_check "$tmp")"
+  assert_eq "a pod created during the run is not judged" "created during the run" "$(summary_row "$tmp" | cut -f 13)"
+  assert_eq "and passes although it grows" \
+    "true 0 of 1 operator pods judged; not judged: $OPERATOR_POD (created during the run)" "$result"
+
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD"
+  operator_samples "$tmp" "$OPERATOR_POD" 1 20 40 100 0
+  operator_samples "$tmp" "$OPERATOR_POD" 21 40 200 100 1
+  result="$(leak_check "$tmp")"
+  assert_eq "a standby that took the lease shows 0>1 and is not judged" $'0>1\tleadership changed' \
+    "$(summary_row "$tmp" | cut -f 4,13)"
+  assert_eq "and passes although its goroutines rise by 160" \
+    "true 0 of 1 operator pods judged; not judged: $OPERATOR_POD (leadership changed)" "$result"
+
+  # No operator pod listed, and no pod read at all.
+  leak_case "$tmp"
+  assert_eq "no operator pod in a successful read fails" "false no operator pod found in the sampled namespaces" \
+    "$(leak_check "$tmp")"
+  assert_eq "and the summary holds its header alone" "1" "$(grep -c . "$tmp/run/platform/operators-summary.tsv")"
+  : >"$tmp/run/platform/pod-samples.log"
+  printf '%s\n' '2026-01-02T00:00:00Z pods: Error from server (Forbidden): pods is forbidden' \
+    '2026-01-02T00:01:00Z usage: Error from server (NotFound)' >"$tmp/run/platform/errors.log"
+  assert_eq "no successful pod read fails with its last error" \
+    "false operator pods could not be listed: 2026-01-02T00:00:00Z pods: Error from server (Forbidden): pods is forbidden" \
+    "$(leak_check "$tmp")"
+
+  # A listed pod without a sample.
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD"
+  printf '%s\n' "2026-01-02T00:00:00Z operators: $OPERATOR_POD: curl: (28) Operation timed out after 10002 milliseconds" \
+    "2026-01-02T00:01:00Z operators: $OPERATOR_POD: curl: (22) The requested URL returned error: 404" \
+    >"$tmp/run/platform/errors.log"
+  result="$(leak_check "$tmp")"
+  assert_eq "a pod without a sample has 0 samples and no value" \
+    $'keystone-system\tkeystone-operator-0\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\tno samples' "$(summary_row "$tmp")"
+  assert_eq "and fails with its last scrape error" \
+    "false $OPERATOR_POD: no metrics sample; last error: curl: (22) The requested URL returned error: 404" "$result"
+  : >"$tmp/run/platform/errors.log"
+  assert_eq "without a scrape error the detail says none" "false $OPERATOR_POD: no metrics sample; last error: none" \
+    "$(leak_check "$tmp")"
+  operator_pod "$tmp" "nova-system/nova-operator-0"
+  operator_samples "$tmp" "nova-system/nova-operator-0" 1 20 50 100 1
+  operator_samples "$tmp" "nova-system/nova-operator-0" 21 40 50 120 1
+  assert_eq "every failing pod is named, in summary order" \
+    "false $OPERATOR_POD: no metrics sample; last error: none; nova-system/nova-operator-0: heap growth 20.0 % (100.0 to 120.0 MiB), goroutine growth 0.0 (50.0 to 50.0)" \
+    "$(leak_check "$tmp")"
+
+  # A pod created during the run without a sample fails too.
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD" 2026-01-03T00:00:00Z
+  assert_eq "a pod created during the run without a sample fails" \
+    "false $OPERATOR_POD: no metrics sample; last error: none" "$(leak_check "$tmp")"
+
+  # A pod without a metrics sample in more than one and more than a tenth of
+  # the pod samples that listed it: its scrapes failed.
+  leak_case "$tmp"
+  operator_listings "$tmp" "$OPERATOR_POD" 21
+  operator_samples "$tmp" "$OPERATOR_POD" 1 5 50 100 1
+  echo "2026-01-02T00:30:00Z operators: $OPERATOR_POD: curl: (28) Connection timed out after 3002 milliseconds" \
+    >"$tmp/run/platform/errors.log"
+  result="$(leak_check "$tmp")"
+  assert_eq "5 samples in 21 pod samples are failed scrapes" "scrapes failed" "$(summary_row "$tmp" | cut -f 13)"
+  assert_eq "and fail with the last scrape error" \
+    "false $OPERATOR_POD: scrapes failed, 5 metrics samples; last error: curl: (28) Connection timed out after 3002 milliseconds" \
+    "$result"
+  leak_case "$tmp"
+  operator_listings "$tmp" "$OPERATOR_POD" 21 2026-01-03T00:00:00Z
+  operator_samples "$tmp" "$OPERATOR_POD" 1 5 50 100 1
+  leak_check "$tmp" >/dev/null
+  assert_eq "also for a pod created during the run" "scrapes failed" "$(summary_row "$tmp" | cut -f 13)"
+  leak_case "$tmp"
+  operator_listings "$tmp" "$OPERATOR_POD" 60
+  operator_samples "$tmp" "$OPERATOR_POD" 1 20 50 100 1
+  leak_check "$tmp" >/dev/null
+  assert_eq "20 samples in 60 pod samples, scrapes that stopped after the 20th, are failed scrapes" "scrapes failed" \
+    "$(summary_row "$tmp" | cut -f 13)"
+  leak_case "$tmp"
+  operator_listings "$tmp" "$OPERATOR_POD" 40
+  operator_samples "$tmp" "$OPERATOR_POD" 1 35 50 100 1
+  leak_check "$tmp" >/dev/null
+  assert_eq "5 misses in 40 pod samples, more than a tenth, are failed scrapes" "scrapes failed" \
+    "$(summary_row "$tmp" | cut -f 13)"
+  operator_samples "$tmp" "$OPERATOR_POD" 36 36 50 100 1
+  leak_check "$tmp" >/dev/null
+  assert_eq "4 misses in 40 pod samples, a tenth, are not" "yes" "$(summary_row "$tmp" | cut -f 13)"
+  leak_case "$tmp"
+  operator_listings "$tmp" "$OPERATOR_POD" 20
+  operator_samples "$tmp" "$OPERATOR_POD" 1 19 50 100 1
+  assert_eq "19 samples in 20 pod samples, the last one cut short by a stop, pass unjudged" \
+    "true 0 of 1 operator pods judged; not judged: $OPERATOR_POD (fewer than 20 samples)" "$(leak_check "$tmp")"
+  leak_case "$tmp"
+  operator_listings "$tmp" "$OPERATOR_POD" 21 2026-01-03T00:00:00Z
+  operator_samples "$tmp" "$OPERATOR_POD" 1 19 50 100 1
+  leak_check "$tmp" >/dev/null
+  assert_eq "2 misses in 21 pod samples of a pod created during the run are not failed scrapes" \
+    "created during the run" "$(summary_row "$tmp" | cut -f 13)"
+  leak_case "$tmp"
+  operator_listings "$tmp" "$OPERATOR_POD" 15 2026-01-03T00:00:00Z
+  operator_samples "$tmp" "$OPERATOR_POD" 1 13 50 100 1
+  leak_check "$tmp" >/dev/null
+  assert_eq "nor are 2 misses in 15 pod samples of a pod created during the run" \
+    "created during the run" "$(summary_row "$tmp" | cut -f 13)"
+  leak_case "$tmp"
+  operator_listings "$tmp" "$OPERATOR_POD" 20
+  operator_samples "$tmp" "$OPERATOR_POD" 1 17 50 100 1
+  assert_eq "3 misses in 20 pod samples, too few to judge after one miss, pass unjudged" \
+    "true 0 of 1 operator pods judged; not judged: $OPERATOR_POD (fewer than 20 samples)" "$(leak_check "$tmp")"
+
+  # A run whose scrapes are all refused.
+  local rc
+  new_case "$tmp"
+  run_runner "$tmp" CURL_RC=1
+  rc=$?
+  assert_eq "a run whose scrapes are refused exits 1 with FAIL" "1 FAIL" "$rc $(jq -r .verdict "$RUN_DIR/verdict.json")"
+  assert_eq "operator-leak names curl's message" \
+    "false $OPERATOR_POD: no metrics sample; last error: curl: (7) Failed to connect to 10.0.0.5 port 8080 after 0 ms: Couldn't connect to server" \
+    "$(check_of operator-leak)"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if ! command -v jq >/dev/null 2>&1; then
@@ -1217,6 +1519,7 @@ test_derive_restarts
 test_derive_usage_summary
 test_operator_sampling
 test_operator_names
+test_operator_leak_check
 test_conditions
 test_conditions_beyond_one_argument
 test_clean_run

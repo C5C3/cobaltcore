@@ -162,7 +162,7 @@ test_checks_table() {
   local runner_checks table
   runner_checks="$(grep -oE '^[[:space:]]*check [a-z0-9-]+ ' "$RUNNER_SH" | awk '{ print $2 }' | sort -u)"
   table="$(section "$TESTING_DOC" '### Verdict checks' | sed -nE 's/^\| `([a-z0-9-]+)` \|.*/\1/p' | sort)"
-  assert_eq "the runner has six checks" "6" "$(grep -c . <<<"$runner_checks")"
+  assert_eq "the runner has seven checks" "7" "$(grep -c . <<<"$runner_checks")"
   assert_eq "the table names them, no more and no fewer" "$runner_checks" "$table"
 }
 
