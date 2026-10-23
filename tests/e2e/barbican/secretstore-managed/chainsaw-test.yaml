@@ -14,6 +14,9 @@
 #   - The derived Secret <store>-approle carries the role-id and secret-id data
 #     keys, a controller ownerReference to the store, and the two mint-stamp
 #     annotations the re-mint schedule is read back from
+#   - Back-dating those annotations past the re-mint threshold makes the
+#     store re-mint its secret ID proactively, and the barbican-operator
+#     release counts it in barbican_operator_secretstore_remints_total
 #   - Deleting the store garbage-collects that Secret, because the
 #     ownerReference — not a finalizer — is what ties the two lifetimes together
 #
@@ -132,6 +135,64 @@ spec:
           kubectl get secret barbican-store-managed-store-approle -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Operator pod logs ==="
           kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+  # ── Step 3.5: Force a proactive re-mint and read its counter ───────────
+  # The controller re-mints once two thirds of the secret ID's lifetime have
+  # passed, and reads both inputs back off the Secret's mint stamps. Back-dating
+  # minted-at to 2000 with a TTL of an hour puts the secret ID far past that
+  # threshold. The controller watches the store and its parent but not the
+  # Secret, so an annotation on the store enqueues the pass; it is set again
+  # every round, in case a pass read the Secret before the cache saw the new
+  # stamps. The re-mint writes a fresh minted-at, and the counter records it
+  # with trigger="proactive".
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          SECRET=barbican-store-managed-store-approle
+          STORE=barbican-store-managed-store
+          OLD=2000-01-01T00:00:00Z
+          kubectl annotate secret "$SECRET" -n openstack --overwrite \
+            "barbican.c5c3.io/secret-id-minted-at=$OLD" \
+            barbican.c5c3.io/secret-id-ttl-seconds=3600
+          MINTED=""
+          READY=""
+          for _ in $(seq 1 18); do
+            kubectl annotate barbicansecretstore "$STORE" -n openstack --overwrite \
+              "e2e.c5c3.io/poke=$(date +%s)" >/dev/null
+            sleep 5
+            MINTED="$(kubectl get secret "$SECRET" -n openstack \
+              -o "jsonpath={.metadata.annotations['barbican\.c5c3\.io/secret-id-minted-at']}")"
+            READY="$(kubectl get barbicansecretstore "$STORE" -n openstack \
+              -o jsonpath='{.status.conditions[?(@.type=="CredentialsReady")].status}')"
+            if [ -n "$MINTED" ] && [ "$MINTED" != "$OLD" ] && [ "$READY" = "True" ]; then
+              break
+            fi
+          done
+          if [ "$MINTED" = "$OLD" ] || [ -z "$MINTED" ] || [ "$READY" != "True" ]; then
+            echo "FAIL: no proactive re-mint within 90s: minted-at '$MINTED', CredentialsReady '$READY'"
+            exit 1
+          fi
+          echo "OK: the store re-minted its secret ID at $MINTED"
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh barbican-system barbican-operator barbican_operator \
+            'barbican_operator_secretstore_remints_total{store="barbican-store-managed-store",namespace="openstack",trigger="proactive"}'
+    catch:
+    - script:
+        content: |
+          echo "=== credentials Secret annotations ==="
+          kubectl get secret barbican-store-managed-store-approle -n $NAMESPACE -o jsonpath='{.metadata.annotations}' 2>&1 || true
+          echo
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-store-managed-store -n $NAMESPACE -o yaml 2>&1 || true
+    - podLogs:
+        namespace: barbican-system
+        selector: app.kubernetes.io/instance=barbican-operator
+        tail: 200
   # ── Step 4: Delete the store ────────────────────────────────────────────
   # The store carries no finalizer: the credentials Secret is owned by it, so
   # Kubernetes garbage collection is what reaps the secret ID, and nothing has to

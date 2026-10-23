@@ -25,6 +25,8 @@
 #   - the metrics port it reads matches the nine charts
 #   - an edit to the script runs the e2e-operator jobs of every operator but
 #     c5c3, whose suites do not call it
+#   - the 17 suites call it with exactly the arguments of their table row,
+#     each in a step with a 120s timeout, and no other suite calls it
 # Usage: bash tests/unit/ci/assert_operator_metric_families_test.sh
 
 set -uo pipefail
@@ -174,6 +176,49 @@ run_sample() {
   set_metrics op-1 "$DURATION_LINE"$'\n'"$ERRORS_LINE"$'\n'"$2"
   run_check keystone-system keystone-operator keystone_operator "$1"
 }
+
+# metric_calls <file>
+# Every call of the script in <file>, one "<timeout>|<call>" line each: the
+# last timeout: value since the step opener "  - try:", and a line whose
+# first text is the script's relative path, joined with its backslash
+# continuations, blanks squeezed.
+metric_calls() {
+  awk '
+    /^  - try:$/ { timeout = "" }
+    !cont && /^[[:space:]]+timeout:[[:space:]]/ { timeout = $2 }
+    cont { line = line " " $0 }
+    !cont && /^[[:space:]]*\.\.\/\.\.\/lib\/assert-operator-metric-families\.sh / { line = $0; cont = 1 }
+    cont {
+      if (line ~ /\\$/) { sub(/\\$/, "", line); next }
+      gsub(/[[:space:]]+/, " ", line); sub(/^ /, "", line); sub(/ $/, "", line)
+      print timeout "|" line
+      cont = 0
+    }' "$1"
+}
+
+# The 17 suites that call the script, each with the arguments it passes after
+# the script's path. A suite reads a sample after the step that completes its
+# Job, rotation or re-mint, and before any step that deletes its CR.
+METRIC_CALLERS="$(cat <<'CALLS'
+barbican/basic-deployment|barbican-system barbican-operator barbican_operator 'barbican_operator_db_sync_total{barbican="barbican-basic",namespace="openstack",result="succeeded"}' 'barbican_operator_db_sync_duration_seconds_count{barbican="barbican-basic",namespace="openstack"}' 'barbican_operator_db_clean_total{barbican="barbican-basic",namespace="openstack",result="succeeded"}' 'barbican_operator_db_clean_duration_seconds_count{barbican="barbican-basic",namespace="openstack"}'
+barbican/secretstore-managed|barbican-system barbican-operator barbican_operator 'barbican_operator_secretstore_remints_total{store="barbican-store-managed-store",namespace="openstack",trigger="proactive"}'
+cinder/basic-deployment|cinder-system cinder-operator cinder_operator 'cinder_operator_db_sync_total{cinder="cinder-basic",namespace="openstack",result="succeeded"}' 'cinder_operator_db_sync_duration_seconds_count{cinder="cinder-basic",namespace="openstack"}'
+cinder/pod-security-restricted|cinder-system cinder-operator cinder_operator 'cinder_operator_db_purge_total{cinder="cinder-pss",namespace="cinder-pss",result="succeeded"}' 'cinder_operator_service_remove_total{cinder="cinder-pss",namespace="cinder-pss",result="succeeded"}'
+glance/basic-deployment|glance-system glance-operator glance_operator 'glance_operator_db_sync_total{glance="glance-basic",namespace="openstack",result="succeeded"}' 'glance_operator_db_sync_duration_seconds_count{glance="glance-basic",namespace="openstack"}' 'glance_operator_db_purge_total{glance="glance-basic",namespace="openstack",result="succeeded"}' 'glance_operator_db_purge_duration_seconds_count{glance="glance-basic",namespace="openstack"}'
+horizon/basic-deployment|horizon-system horizon-operator horizon_operator
+keystone/basic-deployment|keystone-system keystone-operator keystone_operator 'keystone_operator_db_sync_total{keystone="keystone-basic",namespace="openstack",result="succeeded"}' 'keystone_operator_db_sync_duration_seconds_count{keystone="keystone-basic",namespace="openstack"}'
+keystone/credential-rotation|keystone-system keystone-operator keystone_operator 'keystone_operator_key_rotation_age_seconds{keystone="keystone-credential",namespace="openstack",key_type="credential"}'
+keystone/db-expand-failure|keystone-system keystone-operator keystone_operator 'keystone_operator_db_sync_total{keystone="keystone-db-expand-failure",namespace="openstack",result="failed"}'
+keystone/fernet-rotation|keystone-system keystone-operator keystone_operator 'keystone_operator_key_rotation_age_seconds{keystone="keystone-fernet",namespace="openstack",key_type="fernet"}'
+neutron/basic-deployment|neutron-system neutron-operator neutron_operator 'neutron_operator_db_sync_total{neutron="neutron-basic",namespace="openstack",result="succeeded"}' 'neutron_operator_db_sync_duration_seconds_count{neutron="neutron-basic",namespace="openstack"}'
+neutron/ovn-db-sync-repair|neutron-system neutron-operator neutron_operator 'neutron_operator_ovn_db_sync_total{neutron="neutron-dbsync",namespace="openstack",result="succeeded"}'
+nova/basic-deployment|nova-system nova-operator nova_operator 'nova_operator_db_sync_total{nova="nova-basic",namespace="openstack",result="succeeded"}' 'nova_operator_db_sync_duration_seconds_count{nova="nova-basic",namespace="openstack"}'
+nova/db-archive|nova-system nova-operator nova_operator 'nova_operator_db_archive_total{nova="nova-archive",namespace="openstack",result="succeeded"}'
+ovn/central-backup-restore|ovn-system ovn-operator ovn_operator 'ovn_operator_backup_total{ovncentral="ovn-restore",namespace="openstack",result="succeeded"}'
+ovn/central-basic-deployment|ovn-system ovn-operator ovn_operator
+placement/basic-deployment|placement-system placement-operator placement_operator 'placement_operator_db_sync_total{placement="placement-basic",namespace="openstack",result="succeeded"}' 'placement_operator_db_sync_duration_seconds_count{placement="placement-basic",namespace="openstack"}'
+CALLS
+)"
 
 make_kubectl_stub "$STUBS"
 
@@ -585,6 +630,29 @@ test_the_filters_name_the_shared_scripts() {
   assert_not_contains "tests_e2e_c5c3 leaves $script out" "$block" "$script"
 }
 
+# --- Test 11: the callers ---
+test_the_seventeen_suites_call_the_script() {
+  echo "Test: the 17 suites call the script with the tabled arguments in a 120s step, and no other suite calls it"
+
+  local suite args file expected found calls
+  while IFS='|' read -r suite args; do
+    file="$PROJECT_ROOT/tests/e2e/$suite/chainsaw-test.yaml"
+    calls="$(metric_calls "$file")"
+    assert_eq "the $suite suite calls the script once, with its tabled arguments" \
+      "../../lib/assert-operator-metric-families.sh $args" "${calls#*|}"
+    # The script re-reads for up to 60 s; chainsaw's exec default is 30s.
+    assert_eq "the $suite suite gives that step a 120s timeout" "120s" "${calls%%|*}"
+  done <<<"$METRIC_CALLERS"
+
+  assert_eq "the table names 17 suites" "17" "$(grep -c . <<<"$METRIC_CALLERS")"
+  expected="$(cut -d'|' -f1 <<<"$METRIC_CALLERS" | LC_ALL=C sort)"
+  # Any line that is not a comment and names the script counts as a call.
+  found="$(grep -rlE --include=chainsaw-test.yaml \
+    '^[[:space:]]*[^#[:space:]].*assert-operator-metric-families\.sh' "$PROJECT_ROOT/tests" |
+    sed -e "s|^$PROJECT_ROOT/tests/e2e/||" -e 's|/chainsaw-test.yaml$||' | LC_ALL=C sort)"
+  assert_eq "the suites that call the script are the tabled ones" "$expected" "$found"
+}
+
 # --- Run ---
 test_a_two_pod_release_passes_on_the_union
 test_a_release_without_samples_passes
@@ -617,6 +685,7 @@ test_the_script_parses
 test_the_port_matches_the_charts
 
 test_the_filters_name_the_shared_scripts
+test_the_seventeen_suites_call_the_script
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -29,6 +29,8 @@
 #   - a compute on the fake driver registers over that bus, is mapped into cell1
 #     by the scheduler's own periodic, and a server boots on it, resizes onto
 #     the same host and is deleted through the openstack CLI
+#   - the nova-operator release exports its reconcile families and the
+#     db_sync counter and duration count of nova-basic
 #
 # Two fixture tiers exist across the Nova suites. A suite that only asserts on
 # the CR needs nothing but a broker vhost. This one boots a server, so it
@@ -843,3 +845,19 @@ spec:
           status:
             succeeded: 1
     catch: *nova-dump
+  # ── Step 9: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh nova-system nova-operator nova_operator \
+            'nova_operator_db_sync_total{nova="nova-basic",namespace="openstack",result="succeeded"}' \
+            'nova_operator_db_sync_duration_seconds_count{nova="nova-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: nova-system
+        selector: app.kubernetes.io/instance=nova-operator
+        tail: 200

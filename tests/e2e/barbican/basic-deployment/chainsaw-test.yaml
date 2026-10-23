@@ -21,6 +21,9 @@
 #   - The rendered barbican.conf carries [oslo_policy]
 #     enforce_new_defaults = true and no enforce_scope
 #   - The Barbican API answers /healthcheck with 200 from inside the API pod
+#   - One manual run of the db-clean CronJob completes
+#   - The barbican-operator release exports its reconcile families and the
+#     db_sync and db_clean counters and duration counts of barbican-basic
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -344,3 +347,56 @@ spec:
           kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=barbican-basic 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Run the db-clean CronJob by hand ───────────────────────────
+  # The clean-up runs daily at 00:01, so a scheduled firing would never fall
+  # inside a test run. `kubectl create job --from=cronjob` copies the jobTemplate
+  # the operator rendered and makes the CronJob the Job's controller, so the
+  # operator records the run as one of the CronJob's, and the garbage collector
+  # removes the Job with its CronJob when the cleanup deletes the CR.
+  - try:
+    - script:
+        timeout: 180s
+        content: |
+          set -eu
+
+          kubectl create job barbican-basic-db-clean-manual \
+            --from=cronjob/barbican-basic-db-clean -n openstack
+          kubectl wait --for=condition=complete \
+            job/barbican-basic-db-clean-manual -n openstack --timeout=120s
+
+          echo "OK: db-clean job completed successfully"
+    catch:
+    - script:
+        content: |
+          echo "=== db-clean CronJob ==="
+          kubectl get cronjob barbican-basic-db-clean -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== db-clean manual Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=barbican-basic-db-clean-manual -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=barbican-basic-db-clean-manual -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 8: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh barbican-system barbican-operator barbican_operator \
+            'barbican_operator_db_sync_total{barbican="barbican-basic",namespace="openstack",result="succeeded"}' \
+            'barbican_operator_db_sync_duration_seconds_count{barbican="barbican-basic",namespace="openstack"}' \
+            'barbican_operator_db_clean_total{barbican="barbican-basic",namespace="openstack",result="succeeded"}' \
+            'barbican_operator_db_clean_duration_seconds_count{barbican="barbican-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: barbican-system
+        selector: app.kubernetes.io/instance=barbican-operator
+        tail: 200
