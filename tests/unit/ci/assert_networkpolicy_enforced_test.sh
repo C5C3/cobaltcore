@@ -23,11 +23,23 @@
 #   - an edit to the script runs the e2e-operator jobs of the eight service
 #     operators, through tests/e2e/lib/** for seven of them and by name for
 #     neutron, and neither the c5c3 nor the ovn job
+#   - each of the eight service network-policy suites applies the fixture of
+#     the table below and calls the probe with its pods and ports: the
+#     target's first drop before any other probe, the outside drop after the
+#     inside open and before the update patch, the outside open after it; the
+#     table's sink and API ports are the TCP ports the suite's own
+#     NetworkPolicy assert names; the target carries the policy's two selector
+#     labels and no other, only nova's console stand-in carries a component
+#     label, the pods run the service image with the restricted pod spec, the
+#     target and sink listen on the table's ports with one listener program
+#     across all sixteen, the clients and the console stand-in sleep, the
+#     update patch admits <cr>-outside, and no suite keeps its SCOPE CAVEAT
 #
 # The kubectl stub runs the program the script hands to kubectl exec with the
 # local python3, behind a prelude that replaces socket.create_connection,
 # socket.getaddrinfo and time.sleep. Without python3 those cases are skipped
-# and counted.
+# and counted. The structure of the fixtures is read with mikefarah yq; without
+# it those checks are skipped and counted.
 #
 # Usage: bash tests/unit/ci/assert_networkpolicy_enforced_test.sh
 
@@ -54,6 +66,40 @@ HAVE_PYTHON=0
 if command -v python3 >/dev/null 2>&1; then
   HAVE_PYTHON=1
 fi
+HAVE_YQ=0
+if command -v yq >/dev/null 2>&1 && yq --version 2>&1 | grep -q mikefarah; then
+  HAVE_YQ=1
+fi
+
+# The eight suites under tests/e2e/<dir>/network-policy, one per line:
+#   dir|cr|fixture|target ports|sink ports admitted|sink ports denied|API ports
+# The target listens on the API ports and 9999, which no ingress rule admits.
+# The sink listens on the TCP egress ports the policy admits other than 53 and
+# 443, then on the denied ones.
+SUITES='keystone|keystone-netpol|03-probe-pods.yaml|5000 9999|3306 6443 11211|9999|5000
+horizon|horizon-netpol|03-probe-pods.yaml|8080 9999|5000 11211|9999|8080
+glance|glance-netpol|04-probe-pods.yaml|9292 9999|3306 3900 11211|9999|9292
+placement|placement-netpol|03-probe-pods.yaml|8778 9999|3306 5000 11211|9999|8778
+barbican|barbican-netpol|04-probe-pods.yaml|9311 9999|3306 5000 8200 11211|9999|9311
+neutron|neutron-netpol|05-probe-pods.yaml|9696 9999|3306 5000 5672 6641 6642 11211|9999|9696
+cinder|cinder-netpol|04-probe-pods.yaml|8776 9999|2049 3306 5672 11211|5000 9999|8776
+nova|nova-netpol|04-probe-pods.yaml|8774 8775 6080 9999|3306 5000 5672 8778 9292 9696 11211|5900 9999|8774 8775 6080'
+
+# The restricted pod spec every probe pod carries, as yq path=value.
+RESTRICTED='.spec.automountServiceAccountToken=false
+.spec.restartPolicy=Never
+.spec.terminationGracePeriodSeconds=0
+.spec.securityContext.runAsNonRoot=true
+.spec.securityContext.runAsUser=42424
+.spec.securityContext.runAsGroup=42424
+.spec.securityContext.seccompProfile.type=RuntimeDefault
+.spec.containers[0].imagePullPolicy=IfNotPresent
+.spec.containers[0].securityContext.allowPrivilegeEscalation=false
+.spec.containers[0].securityContext.readOnlyRootFilesystem=true
+.spec.containers[0].securityContext.capabilities.drop[0]=ALL
+.spec.containers[0].resources.requests.cpu=10m
+.spec.containers[0].resources.requests.memory=64Mi
+.spec.containers[0].resources.limits.memory=128Mi'
 
 STUBS="$(mktemp -d "${TMPDIR:-/tmp}/netpol-probe-test.XXXXXX")"
 trap 'rm -rf "$STUBS"' EXIT
@@ -404,6 +450,158 @@ test_the_filters_name_the_probe() {
   done
 }
 
+# pod_field <file> <pod> <yq expression>: the expression on the named Pod of
+# the multi-document file.
+pod_field() {
+  POD="$2" yq ea '[select(.kind == "Pod" and .metadata.name == strenv(POD))] | .[0] | '"$3" "$1"
+}
+
+# policy_tcp_ports <suite> <cr> <egress|ingress>: the TCP ports other than 53
+# and 443 that the suite's assert steps name for that direction of the
+# NetworkPolicy <cr>, sorted and without duplicates.
+policy_tcp_ports() {
+  CR="$2" yq '[.spec.steps[].try[] | select(has("assert")) | .assert.resource
+    | select(.kind == "NetworkPolicy" and .metadata.name == strenv(CR))
+    | .spec.'"$3"'[]?.ports[] | select(.protocol == "TCP" and .port != 53 and .port != 443)
+    | .port] | unique | sort | join(" ")' "$1"
+}
+
+# ascending <n>...: print yes when every argument is a whole number above the
+# one before it, and no otherwise. The regex runs before the comparison.
+ascending() {
+  local prev=0 n
+  for n in "$@"; do
+    if ! [[ "$n" =~ ^[1-9][0-9]*$ ]] || [ "$n" -le "$prev" ]; then
+      echo no
+      return
+    fi
+    prev="$n"
+  done
+  echo yes
+}
+
+# --- Test 9: the eight suites ---
+test_each_suite_probes_its_policy() {
+  echo "Test: each service network-policy suite probes its policy with the fixture of the table"
+
+  local found dir cr fixture target sink_open sink_denied api suite fx patch patches path value
+  local listener="" program pod vnc pods namespaces step first
+  local order=()
+  found="$(for suite in "$PROJECT_ROOT"/tests/e2e/*/network-policy/chainsaw-test.yaml; do
+    suite="${suite%/network-policy/chainsaw-test.yaml}"
+    echo "${suite##*/}"
+  done | LC_ALL=C sort | paste -s -d ' ' -)"
+  assert_eq "the network-policy suites on disk are the table's" \
+    "$(cut -d '|' -f 1 <<<"$SUITES" | LC_ALL=C sort | paste -s -d ' ' -)" "$found"
+
+  while IFS='|' read -r dir cr fixture target sink_open sink_denied api; do
+    suite="$PROJECT_ROOT/tests/e2e/$dir/network-policy/chainsaw-test.yaml"
+    fx="$PROJECT_ROOT/tests/e2e/$dir/network-policy/$fixture"
+    assert_eq "the $dir fixture $fixture exists" "yes" "$([ -f "$fx" ] && echo yes || echo no)"
+    assert_file_not_contains "the $dir suite has no SCOPE CAVEAT" "$suite" "SCOPE CAVEAT"
+    assert_file_contains_fixed "the $dir suite applies its fixture" "$suite" "file: $fixture"
+    assert_file_contains_fixed "the $dir suite runs the probe" "$suite" \
+      "PROBE=../../lib/assert-networkpolicy-enforced.sh"
+    assert_file_contains_fixed "the $dir target is dropped on the denied sink ports" "$suite" \
+      "\"\${PROBE}\" openstack $cr-probe-target dropped \"\${SINK}\" $sink_denied"
+    assert_file_contains_fixed "the $dir target resolves a cluster name" "$suite" \
+      "\"\${PROBE}\" openstack $cr-probe-target resolves kubernetes.default.svc.cluster.local."
+    assert_file_contains_fixed "the $dir target reaches the admitted sink ports" "$suite" \
+      "\"\${PROBE}\" openstack $cr-probe-target open \"\${SINK}\" $sink_open"
+    assert_file_contains_fixed "the $dir inside client is dropped on 9999" "$suite" \
+      "\"\${PROBE}\" $dir-system $cr-probe-inside dropped \"\${TARGET}\" 9999"
+    assert_file_contains_fixed "the $dir inside client reaches the API ports" "$suite" \
+      "\"\${PROBE}\" $dir-system $cr-probe-inside open \"\${TARGET}\" $api"
+    assert_file_contains_fixed "the $dir outside client is dropped on the API ports" "$suite" \
+      "\"\${PROBE}\" $cr-outside $cr-probe-outside dropped \"\${TARGET}\" $api"
+    assert_file_contains_fixed "the $dir outside client reaches the API ports after the patch" "$suite" \
+      "\"\${PROBE}\" $cr-outside $cr-probe-outside open \"\${TARGET}\" $api"
+    patches=("$PROJECT_ROOT"/tests/e2e/"$dir"/network-policy/0*-patch-update-ingress.yaml)
+    patch="${patches[0]}"
+    assert_file_contains_fixed "the $dir update patch admits $cr-outside" "$patch" \
+      "kubernetes.io/metadata.name: $cr-outside"
+    # The suite's reasoning rests on this order: the target's first drop waits
+    # for kindnet, the inside open shows kindnet knows the clients before the
+    # outside drop, and the outside open after the patch shows that drop came
+    # from the policy.
+    first="$(grep -nF -m 1 "\"\${PROBE}\" " "$suite" | cut -d: -f1)"
+    order=()
+    for step in "\"\${PROBE}\" openstack $cr-probe-target dropped" \
+      "\"\${PROBE}\" $dir-system $cr-probe-inside open" \
+      "\"\${PROBE}\" $cr-outside $cr-probe-outside dropped" \
+      "file: ${patch##*/}" \
+      "\"\${PROBE}\" $cr-outside $cr-probe-outside open"; do
+      order+=("$(grep -nF -m 1 -- "$step" "$suite" | cut -d: -f1)")
+    done
+    assert_eq "the $dir target's drop is the first probe" "$first" "${order[0]}"
+    assert_eq "the $dir inside open, outside drop, patch and outside open come in order" yes \
+      "$(ascending "${order[@]}")"
+    # Nova's console proxy has a policy of its own, which a fifth pod with the
+    # proxy's component label probes.
+    vnc=""
+    if [ "$dir" = nova ]; then
+      vnc="$cr-probe-vnc"
+      assert_file_contains_fixed "the $dir console stand-in reaches the display range" "$suite" \
+        "\"\${PROBE}\" openstack $vnc open \"\${SINK}\" 5900 9999"
+    fi
+
+    if [ "$HAVE_YQ" -eq 0 ]; then
+      echo "  SKIP: the structure of $fixture of $dir (mikefarah yq not found)"
+      SKIP=$((SKIP + 1))
+      continue
+    fi
+    assert_eq "the $dir sink ports are the asserted TCP egress ports but 53 and 443" "$sink_open" \
+      "$(policy_tcp_ports "$suite" "$cr" egress)"
+    assert_eq "the $dir API ports are the asserted TCP ingress ports" \
+      "$(tr ' ' '\n' <<<"$api" | sort -n | paste -s -d ' ' -)" "$(policy_tcp_ports "$suite" "$cr" ingress)"
+    assert_eq "the $dir fixture creates the Namespace $cr-outside" "$cr-outside" \
+      "$(yq ea '[select(.kind == "Namespace")] | map(.metadata.name) | join(",")' "$fx")"
+    pods="$cr-probe-target $cr-probe-sink $cr-probe-inside $cr-probe-outside${vnc:+ $vnc}"
+    namespaces="openstack openstack $dir-system $cr-outside${vnc:+ openstack}"
+    assert_eq "the $dir fixture holds the probe pods" "$pods" \
+      "$(yq ea '[select(.kind == "Pod")] | map(.metadata.name) | join(" ")' "$fx")"
+    assert_eq "the $dir probe pods run in openstack, $dir-system and $cr-outside" "$namespaces" \
+      "$(yq ea '[select(.kind == "Pod")] | map(.metadata.namespace) | join(" ")' "$fx")"
+    assert_eq "the $dir target carries the policy's two selector labels and no other" \
+      "app.kubernetes.io/instance=$cr,app.kubernetes.io/name=$dir" \
+      "$(pod_field "$fx" "$cr-probe-target" '.metadata.labels | to_entries | map(.key + "=" + .value) | sort | join(",")')"
+    assert_eq "only the console stand-in among the $dir probe pods carries a component label" "$vnc" \
+      "$(yq ea '[select(.kind == "Pod") | select(.metadata.labels | has("app.kubernetes.io/component"))] | map(.metadata.name) | join(" ")' "$fx")"
+    if [ -n "$vnc" ]; then
+      assert_eq "the $dir console stand-in carries the console policy's three selector labels" \
+        "app.kubernetes.io/component=novncproxy,app.kubernetes.io/instance=$cr,app.kubernetes.io/name=$dir" \
+        "$(pod_field "$fx" "$vnc" '.metadata.labels | to_entries | map(.key + "=" + .value) | sort | join(",")')"
+    fi
+    assert_eq "the $dir probe pods run the $dir image" "ghcr.io/c5c3/$dir:2026.1" \
+      "$(yq ea '[select(.kind == "Pod")] | map(.spec.containers[0].image) | unique | join(",")' "$fx")"
+    # The pod count is pinned above, so one value per field covers every pod;
+    # a pod without the field adds null.
+    while IFS='=' read -r path value; do
+      assert_eq "the $dir probe pods set $path" "$value" \
+        "$(yq ea '[select(.kind == "Pod")] | map('"$path"') | unique | join(",")' "$fx")"
+    done <<<"$RESTRICTED"
+    assert_eq "the $dir target listens on the table's ports" "$target" \
+      "$(pod_field "$fx" "$cr-probe-target" '.spec.containers[0].command | .[3:] | join(" ")')"
+    assert_eq "the $dir sink listens on the table's ports" "$sink_open $sink_denied" \
+      "$(pod_field "$fx" "$cr-probe-sink" '.spec.containers[0].command | .[3:] | join(" ")')"
+    for pod in "$cr-probe-inside" "$cr-probe-outside" ${vnc:+"$vnc"}; do
+      assert_eq "$pod sleeps" "sleep infinity" \
+        "$(pod_field "$fx" "$pod" '.spec.containers[0].command | join(" ")')"
+    done
+    for pod in "$cr-probe-target" "$cr-probe-sink"; do
+      assert_eq "$pod runs python3 -c" "python3 -c" \
+        "$(pod_field "$fx" "$pod" '.spec.containers[0].command | .[0:2] | join(" ")')"
+      program="$(pod_field "$fx" "$pod" '.spec.containers[0].command[2]')"
+      if [ -z "$listener" ]; then
+        listener="$program"
+        assert_contains "the listener binds each port it is given" "$listener" \
+          'srv.bind(("0.0.0.0", int(port)))'
+      fi
+      assert_eq "$pod runs the listener of the first target" "$listener" "$program"
+    done
+  done <<<"$SUITES"
+}
+
 # --- Run ---
 test_wrong_arguments_exit_2
 test_open
@@ -413,6 +611,7 @@ test_an_exec_failure_is_reported
 test_host_and_ports_arrive_as_argv
 test_the_script_parses_and_is_linted
 test_the_filters_name_the_probe
+test_each_suite_probes_its_policy
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
