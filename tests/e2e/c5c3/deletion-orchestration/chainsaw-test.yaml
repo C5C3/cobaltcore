@@ -46,40 +46,51 @@
 # covered by the fast fake-client unit test
 # (TestReconcileDelete_ForceRemovesORCFinalizersAfterStall).
 #
-# ── DECISION: belt-and-braces presence guard + single consolidated script ────
-# Like tests/e2e/c5c3/full-controlplane-keystone, the full c5c3 + K-ORC +
-# keystone stack is NOT wired into the current kind E2E (hack/deploy-infra.sh +
-# hack/ci-deploy-operator.sh do not install K-ORC or the c5c3-operator), and the
-# suite runs under execution.failFast. So a runtime presence guard probes the
-# required CRDs + the OpenBao ClusterSecretStore and exits 0 with a SKIP line
-# when the stack is absent; chainsaw has no step-level skip, so the guard and all
-# assertions live in ONE script step. Wiring the stack into kind so this suite
-# EXERCISES rather than skips is the documented c5c3 GitOps/CI fast-follow.
+# The ControlPlane runs alone in chainsaw's ephemeral namespace. The suite
+# seeds its admin-password path with write-bootstrap-secrets.sh and onboards its
+# database-engine roles (Keystone and Barbican, which shares the managed
+# database) with setup-database-tenant.sh, so it depends on nothing an earlier
+# run left behind.
+#
+# ── DECISION: presence guard + single consolidated script ───────────────────
+# The e2e-operator (c5c3) leg runs this directory on a cluster that carries the
+# stack's CRDs alone, so the guard SKIPs there. The e2e-controlplane job sets
+# E2E_REQUIRE_CONTROLPLANE_STACK=true, so the guard fails there instead. The
+# suite seeds its own OpenBao path. Because chainsaw has no step-level skip, the
+# guard and all assertions live in ONE script step.
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
   name: deletion-orchestration
 spec:
-  namespace: openstack
-  # The full chain bring-up (now including the dedicated OpenBao instance the
+  # No spec.namespace: chainsaw runs the suite in an ephemeral namespace of its
+  # own, which keeps it clear of the full-chain plane that stays in openstack
+  # (the webhook admits one ControlPlane per namespace).
+  #
+  # The full chain bring-up (including the dedicated OpenBao instance the
   # Barbican secret store is provisioned against) plus the bounded stall (7m) and
-  # the GC cascade is long-running, so the consolidated script and its diagnostic
-  # catch get generous bounds well above the 120s suite default.
+  # the GC cascade is long-running, so the consolidated script gets a generous
+  # bound. Its poll deadlines sum past it, but they are never all spent: once the
+  # ControlPlane is gone, the garbage collector removes its children within
+  # seconds. catch and finally pin their own timeouts, and cleanup leaves room
+  # for a namespace deletion that meets the 7m stall after a run that died
+  # mid-flight, so the suite's ceiling is 55+5+5+10 = 75m.
   timeouts:
     assert: 5m
-    exec: 40m
+    exec: 55m
+    cleanup: 10m
   steps:
   - try:
     - script:
-        timeout: 40m
+        timeout: 55m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone/c5c3 e2e script pins bash for the same reason.
         shell: bash
         content: |
           set -euo pipefail
 
-          CP_NS=openstack
+          CP_NS="${NAMESPACE}"
           CP_NAME=deletion-orch
           KEYSTONE_CR="${CP_NAME}-keystone"
           AC_NAME="${CP_NAME}-admin-app-credential"
@@ -113,7 +124,50 @@ spec:
           CP_LABELS="c5c3.io/controlplane-name=${CP_NAME},c5c3.io/controlplane-namespace=${CP_NS}"
           FINALIZER="c5c3.io/orc-teardown"
 
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+
           # ── Presence guard ─────────────────────────────────────────────────
+          # The operators are probed before the CRDs. The e2e-operator (c5c3)
+          # matrix leg installs every CRD the c5c3 controller watches WITHOUT
+          # deploying the sibling operators, and it carries no Barbican CRDs,
+          # so probing the keystone-operator first gives that leg the reason
+          # every stack suite prints there. This suite's ControlPlane needs the
+          # keystone-operator and the c5c3-operator to converge before its
+          # deletion can be orchestrated. The Barbican leg needs two more
+          # controllers: the barbican-operator drives the child and mints its
+          # secret store's AppRole credentials, and the openbao-operator drives
+          # the dedicated instance behind that store to Available. The listing
+          # is captured and retried rather than piped into `grep -q`, which
+          # under pipefail reads a transient apiserver error, or grep closing
+          # the pipe on a match, as "no pods".
+          operator_running() { # <app.kubernetes.io/name label value>
+            local pods
+            for _ in 1 2 3 4 5; do
+              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
+                && [ -n "${pods}" ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          if ! operator_running keystone-operator; then
+            skip_or_fail "no keystone-operator is running; the cluster carries the" \
+              "stack's CRDs only, so the ControlPlane cannot converge here."
+          fi
+          if ! operator_running c5c3-operator; then
+            skip_or_fail "no c5c3-operator is running."
+          fi
           missing=""
           for crd in \
             controlplanes.c5c3.io \
@@ -138,54 +192,33 @@ spec:
             fi
           done
           if [ -n "${missing}" ]; then
-            echo "SKIP: required CRDs not present:${missing}"
-            echo "      The c5c3-operator + K-ORC + keystone-operator stack is"
-            echo "      not deployed on this cluster, so ControlPlane deletion"
-            echo "      orchestration cannot be exercised here."
-            exit 0
+            skip_or_fail "required CRDs not present:${missing}." \
+              "The c5c3-operator + K-ORC + keystone-operator stack is" \
+              "not deployed on this cluster, so ControlPlane deletion" \
+              "orchestration cannot be exercised here."
           fi
           if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
-            echo "SKIP: openbao-cluster-store ClusterSecretStore not present;"
-            echo "      the admin-credential chain cannot complete."
-            exit 0
+            skip_or_fail "openbao-cluster-store ClusterSecretStore not present;" \
+              "the admin-credential chain cannot complete."
           fi
-          # The CRDs alone no longer prove the stack: the e2e-operator (c5c3)
-          # matrix leg installs every CRD the c5c3 controller watches WITHOUT
-          # deploying the sibling operators. This suite's ControlPlane needs
-          # the keystone-operator to converge before its deletion can be
-          # orchestrated, so probe for running pods (any namespace), not just
-          # the schema.
-          if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
-            echo "SKIP: no keystone-operator is running; the cluster carries the"
-            echo "      stack's CRDs only, so the ControlPlane cannot converge here."
-            exit 0
-          fi
-          # The Barbican leg needs two more controllers before the ControlPlane can
-          # converge far enough to be worth deleting: the barbican-operator drives
-          # the child and mints its secret store's AppRole credentials, and the
-          # openbao-operator drives the dedicated instance behind that store to
-          # Available. The listing is captured and retried rather than piped into
-          # `grep -q`, which under pipefail reads a transient apiserver error, or
-          # grep closing the pipe on a match, as "no pods".
-          operator_running() { # <app.kubernetes.io/name label value>
-            local pods
-            for _ in 1 2 3 4 5; do
-              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
-                && [ -n "${pods}" ]; then
-                return 0
-              fi
-              sleep 2
-            done
-            return 1
-          }
           for op in barbican-operator openbao-operator; do
             if ! operator_running "${op}"; then
-              echo "SKIP: no ${op} is running; the projected Barbican ensemble"
-              echo "      cannot converge, so its teardown cannot be exercised here."
-              exit 0
+              skip_or_fail "no ${op} is running; the projected Barbican ensemble" \
+                "cannot converge, so its teardown cannot be exercised here."
             fi
           done
-          echo "OK: stack present (including running keystone-, barbican- and"
+          if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
+            skip_or_fail "shared-services/openbao-0 not present."
+          fi
+          # The two deploy/openbao/bootstrap scripts below read the token from
+          # their environment.
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            skip_or_fail "could not extract the OpenBao root token."
+          fi
+          echo "OK: stack present (including running keystone-, c5c3-, barbican- and"
           echo "    openbao-operators) — running ControlPlane deletion orchestration."
 
           # ── Helpers ────────────────────────────────────────────────────────
@@ -265,11 +298,29 @@ spec:
             echo "OK: ${res}/${name} is gone"
           }
 
+          # ── Seed the per-CR OpenBao path this plane reads ──────────────────
+          KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
+            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+          echo "OK: the per-CR admin-password path is seeded."
+
           # ── Bring the ControlPlane up to Ready ─────────────────────────────
+          # Chainsaw runs scripts with the test directory as CWD.
+          kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
+
+          # The database-engine roles need the projected, Ready MariaDB.
+          # InfrastructureReady comes first, because `kubectl wait` on a MariaDB
+          # the plane has not projected yet exits NotFound. The script
+          # provisions the Keystone pair and the Barbican pair, because Barbican
+          # shares the managed database.
+          wait_cp_condition InfrastructureReady 600
+          kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=120s
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          unset BAO_TOKEN
+          echo "OK: OpenBao database-engine tenant onboarded."
+
           # The window covers the Barbican leg too: the dedicated OpenBao instance
           # is created, unsealed and self-init'd, and only then can the store's
           # AppRole be minted and the child converge.
-          kubectl apply -f 00-controlplane-cr.yaml
           wait_cp_condition Ready 1200
 
           # The ORC-teardown finalizer must be installed, and the six owned
@@ -391,26 +442,30 @@ spec:
           echo "OK: ControlPlane deletion orchestration verified."
     catch:
     - script:
+        # Pinned, because chainsaw applies the test's exec budget to every
+        # script operation; a dump against a wedged apiserver must not inherit
+        # 55m.
+        timeout: 5m
         shell: bash
         content: |
           echo "=== ControlPlane (may be Terminating or gone) ==="
-          kubectl get controlplane deletion-orch -n openstack -o yaml 2>&1 || true
+          kubectl get controlplane deletion-orch -n "${NAMESPACE}" -o yaml 2>&1 || true
           echo "=== ControlPlane status.conditions ==="
-          kubectl get controlplane deletion-orch -n openstack \
+          kubectl get controlplane deletion-orch -n "${NAMESPACE}" \
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== K-ORC CRs (may be Terminating) ==="
-          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud -n openstack 2>&1 || true
+          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud -n "${NAMESPACE}" 2>&1 || true
           echo "=== Projected child CRs ==="
-          kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
+          kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n "${NAMESPACE}" 2>&1 || true
           echo "=== Projected KeystoneService registrations (may be Terminating) ==="
-          kubectl get keystoneservices.c5c3.io -n openstack 2>&1 || true
+          kubectl get keystoneservices.c5c3.io -n "${NAMESPACE}" 2>&1 || true
           echo "=== Registration-owned K-ORC CRs (may be Terminating) ==="
-          kubectl get services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,domains.openstack.k-orc.cloud -n openstack -l c5c3.io/keystoneservice-name=deletion-orch-barbican 2>&1 || true
+          kubectl get services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,domains.openstack.k-orc.cloud -n "${NAMESPACE}" -l c5c3.io/keystoneservice-name=deletion-orch-barbican 2>&1 || true
           echo "=== Barbican ensemble (may be Terminating or gone) ==="
-          kubectl get barbicans.barbican.openstack.c5c3.io,barbicansecretstores.barbican.openstack.c5c3.io -n openstack 2>&1 || true
-          kubectl get openbaoclusters.openbao.org,pvc -n openstack 2>&1 || true
+          kubectl get barbicans.barbican.openstack.c5c3.io,barbicansecretstores.barbican.openstack.c5c3.io -n "${NAMESPACE}" 2>&1 || true
+          kubectl get openbaoclusters.openbao.org,pvc -n "${NAMESPACE}" 2>&1 || true
           kubectl get clusterrolebinding \
-            -l c5c3.io/controlplane-name=deletion-orch,c5c3.io/controlplane-namespace=openstack 2>&1 || true
+            -l "c5c3.io/controlplane-name=deletion-orch,c5c3.io/controlplane-namespace=${NAMESPACE}" 2>&1 || true
           echo "=== barbican-operator logs (last 100 lines) ==="
           kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --tail=100 --all-containers 2>&1 || true
           echo "=== openbao-operator logs (last 100 lines) ==="
@@ -419,14 +474,18 @@ spec:
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
           echo "=== K-ORC controller logs (last 100 lines) ==="
           kubectl logs -n orc-system deploy/orc-controller-manager --pod-running-timeout=5s --tail=100 --all-containers 2>&1 || true
-          echo "=== Events (openstack ns, last 40) ==="
-          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+          echo "=== Events (suite namespace, last 40) ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
     finally:
     - script:
+        # Pinned for the same reason as catch above.
+        timeout: 5m
         shell: bash
         content: |
-          # Best-effort cleanup if the test failed mid-flight: force-release the
-          # ControlPlane and Keystone so the shared namespace is not left wedged
-          # for the next suite. Successful runs already deleted everything.
-          kubectl delete controlplane deletion-orch -n openstack --ignore-not-found --wait=false 2>&1 || true
-          kubectl delete keystone deletion-orch-keystone -n openstack --ignore-not-found --wait=false 2>&1 || true
+          # Best-effort cleanup if the test failed mid-flight: start the
+          # ControlPlane's and Keystone's deletion before chainsaw deletes the
+          # suite's namespace, so the plane's finalizer runs its bounded stall
+          # (orcTeardownDeadline, 7m) inside the 10m cleanup. Successful runs
+          # already deleted everything.
+          kubectl delete controlplane deletion-orch -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete keystone deletion-orch-keystone -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
