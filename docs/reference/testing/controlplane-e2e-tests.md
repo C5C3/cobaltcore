@@ -412,6 +412,28 @@ paths any other chassis or metadata agent would share.
    Neither live nor cold migration is called: the suite has one compute, and
    both check the same admin rule the services and aggregates blocks prove.
 
+7e. **Config edit**: a merge patch sets `services.keystone.extraConfig` to
+   `[DEFAULT] instance_format = controlplane-propagation` on the live plane, the
+   inert, catalog-valid marker `config-pruning` also uses. `reconcileKeystone`
+   projects the merged `extraConfig` onto the Keystone child on every pass, so
+   within one 600-second deadline, in order: the ControlPlane's
+   `status.observedGeneration` reaches the patched generation; the child's
+   `spec.extraConfig` carries the marker; the child is `Ready=True` at its
+   generation; the pod template names a new ConfigMap whose `keystone.conf` has
+   the line; the rollout finishes; a Ready pod that mounts the new ConfigMap reads
+   the line from `/etc/keystone/keystone.conf.d/keystone.conf`; and the
+   ControlPlane is `Ready=True/AllReady`. A second merge patch sets the block to
+   `null`. Within a second 600-second deadline the child's `spec.extraConfig` is
+   empty again, the pod template names the original ConfigMap (the render is
+   content-addressed, and the prune keeps the previous ConfigMap), the rollout
+   finishes, and the ControlPlane is `Ready=True/AllReady` at the second
+   generation. The script then prints `OK: a ControlPlane extraConfig edit reached
+   the Keystone child, rolled it to <C1> and back to <C0>.`, and a missed deadline
+   names its stage and the values it last read. A run that stopped between the
+   two patches leaves the block on the never-deleted plane, so Link 7e first
+   checks that the block is empty and otherwise stops with the `kubectl patch`
+   that clears it. The image path of a ControlPlane change is Link 8's.
+
 8a. **Release patch** — the day-2 release upgrade on the live plane. The suite
    reads both releases from its fixtures, the start from `00-controlplane-cr.yaml`
    and the target from `08-patch-upgrade.yaml`, so the hop's assertions follow
@@ -473,7 +495,7 @@ nova-operator, and the chassis its server's port binds on needs the
 `openvswitch` and `geneve` kernel modules on the runner host, which the
 `e2e-controlplane` job asks for with `WITH_OVN_KERNEL_MODULES: "true"`.
 
-The suite budgets 100 minutes for the consolidated script, 5 for its diagnostic
+The suite budgets 120 minutes for the consolidated script, 5 for its diagnostic
 `catch`, and one timeout per `finally` script: 5 minutes to delete the verify
 Job, 2 to release the broker vhost, and 5 for the compute leg's own footprint.
 That last one first deletes the hypervisor-operator Job and the K-ORC fixtures,
@@ -485,8 +507,9 @@ apply and takes the `openstack.c5c3.io/chassis` label off every node, because
 none of the three is owned by the ControlPlane and a label left standing
 advertises a chassis role nothing serves. With the shared
 3-minute cleanup budget the suite's ceiling is
-`100 + 5 + 5 + 2 + 5 + 3 = 120` minutes. A green pass spends about 13 minutes
-before Link 8 and about 20 in it; the waits of Link 8 are bounded at 77. Every one
+`120 + 5 + 5 + 2 + 5 + 3 = 140` minutes. A green pass spends about 13 minutes
+before Link 7e, about 4 in it and about 20 in Link 8. The waits of Link 7e are
+bounded at 10 + 10 minutes and those of Link 8 at 77. Every one
 of those timeouts is pinned
 rather than inherited: chainsaw applies the suite's `exec` budget to each script
 operation, so an unpinned `catch` or `finally` would each carry 30 minutes of
@@ -1466,7 +1489,8 @@ tests/e2e/c5c3/
 │   ├── 05-neutronmetadataagent-cr.yaml Metadata agent on that chassis, gated on the generated secret
 │   ├── 06-fake-compute.yaml            nova-compute built out of the published compute contract
 │   ├── 07-hypervisor-operator-verify-job.yaml  Calls as the hypervisor operator's user
-│   └── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
+│   ├── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
+│   └── extraconfig-edit.sh             Link 7e, sourced by the step 1 script (inline, it passes the 128 KiB argument cap)
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml              ControlPlane admission rejections
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures
