@@ -1,0 +1,160 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the c5c3-operator metrics ServiceMonitor.
+# Verifies that the c5c3-operator chart renders a monitoring.coreos.com/v1
+# ServiceMonitor when monitoring.serviceMonitor.enabled is set, that the
+# Service it selects serves the Prometheus exposition on the port and path the
+# ServiceMonitor names, and that both go away when the release is uninstalled.
+# It mirrors tests/e2e/horizon-operator/metrics/chainsaw-test.yaml and adds the
+# read through the Service.
+#
+# DEPLOYMENT NOTE: why this test installs a second Helm release.
+# On the e2e-operator (c5c3) leg hack/ci-deploy-operator.sh `helm install`s the
+# primary release "c5c3-operator" into c5c3-system with the locally built dev
+# image. This suite installs a second release, "c5c3-operator-metrics", into
+# the same namespace. Every object it renders is named after the release, so
+# nothing collides with the primary. Its manager runs --leader-elect with the
+# fixed lease c5c3.openstack.c5c3.io in c5c3-system, which the primary holds
+# and renews, so the second pod stays a leader-election standby: it reconciles
+# nothing and still serves metrics. Its lease calls feed the client-go family
+# rest_client_requests_total, which every manager registers. The operator's
+# own c5c3_operator_* families are read from the primary release by
+# tests/e2e/c5c3/sizing-profile/, the suite that drives a mapped
+# sub-reconciler error.
+#
+# The chart's operator-library dependency must be vendored before the install.
+# hack/ci-deploy-operator.sh does that on the leg; locally run
+# `helm dependency build operators/c5c3/helm/c5c3-operator` first.
+#
+# The e2e cluster installs prometheus-operator-crds but runs no Prometheus, so
+# a live scrape target is out of scope here, as in the twin suites.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-operator-metrics
+spec:
+  namespace: c5c3-system
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Install a second c5c3-operator release with monitoring on ────
+  # webhook.enabled=false keeps the release clear of the cluster-scoped
+  # webhook configurations the primary release registers.
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          helm install c5c3-operator-metrics \
+            ${GITHUB_WORKSPACE:-.}/operators/c5c3/helm/c5c3-operator/ \
+            --namespace c5c3-system \
+            --set image.repository=ghcr.io/c5c3/c5c3-operator \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --set controller.defaultImagePullPolicy=IfNotPresent \
+            --set replicas=1 \
+            --set webhook.enabled=false \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set monitoring.serviceMonitor.interval=30s \
+            --wait --timeout 90s
+    catch:
+    - script:
+        content: |
+          echo "=== Helm status ==="
+          helm status c5c3-operator-metrics -n c5c3-system 2>&1 || true
+          echo "=== Pod status ==="
+          kubectl get pods -n c5c3-system -l app.kubernetes.io/instance=c5c3-operator-metrics -o wide 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n c5c3-system -l app.kubernetes.io/instance=c5c3-operator-metrics -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n c5c3-system "$pod" --all-containers --tail=120 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n c5c3-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Assert the ServiceMonitor exists with the expected spec ──────
+  # Mirrors operators/shared/helm/operator-library/templates/_servicemonitor.tpl.
+  # With release name "c5c3-operator-metrics" the helper
+  # "operator-library.fullname" resolves to "c5c3-operator-metrics" (the chart
+  # name "c5c3-operator" is a substring of the release name; see
+  # operators/shared/helm/operator-library/templates/_helpers.tpl).
+  - try:
+    - assert:
+        resource:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: c5c3-operator-metrics
+            namespace: c5c3-system
+            labels:
+              app.kubernetes.io/name: c5c3-operator
+              app.kubernetes.io/instance: c5c3-operator-metrics
+              app.kubernetes.io/managed-by: Helm
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: c5c3-operator
+                app.kubernetes.io/instance: c5c3-operator-metrics
+            endpoints:
+            - port: metrics
+              path: /metrics
+              interval: 30s
+    catch:
+    - script:
+        content: |
+          echo "=== ServiceMonitor list ==="
+          kubectl get servicemonitor -n c5c3-system -o wide 2>&1 || true
+          echo "=== ServiceMonitor yaml ==="
+          kubectl get servicemonitor c5c3-operator-metrics -n c5c3-system -o yaml 2>&1 || true
+          echo "=== Helm values ==="
+          helm get values c5c3-operator-metrics -n c5c3-system 2>&1 || true
+  # ── Step 3: Read the exposition through the selected Service ─────────────
+  # The API server's service proxy reaches the Service port the ServiceMonitor
+  # names (metrics) at the path it names (/metrics). The body is matched with a
+  # here-string: printf | grep -q would SIGPIPE under pipefail on a large body.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          path="/api/v1/namespaces/c5c3-system/services/http:c5c3-operator-metrics:metrics/proxy/metrics"
+          body=""
+          for _ in $(seq 1 12); do
+            body="$(kubectl get --raw "${path}" 2>&1)" || true
+            if [ -n "${body}" ] && grep -qE '^rest_client_requests_total\{' <<<"${body}"; then
+              echo "OK: Service c5c3-operator-metrics port metrics serves the Prometheus exposition at /metrics"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL: Service c5c3-operator-metrics port metrics serves no Prometheus exposition at /metrics within 60s"
+          echo "=== Last output (first 40 lines) ==="
+          head -n 40 <<<"${body}"
+          echo "=== EndpointSlices ==="
+          kubectl get endpointslices -n c5c3-system \
+            -l kubernetes.io/service-name=c5c3-operator-metrics -o wide 2>&1 || true
+          exit 1
+  # ── Step 4: Uninstall the test release ───────────────────────────────────
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          helm uninstall c5c3-operator-metrics -n c5c3-system --wait --timeout 60s
+  # ── Step 5: Assert the ServiceMonitor is removed ─────────────────────────
+  # The poll runs up to 60 s, so the script timeout is set above chainsaw's
+  # 30 s exec default.
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          for i in $(seq 1 12); do
+            if ! kubectl get servicemonitor c5c3-operator-metrics -n c5c3-system >/dev/null 2>&1; then
+              echo "PASS: ServiceMonitor correctly removed"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL: ServiceMonitor still present after helm uninstall"
+          kubectl get servicemonitor c5c3-operator-metrics -n c5c3-system -o yaml 2>&1 || true
+          exit 1
