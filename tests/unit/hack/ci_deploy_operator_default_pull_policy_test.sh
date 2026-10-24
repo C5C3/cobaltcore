@@ -13,9 +13,10 @@
 #   - a chart whose values.schema.json lacks the key, and a chart without a
 #     values.schema.json, get no such --set, and the script does not fail;
 #   - every chainsaw file that installs an operator chart with
-#     image.pullPolicy=Never also sets controller.defaultImagePullPolicy to
-#     IfNotPresent, so a second operator release that wins the leader election
-#     keeps the workloads on the images CI loaded into kind.
+#     image.pullPolicy=Never, and each of the two network-policy-egress values
+#     files (horizon and keystone), also sets controller.defaultImagePullPolicy
+#     to IfNotPresent, so a second operator release that wins the leader
+#     election keeps the workloads on the images CI loaded into kind.
 #
 # Follows tests/unit/hack/ci_deploy_operator_replicas_test.sh.
 #
@@ -26,7 +27,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_SH="$PROJECT_ROOT/hack/ci-deploy-operator.sh"
-VALUES_FILE="$PROJECT_ROOT/tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml"
+# The Helm values files of the network-policy-egress suites, relative to
+# PROJECT_ROOT and sorted.
+VALUES_FILES="tests/e2e/horizon-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml"
 
 PASS=0
 FAIL=0
@@ -210,14 +214,16 @@ test_chainsaw_install_sites() {
   done
   assert_gte "the scan finds chainsaw files that install an operator chart with --set" "$count" "1"
 
-  assert_file_contains "the network-policy-egress values file names image.pullPolicy" \
-    "$VALUES_FILE" "^  pullPolicy: Never"
-  assert_file_contains "the network-policy-egress values file sets the operator default" \
-    "$VALUES_FILE" "^  defaultImagePullPolicy: IfNotPresent"
+  for file in $VALUES_FILES; do
+    assert_file_contains "$file names image.pullPolicy" \
+      "$PROJECT_ROOT/$file" "^  pullPolicy: Never"
+    assert_file_contains "$file sets the operator default" \
+      "$PROJECT_ROOT/$file" "^  defaultImagePullPolicy: IfNotPresent"
+  done
   # A Helm values file nests pullPolicy two spaces under the top-level image
   # key; a CR fixture nests spec.image.pullPolicy deeper.
   assert_eq "no other values file names an operator image.pullPolicy" \
-    "tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml" \
+    "$(tr '\n' ' ' <<<"$VALUES_FILES" | sed 's/ $//')" \
     "$(cd "$PROJECT_ROOT" && grep -rlE '^  pullPolicy: Never$' tests/e2e* | sort | tr '\n' ' ' | sed 's/ $//')"
 }
 
