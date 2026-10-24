@@ -669,10 +669,14 @@ func novaCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 // resources, node selector, tolerations and priority class the MariaDB runs
 // with. A nil sizing projects none of them.
 //
+// Every MariaDB it owns also carries the restricted security contexts of
+// applyMariaDBSecurity, so its pods are admitted in a namespace that enforces
+// the restricted Pod Security profile.
+//
 // It stays read-modify-write (not Server-Side Apply): the write is gated on the
-// LIVE object's ownership — an owned CR has its topology and sizing
-// re-projected, while an externally-provisioned CR sharing the name is adopted
-// read-only and never has ownership claimed. That adoption-vs-projection
+// LIVE object's ownership — an owned CR has its topology, sizing and security
+// contexts re-projected, while an externally-provisioned CR sharing the name is
+// adopted read-only and never has ownership claimed. That adoption-vs-projection
 // decision reads live state, so it cannot be expressed as a pure projection of
 // cp.Spec.
 func (r *ControlPlaneReconciler) ensureMariaDB(
@@ -729,6 +733,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
 		applyMariaDBPod(mariadb, pod)
+		applyMariaDBSecurity(mariadb, galeraEnabled)
 		if serr := claimChildOwnership(c, cp, mariadb, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of MariaDB %q: %w", key.Name, serr)
 		}
@@ -742,9 +747,10 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		//
 		//  1. It is OWNED by this ControlPlane (we created it on an earlier pass):
 		//     re-assert the spec-derived projection — spec.replicas, the derived
-		//     Galera topology, and the resources and placement of the sizing — so
-		//     external drift on the owned cluster is corrected back to the declared
-		//     state, and a sizing change reaches the running database.
+		//     Galera topology, the resources and placement of the sizing, and the
+		//     restricted security contexts — so external drift on the owned cluster
+		//     is corrected back to the declared state, and a sizing change reaches
+		//     the running database.
 		//     spec.infrastructure.database.replicas is itself immutable after
 		//     creation (the ControlPlane validating webhook rejects a change), so
 		//     this never scales down or toggles Galera in response to a user edit —
@@ -764,10 +770,20 @@ func (r *ControlPlaneReconciler) ensureMariaDB(
 		// namespace carries the ownership labels instead of an owner reference.
 		if isControlPlaneChild(mariadb, cp) {
 			currentGalera := mariadb.Spec.Galera != nil && mariadb.Spec.Galera.Enabled
-			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled || !mariaDBPodMatches(mariadb, pod) {
+			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled ||
+				!mariaDBPodMatches(mariadb, pod) || !mariaDBSecurityMatches(mariadb, galeraEnabled) {
 				mariadb.Spec.Replicas = replicas
-				mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
+				// spec.galera is updated in place, keeping every live field the
+				// mariadb-operator defaulted. Replacing it wholesale would drop the
+				// defaulted init image together with the init context, the
+				// controller would default the zeroed init container again, and
+				// every pass would write again.
+				if mariadb.Spec.Galera == nil {
+					mariadb.Spec.Galera = &mariadbv1alpha1.Galera{}
+				}
+				mariadb.Spec.Galera.Enabled = galeraEnabled
 				applyMariaDBPod(mariadb, pod)
+				applyMariaDBSecurity(mariadb, galeraEnabled)
 				if uerr := c.Update(ctx, mariadb); uerr != nil {
 					return false, fmt.Errorf("updating owned MariaDB %q: %w", key.Name, uerr)
 				}
@@ -809,6 +825,76 @@ func mariaDBPodMatches(m *mariadbv1alpha1.MariaDB, p c5c3v1alpha1.PinnedSizingSp
 		equality.Semantic.DeepEqual(m.Spec.NodeSelector, p.NodeSelector) &&
 		equality.Semantic.DeepEqual(m.Spec.Tolerations, p.Tolerations) &&
 		equality.Semantic.DeepEqual(m.Spec.PriorityClassName, p.PriorityClassName)
+}
+
+// mariaDBRunAsID is the uid and gid of the mysql user of the MariaDB image.
+// The mariadb-operator builder falls back to it for runAsUser, runAsGroup and
+// fsGroup when spec.podSecurityContext is unset, so pinning it keeps the owner
+// of an existing data volume.
+const mariaDBRunAsID int64 = 999
+
+// restrictedMariaDBPodSecurityContext returns the pod security context that
+// admits a MariaDB pod under the Pod Security Standards restricted profile.
+// Its seccomp profile covers every container of the pod.
+func restrictedMariaDBPodSecurityContext() *mariadbv1alpha1.PodSecurityContext {
+	return &mariadbv1alpha1.PodSecurityContext{
+		RunAsNonRoot:   ptr.To(true),
+		RunAsUser:      ptr.To(mariaDBRunAsID),
+		RunAsGroup:     ptr.To(mariaDBRunAsID),
+		FSGroup:        ptr.To(mariaDBRunAsID),
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+// restrictedMariaDBContainerSecurityContext returns the container security
+// context the restricted profile asks of every MariaDB container. The
+// mariadb-operator container type has no seccomp field, which the pod context
+// supplies. deployment.RestrictedSecurityContext does not fit: it pins the
+// OpenStack uid and a read-only root filesystem, and returns the core type.
+func restrictedMariaDBContainerSecurityContext() *mariadbv1alpha1.SecurityContext {
+	return &mariadbv1alpha1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
+}
+
+// applyMariaDBSecurity writes the restricted security contexts onto m: the pod
+// context, the mariadb container's, and for a Galera cluster the agent's. The
+// init container's context is written only once spec.galera.initContainer.image
+// is set. The mariadb-operator controller defaults that image after creation,
+// and only while the init container is entirely zero (admission leaves it
+// empty), so a context written beside an empty image would leave the init
+// container without one. A fresh Galera cluster therefore gets its init
+// context on a later pass. spec.galera must be set when galeraEnabled is true.
+func applyMariaDBSecurity(m *mariadbv1alpha1.MariaDB, galeraEnabled bool) {
+	m.Spec.PodSecurityContext = restrictedMariaDBPodSecurityContext()
+	m.Spec.SecurityContext = restrictedMariaDBContainerSecurityContext()
+	if !galeraEnabled {
+		return
+	}
+	m.Spec.Galera.Agent.SecurityContext = restrictedMariaDBContainerSecurityContext()
+	if m.Spec.Galera.InitContainer.Image != "" {
+		m.Spec.Galera.InitContainer.SecurityContext = restrictedMariaDBContainerSecurityContext()
+	}
+}
+
+// mariaDBSecurityMatches reports whether m already carries what
+// applyMariaDBSecurity writes. An init container whose image is still empty
+// matches, because applyMariaDBSecurity leaves it alone.
+func mariaDBSecurityMatches(m *mariadbv1alpha1.MariaDB, galeraEnabled bool) bool {
+	container := restrictedMariaDBContainerSecurityContext()
+	if !equality.Semantic.DeepEqual(m.Spec.PodSecurityContext, restrictedMariaDBPodSecurityContext()) ||
+		!equality.Semantic.DeepEqual(m.Spec.SecurityContext, container) {
+		return false
+	}
+	if !galeraEnabled {
+		return true
+	}
+	if m.Spec.Galera == nil || !equality.Semantic.DeepEqual(m.Spec.Galera.Agent.SecurityContext, container) {
+		return false
+	}
+	return m.Spec.Galera.InitContainer.Image == "" ||
+		equality.Semantic.DeepEqual(m.Spec.Galera.InitContainer.SecurityContext, container)
 }
 
 // ensureMemcached create-or-updates the owned Memcached CR named after
