@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the SECRET_KEY dependency gate, the Horizon
+# counterpart of tests/e2e/keystone/missing-secret. Verifies that the
+# reconciler waits while the referenced Secret and its ExternalSecret are
+# both absent:
+#   - SecretsReady=False with reason WaitingForSecretKey and a message
+#     naming the missing ExternalSecret
+#   - no Deployment, because the pipeline stops at the secret gate
+# and that it recovers to Ready=True once the ExternalSecret is created.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-missing-secret
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Horizon CR with a missing secretKeyRef ───────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+  # ── Step 2: Assert SecretsReady=False and no Deployment ────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-missing-secret
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "False"
+              reason: WaitingForSecretKey
+              message: SECRET_KEY ExternalSecret openstack/missing-secret-horizon-secret-key not found yet
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Only a NotFound proves the pipeline stopped at the secret gate;
+          # any other error is an API failure.
+          if OUT=$(kubectl get deployment horizon-missing-secret -n "$NAMESPACE" 2>&1); then
+            echo "FAIL: the Deployment exists although the SECRET_KEY Secret does not"
+            echo "$OUT"
+            exit 1
+          fi
+          if ! grep -q NotFound <<<"$OUT"; then
+            echo "FAIL: kubectl get deployment failed without NotFound: $OUT"
+            exit 1
+          fi
+          echo "OK: no Deployment while SecretsReady=False"
+    catch: &dump
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-missing-secret -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== ExternalSecret status ==="
+          kubectl get externalsecret missing-secret-horizon-secret-key -n $NAMESPACE -o yaml 2>&1 | grep -A20 '^status:' || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-missing-secret -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 2>&1 || true
+  # ── Step 3: Create the missing ExternalSecret ──────────────────────────
+  - try:
+    - apply:
+        file: 01-late-secret.yaml
+  # ── Step 4: Assert recovery to Ready=True ──────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-missing-secret
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *dump
