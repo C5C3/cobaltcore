@@ -575,7 +575,7 @@ test_wiring() {
   for job in e2e-controlplane e2e-controlplane-sso tempest; do
     case "$job" in
       e2e-controlplane)
-        last="Run own-namespace registration E2E test"
+        last="Run ControlPlane pod-security-restricted E2E test"
         artifact="sizing-e2e-controlplane" ;;
       e2e-controlplane-sso)
         last="Run federated ControlPlane E2E test"
