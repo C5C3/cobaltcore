@@ -33,7 +33,20 @@ test_openstack_dashboard_importable() {
   assert_eq "import openstack_dashboard exits 0" "0" "$exit_code"
 }
 
-# --- Test 2: static assets are pre-built at image-build time ---
+# --- Test 2: oslo.log's JSON formatter is importable ---
+# The horizon-operator renders oslo_log.formatters.JSONFormatter into the
+# LOGGING dictConfig for spec.logging.format json; without it Django fails
+# with "Unable to configure formatter 'json'" and uWSGI loads no app.
+test_oslo_log_json_formatter_importable() {
+  echo "Test: oslo_log.formatters.JSONFormatter imports cleanly"
+  local exit_code=0
+  docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c 'import oslo_log.formatters as f; f.JSONFormatter' > /dev/null 2>&1 || exit_code=$?
+
+  assert_eq "import oslo_log.formatters.JSONFormatter exits 0" "0" "$exit_code"
+}
+
+# --- Test 3: static assets are pre-built at image-build time ---
 test_static_assets_present() {
   echo "Test: static assets are pre-built"
 
@@ -61,7 +74,7 @@ print(sum(len(files) for _, _, files in os.walk("/var/lib/openstack/horizon-stat
   assert_eq "offline compression manifest exists" "0" "$manifest_exit"
 }
 
-# --- Test 3: runs as openstack user ---
+# --- Test 4: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
   local whoami_output exit_code=0
@@ -71,13 +84,13 @@ test_runs_as_openstack_user() {
   assert_eq "whoami outputs openstack" "openstack" "$whoami_output"
 }
 
-# --- Test 4: no build tools in final image ---
+# --- Test 5: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
   assert_no_build_tools
 }
 
-# --- Test 5: uwsgi is runnable (serves openstack_dashboard.wsgi at runtime) ---
+# --- Test 6: uwsgi is runnable (serves openstack_dashboard.wsgi at runtime) ---
 test_uwsgi_runnable() {
   echo "Test: uwsgi --version succeeds"
   local version exit_code=0
@@ -93,6 +106,8 @@ echo "=== horizon container verification tests ==="
 echo "Image: $IMAGE"
 echo ""
 test_openstack_dashboard_importable
+echo ""
+test_oslo_log_json_formatter_importable
 echo ""
 test_static_assets_present
 echo ""

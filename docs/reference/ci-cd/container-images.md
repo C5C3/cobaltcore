@@ -157,6 +157,16 @@ image are horizon's own:
   `/etc/openstack-dashboard/`, owned by root; the link dangles until the
   ConfigMap is mounted
 
+The venv holds horizon with the one `pip_packages` entry of
+`releases/<release>/extra-packages.yaml`: `oslo.log`, pinned in
+`upper-constraints.txt`. The horizon-operator names
+`oslo_log.formatters.JSONFormatter` in the rendered `LOGGING` settings when
+`spec.logging.format` is `json`. Horizon 27.0.0 (2026.2) dropped
+`python-neutronclient` and with it the only package that installed
+`oslo.log`, so both releases declare it. `test_oslo_log_json_formatter_importable`
+in `tests/container-images/verify_horizon.sh` imports the formatter in the
+built image.
+
 **Runtime packages:** none beyond the venv; the pymemcache session-cache client
 and uwsgi come from the base pins of `nix/base-requirements.txt`.
 
