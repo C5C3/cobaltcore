@@ -1,0 +1,398 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a managed ControlPlane reconciling under the
+# restricted Pod Security profile.
+#
+# The c5c3-operator creates the MariaDB and Memcached a managed plane uses in
+# the plane's namespace and projects the Keystone that runs there. This suite
+# labels chainsaw's ephemeral namespace with
+# pod-security.kubernetes.io/enforce=restricted and enforce-version=latest
+# before anything is applied to it, brings up a Keystone-only plane, and
+# asserts that:
+#
+#   - the ControlPlane reaches Ready=True/AllReady;
+#   - the MariaDB and Memcached the operator owns carry the restricted
+#     security contexts it projects (pod uid 999 or 11211, seccomp
+#     RuntimeDefault, allowPrivilegeEscalation false, capabilities drop ALL);
+#   - the metadata.generation of neither CR moves over the next 60 s, so the
+#     operator does not rewrite what it projected;
+#   - pod openstack-db-0 and the pods of deployment/openstack-memcached are
+#     Running;
+#   - no event in the namespace carries a
+#     'violates PodSecurity "restricted:latest"' message.
+#
+# The Keystone child's own pods and Jobs are proven under restricted by
+# tests/e2e/keystone/pod-security-restricted/. What this suite adds is the
+# c5c3-owned backing services and the c5c3-projected Keystone spec. The
+# fixture's single-replica database keeps Galera, and the one init pod start
+# a fresh Galera cluster has refused before its init context is added, out of
+# the suite.
+#
+# ── Its own ControlPlane, and the two seeds it needs ─────────────────────────
+# Like keystone-service, the suite brings up a Keystone-only plane in
+# chainsaw's ephemeral namespace, because the webhook admits one ControlPlane
+# per namespace. It seeds the per-CR admin password and the database-engine
+# role with the scripts deploy-infra runs; neither creates a pod in the
+# plane's namespace.
+#
+# ── Presence guard ───────────────────────────────────────────────────────────
+# Mirrors the sibling c5c3 suites. The e2e-operator c5c3 matrix leg runs this
+# whole directory on a cluster carrying the stack's CRDs but none of its
+# operators, so the guard prints a SKIP line and exits 0 there, before the
+# namespace is labelled. E2E_REQUIRE_CONTROLPLANE_STACK=true flips the guard
+# from SKIP to a hard failure on the e2e-controlplane job, which IS meant to
+# carry the stack.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-pod-security-restricted
+spec:
+  # A Keystone-only bring-up and a bounded teardown. cleanup covers the
+  # operators' bounded stall breakers on the failure path, as in
+  # keystone-service.
+  timeouts:
+    assert: 5m
+    exec: 30m
+    cleanup: 15m
+  steps:
+  - try:
+    - script:
+        timeout: 30m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME="cp"
+          TOKEN_FILE="/tmp/.bao-token-${NAMESPACE}"
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+
+          # ── Presence guard ────────────────────────────────────────────────
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud \
+            roles.openstack.k-orc.cloud \
+            roleassignments.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
+            externalsecrets.external-secrets.io \
+            pushsecrets.external-secrets.io \
+            secretstores.external-secrets.io \
+            certificates.cert-manager.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present:${missing}"
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            skip_or_fail "openbao-cluster-store ClusterSecretStore not present."
+          fi
+          if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
+            skip_or_fail "shared-services/openbao-0 not present."
+          fi
+          # The CRDs alone do not prove the stack: the e2e-operator (c5c3) leg
+          # installs them without the sibling operators. The probe captures via
+          # command substitution and retries, so a transient apiserver error is
+          # not read as "no pods".
+          operator_running() { # <app.kubernetes.io/name label value>
+            local pods
+            for _ in 1 2 3 4 5; do
+              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
+                && [ -n "${pods}" ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          if ! operator_running keystone-operator; then
+            skip_or_fail "no keystone-operator is running; the cluster carries the stack's CRDs only."
+          fi
+          if ! operator_running c5c3-operator; then
+            skip_or_fail "no c5c3-operator is running."
+          fi
+
+          # The root token stays out of argv, as in keystone-service: it is
+          # staged once on stdin under a per-namespace path, and only that path
+          # travels on the command line. The export stays, because the two
+          # deploy/openbao/bootstrap scripts below read the token from their
+          # environment.
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            skip_or_fail "could not extract the OpenBao root token."
+          fi
+          if ! printf '%s' "${BAO_TOKEN}" | kubectl exec -i -n shared-services openbao-0 -- \
+            sh -c 'umask 077; cat > "$1"' _ "${TOKEN_FILE}"; then
+            skip_or_fail "could not stage the OpenBao root token in openbao-0."
+          fi
+          bao_exec() {
+            kubectl exec -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+              BAO_TOKEN_FILE="${TOKEN_FILE}" \
+              sh -c 'BAO_TOKEN="$(cat "${BAO_TOKEN_FILE}")"; export BAO_TOKEN; exec "$@"' _ "$@"
+          }
+          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+            skip_or_fail "the eso-tenant OpenBao auth role is not configured."
+          fi
+          echo "OK: prerequisites present — running the ControlPlane pod-security-restricted check."
+
+          # ── Enforce restricted:latest on the plane's namespace ────────────
+          # Chainsaw's ephemeral namespace is labelled before anything is
+          # applied to it, so every pod the plane brings up is admitted under
+          # the restricted profile, and chainsaw's namespace cleanup and the
+          # per-namespace seeding stay as they are.
+          kubectl label namespace "${CP_NS}" \
+            pod-security.kubernetes.io/enforce=restricted \
+            pod-security.kubernetes.io/enforce-version=latest --overwrite
+          ns_labels="$(kubectl get namespace "${CP_NS}" -o json | jq -c '.metadata.labels // {}')"
+          for want in enforce=restricted enforce-version=latest; do
+            got="$(jq -r --arg k "pod-security.kubernetes.io/${want%%=*}" '.[$k] // ""' <<<"${ns_labels}")"
+            if [ "${got}" != "${want#*=}" ]; then
+              echo "ERROR: namespace ${CP_NS} label pod-security.kubernetes.io/${want%%=*} is '${got}', expected '${want#*=}'"
+              exit 1
+            fi
+            echo "OK: namespace ${CP_NS} carries pod-security.kubernetes.io/${want}"
+          done
+
+          # ── Helpers ───────────────────────────────────────────────────────
+          # Explicit polls rather than `kubectl wait`, so a condition or an
+          # object that is briefly absent retries instead of erroring out, and
+          # the failure names the last observed status.
+          wait_condition() { # <resource> <name> <namespace> <conditionType> <expected> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype}=${want}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${ctype} not ${want} within ${timeout}s (last: '${status:-<none>}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          wait_cp_condition() { # <conditionType> <timeoutSeconds>
+            wait_condition controlplane "${CP_NAME}" "${CP_NS}" "$1" True "$2"
+          }
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          # ── Seed the per-CR OpenBao paths this plane reads ────────────────
+          KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
+            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+          echo "OK: the per-CR admin-password path is seeded."
+
+          # ── Apply the ControlPlane and wait for readiness ─────────────────
+          kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
+
+          wait_cp_condition InfrastructureReady 600
+          wait_condition mariadb openstack-db "${CP_NS}" Ready True 600
+
+          # The database-engine role is keyed on the service namespace, so it
+          # has to be onboarded for this plane's namespace before the dynamic
+          # DB credential can be issued.
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          echo "OK: OpenBao database-engine tenant onboarded."
+
+          wait_cp_condition DBCredentialsReady 300
+          wait_cp_condition KeystoneReady 900
+          wait_cp_condition KORCReady 600
+          wait_cp_condition AdminCredentialReady 600
+          wait_cp_condition ESOTenantStoreReady 300
+          wait_cp_condition Ready 300
+          assert_eq "${CP_NAME} Ready reason" "AllReady" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
+
+          # ── The projected security contexts ───────────────────────────────
+          field() { # <resource> <name> <jsonpath>
+            kubectl get "$1" "$2" -n "${CP_NS}" -o "jsonpath=$3"
+          }
+          assert_eq "mariadb/openstack-db pod runAsUser" "999" \
+            "$(field mariadb openstack-db '{.spec.podSecurityContext.runAsUser}')"
+          assert_eq "mariadb/openstack-db pod seccompProfile" "RuntimeDefault" \
+            "$(field mariadb openstack-db '{.spec.podSecurityContext.seccompProfile.type}')"
+          assert_eq "mariadb/openstack-db container allowPrivilegeEscalation" "false" \
+            "$(field mariadb openstack-db '{.spec.securityContext.allowPrivilegeEscalation}')"
+          assert_eq "mariadb/openstack-db container drops" "ALL" \
+            "$(field mariadb openstack-db '{.spec.securityContext.capabilities.drop[0]}')"
+          assert_eq "memcached/openstack-memcached pod runAsUser" "11211" \
+            "$(field memcached openstack-memcached '{.spec.security.podSecurityContext.runAsUser}')"
+          assert_eq "memcached/openstack-memcached pod seccompProfile" "RuntimeDefault" \
+            "$(field memcached openstack-memcached '{.spec.security.podSecurityContext.seccompProfile.type}')"
+          assert_eq "memcached/openstack-memcached container allowPrivilegeEscalation" "false" \
+            "$(field memcached openstack-memcached '{.spec.security.containerSecurityContext.allowPrivilegeEscalation}')"
+
+          # ── The projection settles ────────────────────────────────────────
+          # Both re-projections compare the whole live security subtree. A key
+          # the backing operator writes back there would make both sides write
+          # in turn, and each write raises the generation. The operator watches
+          # both kinds, so such a fight shows within 60 s. A key that CRD
+          # defaulting or a mutating webhook adds is not caught here: the
+          # operator's Update is then a no-op that the apiserver drops without
+          # raising the generation.
+          gen_db="$(field mariadb openstack-db '{.metadata.generation}')"
+          gen_mc="$(field memcached openstack-memcached '{.metadata.generation}')"
+          sleep 60
+          assert_eq "mariadb/openstack-db generation after 60s" "${gen_db}" \
+            "$(field mariadb openstack-db '{.metadata.generation}')"
+          assert_eq "memcached/openstack-memcached generation after 60s" "${gen_mc}" \
+            "$(field memcached openstack-memcached '{.metadata.generation}')"
+
+          # ── The backing services run under restricted ─────────────────────
+          # Only the two c5c3-owned backing services are required to run. A
+          # Keystone Job attempt that failed while MariaDB was still starting
+          # leaves a Failed pod that restricted admitted, so the suite does not
+          # demand that every pod is Running or Succeeded.
+          assert_eq "pod openstack-db-0 phase" "Running" "$(field pod openstack-db-0 '{.status.phase}')"
+          MEMCACHED_SELECTOR="$(kubectl get deployment openstack-memcached -n "${CP_NS}" -o json \
+            | jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')"
+          memcached_pods="$(kubectl get pods -n "${CP_NS}" -l "${MEMCACHED_SELECTOR}" \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.status.phase}{"\n"}{end}')"
+          if [ -z "${memcached_pods}" ] || grep -qv ' Running$' <<<"${memcached_pods}"; then
+            echo "ERROR: the pods of deployment/openstack-memcached are not all Running:"
+            echo "${memcached_pods:-<none>}"
+            exit 1
+          fi
+          echo "OK: the pods of deployment/openstack-memcached are Running: $(tr '\n' ' ' <<<"${memcached_pods}")"
+
+          # ── Zero PodSecurity violations ───────────────────────────────────
+          # A refused pod shows as a FailedCreate event on its parent with the
+          # violation listed verbatim. Every event of the namespace is read,
+          # whatever its reason.
+          violations="$(kubectl get events -n "${CP_NS}" -o json | jq -r \
+            --arg n 'violates PodSecurity "restricted:latest"' \
+            '.items[] | select((.message // "") | contains($n))
+              | "\(.involvedObject.kind)/\(.involvedObject.name) \(.reason): \(.message)"')"
+          if [ -n "${violations}" ]; then
+            echo "FAIL: events in ${CP_NS} carry a restricted:latest PodSecurity violation:"
+            echo "${violations}"
+            exit 1
+          fi
+          echo "OK: zero 'violates PodSecurity \"restricted:latest\"' events in ${CP_NS}."
+          echo "OK: the managed ControlPlane reconciles under restricted:latest."
+    catch:
+    - script:
+        # Pinned, because chainsaw applies the test's exec budget to every
+        # script operation, and an unpinned dump against a wedged apiserver
+        # would inherit 30m.
+        timeout: 5m
+        shell: bash
+        content: |
+          echo "=== Namespace labels ==="
+          kubectl get namespace "${NAMESPACE}" --show-labels 2>&1 || true
+          echo "=== ControlPlane ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== ControlPlane conditions ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          echo "=== Keystone child ==="
+          kubectl get keystone cp-keystone -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== Pods ==="
+          kubectl get pods -n "${NAMESPACE}" -o wide 2>&1 || true
+          echo "=== c5c3-operator ==="
+          kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator -o wide 2>&1 || true
+          OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=150 --all-containers 2>&1 || true
+          echo "=== keystone-operator ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== K-ORC controller ==="
+          kubectl logs -n orc-system deploy/orc-controller-manager --pod-running-timeout=5s --tail=100 --all-containers 2>&1 || true
+          echo "=== PodSecurity violation events ==="
+          kubectl get events -n "${NAMESPACE}" -o json 2>/dev/null | jq -r \
+            --arg n 'violates PodSecurity "restricted:latest"' \
+            '.items[] | select((.message // "") | contains($n))
+              | "\(.involvedObject.kind)/\(.involvedObject.name) \(.reason): \(.message)"' 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    finally:
+    - script:
+        # Pinned for the same reason as catch. The waits below are bounded and
+        # add up to 600 s; 15m covers them plus the deletes that drive them, and
+        # keeps the suite's ceiling at exec + catch + finally + cleanup = 65m,
+        # the number .github/workflows/ci.yaml budgets against.
+        timeout: 15m
+        shell: bash
+        content: |
+          # chainsaw owns the ephemeral namespace and reaps the ControlPlane
+          # with it. When the try block died early, this block is the only
+          # ordered teardown: the plane's K-ORC children and its Keystone go
+          # while the identity plane behind them still serves the calls their
+          # finalizers make, then the plane. Every wait is bounded and
+          # best-effort; a finalizer that does not release in time is left to
+          # chainsaw's cleanup.
+          gone_within() { # <resource> <name> <namespace> <timeoutSeconds>
+            local deadline
+            deadline=$(( $(date +%s) + $4 ))
+            while kubectl get "$1" "$2" -n "$3" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "WARN: $1/$2 in $3 still present after $4s; leaving it to chainsaw cleanup"
+                return 1
+              fi
+              sleep 5
+            done
+            return 0
+          }
+          # The root token the try block staged in openbao-0 goes with the
+          # suite; the pod is shared with the other suites on the job.
+          kubectl exec -n shared-services openbao-0 -- \
+            rm -f "/tmp/.bao-token-${NAMESPACE}" 2>&1 || true
+
+          kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
+          while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
+            if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then
+              echo "WARN: K-ORC residue still present after 240s; leaving it to the stall breakers"
+              break
+            fi
+            sleep 5
+          done
+          kubectl delete keystone cp-keystone -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within keystone cp-keystone "${NAMESPACE}" 120 || true
+
+          gone_within controlplane cp "${NAMESPACE}" 240 || true

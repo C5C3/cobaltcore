@@ -963,10 +963,12 @@ database and the bus. `ensureMariaDB` takes an unset `replicas` / `storageSize`
 from `spec.sizing.database` (the webhook normally stored them at admission) and
 writes `spec.resources`, `spec.nodeSelector`, `spec.tolerations` and
 `spec.priorityClassName`; an owned MariaDB is re-asserted with one `Update` when
-any of them differs (`updating owned MariaDB "<name>"` on failure), and an adopted
-one is never written. `ensureMemcached` takes an unset `replicas` from
-`spec.sizing.cache` on every pass, floors a zero count to 3, and writes or removes
-`spec.resources`; the Memcached CRD has no placement. `ensureRabbitMQ` takes an
+any of them or one of its security contexts (see Pod Security below) differs
+(`updating owned MariaDB "<name>"` on failure), and an adopted one is never
+written. `ensureMemcached` takes an unset `replicas` from `spec.sizing.cache` on
+every pass, floors a zero count to 3, and writes or removes `spec.resources`; an
+owned Memcached has its two `spec.security` contexts re-asserted in the same
+`Update`, and the Memcached CRD has no placement. `ensureRabbitMQ` takes an
 unset `replicas` from `spec.sizing.messaging`, writes `spec.resources` and
 `spec.tolerations`, and writes the node selector and priority class through
 `spec.override.statefulSet.spec.template.spec` (`containers: []` included, which
@@ -974,6 +976,44 @@ the upstream schema requires); unset resources that equal the operator's
 default count as matching, so a `Standard` bus is not rewritten on every pass.
 The shrink gate on `c5c3.io/allow-messaging-recreate` is unchanged. The teardown
 enumerates the instances with the zero sizing, since it only reads their names.
+
+**Pod Security.** Every MariaDB and Memcached the ControlPlane owns carries
+security contexts the restricted Pod Security profile admits, so a managed
+ControlPlane reaches `InfrastructureReady=True` in a namespace that enforces
+`restricted:latest`. `ensureMariaDB` writes `spec.podSecurityContext`
+(`runAsNonRoot`, uid, gid and `fsGroup` 999, seccomp `RuntimeDefault`) and
+`spec.securityContext` (`allowPrivilegeEscalation: false`, `capabilities.drop:
+[ALL]`). 999 is the mysql user the mariadb-operator falls back to when the pod
+context is unset, so an existing data volume keeps its owner. A Galera cluster
+also gets the container context at `spec.galera.agent.securityContext`. The init
+container gets it only once the mariadb-operator has defaulted
+`spec.galera.initContainer.image`: the controller defaults that image only while
+the init container is entirely zero, so an init context written on create would
+leave the init container without an image. A fresh Galera cluster in a
+restricted namespace therefore has one pod start refused for `container "init"`,
+and the next pass, 15 seconds later, adds the init context. The owned re-assert
+updates `spec.galera` in place and keeps every field the mariadb-operator
+defaulted.
+
+`ensureMemcached` writes `spec.security.podSecurityContext` (`runAsNonRoot`, uid
+and gid 11211, seccomp `RuntimeDefault`) and `spec.security.containerSecurityContext`
+(the same two container fields) and leaves every other `spec.security` key alone.
+11211 is the `memcache` user of `memcached:1.6`, the image the memcached-operator
+defaults to. That image names its user, so `runAsNonRoot` alone fails the
+kubelet's non-root check, and a cache on another image needs a different uid. An
+adopted instance is never written. On upgrade every owned instance is updated
+once and rolls: a single-replica MariaDB restarts, a Galera cluster rolls
+`ReplicasFirstPrimaryLast`, and the memcached-operator rolls the cache
+Deployment. Where OpenShift SecurityContextConstraints exist, the
+mariadb-operator builder drops both MariaDB contexts, so the projection has no
+effect on the database there. Rolling the operator back leaves
+`spec.podSecurityContext`, `spec.securityContext` and both Memcached contexts on
+the CRs, and the older operator never compares them. It does replace
+`spec.galera` wholesale on its next write of an owned MariaDB, which a sizing
+change triggers, and that drops the agent and init contexts. In a namespace that
+enforces `restricted`, the roll that write starts then has the first replaced
+Galera member refused for containers `agent` and `init`, so before rolling back,
+relax the enforce label or hold sizing changes.
 
 **The message bus stays home.** `addMessaging` is called once, at
 `childNamespace(cp)` with the declared-at path `spec.infrastructure.messaging`,

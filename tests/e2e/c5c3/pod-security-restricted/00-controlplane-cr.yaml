@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the ControlPlane pod-security-restricted E2E test.
+#
+# A Keystone-only managed plane: the suite proves that the backing services
+# the c5c3-operator owns and the Keystone it projects are admitted in a
+# namespace that enforces restricted:latest, so it needs one projected service
+# and nothing else. The Minimal sizing profile gives a single-replica database,
+# which keeps Galera out of the suite: a fresh Galera cluster has one init pod
+# start refused until the operator adds the init context on its next pass, and
+# that refusal would show as a violation event.
+#
+# The CR carries NO metadata.namespace. Chainsaw runs the suite in its own
+# ephemeral namespace and the test labels that namespace and applies this CR
+# into it: the webhook admits one ControlPlane per namespace, and the canonical
+# openstack/controlplane-keystone belongs to the full-chain suite.
+#
+# Two things this fixture does NOT set:
+#   - spec.services.keystone.gateway: the openstack-gw Gateway lives in the
+#     openstack namespace and allows routes from its own namespace only.
+#   - spec.secretStoreRef: the shared openbao-cluster-store is allow-listed to
+#     openstack and shared-services, so an ephemeral namespace must stay on the
+#     operator-provisioned per-tenant store.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2026.1"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+  services:
+    keystone: {}
+  sizing:
+    profile: Minimal
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

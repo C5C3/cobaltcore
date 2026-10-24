@@ -8,10 +8,12 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	"github.com/mariadb-operator/mariadb-operator/pkg/environment"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -1071,6 +1073,10 @@ func TestEnsureMariaDB_RefusesToReshapeAForeignInstance(t *testing.T) {
 	}, &live)).To(Succeed())
 	g.Expect(live.Spec.Replicas).To(Equal(int32(1)),
 		"an externally-provisioned instance must not have its topology re-projected")
+	g.Expect(live.Spec.PodSecurityContext).To(BeNil(),
+		"an externally-provisioned instance must not gain a pod security context")
+	g.Expect(live.Spec.SecurityContext).To(BeNil(),
+		"an externally-provisioned instance must not gain a container security context")
 	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel),
 		"ownership must never be claimed over an instance we did not create")
 }
@@ -1166,7 +1172,8 @@ func TestEnsureMemcached_CrossNamespaceOwnedReconcilesReplicas(t *testing.T) {
 }
 
 // TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing pins the steady state: a
-// label-owned cache already at the declared count is compared, not rewritten.
+// label-owned cache already at the declared count, resources and security is
+// compared, not rewritten.
 func TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := infraTestScheme(t)
@@ -1174,13 +1181,14 @@ func TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing(t *testing.T) {
 
 	updates := 0
 	seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(3)))
+	g.Expect(unstructured.SetNestedMap(seed.Object, wantMemcachedSecurity(), "spec", "security")).To(Succeed())
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
 		WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(updates).To(BeZero(), "a cache at the declared count must not be written")
+	g.Expect(updates).To(BeZero(), "a cache at the declared count, resources and security must not be written")
 }
 
 // TestEnsureMemcached_RefusesToReshapeAForeignInstance verifies the never-adopt
@@ -1225,6 +1233,9 @@ func TestEnsureMemcached_RefusesToReshapeAForeignInstance(t *testing.T) {
 			g.Expect(live.GetOwnerReferences()).To(BeEmpty(),
 				"ownership must never be claimed over an instance we did not create")
 			g.Expect(live.GetLabels()).To(Equal(tc.labels), "an adopted cache must keep its labels as seeded")
+			_, found, nerr := unstructured.NestedFieldNoCopy(live.Object, "spec", "security")
+			g.Expect(nerr).NotTo(HaveOccurred())
+			g.Expect(found).To(BeFalse(), "an adopted cache must not gain spec.security")
 		})
 	}
 }
@@ -1253,10 +1264,11 @@ func TestEnsureMemcached_LabelOwnedInOwnNamespaceReconcilesReplicas(t *testing.T
 		"a label-owned cache in the ControlPlane's own namespace must have spec.replicas reconciled")
 }
 
-// TestEnsureMemcached_OwnedWriteErrorsAreWrapped pins the two failures of the
-// owned re-projection on a label-owned cache: a rejected Update and a
-// spec.replicas that is not an integer. Each is returned wrapped, naming the
-// cache, and reports not ready. A malformed count is refused before any write.
+// TestEnsureMemcached_OwnedWriteErrorsAreWrapped pins the failures of the
+// owned re-projection on a label-owned cache: a rejected Update, a
+// spec.replicas that is not an integer, and a spec.security that is not a map.
+// Each is returned wrapped, naming the cache, and reports not ready. A
+// malformed field is refused before any write.
 func TestEnsureMemcached_OwnedWriteErrorsAreWrapped(t *testing.T) {
 	sentinel := errors.New("update rejected")
 
@@ -1296,6 +1308,25 @@ func TestEnsureMemcached_OwnedWriteErrorsAreWrapped(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(HavePrefix(`reading Memcached "openstack-memcached" spec.replicas: `))
 		g.Expect(updates).To(BeZero(), "a count that cannot be read must not be overwritten")
+	})
+
+	t.Run("malformed security", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := splitNamespaceControlPlane()
+
+		updates := 0
+		seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(3)))
+		g.Expect(unstructured.SetNestedField(seed.Object, "x", "spec", "security")).To(Succeed())
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		ready, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
+		g.Expect(ready).To(BeFalse())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(HavePrefix(`reading Memcached "openstack-memcached" spec.security: `))
+		g.Expect(updates).To(BeZero(), "a spec.security that cannot be read must not be overwritten")
 	})
 }
 
@@ -2932,6 +2963,352 @@ func TestEnsureMariaDB_Sizing(t *testing.T) {
 		g.Expect(err.Error()).To(HavePrefix(`updating owned MariaDB "openstack-db": `))
 		g.Expect(errors.Is(err, sentinel)).To(BeTrue())
 	})
+}
+
+// wantMariaDBPodSecurityContext is the pod context the restricted profile
+// admits a MariaDB pod with, spelled out apart from the production helper.
+func wantMariaDBPodSecurityContext() *mariadbv1alpha1.PodSecurityContext {
+	return &mariadbv1alpha1.PodSecurityContext{
+		RunAsNonRoot:   ptr.To(true),
+		RunAsUser:      ptr.To(int64(999)),
+		RunAsGroup:     ptr.To(int64(999)),
+		FSGroup:        ptr.To(int64(999)),
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+// wantMariaDBContainerSecurityContext is the container context the restricted
+// profile asks of every MariaDB container.
+func wantMariaDBContainerSecurityContext() *mariadbv1alpha1.SecurityContext {
+	return &mariadbv1alpha1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
+}
+
+// TestEnsureMariaDB_RestrictedSecurity pins the restricted security contexts
+// on the MariaDB a ControlPlane owns: written on create, re-asserted on drift
+// with one Update, and never written beside a Galera init image the
+// mariadb-operator has not defaulted yet, because an init context there would
+// stop the controller from defaulting the image at all.
+func TestEnsureMariaDB_RestrictedSecurity(t *testing.T) {
+	// ensure runs one ensureMariaDB pass over a ControlPlane whose database
+	// declares replicas, with seed (if any) as an owned live MariaDB, and returns
+	// the reconciler, the client, the ControlPlane and the count of MariaDB
+	// Updates so far.
+	ensure := func(
+		t *testing.T, g Gomega, replicas int32, seed *mariadbv1alpha1.MariaDB,
+	) (*ControlPlaneReconciler, client.Client, *c5c3v1alpha1.ControlPlane, *int) {
+		t.Helper()
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		cp.Spec.Infrastructure.Database.Replicas = replicas
+		objs := []client.Object{cp}
+		if seed != nil {
+			seed.Namespace = cp.Namespace
+			g.Expect(controllerutil.SetControllerReference(cp, seed, s)).To(Succeed())
+			objs = append(objs, seed)
+		}
+		updates := 0
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
+			WithInterceptorFuncs(mariadbUpdateInterceptor(&updates, nil)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		return r, c, cp, &updates
+	}
+	// ownedGalera is a live 3-replica Galera MariaDB that carries the pod,
+	// mariadb and agent contexts, a defaulted agent port and an SST method, and
+	// the given init image without an init context.
+	ownedGalera := func(initImage string) *mariadbv1alpha1.MariaDB {
+		size := resource.MustParse("512Mi")
+		m := &mariadbv1alpha1.MariaDB{
+			ObjectMeta: metav1.ObjectMeta{Name: "openstack-db"},
+			Spec: mariadbv1alpha1.MariaDBSpec{
+				Replicas: 3,
+				Storage:  mariadbv1alpha1.Storage{Size: &size},
+				Galera: &mariadbv1alpha1.Galera{
+					Enabled: true,
+					GaleraSpec: mariadbv1alpha1.GaleraSpec{
+						SST: mariadbv1alpha1.SSTMariaBackup,
+						Agent: mariadbv1alpha1.GaleraAgent{
+							ContainerTemplate: mariadbv1alpha1.ContainerTemplate{
+								SecurityContext: wantMariaDBContainerSecurityContext(),
+							},
+							Port: 5555,
+						},
+						InitContainer: mariadbv1alpha1.GaleraInit{Image: initImage},
+					},
+				},
+			},
+		}
+		m.Spec.PodSecurityContext = wantMariaDBPodSecurityContext()
+		m.Spec.SecurityContext = wantMariaDBContainerSecurityContext()
+		return m
+	}
+
+	t.Run("a fresh single-instance MariaDB carries the pod and mariadb contexts only", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, c, cp, _ := ensure(t, g, 1, nil)
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.Spec.PodSecurityContext).To(Equal(wantMariaDBPodSecurityContext()))
+		g.Expect(m.Spec.SecurityContext).To(Equal(wantMariaDBContainerSecurityContext()))
+		g.Expect(m.Spec.Galera.Enabled).To(BeFalse())
+		g.Expect(m.Spec.Galera.Agent.SecurityContext).To(BeNil(), "a single instance runs no Galera agent")
+		g.Expect(m.Spec.Galera.InitContainer.SecurityContext).To(BeNil(), "a single instance runs no Galera init")
+	})
+
+	t.Run("a fresh Galera MariaDB carries the agent context and a zero init container", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, c, cp, _ := ensure(t, g, 3, nil)
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.Spec.PodSecurityContext).To(Equal(wantMariaDBPodSecurityContext()))
+		g.Expect(m.Spec.SecurityContext).To(Equal(wantMariaDBContainerSecurityContext()))
+		g.Expect(m.Spec.Galera.Enabled).To(BeTrue())
+		g.Expect(m.Spec.Galera.Agent.SecurityContext).To(Equal(wantMariaDBContainerSecurityContext()))
+		g.Expect(m.Spec.Galera.InitContainer).To(BeZero(),
+			"the mariadb-operator defaults the init image only while the init container is zero")
+	})
+
+	t.Run("a defaulted init image gets the init context and keeps every live Galera field, then no Update", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		r, c, cp, updates := ensure(t, g, 3, ownedGalera("img:1"))
+		g.Expect(*updates).To(Equal(1))
+		live := getMariaDB(g, c, cp.Namespace)
+		galera := live.Spec.Galera
+		g.Expect(galera.InitContainer.SecurityContext).To(Equal(wantMariaDBContainerSecurityContext()))
+		g.Expect(galera.InitContainer.Image).To(Equal("img:1"))
+		g.Expect(galera.Agent.Port).To(Equal(int32(5555)), "spec.galera is updated in place")
+		g.Expect(galera.SST).To(Equal(mariadbv1alpha1.SSTMariaBackup), "spec.galera is updated in place")
+		g.Expect(galera.Enabled).To(BeTrue())
+
+		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(1), "a Galera cluster carrying its init context finds nothing to change")
+		g.Expect(getMariaDB(g, c, cp.Namespace).ResourceVersion).To(Equal(live.ResourceVersion))
+	})
+
+	t.Run("an owned Galera MariaDB with a drifted agent context gets it back with one Update", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		seed := ownedGalera("img:1")
+		seed.Spec.Galera.InitContainer.SecurityContext = wantMariaDBContainerSecurityContext()
+		seed.Spec.Galera.Agent.SecurityContext = &mariadbv1alpha1.SecurityContext{AllowPrivilegeEscalation: ptr.To(true)}
+		_, c, cp, updates := ensure(t, g, 3, seed)
+		g.Expect(*updates).To(Equal(1))
+		g.Expect(getMariaDB(g, c, cp.Namespace).Spec.Galera.Agent.SecurityContext).
+			To(Equal(wantMariaDBContainerSecurityContext()))
+	})
+
+	t.Run("a fresh Galera MariaDB settles under the mariadb-operator defaulting", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		r, c, cp, updates := ensure(t, g, 3, nil)
+		// The environment fields the mariadb-operator controller's SetDefaults
+		// reads for a Galera MariaDB; the init image defaults to the operator's.
+		env := &environment.OperatorEnv{
+			MariadbOperatorImage: "mariadb-operator:test",
+			RelatedMariadbImage:  "mariadb:test",
+			MariadbGaleraLibPath: "/usr/lib/galera/libgalera_smm.so",
+		}
+
+		// The mariadb-operator controller defaults the created MariaDB.
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.SetDefaults(env)).To(Succeed())
+		g.Expect(m.Spec.Galera.InitContainer.Image).To(Equal(env.MariadbOperatorImage))
+		g.Expect(c.Update(ctx, m)).To(Succeed())
+		defaulted := *updates
+
+		// The next pass adds the init context beside the defaulted image.
+		_, err := r.ensureMariaDB(ctx, c, cp, &cp.Spec.Infrastructure.Database, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(defaulted+1), "the pass writes the init context once")
+		live := getMariaDB(g, c, cp.Namespace)
+		g.Expect(live.Spec.Galera.InitContainer.Image).To(Equal(env.MariadbOperatorImage))
+		g.Expect(live.Spec.Galera.InitContainer.SecurityContext).To(Equal(wantMariaDBContainerSecurityContext()))
+		g.Expect(live.Spec.Galera.Agent.SecurityContext).To(Equal(wantMariaDBContainerSecurityContext()))
+
+		// Neither side has anything left to write.
+		again := live.DeepCopy()
+		g.Expect(again.SetDefaults(env)).To(Succeed())
+		g.Expect(again.Spec).To(Equal(live.Spec), "the mariadb-operator finds nothing left to default")
+		_, err = r.ensureMariaDB(ctx, c, cp, &cp.Spec.Infrastructure.Database, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(defaulted+1), "a settled Galera cluster is not written again")
+	})
+
+	t.Run("an init image not yet defaulted is left alone and causes no Update", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, c, cp, updates := ensure(t, g, 3, ownedGalera(""))
+		g.Expect(*updates).To(BeZero(), "an empty init image counts as matching")
+		g.Expect(getMariaDB(g, c, cp.Namespace).Spec.Galera.InitContainer).To(BeZero())
+	})
+
+	t.Run("an owned MariaDB without contexts gets them with one Update, then none", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		size := resource.MustParse("512Mi")
+		seed := &mariadbv1alpha1.MariaDB{
+			ObjectMeta: metav1.ObjectMeta{Name: "openstack-db"},
+			Spec: mariadbv1alpha1.MariaDBSpec{
+				Replicas: 1,
+				Galera:   &mariadbv1alpha1.Galera{Enabled: false},
+				Storage:  mariadbv1alpha1.Storage{Size: &size},
+			},
+		}
+		r, c, cp, updates := ensure(t, g, 1, seed)
+		g.Expect(*updates).To(Equal(1))
+		m := getMariaDB(g, c, cp.Namespace)
+		g.Expect(m.Spec.PodSecurityContext).To(Equal(wantMariaDBPodSecurityContext()))
+		g.Expect(m.Spec.SecurityContext).To(Equal(wantMariaDBContainerSecurityContext()))
+
+		_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(*updates).To(Equal(1), "a second pass finds nothing to change")
+		g.Expect(getMariaDB(g, c, cp.Namespace).ResourceVersion).To(Equal(m.ResourceVersion))
+	})
+
+	for _, replicas := range []int32{1, 3} {
+		t.Run(fmt.Sprintf("an owned MariaDB without spec.galera at %d replicas gets one", replicas), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			size := resource.MustParse("512Mi")
+			seed := &mariadbv1alpha1.MariaDB{
+				ObjectMeta: metav1.ObjectMeta{Name: "openstack-db"},
+				Spec:       mariadbv1alpha1.MariaDBSpec{Replicas: replicas, Storage: mariadbv1alpha1.Storage{Size: &size}},
+			}
+			_, c, cp, updates := ensure(t, g, replicas, seed)
+			g.Expect(*updates).To(Equal(1))
+			m := getMariaDB(g, c, cp.Namespace)
+			g.Expect(m.Spec.Galera).NotTo(BeNil())
+			g.Expect(m.Spec.Galera.Enabled).To(Equal(replicas > 1))
+			g.Expect(m.Spec.PodSecurityContext).To(Equal(wantMariaDBPodSecurityContext()))
+		})
+	}
+}
+
+// TestReconcileInfrastructure_OwnedMariaDBUpdateErrorSurfacesMariaDBError
+// verifies a rejected re-assertion of the security contexts on an owned
+// MariaDB reaches the ControlPlane: the pass returns the error and
+// InfrastructureReady turns False with reason MariaDBError.
+func TestReconcileInfrastructure_OwnedMariaDBUpdateErrorSurfacesMariaDBError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	sentinel := errors.New("update rejected")
+
+	size := resource.MustParse("512Mi")
+	owned := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db", Namespace: cp.Namespace},
+		Spec: mariadbv1alpha1.MariaDBSpec{
+			Replicas: infraMariaDBReplicasDefault,
+			Galera:   &mariadbv1alpha1.Galera{Enabled: true},
+			Storage:  mariadbv1alpha1.Storage{Size: &size},
+		},
+	}
+	g.Expect(controllerutil.SetControllerReference(cp, owned, s)).To(Succeed())
+	updates := 0
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).
+		WithInterceptorFuncs(mariadbUpdateInterceptor(&updates, sentinel)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileInfrastructure(context.Background(), cp)
+	g.Expect(errors.Is(err, sentinel)).To(BeTrue(), "the Update error must reach the caller for backoff")
+	g.Expect(err.Error()).To(ContainSubstring(`updating owned MariaDB "openstack-db": update rejected`))
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	g.Expect(updates).To(Equal(1))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("MariaDBError"))
+	g.Expect(cond.Message).To(ContainSubstring(`updating owned MariaDB "openstack-db": update rejected`))
+}
+
+// wantMemcachedSecurity is the spec.security the restricted profile admits a
+// Memcached pod with, spelled out apart from the production helper.
+func wantMemcachedSecurity() map[string]interface{} {
+	return map[string]interface{}{
+		"podSecurityContext": map[string]interface{}{
+			"runAsNonRoot":   true,
+			"runAsUser":      int64(11211),
+			"runAsGroup":     int64(11211),
+			"seccompProfile": map[string]interface{}{"type": "RuntimeDefault"},
+		},
+		"containerSecurityContext": map[string]interface{}{
+			"allowPrivilegeEscalation": false,
+			"capabilities":             map[string]interface{}{"drop": []interface{}{"ALL"}},
+		},
+	}
+}
+
+// TestEnsureMemcached_RestrictedSecurity pins the restricted security contexts
+// on the Memcached a ControlPlane owns: written on create, and added to an owned
+// cache with one Update that leaves every other spec.security key in place.
+func TestEnsureMemcached_RestrictedSecurity(t *testing.T) {
+	security := func(g Gomega, u *unstructured.Unstructured) map[string]interface{} {
+		m, found, err := unstructured.NestedMap(u.Object, "spec", "security")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue(), "spec.security must be set")
+		return m
+	}
+
+	t.Run("a fresh Memcached carries both contexts", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		u, _, _ := getMemcached(g, c, cp.Namespace)
+		g.Expect(security(g, u)).To(Equal(wantMemcachedSecurity()))
+	})
+
+	for _, tc := range []struct {
+		name string
+		seed map[string]interface{}
+		want map[string]interface{}
+	}{
+		{name: "no spec.security", want: wantMemcachedSecurity()},
+		{
+			name: "spec.security holding sasl",
+			seed: map[string]interface{}{"sasl": map[string]interface{}{"enabled": true}},
+			want: func() map[string]interface{} {
+				w := wantMemcachedSecurity()
+				w["sasl"] = map[string]interface{}{"enabled": true}
+				return w
+			}(),
+		},
+		{
+			name: "a drifted containerSecurityContext",
+			seed: func() map[string]interface{} {
+				w := wantMemcachedSecurity()
+				w["containerSecurityContext"] = map[string]interface{}{"allowPrivilegeEscalation": true}
+				return w
+			}(),
+			want: wantMemcachedSecurity(),
+		},
+	} {
+		t.Run("an owned Memcached with "+tc.name+" gets both contexts with one Update", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := infraTestScheme(t)
+			cp := splitNamespaceControlPlane() // Cache.Replicas = 3
+
+			seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(3)))
+			if tc.seed != nil {
+				g.Expect(unstructured.SetNestedMap(seed.Object, tc.seed, "spec", "security")).To(Succeed())
+			}
+			updates := 0
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+				WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(updates).To(Equal(1))
+			u, _, _ := getMemcached(g, c, "identity")
+			g.Expect(security(g, u)).To(Equal(tc.want))
+		})
+	}
 }
 
 func TestEnsureMemcached_Sizing(t *testing.T) {
