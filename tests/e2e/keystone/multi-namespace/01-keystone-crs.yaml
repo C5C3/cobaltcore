@@ -7,7 +7,8 @@
 # One Keystone per namespace, all three named keystone-mns, so anything the
 # operator keys by name alone collides. Brownfield mode (database.host +
 # cache.servers) reaches the shared openstack-db and openstack-memcached from
-# outside `openstack`; 00-brownfield-db-setup.yaml pre-creates the schemas.
+# outside `openstack`; 00-brownfield-db-setup.yaml pre-creates the schemas and
+# one MariaDB user per namespace.
 # Each Keystone selects its own namespace's openbao-tenant-store.
 #
 # Caching is off. The three Keystones share `openstack-memcached`, and

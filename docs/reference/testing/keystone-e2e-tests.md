@@ -1009,8 +1009,8 @@ material and no token. Anything the operator keys by name alone would collide.
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
-| 1 | Namespaces, tenant stores and ExternalSecrets | `apply` + `script` (5m) + `assert` (10m) | `00-namespaces.yaml` creates the three namespaces with their `keystone-admin` and `keystone-db` ExternalSecrets. The script copies the shared database and admin values to `openstack/keystone/<ns>/mns/db` and `bootstrap/<ns>/mns/admin` inside `openbao-0` and runs `setup-eso-tenant.sh` for each namespace; the six ExternalSecrets reach `Ready=True` |
-| 2 | Brownfield schemas, grants and user | `apply` + `assert` (10m) | `00-brownfield-db-setup.yaml` in `openstack`: Databases `keystone_mns_a` to `keystone_mns_c`, one Grant each, and User `keystone`, all `Ready=True` |
+| 1 | Namespaces, tenant stores and ExternalSecrets | `apply` + `script` (5m) + `assert` (10m) | `00-namespaces.yaml` creates the three namespaces with their `keystone-admin` and `keystone-db` ExternalSecrets. The script writes the namespace's MariaDB user name and copies the shared database and admin passwords to `openstack/keystone/<ns>/mns/db` and `bootstrap/<ns>/mns/admin` inside `openbao-0`, and runs `setup-eso-tenant.sh` for each namespace; the six ExternalSecrets reach `Ready=True` |
+| 2 | Brownfield schemas, users and grants | `apply` + `assert` (10m) | `00-brownfield-db-setup.yaml` in `openstack`: Databases `keystone_mns_a` to `keystone_mns_c`, each with its own MariaDB user (`keystone-mns-a` to `keystone-mns-c`) and Grant, all `Ready=True` |
 | 3 | Three Keystones of one name | `apply` + `assert` (10m) | `01-keystone-crs.yaml` applies all three at once; each reaches `Ready=True/AllReady` |
 | 4 | Objects, keys and tokens stay in their namespace | `script` (10m) | Per namespace, Deployment and Service `keystone-mns`, the config ConfigMap, Secrets `keystone-mns-fernet-keys` and `keystone-mns-db-connection`, and PushSecret `keystone-mns-fernet-keys-backup` exist with one ownerReference, to that namespace's Keystone. The connection URL names `keystone_mns_<x>`. The PushSecrets write to three distinct keys `openstack/keystone/<ns>/keystone-mns/fernet-keys` and are `Ready=True`. The three fernet key sets hash differently. A token issued in each namespace answers 200 there and 401 in the other two |
 | 5 | Deleting one instance | `script` (6m) | Records the Deployment uid, API pod uids, ConfigMap and fernet hash of `keystone-mns-b` and `keystone-mns-c` and a `keystone-mns-b` token, deletes the Keystone of `keystone-mns-a` and waits up to 180s for it to be gone. Both others stay `Ready=True` with the same values, and the token still answers 200 |
@@ -1028,8 +1028,14 @@ removes the staged OpenBao root token.
 - `database.clusterRef` and `cache.clusterRef` are `LocalObjectReference`s, so the
   three Keystones reach the shared `openstack-db` and `openstack-memcached`
   through `database.host` and `cache.servers`, and the schemas are created in
-  `openstack`. `cleanupPolicy: Skip` keeps the shared `keystone` user and the
-  three schemas at cleanup, as in `pod-security-restricted`.
+  `openstack`. `cleanupPolicy: Skip` keeps the three users and schemas at
+  cleanup, as in `pod-security-restricted`.
+- Each namespace connects as its own MariaDB user. A mariadb-operator `User`
+  allows 10 connections by default, and the canonical `keystone` user that
+  `brownfield-database` and `pod-security-restricted` share cannot also carry
+  three more Keystones: once it reaches the cap, a keystone request that needs
+  a new connection answers 500. The three users share the password of
+  `openstack/keystone-db`.
 - The OpenBao root token is staged in `openbao-0` over stdin at
   `/tmp/.bao-token-keystone-multi-namespace`, a name no other suite uses, so a
   parallel suite's cleanup cannot remove it. Each field is copied by a pipe inside
@@ -1347,7 +1353,7 @@ tests/e2e/keystone/
 ├── multi-namespace/
 │   ├── chainsaw-test.yaml              One Keystone name in three namespaces
 │   ├── 00-namespaces.yaml              Three namespaces + their ExternalSecrets
-│   ├── 00-brownfield-db-setup.yaml     Three Databases + Grants, shared User
+│   ├── 00-brownfield-db-setup.yaml     Three Databases, Users and Grants
 │   └── 01-keystone-crs.yaml            Keystone CR keystone-mns per namespace
 ├── namespace-scoped-rbac/
 │   ├── chainsaw-test.yaml              Namespace-scoped RBAC + standalone webhook

@@ -13,12 +13,12 @@
 # setup-eso-tenant.sh) and read namespace-scoped paths the eso-tenant policy
 # templates to that namespace:
 #   - the admin password at bootstrap/<ns>/mns/admin
-#   - the `keystone` MariaDB user at openstack/keystone/<ns>/mns/db
-# The step 1 script seeds both by copying the shared
-# bootstrap/openstack/controlplane-keystone/admin and
-# openstack/keystone/openstack/standalone/db values, so the `keystone` user's
-# password matches the value every brownfield suite reconciles onto the shared
-# MariaDB user.
+#   - the namespace's MariaDB user at openstack/keystone/<ns>/mns/db
+# The step 1 script seeds both. It copies the admin password from
+# bootstrap/openstack/controlplane-keystone/admin and the database password
+# from openstack/keystone/openstack/standalone/db, the value the User CRs of
+# 00-brownfield-db-setup.yaml read from openstack/keystone-db, and writes the
+# user name keystone-mns-<x>.
 ---
 apiVersion: v1
 kind: Namespace
