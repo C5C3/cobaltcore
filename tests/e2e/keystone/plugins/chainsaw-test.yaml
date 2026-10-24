@@ -1,0 +1,332 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: a driver selected through spec.plugins is the one keystone
+# loads.
+#
+# plugins.RenderPluginConfig (internal/common/plugins/plugins.go) turns each
+# spec.plugins[] entry into an INI section named by its configSection. The
+# fixture's one entry sets [unified_limit] enforcement_model =
+# strict_two_level. Keystone resolves that option through stevedore when its
+# unified-limit manager starts, and GET /v3/limits/model returns the name of
+# the driver it loaded. The suite asserts:
+#   - step 2: the rendered ConfigMap carries the section, and the API reports
+#     strict_two_level;
+#   - step 3: with enforcement_model = no_such_model (a value the webhook does
+#     not check), a pod of the new config never turns Ready, while the old pod
+#     stays Ready and still reports strict_two_level;
+#   - step 4: with spec.plugins removed, the rollout finishes, the ConfigMap has
+#     no [unified_limit] section, and the API reports keystone's default, flat.
+#
+# Step 3 does not assert the CR's Ready: IsDeploymentReady
+# (internal/common/deployment/deployment.go) counts a Deployment ready while an
+# old pod still serves during a surge, by design.
+#
+# limit_model <pod> runs inside <pod>: it issues a project-scoped admin token,
+# the admin password on stdin, and prints model.name of GET /v3/limits/model,
+# whose policy rule identity:get_limit_model admits any scope. The token never
+# leaves the pod.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-plugins
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR and wait for Ready=True ──────────────
+  - name: keystone-ready
+    try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-plugins
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &diagnostics
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -uo pipefail
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-plugins -n openstack -o jsonpath='{.status}' 2>&1 || true
+          echo
+          echo "=== ReplicaSets and pods ==="
+          kubectl get rs,pods -n openstack -l app.kubernetes.io/instance=keystone-plugins -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-plugins,app.kubernetes.io/component=api -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n openstack "$pod" -c keystone --tail=100 2>&1 || true
+            echo "--- $pod (previous) ---"
+            kubectl logs -n openstack "$pod" -c keystone --tail=100 --previous 2>&1 || true
+          done
+  # ── Step 2: The API reports the plugin's model ────────────────────────
+  - name: strict-two-level
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          CR=keystone-plugins
+          ADMIN_PASS="$(kubectl get secret keystone-admin -n "$NS" -o jsonpath='{.data.password}' | base64 -d)"
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "ERROR: Secret keystone-admin has no password"
+            exit 1
+          fi
+          limit_model() {
+            printf '%s' "$ADMIN_PASS" | kubectl exec -i -n "$NS" "$1" -c keystone -- python3 -c '
+          import json, sys, urllib.request
+          pw = sys.stdin.read()
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              tok = r.headers["X-Subject-Token"]
+          req = urllib.request.Request("http://localhost:5000/v3/limits/model", headers={"X-Auth-Token": tok})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              print(json.load(r)["model"]["name"])
+          '
+          }
+          # conf_value <section> <key>: the value keystone.conf on stdin sets
+          # for <key> inside [<section>].
+          conf_value() {
+            awk -v s="[$1]" -v k="$2" '
+              /^\[/ { in_s = ($0 == s); next }
+              in_s && index($0, k " = ") == 1 { print substr($0, length(k) + 4); exit }'
+          }
+
+          C="$(kubectl get deployment "$CR" -n "$NS" \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')"
+          CONF="$(kubectl get cm "$C" -n "$NS" -o jsonpath='{.data.keystone\.conf}')"
+          EM="$(conf_value unified_limit enforcement_model <<<"$CONF")"
+          if [ "$EM" != "strict_two_level" ]; then
+            echo "ERROR: ConfigMap $C sets [unified_limit] enforcement_model '${EM}', expected strict_two_level"
+            exit 1
+          fi
+          echo "OK: ConfigMap $C sets [unified_limit] enforcement_model = strict_two_level"
+          POD="$(kubectl get pods -n "$NS" -l "app.kubernetes.io/instance=$CR,app.kubernetes.io/component=api" -o json \
+            | jq -r --arg c "$C" '[.items[] | select(.metadata.deletionTimestamp == null)
+                | select(any(.spec.volumes[]?; .name == "config" and .configMap.name == $c))
+                | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                | .metadata.name][0] // empty')"
+          if [ -z "$POD" ]; then
+            echo "ERROR: no Ready API pod of $CR mounts $C"
+            exit 1
+          fi
+          deadline=$((SECONDS + 60))
+          while :; do
+            out="$(limit_model "$POD" 2>&1)" || true
+            if [ "$out" = "strict_two_level" ]; then
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "ERROR: GET /v3/limits/model in $POD answered '$(tail -n 1 <<<"$out")', expected strict_two_level"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: GET /v3/limits/model in $POD reports strict_two_level"
+    catch: *diagnostics
+  # ── Step 3: A model keystone cannot load never turns Ready ─────────────
+  - name: refused-model
+    try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          CR=keystone-plugins
+          SELECTOR="app.kubernetes.io/instance=$CR,app.kubernetes.io/component=api"
+          ADMIN_PASS="$(kubectl get secret keystone-admin -n "$NS" -o jsonpath='{.data.password}' | base64 -d)"
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "ERROR: Secret keystone-admin has no password"
+            exit 1
+          fi
+          limit_model() {
+            printf '%s' "$ADMIN_PASS" | kubectl exec -i -n "$NS" "$1" -c keystone -- python3 -c '
+          import json, sys, urllib.request
+          pw = sys.stdin.read()
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              tok = r.headers["X-Subject-Token"]
+          req = urllib.request.Request("http://localhost:5000/v3/limits/model", headers={"X-Auth-Token": tok})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              print(json.load(r)["model"]["name"])
+          '
+          }
+          conf_value() {
+            awk -v s="[$1]" -v k="$2" '
+              /^\[/ { in_s = ($0 == s); next }
+              in_s && index($0, k " = ") == 1 { print substr($0, length(k) + 4); exit }'
+          }
+          template_cm() {
+            kubectl get deployment "$CR" -n "$NS" \
+              -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}'
+          }
+          # pods_mounting <cm> <pods json>: "<name> <Ready status>" per live pod
+          # that mounts <cm>.
+          pods_mounting() {
+            jq -r --arg c "$1" '.items[] | select(.metadata.deletionTimestamp == null)
+              | select(any(.spec.volumes[]?; .name == "config" and .configMap.name == $c))
+              | "\(.metadata.name) \([.status.conditions[]? | select(.type == "Ready") | .status][0] // "Unknown")"' <<<"$2"
+          }
+          C1=""
+          dump_c1_logs() {
+            [ -n "$C1" ] || return 0
+            local pods pod
+            pods="$(kubectl get pods -n "$NS" -l "$SELECTOR" -o json 2>/dev/null)" || return 0
+            for pod in $(pods_mounting "$C1" "$pods" | cut -d' ' -f1); do
+              echo "--- last 50 log lines of $pod (mounts $C1) ---"
+              kubectl logs -n "$NS" "$pod" -c keystone --tail=50 2>&1 || true
+              echo "--- $pod, previous container ---"
+              kubectl logs -n "$NS" "$pod" -c keystone --tail=50 --previous 2>&1 || true
+            done
+          }
+          trap dump_c1_logs EXIT
+
+          C0="$(template_cm)"
+          P0="$(pods_mounting "$C0" "$(kubectl get pods -n "$NS" -l "$SELECTOR" -o json)" \
+            | awk '$2 == "True" { print $1; exit }')"
+          if [ -z "$P0" ]; then
+            echo "ERROR: no Ready API pod of $CR mounts $C0"
+            exit 1
+          fi
+          echo "OK: P0 is $P0, mounting $C0"
+          kubectl patch keystone "$CR" -n "$NS" --type json \
+            -p '[{"op":"replace","path":"/spec/plugins/0/config/enforcement_model","value":"no_such_model"}]'
+
+          # 3.1: a new ConfigMap with the refused model, and a pod mounting it.
+          deadline=$((SECONDS + 120))
+          c="" em="" pods=""
+          while :; do
+            c="$(template_cm || true)"
+            if [ -n "$c" ] && [ "$c" != "$C0" ]; then
+              em="$(kubectl get cm "$c" -n "$NS" -o jsonpath='{.data.keystone\.conf}' 2>/dev/null | conf_value unified_limit enforcement_model || true)"
+              if [ "$em" = "no_such_model" ]; then
+                C1="$c"
+                if pods="$(kubectl get pods -n "$NS" -l "$SELECTOR" -o json 2>/dev/null)" \
+                  && [ -n "$(pods_mounting "$C1" "$pods")" ]; then
+                  break
+                fi
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "ERROR: within 120s no pod mounts a ConfigMap with enforcement_model = no_such_model (template names '${c}', enforcement_model '${em}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: ConfigMap $C1 sets enforcement_model = no_such_model and $(pods_mounting "$C1" "$pods" | cut -d' ' -f1 | paste -sd' ') mount(s) it"
+
+          # 3.2: for 120s no C1 pod turns Ready while P0 serves the old model.
+          deadline=$((SECONDS + 120))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            pods="$(kubectl get pods -n "$NS" -l "$SELECTOR" -o json)"
+            ready_c1="$(pods_mounting "$C1" "$pods" | awk '$2 == "True" { print $1 }')"
+            if [ -n "$ready_c1" ]; then
+              echo "ERROR: pod $ready_c1 mounting $C1 (enforcement_model = no_such_model) turned Ready"
+              exit 1
+            fi
+            if ! pods_mounting "$C0" "$pods" | grep -qx "$P0 True"; then
+              echo "ERROR: P0 $P0 is no longer a Ready pod mounting $C0"
+              exit 1
+            fi
+            out="$(limit_model "$P0" 2>&1)" || true
+            if [ "$out" != "strict_two_level" ]; then
+              echo "ERROR: GET /v3/limits/model in P0 $P0 answered '$(tail -n 1 <<<"$out")', expected strict_two_level"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: for 120s no pod mounting $C1 turned Ready, and $P0 stayed Ready reporting strict_two_level"
+    catch: *diagnostics
+  # ── Step 4: Without spec.plugins keystone loads its default ────────────
+  - name: plugins-removed
+    try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          CR=keystone-plugins
+          ADMIN_PASS="$(kubectl get secret keystone-admin -n "$NS" -o jsonpath='{.data.password}' | base64 -d)"
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "ERROR: Secret keystone-admin has no password"
+            exit 1
+          fi
+          limit_model() {
+            printf '%s' "$ADMIN_PASS" | kubectl exec -i -n "$NS" "$1" -c keystone -- python3 -c '
+          import json, sys, urllib.request
+          pw = sys.stdin.read()
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              tok = r.headers["X-Subject-Token"]
+          req = urllib.request.Request("http://localhost:5000/v3/limits/model", headers={"X-Auth-Token": tok})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              print(json.load(r)["model"]["name"])
+          '
+          }
+
+          kubectl patch keystone "$CR" -n "$NS" --type merge -p '{"spec":{"plugins":null}}'
+          deadline=$((SECONDS + 300))
+          gen="" obs="" rdy=""
+          while :; do
+            if ks="$(kubectl get keystone "$CR" -n "$NS" -o json 2>/dev/null)"; then
+              gen="$(jq -r '.metadata.generation' <<<"$ks")"
+              obs="$(jq -r '.status.observedGeneration // ""' <<<"$ks")"
+              rdy="$(jq -r '[.status.conditions[]? | select(.type == "Ready") | .status][0] // ""' <<<"$ks")"
+              if [ "$obs" = "$gen" ] && [ "$rdy" = "True" ]; then
+                break
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "ERROR: $CR not Ready=True at its generation within 300s (generation '${gen}', observedGeneration '${obs}', Ready '${rdy}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: $CR is Ready=True at observedGeneration $gen"
+          left=$((deadline - SECONDS))
+          if [ "$left" -lt 1 ]; then
+            left=1
+          fi
+          kubectl rollout status "deployment/$CR" -n "$NS" --timeout="${left}s"
+
+          C2="$(kubectl get deployment "$CR" -n "$NS" \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')"
+          CONF="$(kubectl get cm "$C2" -n "$NS" -o jsonpath='{.data.keystone\.conf}')"
+          if grep -qxF '[unified_limit]' <<<"$CONF"; then
+            echo "ERROR: ConfigMap $C2 still has a [unified_limit] section after spec.plugins was removed"
+            exit 1
+          fi
+          echo "OK: ConfigMap $C2 has no [unified_limit] section"
+          POD="$(kubectl get pods -n "$NS" -l "app.kubernetes.io/instance=$CR,app.kubernetes.io/component=api" -o json \
+            | jq -r --arg c "$C2" '[.items[] | select(.metadata.deletionTimestamp == null)
+                | select(any(.spec.volumes[]?; .name == "config" and .configMap.name == $c))
+                | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                | .metadata.name][0] // empty')"
+          if [ -z "$POD" ]; then
+            echo "ERROR: no Ready API pod of $CR mounts $C2"
+            exit 1
+          fi
+          out="$(limit_model "$POD" 2>&1)" || true
+          if [ "$out" != "flat" ]; then
+            echo "ERROR: GET /v3/limits/model in $POD answered '$(tail -n 1 <<<"$out")', expected flat"
+            exit 1
+          fi
+          echo "OK: GET /v3/limits/model in $POD reports flat after spec.plugins was removed"
+    catch: *diagnostics
