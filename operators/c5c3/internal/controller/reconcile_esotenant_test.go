@@ -136,6 +136,31 @@ func TestReconcileESOTenantStore_ProvisionsObjects(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring(esoTenantStoreName))
 }
 
+// TestReconcileESOTenantStore_LongNamespace_CommonNameFitsCertManagersCap: in a
+// 41-character namespace "eso-tenant-client-tls.<namespace>.svc" is 67 bytes,
+// which cert-manager's webhook refuses, and no store of the plane could
+// authenticate. The commonName is cut to 64 bytes instead.
+func TestReconcileESOTenantStore_LongNamespace_CommonNameFitsCertManagersCap(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Namespace = "openstack-production-eu-de-1-tenant-alpha"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore()).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileESOTenantStore(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Namespace: childNamespace(cp), Name: esoTenantClientCertName}, cert)).To(Succeed())
+	commonName, _, _ := unstructured.NestedString(cert.Object, "spec", "commonName")
+	g.Expect(len(commonName)).To(BeNumerically("<=", maxCommonNameBytes))
+	g.Expect(commonName).To(Equal("eso-tenant-client-tls.openstack-production-eu-de-1-tenant-alpha"))
+}
+
 // TestReconcileESOTenantStore_ReadyWhenStoreReady when the tenant SecretStore
 // already reports Ready, the sub-reconciler flips ESOTenantStoreReady=True and
 // stops requeuing.

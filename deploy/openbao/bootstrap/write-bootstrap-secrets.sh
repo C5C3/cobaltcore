@@ -90,16 +90,31 @@ readonly GENERATED_GK_ACCESS_KEY="@generate-gk"
 # inside the pod:  write_secret_if_missing "path" "password=@generate"
 #
 # The function checks whether the secret at <kv_path> is readable. If the
-# secret exists (exit code 0), the write is skipped. Otherwise the secret is
-# created with the supplied key/value pairs.
+# secret exists (exit code 0), the write is skipped. If bao reports the path as
+# missing ("No value found at"), the secret is created with the supplied
+# key/value pairs. Any other failure (a kubectl exec error, an OpenBao 5xx, a
+# denied read) says nothing about the path. The probe is retried twice, 2s
+# apart, and a third such failure stops the script rather than overwrite a
+# secret that may exist, such as the static-seal key below.
 write_secret_if_missing() {
   local kv_path="$1"
   shift
 
-  if bao_exec bao kv get -format=json "${kv_path}" >/dev/null 2>&1; then
-    log "Secret '${kv_path}' already exists — skipping."
-    return 0
-  fi
+  # Only stderr is kept: on a read that succeeds, stdout carries the secret.
+  local probe attempt
+  for attempt in 1 2 3; do
+    if probe="$(bao_exec bao kv get -format=json "${kv_path}" 2>&1 >/dev/null)"; then
+      log "Secret '${kv_path}' already exists — skipping."
+      return 0
+    fi
+    [[ "${probe}" == *"No value found at"* ]] && break
+    if [[ "${attempt}" -eq 3 ]]; then
+      log "ERROR: could not check whether '${kv_path}' exists: ${probe}"
+      exit 1
+    fi
+    log "WARN: probe of '${kv_path}' failed (attempt ${attempt}/3), retrying: ${probe}"
+    sleep 2
+  done
 
   # Build bao kv put arguments, replacing @generate markers with in-pod
   # password generation so cleartext never travels as a kubectl exec arg.

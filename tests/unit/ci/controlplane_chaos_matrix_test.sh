@@ -7,8 +7,7 @@
 # .github/workflows/ci.yaml (#1390): the entry and its suites, the
 # c5c3-operator image it loads, the infrastructure it asks setup-e2e-infra for,
 # the K-ORC and c5c3-operator deploys, its diagnostics, its wall and its place
-# among the non-blocking legs. It also checks that the DB client certificate
-# commonName of every suite's ControlPlane fits cert-manager's 64 bytes.
+# among the non-blocking legs.
 #
 # Every signal here fails silently when it is missing. The matrix enumerates
 # test_dirs by hand, so a suite absent from the entry is lint-checked and never
@@ -16,9 +15,7 @@
 # runs, and every ControlPlane of the leg waits for a reconciler until its
 # bring-up times out. Without WITH_CONTROLPLANE the infrastructure overlay
 # still carries the standalone MariaDB and Memcached of `openstack`. Without
-# K-ORC no plane reaches KORCReady. A commonName over 64 bytes stops the plane
-# at DBCredentialsReady=False/GeneratorError after a long bring-up, on a leg
-# that does not gate the merge.
+# K-ORC no plane reaches KORCReady.
 #
 # Usage: bash tests/unit/ci/controlplane_chaos_matrix_test.sh
 
@@ -156,24 +153,7 @@ test_the_leg_has_its_wall_and_does_not_gate() {
     "$(grep -E '^ +continue-on-error:' <<<"$job")" "matrix.suite == 'controlplane'"
 }
 
-test_each_plane_fits_the_commonname_budget() {
-  echo "Test: the DB client commonName of every ControlPlane suite fits 64 bytes"
-  # The c5c3-operator names the certificate
-  # <cp>-keystone-db-openbao-client.<namespace>.svc (reconcile_dbcredentials.go).
-  local suite dir ns cp cn
-  for suite in ${CONTROLPLANE_SUITES[@]+"${CONTROLPLANE_SUITES[@]}"}; do
-    dir="$PROJECT_ROOT/tests/e2e-chaos/${suite}"
-    ns="$(sed -n 's/^  namespace: //p' "$dir/chainsaw-test.yaml" | head -1)"
-    cp="$(sed -n 's/^  name: //p' "$dir/00-controlplane-cr.yaml" | head -1)"
-    cn="${cp}-keystone-db-openbao-client.${ns}.svc"
-    assert_not_empty "${suite}: the test fixes its namespace in spec.namespace" "$ns"
-    assert_not_empty "${suite}: the fixture names its ControlPlane" "$cp"
-    assert_gte "${suite}: ${cn} (${#cn} bytes) is at most 64 bytes" 64 "${#cn}"
-  done
-}
-
 test_the_entry_runs_the_controlplane_suites
-test_each_plane_fits_the_commonname_budget
 test_the_leg_loads_the_c5c3_operator_image
 test_the_leg_asks_for_the_controlplane_path
 test_the_leg_deploys_korc_and_the_c5c3_operator

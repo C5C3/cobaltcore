@@ -74,11 +74,7 @@ scales it back. `openbao-sealed` seals OpenBao in step 2 and unseals it in step
 5, and `openbao-tenant-policy-narrowed` narrows a policy and writes the captured
 one back. The suites of the first four matrix entries run in the namespace
 `openstack`. The five of the `controlplane` entry each bring up a ControlPlane in a
-short namespace of their own, `chaos-korc-out` and its siblings. The c5c3-operator
-names the DB-credential client certificate of a plane
-`<cp>-keystone-db-openbao-client.<namespace>.svc`, and cert-manager refuses a
-`commonName` over 64 bytes, so a plane name and a namespace that chainsaw
-generates do not fit together.
+short namespace of their own, `chaos-korc-out` and its siblings.
 [Test Suite Inventory](#test-suite-inventory) lists every suite with its
 scenario, its service resource and its assertions.
 
@@ -530,7 +526,7 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [eso-down](#eso-down) | — | `keystone-chaos-eso-fresh` | ESO controller at zero (fail-closed provisioning) | `FAILCLOSED-OK`: for 90 s with the controller at zero, a fresh Keystone holds `SecretsReady=False/WaitingForDBCredentials`, never reads `Ready=True` and has no Secret `eso-down-db`, while `keystone-chaos-eso` stays `Ready=True`; after the scale-up both ExternalSecrets `Ready=True/SecretSynced` and the fresh Keystone at `Ready=True/AllReady` within 10 minutes, workload budget zero |
 | [eso-pod-kill](#eso-pod-kill) | — | `keystone-chaos-esokill` | ESO controller pod kill | Every pre-kill controller pod UID gone and `readyReplicas` back at `spec.replicas`, the Keystone at `SecretsReady=True` and `Ready=True/AllReady`, `RESYNC-OK`: a forced sync of `eso-kill-probe` with a `refreshTime` at or after the request and `Ready=True/SecretSynced` within 180 s, workload budget zero |
 | [openbao-sealed](#openbao-sealed) | — | `keystone-chaos-seal` | OpenBao sealed in place | `openbao-cluster-store` `Ready=False`, the Keystone at `SecretsReady=False/SecretStoreNotReady` and `Ready=False/NotAllReady`, `SEALED-IN-PLACE-OK`: `openbao-0` with its pod UID and `restartCount` unchanged; after `unseal-openbao.sh` the store and the Keystone `Ready=True` within 5 minutes, workload budget zero |
-| [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `keystone-chaos-policy` | Tenant policy narrowed (fail-closed sync) | `DENIED-OK`: a forced sync of `policy-narrowed-db` at `Ready=False/SecretSyncedError` within 120 s, with `permission denied` or `403` in its condition or an event, its Secret at the same `resourceVersion` and the Keystone at `Ready=True`; policy `eso-tenant` restored byte for byte, `policy-narrowed-db` and `keystone-db` synced again within 120 s, workload budget zero |
+| [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `keystone-chaos-policy` | Tenant policy narrowed (fail-closed sync) | `DENIED-OK`: a forced sync of `policy-narrowed-db` at `Ready=False/SecretSyncedError` within 120 s, with `permission denied` or `Code: 403` in its condition, an event, or the ESO controller's log line for it, its Secret at the same `resourceVersion` and the Keystone at `Ready=True`; policy `eso-tenant` restored byte for byte, `policy-narrowed-db` and `keystone-db` synced again within 120 s, workload budget zero |
 | [envoy-gateway-outage](#envoy-gateway-outage) | — | `keystone-chaos-eg` | Gateway controller outage (configuration plane) | `UNPROGRAMMED-OK`: for 90 s a route added under the fault carries no `Accepted=True` and `GET /v3` through `placement.127-0-0-1.nip.io` gets no 200; `PROGRAMMED-OK`: `Accepted=True` and a 200 within 180 s of the lift; `Ready=True/AllReady` throughout, workload budget zero |
 | [envoy-proxy-pod-kill](#envoy-proxy-pod-kill) | — | `keystone-chaos-proxy` | Gateway proxy pod kill (data plane) | Every pre-kill proxy pod UID gone, the proxy Deployment back at `readyReplicas == spec.replicas`, `Ready=True/AllReady`, the token stream through the listener within its measured budget |
 | [mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) | — | `keystone-chaos-cascade` | Dependency outage through two restarted operators | `OPERATORS-BACK` with every pre-kill pod of the mariadb-operator and the keystone-operator replaced; within 120 s `mariadb/openstack-db` `Ready=False`, the Keystone at `DatabaseReady=False/ClusterNotReady` and `Ready=False`, then 60 s without `Ready=True` (`COLD-CACHE-OK`); `Ready=True/AllReady` after the lift, the token stream within its measured budget |
@@ -3499,7 +3495,7 @@ keeps the Secret it wrote before, and the Keystone that reads it keeps running.
 | --- | --- | --- | --- |
 | 1 | A synced credential, a Keystone on it, the workload | `apply` + `assert` (5m) + `apply` + `assert` (5m) + `script` (6m) | `policy-narrowed-db` at `Ready=True/SecretSynced`; `keystone-chaos-policy` (database `keystone_chaos_policy`) on it at `Ready=True/AllReady`; `workload.sh start` |
 | 2 | Capture, then narrow | `script` (3m) | Reads `bao policy read eso-tenant` into ConfigMap `policy-narrowed-orig` (key `policy.hcl`), drops the one stanza whose `path` line names `kv-v2/data/openstack/keystone/` with the namespace template and ends `/*" {` (any other count fails the step), runs `workload.sh mark fault-start`, writes the narrowed text and requires the policy to read back as that text |
-| 3 | A sync is denied | `script` (4m) | Sets `force-sync` on `policy-narrowed-db`. Within 120 s its `Ready` reads `False/SecretSyncedError` with `permission denied` or `403` in the condition or an event; on every read of the 120 s Secret `policy-narrowed-db` keeps its `resourceVersion` and the Keystone `Ready=True` (`DENIED-OK`) |
+| 3 | A sync is denied | `script` (4m) | Sets `force-sync` on `policy-narrowed-db`. Within 120 s its `Ready` reads `False/SecretSyncedError` with `permission denied` or `Code: 403` in the condition, an event, or the ESO controller's log line for it since the request (ESO 2.14 keeps provider errors out of the first two, external-secrets/external-secrets#7149); on every read of the 120 s Secret `policy-narrowed-db` keeps its `resourceVersion` and the Keystone `Ready=True` (`DENIED-OK`) |
 | 4 | Restore the capture | `script` (2m) | Writes the captured text back, compares `bao policy read` with it byte for byte, then `workload.sh mark fault-end` |
 | 5 | Both credentials sync again | `script` (4m) | Sets `force-sync` on `policy-narrowed-db` and on the kind stack's `keystone-db`; both reach `Ready=True/SecretSynced` with a `refreshTime` at or after the request within 120 s |
 | 6 | Judge the workload | `script` (15m) | `workload.sh verify` against `failures=0 recovery=0s` |
@@ -4551,9 +4547,7 @@ tests/e2e-chaos/
    [Adopting the harness](#adopting-the-harness) describes, put the measured
    `# Chaos budget:` line in the header, and add `dump` to the catch blocks
 7. For a suite that needs a ControlPlane of its own, add `00-controlplane-cr.yaml`
-   in place of the Keystone CR and set a short fixed `spec.namespace`: the plane
-   name and the namespace share 32 characters, because cert-manager caps the
-   commonName of the plane's DB client certificate at 64 bytes. Source
+   in place of the Keystone CR. Source
    `../lib/controlplane.sh` for `cp_bring_up`, `cp_teardown` and `cp_dump`, start
    the workload with `CHAOS_WORKLOAD_ADMIN_SECRET=<cp>-keystone-admin-credentials`,
    and add the directory to the `controlplane` entry in `.github/workflows/ci.yaml`

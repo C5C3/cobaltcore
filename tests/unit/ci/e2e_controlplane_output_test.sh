@@ -205,6 +205,14 @@ test_filter_covers_the_machinery_and_the_suites() {
     "$block" "tests/e2e/c5c3/keystone-service-foreign-namespace/**"
   assert_contains "the filter lists the KeystoneUser order suite" \
     "$block" "tests/e2e/c5c3/keystone-user/**"
+  assert_contains "the filter lists the admin-password scoping suite" \
+    "$block" "tests/e2e/c5c3/admin-password-scoping/**"
+  assert_contains "the filter lists the DB-credential scoping suite" \
+    "$block" "tests/e2e/c5c3/db-credential-scoping/**"
+  assert_contains "the filter lists the multi-ControlPlane isolation suite" \
+    "$block" "tests/e2e/c5c3/multi-controlplane/**"
+  assert_contains "the filter lists the deletion-orchestration suite" \
+    "$block" "tests/e2e/c5c3/deletion-orchestration/**"
   # The full-chain suite applies the fixtures of this overlay, so an edit to it
   # has to schedule that suite and not only the canary.
   assert_contains "the filter lists the hypervisor-operator fixture overlay" \
@@ -248,8 +256,8 @@ test_filter_covers_the_machinery_and_the_suites() {
     "$block" "images/keystone-federation-proxy/**"
 }
 
-test_job_runs_all_four_suites() {
-  echo "Test: the job schedules all four chainsaw suites"
+test_job_runs_all_eight_suites() {
+  echo "Test: the job schedules all eight chainsaw suites"
 
   local block
   block=$(job_block e2e-controlplane)
@@ -270,14 +278,30 @@ test_job_runs_all_four_suites() {
     "$block" "tests/e2e/c5c3/keystone-user/"
   assert_contains "the KeystoneUser order suite reports under its own name" \
     "$block" "chainsaw-report-keystone-user"
+  assert_contains "the job runs the admin-password scoping suite" \
+    "$block" "tests/e2e/c5c3/admin-password-scoping/"
+  assert_contains "the admin-password scoping suite reports under its own name" \
+    "$block" "chainsaw-report-admin-password-scoping"
+  assert_contains "the job runs the DB-credential scoping suite" \
+    "$block" "tests/e2e/c5c3/db-credential-scoping/"
+  assert_contains "the DB-credential scoping suite reports under its own name" \
+    "$block" "chainsaw-report-db-credential-scoping"
+  assert_contains "the job runs the multi-ControlPlane isolation suite" \
+    "$block" "tests/e2e/c5c3/multi-controlplane/"
+  assert_contains "the multi-ControlPlane isolation suite reports under its own name" \
+    "$block" "chainsaw-report-multi-controlplane"
+  assert_contains "the job runs the deletion-orchestration suite" \
+    "$block" "tests/e2e/c5c3/deletion-orchestration/"
+  assert_contains "the deletion-orchestration suite reports under its own name" \
+    "$block" "chainsaw-report-deletion-orchestration"
 
   # The `--` keeps grep from reading the pattern as flags. Matching the quoted
   # env form keeps the job's own prose comment about the unquoted
   # E2E_REQUIRE_CONTROLPLANE_STACK=true out of the count.
-  assert_eq "the job runs exactly three named reports" \
-    "3" "$(grep -c -- '--report-name' <<<"$block")"
-  assert_eq "all four suites harden the presence guard" \
-    "4" "$(grep -c 'E2E_REQUIRE_CONTROLPLANE_STACK: "true"' <<<"$block")"
+  assert_eq "the job runs exactly seven named reports" \
+    "7" "$(grep -c -- '--report-name' <<<"$block")"
+  assert_eq "all eight suites harden the presence guard" \
+    "8" "$(grep -c 'E2E_REQUIRE_CONTROLPLANE_STACK: "true"' <<<"$block")"
 }
 
 test_job_loads_both_ends_of_the_release_hop() {
@@ -335,7 +359,7 @@ test_tag_push_forces_the_job
 test_resolve_script_errors_without_operators
 test_ci_yaml_wires_all_four_sides
 test_filter_covers_the_machinery_and_the_suites
-test_job_runs_all_four_suites
+test_job_runs_all_eight_suites
 test_job_loads_both_ends_of_the_release_hop
 test_autoscaling_job_runs_its_suite
 

@@ -489,6 +489,21 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	// this ControlPlane placed on a target cluster: the namespace sweep never ran
 	// on this path, so the remote-children finalizer stays on and
 	// reconcileDeleteRemoteChildren finishes the sweep from the next pass.
+	//
+	// A ControlPlane that placed nothing carries no remote-children finalizer, so
+	// releasing the ORC one releases the CR and no later pass runs the sweep. Run
+	// it here, or the co-located Barbican's auth-delegator binding and
+	// OpenBaoTenant outlive the CR. The sweep is past its own orcTeardownDeadline
+	// by now, so it stops waiting on stuck children.
+	if !controllerutil.ContainsFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer) {
+		done, err := r.sweepNamespacesBeforeRelease(ctx, cp)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
+		}
+	}
 	controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
 	if err := r.Update(ctx, cp); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer after force-remove: %w", err)

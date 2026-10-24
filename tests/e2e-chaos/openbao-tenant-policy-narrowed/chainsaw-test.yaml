@@ -16,7 +16,9 @@
 # Claim, phase by phase:
 #   narrowed  A forced sync of ExternalSecret policy-narrowed-db turns it
 #             Ready=False/SecretSyncedError within 120 s, with permission
-#             denied or 403 in its condition or an event. For the rest of the
+#             denied or Code: 403 in its condition, an event, or the ESO
+#             controller's log line for it since the forced sync (ESO 2.14
+#             keeps provider errors out of the first two). For the rest of the
 #             window Secret policy-narrowed-db keeps its resourceVersion (ESO's
 #             default deletionPolicy, Retain) and the Keystone that reads it
 #             stays Ready (DENIED-OK).
@@ -164,6 +166,7 @@ spec:
           }
           rv0="$(kubectl get secret policy-narrowed-db -n "$NAMESPACE" -o jsonpath='{.metadata.resourceVersion}')"
           requested="$(date -u +%s)"
+          since="$(date -u -d "@${requested}" +%Y-%m-%dT%H:%M:%SZ)"
           kubectl annotate externalsecret policy-narrowed-db -n "$NAMESPACE" force-sync="$requested" --overwrite
           end=$((requested + 120))
           denied=""
@@ -174,8 +177,16 @@ spec:
               said="${said}"$'\n'"$(kubectl get events -n "$NAMESPACE" \
                 --field-selector involvedObject.kind=ExternalSecret,involvedObject.name=policy-narrowed-db \
                 -o jsonpath='{range .items[*]}{.message}{"\n"}{end}')"
-              if grep -qiE 'permission denied|403' <<<"$said"; then
-                denied="$(grep -iE -m1 'permission denied|403' <<<"$said")"
+              # ESO 2.14 keeps provider errors out of the condition and the
+              # events (external-secrets/external-secrets#7149). Its controller
+              # still logs them, on the Reconciler error line that names the
+              # ExternalSecret. "Code: 403" rather than a bare 403, which an
+              # epoch timestamp or a reconcileID on that line can carry.
+              said="${said}"$'\n'"$(kubectl logs -n external-secrets \
+                -l app.kubernetes.io/name=external-secrets --all-containers \
+                --tail=-1 --since-time="$since" 2>/dev/null | grep -F policy-narrowed-db || true)"
+              if grep -qiE 'permission denied|Code: 403' <<<"$said"; then
+                denied="$(grep -iE -m1 'permission denied|Code: 403' <<<"$said")"
                 echo "OK: the sync is denied: ${denied}"
               fi
             fi
@@ -196,7 +207,7 @@ spec:
             sleep 5
           done
           if [ -z "$denied" ]; then
-            echo "FAIL: no Ready=False/SecretSyncedError naming permission denied or 403 within 120 s (last Ready ${ready})"
+            echo "FAIL: no Ready=False/SecretSyncedError with permission denied or Code: 403 in its condition, an event or the ESO controller log within 120 s (last Ready ${ready})"
             exit 1
           fi
           echo "DENIED-OK: the sync failed closed, the Secret kept resourceVersion ${rv0} and the Keystone stayed Ready"

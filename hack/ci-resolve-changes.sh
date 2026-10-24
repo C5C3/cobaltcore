@@ -302,8 +302,9 @@ e2e_prometheus=$(or_force "$cond")
 #
 # Deliberately FILTER_c5c3 rather than membership of op_changed: a shared Go
 # change puts every operator in that set, and these four jobs are the most
-# expensive in the pipeline (up to 240 minutes each). A shared change still runs
-# the c5c3 e2e leg; ci:controlplane or ci:full asks for the full chain.
+# expensive in the pipeline (e2e-controlplane alone has a 490-minute wall). A
+# shared change still runs the c5c3 e2e leg; ci:controlplane or ci:full asks
+# for the full chain.
 cp_common=false
 if filter_on c5c3 || has_label "ci:controlplane"; then cp_common=true; fi
 
