@@ -74,11 +74,17 @@ The v1 operator resolves the onboarding decisions as follows:
   is pinned in `upper-constraints.txt`; `overrides/<release>/constraints.txt`
   removes the pin so the source install builds the ref from
   `source-refs.yaml`.
-- **No events, no finalizer in v1.** The operator emits no custom Kubernetes
-  events (conditions carry the full state contract), and every owned resource
-  is namespace-scoped and garbage-collected via ownerReferences, so deletion
-  needs no finalizer pass. An events reference page is added when the first
-  event lands.
+- **Two Warning events, one optional finalizer.** The operator records no
+  Normal lifecycle events; conditions carry the state contract. It records two
+  Warning events: `ExtraConfigOwnedKeyOverride` when `spec.extraConfig`
+  overrides an operator-owned setting (see the
+  [extraConfig ownership guard](./horizon-crd.md#extraconfig-ownership-guard)),
+  and `RemoteChildrenAbandoned` when deletion begins while the target cluster
+  a CR named no longer resolves. A CR without `spec.targetClusterRef` carries
+  no finalizer: every owned resource is namespace-scoped and
+  garbage-collected via ownerReferences. A CR with it carries the
+  `openstack.c5c3.io/remote-children` finalizer, which sweeps the children on
+  the target cluster.
 
 ## Owned resources
 

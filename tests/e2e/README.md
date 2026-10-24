@@ -65,7 +65,8 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/<suite>
     record;
   - `assert-steady-state-events.sh`, which ends each of the nine
     `basic-deployment` suites: the Ready CR may gain no event in a
-    120-second window.
+    120-second window. `horizon/events` runs it in a step before its last
+    one, with its extraConfig overrides in place.
 
   Chainsaw runs script steps in the suite directory, so a suite calls them
   by relative path (`../../lib/<script>.sh`). Each script is unit-tested

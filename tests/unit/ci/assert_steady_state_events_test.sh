@@ -19,8 +19,10 @@
 #   - an edit to the script runs the e2e-operator jobs of every operator but
 #     c5c3, whose suites do not call it
 #   - the nine basic-deployment suites call it in their last step with the
-#     arguments of their table row and a 4m step timeout, and no other suite
-#     calls it
+#     arguments of their table row and a 4m step timeout
+#   - horizon/events calls it once, in a step before its last one, with the
+#     arguments of its table row and a 4m step timeout, and no suite outside
+#     the two tables calls it
 # Usage: bash tests/unit/ci/assert_steady_state_events_test.sh
 
 set -uo pipefail
@@ -164,6 +166,26 @@ ovn/central-basic-deployment|openstack ovncentrals.ovn.openstack.c5c3.io ovn-bas
 placement/basic-deployment|openstack placements.placement.openstack.c5c3.io placement-basic
 CALLS
 )"
+
+# The suites that run the budget in a step before their last one, with the
+# arguments they pass. horizon/events holds its extraConfig overrides in
+# place during the window and clears them in its last step.
+MID_SUITE_EVENT_CALLERS="$(cat <<'CALLS'
+horizon/events|openstack horizons.horizon.openstack.c5c3.io horizon-events
+CALLS
+)"
+
+# step_calls <file>
+# The calls of the script in any step of <file>, one "<timeout>|<call>" line
+# each, shaped like the lines of last_step_calls.
+step_calls() {
+  awk '
+    /^  - try:$/ { timeout = ""; next }
+    /^[[:space:]]+timeout:[[:space:]]/ { timeout = $2 }
+    /^[[:space:]]*\.\.\/\.\.\/lib\/assert-steady-state-events\.sh / {
+      line = $0; sub(/^[[:space:]]+/, "", line); print timeout "|" line
+    }' "$1"
+}
 
 # last_step_calls <file>
 # The calls of the script in the last step of <file>, one "<timeout>|<call>"
@@ -409,7 +431,7 @@ test_the_filters_name_the_shared_scripts() {
 
 # --- Test 8: the callers ---
 test_the_nine_suites_end_with_the_budget() {
-  echo "Test: the nine basic-deployment suites end with the budget, and no other suite calls it"
+  echo "Test: the nine basic-deployment suites end with the budget, and no suite outside the tables calls it"
 
   local suite args expected found calls
   while IFS='|' read -r suite args; do
@@ -422,12 +444,27 @@ test_the_nine_suites_end_with_the_budget() {
   done <<<"$EVENT_CALLERS"
 
   assert_eq "the table names nine suites" "9" "$(grep -c . <<<"$EVENT_CALLERS")"
-  expected="$(cut -d'|' -f1 <<<"$EVENT_CALLERS" | LC_ALL=C sort)"
+  expected="$(printf '%s\n%s\n' "$EVENT_CALLERS" "$MID_SUITE_EVENT_CALLERS" |
+    cut -d'|' -f1 | LC_ALL=C sort)"
   # Any line that is not a comment and names the script counts as a call.
   found="$(grep -rlE --include=chainsaw-test.yaml \
     '^[[:space:]]*[^#[:space:]].*assert-steady-state-events\.sh' "$PROJECT_ROOT/tests" |
     sed -e "s|^$PROJECT_ROOT/tests/e2e/||" -e 's|/chainsaw-test.yaml$||' | LC_ALL=C sort)"
   assert_eq "the suites that call the script are the tabled ones" "$expected" "$found"
+}
+
+# --- Test 9: the mid-suite callers ---
+test_the_mid_suite_callers_hold_the_budget() {
+  echo "Test: horizon/events runs the budget once before its last step"
+
+  local suite args
+  while IFS='|' read -r suite args; do
+    assert_eq "the $suite suite calls the script once, with its tabled arguments and a 4m timeout" \
+      "4m|../../lib/assert-steady-state-events.sh $args" \
+      "$(step_calls "$PROJECT_ROOT/tests/e2e/$suite/chainsaw-test.yaml")"
+    assert_eq "the $suite suite does not call the script in its last step" \
+      "" "$(last_step_calls "$PROJECT_ROOT/tests/e2e/$suite/chainsaw-test.yaml")"
+  done <<<"$MID_SUITE_EVENT_CALLERS"
 }
 
 # --- Run ---
@@ -447,6 +484,7 @@ test_the_script_parses
 
 test_the_filters_name_the_shared_scripts
 test_the_nine_suites_end_with_the_budget
+test_the_mid_suite_callers_hold_the_budget
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
