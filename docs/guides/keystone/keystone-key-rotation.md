@@ -114,6 +114,35 @@ Fernet keys staging Secret updated successfully
 At this point the CronJob has PATCHed the staging Secret with both the new
 `data` map and the completion annotation. The operator has not yet acted.
 
+A failed PATCH (an API error, a network error, or a staging Secret that is
+missing at that moment) fails the rotate container, and the kubelet restarts it
+in the same pod. For an error status from the API server, the log of the failed
+attempt, `kubectl -n openstack logs <pod> -c fernet-rotate --previous`, shows
+`Secret update failed` with the status and the response body. The restarted
+container logs this line and PATCHes the key set the first attempt rotated
+without rotating again:
+
+```
+Retry: restoring the Fernet keys this pod rotated earlier; not rotating again
+```
+
+When the production keys changed while the container was retrying, for
+example because a Job created with `kubectl create job --from` committed its
+rotation, the restarted container rotates the current production keys instead.
+The saved set would drop the keys that Job added. The container logs:
+
+```text
+Retry: the production Fernet keys changed since this pod rotated; starting over
+```
+
+When the production Secret already holds the saved set, the operator
+committed a PATCH whose response the container never received. The container
+logs this line and exits 0:
+
+```text
+Retry: the production Secret already holds the Fernet keys this pod rotated; nothing to PATCH
+```
+
 ---
 
 ## 2. Verify the staging Secret's completion annotation
@@ -285,15 +314,18 @@ Everything above applies to credential rotation unchanged — substitute:
 | `FernetKeysRotated` event | `CredentialKeysRotated` event |
 | `spec.fernet.*` | `spec.credentialKeys.*` |
 
-One additional step runs inside the credential CronJob: after
-`keystone-manage credential_rotate`, the script runs `keystone-manage credential_migrate`
-**before** the staging PATCH. This re-encrypts existing stored credentials
-with the new primary key, so by the time the operator applies the Secret
-swap there is no surviving plaintext encrypted under a key scheduled for
-aging-out.
+The credential CronJob runs `keystone-manage credential_migrate`,
+`credential_rotate` and `credential_migrate` again, in that order, **before**
+the staging PATCH. `credential_rotate` refuses while any credential is
+encrypted with a key other than the primary, so the first migration puts such
+credentials under the production primary key. It writes nothing unless a
+credential is not under that key. The second migration re-encrypts existing
+stored credentials with the new primary key, so by the time the operator
+applies the Secret swap there is no surviving plaintext encrypted under a key
+scheduled for aging-out.
 
 > **Key-rollover window.** There
-> is a ~60s window between `credential_migrate` completion and the kubelet
+> is a ~60s window between the second `credential_migrate` and the kubelet
 > refreshing the in-place Secret projection. During this window,
 > running Keystone pods still have the old keyset mounted and cannot decrypt
 > rows already re-encrypted under the new primary. This is an inherent
@@ -338,7 +370,8 @@ identical.
 This guide's happy path and the RBAC verb split are asserted end-to-end on the
 CI e2e kind cluster by these chainsaw suites. The `fernet-rotation` suite also
 asserts pruning past `maxActiveKeys`, deletion of the staging Secret between
-rotations, and the CronJob's concurrency policy:
+rotations, a refused staging PATCH that the Job retries without a second
+rotation, and the CronJob's concurrency policy:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/fernet-rotation
