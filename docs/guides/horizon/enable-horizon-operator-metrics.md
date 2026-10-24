@@ -128,12 +128,19 @@ Horizon CR since the scrape began.
 The chart's ServiceMonitor render-and-remove lifecycle is asserted on the CI
 e2e kind cluster by the chainsaw suite below (install with
 `monitoring.serviceMonitor.enabled=true`, assert the `ServiceMonitor` shape,
-uninstall, assert removal). The end-to-end scrape path — a live Prometheus
-that discovers the ServiceMonitor and marks the target Up — is the
-`WITH_PROMETHEUS=true` kind bring-up shown in the tip above, not this suite:
-the e2e cluster ships only the prometheus-operator CRDs, not a Prometheus
-instance.
+uninstall, assert removal). That cluster ships only the prometheus-operator
+CRDs, not a Prometheus instance.
 
 ```bash
 chainsaw test --test-dir tests/e2e/horizon-operator/metrics
+```
+
+The end-to-end scrape path runs in the `e2e-prometheus` CI job, which deploys
+the horizon-operator with its ServiceMonitor into `horizon-system` next to a
+live kube-prometheus-stack. Its suite asserts that the ServiceMonitor exists,
+that every `horizon-operator` target is up, and that Prometheus ingested a
+`controller_runtime_reconcile_total` series of that job:
+
+```bash
+chainsaw test --test-dir tests/e2e/horizon/prometheus-stack
 ```

@@ -719,10 +719,13 @@ e2e-chaos:
 # This Makefile target also satisfies the CI-to-Makefile parity expected
 # by .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
 # developers can reproduce the e2e-prometheus CI job locally without reading YAML.
+# Like the CI job, it needs both operators deployed with
+# WITH_PROMETHEUS=true hack/ci-deploy-operator.sh: keystone into its default
+# keystone-system, horizon with NAMESPACE=horizon-system.
 e2e-prometheus:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@kubectl get ns monitoring >/dev/null 2>&1 || { echo 'kube-prometheus-stack is not installed; run `WITH_PROMETHEUS=true make deploy-infra` first' >&2; exit 1; }
-	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/ tests/e2e/horizon/prometheus-stack/
 
 .PHONY: e2e-controlplane
 # e2e-controlplane runs the full ControlPlane -> Keystone chain Chainsaw suite
