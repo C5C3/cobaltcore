@@ -54,11 +54,18 @@ OpenBao path. A fourth runs `keystone-service`, the
 own-namespace registration suite: the round-trip, an injected K-ORC latch that
 holds for a misconfiguration and is cleared for a transport failure, a rotation
 through a `CredentialRotation`, a collision held until `adopt`, and deletion.
-Each of the last three runs against a Keystone-only plane of its own. The four
-suites run in sequence because the shared chainsaw config sets `failFast`, so
-one invocation over the directories would let a failure in any abort the
-others. See the [CI workflow reference](../ci-cd/ci-workflow.md) for
-the job definition.
+A fifth runs `healthcheck`, which asserts that a plane reports `KeystoneReady`
+and `Ready` only once its Keystone API answers, and a sixth
+`pod-security-restricted`, which brings a managed plane to `Ready` in a
+namespace that enforces `restricted:latest`. Each of the last five runs against
+a Keystone-only plane of its own. The six suites run in sequence because the
+shared chainsaw config sets `failFast`, so one invocation over the directories
+would let a failure in any abort the others. See the
+[CI workflow reference](../ci-cd/ci-workflow.md) for the job definition.
+
+The chart-level suite `c5c3-operator-metrics` lives in
+`tests/e2e/c5c3-operator/metrics/` and runs in the `e2e-operator (c5c3)` job,
+which picks up that directory beside `tests/e2e/c5c3/`.
 
 ## Running the Tests
 
@@ -91,6 +98,8 @@ images of that release as well as those of the start release: kind-loaded, as th
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check, and a release hop from the start release to its successor |
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, and a namespace assignment's role allowlist refuses and freezes the account |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
+| [healthcheck](#healthcheck) | `cp` (ephemeral namespace) | The plane holds `KeystoneReady` at `WaitingForKeystone` until the Keystone child's API probe passes, never reports `KeystoneReady` or `Ready` ahead of it, and Keystone `/v3` answers 200 on a single attempt when the plane first reports `Ready`, with the reasons and the `lastTransitionTime` order to match |
+| [pod-security-restricted](#pod-security-restricted) | `cp` (ephemeral namespace) | A managed plane in a namespace labelled `enforce=restricted`, `enforce-version=latest` reaches `Ready=True/AllReady`: the owned MariaDB and Memcached carry the projected restricted security contexts, their pods run, and no event carries a PodSecurity violation |
 | [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` + `KeystoneProject` `workflow-project` + `KeystoneRoleAssignment` `workflow-member` + `KeystoneCatalogEntry` `workflow-dns` + `KeystoneApplicationCredential` `workflow-appcred` + `MariaDBDatabase` `workflow-db` | Keystone and database orders: a user order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates and a one-minute schedule rotates once more before it is turned off; a project is provisioned, a role and a catalog entry are refused until the entry admits them, a Job scopes a token to the project and reads the entry out of the catalog, a duplicate assignment and a colliding entry are refused; an application credential is refused without the role, then created as the user and delivered, rotated on its schedule and by hand, and the superseded credential stops working after its grace period; a database order gets its Secret, a Job writes a row with it, and a forced ESO refresh delivers a new user; an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes every order, and deletion revokes the database order's leases and keeps or drops its schema by `deletionPolicy`, holds the assignment on the credential order and the user on the assignment, and removes everything down to the OpenBao paths |
 | [orders-target-cluster](#orders-target-cluster) | `cp` (ephemeral namespace) + the seven orders `workflow`, `workflow-project`, `workflow-member`, `workflow-dns`, `workflow-appcred`, `workflow-db`, `workflow-bus` in `orders-tenant` and `unassigned` in `orders-outsider` on the registered target `cobaltcore-target` | Orders from a namespace on a target cluster: the plane publishes Keystone, the database and the bus on NodePorts of the management node, each order on the target is delivered beside it with those addresses and nothing on the management cluster, and Jobs on the target issue a token, scope one to the project and read the catalog entry, authenticate with the application credential, write a row and open an AMQP connection; an order no entry assigns holds at `NamespaceNotAssigned`, a database order without a published address at `DatabaseNotPublished`, and the teardown follows the holds |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, a brownfield registration's round-trip, rotation and teardown, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
@@ -104,6 +113,7 @@ images of that release as well as those of the start release: kind-loaded, as th
 | [messaging](#messaging) | `cp` (ephemeral namespace) + `RabbitMQVhost` `workflow` / `workflow-delete` | The shared RabbitMQ bus: provisioned from `spec.infrastructure.messaging` with no service declared, owned, sized from the `Minimal` profile, gating `InfrastructureReady` on `AllReplicasReady`, and frozen against removal; a vhost order from an assigned namespace is delivered and proven with `rabbitmqctl`, its Secret is repaired, its user rotates on the schedule with both users valid during the grace period and by hand, deletion keeps the vhost under `Retain` and removes it under `Delete`, and withdrawing the assignment freezes the order |
 | [dedicated-namespaces](#dedicated-namespaces) | `cp` (ephemeral namespace) | Per-service dedicated namespaces: Managed/External lifecycles, backing-service placement, ownership labels, per-namespace tenant stores, and the deletion sweep |
 | [multi-controlplane](#multi-controlplane) | `controlplane-a`, `controlplane-b` | Per-CR admin-credential isolation across two tenants; rotation non-interference |
+| [c5c3-operator-metrics](#c5c3-operator-metrics) | — (operator-level) | A second chart release with `monitoring.serviceMonitor.enabled` renders the ServiceMonitor, the Service it selects serves the Prometheus exposition on port `metrics` at `/metrics`, and both go away on uninstall. It runs in the `e2e-operator (c5c3)` job and needs no stack |
 | env-key-material | — (operator-level) | The c5c3-operator pod in `c5c3-system` reads no Secret into env, and its manager's process environment, read from an ephemeral container by `tests/e2e/lib/assert-operator-env-clean.sh`, holds no key material. Unlike the ControlPlane suites it needs no stack: it runs on the `e2e-operator` c5c3 leg, which loads `keystone:2026.1` as the shell of the scan |
 | [secret-store-scoping](#secret-store-scoping) | — (namespace-only) | Per-ControlPlane OpenBao identity via a namespaced `SecretStore`; OpenBao-enforced cross-tenant isolation |
 | invalid-keystoneservice-cr | multiple (rejected) | Every `KeystoneService` CEL `XValidation` and webhook rejection path pinned to a deterministic admission failure. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
@@ -1235,6 +1245,118 @@ Run it locally against a full ControlPlane stack with
 It is the third chainsaw step of the `e2e-controlplane` CI job, reporting as
 `chainsaw-report-keystone-user`.
 
+### healthcheck
+
+Asserts the wait direction of the readiness chain from the Keystone API to the
+`ControlPlane`. The c5c3-operator mirrors the Keystone child's `Ready` into
+`KeystoneReady` through `ProjectChild`, and the child's `Ready` requires
+`KeystoneAPIReady`, which the keystone-operator sets from its own `/v3` probe.
+The suite brings up the Keystone-only plane `cp` in chainsaw's ephemeral
+namespace with the presence guard, seeding and waits of
+[keystone-service](#keystone-service), and asserts that:
+
+- a watcher started before the apply, sampling the plane and then its child
+  every 2 s, sees the plane at `KeystoneReady=False/WaitingForKeystone` and
+  never at `KeystoneReady=True` before the child's `KeystoneAPIReady` first
+  reads `True`, and never sees `Ready=True` while `KeystoneReady` is not
+  `True`. A sample whose read of the child failed is skipped;
+- when the `Ready` wait first succeeds, a single `GET` of
+  `http://cp-keystone.<namespace>.svc:5000/v3` from a pod on the keystone image
+  answers 200, with no retry;
+- the snapshots of both objects taken at that moment carry
+  `KeystoneReady=True/KeystoneReady` and `Ready=True/AllReady` on the plane and
+  `KeystoneAPIReady=True/APIHealthy` and `Ready=True/AllReady` on the child;
+- their `lastTransitionTime` values order child `KeystoneAPIReady`, child
+  `Ready`, plane `KeystoneReady`, plane `Ready`. Both operators write them from
+  the clock of the same kind node, and equal values pass.
+
+The drop direction, a `Ready` plane whose API stops answering, is out of
+scope: the keystone-operator caches a healthy probe for 30 s and does not
+requeue after one, so a timed outage check would race that cache. The checks on
+the child's `KeystoneAPIReady` stop at its first `True` sample for the same
+scope: after that, the plane follows a child drop only on its next reconcile.
+Any failed check prints the watcher's whole transcript. The OpenBao root token
+is staged in `openbao-0` under `/tmp/.bao-token-<namespace>` and removed in
+`finally`.
+The suite pins `catch` at 5m and `finally` at 15m, for a ceiling of
+30+5+15+15 = 65 minutes.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it fifth.
+It is the fifth chainsaw step of the `e2e-controlplane` CI job, reporting as
+`chainsaw-report-controlplane-healthcheck`.
+
+### pod-security-restricted
+
+Asserts that a managed `ControlPlane` reconciles under the restricted
+[Pod Security](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted)
+profile. Directly after the presence guard, the script labels chainsaw's
+ephemeral namespace `pod-security.kubernetes.io/enforce=restricted` and
+`pod-security.kubernetes.io/enforce-version=latest` and reads both labels back.
+It then brings up the same Keystone-only plane as [healthcheck](#healthcheck)
+and asserts that:
+
+- the plane reaches `Ready=True` with reason `AllReady`;
+- `mariadb/openstack-db` carries the pod context's `runAsUser` 999 and seccomp
+  profile `RuntimeDefault`, and the container context's
+  `allowPrivilegeEscalation` false and `capabilities.drop` `[ALL]`;
+- `memcached/openstack-memcached` carries `spec.security.podSecurityContext`
+  with `runAsUser` 11211 and seccomp profile `RuntimeDefault`, and
+  `spec.security.containerSecurityContext` with `allowPrivilegeEscalation`
+  false. These are the contexts the
+  [reconciler projects](../c5c3/controlplane-reconciler.md#reconcileinfrastructure);
+- the `metadata.generation` of neither CR moves over the next 60 s, so the
+  backing operators and the c5c3-operator do not take turns rewriting the
+  contexts it projected;
+- pod `openstack-db-0` and the pods of `deployment/openstack-memcached` are
+  `Running`;
+- no event in the namespace carries `violates PodSecurity "restricted:latest"`.
+
+The suite does not require every pod to be `Running` or `Succeeded`: a
+Keystone Job attempt that failed while MariaDB was still starting leaves a
+`Failed` pod that restricted admitted. The Keystone child's own pods and Jobs
+are proven under restricted by the
+[Keystone pod-security-restricted suite](./keystone-e2e-tests.md#pod-security-restricted); this suite
+adds the c5c3-owned backing services and the c5c3-projected Keystone spec. The
+fixture's single-replica database keeps Galera out of the suite, and with it
+the one init pod start a fresh Galera cluster has refused before its init
+context is added. Labelling the ephemeral namespace keeps chainsaw's namespace
+cleanup and the per-namespace seeding unchanged. The `catch` prints the
+namespace labels and every violation event in full. The ceiling is the same
+65 minutes as healthcheck's.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it sixth.
+It is the sixth chainsaw step of the `e2e-controlplane` CI job, reporting as
+`chainsaw-report-controlplane-pod-security-restricted`.
+
+### c5c3-operator-metrics
+
+Asserts the c5c3-operator chart's ServiceMonitor on a live cluster. The suite
+lives in `tests/e2e/c5c3-operator/metrics/`, runs in `c5c3-system` in the
+`e2e-operator (c5c3)` job, and mirrors the service operators' metrics suites. It
+installs a second release, `c5c3-operator-metrics`, with
+`monitoring.serviceMonitor.enabled=true`, a 30s interval and the webhook off.
+Every object that release renders is named after it, so nothing collides with
+the primary `c5c3-operator` release. Its manager competes for the primary's
+lease `c5c3.openstack.c5c3.io`, so it stays a leader-election standby that
+reconciles nothing and still serves metrics. The suite asserts that:
+
+- ServiceMonitor `c5c3-operator-metrics` carries the release's name, instance
+  and `managed-by` labels, selects on name and instance, and names the endpoint
+  `port: metrics`, `path: /metrics`, `interval: 30s`;
+- the API server's proxy to that Service port returns a non-empty body with a
+  `rest_client_requests_total{` line within 60 s; client-go registers that
+  family in every manager, and the standby's lease calls feed it;
+- after `helm uninstall` the ServiceMonitor is gone within 60 s.
+
+The chart's `operator-library` dependency must be vendored first.
+`hack/ci-deploy-operator.sh` does that in CI; locally run
+`helm dependency build operators/c5c3/helm/c5c3-operator`. The operator's own
+`c5c3_operator_*` families are read from the primary release by
+[sizing-profile](#sizing-profile), the suite that drives a mapped
+sub-reconciler error.
+
 ### orders-target-cluster
 
 Covers the orders of a service owner whose namespace lives on a registered
@@ -1477,6 +1599,9 @@ tests/e2e/c5c3/
 │   ├── 06-fake-compute.yaml            nova-compute built out of the published compute contract
 │   ├── 07-hypervisor-operator-verify-job.yaml  Calls as the hypervisor operator's user
 │   └── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
+├── healthcheck/
+│   ├── chainsaw-test.yaml              KeystoneReady and Ready wait for the Keystone API
+│   └── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; ephemeral namespace)
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml              ControlPlane admission rejections
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures
@@ -1567,11 +1692,22 @@ tests/e2e/c5c3/
 │   ├── 00-tenant-a-controlplane.yaml   ControlPlane CR controlplane-a
 │   ├── 01-tenant-b-controlplane.yaml   ControlPlane CR controlplane-b
 │   └── 02-tenant-a-rotation.yaml       Rotation trigger for tenant-a only
+├── pod-security-restricted/
+│   ├── chainsaw-test.yaml              Managed ControlPlane under restricted:latest
+│   └── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; single-replica database)
 ├── secret-store-scoping/
 │   └── chainsaw-test.yaml              Per-tenant OpenBao identity + isolation
 └── sizing-profile/
     ├── chainsaw-test.yaml              SizingProfile resolution, edit and deletion
     └── 00-controlplane-cr.yaml         ControlPlane CR (cp; __PROFILE__ token)
+```
+
+The chart-level suite lives beside it:
+
+```text
+tests/e2e/c5c3-operator/
+└── metrics/
+    └── chainsaw-test.yaml              Second release's ServiceMonitor, its Service's exposition, uninstall
 ```
 
 The two-cluster orders suite lives outside `tests/e2e/`:
