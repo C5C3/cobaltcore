@@ -26,11 +26,6 @@
 # the Neutron MTU and the managed message bus are kept as the lab CR has them.
 # The webhook fills in the database openstack-db, the cache
 # openstack-memcached and the bus openstack-rabbitmq in openstack-ha.
-#
-# The plane's name and its namespace share 32 characters: the c5c3-operator
-# names a client certificate <cp>-keystone-db-openbao-client.<namespace>.svc,
-# and cert-manager refuses a commonName over 64 bytes
-# (tests/e2e-chaos/lib/controlplane.sh). cp-ha and openstack-ha are 17.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
