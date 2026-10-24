@@ -151,7 +151,7 @@ status:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `deployment` | [`DeploymentSpec`](#deploymentspec) | No | See below | Pod-level knobs for the Keystone API Deployment (replicas, resources, rollout strategy, graceful-termination timings, scheduling constraints, node placement). Grouping them keeps the spec root legible. |
-| `jobs` | [`*JobSpec`](#jobspec) | No | `nil` | Sizes, prioritizes and places the pods of every Keystone Job and CronJob: db-sync, schema-check, the db-expand, db-migrate and db-contract upgrade phases, bootstrap, policy-validation, the fernet-rotate and credential-rotate CronJobs (their `copy-keys` init container included), trust-flush, and the admin-password rotation. A field left unset falls back to `spec.deployment`; see [the Job pod rule](#jobspec). |
+| `jobs` | [`*JobSpec`](#jobspec) | No | `nil` | Sizes, prioritizes and places the pods of every Keystone Job and CronJob: db-sync, schema-check, the db-expand, db-migrate and db-contract upgrade phases, bootstrap, policy-validation, the fernet-rotate and credential-rotate CronJobs, trust-flush, and the admin-password rotation. A field left unset falls back to `spec.deployment`; see [the Job pod rule](#jobspec). |
 | `image` | [`ImageSpec`](#imagespec) | Yes | — | Keystone container image reference. |
 | `database` | [`DatabaseSpec`](#databasespec) | Yes | — | MariaDB connection configuration. Includes the optional [`tls`](#databasetlsspec) sub-block that opts in to TLS / mTLS for the connection; when `nil`, the connection is plaintext TCP — preserving the previous behavior for all existing CRs. |
 | `cache` | [`CacheSpec`](#cachespec) | Yes | — | Memcached cache configuration. |
@@ -1618,9 +1618,9 @@ The Job pod rule:
 
 An empty value opts out of the fallback, the way an empty
 `topologySpreadConstraints` list disables the Deployment's default spread.
-The resources land on every container and init container of the pod, Keystone's
-`copy-keys` included. An init container never runs beside the main containers,
-so this adds nothing to the pod's footprint.
+The resources land on every container and init container of the pod. An init
+container never runs beside the main containers, so this adds nothing to the
+pod's footprint.
 
 Two Jobs size with their data rather than with a process count and resolve
 `resources` through the request floor instead: the OVN backup and Neutron's

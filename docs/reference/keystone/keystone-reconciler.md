@@ -1611,14 +1611,15 @@ and disaster recovery backup to OpenBao.
 | Suspend | `spec.fernet.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
 | Concurrency policy | `Forbid`: a scheduled run never starts while an earlier scheduled run is active; a manual Job (`kubectl create job --from=cronjob/...`) is not governed |
 | Active deadline | `activeDeadlineSeconds: 3600` on each Job: a Job still active after an hour fails, so a stuck run cannot block later scheduled runs under `Forbid` |
+| Retry | `restartPolicy: OnFailure` restarts the rotate container in place after a failed PATCH; the script restores the saved key set and repeats only the PATCH, or starts over when the production keys changed since it rotated |
 | ServiceAccount | `{name}-fernet-rotate` |
-| Init container | Copies keys from `fernet-keys-src` (Secret) to `fernet-keys` (emptyDir) |
 | Command | `/scripts/fernet_rotate.sh` |
-| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source, `defaultMode: 0400`) |
-| Volume `fernet-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) |
+| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source, `defaultMode: 0400`); mounted read-only at `/fernet-keys-src` in the rotate container |
+| Volume `fernet-keys` | emptyDir (writable working copy; the rotate script writes files with `install -m 0400`) |
 | Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config, `defaultMode: 0400`) |
 | Volume `config` | ConfigMap `{configMapName}` |
 | Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) |
+| Volume `rotation-state` | emptyDir at `/rotation-state` in the rotate container; holds the rotated key set and the digest of the production keys it came from across container restarts |
 | Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
 | Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
 
@@ -1674,11 +1675,14 @@ steps below.
 
 ![Staged rotation of Fernet keys in six numbered steps. The CronJob mounts the production Secret read-only, runs keystone-manage fernet_rotate on a copy and patches the result onto a staging Secret, the only Secret its Role may write. The keystone-operator validates the staged keys, replaces the data of the production Secret and deletes the staging Secret. A rejected payload raises the event RotationRejected, the staging data is cleared and the production Secret stays as it was. The kubelet projects the new keys into the running Keystone pods without a rollout, and a PushSecret copies them to OpenBao as a backup. Credential keys follow the same path with credential_rotate and credential_migrate.](../../diagrams/secrets-rotation-keys.svg)
 
-1. The kubelet mounts `{name}-fernet-keys` into the Job pod and an init
-   container copies it to an `emptyDir`.
+1. The kubelet mounts `{name}-fernet-keys` into the Job pod and the rotate
+   script copies it to an `emptyDir`.
 2. The Job runs `keystone-manage fernet_rotate` on the copy and sends one PATCH
    with the new `data` and the annotation
-   `cobaltcore.c5c3.io/rotation-completed-at`.
+   `cobaltcore.c5c3.io/rotation-completed-at`. A failed PATCH restarts the
+   container in the same pod; the retry restores the key set saved in the
+   `rotation-state` emptyDir and sends the PATCH again without rotating. When
+   the production keys changed in the meantime, the retry rotates them instead.
 3. The Secret watch wakes the operator, which checks key count, key format and
    uniqueness.
 4. A valid payload replaces the `data` of the production Secret in one
@@ -1706,6 +1710,7 @@ strategic-merge PATCH. Format: `datetime.datetime.now(datetime.timezone.utc).iso
 — an RFC3339 UTC timestamp such as `2026-04-18T12:34:56Z`. The operator
 treats the annotation as the **single-shot commit marker**: it never rewrites
 the production Secret unless the annotation is present and parses cleanly.
+A retried PATCH carries the same `data` and a new timestamp.
 
 **Operator validation rules.** Before copying staged data to production,
 `applyRotationOutput` calls `validateRotationOutput` (see
@@ -1812,21 +1817,25 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Suspend | `spec.credentialKeys.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
 | Concurrency policy | `Forbid`: a scheduled run never starts while an earlier scheduled run is active; a manual Job (`kubectl create job --from=cronjob/...`) is not governed |
 | Active deadline | `activeDeadlineSeconds: 3600` on each Job: a Job still active after an hour fails, so a stuck run cannot block later scheduled runs under `Forbid` |
+| Retry | `restartPolicy: OnFailure` restarts the rotate container in place after a failed PATCH; the script restores the saved key set and repeats only the second `credential_migrate` and the PATCH, or starts over when the production keys changed since it rotated |
 | ServiceAccount | `{name}-credential-rotate` |
-| Init container | Copies keys from `credential-keys-src` (Secret) to `credential-keys` (emptyDir) |
 | Command | `/scripts/credential_rotate.sh` |
-| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source, `defaultMode: 0400`) |
-| Volume `credential-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) |
+| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source, `defaultMode: 0400`); mounted read-only at `/credential-keys-src` in the rotate container |
+| Volume `credential-keys` | emptyDir (writable working copy; the rotate script writes files with `install -m 0400`) |
 | Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config, `defaultMode: 0400`) |
 | Volume `config` | ConfigMap `{configMapName}` |
 | Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) |
+| Volume `rotation-state` | emptyDir at `/rotation-state` in the rotate container; holds the rotated key set and the digest of the production keys it came from across container restarts |
 | Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
 | Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
 
-> **Note:** The `credential_rotate.sh` script runs both `credential_rotate` and
-> `credential_migrate`. The migrate step re-encrypts existing credentials in the
-> database with the new primary key, which is critical to prevent data loss when
-> old keys are eventually purged.
+> **Note:** The `credential_rotate.sh` script runs `credential_migrate`,
+> `credential_rotate` and `credential_migrate` again. `credential_rotate`
+> refuses while any credential is encrypted with a key other than the primary,
+> so the first migration puts such credentials under the production primary
+> key; with nothing to re-encrypt it writes nothing. The second migration
+> re-encrypts existing credentials in the database with the new primary key,
+> which is critical to prevent data loss when old keys are eventually purged.
 
 **PushSecret:**
 
@@ -1869,8 +1878,9 @@ the production `{name}-credential-keys` Secret.
 
 The [figure and its steps](#key-rotation-rbac-split) under
 `reconcileFernetKeys` apply with `credential` in every name. Step 2 runs
-`keystone-manage credential_migrate` against the database after
-`credential_rotate`.
+`keystone-manage credential_migrate`, `credential_rotate` and
+`credential_migrate` again: the first migration lets `credential_rotate` run,
+and the second re-encrypts the database under the new primary key.
 
 **Staging Secret naming.** Per `credentialStagingSecretName`, the staging
 Secret is `{keystone.Name}-credential-keys-rotation`. It is created and
@@ -1881,12 +1891,15 @@ owned by the operator via `ensureCredentialStagingSecret`:
 - Owner reference: the Keystone CR (garbage-collected with the CR).
 
 **Completion annotation contract.** `credential_rotate.sh` runs
-`keystone-manage credential_rotate` and then `keystone-manage credential_migrate`
-(in that order — migrate re-encrypts existing stored credentials with the new
-primary key) before emitting a single atomic PATCH that sets both `data`
-and the `cobaltcore.c5c3.io/rotation-completed-at` annotation (RFC3339 UTC, `Z`
-suffix). As with Fernet, the annotation is the single-shot commit marker;
-absence or malformed format blocks the operator's apply path.
+`keystone-manage credential_migrate`, `credential_rotate` and
+`credential_migrate` in that order. The first migration puts credentials left
+under another key under the production primary, because `credential_rotate`
+refuses otherwise; the second re-encrypts existing stored credentials with the
+new primary key. The script then emits a single atomic PATCH that sets both
+`data` and the `cobaltcore.c5c3.io/rotation-completed-at` annotation (RFC3339
+UTC, `Z` suffix). As with Fernet, the annotation is the single-shot commit
+marker; absence or malformed format blocks the operator's apply path. A
+retried PATCH carries the same `data` and a new timestamp.
 
 **Operator validation rules.** Identical to Fernet, with one parameter
 difference — `maxKeys=normalizedCredentialMaxActiveKeys(keystone)+1`:
@@ -1908,7 +1921,7 @@ database is re-encrypted with the new primary by the time the operator
 commits the Secret swap — no data loss when old keys age out.
 
 > **Key-rollover window.** There
-> is a ~60s window between `credential_migrate` completion and the kubelet
+> is a ~60s window between the second `credential_migrate` and the kubelet
 > refreshing the in-place Secret projection. During that window,
 > running Keystone pods still have the old credential keyset mounted —
 > database rows are already encrypted under the new primary, but the pods
