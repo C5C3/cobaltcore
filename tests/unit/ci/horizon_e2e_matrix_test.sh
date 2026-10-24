@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the horizon operator reaches the e2e-operators matrix, the two Go test
-# matrices, the helm filter, the cleanup matrices, the e2e-chaos legs and the
-# ControlPlane leg in .github/workflows/ci.yaml.
+# matrices, the helm filter, the cleanup matrices, the e2e-chaos legs, the
+# ControlPlane leg and the e2e-prometheus leg in .github/workflows/ci.yaml.
 #
 # Every signal here fails silently when it is missing. ALL_OPERATORS is the sole
 # source of the e2e-operators matrix, so an operator absent from it never
@@ -27,7 +27,9 @@
 # operator in horizon-system. horizon-operator-pod-kill selects the operator pod
 # in that Namespace, so an operator deployed into the keystone-system default
 # leaves the PodChaos without a target. The ControlPlane leg needs the same
-# images and its own operator deploy.
+# images and its own operator deploy. The e2e-prometheus leg deploys the
+# horizon-operator with its ServiceMonitor into horizon-system, where
+# tests/e2e/horizon/prometheus-stack reads it.
 #
 # Usage: bash tests/unit/ci/horizon_e2e_matrix_test.sh
 
@@ -272,6 +274,43 @@ test_controlplane_leg_deploys_horizon() {
     "NAMESPACE: horizon-system"
 }
 
+test_prometheus_leg_scrapes_horizon() {
+  echo "Test: the e2e-prometheus leg deploys and scrapes horizon"
+
+  local pull kind_load deploy run dump block
+  pull=$(job_step e2e-prometheus "Load E2E images")
+  assert_contains "the leg pulls the horizon-operator image" "$pull" \
+    "\${{ env.IMAGE_PREFIX }}/horizon-operator:dev"
+
+  kind_load=$(job_step e2e-prometheus "Load images into kind")
+  assert_contains "the operator image reaches the node" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/horizon-operator:dev"
+
+  deploy=$(job_step e2e-prometheus "Deploy horizon-operator")
+  assert_not_empty "the horizon-operator is deployed" "$deploy"
+  assert_contains "it deploys the horizon operator" "$deploy" "OPERATOR: horizon"
+  assert_contains "it lands where the suite reads its ServiceMonitor" "$deploy" \
+    "NAMESPACE: horizon-system"
+  assert_contains "it renders the ServiceMonitor" "$deploy" \
+    'WITH_PROMETHEUS: "true"'
+
+  run=$(job_step e2e-prometheus "Run prometheus E2E tests")
+  assert_contains "the leg runs the keystone suite" "$run" \
+    "tests/e2e/keystone/prometheus-stack/"
+  assert_contains "the leg runs the horizon suite" "$run" \
+    "tests/e2e/horizon/prometheus-stack/"
+
+  dump=$(job_step e2e-prometheus "Dump diagnostic info")
+  assert_contains "the dump reads horizon-system too" "$dump" \
+    "OPERATOR=horizon OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh"
+
+  block=$(filter_block tests_prometheus)
+  assert_contains "tests_prometheus names the horizon suite" "$block" \
+    "'tests/e2e/horizon/prometheus-stack/**'"
+  assert_contains "tests_prometheus names the horizon ServiceMonitor template" "$block" \
+    "'operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml'"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -287,6 +326,7 @@ test_cleanup_matrices_cover_the_horizon_images
 test_a_keystone_only_change_produces_no_horizon_leg
 test_chaos_legs_deploy_horizon
 test_controlplane_leg_deploys_horizon
+test_prometheus_leg_scrapes_horizon
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

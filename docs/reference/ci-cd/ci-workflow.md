@@ -1568,10 +1568,15 @@ the job. The `ci:pressure` label asks for it on any pull request, and
 
 End-to-end kube-prometheus-stack tests using kind cluster, Flux-managed
 `kube-prometheus-stack` HelmRelease, and Chainsaw. Pulls the
-keystone operator image, deploys it alongside the monitoring stack, and runs
-the prometheus suite under `tests/e2e/keystone/prometheus-stack/` to verify
-HelmRelease readiness, ServiceMonitor presence, and live Prometheus scraping
-of the operator metrics endpoint.
+keystone-operator and horizon-operator images, deploys both alongside the
+monitoring stack, and runs two prometheus suites.
+`tests/e2e/keystone/prometheus-stack/` verifies HelmRelease readiness, the
+kind posture, ServiceMonitor presence, live Prometheus scraping of the
+keystone-operator metrics endpoint and the Grafana dashboard.
+`tests/e2e/horizon/prometheus-stack/` verifies the horizon-operator
+ServiceMonitor in `horizon-system`, that every `horizon-operator` target is
+up, and that Prometheus ingested a `controller_runtime_reconcile_total` series
+of that job.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-prometheus == 'true'`, the upstream
@@ -1583,12 +1588,15 @@ in its step `env`, which threads through to `hack/deploy-infra.sh` and gates the
 post-deploy `enable_operator_servicemonitor` patch (applied to the keystone-operator,
 horizon-operator, glance-operator, placement-operator, barbican-operator, ovn-operator,
 neutron-operator, cinder-operator and nova-operator HelmReleases). The Deploy operator
-step runs `hack/ci-deploy-operator.sh` with `WITH_PROMETHEUS: "true"` in its step `env`,
+and Deploy horizon-operator steps run `hack/ci-deploy-operator.sh` with
+`WITH_PROMETHEUS: "true"` in their step `env`,
 which adds `--set monitoring.serviceMonitor.enabled=true` to the Helm install command —
 without this flag the chart's gated `ServiceMonitor` template renders nothing and the
 chainsaw step `servicemonitor-exists` (and the dependent `prometheus-target-up`) cannot
-pass. The kind base kustomization keeps the keystone-operator HelmRelease suspended, so
-the runtime `kubectl patch` cannot reactively enable the ServiceMonitor — the
+pass. The horizon step sets `NAMESPACE: horizon-system`, where the horizon suite reads
+the ServiceMonitor; the script default is `keystone-system`. The kind base
+kustomization keeps the keystone-operator and horizon-operator HelmReleases suspended,
+so the runtime `kubectl patch` cannot reactively enable the ServiceMonitors, and the
 install-time flag is the single source of truth.
 
 Unlike `e2e-chaos`, `e2e-prometheus` runs with `continue-on-error: false`:
@@ -1599,18 +1607,21 @@ genuine regression of the kind-only Quick Start observability story.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `load-e2e-images` composite | Pulls `keystone-operator:dev` and `keystone:2026.1` from GHCR and re-tags them to their canonical local references |
-| 4 | `kind load docker-image` | Loads operator and service images into kind |
+| 3 | `load-e2e-images` composite | Pulls `keystone-operator:dev`, `keystone:2026.1` and `horizon-operator:dev` from GHCR and re-tags them to their canonical local references |
+| 4 | `kind load docker-image` | Loads the two operator images and the service image into kind |
 | 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_PROMETHEUS: "true"` |
 | 6 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys keystone operator via Helm with `WITH_PROMETHEUS: "true"` (gates `--set monitoring.serviceMonitor.enabled=true`) |
-| 7 | `chainsaw test` | Runs the prometheus E2E suite from `tests/e2e/keystone/prometheus-stack/` |
-| 8 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone` |
-| 9 | Upload JUnit report | Uploads `_output/reports/` as `e2e-prometheus-junit-report` artifact (14-day retention) |
-| 10 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 7 | Deploy horizon-operator | Runs `hack/ci-deploy-operator.sh` with `OPERATOR: horizon`, `NAMESPACE: horizon-system` and `WITH_PROMETHEUS: "true"` |
+| 8 | `chainsaw test` | Runs the prometheus E2E suites from `tests/e2e/keystone/prometheus-stack/` and `tests/e2e/horizon/prometheus-stack/` |
+| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, then the horizon-system sections with `OPERATOR=horizon OPERATOR_ONLY=1` |
+| 10 | Upload JUnit report | Uploads `_output/reports/` as `e2e-prometheus-junit-report` artifact (14-day retention) |
+| 11 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
-**Path filter:** `tests/e2e/keystone/prometheus-stack/**`, `deploy/kind/prometheus/**`,
-`operators/keystone/dashboards/**` and
-`operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml` (the
+**Path filter:** `tests/e2e/keystone/prometheus-stack/**`,
+`tests/e2e/horizon/prometheus-stack/**`, `deploy/kind/prometheus/**`,
+`operators/keystone/dashboards/**`,
+`operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml` and
+`operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml` (the
 `tests_prometheus` class). No Go code change and no other E2E test change schedules the
 job, and `ci:full` forces it on.
 

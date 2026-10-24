@@ -444,9 +444,11 @@ jobs:
               - 'tests/e2e/cinder/broker-vhost.sh'
             tests_prometheus:
               - 'tests/e2e/keystone/prometheus-stack/**'
+              - 'tests/e2e/horizon/prometheus-stack/**'
               - 'deploy/kind/prometheus/**'
               - 'operators/keystone/dashboards/**'
               - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
+              - 'operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml'
             e2e_infra:
               - 'tests/e2e/infrastructure/**'
             # ---------------------------------------------------------------
@@ -2655,13 +2657,16 @@ jobs:
         run: hack/ci-delete-kind-cluster.sh
 
   # End-to-end Prometheus stack tests using kind cluster,
-  # kube-prometheus-stack, and Chainsaw.  Builds the keystone operator image,
-  # deploys it with the monitoring stack (WITH_PROMETHEUS=true on the shared
-  # composite action), enables the keystone-operator ServiceMonitor via the
-  # post-deploy patch baked into hack/deploy-infra.sh, and runs the
-  # prometheus-stack chainsaw suite (HelmRelease readiness, ServiceMonitor
-  # presence in openstack, Prometheus target health for keystone-operator,
-  # Grafana dashboard presence).
+  # kube-prometheus-stack, and Chainsaw.  Loads the keystone-operator and
+  # horizon-operator images, brings up the monitoring stack (WITH_PROMETHEUS=true
+  # on the shared composite action), deploys both operators with their
+  # ServiceMonitors (WITH_PROMETHEUS=true on hack/ci-deploy-operator.sh), and
+  # runs two chainsaw suites: tests/e2e/keystone/prometheus-stack (HelmRelease
+  # readiness and kind posture, ServiceMonitor presence in keystone-system,
+  # Prometheus target health for keystone-operator, Grafana dashboard
+  # presence) and tests/e2e/horizon/prometheus-stack (ServiceMonitor presence
+  # in horizon-system, Prometheus target health for horizon-operator, an
+  # ingested controller_runtime_reconcile_total series).
   #
   # Single matrix entry on the self-hosted runner — the
   # kube-prometheus stack is deterministic, so unlike e2e-chaos this job runs
@@ -2702,10 +2707,12 @@ jobs:
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to kube-prometheus-stack — required for the prometheus suite.
       - name: Setup E2E infrastructure
@@ -2725,17 +2732,32 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
           WITH_PROMETHEUS: "true"
+      # A second live scrape target for tests/e2e/horizon/prometheus-stack.
+      # NAMESPACE matters: the script defaults to keystone-system, while the
+      # suite reads ServiceMonitor/horizon-operator in horizon-system and the
+      # horizon diagnostics pass below derives horizon-system as well. The
+      # kind Prometheus selects ServiceMonitors in every namespace
+      # (deploy/kind/prometheus/release.yaml).
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+          WITH_PROMETHEUS: "true"
       - name: Run prometheus E2E tests
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml \
-            tests/e2e/keystone/prometheus-stack/
-      # Use shared diagnostic dump script.
+            tests/e2e/keystone/prometheus-stack/ tests/e2e/horizon/prometheus-stack/
+      # Use shared diagnostic dump script. The horizon pass adds the
+      # horizon-system sections the keystone pass never looks at;
+      # OPERATOR_ONLY skips the infrastructure block it already emitted.
       - name: Dump diagnostic info
         if: always()
-        run: hack/ci-dump-diagnostics.sh
-        env:
-          OPERATOR: keystone
+        run: |
+          OPERATOR=keystone hack/ci-dump-diagnostics.sh
+          OPERATOR=horizon OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
