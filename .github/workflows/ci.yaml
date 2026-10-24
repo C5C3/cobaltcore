@@ -305,12 +305,15 @@ jobs:
               # directory. ovn and neutron run the scan, the metric-family
               # check and the event budget, and list those three scripts.
               # neutron also lists the NetworkPolicy probe its network-policy
-              # suite runs. c5c3 runs the scan alone and lists that one
-              # script, so an edit to the proof runs none of the three.
+              # suite runs. c5c3 runs the scan and the metric-family check and
+              # lists those two scripts, so an edit to the proof runs none of
+              # the three.
               - 'tests/e2e/lib/**'
             tests_e2e_c5c3:
               - 'tests/e2e/c5c3/**'
+              - 'tests/e2e/c5c3-operator/**'
               - 'tests/e2e/lib/assert-operator-env-clean.sh'
+              - 'tests/e2e/lib/assert-operator-metric-families.sh'
             tests_e2e_horizon:
               - 'tests/e2e/horizon/**'
               - 'tests/e2e/horizon-operator/**'
