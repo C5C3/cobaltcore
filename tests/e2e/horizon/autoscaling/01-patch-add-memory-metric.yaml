@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to add memory metric to autoscaling.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-autoscaling
+  namespace: openstack
+spec:
+  autoscaling:
+    maxReplicas: 6
+    targetCPUUtilization: 80
+    targetMemoryUtilization: 70
