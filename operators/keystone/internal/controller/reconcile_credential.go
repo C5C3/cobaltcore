@@ -28,11 +28,15 @@ import (
 )
 
 // credentialRotateScript is the shell script executed by the credential rotation CronJob.
-// It rotates credential keys, migrates existing encrypted credentials in the database
-// to use the new primary key, then pushes the updated keys back to the Kubernetes
-// Secret via the API using the pod's ServiceAccount token.
-// The credential_migrate step is critical: without it, credentials encrypted with the
-// old primary key become inaccessible once that key is purged.
+// It first migrates existing encrypted credentials in the database to the primary
+// key of the production keys, because credential_rotate refuses while any credential
+// is under another key. It then rotates the credential keys, migrates the credentials
+// again to the new primary key, and pushes the updated keys back to the Kubernetes
+// Secret via the API using the pod's ServiceAccount token. A restarted container
+// restores the key set it saved and repeats only the second migration and the
+// PATCH, or starts over when the production keys changed since it rotated.
+// The second credential_migrate step is critical: without it, credentials encrypted
+// with the old primary key become inaccessible once that key is purged.
 // Extracted to scripts/credential_rotate.sh for independent linting and testing.
 //
 //go:embed scripts/credential_rotate.sh

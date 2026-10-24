@@ -18,11 +18,10 @@ import (
 )
 
 // keyRotationParams captures the per-flavour differences between the Fernet and
-// credential key-rotation CronJobs. Everything else — the init container that
-// copies keys into a writable emptyDir, the FSGroup, the security contexts, the
-// staging-Secret PATCH target, the config and script mounts, the
-// sibling-key read-only mount, the rotation-state emptyDir, the Forbid
-// concurrency policy, and the Job deadline — is identical and lives in
+// credential key-rotation CronJobs. Everything else — the FSGroup, the
+// security context, the staging-Secret PATCH target, the config and script
+// mounts, the sibling-key read-only mount, the rotation-state emptyDir, the
+// Forbid concurrency policy, and the Job deadline — is identical and lives in
 // keyRotationCronJob.
 type keyRotationParams struct {
 	// keyKind is the rotated key kind ("fernet" or "credential"). It drives the
@@ -69,12 +68,11 @@ const (
 // keyRotationCronJob builds the CronJob that rotates a key repository and
 // persists the result back to a staging Secret via the K8s API. The CronJob:
 //  1. Mounts the production keys Secret as a read-only volume.
-//  2. Uses an init container to copy keys into a writable emptyDir.
-//  3. Mounts the rotation script from a versioned ConfigMap at /scripts/.
-//  4. Runs /scripts/<keyKind>_rotate.sh, which resets the emptyDir from the
-//     read-only source mount and rotates it, or, in a restarted container,
+//  2. Mounts the rotation script from a versioned ConfigMap at /scripts/.
+//  3. Runs /scripts/<keyKind>_rotate.sh, which resets a writable emptyDir from
+//     the read-only source mount and rotates it, or, in a restarted container,
 //     restores the key set it saved in the rotation-state emptyDir.
-//  5. PATCHes the updated keys onto the staging Secret using the pod's
+//  4. PATCHes the updated keys onto the staging Secret using the pod's
 //     ServiceAccount.
 //
 // It is parameterised by keyRotationParams so the Fernet and credential
@@ -116,21 +114,6 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		// world readable" WARNING via fernet_utils._check_key_repository
 		// for any default-mode (0o644) workaround.
 		SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
-		InitContainers: []corev1.Container{{
-			Name:            "copy-keys",
-			Image:           image,
-			ImagePullPolicy: pullPolicy,
-			// `install -m 0400` materialises each key in the writable emptyDir
-			// at owner-read-only mode. A plain `cp` would inherit the kubelet
-			// emptyDir mode and re-introduce the world-readable directory for the
-			// rotation Pod.
-			Command:         []string{"sh", "-c", fmt.Sprintf("install -m 0400 %s/* %s/", srcMountPath, keyDir)},
-			SecurityContext: deployment.RestrictedSecurityContext(),
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: srcVolName, MountPath: srcMountPath, ReadOnly: true},
-				{Name: keyVolName, MountPath: keyDir},
-			},
-		}},
 		Containers: []corev1.Container{{
 			Name:            p.keyKind + "-rotate",
 			Image:           image,
@@ -221,8 +204,8 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		},
 	}
 	// Append the per-domain identity-backend volume/mount when a backend is
-	// projected, apply the Job pod settings (the copy-keys init container
-	// included), then wrap the pod spec in the shared CronJob boilerplate.
+	// projected, apply the Job pod settings, then wrap the pod spec in the
+	// shared CronJob boilerplate.
 	podSpec.Volumes = append(podSpec.Volumes, extraVolumes...)
 	podSpec.Containers[0].VolumeMounts = append(podSpec.Containers[0].VolumeMounts, extraMounts...)
 	keystoneJobPod(keystone).Apply(&podSpec)
