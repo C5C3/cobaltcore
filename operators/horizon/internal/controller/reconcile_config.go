@@ -43,6 +43,13 @@ const (
 	// suffix's 8 because a collision between two releases would bring back
 	// the template-cache poisoning the prefix exists to prevent.
 	cacheKeyPrefixHashLen = 12
+	// horizonTextLogFormat is oslo.log's logging_default_format_string without
+	// %(instance)s, which only oslo.log's ContextFormatter fills and the stdlib
+	// logging.Formatter cannot resolve, so a Horizon text line has the shape
+	// of every other service's line, "[-]" column included.
+	horizonTextLogFormat     = "%(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] %(message)s"
+	horizonTextLogDateFormat = "%Y-%m-%d %H:%M:%S"
+	horizonJSONLogFormatter  = "oslo_log.formatters.JSONFormatter"
 )
 
 // reconcileConfig renders local_settings.py, creates an immutable ConfigMap
@@ -324,16 +331,36 @@ func allowedHosts(horizon *horizonv1alpha1.Horizon) []any {
 
 // djangoLogging derives the Django LOGGING dictConfig from the shared
 // LoggingSpec: a single stderr console handler so kubectl logs surfaces the
-// dashboard records, the root logger at spec.logging.level, and one named
-// logger per perLoggerLevels entry.
+// dashboard records, the root logger at spec.logging.level, the "django"
+// logger with Django's mail_admins handler, and one named logger per
+// perLoggerLevels entry. The console handler carries exactly one formatter:
+// format "json" names oslo.log's JSONFormatter through the dictConfig "()"
+// factory key, which Django resolves when it configures logging at
+// start-up, and every other value renders oslo.log's text line format.
 func djangoLogging(logging horizonv1alpha1.LoggingSpec) map[string]any {
+	formatterName := "text"
+	formatter := map[string]any{"format": horizonTextLogFormat, "datefmt": horizonTextLogDateFormat}
+	if logging.Format == "json" {
+		formatterName = "json"
+		formatter = map[string]any{"()": horizonJSONLogFormatter}
+	}
 	cfg := map[string]any{
 		"version":                  1,
 		"disable_existing_loggers": false,
+		"filters": map[string]any{
+			"require_debug_false": map[string]any{"()": "django.utils.log.RequireDebugFalse"},
+		},
+		"formatters": map[string]any{formatterName: formatter},
 		"handlers": map[string]any{
 			"console": map[string]any{
-				"class":  "logging.StreamHandler",
-				"stream": "ext://sys.stderr",
+				"class":     "logging.StreamHandler",
+				"stream":    "ext://sys.stderr",
+				"formatter": formatterName,
+			},
+			"mail_admins": map[string]any{
+				"class":   "django.utils.log.AdminEmailHandler",
+				"level":   "ERROR",
+				"filters": []any{"require_debug_false"},
 			},
 		},
 		"root": map[string]any{
@@ -341,13 +368,25 @@ func djangoLogging(logging horizonv1alpha1.LoggingSpec) map[string]any {
 			"level":    logging.Level,
 		},
 	}
-	if len(logging.PerLoggerLevels) > 0 {
-		loggers := make(map[string]any, len(logging.PerLoggerLevels))
-		for name, level := range logging.PerLoggerLevels {
-			loggers[name] = map[string]any{"level": level}
-		}
-		cfg["loggers"] = loggers
+	// Django applies its DEFAULT_LOGGING before LOGGING, which hangs a
+	// console handler without a formatter (active under DEBUG) and
+	// mail_admins on the "django" logger. Naming the logger here makes
+	// dictConfig drop both, so every django.* record leaves once, through the
+	// formatted handler above. mail_admins is declared again with
+	// DEFAULT_LOGGING's settings and attached to the logger, so a CR that sets
+	// ADMINS through spec.extraConfig still gets Django's error mails. INFO
+	// is DEFAULT_LOGGING's own level for the logger; a perLoggerLevels entry
+	// for "django" replaces it.
+	loggers := make(map[string]any, len(logging.PerLoggerLevels)+1)
+	for name, level := range logging.PerLoggerLevels {
+		loggers[name] = map[string]any{"level": level}
 	}
+	djangoLevel := "INFO"
+	if level, ok := logging.PerLoggerLevels["django"]; ok {
+		djangoLevel = level
+	}
+	loggers["django"] = map[string]any{"level": djangoLevel, "handlers": []any{"mail_admins"}}
+	cfg["loggers"] = loggers
 	return cfg
 }
 
