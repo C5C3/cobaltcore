@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Admission policy that holds the scheduled Fernet rotation of keystone-fernet
-# in step 8. It refuses every fernet-rotation pod of that Keystone in
+# in step 9. It refuses every fernet-rotation pod of that Keystone in
 # openstack. A refused pod creation never fails a Job, so the first scheduled
 # Job stays in the CronJob's status.active and the next tick meets
 # concurrencyPolicy: Forbid. Chainsaw deletes both objects at the end of the

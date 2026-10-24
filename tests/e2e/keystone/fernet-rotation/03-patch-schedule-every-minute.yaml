@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch to run the Fernet rotation CronJob every minute in step 8, so a
+# Patch to run the Fernet rotation CronJob every minute in step 9, so a
 # scheduled Job starts at the next minute and a second tick follows one
 # minute later.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
