@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Patch to restore the fixture's weekly Fernet rotation schedule (Sunday
-# 00:00 UTC) once step 8 has seen the held scheduled rotation skip a tick.
+# 00:00 UTC) once step 9 has seen the held scheduled rotation skip a tick.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
