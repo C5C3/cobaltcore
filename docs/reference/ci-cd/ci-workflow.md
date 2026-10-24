@@ -1687,8 +1687,20 @@ materialised `clouds.yaml`, the rotation driven by a `CredentialRotation`, a
 collision held at `ServiceCollision` / `ServiceAccountCollision` until
 `catalog.adopt` takes the row over, and residue-free deletion. Both are separate
 steps for the same `failFast` reason, and this one writes its JUnit XML as
-`chainsaw-report-keystone-service-own-namespace`, so the uploaded artifact
-carries four report files.
+`chainsaw-report-keystone-service-own-namespace`.
+
+A fifth chainsaw step runs `tests/e2e/c5c3/healthcheck/`, which asserts that a
+Keystone-only ControlPlane reports `KeystoneReady` and `Ready` only after its
+Keystone child's API probe passes and that `/v3` answers 200 on a single attempt
+when the plane first reports `Ready`. A sixth runs
+`tests/e2e/c5c3/pod-security-restricted/`, which labels the plane's namespace
+`enforce=restricted`, `enforce-version=latest` and asserts that a managed
+Keystone-only plane reaches `Ready=True/AllReady` with no PodSecurity violation
+event. Each brings up a plane of its own, stays a separate step for the same
+`failFast` reason, and writes its JUnit XML as
+`chainsaw-report-controlplane-healthcheck` and
+`chainsaw-report-controlplane-pod-security-restricted`, so the uploaded artifact
+carries six report files.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
@@ -1721,30 +1733,31 @@ fails the step above 4000m CPU or 16Gi memory. The job-level `env` sets
 `hack/ci-deploy-operator.sh`, so every operator runs one replica, as in the kind
 devstack, and the gate counts that footprint. The other e2e jobs keep the chart
 default of two. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 380-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 400-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
-OpenBao + ESO + K-ORC on one node is resource-heavy, and its four chainsaw
+OpenBao + ESO + K-ORC on one node is resource-heavy, and its six chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
 overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
-and the `cleanup` budget runs after all three. Each of the four suites
+and the `cleanup` budget runs after all three. Each of the six suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 140, 80, 110 and 90 minutes. The job wall has to outlast the bring-up plus
+ceilings at 140, 80, 110, 90, 65 and 65 minutes. The job wall has to outlast the bring-up plus
 the suites that pass plus the full ceiling of the one that stalls, or a stalled
 suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML. The 380 minutes cover roughly 45 minutes of bring-up, the
+no JUnit XML. The 400 minutes cover roughly 45 minutes of bring-up, the
 140-minute ceiling of the full-chain suite, roughly 25 minutes for the
-foreign-namespace pass and 55 for the keystone-user pass, and the 110-minute
-ceiling of the keystone-user suite, the largest of the other three, for the
-suite that stalls: 45+140+25+55+110 = 375 minutes in all; the bring-up and the
-two pass terms are
-estimates, so confirm them against the first green run of the leg and re-derive
-the wall if one overruns.
+foreign-namespace pass, 55 for the keystone-user pass and 10 each for the
+healthcheck and pod-security-restricted passes, and the 110-minute ceiling of
+the keystone-user suite, the largest of the other five, for the suite that
+stalls: 45+140+25+55+10+10+110 = 395 minutes in all. The bring-up and the four
+pass terms are estimates, so confirm them against the first green run of the
+leg and re-derive the wall if one overruns.
 
 Under `ci:measure-sizing` the job runs the
 [sizing measurement](#sizing-measurement): the watch starts after
 `Setup E2E infrastructure`, and the collect and upload steps follow
-`Run own-namespace registration E2E test` and publish `sizing-e2e-controlplane`.
+`Run ControlPlane pod-security-restricted E2E test` and publish
+`sizing-e2e-controlplane`.
 
 The job creates its cluster from `hack/kind-config-audit.yaml`, so the API
 server writes an audit log. After the diagnostics dumps, the `Report RBAC usage`
