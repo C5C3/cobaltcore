@@ -16,11 +16,7 @@
 # set -euo pipefail is the caller's.
 #
 # The namespaces are short fixed names in spec.namespace (chaos-korc-out and its
-# siblings), which chainsaw creates and deletes. The c5c3-operator names the
-# plane's DB-credential client certificate
-# <cp>-keystone-db-openbao-client.<namespace>.svc, and cert-manager refuses a
-# commonName over 64 bytes: the plane name and the namespace share 32
-# characters, which a namespace chainsaw generates leaves no room for.
+# siblings), which chainsaw creates and deletes.
 #
 # Fixtures that name the namespace carry @NS@, which cp_render replaces for
 # cp_apply_file and cp_delete_file.
