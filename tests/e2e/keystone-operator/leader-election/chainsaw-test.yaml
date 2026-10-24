@@ -1,0 +1,272 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: the keystone-operator elects a new leader after its Lease
+# is deleted, and the new leader reconciles.
+#
+# hack/ci-deploy-operator.sh installs the chart into keystone-system with two
+# replicas and leader election on. bootstrap.Run
+# (internal/common/bootstrap/manager.go) sets the election ID
+# keystone.openstack.c5c3.io and keeps controller-runtime's default durations,
+# so the Lease lives in keystone-system and its holder identity is
+# "<pod name>_<uuid>". Every operator starts its manager through bootstrap.Run,
+# so this suite covers the election wiring all of them share.
+#
+# Step 2 deletes the Lease. Whichever replica polls first gets NotFound,
+# creates a new Lease holding itself and leads. The suite asserts:
+#   - a Lease with a new uid and a holder appears within 90s;
+#   - its acquireTime is not earlier than the old Lease's last renewTime,
+#     unless the leader itself recreated it within its own term (step 2.4);
+#   - the new holder renews it;
+#   - the operator Deployment is fully Ready again, and when the standby won,
+#     the former leader's manager container restarted (a former leader that
+#     keeps running after losing its Lease would reconcile beside the new one);
+#   - the Lease keeps its uid and holder for 30s;
+#   - the Keystone stays Ready=True from the delete until the operator is Ready.
+# Step 3 patches the Keystone to two replicas and waits for the re-elected
+# leader to reconcile that generation.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# When the standby wins, the former leader restarts mid-suite. Run beside
+# another suite, that restart would break the metric-family scrape and the
+# steady-state event window basic-deployment runs against the operator
+# (tests/e2e/keystone/basic-deployment/chainsaw-test.yaml, steps 8 and 9), so
+# this suite runs alone, before the concurrent suites start, as
+# tests/e2e/keystone/namespace-scoped-rbac does for a reason of the same kind.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-operator-leader-election
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR and wait for Ready=True ──────────────
+  - name: keystone-ready
+    try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-lease
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 2: Delete the Lease and watch the re-election ─────────────────
+  - name: re-election
+    try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          OP_NS=keystone-system
+          LEASE=keystone.openstack.c5c3.io
+          SELECTOR=app.kubernetes.io/name=keystone-operator
+          CR=keystone-lease
+
+          # ready_or_die: the Keystone's Ready must stay True through the
+          # re-election. A failed read is skipped for that tick.
+          ready_or_die() {
+            local status
+            if ! status="$(kubectl get keystone "$CR" -n openstack \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)"; then
+              return 0
+            fi
+            if [ "$status" != "True" ]; then
+              echo "ERROR: $CR Ready went ${status:-<none>} during the re-election"
+              exit 1
+            fi
+          }
+          # restarts_of <pod> <pods json>: the manager container's restartCount.
+          restarts_of() {
+            jq -r --arg p "$1" '[.items[] | select(.metadata.name == $p)
+              | .status.containerStatuses[]? | select(.name == "manager") | .restartCount][0] // empty' <<<"$2"
+          }
+          epoch() { date -u -d "$1" +%s; }
+
+          # 2.1: the Lease before the delete.
+          L0="$(kubectl get lease "$LEASE" -n "$OP_NS" --ignore-not-found -o json)"
+          if [ -z "$L0" ]; then
+            echo "ERROR: no Lease $OP_NS/$LEASE"
+            exit 1
+          fi
+          U0="$(jq -r '.metadata.uid' <<<"$L0")"
+          H0="$(jq -r '.spec.holderIdentity // ""' <<<"$L0")"
+          R0="$(jq -r '.spec.renewTime // ""' <<<"$L0")"
+          A0="$(jq -r '.spec.acquireTime // ""' <<<"$L0")"
+          if [ -z "$H0" ]; then
+            echo "ERROR: the Lease names no holder"
+            exit 1
+          fi
+          P0="${H0%%_*}"
+          PODS0="$(kubectl get pods -n "$OP_NS" -l "$SELECTOR" -o json)"
+          if ! jq -e --arg p "$P0" '.items[] | select(.metadata.name == $p and .metadata.deletionTimestamp == null)
+            | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))' <<<"$PODS0" >/dev/null; then
+            echo "ERROR: holder pod $P0 is not a Ready keystone-operator pod"
+            exit 1
+          fi
+          jq -r '.items[] | "\(.metadata.name) \([.status.containerStatuses[]? | select(.name == "manager") | .restartCount][0] // "?")"' <<<"$PODS0" \
+            | while read -r pod n; do echo "OK: operator pod $pod has restarted $n time(s)"; done
+          RESTARTS0="$(restarts_of "$P0" "$PODS0")"
+          echo "OK: Lease uid $U0 is held by $P0, last renewed $R0"
+
+          # 2.2: delete it.
+          kubectl delete lease "$LEASE" -n "$OP_NS"
+
+          # 2.3: a new Lease with a holder. A failed read (NotFound before a
+          # replica recreated it, or a transient API error) is not yet.
+          deadline=$((SECONDS + 90))
+          L1="" U1="" H1=""
+          while :; do
+            ready_or_die
+            if L1="$(kubectl get lease "$LEASE" -n "$OP_NS" -o json 2>/dev/null)"; then
+              U1="$(jq -r '.metadata.uid' <<<"$L1")"
+              H1="$(jq -r '.spec.holderIdentity // ""' <<<"$L1")"
+              if [ "$U1" != "$U0" ] && [ -n "$H1" ]; then
+                break
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "ERROR: no new leader within 90s"
+              kubectl get lease -n "$OP_NS" -o yaml || true
+              exit 1
+            fi
+            sleep 2
+          done
+          P1="${H1%%_*}"
+          echo "OK: new Lease uid $U1 is held by $P1"
+
+          # 2.4: the new Lease was acquired after the old one was last renewed.
+          # One case keeps the old acquireTime: in client-go's fast path
+          # (tryAcquireOrRenew in tools/leaderelection) a leader whose Lease
+          # is still valid in its own view updates it with the acquireTime it
+          # observed, and the API server turns that update of a deleted Lease
+          # into a create. The same holder then keeps its term.
+          A1="$(jq -r '.spec.acquireTime // ""' <<<"$L1")"
+          if [ "$H1" = "$H0" ] && [ "$A1" = "$A0" ]; then
+            echo "OK: $P1 recreated the Lease within its own term (acquireTime $A1 kept)"
+          elif [ -z "$A1" ] || [ "$(epoch "$A1")" -lt "$(epoch "$R0")" ]; then
+            echo "ERROR: the new Lease was acquired before the old one was last renewed (acquireTime '${A1}', last renewTime $R0)"
+            exit 1
+          else
+            echo "OK: acquireTime $A1 is not earlier than the old renewTime $R0"
+          fi
+
+          # 2.5: the new holder renews. Six seconds are three retry periods.
+          RA="$(kubectl get lease "$LEASE" -n "$OP_NS" -o jsonpath='{.spec.renewTime}')"
+          sleep 6
+          LB="$(kubectl get lease "$LEASE" -n "$OP_NS" -o json)"
+          RB="$(jq -r '.spec.renewTime // ""' <<<"$LB")"
+          HB="$(jq -r '.spec.holderIdentity // ""' <<<"$LB")"
+          if [ -z "$RA" ] || [ -z "$RB" ] || [ "$HB" != "$H1" ] || [ "$(epoch "$RB")" -le "$(epoch "$RA")" ]; then
+            echo "ERROR: the new leader $H1 is not renewing (renewTime '${RA}' then '${RB}', holder then '${HB}')"
+            exit 1
+          fi
+          echo "OK: $P1 renewed the Lease ($RA -> $RB)"
+
+          # 2.6: the operator Deployment is Ready again. When the standby won,
+          # the former leader's manager must also have restarted and be Ready
+          # again: until it exits, readyReplicas still counts it.
+          deadline=$((SECONDS + 120))
+          while :; do
+            ready_or_die
+            desired="" ready="" n=""
+            if dep="$(kubectl get deployment keystone-operator -n "$OP_NS" -o json 2>/dev/null)"; then
+              desired="$(jq -r '.spec.replicas' <<<"$dep")"
+              ready="$(jq -r '.status.readyReplicas // 0' <<<"$dep")"
+            fi
+            if [ -n "$desired" ] && [ "$ready" = "$desired" ]; then
+              if [ "$P1" = "$P0" ]; then
+                echo "OK: $P1 re-acquired the Lease"
+                break
+              fi
+              if PODS="$(kubectl get pods -n "$OP_NS" -l "$SELECTOR" -o json 2>/dev/null)"; then
+                n="$(restarts_of "$P0" "$PODS")"
+                if [ -n "$n" ] && [ "$n" -gt "$RESTARTS0" ] && jq -e --arg p "$P0" '.items[] | select(.metadata.name == $p)
+                  | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))' <<<"$PODS" >/dev/null; then
+                  echo "OK: failover to $P1; $P0 restarted $((n - RESTARTS0)) time(s)"
+                  break
+                fi
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              if [ -z "$desired" ] || [ "$ready" != "$desired" ]; then
+                echo "ERROR: Deployment $OP_NS/keystone-operator has ${ready:-0} of ${desired:-?} replicas Ready 120s after the re-election"
+              else
+                echo "ERROR: former leader $P0 did not restart within 120s after losing the Lease to $P1 (restartCount ${n:-?}, was $RESTARTS0)"
+              fi
+              exit 1
+            fi
+            sleep 2
+          done
+
+          # 2.7: the Lease stays where the election put it.
+          for _ in 1 2 3 4 5 6; do
+            sleep 5
+            LH="$(kubectl get lease "$LEASE" -n "$OP_NS" -o json)"
+            UH="$(jq -r '.metadata.uid' <<<"$LH")"
+            HH="$(jq -r '.spec.holderIdentity // ""' <<<"$LH")"
+            if [ "$UH" != "$U1" ] || [ "$HH" != "$H1" ]; then
+              echo "ERROR: the Lease moved to ${HH:-<none>} after the re-election (uid $UH, expected $U1 held by $H1)"
+              exit 1
+            fi
+          done
+          echo "OK: the Lease stayed with $P1 for 30s"
+    catch: &diagnostics
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -uo pipefail
+          echo "=== Lease ==="
+          kubectl get lease keystone.openstack.c5c3.io -n keystone-system -o yaml 2>&1 || true
+          echo "=== Operator pods ==="
+          kubectl get pods -n keystone-system -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n keystone-system -l app.kubernetes.io/name=keystone-operator -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n keystone-system "$pod" -c manager --tail=100 2>&1 || true
+            echo "--- $pod (previous) ---"
+            kubectl logs -n keystone-system "$pod" -c manager --tail=100 --previous 2>&1 || true
+          done
+          echo "=== Events in keystone-system ==="
+          kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -50 || true
+  # ── Step 3: The re-elected leader reconciles a new generation ──────────
+  - name: reconcile-after-election
+    try:
+    - patch:
+        file: 01-patch-replicas.yaml
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          deadline=$((SECONDS + 300))
+          gen="" obs="" rdy="" replicas=""
+          while :; do
+            if ks="$(kubectl get keystone keystone-lease -n openstack -o json 2>/dev/null)"; then
+              gen="$(jq -r '.metadata.generation' <<<"$ks")"
+              obs="$(jq -r '.status.observedGeneration // ""' <<<"$ks")"
+              rdy="$(jq -r '[.status.conditions[]? | select(.type == "Ready") | .status][0] // ""' <<<"$ks")"
+              replicas="$(kubectl get deployment keystone-lease -n openstack \
+                -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+              if [ "$obs" = "$gen" ] && [ "$rdy" = "True" ] && [ "$replicas" = "2" ]; then
+                break
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "ERROR: keystone-lease not reconciled within 300s (generation '${gen}', observedGeneration '${obs}', Ready '${rdy}', Deployment keystone-lease readyReplicas '${replicas}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the re-elected operator reconciled generation $gen"
+    catch: *diagnostics
