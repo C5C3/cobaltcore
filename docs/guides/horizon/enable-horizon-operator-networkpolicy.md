@@ -142,10 +142,18 @@ the shared operator-library, whose helm-unittest
 (`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
 pins the shared rules. The horizon chart's helm-unittest
 (`operators/horizon/helm/horizon-operator/tests/networkpolicy_test.yaml`) pins
-the egress rule the chart adds for its API health check. The keystone chart's
-policy is exercised end-to-end on the CI e2e kind cluster by the chainsaw suite
-below.
+the egress rule the chart adds for its API health check. The horizon chart's
+policy is exercised end-to-end on the CI e2e kind cluster by this chainsaw
+suite:
 
 ```bash
-chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
+chainsaw test --test-dir tests/e2e/horizon-operator/network-policy-egress
 ```
+
+The suite checks that the chart renders the policy and that a Horizon CR
+reaches `Ready=True` while it is present. The primary operator release competes
+for the same leader lease, so a last step runs a probe pod the policy selects:
+its connection to the MariaDB port must be dropped, and the dashboard must answer
+`GET /auth/login/` through its Service on 8080. The step waits for the drop
+first and fails when it never comes, so it passes only on a cluster that
+enforces the policy, as the CI kind cluster does.

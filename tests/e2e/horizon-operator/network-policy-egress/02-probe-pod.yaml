@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Probe pod for the network-policy-egress E2E test (Step 5 of
+# chainsaw-test.yaml). It carries the two selector labels of the
+# horizon-operator-netpol release, so the release's NetworkPolicy judges its
+# connections as it judges the operator pod's. It has no pod-template-hash
+# label, so the release's ReplicaSet does not adopt it, and chainsaw deletes it
+# when the test ends. The horizon service image brings the python3 the probes
+# run, and kind already holds it for the Horizon CR of 01-horizon-cr.yaml. UID
+# and GID 42424 are the openstack user of the service images
+# (internal/common/deployment/security_context.go).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: horizon-operator-netpol-probe
+  namespace: horizon-system
+  labels:
+    app.kubernetes.io/name: horizon-operator
+    app.kubernetes.io/instance: horizon-operator-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/horizon:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
