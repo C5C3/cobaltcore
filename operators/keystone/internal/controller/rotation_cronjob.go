@@ -21,8 +21,9 @@ import (
 // credential key-rotation CronJobs. Everything else — the init container that
 // copies keys into a writable emptyDir, the FSGroup, the security contexts, the
 // staging-Secret PATCH target, the config and script mounts, the
-// sibling-key read-only mount, the Forbid concurrency policy, and the Job
-// deadline — is identical and lives in keyRotationCronJob.
+// sibling-key read-only mount, the rotation-state emptyDir, the Forbid
+// concurrency policy, and the Job deadline — is identical and lives in
+// keyRotationCronJob.
 type keyRotationParams struct {
 	// keyKind is the rotated key kind ("fernet" or "credential"). It drives the
 	// production Secret name (<keystone>-<keyKind>-keys), the SA/CronJob name
@@ -56,12 +57,23 @@ type keyRotationParams struct {
 // runtime of a key rotation.
 const keyRotationActiveDeadlineSeconds int64 = 3600
 
+// rotationStateVolumeName and rotationStateMountPath name the emptyDir where
+// both rotation scripts save the rotated key set and the digest of the
+// production keys they rotated, so a container restarted after a failed PATCH
+// does not rotate again. Both scripts default STATE_DIR to this path.
+const (
+	rotationStateVolumeName = "rotation-state"
+	rotationStateMountPath  = "/rotation-state"
+)
+
 // keyRotationCronJob builds the CronJob that rotates a key repository and
 // persists the result back to a staging Secret via the K8s API. The CronJob:
 //  1. Mounts the production keys Secret as a read-only volume.
 //  2. Uses an init container to copy keys into a writable emptyDir.
 //  3. Mounts the rotation script from a versioned ConfigMap at /scripts/.
-//  4. Runs /scripts/<keyKind>_rotate.sh against the emptyDir.
+//  4. Runs /scripts/<keyKind>_rotate.sh, which resets the emptyDir from the
+//     read-only source mount and rotates it, or, in a restarted container,
+//     restores the key set it saved in the rotation-state emptyDir.
 //  5. PATCHes the updated keys onto the staging Secret using the pod's
 //     ServiceAccount.
 //
@@ -151,6 +163,8 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 				{Name: otherVolName, MountPath: otherKeyDir, ReadOnly: true},
 				{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
 				{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
+				{Name: srcVolName, MountPath: srcMountPath, ReadOnly: true},
+				{Name: rotationStateVolumeName, MountPath: rotationStateMountPath},
 			},
 		}},
 		Volumes: []corev1.Volume{
@@ -196,6 +210,12 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 						LocalObjectReference: corev1.LocalObjectReference{Name: scriptConfigMapName},
 						DefaultMode:          ptr.To(int32(0o555)),
 					},
+				},
+			},
+			{
+				Name: rotationStateVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
 			},
 		},
