@@ -1,0 +1,299 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: a burst of spec changes converges on the last one.
+#
+# Every render writes an immutable ConfigMap keystone-rapid-config-<hash>
+# (internal/common/config/config.go), and a render cache keyed on the CR's uid
+# and generation skips unchanged renders
+# (operators/keystone/internal/controller/reconcile_config.go). Step 2 sends
+# twelve merge patches of [token] expiration back to back, faster than the
+# operator reconciles, with one misspelt patch the webhook refuses in the
+# middle. It then asserts:
+#   - every one of the twelve patches bumped metadata.generation, and the
+#     refused one did not;
+#   - the CR reaches Ready=True at the last generation and the rollout ends;
+#   - the ConfigMap the pod template names carries the last value (4320), and
+#     every live API pod mounts it;
+#   - a token the API issues lives 4318 to 4320 seconds, so the running
+#     service serves the last value and not an earlier one;
+#   - repeating the last patch changes neither the generation nor the set of
+#     ConfigMaps;
+#   - pruning keeps at most four keystone-rapid-config- ConfigMaps;
+#   - for 60s no later reconcile moves the Deployment.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-rapid-spec-changes
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR and wait for Ready=True ──────────────
+  - name: keystone-ready
+    try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-rapid
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &diagnostics
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -uo pipefail
+          echo "=== Keystone status ==="
+          kubectl get keystone keystone-rapid -n openstack -o jsonpath='{.status}' 2>&1 || true
+          echo
+          echo "=== Deployment and ReplicaSets ==="
+          kubectl get deployment keystone-rapid -n openstack -o yaml 2>&1 | tail -60 || true
+          kubectl get rs -n openstack -l app.kubernetes.io/instance=keystone-rapid -o wide 2>&1 || true
+          echo "=== keystone-rapid-config- ConfigMaps ==="
+          kubectl get cm -n openstack -o name 2>&1 | grep 'configmap/keystone-rapid-config-' || true
+          echo "=== keystone-operator logs ==="
+          for pod in $(kubectl get pods -n keystone-system -l app.kubernetes.io/name=keystone-operator -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n keystone-system "$pod" -c manager --tail=200 2>&1 || true
+          done
+  # ── Step 2: Twelve patches in a burst, then read the result back ───────
+  - name: burst
+    try:
+    - script:
+        timeout: 20m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          CR=keystone-rapid
+          CM_PREFIX=keystone-rapid-config-
+          CATALOG_MSG='no such option in the keystone 2026.1 option catalog'
+
+          generation() {
+            kubectl get keystone "$CR" -n "$NS" -o jsonpath='{.metadata.generation}'
+          }
+          template_cm() {
+            kubectl get deployment "$CR" -n "$NS" \
+              -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}'
+          }
+          # conf_value <section> <key>: the value keystone.conf on stdin sets
+          # for <key> inside [<section>].
+          conf_value() {
+            awk -v s="[$1]" -v k="$2" '
+              /^\[/ { in_s = ($0 == s); next }
+              in_s && index($0, k " = ") == 1 { print substr($0, length(k) + 4); exit }'
+          }
+          # list_cms: CMS becomes the sorted keystone-rapid-config- ConfigMap
+          # names. Called outside a command substitution, so a failed read
+          # stops the script instead of reading as an empty list.
+          list_cms() {
+            local names
+            names="$(kubectl get cm -n "$NS" -o name)"
+            CMS="$(grep "^configmap/${CM_PREFIX}" <<<"$names" | LC_ALL=C sort || true)"
+          }
+
+          # 2.1
+          G0="$(generation)"
+          if ! [[ "$G0" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: could not read metadata.generation of $CR (got '${G0}')"
+            exit 1
+          fi
+          echo "OK: generation before the burst is $G0"
+
+          # 2.2 and 2.3: twelve patches with no pause, the refused one between
+          # patches 6 and 7. extraConfig is a map of strings, so each value is
+          # quoted.
+          for i in $(seq 1 12); do
+            if [ "$i" -eq 7 ]; then
+              GM="$(generation)"
+              if OUT="$(kubectl patch keystone "$CR" -n "$NS" --type merge \
+                -p '{"spec":{"extraConfig":{"token":{"expiraton":"3600"}}}}' 2>&1)"; then
+                echo "ERROR: the webhook admitted the misspelt token.expiraton: $OUT"
+                exit 1
+              fi
+              if ! grep -qF "$CATALOG_MSG" <<<"$OUT"; then
+                echo "ERROR: the misspelt patch failed without '$CATALOG_MSG': $OUT"
+                exit 1
+              fi
+              GA="$(generation)"
+              if [ "$GA" != "$GM" ]; then
+                echo "ERROR: the refused patch moved metadata.generation from $GM to $GA"
+                exit 1
+              fi
+              echo "OK: the misspelt token.expiraton was refused with '$CATALOG_MSG', generation stays $GA"
+            fi
+            v=$((3600 + 60 * i))
+            if ! kubectl patch keystone "$CR" -n "$NS" --type merge \
+              -p "{\"spec\":{\"extraConfig\":{\"token\":{\"expiration\":\"${v}\"}}}}" >/dev/null; then
+              echo "ERROR: patch $i (expiration $v) was refused"
+              exit 1
+            fi
+          done
+          echo "OK: twelve patches sent, expiration 3660 to 4320"
+
+          # 2.4
+          GL=$((G0 + 12))
+          G="$(generation)"
+          if [ "$G" != "$GL" ]; then
+            echo "ERROR: $((G - G0)) of the twelve patches bumped the generation (generation $G0 -> $G)"
+            exit 1
+          fi
+          echo "OK: generation $G0 -> $G after the burst"
+
+          # 2.5
+          deadline=$((SECONDS + 600))
+          obs="" rdy=""
+          while :; do
+            if ks="$(kubectl get keystone "$CR" -n "$NS" -o json 2>/dev/null)"; then
+              obs="$(jq -r '.status.observedGeneration // ""' <<<"$ks")"
+              rdy="$(jq -r '[.status.conditions[]? | select(.type == "Ready") | "\(.status)/\(.reason)"][0] // ""' <<<"$ks")"
+              if [ "$obs" = "$GL" ] && [ "$rdy" = "True/AllReady" ]; then
+                break
+              fi
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "ERROR: $CR did not reach Ready=True/AllReady at generation $GL within 600s (observedGeneration '${obs}', Ready '${rdy}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: $CR is Ready=True/AllReady at observedGeneration $GL"
+          kubectl rollout status "deployment/$CR" -n "$NS" --timeout=300s
+
+          # 2.6
+          C="$(template_cm)"
+          if [ -z "$C" ]; then
+            echo "ERROR: Deployment $CR names no config ConfigMap"
+            exit 1
+          fi
+          CONF="$(kubectl get cm "$C" -n "$NS" -o jsonpath='{.data.keystone\.conf}')"
+          EXP="$(conf_value token expiration <<<"$CONF")"
+          if [ "$EXP" != "4320" ]; then
+            echo "ERROR: ConfigMap $C carries expiration ${EXP:-<none>}, not the last patch's 4320"
+            exit 1
+          fi
+          echo "OK: ConfigMap $C sets [token] expiration = 4320"
+          PODS="$(kubectl get pods -n "$NS" \
+            -l "app.kubernetes.io/name=keystone,app.kubernetes.io/instance=$CR,pod-template-hash" -o json)"
+          MOUNTS="$(jq -r '.items[] | select(.metadata.deletionTimestamp == null)
+            | "\(.metadata.name) \([.spec.volumes[]? | select(.name == "config") | .configMap.name][0] // "<none>")"' <<<"$PODS")"
+          if [ -z "$MOUNTS" ]; then
+            echo "ERROR: no live API pod of $CR"
+            exit 1
+          fi
+          POD=""
+          while read -r pod cm; do
+            if [ "$cm" != "$C" ]; then
+              echo "ERROR: pod $pod mounts ConfigMap $cm, not $C"
+              exit 1
+            fi
+            POD="$pod"
+          done <<<"$MOUNTS"
+          echo "OK: every live API pod mounts $C"
+
+          # 2.7: a project-scoped admin token, the request of release-upgrade.
+          # The password goes over stdin; the pod prints the lifetime only.
+          ADMIN_PASS="$(kubectl get secret keystone-admin -n "$NS" -o jsonpath='{.data.password}' | base64 -d)"
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "ERROR: Secret keystone-admin has no password"
+            exit 1
+          fi
+          if ! LIFETIME="$(printf '%s' "$ADMIN_PASS" | kubectl exec -i -n "$NS" "$POD" -c keystone -- python3 -c '
+          import datetime, json, sys, time, urllib.error, urllib.request
+          pw = sys.stdin.read()
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          last = None
+          for _ in range(15):
+              try:
+                  with urllib.request.urlopen(req) as r:
+                      doc = json.load(r)["token"]
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit("POST /v3/auth/tokens -> HTTP %d" % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  time.sleep(2)
+          else:
+              raise SystemExit("POST /v3/auth/tokens never answered: %r" % last)
+          def ts(v):
+              return datetime.datetime.strptime(v, "%Y-%m-%dT%H:%M:%S.%fZ")
+          print(int((ts(doc["expires_at"]) - ts(doc["issued_at"])).total_seconds()))
+          ')"; then
+            echo "ERROR: pod $POD issued no project-scoped admin token"
+            exit 1
+          fi
+          if ! [[ "$LIFETIME" =~ ^[0-9]+$ ]] || [ "$LIFETIME" -lt 4318 ] || [ "$LIFETIME" -gt 4320 ]; then
+            echo "ERROR: token lifetime ${LIFETIME}s, expected 4318 to 4320"
+            exit 1
+          fi
+          echo "OK: pod $POD issued a token that lives ${LIFETIME}s"
+
+          # 2.8: the last patch again changes nothing. Pruning may delete a
+          # ConfigMap meanwhile, so only a name absent before counts.
+          list_cms
+          BEFORE="$CMS"
+          kubectl patch keystone "$CR" -n "$NS" --type merge \
+            -p '{"spec":{"extraConfig":{"token":{"expiration":"4320"}}}}' >/dev/null
+          for _ in 1 2 3 4 5 6; do
+            sleep 5
+            G="$(generation)"
+            if [ "$G" != "$GL" ]; then
+              echo "ERROR: repeating the last patch moved metadata.generation from $GL to $G"
+              exit 1
+            fi
+            list_cms
+            NEW="$(comm -13 <(printf '%s\n' "$BEFORE") <(printf '%s\n' "$CMS"))"
+            if [ -n "$NEW" ]; then
+              echo "ERROR: repeating the last patch rendered a new ConfigMap: ${NEW#configmap/}"
+              exit 1
+            fi
+          done
+          echo "OK: repeating the last patch kept generation $GL and rendered no ConfigMap for 30s"
+
+          # 2.9: at most the current ConfigMap plus three, the cap config-pruning
+          # asserts.
+          deadline=$((SECONDS + 120))
+          while :; do
+            list_cms
+            if ! grep -qxF "configmap/$C" <<<"$CMS"; then
+              echo "ERROR: the current ConfigMap $C is gone"
+              exit 1
+            fi
+            N="$(grep -c . <<<"$CMS")"
+            if [ "$N" -le 4 ] || [ "$SECONDS" -ge "$deadline" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "$N" -gt 4 ]; then
+            echo "ERROR: $N ${CM_PREFIX} ConfigMaps exist 120s after the burst, expected at most 4"
+            printf '%s\n' "$CMS"
+            exit 1
+          fi
+          echo "OK: $N ${CM_PREFIX} ConfigMaps remain (at most 4)"
+
+          # 2.10: nothing moves for 60s.
+          DG="$(kubectl get deployment "$CR" -n "$NS" -o jsonpath='{.metadata.generation}')"
+          for _ in $(seq 1 12); do
+            sleep 5
+            cm="$(template_cm)"
+            dg="$(kubectl get deployment "$CR" -n "$NS" -o jsonpath='{.metadata.generation}')"
+            obs="$(kubectl get keystone "$CR" -n "$NS" -o jsonpath='{.status.observedGeneration}')"
+            if [ "$cm" != "$C" ] || [ "$dg" != "$DG" ] || [ "$obs" != "$GL" ]; then
+              echo "ERROR: a later reconcile moved $CR to ${cm:-<none>} (Deployment generation $DG -> $dg, observedGeneration $obs, expected $GL)"
+              exit 1
+            fi
+          done
+          echo "OK: for 60s $CR kept $C, Deployment generation $DG and observedGeneration $GL"
+    catch: *diagnostics
