@@ -1,0 +1,429 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the ControlPlane's readiness gate on the Keystone API.
+#
+# The c5c3-operator runs no workload of its own: it projects a Keystone child
+# and mirrors the child's Ready into KeystoneReady, and the child's Ready
+# requires KeystoneAPIReady, which the keystone-operator sets from its own /v3
+# probe. This suite brings up a Keystone-only plane and asserts the wait
+# direction of that chain on a live cluster:
+#
+#   - a watcher started before the apply samples the plane and its child every
+#     2 s. Before the child's KeystoneAPIReady first reads True, the plane is
+#     observed at KeystoneReady=False/WaitingForKeystone and never reports
+#     KeystoneReady=True. Over the whole transcript it never reports Ready=True
+#     while its own KeystoneReady is not True;
+#   - when Ready=True is first observed, /v3 on the child's Service answers 200
+#     on a single attempt, without a retry;
+#   - snapshots taken at that moment carry the reasons KeystoneReady/AllReady
+#     on the plane and APIHealthy/AllReady on the child, and the
+#     lastTransitionTime values satisfy
+#     child KeystoneAPIReady <= child Ready <= plane KeystoneReady <= plane Ready.
+#
+# The drop direction (a Ready plane whose API stops answering) is out of scope:
+# the keystone-operator caches a healthy probe for 30 s and does not requeue
+# after one, so a timed outage check would race that cache. The checks on the
+# child's KeystoneAPIReady therefore stop at the first sample in which it reads
+# True. After that, the plane follows a child drop only on its next reconcile,
+# so a sample can pair the plane's KeystoneReady=True with a child that has
+# just dropped.
+#
+# ── Clock assumption ─────────────────────────────────────────────────────────
+# The c5c3-operator and the keystone-operator write their lastTransitionTime
+# values from the clock of the same kind node, so the four timestamps are
+# comparable. They have one-second resolution, so equal values pass.
+#
+# ── Its own ControlPlane, and the two seeds it needs ─────────────────────────
+# Like keystone-service, the suite brings up a Keystone-only plane in
+# chainsaw's ephemeral namespace, because the webhook admits one ControlPlane
+# per namespace. It seeds the per-CR admin password and the database-engine
+# role with the scripts deploy-infra runs.
+#
+# ── Presence guard ───────────────────────────────────────────────────────────
+# Mirrors the sibling c5c3 suites. The e2e-operator c5c3 matrix leg runs this
+# whole directory on a cluster carrying the stack's CRDs but none of its
+# operators, so the guard prints a SKIP line and exits 0 there.
+# E2E_REQUIRE_CONTROLPLANE_STACK=true flips the guard from SKIP to a hard
+# failure on the e2e-controlplane job, which IS meant to carry the stack.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-healthcheck
+spec:
+  # A Keystone-only bring-up and a bounded teardown. cleanup covers the
+  # operators' bounded stall breakers on the failure path, as in
+  # keystone-service.
+  timeouts:
+    assert: 5m
+    exec: 30m
+    cleanup: 15m
+  steps:
+  - try:
+    - script:
+        timeout: 30m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME="cp"
+          KEYSTONE_CR="${CP_NAME}-keystone"
+          TOKEN_FILE="/tmp/.bao-token-${NAMESPACE}"
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+
+          # ── Presence guard ────────────────────────────────────────────────
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud \
+            roles.openstack.k-orc.cloud \
+            roleassignments.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
+            externalsecrets.external-secrets.io \
+            pushsecrets.external-secrets.io \
+            secretstores.external-secrets.io \
+            certificates.cert-manager.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present:${missing}"
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            skip_or_fail "openbao-cluster-store ClusterSecretStore not present."
+          fi
+          if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
+            skip_or_fail "shared-services/openbao-0 not present."
+          fi
+          # The CRDs alone do not prove the stack: the e2e-operator (c5c3) leg
+          # installs them without the sibling operators. The probe captures via
+          # command substitution and retries, so a transient apiserver error is
+          # not read as "no pods".
+          operator_running() { # <app.kubernetes.io/name label value>
+            local pods
+            for _ in 1 2 3 4 5; do
+              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
+                && [ -n "${pods}" ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          if ! operator_running keystone-operator; then
+            skip_or_fail "no keystone-operator is running; the cluster carries the stack's CRDs only."
+          fi
+          if ! operator_running c5c3-operator; then
+            skip_or_fail "no c5c3-operator is running."
+          fi
+
+          # The root token stays out of argv, as in keystone-service: it is
+          # staged once on stdin under a per-namespace path, and only that path
+          # travels on the command line. The export stays, because the two
+          # deploy/openbao/bootstrap scripts below read the token from their
+          # environment.
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            skip_or_fail "could not extract the OpenBao root token."
+          fi
+          if ! printf '%s' "${BAO_TOKEN}" | kubectl exec -i -n shared-services openbao-0 -- \
+            sh -c 'umask 077; cat > "$1"' _ "${TOKEN_FILE}"; then
+            skip_or_fail "could not stage the OpenBao root token in openbao-0."
+          fi
+          bao_exec() {
+            kubectl exec -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+              BAO_TOKEN_FILE="${TOKEN_FILE}" \
+              sh -c 'BAO_TOKEN="$(cat "${BAO_TOKEN_FILE}")"; export BAO_TOKEN; exec "$@"' _ "$@"
+          }
+          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+            skip_or_fail "the eso-tenant OpenBao auth role is not configured."
+          fi
+          echo "OK: prerequisites present — running the ControlPlane healthcheck."
+
+          # ── Helpers ───────────────────────────────────────────────────────
+          # Explicit polls rather than `kubectl wait`, so a condition or an
+          # object that is briefly absent retries instead of erroring out, and
+          # the failure names the last observed status.
+          wait_condition() { # <resource> <name> <namespace> <conditionType> <expected> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype}=${want}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${ctype} not ${want} within ${timeout}s (last: '${status:-<none>}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          wait_cp_condition() { # <conditionType> <timeoutSeconds>
+            wait_condition controlplane "${CP_NAME}" "${CP_NS}" "$1" True "$2"
+          }
+          # cond <json> <conditionType> <jq expression on the condition>
+          # Prints the expression for the condition of that type, or nothing
+          # when the object or the condition is absent or the JSON is unreadable.
+          cond() {
+            jq -r --arg t "$2" "[.status.conditions[]? | select(.type == \$t) | $3][0] // empty" \
+              <<<"$1" 2>/dev/null || true
+          }
+
+          # ── Seed the per-CR OpenBao paths this plane reads ────────────────
+          KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
+            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+          echo "OK: the per-CR admin-password path is seeded."
+
+          # ── Start the watcher before the apply ────────────────────────────
+          # One line every 2 s:
+          #   <epoch> cpKeystone=<status>/<reason> cpReady=<status> ksAPI=<status> ksReady=<status>
+          # The plane is read first, both conditions from one get, and the
+          # child second: whatever the plane mirrored was already true on the
+          # child before that later read. An absent object or condition, or a
+          # failed read of the plane, prints "-". A failed read of the child
+          # prints ERR in both of its fields, and the checks skip that sample,
+          # because it says nothing about the child. Every command tolerates
+          # failure, so `set -e` never ends the subshell, and the loop ends
+          # when this script does, also when chainsaw kills it at its timeout.
+          # Its output goes to /dev/null, so it never holds the script's stdout
+          # open.
+          TRANSCRIPT="$(mktemp)"
+          CP_SNAP="$(mktemp)"
+          KS_SNAP="$(mktemp)"
+          SCRIPT_PID=$$
+          (
+            while kill -0 "${SCRIPT_PID}" 2>/dev/null; do
+              cp_json="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o json 2>/dev/null || true)"
+              if ks_json="$(kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o json --ignore-not-found 2>/dev/null)"; then
+                ks_api="$(cond "${ks_json}" KeystoneAPIReady .status)"
+                ks_ready="$(cond "${ks_json}" Ready .status)"
+              else
+                ks_api=ERR
+                ks_ready=ERR
+              fi
+              cp_keystone="$(cond "${cp_json}" KeystoneReady '"\(.status)/\(.reason)"')"
+              cp_ready="$(cond "${cp_json}" Ready .status)"
+              echo "$(date +%s) cpKeystone=${cp_keystone:--} cpReady=${cp_ready:--} ksAPI=${ks_api:--} ksReady=${ks_ready:--}" \
+                >>"${TRANSCRIPT}" || true
+              sleep 2
+            done
+          ) >/dev/null 2>&1 &
+          WATCH_PID=$!
+          trap 'kill "${WATCH_PID}" 2>/dev/null || true; rm -f "${TRANSCRIPT}" "${CP_SNAP}" "${KS_SNAP}"' EXIT
+
+          # fail <message...> prints the message and the whole transcript, then
+          # exits 1.
+          fail() {
+            echo "$*"
+            echo "=== Watcher transcript ==="
+            cat "${TRANSCRIPT}" || true
+            exit 1
+          }
+
+          # ── Apply the ControlPlane and wait for first readiness ───────────
+          kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
+
+          wait_cp_condition InfrastructureReady 600
+          wait_condition mariadb openstack-db "${CP_NS}" Ready True 600
+
+          # The database-engine role is keyed on the service namespace, so it
+          # has to be onboarded for this plane's namespace before the dynamic
+          # DB credential can be issued.
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          echo "OK: OpenBao database-engine tenant onboarded."
+
+          wait_cp_condition DBCredentialsReady 300
+          wait_cp_condition KeystoneReady 900
+          wait_cp_condition KORCReady 600
+          wait_cp_condition AdminCredentialReady 600
+          wait_cp_condition ESOTenantStoreReady 300
+          wait_cp_condition Ready 300
+
+          # ── Snapshot the plane and its child at first readiness ───────────
+          # The checks below judge these two snapshots, so a probe flap after
+          # this point cannot move a timestamp under them.
+          kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o json >"${CP_SNAP}"
+          kubectl get keystone "${KEYSTONE_CR}" -n "${CP_NS}" -o json >"${KS_SNAP}"
+
+          # ── /v3 answers 200 on a single attempt ───────────────────────────
+          # The keystone image's python, so no extra image is loaded. urlopen
+          # raises on a non-2xx answer and on a refused connection.
+          if ! kubectl run c5c3-hc-v3 --image=ghcr.io/c5c3/keystone:2026.1 --rm -i --restart=Never \
+            -n "${CP_NS}" --command -- \
+            python3 -c "import sys,urllib.request; r=urllib.request.urlopen('http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3', timeout=10); print('HTTP', r.status); sys.exit(0 if r.status == 200 else 1)"; then
+            fail "FAIL: Keystone /v3 did not answer 200 when the ControlPlane first reported Ready"
+          fi
+          echo "OK: Keystone /v3 answered 200 on the first attempt."
+
+          # ── The reasons at first readiness ────────────────────────────────
+          assert_reason() { # <object> <snapshot> <conditionType> <status> <reason>
+            local got
+            got="$(cond "$(cat "$2")" "$3" '"\(.status)/\(.reason)"')"
+            if [ "${got}" != "$4/$5" ]; then
+              fail "FAIL: $1 $3 is '${got:-<none>}', expected '$4/$5'"
+            fi
+            echo "OK: $1 $3=$4/$5"
+          }
+          assert_reason "${CP_NAME}" "${CP_SNAP}" KeystoneReady True KeystoneReady
+          assert_reason "${CP_NAME}" "${CP_SNAP}" Ready True AllReady
+          assert_reason "${KEYSTONE_CR}" "${KS_SNAP}" KeystoneAPIReady True APIHealthy
+          assert_reason "${KEYSTONE_CR}" "${KS_SNAP}" Ready True AllReady
+
+          # ── The lastTransitionTime chain ──────────────────────────────────
+          # RFC 3339 UTC timestamps order as strings; jq compares strings by
+          # code point, whatever the locale.
+          transition() { # <snapshot> <conditionType>
+            cond "$(cat "$1")" "$2" .lastTransitionTime
+          }
+          not_after() { # <name a> <time a> <name b> <time b>
+            if [ -z "$2" ] || [ -z "$4" ] || ! jq -en --arg a "$2" --arg b "$4" '$a <= $b' >/dev/null; then
+              fail "FAIL: $1 (${2:-<none>}) must not transition after $3 (${4:-<none>})"
+            fi
+            echo "OK: $1 (${2}) <= $3 (${4})"
+          }
+          T_KS_API="$(transition "${KS_SNAP}" KeystoneAPIReady)"
+          T_KS_READY="$(transition "${KS_SNAP}" Ready)"
+          T_CP_KEYSTONE="$(transition "${CP_SNAP}" KeystoneReady)"
+          T_CP_READY="$(transition "${CP_SNAP}" Ready)"
+          not_after "${KEYSTONE_CR} KeystoneAPIReady" "${T_KS_API}" "${KEYSTONE_CR} Ready" "${T_KS_READY}"
+          not_after "${KEYSTONE_CR} Ready" "${T_KS_READY}" "${CP_NAME} KeystoneReady" "${T_CP_KEYSTONE}"
+          not_after "${CP_NAME} KeystoneReady" "${T_CP_KEYSTONE}" "${CP_NAME} Ready" "${T_CP_READY}"
+
+          # ── The transcript ────────────────────────────────────────────────
+          kill "${WATCH_PID}" 2>/dev/null || true
+          wait "${WATCH_PID}" 2>/dev/null || true
+          echo "OK: the watcher recorded $(grep -c . "${TRANSCRIPT}" || true) samples."
+          # The samples before the child's KeystoneAPIReady first reads True,
+          # without those whose read of the child failed.
+          rise="$(awk '$4 == "ksAPI=True" { exit } $4 != "ksAPI=ERR"' "${TRANSCRIPT}")"
+          waiting="$(awk '$2 == "cpKeystone=False/WaitingForKeystone"' <<<"${rise}")"
+          if [ -z "${waiting}" ]; then
+            fail "FAIL: the plane was never observed at KeystoneReady=False/WaitingForKeystone before the child's KeystoneAPIReady first read True"
+          fi
+          echo "OK: the plane held at WaitingForKeystone while the child's API was not ready ($(grep -c . <<<"${waiting}") samples)."
+          early_keystone="$(awk 'index($2, "cpKeystone=True/") == 1' <<<"${rise}")"
+          if [ -n "${early_keystone}" ]; then
+            fail "FAIL: the plane reported KeystoneReady=True before the child's KeystoneAPIReady first read True:" \
+              $'\n'"${early_keystone}"
+          fi
+          echo "OK: the plane never reported KeystoneReady=True before the child's API was ready."
+          early_ready="$(awk '$3 == "cpReady=True" && index($2, "cpKeystone=True/") != 1' "${TRANSCRIPT}")"
+          if [ -n "${early_ready}" ]; then
+            fail "FAIL: the plane reported Ready=True while its KeystoneReady was not True:" \
+              $'\n'"${early_ready}"
+          fi
+          echo "OK: the plane never reported Ready=True before its KeystoneReady."
+          echo "OK: the ControlPlane waits for the Keystone API before it reports Ready."
+    catch:
+    - script:
+        # Pinned, because chainsaw applies the test's exec budget to every
+        # script operation, and an unpinned dump against a wedged apiserver
+        # would inherit 30m.
+        timeout: 5m
+        shell: bash
+        content: |
+          echo "=== ControlPlane ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== ControlPlane conditions ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          echo "=== Keystone child ==="
+          kubectl get keystone cp-keystone -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== Pods ==="
+          kubectl get pods -n "${NAMESPACE}" -o wide 2>&1 || true
+          echo "=== c5c3-operator ==="
+          kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator -o wide 2>&1 || true
+          OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=150 --all-containers 2>&1 || true
+          echo "=== keystone-operator ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== K-ORC controller ==="
+          kubectl logs -n orc-system deploy/orc-controller-manager --pod-running-timeout=5s --tail=100 --all-containers 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    finally:
+    - script:
+        # Pinned for the same reason as catch. The waits below are bounded and
+        # add up to 600 s; 15m covers them plus the deletes that drive them, and
+        # keeps the suite's ceiling at exec + catch + finally + cleanup = 65m,
+        # the number .github/workflows/ci.yaml budgets against.
+        timeout: 15m
+        shell: bash
+        content: |
+          # chainsaw owns the ephemeral namespace and reaps the ControlPlane
+          # with it. When the try block died early, this block is the only
+          # ordered teardown: the plane's K-ORC children and its Keystone go
+          # while the identity plane behind them still serves the calls their
+          # finalizers make, then the plane. Every wait is bounded and
+          # best-effort; a finalizer that does not release in time is left to
+          # chainsaw's cleanup.
+          gone_within() { # <resource> <name> <namespace> <timeoutSeconds>
+            local deadline
+            deadline=$(( $(date +%s) + $4 ))
+            while kubectl get "$1" "$2" -n "$3" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "WARN: $1/$2 in $3 still present after $4s; leaving it to chainsaw cleanup"
+                return 1
+              fi
+              sleep 5
+            done
+            return 0
+          }
+          # The root token the try block staged in openbao-0 goes with the
+          # suite; the pod is shared with the other suites on the job.
+          kubectl exec -n shared-services openbao-0 -- \
+            rm -f "/tmp/.bao-token-${NAMESPACE}" 2>&1 || true
+          kubectl delete pod c5c3-hc-v3 -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+
+          kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
+          while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
+            if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then
+              echo "WARN: K-ORC residue still present after 240s; leaving it to the stall breakers"
+              break
+            fi
+            sleep 5
+          done
+          kubectl delete keystone cp-keystone -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within keystone cp-keystone "${NAMESPACE}" 120 || true
+
+          gone_within controlplane cp "${NAMESPACE}" 240 || true
