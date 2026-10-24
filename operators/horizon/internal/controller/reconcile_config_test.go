@@ -179,6 +179,115 @@ func TestReconcileConfig_PerLoggerLevelsReachLoggingDict(t *testing.T) {
 	g.Expect(rendered).To(ContainSubstring(`"django.request": {"level": "ERROR"}`))
 }
 
+// renderLoggingConfigMap reconciles the config of h and returns the
+// ConfigMap name and its rendered local_settings.py.
+func renderLoggingConfigMap(t *testing.T, r *HorizonReconciler, h *horizonv1alpha1.Horizon) (string, string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
+	g.Expect(err).NotTo(HaveOccurred())
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
+	return name, cm.Data["local_settings.py"]
+}
+
+func TestReconcileConfig_TextLoggingRendersOsloLineFormat(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Logging = nil
+	r := newTestReconciler(testScheme(), h)
+
+	_, rendered := renderLoggingConfigMap(t, r, h)
+	g.Expect(rendered).To(ContainSubstring(`"formatter": "text"`))
+	g.Expect(rendered).To(ContainSubstring(`"formatters": {"text": {"datefmt": "%Y-%m-%d %H:%M:%S", "format": "%(asctime)s.%(msecs)03d %(process)d %(levelname)s %(name)s [-] %(message)s"}}`))
+	g.Expect(rendered).To(ContainSubstring(horizonTextLogFormat))
+	g.Expect(rendered).To(ContainSubstring(horizonTextLogDateFormat))
+	g.Expect(rendered).NotTo(ContainSubstring("JSONFormatter"))
+}
+
+// TestReconcileConfig_NonJSONLoggingFormatRendersText covers CRs that bypassed
+// the defaulting and validating webhooks: an empty format and a value the
+// webhook would reject both fall back to the text formatter.
+func TestReconcileConfig_NonJSONLoggingFormatRendersText(t *testing.T) {
+	for _, format := range []string{"", "yaml"} {
+		t.Run(fmt.Sprintf("format=%q", format), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			h := testHorizon()
+			h.Spec.Logging = &horizonv1alpha1.LoggingSpec{Format: format}
+			r := newTestReconciler(testScheme(), h)
+
+			_, rendered := renderLoggingConfigMap(t, r, h)
+			g.Expect(rendered).To(ContainSubstring(`"formatter": "text"`))
+			g.Expect(rendered).NotTo(ContainSubstring("JSONFormatter"))
+		})
+	}
+}
+
+func TestReconcileConfig_JSONLoggingRendersOsloJSONFormatter(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Logging = &horizonv1alpha1.LoggingSpec{Format: "json"}
+	r := newTestReconciler(testScheme(), h)
+
+	_, rendered := renderLoggingConfigMap(t, r, h)
+	g.Expect(rendered).To(ContainSubstring(`"()": "oslo_log.formatters.JSONFormatter"`))
+	g.Expect(rendered).To(ContainSubstring(`"formatter": "json"`))
+	g.Expect(rendered).NotTo(ContainSubstring(horizonTextLogFormat))
+}
+
+// TestReconcileConfig_LoggingNamesDjangoLogger pins the "django" logger entry
+// that replaces the handlers Django's DEFAULT_LOGGING attaches to it, whose
+// unformatted console copy would print every django.* record a second time
+// under DEBUG. The entry keeps Django's mail_admins handler, so the error
+// mails to ADMINS survive. A perLoggerLevels entry for "django" sets its
+// level.
+func TestReconcileConfig_LoggingNamesDjangoLogger(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		levels  map[string]string
+		loggers string
+	}{
+		{
+			name:    "no perLoggerLevels",
+			loggers: `"loggers": {"django": {"handlers": ["mail_admins"], "level": "INFO"}}`,
+		},
+		{
+			name:    "perLoggerLevels",
+			levels:  map[string]string{"django.request": "ERROR"},
+			loggers: `"loggers": {"django": {"handlers": ["mail_admins"], "level": "INFO"}, "django.request": {"level": "ERROR"}}`,
+		},
+		{
+			name:    "perLoggerLevels sets django",
+			levels:  map[string]string{"django": "WARNING"},
+			loggers: `"loggers": {"django": {"handlers": ["mail_admins"], "level": "WARNING"}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			h := testHorizon()
+			h.Spec.Logging = &horizonv1alpha1.LoggingSpec{PerLoggerLevels: tc.levels}
+			r := newTestReconciler(testScheme(), h)
+
+			_, rendered := renderLoggingConfigMap(t, r, h)
+			g.Expect(rendered).To(ContainSubstring(tc.loggers))
+			g.Expect(rendered).To(ContainSubstring(`"filters": {"require_debug_false": {"()": "django.utils.log.RequireDebugFalse"}}`))
+			g.Expect(rendered).To(ContainSubstring(`"mail_admins": {"class": "django.utils.log.AdminEmailHandler", "filters": ["require_debug_false"], "level": "ERROR"}`))
+		})
+	}
+}
+
+func TestReconcileConfig_LoggingFormatChangeRollsConfigMap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Logging = &horizonv1alpha1.LoggingSpec{Format: "text"}
+	r := newTestReconciler(testScheme(), h)
+
+	textName, _ := renderLoggingConfigMap(t, r, h)
+	h.Spec.Logging.Format = "json"
+	jsonName, _ := renderLoggingConfigMap(t, r, h)
+	g.Expect(jsonName).NotTo(Equal(textName), "a format change must move the ConfigMap name")
+}
+
 func TestPruneStaleConfigMaps_RetainsNewestAndCurrent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()
