@@ -1,0 +1,610 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: one Keystone name runs in three namespaces at once, and
+# the three instances share nothing.
+#
+# keystone-mns-a, keystone-mns-b and keystone-mns-c each run a Keystone named
+# keystone-mns, so anything the operator keys by name alone collides. The
+# suite asserts:
+#   - every child of a namespace's Keystone (Deployment, Service, config
+#     ConfigMap, fernet-keys and db-connection Secrets, fernet backup
+#     PushSecret) exists in that namespace with exactly one ownerReference, to
+#     that namespace's Keystone;
+#   - each instance connects to its own schema;
+#   - the three fernet backups write to three distinct OpenBao keys
+#     (reconcile_fernet.go builds the key from namespace and name);
+#   - the three fernet key sets differ;
+#   - a token issued in one namespace is valid there (200) and refused in the
+#     other two (401);
+#   - deleting the Keystone of keystone-mns-a leaves the other two unchanged:
+#     Ready, the same Deployment, pods, ConfigMap and keys, and a token issued
+#     before the deletion still valid.
+#
+# Decisions worth knowing before reading the steps:
+#
+#   - `spec.namespace: ""` opts out of chainsaw's per-test namespace, as in
+#     pod-security-restricted: the suite applies its own three namespaces.
+#
+#   - Brownfield mode: Database.ClusterRef and Cache.ClusterRef are
+#     LocalObjectReferences, so a Keystone outside `openstack` reaches the
+#     shared openstack-db and openstack-memcached through database.host and
+#     cache.servers, and 00-brownfield-db-setup.yaml pre-creates one schema
+#     per namespace in `openstack`. Three managed MariaDB and Memcached
+#     instances would add three database servers to the kind node for an
+#     isolation the brownfield wiring already gives.
+#
+#   - Per-tenant store: each namespace gets its own openbao-tenant-store from
+#     deploy/openbao/bootstrap/setup-eso-tenant.sh, and the step 1 script
+#     seeds the namespace-scoped OpenBao paths the ExternalSecrets read. The
+#     OpenBao root token is staged in openbao-0 over stdin under a name unique
+#     to this suite, so a parallel suite's cleanup cannot remove it, and every
+#     copy runs inside the pod, so no value leaves it or enters an argument
+#     the API server's audit log would record. Step 1's finally removes the
+#     staged token.
+#
+#   - Caching is off in the three Keystones (01-keystone-crs.yaml): keystone's
+#     cache keys carry no per-instance discriminator, so a validation cached by
+#     one instance in the shared memcached would answer in the other two (#227).
+#
+#   - Every token and password crosses into a pod over stdin, never in an
+#     argument, as issue_token and validate do in fernet-rotation.
+#
+#   - Chainsaw deletes the Keystones, the MariaDB CRs and the namespaces at
+#     cleanup. `cleanupPolicy: Skip` keeps the shared `keystone` user and the
+#     three keystone_mns_* schemas, as in pod-security-restricted; a rerun
+#     re-adopts them.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-multi-namespace
+spec:
+  namespace: ""
+  timeouts:
+    assert: 10m
+    cleanup: 5m
+  steps:
+  # ── Step 1: Namespaces, tenant stores and ExternalSecrets ──────────────
+  - name: namespaces
+    try:
+    - apply:
+        file: 00-namespaces.yaml
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          TOKEN_FILE=/tmp/.bao-token-keystone-multi-namespace
+          ROOT_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "$ROOT_TOKEN" ] || [ "$ROOT_TOKEN" = "null" ]; then
+            echo "ERROR: Secret shared-services/openbao-init-keys holds no root_token"
+            exit 1
+          fi
+          printf '%s' "$ROOT_TOKEN" | kubectl exec -i -n shared-services openbao-0 -- \
+            sh -c "umask 077; cat > $TOKEN_FILE"
+          unset ROOT_TOKEN
+          # bao_exec: a bao call inside openbao-0 that reads the staged token,
+          # as in tests/e2e/c5c3/keystone-user.
+          bao_exec() {
+            kubectl exec -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+              TOKEN_FILE="$TOKEN_FILE" \
+              sh -c 'BAO_TOKEN="$(cat "$TOKEN_FILE")"; export BAO_TOKEN; exec "$@"' _ "$@"
+          }
+          # copy_field <src> <dst> <field> <put|patch>: copy one field inside
+          # openbao-0. The value goes from bao kv get to the shell's builtin
+          # printf and over a pipe to bao kv put|patch <dst> <field>=-.
+          copy_field() {
+            bao_exec sh -c 'v="$(bao kv get -mount=kv-v2 -field="$3" "$1")" && printf "%s" "$v" | bao kv "$4" -mount=kv-v2 "$2" "$3=-" >/dev/null' \
+              _ "$1" "$2" "$3" "$4"
+          }
+          for ns in keystone-mns-a keystone-mns-b keystone-mns-c; do
+            copy_field openstack/keystone/openstack/standalone/db "openstack/keystone/$ns/mns/db" username put
+            copy_field openstack/keystone/openstack/standalone/db "openstack/keystone/$ns/mns/db" password patch
+            copy_field bootstrap/openstack/controlplane-keystone/admin "bootstrap/$ns/mns/admin" password put
+            echo "OK: seeded openstack/keystone/$ns/mns/db and bootstrap/$ns/mns/admin"
+            ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "$ns"
+          done
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-admin
+            namespace: keystone-mns-a
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-db
+            namespace: keystone-mns-a
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-admin
+            namespace: keystone-mns-b
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-db
+            namespace: keystone-mns-b
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-admin
+            namespace: keystone-mns-c
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: keystone-db
+            namespace: keystone-mns-c
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch: &diagnostics
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -uo pipefail
+          for ns in keystone-mns-a keystone-mns-b keystone-mns-c; do
+            echo "=== $ns: Keystone status ==="
+            kubectl get keystone keystone-mns -n "$ns" -o jsonpath='{.status}' 2>&1 || true
+            echo
+            echo "=== $ns: pods ==="
+            kubectl get pods -n "$ns" -o wide 2>&1 || true
+            echo "=== $ns: events ==="
+            kubectl get events -n "$ns" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+            echo "=== $ns: ExternalSecrets and SecretStores ==="
+            kubectl get externalsecret,secretstore -n "$ns" -o wide 2>&1 || true
+            kubectl get secretstore openbao-tenant-store -n "$ns" -o jsonpath='{.status}' 2>&1 || true
+            echo
+          done
+    finally:
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -uo pipefail
+          # The staged root token goes with the step; openbao-0 is shared with
+          # every other suite of the leg.
+          kubectl exec -n shared-services openbao-0 -- rm -f /tmp/.bao-token-keystone-multi-namespace 2>&1 || true
+  # ── Step 2: Pre-create the brownfield schemas, grants and user ─────────
+  - name: brownfield-database
+    try:
+    - apply:
+        file: 00-brownfield-db-setup.yaml
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-mns-a-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-mns-b-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-mns-c-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-mns-user
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-mns-a-grant
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-mns-b-grant
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-mns-c-grant
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch: *diagnostics
+  # ── Step 3: Three Keystones of one name, applied at once ───────────────
+  - name: keystones-ready
+    try:
+    - apply:
+        file: 01-keystone-crs.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-mns
+            namespace: keystone-mns-a
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-mns
+            namespace: keystone-mns-b
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-mns
+            namespace: keystone-mns-c
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *diagnostics
+  # ── Step 4: Objects, keys and tokens stay in their namespace ───────────
+  - name: isolation
+    try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NAME=keystone-mns
+          NSS="keystone-mns-a keystone-mns-b keystone-mns-c"
+          SELECTOR="app.kubernetes.io/instance=$NAME,app.kubernetes.io/component=api"
+
+          # check_owner <ns> <kind> <name> <uid>: exactly one ownerReference,
+          # to the Keystone with <uid>.
+          check_owner() {
+            local obj n uid
+            obj="$(kubectl get "$2" "$3" -n "$1" --ignore-not-found -o json)"
+            if [ -z "$obj" ]; then
+              echo "ERROR: $1/$2/$3 is missing"
+              exit 1
+            fi
+            n="$(jq '.metadata.ownerReferences // [] | length' <<<"$obj")"
+            if [ "$n" != "1" ]; then
+              echo "ERROR: $1/$2/$3 has $n ownerReferences, expected 1"
+              exit 1
+            fi
+            uid="$(jq -r '.metadata.ownerReferences[0].uid' <<<"$obj")"
+            if [ "$uid" != "$4" ]; then
+              echo "ERROR: $1/$2/$3 is owned by uid $uid, not by Keystone $1/$NAME ($4)"
+              exit 1
+            fi
+          }
+          fernet_hash() {
+            local data
+            data="$(kubectl get secret "$NAME-fernet-keys" -n "$1" -o json | jq -cS '.data // {}')"
+            if [ "$data" = "{}" ]; then
+              echo "ERROR: $1/secret/$NAME-fernet-keys holds no keys" >&2
+              return 1
+            fi
+            sha256sum <<<"$data" | cut -d' ' -f1
+          }
+          api_pod() {
+            kubectl get pods -n "$1" -l "$SELECTOR" -o json \
+              | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)
+                  | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                  | .metadata.name][0] // empty'
+          }
+          # issue_token <ns> <pod>: an admin token, the request of
+          # fernet-rotation, with <ns>'s keystone-admin password on stdin.
+          issue_token() {
+            local pass
+            pass="$(kubectl get secret keystone-admin -n "$1" -o jsonpath='{.data.password}' | base64 -d)"
+            printf '%s' "$pass" | kubectl exec -i -n "$1" "$2" -c keystone -- python3 -c '
+          import json, sys, urllib.request
+          pw = sys.stdin.read()
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              sys.stdout.write(r.headers.get("X-Subject-Token", ""))
+          '
+          }
+          # validate <ns> <pod> <token>: the HTTP code of GET /v3/auth/tokens
+          # in <pod> with the token as both X-Auth-Token and X-Subject-Token,
+          # the request of fernet-rotation. The token goes over stdin.
+          validate() {
+            printf '%s' "$3" | kubectl exec -i -n "$1" "$2" -c keystone -- python3 -c '
+          import sys, urllib.request, urllib.error
+          tok = sys.stdin.read()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", headers={"X-Auth-Token": tok, "X-Subject-Token": tok})
+          try:
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  sys.stdout.write(str(r.status))
+          except urllib.error.HTTPError as e:
+              sys.stdout.write(str(e.code))
+          '
+          }
+
+          # 4.1: every child is in its namespace and owned by its Keystone.
+          for ns in $NSS; do
+            KUID="$(kubectl get keystone "$NAME" -n "$ns" -o jsonpath='{.metadata.uid}')"
+            CM="$(kubectl get deployment "$NAME" -n "$ns" \
+              -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')"
+            case "$CM" in
+              "$NAME-config-"?*) ;;
+              *)
+                echo "ERROR: $ns/deployment/$NAME names config ConfigMap '${CM}', not a $NAME-config- one"
+                exit 1
+                ;;
+            esac
+            check_owner "$ns" deployment "$NAME" "$KUID"
+            check_owner "$ns" service "$NAME" "$KUID"
+            check_owner "$ns" configmap "$CM" "$KUID"
+            check_owner "$ns" secret "$NAME-fernet-keys" "$KUID"
+            check_owner "$ns" secret "$NAME-db-connection" "$KUID"
+            check_owner "$ns" pushsecret "$NAME-fernet-keys-backup" "$KUID"
+            echo "OK: $ns: Deployment, Service, ConfigMap $CM, Secrets and PushSecret owned by Keystone $ns/$NAME ($KUID) alone"
+          done
+
+          # 4.2: each instance connects to its own schema. The URL carries the
+          # password, so it is compared and never printed; it always ends in a
+          # query string (?charset=utf8), so the path is compared.
+          for ns in $NSS; do
+            want="keystone_mns_${ns##*-}"
+            dsn="$(kubectl get secret "$NAME-db-connection" -n "$ns" -o jsonpath='{.data.connection}' | base64 -d)"
+            path="${dsn%%\?*}"
+            if [ "${path##*/}" != "$want" ]; then
+              echo "ERROR: $ns/secret/$NAME-db-connection connects to database '${path##*/}', expected $want"
+              exit 1
+            fi
+            echo "OK: $ns connects to database $want"
+          done
+
+          # 4.3: three distinct backup keys, each PushSecret Ready.
+          KEYS=""
+          for ns in $NSS; do
+            want="openstack/keystone/$ns/$NAME/fernet-keys"
+            rk="$(kubectl get pushsecret "$NAME-fernet-keys-backup" -n "$ns" \
+              -o jsonpath='{.spec.data[0].match.remoteRef.remoteKey}')"
+            if [ "$rk" != "$want" ]; then
+              echo "ERROR: $ns/pushsecret/$NAME-fernet-keys-backup writes to '${rk}', expected $want"
+              exit 1
+            fi
+            deadline=$((SECONDS + 60))
+            until [ "$(kubectl get pushsecret "$NAME-fernet-keys-backup" -n "$ns" \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)" = "True" ]; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "ERROR: $ns/pushsecret/$NAME-fernet-keys-backup is not Ready=True within 60s"
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "OK: $ns backs its fernet keys up to $rk (Ready=True)"
+            KEYS="$KEYS$rk"$'\n'
+          done
+          if [ "$(sort -u <<<"${KEYS%$'\n'}" | grep -c .)" != "3" ]; then
+            echo "ERROR: the three PushSecrets do not write to three distinct keys"
+            exit 1
+          fi
+          echo "OK: three distinct fernet backup keys"
+
+          # 4.4: three different fernet key sets.
+          HASHES=""
+          for ns in $NSS; do
+            h="$(fernet_hash "$ns")"
+            echo "OK: $ns fernet keys hash ${h:0:12}"
+            HASHES="$HASHES$h"$'\n'
+          done
+          if [ "$(sort -u <<<"${HASHES%$'\n'}" | grep -c .)" != "3" ]; then
+            echo "ERROR: two namespaces hold the same fernet keys"
+            exit 1
+          fi
+          echo "OK: the fernet key sets differ pairwise"
+
+          # 4.5: a token is valid at home and refused in the other two.
+          for x in $NSS; do
+            PX="$(api_pod "$x")"
+            if [ -z "$PX" ]; then
+              echo "ERROR: no Ready API pod of $x/$NAME"
+              exit 1
+            fi
+            TOKEN="$(issue_token "$x" "$PX")"
+            if [ -z "$TOKEN" ]; then
+              echo "ERROR: $x/$PX issued no admin token"
+              exit 1
+            fi
+            for y in $NSS; do
+              PY="$(api_pod "$y")"
+              if [ -z "$PY" ]; then
+                echo "ERROR: no Ready API pod of $y/$NAME"
+                exit 1
+              fi
+              want=401
+              if [ "$x" = "$y" ]; then
+                want=200
+              fi
+              code="$(validate "$y" "$PY" "$TOKEN")"
+              if [ "$code" != "$want" ]; then
+                echo "ERROR: token of $x answered ${code:-<none>} in $y, expected $want"
+                exit 1
+              fi
+              echo "OK: token of $x answered $code in $y"
+            done
+          done
+          unset TOKEN
+    catch: *diagnostics
+  # ── Step 5: Deleting one instance leaves the other two untouched ───────
+  - name: delete-one
+    try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NAME=keystone-mns
+          SELECTOR="app.kubernetes.io/instance=$NAME,app.kubernetes.io/component=api"
+
+          api_pod() {
+            kubectl get pods -n "$1" -l "$SELECTOR" -o json \
+              | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)
+                  | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                  | .metadata.name][0] // empty'
+          }
+          # read_state <ns>: STATE becomes the Deployment uid, the live API pod
+          # uids, the template ConfigMap and the fernet keys hash, one line
+          # each. Called outside a command substitution, so a failed read stops
+          # the script.
+          read_state() {
+            local dep pods data
+            dep="$(kubectl get deployment "$NAME" -n "$1" -o json)"
+            pods="$(kubectl get pods -n "$1" -l "$SELECTOR" -o json)"
+            data="$(kubectl get secret "$NAME-fernet-keys" -n "$1" -o json | jq -cS '.data // {}')"
+            STATE="deployment uid $(jq -r '.metadata.uid' <<<"$dep")
+          configmap $(jq -r '[.spec.template.spec.volumes[]? | select(.name == "config") | .configMap.name][0] // ""' <<<"$dep")
+          pod uids $(jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.uid] | sort | join(",")' <<<"$pods")
+          fernet keys hash $(sha256sum <<<"$data" | cut -d' ' -f1)"
+          }
+          issue_token() {
+            local pass
+            pass="$(kubectl get secret keystone-admin -n "$1" -o jsonpath='{.data.password}' | base64 -d)"
+            printf '%s' "$pass" | kubectl exec -i -n "$1" "$2" -c keystone -- python3 -c '
+          import json, sys, urllib.request
+          pw = sys.stdin.read()
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=10) as r:
+              sys.stdout.write(r.headers.get("X-Subject-Token", ""))
+          '
+          }
+          validate() {
+            printf '%s' "$3" | kubectl exec -i -n "$1" "$2" -c keystone -- python3 -c '
+          import sys, urllib.request, urllib.error
+          tok = sys.stdin.read()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", headers={"X-Auth-Token": tok, "X-Subject-Token": tok})
+          try:
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  sys.stdout.write(str(r.status))
+          except urllib.error.HTTPError as e:
+              sys.stdout.write(str(e.code))
+          '
+          }
+
+          read_state keystone-mns-b
+          B0="$STATE"
+          read_state keystone-mns-c
+          C0="$STATE"
+          PB="$(api_pod keystone-mns-b)"
+          if [ -z "$PB" ]; then
+            echo "ERROR: no Ready API pod of keystone-mns-b/$NAME"
+            exit 1
+          fi
+          TOKEN="$(issue_token keystone-mns-b "$PB")"
+          if [ -z "$TOKEN" ]; then
+            echo "ERROR: keystone-mns-b/$PB issued no admin token"
+            exit 1
+          fi
+          echo "OK: recorded keystone-mns-b and keystone-mns-c, token issued in keystone-mns-b"
+
+          kubectl delete keystone "$NAME" -n keystone-mns-a --wait=false
+          deadline=$((SECONDS + 180))
+          while [ -n "$(kubectl get keystone "$NAME" -n keystone-mns-a --ignore-not-found -o name)" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "ERROR: Keystone keystone-mns-a/$NAME still exists 180s after its deletion"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: Keystone keystone-mns-a/$NAME is gone"
+
+          for ns in keystone-mns-b keystone-mns-c; do
+            ready="$(kubectl get keystone "$NAME" -n "$ns" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "$ready" != "True" ]; then
+              echo "ERROR: $ns/$NAME Ready went ${ready:-<none>} after the deletion in keystone-mns-a"
+              exit 1
+            fi
+            before="$B0"
+            if [ "$ns" = "keystone-mns-c" ]; then
+              before="$C0"
+            fi
+            read_state "$ns"
+            changed="$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$STATE") | sed -n 's/^> //p' | cut -d' ' -f1-2 | paste -sd',' || true)"
+            if [ -n "$changed" ]; then
+              echo "ERROR: $ns/$NAME changed after the deletion in keystone-mns-a: $changed"
+              exit 1
+            fi
+            echo "OK: $ns/$NAME is Ready with the same Deployment, pods, ConfigMap and fernet keys"
+          done
+          PB="$(api_pod keystone-mns-b)"
+          code="$(validate keystone-mns-b "$PB" "$TOKEN")"
+          if [ "$code" != "200" ]; then
+            echo "ERROR: the keystone-mns-b token answered ${code:-<none>} after the deletion in keystone-mns-a, expected 200"
+            exit 1
+          fi
+          echo "OK: the keystone-mns-b token still answers 200"
+          unset TOKEN
+    catch: *diagnostics

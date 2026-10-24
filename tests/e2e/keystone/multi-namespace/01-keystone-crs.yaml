@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixtures for the multi-namespace E2E test.
+#
+# One Keystone per namespace, all three named keystone-mns, so anything the
+# operator keys by name alone collides. Brownfield mode (database.host +
+# cache.servers) reaches the shared openstack-db and openstack-memcached from
+# outside `openstack`; 00-brownfield-db-setup.yaml pre-creates the schemas.
+# Each Keystone selects its own namespace's openbao-tenant-store.
+#
+# Caching is off. The three Keystones share `openstack-memcached`, and
+# keystone's cache keys carry no per-instance discriminator, so a token
+# validation cached by one of them would answer the same token in the other
+# two, and the 401 checks of step 4 could not pass. #227 tracks per-instance
+# cache keys in the operator.
+---
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-mns
+  namespace: keystone-mns-a
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    host: openstack-db.openstack.svc.cluster.local
+    port: 3306
+    database: keystone_mns_a
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "openstack-memcached.openstack.svc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  extraConfig:
+    cache:
+      enabled: "false"
+---
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-mns
+  namespace: keystone-mns-b
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    host: openstack-db.openstack.svc.cluster.local
+    port: 3306
+    database: keystone_mns_b
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "openstack-memcached.openstack.svc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  extraConfig:
+    cache:
+      enabled: "false"
+---
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-mns
+  namespace: keystone-mns-c
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    host: openstack-db.openstack.svc.cluster.local
+    port: 3306
+    database: keystone_mns_c
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "openstack-memcached.openstack.svc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  extraConfig:
+    cache:
+      enabled: "false"
