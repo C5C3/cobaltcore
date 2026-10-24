@@ -1172,7 +1172,8 @@ func TestEnsureMemcached_CrossNamespaceOwnedReconcilesReplicas(t *testing.T) {
 }
 
 // TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing pins the steady state: a
-// label-owned cache already at the declared count is compared, not rewritten.
+// label-owned cache already at the declared count, resources and security is
+// compared, not rewritten.
 func TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := infraTestScheme(t)
@@ -1180,13 +1181,14 @@ func TestEnsureMemcached_OwnedAtDeclaredCountWritesNothing(t *testing.T) {
 
 	updates := 0
 	seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(3)))
+	g.Expect(unstructured.SetNestedMap(seed.Object, wantMemcachedSecurity(), "spec", "security")).To(Succeed())
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
 		WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(updates).To(BeZero(), "a cache at the declared count must not be written")
+	g.Expect(updates).To(BeZero(), "a cache at the declared count, resources and security must not be written")
 }
 
 // TestEnsureMemcached_RefusesToReshapeAForeignInstance verifies the never-adopt
@@ -1231,6 +1233,9 @@ func TestEnsureMemcached_RefusesToReshapeAForeignInstance(t *testing.T) {
 			g.Expect(live.GetOwnerReferences()).To(BeEmpty(),
 				"ownership must never be claimed over an instance we did not create")
 			g.Expect(live.GetLabels()).To(Equal(tc.labels), "an adopted cache must keep its labels as seeded")
+			_, found, nerr := unstructured.NestedFieldNoCopy(live.Object, "spec", "security")
+			g.Expect(nerr).NotTo(HaveOccurred())
+			g.Expect(found).To(BeFalse(), "an adopted cache must not gain spec.security")
 		})
 	}
 }
@@ -1259,10 +1264,11 @@ func TestEnsureMemcached_LabelOwnedInOwnNamespaceReconcilesReplicas(t *testing.T
 		"a label-owned cache in the ControlPlane's own namespace must have spec.replicas reconciled")
 }
 
-// TestEnsureMemcached_OwnedWriteErrorsAreWrapped pins the two failures of the
-// owned re-projection on a label-owned cache: a rejected Update and a
-// spec.replicas that is not an integer. Each is returned wrapped, naming the
-// cache, and reports not ready. A malformed count is refused before any write.
+// TestEnsureMemcached_OwnedWriteErrorsAreWrapped pins the failures of the
+// owned re-projection on a label-owned cache: a rejected Update, a
+// spec.replicas that is not an integer, and a spec.security that is not a map.
+// Each is returned wrapped, naming the cache, and reports not ready. A
+// malformed field is refused before any write.
 func TestEnsureMemcached_OwnedWriteErrorsAreWrapped(t *testing.T) {
 	sentinel := errors.New("update rejected")
 
@@ -1302,6 +1308,25 @@ func TestEnsureMemcached_OwnedWriteErrorsAreWrapped(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(HavePrefix(`reading Memcached "openstack-memcached" spec.replicas: `))
 		g.Expect(updates).To(BeZero(), "a count that cannot be read must not be overwritten")
+	})
+
+	t.Run("malformed security", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := splitNamespaceControlPlane()
+
+		updates := 0
+		seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(3)))
+		g.Expect(unstructured.SetNestedField(seed.Object, "x", "spec", "security")).To(Succeed())
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+			WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		ready, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
+		g.Expect(ready).To(BeFalse())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(HavePrefix(`reading Memcached "openstack-memcached" spec.security: `))
+		g.Expect(updates).To(BeZero(), "a spec.security that cannot be read must not be overwritten")
 	})
 }
 
@@ -3195,6 +3220,95 @@ func TestReconcileInfrastructure_OwnedMariaDBUpdateErrorSurfacesMariaDBError(t *
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("MariaDBError"))
 	g.Expect(cond.Message).To(ContainSubstring(`updating owned MariaDB "openstack-db": update rejected`))
+}
+
+// wantMemcachedSecurity is the spec.security the restricted profile admits a
+// Memcached pod with, spelled out apart from the production helper.
+func wantMemcachedSecurity() map[string]interface{} {
+	return map[string]interface{}{
+		"podSecurityContext": map[string]interface{}{
+			"runAsNonRoot":   true,
+			"runAsUser":      int64(11211),
+			"runAsGroup":     int64(11211),
+			"seccompProfile": map[string]interface{}{"type": "RuntimeDefault"},
+		},
+		"containerSecurityContext": map[string]interface{}{
+			"allowPrivilegeEscalation": false,
+			"capabilities":             map[string]interface{}{"drop": []interface{}{"ALL"}},
+		},
+	}
+}
+
+// TestEnsureMemcached_RestrictedSecurity pins the restricted security contexts
+// on the Memcached a ControlPlane owns: written on create, and added to an owned
+// cache with one Update that leaves every other spec.security key in place.
+func TestEnsureMemcached_RestrictedSecurity(t *testing.T) {
+	security := func(g Gomega, u *unstructured.Unstructured) map[string]interface{} {
+		m, found, err := unstructured.NestedMap(u.Object, "spec", "security")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue(), "spec.security must be set")
+		return m
+	}
+
+	t.Run("a fresh Memcached carries both contexts", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedInfraControlPlane()
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, cp.Namespace)
+		g.Expect(err).NotTo(HaveOccurred())
+		u, _, _ := getMemcached(g, c, cp.Namespace)
+		g.Expect(security(g, u)).To(Equal(wantMemcachedSecurity()))
+	})
+
+	for _, tc := range []struct {
+		name string
+		seed map[string]interface{}
+		want map[string]interface{}
+	}{
+		{name: "no spec.security", want: wantMemcachedSecurity()},
+		{
+			name: "spec.security holding sasl",
+			seed: map[string]interface{}{"sasl": map[string]interface{}{"enabled": true}},
+			want: func() map[string]interface{} {
+				w := wantMemcachedSecurity()
+				w["sasl"] = map[string]interface{}{"enabled": true}
+				return w
+			}(),
+		},
+		{
+			name: "a drifted containerSecurityContext",
+			seed: func() map[string]interface{} {
+				w := wantMemcachedSecurity()
+				w["containerSecurityContext"] = map[string]interface{}{"allowPrivilegeEscalation": true}
+				return w
+			}(),
+			want: wantMemcachedSecurity(),
+		},
+	} {
+		t.Run("an owned Memcached with "+tc.name+" gets both contexts with one Update", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := infraTestScheme(t)
+			cp := splitNamespaceControlPlane() // Cache.Replicas = 3
+
+			seed := seedMemcached("identity", controlPlaneChildLabels(cp), ptr.To(int64(3)))
+			if tc.seed != nil {
+				g.Expect(unstructured.SetNestedMap(seed.Object, tc.seed, "spec", "security")).To(Succeed())
+			}
+			updates := 0
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, seed).
+				WithInterceptorFuncs(memcachedUpdateInterceptor(&updates, nil)).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, nil, "identity")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(updates).To(Equal(1))
+			u, _, _ := getMemcached(g, c, "identity")
+			g.Expect(security(g, u)).To(Equal(tc.want))
+		})
+	}
 }
 
 func TestEnsureMemcached_Sizing(t *testing.T) {

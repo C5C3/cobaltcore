@@ -908,8 +908,9 @@ func mariaDBSecurityMatches(m *mariadbv1alpha1.MariaDB, galeraEnabled bool) bool
 // object's ownership through isControlPlaneChild, the same test ensureMariaDB
 // uses. Owned means the controller owner reference, or the ownership labels in
 // any namespace, the form a child in a service namespace or on a target cluster
-// is created with. An owned CR has spec.replicas and spec.resources
-// re-projected, while an externally provisioned CR carrying neither is adopted
+// is created with. An owned CR has spec.replicas, spec.resources and the
+// restricted security contexts of restrictedMemcachedSecurity re-projected,
+// while an externally provisioned CR carrying neither ownership mark is adopted
 // read-only and never has ownership claimed. It is also unstructured, which
 // apply.EnsureObject's typed-struct path does not cover.
 //
@@ -945,7 +946,18 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
 			return fmt.Errorf("setting Memcached %q spec.replicas: %w", key.Name, serr)
 		}
-		return setUnstructuredResources(u, resources)
+		if serr := setUnstructuredResources(u, resources); serr != nil {
+			return serr
+		}
+		// Only the two security subtrees are written; any other spec.security
+		// key (sasl, tls, networkPolicy) stays as it is.
+		security := restrictedMemcachedSecurity()
+		for _, field := range slices.Sorted(maps.Keys(security)) {
+			if serr := unstructured.SetNestedField(u.Object, security[field], "spec", "security", field); serr != nil {
+				return fmt.Errorf("setting Memcached %q spec.security.%s: %w", key.Name, field, serr)
+			}
+		}
+		return nil
 	}
 
 	u := &unstructured.Unstructured{}
@@ -968,13 +980,14 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 		return false, fmt.Errorf("getting Memcached %q: %w", key.Name, err)
 	default:
 		// An existing Memcached. If this ControlPlane OWNS it (we created it on an
-		// earlier pass), reconcile spec.replicas and spec.resources so a
-		// ControlPlane spec or sizing change actually resizes the cache we own
-		// instead of being ignored after first creation. The re-projection runs in
-		// both directions and needs no opt-in: scaling a cache drops cached entries
-		// and no data. If it is a pre-existing / externally-provisioned instance
-		// (NOT owned) we adopt it as-is and never reshape it — same rationale as
-		// ensureMariaDB — nor claim GC ownership of shared infra.
+		// earlier pass), reconcile spec.replicas, spec.resources and the two
+		// spec.security contexts so a ControlPlane spec or sizing change actually
+		// resizes the cache we own instead of being ignored after first creation,
+		// and drift off the restricted contexts is corrected. The re-projection
+		// runs in both directions and needs no opt-in: scaling a cache drops cached
+		// entries and no data. If it is a pre-existing / externally-provisioned
+		// instance (NOT owned) we adopt it as-is and never reshape it — same
+		// rationale as ensureMariaDB — nor claim GC ownership of shared infra.
 		//
 		// Ownership is isControlPlaneChild, not IsControlledBy: a child in a service
 		// namespace or on a target cluster carries the ownership labels instead of
@@ -988,7 +1001,11 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 			if rerr != nil {
 				return false, fmt.Errorf("reading Memcached %q spec.resources: %w", key.Name, rerr)
 			}
-			if !found || current != int64(replicas) || !resourcesMatch {
+			securityMatches, serr := unstructuredMemcachedSecurityMatches(u)
+			if serr != nil {
+				return false, fmt.Errorf("reading Memcached %q spec.security: %w", key.Name, serr)
+			}
+			if !found || current != int64(replicas) || !resourcesMatch || !securityMatches {
 				if perr := project(u); perr != nil {
 					return false, perr
 				}
@@ -1000,6 +1017,49 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 	}
 
 	return unstructuredReady(u), nil
+}
+
+// memcachedRunAsID is the uid and gid of the memcache user of memcached:1.6,
+// the image the memcached-operator defaults spec.image to. That image names
+// its user instead of giving a number, so runAsNonRoot alone fails the
+// kubelet's non-root check. A Memcached on another image needs this changed.
+const memcachedRunAsID int64 = 11211
+
+// restrictedMemcachedSecurity returns the spec.security subtrees that admit a
+// Memcached pod under the Pod Security Standards restricted profile. Numbers
+// are int64 and lists []any, the types the API decodes them to, so a live
+// object compares equal.
+func restrictedMemcachedSecurity() map[string]any {
+	return map[string]any{
+		"podSecurityContext": map[string]any{
+			"runAsNonRoot":   true,
+			"runAsUser":      memcachedRunAsID,
+			"runAsGroup":     memcachedRunAsID,
+			"seccompProfile": map[string]any{"type": string(corev1.SeccompProfileTypeRuntimeDefault)},
+		},
+		"containerSecurityContext": map[string]any{
+			"allowPrivilegeEscalation": false,
+			"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		},
+	}
+}
+
+// unstructuredMemcachedSecurityMatches reports whether u carries both
+// subtrees of restrictedMemcachedSecurity. A missing subtree does not match. A
+// value at spec.security or below that is not a map returns the error of the
+// unstructured accessor.
+func unstructuredMemcachedSecurityMatches(u *unstructured.Unstructured) (bool, error) {
+	want := restrictedMemcachedSecurity()
+	for _, field := range slices.Sorted(maps.Keys(want)) {
+		live, found, err := unstructured.NestedMap(u.Object, "spec", "security", field)
+		if err != nil {
+			return false, err
+		}
+		if !found || !equality.Semantic.DeepEqual(live, want[field]) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // ensureRabbitMQ create-or-updates the owned RabbitmqCluster CR named after
