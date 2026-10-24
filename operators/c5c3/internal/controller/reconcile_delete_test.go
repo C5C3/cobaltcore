@@ -369,7 +369,7 @@ func TestReconcileDelete_WaitsWhileORCTerminating(t *testing.T) {
 func TestReconcileDelete_ForceRemovesORCFinalizersAfterStall(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingControlPlane(2 * orcTeardownStallTimeout)
 	// An AC stuck Terminating behind a K-ORC finalizer AND a foreign finalizer
 	// that must survive the force-remove.
@@ -881,7 +881,7 @@ func TestReconcileDelete_StallEscapeReleasesTheStalledRegistrationsChildren(t *t
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
 	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
 
@@ -2015,7 +2015,7 @@ func stalledExternalORCChildren(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 func TestReconcileDelete_StallEscapeNamesOrphanedManagedResources(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	s := korcTestScheme(t)
+	s := namespaceTeardownScheme(t)
 	cp := deletingExternalControlPlane()
 	stalled := metav1.NewTime(metav1.Now().Add(-2 * orcTeardownStallTimeout))
 	cp.DeletionTimestamp = &stalled
@@ -3265,6 +3265,48 @@ func TestReconcileDelete_RemovesTheColocatedAuthDelegatorBinding(t *testing.T) {
 
 		expectPresent(t, c, foreign)
 	})
+}
+
+// TestReconcileDelete_StallEscapeRemovesTheColocatedBarbicanResidue is the
+// regression guard for the leak the deletion-orchestration suite caught: with
+// Keystone gone first the teardown takes the ORC stall escape, and a ControlPlane
+// that placed nothing carries no remote-children finalizer to finish the sweep on a
+// later pass. Releasing the ORC finalizer releases the CR, so the co-located
+// Barbican's auth-delegator binding and OpenBaoTenant have to go on the escape
+// pass itself, or nothing ever collects them.
+func TestReconcileDelete_StallEscapeRemovesTheColocatedBarbicanResidue(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := colocatedBarbicanControlPlane(g)
+	stalledSince := metav1.NewTime(metav1.Now().Add(-(orcTeardownDeadline + time.Minute)))
+	cp.DeletionTimestamp = &stalledSince
+	// A managed K-ORC CR wedged behind a finalizer K-ORC can no longer run.
+	wedged := &orcv1alpha1.ApplicationCredential{ObjectMeta: terminatingImportMeta(
+		adminAppCredentialName(cp), childNamespace(cp), "openstack.k-orc.cloud/applicationcredential")}
+	binding := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{
+		Name:   barbicanOpenBaoAuthDelegatorName(barbicanOpenBaoName(cp), cp.BarbicanNamespace()),
+		Labels: controlPlaneChildLabels(cp),
+	}}
+	tenant := barbicanOpenBaoSizedTenant(cp, defaultOpenBaoOperatorNamespace)
+	tenant.Labels = controlPlaneChildLabels(cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedged, binding, tenant).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(ctx, key, cp)).To(Succeed())
+	g.Expect(cp.Finalizers).NotTo(ContainElement(commonmulticluster.RemoteChildrenFinalizer),
+		"the fixture must place nothing, or the remote-children pass would cover the sweep")
+
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "the stall escape must release without requeue")
+	g.Expect(strings.Join(drainEvents(rec), "\n")).To(ContainSubstring("ORCTeardownStalled"))
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
+
+	expectSwept(t, c, binding, tenant)
 }
 
 // TestSweepExternalNamespaceResidue_RemovesTheBarbicanResidue covers the External
