@@ -1,0 +1,168 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for immutable ConfigMap pruning and for keys removed
+# from spec.extraConfig, the Horizon counterpart of
+# tests/e2e/keystone/config-pruning. Verifies:
+#   - After four extraConfig changes, stale ConfigMaps are pruned: at most
+#     retain + 1 = 4 horizon-pruning-config-<hash> ConfigMaps remain
+#   - The mounted ConfigMap carries the last value, SESSION_TIMEOUT = 3604
+#   - Removing spec.extraConfig removes SESSION_TIMEOUT from the mounted
+#     local_settings.py, and the count stays at most 4. The rendered content
+#     then equals the first generation's, so the content-addressed name is
+#     the first ConfigMap's, which the pruning deleted and the operator
+#     creates again
+#   - Ready=True is kept throughout
+#
+# SESSION_TIMEOUT is a Django setting the operator neither owns
+# (operators/horizon/api/v1alpha1/config_ownership.go) nor rejects, so each
+# value renders a new ConfigMap and nothing else.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-config-pruning
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Horizon CR and wait for Ready ────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-pruning
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &dump
+    - script:
+        content: |
+          echo "=== ConfigMaps ==="
+          kubectl get cm -n $NAMESPACE -o name | grep horizon-pruning-config- || true
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-pruning -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-pruning -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 2>&1 || true
+  # ── Step 2: Four config changes, then remove the key ───────────────────
+  # The operator prunes after the Deployment step, so a pass that reports
+  # DeploymentReady=True for the current generation has pruned already.
+  # The 30m timeout covers the worst case: five wait_converged calls of
+  # 180 + 150 s each plus the 120 s count poll, 1,770 s.
+  - try:
+    - script:
+        timeout: 30m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          CR=horizon-pruning
+          PREFIX=configmap/horizon-pruning-config-
+
+          count_cms() {
+            kubectl get cm -n "$NS" -o name | grep -c "$PREFIX" || true
+          }
+          mounted_settings() {
+            local cm
+            cm=$(kubectl get deployment "$CR" -n "$NS" \
+              -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+            echo "mounted ConfigMap: $cm" >&2
+            kubectl get cm "$cm" -n "$NS" -o jsonpath='{.data.local_settings\.py}'
+          }
+          # wait_converged: polls every 5 s for up to 180 s until the
+          # operator observed the current generation and DeploymentReady is
+          # True for it, then waits for the rollout.
+          wait_converged() {
+            local deadline converged
+            deadline=$(( $(date +%s) + 180 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              converged=$(kubectl get horizon "$CR" -n "$NS" -o json | jq -r '
+                .metadata.generation as $gen
+                | (.status.observedGeneration == $gen)
+                  and ((.status.conditions // []) | any(.type == "DeploymentReady"
+                    and .status == "True" and .observedGeneration == $gen))')
+              if [ "$converged" = "true" ]; then
+                kubectl rollout status deployment/"$CR" -n "$NS" --timeout=150s
+                return 0
+              fi
+              sleep 5
+            done
+            echo "FAIL: $CR did not converge on its generation within 180 s"
+            return 1
+          }
+
+          echo "Initial ConfigMap count: $(count_cms)"
+          for i in 1 2 3 4; do
+            echo "=== Patch $i: SESSION_TIMEOUT = 360$i ==="
+            kubectl patch horizon "$CR" -n "$NS" --type=merge \
+              -p "{\"spec\":{\"extraConfig\":{\"SESSION_TIMEOUT\":360$i}}}"
+            wait_converged
+            echo "After patch $i: ConfigMap count = $(count_cms)"
+          done
+
+          COUNT=$(count_cms)
+          DEADLINE=$(( $(date +%s) + 120 ))
+          while [ "$COUNT" -gt 4 ] && [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            sleep 5
+            COUNT=$(count_cms)
+          done
+          if [ "$COUNT" -gt 4 ]; then
+            echo "FAIL: expected at most 4 ConfigMaps (retain=3 + current), got $COUNT"
+            kubectl get cm -n "$NS" -o name | grep "$PREFIX" || true
+            exit 1
+          fi
+          echo "OK: $COUNT ConfigMaps after four changes (at most 4)"
+
+          if ! grep -qx 'SESSION_TIMEOUT = 3604' <<<"$(mounted_settings)"; then
+            echo "FAIL: the mounted local_settings.py does not carry SESSION_TIMEOUT = 3604"
+            exit 1
+          fi
+          echo "OK: the mounted local_settings.py carries SESSION_TIMEOUT = 3604"
+
+          echo "=== Removing spec.extraConfig ==="
+          kubectl patch horizon "$CR" -n "$NS" --type=merge -p '{"spec":{"extraConfig":null}}'
+          wait_converged
+          SETTINGS=$(mounted_settings)
+          if grep -q '^SESSION_TIMEOUT' <<<"$SETTINGS"; then
+            echo "FAIL: SESSION_TIMEOUT is still in the mounted local_settings.py"
+            grep '^SESSION_TIMEOUT' <<<"$SETTINGS"
+            exit 1
+          fi
+          COUNT=$(count_cms)
+          if [ "$COUNT" -gt 4 ]; then
+            echo "FAIL: expected at most 4 ConfigMaps after the removal, got $COUNT"
+            kubectl get cm -n "$NS" -o name | grep "$PREFIX" || true
+            exit 1
+          fi
+          echo "OK: SESSION_TIMEOUT removed from the mounted local_settings.py, $COUNT ConfigMaps"
+    catch: *dump
+  # ── Step 3: Assert Ready=True after pruning ────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-pruning
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *dump
