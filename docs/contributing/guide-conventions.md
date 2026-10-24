@@ -42,14 +42,14 @@ gate does not cover (see
 
 A reader arriving at a guide has to know exactly which cluster to build before
 the first command runs. Every guide therefore opens with a standardized
-prerequisites block that names **exactly one** Getting-Started tutorial and its
+prerequisites block that names **exactly one** deployment guide or tutorial and its
 verbatim bring-up command.
 
 The section is short and machine-checkable. It consists of:
 
 1. A `## Prerequisites` heading.
 2. Whose first element is a `::: info Devstack` container that holds, in order:
-   - exactly **one** link to a Getting-Started tutorial
+   - exactly **one** link to a deployment guide or tutorial
      (`../quick-start.md`, `../quick-start-extended.md`,
      `../quick-start-controlplane.md`, or `../quick-start-metal-stack.md` — one
      `../` deeper from a service subdirectory);
@@ -64,21 +64,18 @@ The section is short and machine-checkable. It consists of:
   NetworkPolicy, ...); omit it when there are none. Do not use a list or
   stack another callout box when the prerequisite fits in this paragraph.
 
-The map shows what each of the five quick starts deploys and how they relate. A
-guide whose devstack is a ControlPlane cannot start from a standalone cluster:
-that step takes `make teardown-infra` and a fresh cluster.
-
-![A map of the five quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other three run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. The Quick Start (Orders) extends the ControlPlane devstack without a teardown: a second kind cluster joins it as a registered target, a service owner orders seven pieces from an assigned namespace on each cluster, and it ends with four Secrets on the target and four Jobs that use them. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Four of them begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack.](../diagrams/quickstart-map.svg)
-
-The five quick starts on the map, and the four devstacks a guide may name with
-the names each produces:
+Choose the environment that supplies the resources your guide uses. The Quick
+Start now creates a minimal ControlPlane. Deploy a ControlPlane extends that
+same cluster; the standalone Keystone guide uses a separate deployment mode.
+See [Deploy on Local Kubernetes](../deployment/local-kubernetes.md) before
+switching between standalone and ControlPlane modes.
 
 | Devstack | Verbatim bring-up | Names the examples may use |
 | --- | --- | --- |
-| [Quick Start](../quick-start.md) | `KIND_HOST_PORT=8443 make deploy-infra` (then the operator, image, and CR steps) | Keystone CR `keystone` in `openstack`; admin Secret `keystone-admin`; DB Secret `keystone-db`; gateway `openstack-gw`; endpoint `https://keystone.127-0-0-1.nip.io:8443/v3` |
-| [Quick Start (Extended)](../quick-start-extended.md) | `kind create cluster --name cobaltcore --config hack/kind-config.yaml` then `make deploy-infra` (then the operator, image, and CR steps) | Same standalone names as the base Quick Start (`keystone`, `keystone-admin`, `keystone-db`) |
-| [Quick Start (ControlPlane)](../quick-start-controlplane.md) | `KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra` | ControlPlane CR `controlplane` in `openstack`; projected children `controlplane-keystone` / `controlplane-horizon`; admin Secret and ExternalSecret `controlplane-keystone-admin-credentials`; DB ExternalSecret `controlplane-keystone-db-credentials`; shared `openstack-db` / `openstack-memcached` / `openstack-gw` |
-| [Quick Start (metal-stack)](../quick-start-metal-stack.md) | `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra` (then Part 1, and Part 2 for a guide that needs servers) | ControlPlane CR `controlplane` in `openstack` with the projected children of the ControlPlane devstack; Cinder child `controlplane-cinder` with the RBD backends `ceph1` and `cephbk` on the lab Ceph, whose toolbox is `rook-ceph/rook-ceph-tools`; `OVNCentral` `controlplane-ovn`; `OVNChassis` `lab-chassis`; `NeutronMetadataAgent` `lab-metadata-agent`; `NovaCompute` `lab`; namespace `hypervisor-system`; the `*.127-0-0-1.nip.io:8443` endpoints behind `kubectl port-forward` |
+| [Quick Start](../quick-start.md) | `EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=true make deploy-infra` | ControlPlane `controlplane` in `openstack`; Keystone `controlplane-keystone`; Horizon `controlplane-horizon`; admin Secret `controlplane-keystone-admin-credentials`; gateway `openstack-gw`; endpoint `https://keystone.127-0-0-1.nip.io:8443/v3` |
+| [Deploy Keystone Locally](../quick-start-extended.md) | `EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=false WITH_CONTROLPLANE_CR=false make deploy-infra` (then the operator, image, and CR steps) | Standalone Keystone `keystone` in `openstack`; admin Secret `keystone-admin`; DB Secret `keystone-db` |
+| [Deploy a ControlPlane](../quick-start-controlplane.md) | `EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra` | ControlPlane CR `controlplane` in `openstack`; projected children `controlplane-keystone` / `controlplane-horizon`; admin Secret and ExternalSecret `controlplane-keystone-admin-credentials`; DB ExternalSecret `controlplane-keystone-db-credentials`; shared `openstack-db` / `openstack-memcached` / `openstack-gw` |
+| [Deploy on Bare Metal](../quick-start-metal-stack.md) | `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra` (then Part 1, and Part 2 for a guide that needs servers) | ControlPlane CR `controlplane` in `openstack` with the projected children of the ControlPlane devstack; Cinder child `controlplane-cinder` with the RBD backends `ceph1` and `cephbk` on the lab Ceph, whose toolbox is `rook-ceph/rook-ceph-tools`; `OVNCentral` `controlplane-ovn`; `OVNChassis` `lab-chassis`; `NeutronMetadataAgent` `lab-metadata-agent`; `NovaCompute` `lab`; namespace `hypervisor-system`; the `*.127-0-0-1.nip.io:8443` endpoints behind `kubectl port-forward` |
 
 Opt-in flags compose, so a guide that needs both a ControlPlane and Prometheus
 names `KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make deploy-infra`.
@@ -90,7 +87,7 @@ actually produces — never a placeholder name that no tutorial creates. A reade
 on that devstack must be able to copy a command and have it hit a resource that
 exists.
 
-When a guide's devstack is the ControlPlane Quick Start, the primary path uses
+When a guide uses the Quick Start or Deploy a ControlPlane, the primary path uses
 the ControlPlane devstack's real names: the projected Keystone child is
 `controlplane-keystone`, its admin credential lives in
 `controlplane-keystone-admin-credentials`, and so on. Where a standalone

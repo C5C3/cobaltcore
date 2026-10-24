@@ -28,7 +28,7 @@ one control plane.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy a ControlPlane](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -757,7 +757,7 @@ one.
 No suite crosses a cluster boundary with Nova, exposes a broker, or runs hvo,
 so steps 1 and 2 and steps 5 to 7 are the contract as written. hvo and
 kvm-node-agent run only on the metal-stack lab, by hand, in Part 2 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hypervisors).
+[Deploy on Bare Metal](../../quick-start-metal-stack.md#hypervisors).
 [Tested by](#tested-by) lists the suites that cover the pieces this guide puts
 together.
 

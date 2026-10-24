@@ -1471,7 +1471,7 @@ domain of type `qemu`. The domain's disk is a qcow2 overlay on a base file
 under `/var/lib/nova/instances/_base/`. Deleting the server removes the domain
 and the instance directory. The guest has no operating system and no NIC: the
 guest boot, KVM, networking and live migration are proven by the lab run of
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md).
+[Deploy on Bare Metal](../../quick-start-metal-stack.md).
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-nova-libvirt == 'true'`, the upstream

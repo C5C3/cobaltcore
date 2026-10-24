@@ -17,7 +17,7 @@ For the controller-side instrumentation contract, see
 [Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
 
 ::: tip On kind
-If you are running the kind Quick Start, the prometheus-operator CRDs,
+If you are running the standalone kind environment, the prometheus-operator CRDs,
 Prometheus, Grafana, and the bundled `Keystone Operator` dashboard are
 already wrapped behind a single opt-in flag — none of the manual steps
 below are required:
@@ -30,7 +30,7 @@ WITH_PROMETHEUS=true make deploy-infra
 overlay (`deploy/kind/prometheus/`), patch the keystone-operator
 HelmRelease to flip `monitoring.serviceMonitor.enabled=true`, and wait
 for the scrape targets to come up. See
-[Extended Quick Start — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui)
+[Deploy Keystone Locally — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui)
 for the port-forward, default credentials, and the Prometheus targets
 sanity-check.
 
@@ -45,7 +45,7 @@ sections below cover that wiring end-to-end.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy Keystone Locally](../../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_PROMETHEUS=true make deploy-infra

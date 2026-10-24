@@ -3,12 +3,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify docs/quick-start-orders.md, the quick start for the orders of a
-# service the control plane does not manage:
-#   1. the frontmatter holds `title: Quick Start (Orders)` and no other key,
+# Verify docs/quick-start-orders.md, the tutorial for provisioning a
+# service's resources:
+#   1. the frontmatter holds `title: Provision Resources` and no other key,
 #      the SPDX comment is present, and the H1 follows it
-#   2. docs/.vitepress/config.ts lists the page after the metal-stack quick
-#      start and before the Architecture group
+#   2. docs/.vitepress/config.ts lists the page in the Tutorials group
+#      before the Architecture group
 #   3. the six `## ` sections occur once each and in order, every
 #      `### Step` heading carries an explicit anchor, `cp-` in Part 1 and `tc-`
 #      in Part 2, and Part 2 keeps `### The path from the target {#tc-path}`,
@@ -22,10 +22,11 @@
 #      `NodePort 31443`
 #   7. the page names publishedDatabaseEndpoint and publishedMessagingEndpoint,
 #      and both are fields of the ControlPlane API
-#   8. the Devstack box names ./quick-start-controlplane.md once and holds the
-#      verbatim bring-up of that devstack
+#   8. the prerequisites link to ./quick-start-controlplane.md and hold the
+#      verbatim bring-up of that local environment
 #   9. Part 2 registers the target with both keys, namespaces=openstack and
-#      assignedNamespaces=workflow, and waits for `cluster engaged`
+#      assignedNamespaces=workflow, waits for `cluster engaged`, and creates
+#      the assigned namespace before installing its access Roles
 #  10. Part 1 numbers its steps 1 to 10, Step 7 is the rotation {#cp-rotation}
 #      and Steps 8 to 10 keep {#cp-database}, {#cp-vhost} and {#cp-teardown};
 #      only Part 1 shortens the schedule (interval: 3m, gracePeriod: 2m), Part 2
@@ -120,8 +121,8 @@ test_frontmatter() {
   assert_eq "line 1 opens the frontmatter" "---" "$(head -n 1 "$QUICK_START_DOC")"
   local keys
   keys="$(awk 'NR == 1 && $0 != "---" { exit } NR > 1 && /^---$/ { exit } NR > 1 && /^[A-Za-z0-9_-]+:/ { print }' "$QUICK_START_DOC")"
-  assert_eq "the frontmatter holds 'title: Quick Start (Orders)' and no other key" \
-    "title: Quick Start (Orders)" "$keys"
+  assert_eq "the frontmatter holds 'title: Provision Resources' and no other key" \
+    "title: Provision Resources" "$keys"
   assert_file_contains_fixed "SPDX copyright line present" "$QUICK_START_DOC" \
     "SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company"
   assert_file_contains_fixed "SPDX license line present" "$QUICK_START_DOC" \
@@ -131,22 +132,22 @@ test_frontmatter() {
   # the page's one H1.
   local after
   after="$(awk 'closed && NF { print; exit } /^-->$/ { closed = 1 }' "$QUICK_START_DOC")"
-  assert_starts_with "the H1 follows the SPDX comment" "$after" "# Quick Start (Orders)"
+  assert_starts_with "the H1 follows the SPDX comment" "$after" "# Provision Resources"
   assert_eq "the page holds one H1" "1" "$(headings '#' | grep -c . || true)"
 }
 
 # --- Test 2: the sidebar item ---
 test_sidebar() {
-  echo "Test: the sidebar lists the page after the metal-stack quick start"
-  local metal_stack orders architecture ok=0
-  metal_stack="$(grep -nF "link: '/quick-start-metal-stack'" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  orders="$(grep -nF "{ text: 'Quick Start (Orders)', link: '/quick-start-orders' }" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
+  echo "Test: the sidebar lists Provision Resources in Tutorials"
+  local tutorials orders architecture ok=0
+  tutorials="$(grep -nE "^[[:space:]]*text: 'Tutorials',[[:space:]]*$" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
+  orders="$(grep -nF "{ text: 'Provision Resources', link: '/quick-start-orders' }" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
   architecture="$(grep -nE "^[[:space:]]*text: 'Architecture',[[:space:]]*$" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  if [[ -n "$metal_stack" && -n "$orders" && -n "$architecture" ]] &&
-    ((metal_stack < orders && orders < architecture)); then
+  if [[ -n "$tutorials" && -n "$orders" && -n "$architecture" ]] &&
+    ((tutorials < orders && orders < architecture)); then
     ok=1
   fi
-  record "$ok" "sidebar item between the metal-stack item and the Architecture group (metal-stack '${metal_stack}', Orders '${orders}', Architecture '${architecture}')"
+  record "$ok" "sidebar item in Tutorials before Architecture (Tutorials '${tutorials}', Provision Resources '${orders}', Architecture '${architecture}')"
 }
 
 # --- Test 3: sections and step anchors ---
@@ -154,8 +155,8 @@ test_sections() {
   echo "Test: the six sections occur once each, in order"
   local sections pattern name count line previous=0 ordered=1
   sections="$(headings '##')"
-  for pattern in '^## Prerequisites$' '^## Part 1: The management cluster' '^## Part 2: A target cluster' \
-    '^## Teardown$' '^## Tested by$' '^## Related references$'; do
+  for pattern in '^## Prerequisites$' '^## Part 1: Provision resources for your service' '^## Part 2: Provision resources from another cluster' \
+    '^## Remove the local environment' '^## Run the related tests' '^## Related references$'; do
     name="${pattern#^## }"
     name="${name%$}"
     count="$(cut -d: -f2- <<<"$sections" | grep -cE "$pattern" || true)"
@@ -193,7 +194,7 @@ test_sections() {
 test_tested_by_paths_resolve() {
   echo "Test: every chainsaw test --test-dir path resolves to a chainsaw-test.yaml"
   local dirs dir
-  dirs="$(section '^## Tested by$' | grep -oE 'chainsaw test --test-dir [^[:space:]]+' |
+  dirs="$(section '^## Run the related tests' | grep -oE 'chainsaw test --test-dir [^[:space:]]+' |
     sed 's|^chainsaw test --test-dir ||' || true)"
   if [[ -z "$dirs" ]]; then
     record 0 "Tested by names a suite"
@@ -264,28 +265,34 @@ test_published_fields_exist() {
   done
 }
 
-# --- Test 8: the Devstack box ---
-test_devstack_box() {
-  echo "Test: the Devstack box names the ControlPlane quick start once with its bring-up"
-  local box
-  box="$(awk '/^::: info Devstack/ { inside = 1; next } inside && /^:::[[:space:]]*$/ { exit } inside { print }' "$QUICK_START_DOC")"
-  assert_not_empty "the page holds a Devstack box" "$box"
-  assert_eq "the box names ./quick-start-controlplane.md once" "1" \
-    "$(grep -oF './quick-start-controlplane.md' <<<"$box" | grep -c . || true)"
-  assert_contains "the box holds the verbatim bring-up" "$box" \
+# --- Test 8: the local environment prerequisites ---
+test_prerequisites() {
+  echo "Test: prerequisites link to the ControlPlane tutorial and show its bring-up"
+  local prerequisites
+  prerequisites="$(section '^## Prerequisites$')"
+  assert_contains "prerequisites link to the ControlPlane tutorial" "$prerequisites" \
+    "./quick-start-controlplane.md"
+  assert_contains "prerequisites hold the verbatim bring-up" "$prerequisites" \
     "KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra"
 }
 
 # --- Test 9: the two-key registration of Part 2 ---
 test_part_2_registers_two_keys() {
   echo "Test: Part 2 registers the target with both keys and waits for the engagement"
-  local part2
+  local part2 chart_step namespace_line install_line namespace_first=0
   part2="$(section '^## Part 2: ')"
   assert_contains "the registration carries the placed namespace" "$part2" "--from-literal=namespaces=openstack"
   assert_contains "the registration carries the assigned namespace" "$part2" \
     "--from-literal=assignedNamespaces=workflow"
   assert_contains "the chart assigns the same namespace" "$part2" "assignedNamespaces={workflow}"
   assert_contains "Part 2 waits for the engagement" "$part2" "cluster engaged"
+  chart_step="$(step_text 2 2)"
+  namespace_line="$(grep -nF 'kubectl --context kind-cobaltcore-target create namespace workflow' <<<"$chart_step" | head -n 1 | cut -d: -f1)"
+  install_line="$(grep -nF 'helm install --kube-context kind-cobaltcore-target' <<<"$chart_step" | head -n 1 | cut -d: -f1)"
+  if [[ -n "$namespace_line" && -n "$install_line" ]] && ((namespace_line < install_line)); then
+    namespace_first=1
+  fi
+  record "$namespace_first" "create the assigned namespace before Helm installs its access Roles"
 }
 
 # --- Test 10: the rotation step of Part 1 ---
@@ -299,9 +306,9 @@ test_part_1_rotation_step() {
   want_numbers="1 2 3 4 5 6 7 8 9 10 "
   assert_eq "Part 1 numbers its steps 1 to 10 in order" "$want_numbers" "$numbers"
   assert_contains "Step 7 is the rotation" "$steps" "### Step 7: Watch the credential rotate {#cp-rotation}"
-  assert_contains "Step 8 keeps its anchor" "$steps" "### Step 8: Order a database {#cp-database}"
-  assert_contains "Step 9 keeps its anchor" "$steps" "### Step 9: Order a vhost {#cp-vhost}"
-  assert_contains "Step 10 keeps its anchor" "$steps" "### Step 10: Tear the orders down {#cp-teardown}"
+  assert_contains "Step 8 keeps its anchor" "$steps" "### Step 8: Create a database {#cp-database}"
+  assert_contains "Step 9 keeps its anchor" "$steps" "### Step 9: Set up messaging {#cp-vhost}"
+  assert_contains "Step 10 keeps its anchor" "$steps" "### Step 10: Remove the service resources {#cp-teardown}"
 
   assert_eq "Part 1 sets 'interval: 3m' once" "1" "$(grep -cE '^[[:space:]]+interval: 3m$' <<<"$part1" || true)"
   assert_eq "Part 1 sets 'gracePeriod: 2m' once" "1" "$(grep -cE '^[[:space:]]+gracePeriod: 2m$' <<<"$part1" || true)"
@@ -362,7 +369,7 @@ test_tested_by_paths_resolve
 test_imports_resolve_with_balanced_regions
 test_target_port_is_the_envoy_node_port
 test_published_fields_exist
-test_devstack_box
+test_prerequisites
 test_part_2_registers_two_keys
 test_part_1_rotation_step
 

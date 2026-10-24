@@ -9,230 +9,114 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start
 
-This macOS quick start gets you from `git clone` to an authenticated Keystone
-API call on kind host port `8443`. It needs no `vmnetd` helper and binds no
-privileged port. For the Keystone identity service reference, see
-[Keystone Operator](./reference/keystone/index.md). For UI tours, fallbacks,
-the local-build path, the production HelmRelease, E2E and Tempest, see
-[Quick Start (Extended)](./quick-start-extended.md).
+Deploy CobaltCore on your computer, sign in to OpenStack, and open its dashboard.
+This walkthrough uses Docker, a local kind Kubernetes cluster, and port `8443`.
 
-On the map of the five quick starts this page is the box Quick Start, the
-shortest path to one standalone Keystone.
+CobaltCore manages OpenStack services through a Kubernetes resource called a
+`ControlPlane`. You declare the services you need; CobaltCore creates and
+maintains them and their supporting infrastructure.
 
-![A map of the five quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other three run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. The Quick Start (Orders) extends the ControlPlane devstack without a teardown: a second kind cluster joins it as a registered target, a service owner orders seven pieces from an assigned namespace on each cluster, and it ends with four Secrets on the target and four Jobs that use them. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Four of them begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack.](./diagrams/quickstart-map.svg)
+This first deployment enables Keystone for identity and Horizon for the
+dashboard. It uses the `Minimal` sizing profile for a single-node evaluation.
+Add networking, images, and compute with [Deploy a ControlPlane](./quick-start-controlplane.md)
+after verifying this deployment.
 
-## Prerequisites
+## Before you start
 
-- A running container runtime:
-  - Docker Desktop, or
-  - Podman with its machine already running.
+- Run Docker Desktop on macOS or Docker Engine on Linux.
+- Allow at least 4 CPU cores, 16 GB of memory, and 10 GB of free disk for the lab.
+- Install Git, Make, `jq`, [Mike Farah's `yq`](https://github.com/mikefarah/yq)
+  v4.40.1 or newer, and the [OpenStack CLI](https://docs.openstack.org/python-openstackclient/latest/).
+- Keep local ports `8443` and `8428` free and allow internet access for image downloads.
 
-- `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
-- OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the authenticated token check in Step 6
-- Pinned `kind`, `kubectl`, `Helm`, `jq` on `PATH`:
+Start with no existing kind cluster named `cobaltcore`. If you already have a
+local deployment, follow [Deploy on Local Kubernetes](./deployment/local-kubernetes.md)
+before changing its mode. This walkthrough creates a local evaluation cloud;
+running virtual machines requires compute hosts, covered by
+[Deploy on Bare Metal](./quick-start-metal-stack.md).
 
-  ```bash
-  make install-test-deps
-  export PATH="${HOME}/.local/bin:${PATH}"
-  ```
-
-- [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` (only required because `KIND_HOST_PORT` is overridden)
-- A stable internet connection for the initial image pulls and package downloads
-
-## Step 1 — Clone
+## 1. Get CobaltCore
 
 ```bash
 git clone https://github.com/c5c3/cobaltcore.git
 cd cobaltcore
+make install-test-deps
+export PATH="${HOME}/.local/bin:${PATH}"
 ```
 
-## Step 2 — Cluster + infrastructure stack
+The installer supplies pinned versions of kind, kubectl, and Chainsaw.
+Run the remaining commands from this repository directory.
 
-When using Podman, ensure its machine is already running and select Podman as
-kind's provider:
+## 2. Deploy
 
 ```bash
-export KIND_EXPERIMENTAL_PROVIDER=podman
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=true make deploy-infra
+kubectl config use-context kind-cobaltcore
+kubectl wait controlplane/controlplane -n openstack \
+  --for=condition=Ready --timeout=15m
 ```
+
+The command creates Kubernetes, installs CobaltCore and its dependencies, and
+applies the bundled `ControlPlane`. It also configures credentials and the
+public API address. Initial downloads and startup can take several minutes.
+
+If a download is interrupted after cluster creation, run
+`kubectl config use-context kind-cobaltcore` before repeating the deployment
+command with the same flags. For a readiness failure, inspect the resource
+before retrying:
 
 ```bash
-KIND_HOST_PORT=8443 make deploy-infra
+kubectl describe controlplane controlplane -n openstack
+kubectl get pods -n openstack
 ```
 
-The command creates the `cobaltcore` kind cluster with `host:8443 → nodePort 31443`,
-then installs Flux, cert-manager, the Gateway API CRDs,
-prometheus-operator-crds, OpenBao (initialised, unsealed and bootstrapped),
-MariaDB operator + `openstack-db`, External Secrets, Memcached operator +
-`openstack-memcached`, Envoy Gateway and the shared `openstack-gw`. Expect
-5 to 10 minutes on first run.
+See [Diagnose a Deployment](./guides/observability.md) for further checks.
 
-The figure follows a request along that mapping, from the workstation to the
-pods of the Keystone that Step 5 creates.
-[The request path, hop by hop](./quick-start-extended.md#request-path) names
-each hop and where a first run stops.
-
-![The path of a request from the workstation to an OpenStack API on the kind devstack, in six numbered hops. Hop 1: the public nip.io service resolves {svc}.127-0-0-1.nip.io to 127.0.0.1. Hop 2: the client connects to 127.0.0.1 on the host port, which is 443 or the value of KIND_HOST_PORT. Hop 3: the extraPortMappings entry of hack/kind-config.yaml forwards the host port to port 31443 of the kind node, the NodePort of the Envoy proxy Service in envoy-gateway-system. Hop 4: the Service hands the connection to the Envoy proxy, which serves the Gateway openstack-gw in the namespace openstack, with one HTTPS listener per hostname and the certificate Secret {svc}-nip-io-tls. Hop 5: the HTTPRoute, which the service operator renders from spec.gateway of the service resource, sends the request to the Service by hostname and path. Hop 6: the Service reaches the pods over plain HTTP. The publicEndpoint of the service resource is the public URL in the catalog and has to carry the host port. Two paths leave hops out: a port-forward to the Service, started by hand, skips hops 1 to 5, and the metal-stack lab forwards local port 8443 to the Envoy proxy Service in place of hops 2 and 3.](./diagrams/quickstart-request-path.svg)
-
-`make deploy-infra` is safe to re-run. A run with the same parameters detects
-the existing cluster and the steps that already completed, then converges
-without redoing them, so you can repeat an interrupted bootstrap. To enable an
-optional component later, re-run with its flag set; the opt-in tips are in the
-[Extended Quick Start](./quick-start-extended.md). Removing a flag does not
-uninstall that component. That is `make teardown-infra`'s job.
-
-If the first run fails because a download or image pull flakes out, run
-`make teardown-infra` and then repeat Step 2.
-
-## Step 3 — Keystone operator
-
-```bash
-kubectl apply -f deploy/flux-system/sources/c5c3-charts.yaml
-kubectl apply -f deploy/flux-system/releases/keystone-operator.yaml
-kubectl wait helmrelease/keystone-operator -n keystone-system \
-  --for=condition=Ready --timeout=120s
-```
-
-## Step 4 — Keystone service image
-
-> Note: the keystone-operator controller runs in `keystone-system`; the Keystone workload it manages runs in `openstack` (controller-vs-workload split).
-
-> The `2026.1` image tag below matches the OpenStack release pinned in this
-> repository under `releases/2026.1/`; if you are following a different release
-> branch, substitute the matching tag there.
-
-```bash
-RELEASE=2026.1
-docker pull ghcr.io/c5c3/keystone:${RELEASE}
-kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore
-```
-
-With Podman, keep `KIND_EXPERIMENTAL_PROVIDER=podman` exported from the
-Prerequisites step, pull the image into Podman's image store, and load it into
-the same kind provider:
-
-```bash
-RELEASE=2026.1
-podman pull ghcr.io/c5c3/keystone:${RELEASE}
-kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore
-```
-
-## Step 5 — Keystone CR
-
-```yaml
-# keystone.yaml
-apiVersion: keystone.openstack.c5c3.io/v1alpha1
-kind: Keystone
-metadata:
-  name: keystone
-  namespace: openstack
-spec:
-  deployment:
-    replicas: 3
-  image:
-    repository: ghcr.io/c5c3/keystone
-    tag: "2026.1"
-  database:
-    clusterRef:
-      name: openstack-db
-    database: keystone
-    secretRef:
-      name: keystone-db
-  cache:
-    clusterRef:
-      name: openstack-memcached
-    backend: dogpile.cache.pymemcache
-  fernet:
-    rotationSchedule: "0 0 * * 0"
-    maxActiveKeys: 3
-  bootstrap:
-    adminUser: admin
-    adminPasswordSecretRef:
-      name: keystone-admin
-    region: RegionOne
-    publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
-  gateway:
-    parentRef:
-      name: openstack-gw
-    hostname: keystone.127-0-0-1.nip.io
-    path: /
-```
-
-```bash
-kubectl apply -f keystone.yaml
-kubectl wait keystone/keystone -n openstack \
-  --for=condition=Ready --timeout=5m
-```
-
-## Step 6 — Verify
-
-```bash
-curl -k https://keystone.127-0-0-1.nip.io:8443/v3
-```
-
-Expected output:
-
-```json
-{"version": {"id": "v3.14", "status": "stable", "updated": "2020-04-07T00:00:00Z", "links": [{"rel": "self", "href": "https://keystone.127-0-0-1.nip.io:8443/v3/"}], "media-types": [{"base": "application/json", "type": "application/vnd.openstack.identity-v3+json"}]}}
-```
-
-Authenticated token request:
+## 3. Verify API access
 
 ```bash
 export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3
 export OS_USERNAME=admin
-export OS_PASSWORD=$(kubectl get secret keystone-admin -n openstack -o jsonpath='{.data.password}' | base64 -d)
+export OS_PASSWORD=$(kubectl get secret controlplane-keystone-admin-credentials \
+  -n openstack -o jsonpath='{.data.password}' | base64 -d)
 export OS_PROJECT_NAME=admin
 export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
+export OS_IDENTITY_API_VERSION=3
 openstack --insecure token issue
 ```
 
-Expected output:
+Success returns a token with `expires`, `id`, `project_id`, and `user_id` fields.
+This verifies authentication through the public API. `--insecure` accepts the
+self-signed certificate used by this local lab.
 
-```text
-+------------+-------------------------------------------------------------------------------------------------------+
-| Field      | Value                                                                                                 |
-+------------+-------------------------------------------------------------------------------------------------------+
-| expires    | 2026-04-27T10:47:07+0000                                                                              |
-| id         | gAAAAABp7zCb9zhkS7ULijkujyqTFwXQshf_SXm6TMe0APpwHCpTV10gGrEakgWX-                                     |
-|            | OKcFgwDocxHvluFfr9MN2ByqSmuMEJT2vuXfTbOX7mn1zMIecvUTwLFQKgWsKpfQyRFNW71s4S4MVpd93o_EPLleg7aAZPT-      |
-|            | fLjitIFzU7b6sCSUG-CEdg                                                                                |
-| project_id | aed71e82de764a00aaab396e472e7929                                                                      |
-| user_id    | 8ac0e4e97079469dacfd1c5732c6e06b                                                                      |
-+------------+-------------------------------------------------------------------------------------------------------+
-```
+The `*.127-0-0-1.nip.io` hostnames must resolve to `127.0.0.1`. If your network
+blocks them, use the [local DNS troubleshooting steps](./deployment/local-kubernetes.md).
 
-## Optional — UIs
+## 4. Open the dashboard
 
-**Headlamp** (Kubernetes + Flux dashboard):
+Open [Horizon](https://horizon.127-0-0-1.nip.io:8443/), accept the lab certificate,
+and sign in with domain `Default`, user `admin`, and the password held in
+`OS_PASSWORD`. Retrieve that password when needed:
 
 ```bash
-kubectl wait helmrelease/headlamp -n headlamp-system \
-  --for=condition=Ready --timeout=300s
-kubectl create token headlamp -n headlamp-system --duration=8h
-kubectl port-forward svc/headlamp -n headlamp-system 8080:80
+printf '%s\n' "$OS_PASSWORD"
 ```
 
-Open <http://localhost:8080> and paste the token.
+The dashboard and successful token request confirm your first CobaltCore
+deployment works. Compute, networking, images, and volumes become available
+as you enable those services.
 
-**OpenBao** (root token from `openbao-init-keys`):
+## Next steps
 
-```bash
-kubectl get secret openbao-init-keys -n shared-services \
-  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token'
-kubectl port-forward svc/openbao -n shared-services 8200:8200
-```
+- [Deploy a ControlPlane](./quick-start-controlplane.md): add OpenStack services to this deployment.
+- [Provision Resources](./quick-start-orders.md): request service identities, databases, and credentials.
+- [Deploy on an Existing Kubernetes Cluster](./deployment/existing-kubernetes.md): prepare a cluster outside your workstation.
 
-The listener enforces mutual TLS, so the browser must present a client
-certificate before it reaches the UI. Build a PKCS#12 bundle from the
-`openbao-client-tls` Secret, import it into Firefox, and sign in with the
-token. [Extended Quick Start — Step 4b](./quick-start-extended.md#step-4b-openbao-ui)
-has the commands, CA trust, and browser notes.
+## Remove the local deployment
 
-> **Grafana (kind-only, opt-in):** for the keystone-operator metrics dashboard, run `WITH_PROMETHEUS=true make deploy-infra` and follow [Extended Quick Start — Step 4c](./quick-start-extended.md#step-4c-grafana-ui). The compact path stays Grafana-free by default.
-
-## Teardown
+This deletes the `cobaltcore` kind cluster and all data in it:
 
 ```bash
-make teardown-infra
+EXTERNAL_CLUSTER=false make teardown-infra
 ```

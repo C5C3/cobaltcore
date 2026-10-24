@@ -34,7 +34,7 @@ checking them again (see
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy a ControlPlane](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_OVN_KERNEL_MODULES=true make deploy-infra
@@ -407,7 +407,7 @@ The walkthrough mirrors steps 7 and 8 of the following suite. It boots a server
 on the one kind node through the fake driver, removes the pool label, and then
 deletes the server where hvo's Eviction would migrate it. No suite runs hvo;
 Part 2, Step 9 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md#hv-evict) evicts a
+[Deploy on Bare Metal](../../quick-start-metal-stack.md#hv-evict) evicts a
 node through it by hand.
 
 ```bash

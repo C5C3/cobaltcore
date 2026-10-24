@@ -30,7 +30,7 @@ and [Ceph files in the backup pod](../../reference/cinder/cinder-backup-backend-
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (metal-stack)](../../quick-start-metal-stack.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy on Bare Metal](../../quick-start-metal-stack.md)** devstack. Stand it up first:
 
 ```bash
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra

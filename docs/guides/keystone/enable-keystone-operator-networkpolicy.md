@@ -23,7 +23,7 @@ authoritative rule table, failure modes, and schema contract, see
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy Keystone Locally](../../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
@@ -43,7 +43,7 @@ and cannot verify on kind.)
    - [Antrea](https://antrea.io/docs/main/docs/network-policy/)
 
    ::: warning Enforcement cannot be verified on the default devstack CNI
-   The Quick Start kind devstack uses the default `kindnet` CNI, which
+   The standalone kind environment uses the default `kindnet` CNI, which
    **silently ignores** NetworkPolicy objects. kind fixes the CNI at cluster
    creation, so it cannot be swapped in afterwards on a running devstack. The
    policy object is still rendered and the operator keeps reconciling
