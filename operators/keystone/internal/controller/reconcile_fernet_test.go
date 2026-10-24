@@ -748,9 +748,10 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.Key).To(Equal(database.ConnectionSecretKey))
 
-	// Verify volume mounts on main container: fernet-keys + credential-keys (read-only) + config + scripts.
-	g.Expect(container.VolumeMounts).To(HaveLen(4))
-	var fernetMount, credMount, cfgMount, scriptsMount corev1.VolumeMount
+	// Verify volume mounts on main container: fernet-keys + credential-keys (read-only) + config + scripts
+	// + fernet-keys-src (read-only) + rotation-state.
+	g.Expect(container.VolumeMounts).To(HaveLen(6))
+	var fernetMount, credMount, cfgMount, scriptsMount, srcMount, stateMount corev1.VolumeMount
 	for _, vm := range container.VolumeMounts {
 		switch vm.Name {
 		case "fernet-keys":
@@ -761,6 +762,10 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 			cfgMount = vm
 		case "scripts":
 			scriptsMount = vm
+		case "fernet-keys-src":
+			srcMount = vm
+		case "rotation-state":
+			stateMount = vm
 		}
 	}
 	g.Expect(fernetMount.MountPath).To(Equal("/etc/keystone/fernet-keys"))
@@ -770,10 +775,15 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	g.Expect(cfgMount.ReadOnly).To(BeTrue())
 	g.Expect(scriptsMount.MountPath).To(Equal("/scripts"))
 	g.Expect(scriptsMount.ReadOnly).To(BeTrue())
+	g.Expect(srcMount.MountPath).To(Equal("/fernet-keys-src"))
+	g.Expect(srcMount.ReadOnly).To(BeTrue())
+	g.Expect(stateMount.MountPath).To(Equal("/rotation-state"))
+	g.Expect(stateMount.ReadOnly).To(BeFalse())
 
-	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), scripts (ConfigMap).
-	g.Expect(podSpec.Volumes).To(HaveLen(5))
-	var srcVol, workVol, credVol, cfgVol, scriptsVol corev1.Volume
+	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), scripts (ConfigMap),
+	// rotation-state (emptyDir).
+	g.Expect(podSpec.Volumes).To(HaveLen(6))
+	var srcVol, workVol, credVol, cfgVol, scriptsVol, stateVol corev1.Volume
 	for _, v := range podSpec.Volumes {
 		switch v.Name {
 		case "fernet-keys-src":
@@ -786,8 +796,11 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 			cfgVol = v
 		case "scripts":
 			scriptsVol = v
+		case "rotation-state":
+			stateVol = v
 		}
 	}
+	g.Expect(stateVol.EmptyDir).NotTo(BeNil())
 	g.Expect(srcVol.Secret).NotTo(BeNil())
 	g.Expect(srcVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(workVol.EmptyDir).NotTo(BeNil())
@@ -923,7 +936,9 @@ func TestFernetRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadableMod
 // DefaultMode, and the init container's copy command. The fernet-rotate
 // container's VolumeMounts (including the read-only credential-keys mount and
 // the read-only config/scripts mounts) must stay byte-for-byte identical to
-// what reconcile_fernet.go declares today.
+// what reconcile_fernet.go declares today. The list includes the read-only
+// fernet-keys-src mount and the writable rotation-state mount that a
+// restarted container needs to retry without rotating again.
 func TestFernetRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
@@ -938,6 +953,8 @@ func TestFernetRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testing.T
 		corev1.VolumeMount{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys", ReadOnly: true},
 		corev1.VolumeMount{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
 		corev1.VolumeMount{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
+		corev1.VolumeMount{Name: "fernet-keys-src", MountPath: "/fernet-keys-src", ReadOnly: true},
+		corev1.VolumeMount{Name: "rotation-state", MountPath: "/rotation-state"},
 	), "scope guard: fernet-rotate container VolumeMounts must not be modified")
 }
 

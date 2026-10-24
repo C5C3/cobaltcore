@@ -716,9 +716,10 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.Key).To(Equal(database.ConnectionSecretKey))
 
-	// Verify volume mounts on main container: credential-keys + fernet-keys (read-only) + config + scripts.
-	g.Expect(container.VolumeMounts).To(HaveLen(4))
-	var credMount, fernetMount, cfgMount, scriptsMount corev1.VolumeMount
+	// Verify volume mounts on main container: credential-keys + fernet-keys (read-only) + config + scripts
+	// + credential-keys-src (read-only) + rotation-state.
+	g.Expect(container.VolumeMounts).To(HaveLen(6))
+	var credMount, fernetMount, cfgMount, scriptsMount, srcMount, stateMount corev1.VolumeMount
 	for _, vm := range container.VolumeMounts {
 		switch vm.Name {
 		case "credential-keys":
@@ -729,6 +730,10 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 			cfgMount = vm
 		case "scripts":
 			scriptsMount = vm
+		case "credential-keys-src":
+			srcMount = vm
+		case "rotation-state":
+			stateMount = vm
 		}
 	}
 	g.Expect(credMount.MountPath).To(Equal("/etc/keystone/credential-keys"))
@@ -738,10 +743,15 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(cfgMount.ReadOnly).To(BeTrue())
 	g.Expect(scriptsMount.MountPath).To(Equal("/scripts"))
 	g.Expect(scriptsMount.ReadOnly).To(BeTrue())
+	g.Expect(srcMount.MountPath).To(Equal("/credential-keys-src"))
+	g.Expect(srcMount.ReadOnly).To(BeTrue())
+	g.Expect(stateMount.MountPath).To(Equal("/rotation-state"))
+	g.Expect(stateMount.ReadOnly).To(BeFalse())
 
-	// Verify volumes: credential-keys-src (Secret), credential-keys (emptyDir), fernet-keys (Secret), config (ConfigMap), scripts (ConfigMap).
-	g.Expect(podSpec.Volumes).To(HaveLen(5))
-	var srcVol, workVol, fernetVol, cfgVol, scriptsVol corev1.Volume
+	// Verify volumes: credential-keys-src (Secret), credential-keys (emptyDir), fernet-keys (Secret), config (ConfigMap), scripts (ConfigMap),
+	// rotation-state (emptyDir).
+	g.Expect(podSpec.Volumes).To(HaveLen(6))
+	var srcVol, workVol, fernetVol, cfgVol, scriptsVol, stateVol corev1.Volume
 	for _, v := range podSpec.Volumes {
 		switch v.Name {
 		case "credential-keys-src":
@@ -754,8 +764,11 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 			cfgVol = v
 		case "scripts":
 			scriptsVol = v
+		case "rotation-state":
+			stateVol = v
 		}
 	}
+	g.Expect(stateVol.EmptyDir).NotTo(BeNil())
 	g.Expect(srcVol.Secret).NotTo(BeNil())
 	g.Expect(srcVol.Secret.SecretName).To(Equal("test-keystone-credential-keys"))
 	g.Expect(workVol.EmptyDir).NotTo(BeNil())
@@ -887,7 +900,10 @@ func TestCredentialRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadabl
 // volume DefaultMode, and the init container's copy command. The
 // credential-rotate container's VolumeMounts (including the read-only
 // fernet-keys mount and the read-only config/scripts mounts) must stay
-// byte-for-byte identical to what reconcile_credential.go declares today
+// byte-for-byte identical to what reconcile_credential.go declares today.
+// The list includes the read-only credential-keys-src mount and the writable
+// rotation-state mount that a restarted container needs to retry without
+// rotating or migrating again.
 func TestCredentialRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
@@ -902,6 +918,8 @@ func TestCredentialRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testi
 		corev1.VolumeMount{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys", ReadOnly: true},
 		corev1.VolumeMount{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
 		corev1.VolumeMount{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
+		corev1.VolumeMount{Name: "credential-keys-src", MountPath: "/credential-keys-src", ReadOnly: true},
+		corev1.VolumeMount{Name: "rotation-state", MountPath: "/rotation-state"},
 	), "scope guard: credential-rotate container VolumeMounts must not be modified")
 }
 

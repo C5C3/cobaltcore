@@ -949,7 +949,7 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 		"OS_fernet_tokens__max_active_keys should match spec.fernet.maxActiveKeys")
 
 	// Verify main container volume mounts.
-	g.Expect(mainContainer.VolumeMounts).To(HaveLen(4))
+	g.Expect(mainContainer.VolumeMounts).To(HaveLen(6))
 	g.Expect(mainContainer.VolumeMounts[0].Name).To(Equal("fernet-keys"))
 	g.Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/fernet-keys"))
 	g.Expect(mainContainer.VolumeMounts[1].Name).To(Equal("credential-keys"))
@@ -961,13 +961,23 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	g.Expect(mainContainer.VolumeMounts[3].Name).To(Equal("scripts"))
 	g.Expect(mainContainer.VolumeMounts[3].MountPath).To(Equal("/scripts"))
 	g.Expect(mainContainer.VolumeMounts[3].ReadOnly).To(BeTrue())
+	g.Expect(mainContainer.VolumeMounts[4].Name).To(Equal("fernet-keys-src"))
+	g.Expect(mainContainer.VolumeMounts[4].MountPath).To(Equal("/fernet-keys-src"))
+	g.Expect(mainContainer.VolumeMounts[4].ReadOnly).To(BeTrue())
+	g.Expect(mainContainer.VolumeMounts[5].Name).To(Equal("rotation-state"))
+	g.Expect(mainContainer.VolumeMounts[5].MountPath).To(Equal("/rotation-state"))
+	g.Expect(mainContainer.VolumeMounts[5].ReadOnly).To(BeFalse())
 
-	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), and scripts (ConfigMap).
+	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), scripts (ConfigMap),
+	// and rotation-state (emptyDir).
 	volMap := map[string]corev1.Volume{}
 	for _, v := range podSpec.Volumes {
 		volMap[v.Name] = v
 	}
-	g.Expect(volMap).To(HaveLen(5))
+	g.Expect(volMap).To(HaveLen(6))
+
+	g.Expect(volMap).To(HaveKey("rotation-state"))
+	g.Expect(volMap["rotation-state"].EmptyDir).NotTo(BeNil(), "rotation-state volume should be an emptyDir")
 
 	g.Expect(volMap).To(HaveKey("fernet-keys-src"))
 	g.Expect(volMap["fernet-keys-src"].Secret).NotTo(BeNil(), "fernet-keys-src volume should be a Secret")
