@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch raising the django.request logger to ERROR, which silences its
+# "Not Found: <path>" WARNING records while the root logger stays at INFO.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-logging
+  namespace: openstack
+spec:
+  logging:
+    perLoggerLevels:
+      django.request: ERROR
