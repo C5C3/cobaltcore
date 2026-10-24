@@ -31,7 +31,11 @@
 #     LocalObjectReferences, so a Keystone outside `openstack` reaches the
 #     shared openstack-db and openstack-memcached through database.host and
 #     cache.servers, and 00-brownfield-db-setup.yaml pre-creates one schema
-#     per namespace in `openstack`. Three managed MariaDB and Memcached
+#     and one MariaDB user per namespace in `openstack`. The users are not
+#     the canonical `keystone` user: a User CR allows 10 connections by
+#     default, and three Keystones beside the brownfield suites that share
+#     `keystone` exceed that, which keystone answers with a 500. Three
+#     managed MariaDB and Memcached
 #     instances would add three database servers to the kind node for an
 #     isolation the brownfield wiring already gives.
 #
@@ -52,9 +56,9 @@
 #     argument, as issue_token and validate do in fernet-rotation.
 #
 #   - Chainsaw deletes the Keystones, the MariaDB CRs and the namespaces at
-#     cleanup. `cleanupPolicy: Skip` keeps the shared `keystone` user and the
-#     three keystone_mns_* schemas, as in pod-security-restricted; a rerun
-#     re-adopts them.
+#     cleanup. `cleanupPolicy: Skip` keeps the three keystone-mns-* users and
+#     keystone_mns_* schemas, as in pod-security-restricted; a rerun re-adopts
+#     them.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -104,7 +108,8 @@ spec:
               _ "$1" "$2" "$3" "$4"
           }
           for ns in keystone-mns-a keystone-mns-b keystone-mns-c; do
-            copy_field openstack/keystone/openstack/standalone/db "openstack/keystone/$ns/mns/db" username put
+            # The user name is the namespace's own MariaDB user and no secret.
+            bao_exec bao kv put -mount=kv-v2 "openstack/keystone/$ns/mns/db" "username=$ns" >/dev/null
             copy_field openstack/keystone/openstack/standalone/db "openstack/keystone/$ns/mns/db" password patch
             copy_field bootstrap/openstack/controlplane-keystone/admin "bootstrap/$ns/mns/admin" password put
             echo "OK: seeded openstack/keystone/$ns/mns/db and bootstrap/$ns/mns/admin"
@@ -182,6 +187,10 @@ spec:
             echo
             echo "=== $ns: pods ==="
             kubectl get pods -n "$ns" -o wide 2>&1 || true
+            for pod in $(kubectl get pods -n "$ns" -l app.kubernetes.io/component=api -o name 2>/dev/null); do
+              echo "--- $ns: last 100 log lines of $pod ---"
+              kubectl logs -n "$ns" "$pod" -c keystone --tail=100 2>&1 || true
+            done
             echo "=== $ns: events ==="
             kubectl get events -n "$ns" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
             echo "=== $ns: ExternalSecrets and SecretStores ==="
@@ -198,7 +207,7 @@ spec:
           # The staged root token goes with the step; openbao-0 is shared with
           # every other suite of the leg.
           kubectl exec -n shared-services openbao-0 -- rm -f /tmp/.bao-token-keystone-multi-namespace 2>&1 || true
-  # ── Step 2: Pre-create the brownfield schemas, grants and user ─────────
+  # ── Step 2: Pre-create the brownfield schemas, users and grants ────────
   - name: brownfield-database
     try:
     - apply:
@@ -238,7 +247,27 @@ spec:
           apiVersion: k8s.mariadb.com/v1alpha1
           kind: User
           metadata:
-            name: keystone-mns-user
+            name: keystone-mns-a-user
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-mns-b-user
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-mns-c-user
             namespace: openstack
           status:
             (conditions[?type == 'Ready']):
