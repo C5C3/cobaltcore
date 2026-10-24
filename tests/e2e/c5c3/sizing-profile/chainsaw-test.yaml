@@ -15,7 +15,11 @@
 #   - an edit of the profile reaches the Memcached it sizes within 60 s,
 #     through the watch the ControlPlane controller keeps on SizingProfiles;
 #   - deleting the profile turns SizingReady False with reason
-#     SizingProfileNotFound.
+#     SizingProfileNotFound;
+#   - the c5c3-operator release exports its reconcile families, the Sizing
+#     error among them (step 2). Step 1 creates the ConfigMap
+#     sizing-profile-ran once the presence guard passes, and step 2 SKIPs
+#     without it.
 #
 # ── Ephemeral namespace and a per-run profile ────────────────────────────────
 # The suite follows dedicated-backing-services: it runs in chainsaw's ephemeral
@@ -104,6 +108,9 @@ spec:
           fi
           echo "OK: every CRD the ControlPlane controller watches is present —"
           echo "    running the sizing-profile assertions in namespace ${CP_NS}."
+          # The marker the metric step reads: past the guard, the assertions
+          # below drive the Sizing error the step asserts.
+          kubectl create configmap sizing-profile-ran -n "${CP_NS}"
 
           # ── Cleanup on every exit path ────────────────────────────────────
           # The ControlPlane goes first: it references the profile, and the
@@ -206,3 +213,27 @@ spec:
           kubectl logs -n orc-system deploy/orc-controller-manager --pod-running-timeout=5s --tail=100 --all-containers 2>&1 || true
           echo "=== Events (last 30) ==="
           kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release. Step 1 deleted the
+  # profile, so reconcileSizing returned SizingProfileNotFound and the
+  # operator counted a Sizing error under SizingReady. The families carry no
+  # per-CR label, so they outlive the ControlPlane step 1 deleted. Without
+  # the marker step 1 skipped, and so does this step.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          if ! kubectl get configmap sizing-profile-ran -n "${NAMESPACE}" >/dev/null 2>&1; then
+            echo "SKIP: the sizing assertions did not run on this cluster"
+            exit 0
+          fi
+          ../../lib/assert-operator-metric-families.sh c5c3-system c5c3-operator c5c3_operator \
+            'c5c3_operator_reconcile_duration_seconds_count{sub_reconciler="Sizing"}' \
+            'c5c3_operator_reconcile_errors_total{sub_reconciler="Sizing",condition_type="SizingReady"}'
+    catch:
+    - podLogs:
+        namespace: c5c3-system
+        selector: app.kubernetes.io/instance=c5c3-operator
+        tail: 200
