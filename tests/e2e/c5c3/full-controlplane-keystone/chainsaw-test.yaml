@@ -164,6 +164,12 @@
 #                        public compute and placement row per scope, the admin
 #                        reach into services, hypervisors, aggregates and
 #                        Placement, and the test@cc3test scope.
+#   7e. Config edit    — a merge patch sets services.keystone.extraConfig
+#                        [DEFAULT] instance_format on the live plane; within 600s
+#                        the Keystone child carries it, renders a new ConfigMap
+#                        and rolls, and a Ready pod mounts the line; clearing the
+#                        block returns the child to its original ConfigMap within
+#                        a second 600s.
 #   8a. Release patch  — 08-patch-upgrade.yaml moves spec.openStackRelease to
 #                        the next release; the webhook admits it, the new
 #                        generation reaches status.observedGeneration within
@@ -264,10 +270,12 @@ spec:
   # ── Step 1: Presence-gate, apply the ControlPlane, assert the chain ────────
   - try:
     - script:
-        # About 13 minutes of a green pass come before Link 8. Link 8 waits at
-        # most 2 + 30 + 10 + 5 + 5 + 25 minutes (patch, children, rollouts,
-        # Ready, status.services, verify Job) and a pass needs about 20.
-        timeout: 100m
+        # About 13 minutes of a green pass come before Link 7e. Link 7e waits
+        # at most 10 + 10 minutes (the edit, the revert) and a pass needs about
+        # 4. Link 8 waits at most 2 + 30 + 10 + 5 + 5 + 25 minutes (patch,
+        # children, rollouts, Ready, status.services, verify Job) and a pass
+        # needs about 20. 13 + 20 + 77 = 110.
+        timeout: 120m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone e2e script pins bash for the same reason.
         shell: bash
@@ -2139,6 +2147,13 @@ spec:
             grep -q "${line}" <<<"${HVO_LOGS}" \
               || { echo "ERROR: the hypervisor-operator Job printed no '${line}' line"; exit 1; }
           done
+
+          # ── Link 7e: a ControlPlane extraConfig edit rolls the Keystone child
+          # The link lives in extraconfig-edit.sh beside this file: inline, it
+          # takes this script past the 128 KiB Linux allows one argument, and
+          # chainsaw passes the script to bash as one. Sourced, it shares this
+          # shell's variables, functions and set -euo pipefail.
+          . ./extraconfig-edit.sh
 
           # ── Link 8a: patch spec.openStackRelease to the next release ──────
           # The day-2 release upgrade of docs/guides/day-2-operations.md: one
