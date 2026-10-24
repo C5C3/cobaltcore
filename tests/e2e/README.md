@@ -59,7 +59,7 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/<suite>
   - `assert-operator-env-clean.sh`, the scan every `env-key-material`
     suite runs to show that the operator's pod spec and process
     environment hold no key material;
-  - `assert-operator-metric-families.sh`, which 17 suites run to read the
+  - `assert-operator-metric-families.sh`, which 18 suites run to read the
     operator release's own Prometheus families through the API server's
     pod proxy, with the per-CR samples their Jobs, rotations or re-mints
     record;
@@ -74,7 +74,7 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/<suite>
   edit to a script runs those `e2e-operator` jobs. The seven operators
   that run the proof list `tests/e2e/lib/**`. ovn and neutron list the
   scan, the metric check and the event budget, and c5c3 lists the scan
-  alone.
+  and the metric check.
 
 ## Configuration
 

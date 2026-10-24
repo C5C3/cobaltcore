@@ -22,10 +22,9 @@
 #     read that failed in between, and a duration count without labels
 #   - fewer than three arguments, an empty argument or a malformed sample
 #     exits 2 with the usage line
-#   - the metrics port it reads matches the nine charts
-#   - an edit to the script runs the e2e-operator jobs of every operator but
-#     c5c3, whose suites do not call it
-#   - the 17 suites call it with exactly the arguments of their table row,
+#   - the metrics port it reads matches the ten charts
+#   - an edit to the script runs the e2e-operator jobs of every operator
+#   - the 18 suites call it with exactly the arguments of their table row,
 #     each in a step with a 120s timeout, and no other suite calls it
 # Usage: bash tests/unit/ci/assert_operator_metric_families_test.sh
 
@@ -45,8 +44,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 SCRIPT="$PROJECT_ROOT/tests/e2e/lib/assert-operator-metric-families.sh"
-# The nine operators whose charts the script reads metrics from.
-OPERATORS="barbican cinder glance horizon keystone neutron nova ovn placement"
+# The ten operators whose charts the script reads metrics from.
+OPERATORS="barbican c5c3 cinder glance horizon keystone neutron nova ovn placement"
 
 STUBS="$(mktemp -d)"
 trap 'rm -rf "$STUBS"' EXIT
@@ -196,12 +195,13 @@ metric_calls() {
     }' "$1"
 }
 
-# The 17 suites that call the script, each with the arguments it passes after
+# The 18 suites that call the script, each with the arguments it passes after
 # the script's path. A suite reads a sample after the step that completes its
 # Job, rotation or re-mint, and before any step that deletes its CR.
 METRIC_CALLERS="$(cat <<'CALLS'
 barbican/basic-deployment|barbican-system barbican-operator barbican_operator 'barbican_operator_db_sync_total{barbican="barbican-basic",namespace="openstack",result="succeeded"}' 'barbican_operator_db_sync_duration_seconds_count{barbican="barbican-basic",namespace="openstack"}' 'barbican_operator_db_clean_total{barbican="barbican-basic",namespace="openstack",result="succeeded"}' 'barbican_operator_db_clean_duration_seconds_count{barbican="barbican-basic",namespace="openstack"}'
 barbican/secretstore-managed|barbican-system barbican-operator barbican_operator 'barbican_operator_secretstore_remints_total{store="barbican-store-managed-store",namespace="openstack",trigger="proactive"}'
+c5c3/sizing-profile|c5c3-system c5c3-operator c5c3_operator 'c5c3_operator_reconcile_duration_seconds_count{sub_reconciler="Sizing"}' 'c5c3_operator_reconcile_errors_total{sub_reconciler="Sizing",condition_type="SizingReady"}'
 cinder/basic-deployment|cinder-system cinder-operator cinder_operator 'cinder_operator_db_sync_total{cinder="cinder-basic",namespace="openstack",result="succeeded"}' 'cinder_operator_db_sync_duration_seconds_count{cinder="cinder-basic",namespace="openstack"}'
 cinder/pod-security-restricted|cinder-system cinder-operator cinder_operator 'cinder_operator_db_purge_total{cinder="cinder-pss",namespace="cinder-pss",result="succeeded"}' 'cinder_operator_service_remove_total{cinder="cinder-pss",namespace="cinder-pss",result="succeeded"}'
 glance/basic-deployment|glance-system glance-operator glance_operator 'glance_operator_db_sync_total{glance="glance-basic",namespace="openstack",result="succeeded"}' 'glance_operator_db_sync_duration_seconds_count{glance="glance-basic",namespace="openstack"}' 'glance_operator_db_purge_total{glance="glance-basic",namespace="openstack",result="succeeded"}' 'glance_operator_db_purge_duration_seconds_count{glance="glance-basic",namespace="openstack"}'
@@ -599,7 +599,7 @@ test_the_script_parses() {
 
 # --- Test 9: the metrics port ---
 test_the_port_matches_the_charts() {
-  echo "Test: the metrics port the script reads matches the nine charts"
+  echo "Test: the metrics port the script reads matches the ten charts"
 
   local op port
   port="$(sed -n 's/^metrics_port=//p' "$SCRIPT")"
@@ -612,7 +612,7 @@ test_the_port_matches_the_charts() {
 
 # --- Test 10: the path filters ---
 test_the_filters_name_the_shared_scripts() {
-  echo "Test: an edit to the script runs every leg but c5c3"
+  echo "Test: an edit to the script runs every leg"
 
   local op block script=assert-operator-metric-families.sh
   # These seven list the whole directory.
@@ -620,19 +620,16 @@ test_the_filters_name_the_shared_scripts() {
     block="$(filter_block "tests_e2e_$op")"
     assert_contains "tests_e2e_$op lists the shared directory" "$block" "'tests/e2e/lib/**'"
   done
-  # ovn and neutron name the script; c5c3 does not call it.
-  for op in ovn neutron; do
+  # ovn, neutron and c5c3 name the script.
+  for op in ovn neutron c5c3; do
     block="$(filter_block "tests_e2e_$op")"
     assert_contains "tests_e2e_$op names $script" "$block" "'tests/e2e/lib/$script'"
   done
-  block="$(filter_block tests_e2e_c5c3)"
-  assert_not_empty "tests_e2e_c5c3 exists" "$block"
-  assert_not_contains "tests_e2e_c5c3 leaves $script out" "$block" "$script"
 }
 
 # --- Test 11: the callers ---
-test_the_seventeen_suites_call_the_script() {
-  echo "Test: the 17 suites call the script with the tabled arguments in a 120s step, and no other suite calls it"
+test_the_eighteen_suites_call_the_script() {
+  echo "Test: the 18 suites call the script with the tabled arguments in a 120s step, and no other suite calls it"
 
   local suite args file expected found calls
   while IFS='|' read -r suite args; do
@@ -644,7 +641,7 @@ test_the_seventeen_suites_call_the_script() {
     assert_eq "the $suite suite gives that step a 120s timeout" "120s" "${calls%%|*}"
   done <<<"$METRIC_CALLERS"
 
-  assert_eq "the table names 17 suites" "17" "$(grep -c . <<<"$METRIC_CALLERS")"
+  assert_eq "the table names 18 suites" "18" "$(grep -c . <<<"$METRIC_CALLERS")"
   expected="$(cut -d'|' -f1 <<<"$METRIC_CALLERS" | LC_ALL=C sort)"
   # Any line that is not a comment and names the script counts as a call.
   found="$(grep -rlE --include=chainsaw-test.yaml \
@@ -685,7 +682,7 @@ test_the_script_parses
 test_the_port_matches_the_charts
 
 test_the_filters_name_the_shared_scripts
-test_the_seventeen_suites_call_the_script
+test_the_eighteen_suites_call_the_script
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

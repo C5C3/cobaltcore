@@ -723,11 +723,21 @@ database and cache stating no replica count and no volume size. It asserts that:
 - patching the profile's `cache.resources` to a 192Mi limit reaches the
   Memcached within 60 s, through the watch the controller keeps on the kind;
 - deleting the profile turns `SizingReady` `False` with reason
-  `SizingProfileNotFound`.
+  `SizingProfileNotFound`;
+- the `c5c3-operator` release in `c5c3-system` exports its reconcile families
+  (second step): `tests/e2e/lib/assert-operator-metric-families.sh` reads every
+  pod of the release, finds a `c5c3_operator_reconcile_duration_seconds_count`
+  sample for `sub_reconciler="Sizing"` and the `Sizing` error the profile's
+  deletion caused, counted under `condition_type="SizingReady"`, and no error
+  labelled `condition_type="UNKNOWN"`. The families carry no per-CR label, so
+  they outlast the ControlPlane the first step deletes. The first step creates
+  the ConfigMap `sizing-profile-ran` once its presence guard passes, and the
+  second step prints a `SKIP:` line and exits 0 without it.
 
 It follows the dedicated-backing-services suite: an ephemeral namespace, a
 brownfield shared block that provisions nothing, and one guarded script step
-whose presence guard also probes `sizingprofiles.c5c3.io`. The profile is
+for the sizing assertions whose presence guard also probes
+`sizingprofiles.c5c3.io`. The profile is
 cluster-scoped, so the namespace teardown never reaps it; the script deletes the
 ControlPlane first and the profile last on every exit path.
 
