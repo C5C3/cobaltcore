@@ -1721,7 +1721,7 @@ fails the step above 4000m CPU or 16Gi memory. The job-level `env` sets
 `hack/ci-deploy-operator.sh`, so every operator runs one replica, as in the kind
 devstack, and the gate counts that footprint. The other e2e jobs keep the chart
 default of two. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 360-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 380-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy, and its four chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
@@ -1729,14 +1729,14 @@ overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
 and the `cleanup` budget runs after all three. Each of the four suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 120, 80, 110 and 90 minutes. The job wall has to outlast the bring-up plus
+ceilings at 140, 80, 110 and 90 minutes. The job wall has to outlast the bring-up plus
 the suites that pass plus the full ceiling of the one that stalls, or a stalled
 suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML. The 360 minutes cover roughly 45 minutes of bring-up, the
-120-minute ceiling of the full-chain suite, roughly 25 minutes for the
+no JUnit XML. The 380 minutes cover roughly 45 minutes of bring-up, the
+140-minute ceiling of the full-chain suite, roughly 25 minutes for the
 foreign-namespace pass and 55 for the keystone-user pass, and the 110-minute
 ceiling of the keystone-user suite, the largest of the other three, for the
-suite that stalls: 45+120+25+55+110 = 355 minutes in all; the bring-up and the
+suite that stalls: 45+140+25+55+110 = 375 minutes in all; the bring-up and the
 two pass terms are
 estimates, so confirm them against the first green run of the leg and re-derive
 the wall if one overruns.
