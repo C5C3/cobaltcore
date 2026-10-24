@@ -124,7 +124,7 @@ Deployment rollout, bootstrap Job).
 | autoscaling | `keystone-autoscaling` | HPA create/update/delete driven by `spec.autoscaling` (CPU and memory targets); the API PodDisruptionBudget follows the HPA minimum: `minAvailable: 1` with `minReplicas` unset, `maxUnavailable: 1` at `minReplicas: 1`, `minAvailable: 1` again after autoscaling is removed; a CPU target of 150 and a `scaleDown` behavior reach the HPA as `averageUtilization: 150` and `spec.behavior.scaleDown` |
 | basic-deployment-2026-2 | `keystone-basic-2026-2` | Happy-path deployment pinned to the 2026.2 release image |
 | configmap-no-secrets | `keystone-cc0080` | No secrets leak into the ConfigMap: placeholder URL in `keystone.conf`, real DSN only in the derived `<name>-db-connection` Secret |
-| credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step; after the rotation the keystone-operator release exports the `keystone_operator_key_rotation_age_seconds{key_type="credential"}` sample |
+| credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step, a refused staging PATCH retried without a second rotation while a credential stored before it keeps its blob; after the rotation the keystone-operator release exports the `keystone_operator_key_rotation_age_seconds{key_type="credential"}` sample |
 | database-tls | `keystone-dbtls` | `spec.database.tls` up to `verify-full`: `DatabaseTLSReady=True`, cert-manager client cert, encrypted MariaDB connection |
 | [db-expand-failure](#db-expand-failure) | `keystone-db-expand-failure` | A 2026.1 → 2026.2 upgrade whose expand Job is OOM-killed until `BackoffLimitExceeded`: `DatabaseReady=False/ExpandFailed` naming the failed Job while `upgradePhase` stays `Expanding`, a Warning `ExpandFailed` event, the `keystone_operator_db_sync_total{result="failed"}` sample, and the Deployment still on 2026.1 |
 | env-key-material | — (operator-level) | The keystone-operator pod in `keystone-system` reads no Secret into env, and its manager's process environment, read from an ephemeral container on the `keystone:2026.1` image by `tests/e2e/lib/assert-operator-env-clean.sh`, holds no variable named like key material and no value such as a PEM block; a finding names the variable, never its value |
@@ -1278,7 +1278,9 @@ tests/e2e/keystone/
 │   └── 00-keystone-cr.yaml             Keystone CR for env-override split
 ├── credential-rotation/
 │   ├── chainsaw-test.yaml              Credential key rotation
-│   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+│   ├── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+│   ├── 01-patch-suspend-credential.yaml Patch to suspend rotation
+│   └── 02-refuse-staging-patch.yaml    Admission policy that refuses the staging PATCH
 ├── database-tls/
 │   ├── chainsaw-test.yaml              Keystone ↔ MariaDB TLS (verify-full)
 │   └── 00-keystone-cr.yaml             Keystone CR with database.tls
