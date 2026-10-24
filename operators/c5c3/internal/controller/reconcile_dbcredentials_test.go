@@ -12,6 +12,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -201,6 +202,68 @@ func TestReconcileDBCredentials_Managed_ProjectsDynamicObjects(t *testing.T) {
 	issuer, _, _ := unstructured.NestedString(cert.Object, "spec", "issuerRef", "name")
 	g.Expect(issuer).To(Equal(openBaoCAIssuerName))
 	g.Expect(metav1.GetControllerOf(cert)).NotTo(BeNil())
+	commonName, _, _ := unstructured.NestedString(cert.Object, "spec", "commonName")
+	g.Expect(commonName).To(Equal("controlplane-keystone-db-openbao-client.openstack.svc"),
+		"a commonName that fits keeps its full form, so no existing Certificate is re-issued")
+}
+
+// TestReconcileDBCredentials_LongNamespace_CommonNameFitsCertManagersCap pins the
+// plane e2e-controlplane applies in a chainsaw namespace: "controlplane" in
+// "chainsaw-internal-coyote" makes "<cert>.<namespace>.svc" 68 bytes, which
+// cert-manager's webhook refuses, so DBCredentialsReady parked on GeneratorError.
+func TestReconcileDBCredentials_LongNamespace_CommonNameFitsCertManagersCap(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := dbCredManagedControlPlane()
+	cp.Namespace = "chainsaw-internal-coyote"
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	if _, err := r.reconcileDBCredentials(context.Background(), cp); err != nil {
+		t.Fatalf("reconcileDBCredentials: %v", err)
+	}
+
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	g.Expect(r.Get(context.Background(),
+		types.NamespacedName{Namespace: childNamespace(cp), Name: dbCredentialClientCertName(cp)}, cert)).To(Succeed())
+	commonName, _, _ := unstructured.NestedString(cert.Object, "spec", "commonName")
+	g.Expect(len(commonName)).To(BeNumerically("<=", maxCommonNameBytes))
+	g.Expect(commonName).To(Equal("controlplane-keystone-db-openbao-client.chainsaw-internal-coyote"))
+}
+
+// TestClientCertCommonName covers the cut: a commonName that fits is left alone,
+// a longer one is cut to cert-manager's 64 bytes, and a cut that would end on a
+// separator drops it.
+func TestClientCertCommonName(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cert, namespace, want string
+	}{
+		"fits": {
+			cert: "cp-keystone-db-openbao-client", namespace: "openstack",
+			want: "cp-keystone-db-openbao-client.openstack.svc",
+		},
+		"exactly 64 bytes": {
+			cert: "controlplane-keystone-db-openbao-client", namespace: "chainsaw-coyote-hare",
+			want: "controlplane-keystone-db-openbao-client.chainsaw-coyote-hare.svc",
+		},
+		"too long": {
+			cert: "controlplane-keystone-db-openbao-client", namespace: "chainsaw-internal-coyote",
+			want: "controlplane-keystone-db-openbao-client.chainsaw-internal-coyote",
+		},
+		"cut on a separator": {
+			cert: strings.Repeat("n", 63), namespace: "openstack",
+			want: strings.Repeat("n", 63),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			got := clientCertCommonName(tc.cert, tc.namespace)
+			g.Expect(got).To(Equal(tc.want))
+			g.Expect(len(got)).To(BeNumerically("<=", maxCommonNameBytes))
+		})
+	}
 }
 
 // TestReconcileDBCredentials_Static_ProjectsKVExternalSecret verifies the Static

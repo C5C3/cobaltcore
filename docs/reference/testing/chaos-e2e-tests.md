@@ -74,11 +74,7 @@ scales it back. `openbao-sealed` seals OpenBao in step 2 and unseals it in step
 5, and `openbao-tenant-policy-narrowed` narrows a policy and writes the captured
 one back. The suites of the first four matrix entries run in the namespace
 `openstack`. The five of the `controlplane` entry each bring up a ControlPlane in a
-short namespace of their own, `chaos-korc-out` and its siblings. The c5c3-operator
-names the DB-credential client certificate of a plane
-`<cp>-keystone-db-openbao-client.<namespace>.svc`, and cert-manager refuses a
-`commonName` over 64 bytes, so a plane name and a namespace that chainsaw
-generates do not fit together.
+short namespace of their own, `chaos-korc-out` and its siblings.
 [Test Suite Inventory](#test-suite-inventory) lists every suite with its
 scenario, its service resource and its assertions.
 
@@ -4551,9 +4547,7 @@ tests/e2e-chaos/
    [Adopting the harness](#adopting-the-harness) describes, put the measured
    `# Chaos budget:` line in the header, and add `dump` to the catch blocks
 7. For a suite that needs a ControlPlane of its own, add `00-controlplane-cr.yaml`
-   in place of the Keystone CR and set a short fixed `spec.namespace`: the plane
-   name and the namespace share 32 characters, because cert-manager caps the
-   commonName of the plane's DB client certificate at 64 bytes. Source
+   in place of the Keystone CR. Source
    `../lib/controlplane.sh` for `cp_bring_up`, `cp_teardown` and `cp_dump`, start
    the workload with `CHAOS_WORKLOAD_ADMIN_SECRET=<cp>-keystone-admin-credentials`,
    and add the directory to the `controlplane` entry in `.github/workflows/ci.yaml`
