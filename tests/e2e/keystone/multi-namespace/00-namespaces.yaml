@@ -1,0 +1,162 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Namespaces and ExternalSecrets for the multi-namespace E2E test.
+#
+# Each of the three namespaces runs a Keystone named keystone-mns. Its
+# keystone-admin and keystone-db Secrets are ESO-managed, as in
+# pod-security-restricted: the operator's reconcileSecrets gates SecretsReady
+# on WaitForExternalSecret, so plain Secrets would never let the CR turn Ready.
+# Both ExternalSecrets authenticate through the namespace's own
+# openbao-tenant-store (provisioned by the step 1 script with
+# setup-eso-tenant.sh) and read namespace-scoped paths the eso-tenant policy
+# templates to that namespace:
+#   - the admin password at bootstrap/<ns>/mns/admin
+#   - the `keystone` MariaDB user at openstack/keystone/<ns>/mns/db
+# The step 1 script seeds both by copying the shared
+# bootstrap/openstack/controlplane-keystone/admin and
+# openstack/keystone/openstack/standalone/db values, so the `keystone` user's
+# password matches the value every brownfield suite reconciles onto the shared
+# MariaDB user.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keystone-mns-a
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-admin
+  namespace: keystone-mns-a
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-tenant-store
+    kind: SecretStore
+  target:
+    name: keystone-admin
+    creationPolicy: Owner
+  data:
+  - secretKey: password
+    remoteRef:
+      key: bootstrap/keystone-mns-a/mns/admin
+      property: password
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-db
+  namespace: keystone-mns-a
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-tenant-store
+    kind: SecretStore
+  target:
+    name: keystone-db
+    creationPolicy: Owner
+  data:
+  - secretKey: username
+    remoteRef:
+      key: openstack/keystone/keystone-mns-a/mns/db
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: openstack/keystone/keystone-mns-a/mns/db
+      property: password
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keystone-mns-b
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-admin
+  namespace: keystone-mns-b
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-tenant-store
+    kind: SecretStore
+  target:
+    name: keystone-admin
+    creationPolicy: Owner
+  data:
+  - secretKey: password
+    remoteRef:
+      key: bootstrap/keystone-mns-b/mns/admin
+      property: password
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-db
+  namespace: keystone-mns-b
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-tenant-store
+    kind: SecretStore
+  target:
+    name: keystone-db
+    creationPolicy: Owner
+  data:
+  - secretKey: username
+    remoteRef:
+      key: openstack/keystone/keystone-mns-b/mns/db
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: openstack/keystone/keystone-mns-b/mns/db
+      property: password
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keystone-mns-c
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-admin
+  namespace: keystone-mns-c
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-tenant-store
+    kind: SecretStore
+  target:
+    name: keystone-admin
+    creationPolicy: Owner
+  data:
+  - secretKey: password
+    remoteRef:
+      key: bootstrap/keystone-mns-c/mns/admin
+      property: password
+---
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: keystone-db
+  namespace: keystone-mns-c
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: openbao-tenant-store
+    kind: SecretStore
+  target:
+    name: keystone-db
+    creationPolicy: Owner
+  data:
+  - secretKey: username
+    remoteRef:
+      key: openstack/keystone/keystone-mns-c/mns/db
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: openstack/keystone/keystone-mns-c/mns/db
+      property: password
