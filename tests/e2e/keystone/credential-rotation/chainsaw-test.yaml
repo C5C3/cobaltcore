@@ -7,6 +7,10 @@
 #   - CronJob schedule matches spec.credentialKeys.rotationSchedule
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
 #   - Pod UIDs remain unchanged after rotation (no Deployment rollout)
+#   - A rotation whose first staging PATCH is refused restarts its container
+#     in place, and the retry PATCHes the keys of one rotation: the new
+#     primary is the old staged key 0, and a credential stored just before
+#     returns its blob under the committed keys
 #   - The keystone-operator release exports
 #     keystone_operator_key_rotation_age_seconds for the credential keys
 #     once the rotation is applied
@@ -211,11 +215,290 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
-  # ── Step 6: Pause rotation via spec.credentialKeys.suspend: true ────────
+  # ── Step 6: Retry a refused staging PATCH in place ────────────────────
+  # The policy of 02-refuse-staging-patch.yaml refuses the staging PATCH of
+  # the rotation ServiceAccount. The refused PATCH fails the rotate
+  # container, and restartPolicy OnFailure restarts it in the same pod: the
+  # emptyDirs keep the keys the first attempt rotated. The retry must PATCH
+  # the keys of one rotation, not rotate them a second time, and a credential
+  # stored before the rotation must keep its blob under the committed keys.
+  # The scripts apply and delete the policy with kubectl rather than through
+  # a chainsaw apply, because the second script lifts it partway through the
+  # step.
+  - try:
+    - script:
+        timeout: 90s
+        shell: bash
+        content: |
+          set -euo pipefail
+          STAGING=keystone-credential-credential-keys-rotation
+          MESSAGE="credential-rotation e2e refuses the staging PATCH once"
+
+          # The commit of step 4 deleted the staging Secret, and the next
+          # reconcile recreates it. The probe below PATCHes it.
+          deadline=$((SECONDS + 60))
+          until kubectl get secret "$STAGING" -n openstack -o name >/dev/null 2>&1; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: staging Secret $STAGING did not reappear within 60s"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: staging Secret $STAGING exists"
+
+          kubectl apply -f 02-refuse-staging-patch.yaml
+
+          # Without this wait, a policy not yet in force would admit the first
+          # PATCH of the Job. The probe PATCHes as the rotation ServiceAccount
+          # in a server-side dry run, so it passes admission without writing.
+          deadline=$((SECONDS + 30))
+          while :; do
+            if OUT=$(kubectl patch secret "$STAGING" -n openstack \
+                --as=system:serviceaccount:openstack:keystone-credential-credential-rotate \
+                --dry-run=server --type=merge \
+                -p '{"metadata":{"annotations":{"e2e.cobaltcore.c5c3.io/probe":"refused"}}}' 2>&1); then
+              : # admitted: the policy is not in force yet
+            elif grep -qF "$MESSAGE" <<<"$OUT"; then
+              echo "OK: the refuse policy refuses the staging PATCH of the rotation ServiceAccount"
+              exit 0
+            else
+              echo "FAIL: the probe PATCH was refused for another reason:"
+              echo "$OUT"
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: the refuse policy did not refuse the probe PATCH within 30s"
+              exit 1
+            fi
+            sleep 2
+          done
+    - script:
+        timeout: 660s
+        shell: bash
+        content: |
+          set -euo pipefail
+          JOB=keystone-credential-manual-rotate-2
+
+          ADMIN_PASS=$(kubectl get secret keystone-admin -n openstack \
+            -o jsonpath='{.data.password}' | base64 -d)
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "FAIL: keystone-admin Secret has empty or missing password field"
+            exit 1
+          fi
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-credential,pod-template-hash \
+            -o jsonpath='{.items[0].metadata.name}')
+
+          # prod_keys: the key indices of the production Secret, ascending.
+          prod_keys() {
+            kubectl get secret keystone-credential-credential-keys -n openstack -o json \
+              | jq -r '.data // {} | keys | sort_by(tonumber) | join(" ")'
+          }
+          # pod_keys: the digit-named entries of the API pod's key directory,
+          # ascending. The kubelet projection adds ..data entries, which the
+          # filter drops; python3 lists the directory because the image does
+          # not promise ls.
+          pod_keys() {
+            kubectl exec -n openstack "$POD" -- python3 -c 'import os; print(" ".join(sorted((n for n in os.listdir("/etc/keystone/credential-keys") if n.isdigit()), key=int)))'
+          }
+          # wait_projection <keys> <seconds>: poll until the pod projects <keys>.
+          wait_projection() {
+            local want="$1" limit="$2" have=""
+            local until_s=$((SECONDS + limit))
+            while :; do
+              have=$(pod_keys || true)
+              [ "$have" = "$want" ] && return 0
+              if [ "$SECONDS" -ge "$until_s" ]; then
+                echo "FAIL: pod $POD projects keys [$have], Secret holds [$want] after ${limit}s"
+                return 1
+              fi
+              sleep 2
+            done
+          }
+          # credential create <blob> | credential get <id>: with an admin
+          # token scoped to the admin project, store a credential of type cert
+          # holding <blob> for the admin user and print its id, or print the
+          # blob of credential <id>. An HTTP error prints "HTTP <code>". The
+          # password goes over stdin, never into an argument.
+          credential() {
+            printf '%s' "$ADMIN_PASS" | kubectl exec -i -n openstack "$POD" -- python3 -c '
+          import json, sys, urllib.request, urllib.error
+          pw = sys.stdin.read()
+          mode, arg = sys.argv[1], sys.argv[2]
+          api = "http://localhost:5000/v3"
+          auth = {"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}, "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}
+          req = urllib.request.Request(api + "/auth/tokens", data=json.dumps(auth).encode(), headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req) as r:
+              headers = {"Content-Type": "application/json", "X-Auth-Token": r.headers["X-Subject-Token"]}
+              user = json.load(r)["token"]["user"]["id"]
+          if mode == "create":
+              body = json.dumps({"credential": {"type": "cert", "user_id": user, "blob": arg}}).encode()
+              req = urllib.request.Request(api + "/credentials", data=body, headers=headers)
+          else:
+              req = urllib.request.Request(api + "/credentials/" + arg, headers=headers)
+          try:
+              with urllib.request.urlopen(req) as r:
+                  cred = json.load(r)["credential"]
+                  sys.stdout.write(cred["id"] if mode == "create" else cred["blob"])
+          except urllib.error.HTTPError as e:
+              sys.stdout.write("HTTP {}".format(e.code))
+          ' "$1" "$2"
+          }
+
+          # The credential is encrypted under the primary key the API pod
+          # projects, so the pod must project the production keys first.
+          wait_projection "$(prod_keys)" 150
+          BLOB="credential-rotation e2e $(date +%s)"
+          CRED=$(credential create "$BLOB")
+          case "$CRED" in
+            "" | HTTP*)
+              echo "FAIL: no credential stored before the retried rotation: [$CRED]"
+              exit 1
+              ;;
+          esac
+          echo "OK: credential $CRED stored under the projected key set"
+
+          # E is the set one rotation of B leaves for max_active_keys 3. One
+          # rotation promotes the staged key 0 to MAXB+1 and keeps the primary
+          # MAXB; the values are compared, never printed.
+          B=$(prod_keys)
+          MAXB=${B##* }
+          E="0 $MAXB $((MAXB + 1))"
+          PROD=$(kubectl get secret keystone-credential-credential-keys -n openstack -o json)
+          OLD0=$(jq -r '.data["0"] // ""' <<<"$PROD")
+          OLDP=$(jq -r --arg k "$MAXB" '.data[$k] // ""' <<<"$PROD")
+          BEFORE_HASH=$(kubectl get secret keystone-credential-credential-keys -n openstack \
+            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          echo "OK: keys before the retried rotation [$B], expected after [$E]"
+
+          kubectl create job "$JOB" \
+            --from=cronjob/keystone-credential-credential-rotate -n openstack
+
+          # The refused PATCH fails the first attempt, and the kubelet starts
+          # the container again in the same pod.
+          deadline=$((SECONDS + 90))
+          JOB_POD=""
+          RESTARTS=""
+          while :; do
+            JOB_POD=$(kubectl get pods -n openstack -l "job-name=$JOB" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            if [ -n "$JOB_POD" ]; then
+              RESTARTS=$(kubectl get pod "$JOB_POD" -n openstack \
+                -o jsonpath='{.status.containerStatuses[?(@.name=="credential-rotate")].restartCount}' 2>/dev/null || true)
+              [ "${RESTARTS:-0}" -ge 1 ] && break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: container credential-rotate of $JOB did not restart within 90s of the refused PATCH"
+              exit 1
+            fi
+            sleep 2
+          done
+          # While the restarted attempt runs, --previous holds the log of the
+          # refused first attempt. Once the restarted attempt has failed on
+          # the refused PATCH as well, --previous prints "unable to retrieve
+          # container logs" and the current log holds that refusal, so the
+          # check reads both.
+          ATTEMPTS=$(kubectl logs -n openstack "$JOB_POD" -c credential-rotate --previous 2>&1 || true)
+          ATTEMPTS+=$'\n'$(kubectl logs -n openstack "$JOB_POD" -c credential-rotate 2>&1 || true)
+          if ! grep -qF "credential-rotation e2e refuses the staging PATCH once" <<<"$ATTEMPTS"; then
+            echo "FAIL: no attempt in $JOB_POD failed on the refused PATCH; the last 20 lines of its logs:"
+            tail -20 <<<"$ATTEMPTS"
+            exit 1
+          fi
+          echo "OK: container credential-rotate of $JOB_POD restarted ($RESTARTS) after the refused PATCH"
+
+          kubectl delete validatingadmissionpolicybinding/keystone-credential-refuse-staging-patch \
+            validatingadmissionpolicy/keystone-credential-refuse-staging-patch --wait=true
+          kubectl wait --for=condition=complete "job/$JOB" -n openstack --timeout=180s
+
+          PODS=$(kubectl get pods -n openstack -l "job-name=$JOB" -o json | jq '.items | length')
+          if [ "$PODS" != "1" ]; then
+            echo "FAIL: $JOB ran $PODS pods; the retry was not an in-place restart"
+            exit 1
+          fi
+          echo "OK: $JOB completed in its one pod $JOB_POD"
+
+          AFTER_HASH="$BEFORE_HASH"
+          for _ in $(seq 1 60); do
+            AFTER_HASH=$(kubectl get secret keystone-credential-credential-keys -n openstack \
+              -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+            [ "$BEFORE_HASH" != "$AFTER_HASH" ] && break
+            sleep 1
+          done
+          if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
+            echo "FAIL: credential Secret data did not change within 60s of the retried rotation"
+            exit 1
+          fi
+
+          A=$(prod_keys)
+          read -ra A_KEYS <<<"$A"
+          if [ "$A" != "$E" ] || [ "${#A_KEYS[@]}" -ne 3 ]; then
+            echo "FAIL: key set after the retried rotation is [$A], expected [$E] (before: [$B]); the retry rotated again"
+            exit 1
+          fi
+          PROD=$(kubectl get secret keystone-credential-credential-keys -n openstack -o json)
+          if [ "$(jq -r --arg k "$((MAXB + 1))" '.data[$k] // ""' <<<"$PROD")" != "$OLD0" ]; then
+            echo "FAIL: the new primary key $((MAXB + 1)) is not the staged key 0 of [$B]; the retry rotated again"
+            exit 1
+          fi
+          if [ "$(jq -r --arg k "$MAXB" '.data[$k] // ""' <<<"$PROD")" != "$OLDP" ]; then
+            echo "FAIL: key $MAXB, the primary before the rotation, changed or was purged"
+            exit 1
+          fi
+          echo "OK: the retried rotation left keys [$A]; the new primary $((MAXB + 1)) is the staged key 0, and key $MAXB is kept"
+
+          CURRENT=$(kubectl logs -n openstack "$JOB_POD" -c credential-rotate 2>&1 || true)
+          if ! grep -qF "Retry: restoring the credential keys this pod rotated earlier; not rotating again" <<<"$CURRENT"; then
+            echo "FAIL: the retried container did not restore the saved key set"
+            exit 1
+          fi
+          echo "OK: the retried container restored the saved key set"
+
+          # Once the pod projects only the committed keys, the credential
+          # decrypts only if every migration of the Job used a key of them.
+          wait_projection "$E" 150
+          GOT=$(credential get "$CRED")
+          if [ "$GOT" != "$BLOB" ]; then
+            echo "FAIL: credential $CRED does not return its blob under the committed keys: [$GOT]"
+            exit 1
+          fi
+          echo "OK: credential $CRED returns its blob under the committed keys [$E]"
+    catch:
+    - script:
+        content: |
+          echo "=== Retried rotation Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-credential-manual-rotate-2 -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-credential-manual-rotate-2 -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" -c credential-rotate --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" -c credential-rotate --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Production key names ==="
+          kubectl get secret keystone-credential-credential-keys -n $NAMESPACE -o json 2>/dev/null \
+            | jq -r '.data // {} | keys | join(" ")' 2>&1 || true
+          echo "=== Refuse policy ==="
+          kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding keystone-credential-refuse-staging-patch 2>&1 || true
+          echo "=== Keystone API pod logs ==="
+          kubectl logs -n $NAMESPACE \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-credential,pod-template-hash \
+            --tail=50 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    # A failed run must not leave the staging Secret refused for the steps
+    # that follow, so this deletes the policy, pass or fail.
+    finally:
+    - script:
+        content: |
+          kubectl delete validatingadmissionpolicybinding/keystone-credential-refuse-staging-patch \
+            validatingadmissionpolicy/keystone-credential-refuse-staging-patch --ignore-not-found 2>&1 || true
+  # ── Step 7: Pause rotation via spec.credentialKeys.suspend: true ────────
   - try:
     - patch:
         file: 01-patch-suspend-credential.yaml
-  # ── Step 7: Assert CronJob preserved, suspended, schedule unchanged ─────
+  # ── Step 8: Assert CronJob preserved, suspended, schedule unchanged ─────
   # suspend pauses rotation without deleting the CronJob and without changing
   # the rotation cadence, so an SRE can resume without churn.
   - try:
@@ -229,7 +512,7 @@ spec:
           spec:
             schedule: "0 0 * * 0"
             suspend: true
-  # ── Step 8: Assert the operator's metric families ──────────────────────
+  # ── Step 9: Assert the operator's metric families ──────────────────────
   # The header of ../../lib/assert-operator-metric-families.sh lists the
   # checks it runs against the cluster-wide release.
   # The rotation of Step 4 set the age gauge, which no fresh deployment
