@@ -905,22 +905,8 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	g.Expect(podSpec.ServiceAccountName).To(Equal(fmt.Sprintf("%s-fernet-rotate", ks.Name)),
 		"CronJob should use the fernet-rotate ServiceAccount")
 
-	// Verify init container: copy-keys.
-	g.Expect(podSpec.InitContainers).To(HaveLen(1), "CronJob should have exactly one init container")
-	initContainer := podSpec.InitContainers[0]
-	g.Expect(initContainer.Name).To(Equal("copy-keys"))
-	g.Expect(initContainer.Image).To(Equal(expectedImage), "init container image should match spec")
-	g.Expect(initContainer.Command).To(Equal([]string{"sh", "-c", "install -m 0400 /fernet-keys-src/* /etc/keystone/fernet-keys/"}))
-
-	// Verify init container volume mounts.
-	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))
-	initMounts := map[string]corev1.VolumeMount{}
-	for _, vm := range initContainer.VolumeMounts {
-		initMounts[vm.Name] = vm
-	}
-	g.Expect(initMounts["fernet-keys-src"].MountPath).To(Equal("/fernet-keys-src"))
-	g.Expect(initMounts["fernet-keys-src"].ReadOnly).To(BeTrue(), "fernet-keys-src should be read-only")
-	g.Expect(initMounts["fernet-keys"].MountPath).To(Equal("/etc/keystone/fernet-keys"))
+	// No init container: the rotate script copies the keys itself.
+	g.Expect(podSpec.InitContainers).To(BeEmpty(), "CronJob should have no init container")
 
 	// Verify main container: fernet-rotate.
 	g.Expect(podSpec.Containers).To(HaveLen(1), "CronJob should have exactly one main container")

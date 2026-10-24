@@ -34,6 +34,8 @@ import (
 // fernetRotateScript is the shell script executed by the Fernet rotation CronJob.
 // It rotates the keys on an emptyDir working copy, then pushes the updated keys
 // back to the Kubernetes Secret via the API using the pod's ServiceAccount token.
+// A restarted container restores the key set it saved and repeats only the PATCH,
+// or starts over when the production keys changed since it rotated.
 // Only Python standard library modules are used to avoid image dependencies.
 // Extracted to scripts/fernet_rotate.sh for independent linting and testing.
 //

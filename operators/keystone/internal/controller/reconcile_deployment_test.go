@@ -2840,8 +2840,8 @@ func TestKeystoneWorkloads_ImagePullPolicy(t *testing.T) {
 				}
 			}
 			g.Expect(specs["api"].Containers).To(HaveLen(2), "keystone and federation-proxy")
-			g.Expect(specs["fernet-rotate"].InitContainers).To(HaveLen(1), "copy-keys")
-			g.Expect(specs["credential-rotate"].InitContainers).To(HaveLen(1), "copy-keys")
+			g.Expect(specs["fernet-rotate"].InitContainers).To(BeEmpty())
+			g.Expect(specs["credential-rotate"].InitContainers).To(BeEmpty())
 		})
 	}
 }
