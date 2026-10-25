@@ -323,7 +323,7 @@ func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, fi
 			// admitted with it no update to remove it through. A new or changed value
 			// is still forbidden.
 			if owned.Rejected {
-				if value, ok := stored[owned.Section][owned.Key]; ok && value == merged[owned.Section][owned.Key] {
+				if owned.CarryOver && config.CarriedOver(stored, owned.Section, owned.Key, merged[owned.Section][owned.Key]) {
 					warnings = append(warnings, carriedRejectedINIWarning(owned, paths))
 					continue
 				}
