@@ -411,7 +411,8 @@ jobs:
             # The inputs every operator upgrade job shares: a change here runs
             # all ten. Each operator's own suite (and the scripts only some
             # suites call: the vhost script of cinder and nova, the CRD window
-            # check of keystone) runs that operator's job alone.
+            # check and the chaos workload harness of keystone) runs that
+            # operator's job alone.
             tests_operator_upgrade:
               - 'tests/e2e-operator-upgrade/chainsaw-config.yaml'
               - 'hack/ci-fetch-released-operator.sh'
@@ -422,6 +423,9 @@ jobs:
             tests_operator_upgrade_keystone:
               - 'tests/e2e-operator-upgrade/keystone-helm-upgrade/**'
               - 'hack/ci-operator-upgrade-crd-window.sh'
+              - 'tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**'
+              - 'tests/e2e-chaos/lib/workload.sh'
+              - 'tests/e2e-chaos/lib/workload.py'
             tests_operator_upgrade_c5c3:
               - 'tests/e2e-operator-upgrade/c5c3-helm-upgrade/**'
             tests_operator_upgrade_horizon:

@@ -24,6 +24,13 @@
 # 68-minute budget is the one the keystone-only job had, and that job took 10
 # to 12 minutes in the pull-request runs of 2026-10-20 and 2026-10-21. The
 # other nine jobs have no CI duration on record yet.
+#
+# The keystone job runs a second pass when its first suite passed: it
+# uninstalls the operator, installs the baseline again and runs
+# tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/, which kills
+# every operator pod in the middle of the helm upgrade under Chaos Mesh. That
+# adds the Chaos Mesh install, the reinstall and about 12 minutes of suite to
+# the 10 to 12 minutes of the first pass, inside the same 68 minutes.
 name: E2E Operator Upgrade
 
 "on":
@@ -128,10 +135,12 @@ jobs:
           OPERATOR: ${{ matrix.operator }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra
       # sequence. The leg table names the opt-ins; an empty value keeps
-      # deploy-infra.sh's default of leaving the component out.
+      # deploy-infra.sh's default of leaving the component out. Chaos Mesh is
+      # for the keystone job's pod-kill pass.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
+          WITH_CHAOS_MESH: ${{ steps.leg.outputs.with-chaos-mesh }}
           WITH_NFS: ${{ steps.leg.outputs.with-nfs }}
           WITH_MESSAGING: ${{ steps.leg.outputs.with-messaging }}
           WITH_OVN_KERNEL_MODULES: ${{ steps.leg.outputs.with-ovn-kernel-modules }}
@@ -177,6 +186,33 @@ jobs:
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml "tests/e2e-operator-upgrade/${OPERATOR}-helm-upgrade/"
+      # The pod-kill pass of the leg table's pod-kill-suite row (keystone),
+      # after a first suite that passed: the implicit success() skips both
+      # steps otherwise. The first suite left the :dev operator in place, so
+      # the release goes and the baseline comes back with the env of the
+      # baseline step. hack/ci-deploy-operator.sh applies the chart's crds/
+      # on every install, so the released CRDs come back with it; the suite
+      # applies the in-repo CRDs before its helm upgrade.
+      - name: Reinstall released operator (pod-kill baseline)
+        if: steps.leg.outputs.pod-kill-suite == 'true'
+        env:
+          OPERATOR: ${{ matrix.operator }}
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
+          IMAGE_TAG: ${{ steps.baseline.outputs.image_tag }}
+          CHART_DIR: ${{ steps.baseline.outputs.chart_dir }}
+          NAMESPACE: ${{ matrix.operator }}-system
+        run: |
+          helm uninstall "${OPERATOR}-operator" -n "${OPERATOR}-system" --wait --timeout 120s
+          hack/ci-deploy-operator.sh
+      # A report name of its own, so the JUnit file of the first suite stays.
+      - name: Run operator upgrade pod-kill E2E
+        if: steps.leg.outputs.pod-kill-suite == 'true'
+        env:
+          OPERATOR: ${{ matrix.operator }}
+        run: |
+          chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml \
+            --report-name chainsaw-operator-upgrade-pod-kill-report \
+            "tests/e2e-operator-upgrade/${OPERATOR}-helm-upgrade-pod-kill/"
       # Use shared diagnostic dump script, then the operator sections of every
       # sibling, whose Namespaces the first dump never looks at.
       - name: Dump diagnostic info

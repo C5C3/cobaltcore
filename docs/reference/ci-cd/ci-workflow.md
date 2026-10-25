@@ -82,7 +82,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
 | `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
 | `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
-| `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`, keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls | that operator's `e2e-operator-upgrade` job |
+| `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`; keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls, and `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**` with the `tests/e2e-chaos/lib/workload.sh` and `workload.py` that suite calls | that operator's `e2e-operator-upgrade` job |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
 | `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
@@ -1155,8 +1155,11 @@ to the in-repo chart, CRDs and `:dev` image. The suite asserts that the deployed
 keeps its workloads, its `status.installedRelease` and its Ready condition. The
 keystone suite also applies the in-repo CRDs before the upgrade and checks its
 Keystone while the released operator still runs it (the
-[CRD window](../testing/operator-upgrade-e2e-tests.md#the-crd-window)). See
-[Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md) for the suites.
+[CRD window](../testing/operator-upgrade-e2e-tests.md#the-crd-window)). The keystone
+job then runs a second pass: it installs the baseline again and runs
+`keystone-helm-upgrade-pod-kill`, which kills every operator pod in the middle of the
+upgrade. See [Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md)
+for the suites.
 
 **Dependencies:** `needs: [changes, build-e2e-images]`
 **Condition:** Runs on `pull_request` when `e2e-operator-upgrade == 'true'`,
@@ -1185,26 +1188,31 @@ runs on `self-hosted` with `fail-fast: false` and a 68-minute timeout:
 | 1 | `actions/checkout@v7` | Checks out `ref` |
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` for the registry login and the chart pull |
 | 3 | `create-kind-cluster` composite action | Creates the kind cluster |
-| 4 | `Resolve the upgrade leg` | Runs `hack/ci-operator-upgrade-leg.sh`, which writes the operator's image refs, its infrastructure opt-ins, its sibling operators and whether it needs the c5c3-operator's watched CRDs |
+| 4 | `Resolve the upgrade leg` | Runs `hack/ci-operator-upgrade-leg.sh`, which writes the operator's image refs, its infrastructure opt-ins, its sibling operators, whether it needs the c5c3-operator's watched CRDs, and the `with-chaos-mesh` and `pod-kill-suite` outputs of the second pass (keystone only) |
 | 5 | `load-e2e-images` composite action | Pulls the refs of step 4 through `image-map` |
 | 6 | `Load images into kind` | One `kind load docker-image` call for every ref |
 | 7 | `Log in to GHCR for Helm` | `helm registry login` with the job's token |
 | 8 | `Fetch released operator baseline` | Runs `hack/ci-fetch-released-operator.sh`, which pulls the pinned chart and image and writes `chart_dir` and `image_tag` |
-| 9 | `setup-e2e-infra` composite action | Deploys the infrastructure with the `WITH_NFS`, `WITH_MESSAGING` and `WITH_OVN_KERNEL_MODULES` of step 4 |
+| 9 | `setup-e2e-infra` composite action | Deploys the infrastructure with the `WITH_CHAOS_MESH`, `WITH_NFS`, `WITH_MESSAGING` and `WITH_OVN_KERNEL_MODULES` of step 4 |
 | 10 | `Install CRDs watched by the c5c3-operator` | c5c3 only: the keystone, horizon, glance and placement CRDs and `hack/ci-deploy-korc.sh` |
 | 11 | `Deploy sibling operators` | neutron only: the ovn-operator at `:dev` through `hack/ci-deploy-operator.sh` |
 | 12 | `Deploy released operator (baseline)` | `hack/ci-deploy-operator.sh` with `CHART_DIR` and `IMAGE_TAG` from step 8, into `<op>-system` |
 | 13 | `Run operator upgrade E2E` | `chainsaw test` of `tests/e2e-operator-upgrade/<op>-helm-upgrade/` |
-| 14 | `Dump diagnostic info` | `hack/ci-dump-diagnostics.sh` for the operator, then `OPERATOR_ONLY=1` for each sibling (always) |
-| 15 | `actions/upload-artifact@v7` | Uploads `e2e-operator-upgrade-<op>-junit-report` (always) |
-| 16 | `Delete kind cluster` | `hack/ci-delete-kind-cluster.sh` (always) |
+| 14 | `Reinstall released operator (pod-kill baseline)` | When `pod-kill-suite` is `true`: `helm uninstall --wait` of the release, then `hack/ci-deploy-operator.sh` with the env of step 12, which also applies the released CRDs again |
+| 15 | `Run operator upgrade pod-kill E2E` | When `pod-kill-suite` is `true`: `chainsaw test` of `tests/e2e-operator-upgrade/<op>-helm-upgrade-pod-kill/` with `--report-name chainsaw-operator-upgrade-pod-kill-report` |
+| 16 | `Dump diagnostic info` | `hack/ci-dump-diagnostics.sh` for the operator, then `OPERATOR_ONLY=1` for each sibling (always) |
+| 17 | `actions/upload-artifact@v7` | Uploads `e2e-operator-upgrade-<op>-junit-report` (always) |
+| 18 | `Delete kind cluster` | `hack/ci-delete-kind-cluster.sh` (always) |
 
 Each suite's step 3 except keystone's upgrades the release through
 `hack/ci-deploy-operator.sh` with `HELM_UPGRADE=true`, so the upgrade passes the
 values the baseline install passed. The keystone suite runs its own `helm upgrade`
 with its own `--set` list.
+Steps 14 and 15 run after a first suite that passed. Their report name keeps the
+JUnit file of step 13.
 Blocking (no `continue-on-error`). The keystone job took 10 to 12 minutes in the pull
-request runs of 2026-10-20 and 2026-10-21.
+request runs of 2026-10-20 and 2026-10-21, before the second pass added the Chaos
+Mesh install, the reinstall and about 12 minutes of suite.
 
 The same workflow runs after every publish on `main`.
 `.github/workflows/operator-upgrade.yaml`, named `Operator Upgrade`, triggers on
