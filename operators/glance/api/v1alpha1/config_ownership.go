@@ -14,7 +14,8 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 //
 //   - The registry is static. Conditionally rendered keys — [DEFAULT]
 //     default_log_levels / log_config_append, the three [DEFAULT] image_cache_*
-//     keys, the [keystone_authtoken] region_name / memcached_servers, and the
+//     keys, the [keystone_authtoken] region_name / memcached_servers, the
+//     [DEFAULT] use_keystone_limits and [oslo_limit] keys, and the
 //     [oslo_policy] policy_file — are
 //     registered unconditionally, because the registry documents "this key is
 //     not the user's to set", not "this key is currently rendered". A key the
@@ -29,18 +30,32 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 //     ConfigMap; the six [import_filtering_opts] keys, because a silently
 //     loosened web-download filter is the very thing spec.importFiltering exists
 //     to make visible; the three [DEFAULT] image_cache_* keys, because each
-//     of them ends in an evicted pod or in database rows nothing reclaims; and
-//     the four image-import plugin keys, because each one reaches past a
-//     guarantee spec.importPlugins makes at admission.
+//     of them ends in an evicted pod or in database rows nothing reclaims; the
+//     four image-import plugin keys, because each one reaches past a
+//     guarantee spec.importPlugins makes at admission; and the unified-limits
+//     keys ([DEFAULT] use_keystone_limits and the [oslo_limit] keys that pick
+//     the credential, the scope and the endpoint), because a wrong value
+//     refuses every image create or silently drops the quotas.
+//
+// The unified-limits keys are CarryOver as well: enabling unified limits by
+// hand through extraConfig was the only way before spec.keystoneLimits
+// existed, so the validating webhook admits an update that carries one with
+// the value the stored object already holds, with a warning, and the object
+// stays updatable and deletable; a new key or a changed value is refused.
+// An update that sets spec.keystoneLimits carries nothing over, because a
+// hand-set key would override the section it renders. Every other Rejected
+// key is refused on update as on create.
 
 // OwnedConfigKeys is the registry of glance-api.conf keys the operator owns.
 // Reported entries are honored-but-surfaced when overridden in spec.extraConfig;
 // the Rejected entries ([keystone_authtoken] password, the six
-// [import_filtering_opts] keys, the three [DEFAULT] image_cache_* keys and the
-// four image-import plugin keys) are blocked at admission instead. The entries
+// [import_filtering_opts] keys, the three [DEFAULT] image_cache_* keys, the
+// four image-import plugin keys, and [DEFAULT] use_keystone_limits with the
+// [oslo_limit] keys spec.keystoneLimits owns) are blocked at admission instead. The entries
 // mirror the defaults map built by operatorDefaults (the
-// [keystone_authtoken] keys come from keystoneauth.Section) plus the oslo_policy
-// policy_file injected by config.InjectOsloPolicyConfig.
+// [keystone_authtoken] keys come from keystoneauth.Section, the [oslo_limit]
+// keys from keystoneauth.LimitSection) plus the oslo_policy policy_file
+// injected by config.InjectOsloPolicyConfig.
 var OwnedConfigKeys = []config.OwnedKey{
 	// [DEFAULT]
 	{Section: "DEFAULT", Key: "enabled_backends", OwnedBy: "operator-computed", Impact: "must agree with the projected backends Secret"},
@@ -143,7 +158,58 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "image_conversion", Key: "output_format", Rejected: true, OwnedBy: "spec.importPlugins", Impact: importPluginsOverrideImpact},
 	{Section: "inject_metadata_properties", Key: "inject", Rejected: true, OwnedBy: "spec.importPlugins", Impact: importPluginsOverrideImpact},
 	{Section: "inject_metadata_properties", Key: "ignore_user_roles", Rejected: true, OwnedBy: "spec.importPlugins", Impact: importPluginsOverrideImpact},
+
+	// Keystone unified limits — derived from spec.keystoneLimits, rendered by
+	// keystoneauth.LimitSection. All of them are Rejected: each override does
+	// its damage on the next image request, before ExtraConfigHealthy could
+	// surface it. use_keystone_limits turned on without the registered limits
+	// makes oslo.limit count every resource as limit 0, and turned off it drops
+	// the quotas the platform set; a wrong [oslo_limit] auth or endpoint option
+	// fails the Keystone lookup every quota check makes, which glance answers
+	// with 500. password is never rendered: it is env-injected, so it stays the
+	// drift guard's "extras" entry, as [keystone_authtoken] password does.
+	//
+	// The fifteen entries after password are not rendered either, but each one
+	// overrides what the operator renders: keystoneauth refuses a project,
+	// domain or trust scope next to system_scope, user_id, user_domain_id,
+	// default_domain_id (the password plugin's fallback for user_domain_id,
+	// which wins over the rendered user_domain_name) and the deprecated
+	// user_name log in as another user, and endpoint_id or
+	// endpoint_service_name replace the endpoint lookup, so oslo.limit reads
+	// another endpoint's limits or none. They are drift-guard extras too.
+	// [oslo_limit] keys that pick none of these (cafile, insecure, timeout and
+	// the other session options) stay settable through extraConfig.
+	{Section: "DEFAULT", Key: "use_keystone_limits", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: "turned on without the four registered limits it refuses every image create with 413; turned off it silently drops the quotas"},
+	{Section: "oslo_limit", Key: "auth_type", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "auth_url", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "username", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "user_domain_name", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "system_scope", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "endpoint_service_type", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "endpoint_interface", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "endpoint_override", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "endpoint_region_name", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "password", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: "the password is env-injected through OS_OSLO_LIMIT__PASSWORD; a file value is ignored at runtime and leaks the credential into the namespace-readable ConfigMap"},
+	{Section: "oslo_limit", Key: "project_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "project_name", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "project_domain_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "project_domain_name", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "tenant_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "tenant_name", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "domain_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "domain_name", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "trust_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "user_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "user_domain_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "default_domain_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "user_name", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "endpoint_id", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
+	{Section: "oslo_limit", Key: "endpoint_service_name", Rejected: true, CarryOver: true, OwnedBy: "spec.keystoneLimits", Impact: keystoneLimitsOverrideImpact},
 }
+
+// keystoneLimitsOverrideImpact is the shared consequence note for the Rejected
+// [oslo_limit] auth, scope and endpoint keys, rendered into the admission error.
+const keystoneLimitsOverrideImpact = "a wrong value fails every quota check, and every image create answers 500"
 
 // importFilteringOverrideImpact is the shared consequence note for the six
 // Rejected [import_filtering_opts] keys, rendered into the admission error.

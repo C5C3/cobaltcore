@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraConfig setting [DEFAULT] use_keystone_limits is rejected by the
+# validating webhook. It is a Rejected registry entry owned by
+# spec.keystoneLimits: turned on without the four registered limits it
+# refuses every image create with 413, and turned off it drops the quotas.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-invalid-extraconfig-use-keystone-limits
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: glance-service-password
+  extraConfig:
+    DEFAULT:
+      use_keystone_limits: "true"

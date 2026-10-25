@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/tools/record"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
@@ -87,6 +88,94 @@ func TestFindOwnedOverrides(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			g.Expect(FindOwnedOverrides(tt.extraConfig, registry)).To(Equal(tt.want))
+		})
+	}
+}
+
+func TestCarriedOver(t *testing.T) {
+	carried := map[string]map[string]string{"nova": {"password": "s3cret", "empty": ""}}
+
+	tests := []struct {
+		name    string
+		carried map[string]map[string]string
+		key     string
+		value   string
+		want    bool
+	}{
+		{name: "same value", carried: carried, key: "password", value: "s3cret", want: true},
+		{name: "changed value", carried: carried, key: "password", value: "rotated"},
+		{name: "stored empty value kept empty", carried: carried, key: "empty", value: "", want: true},
+		{name: "key the stored object never held", carried: carried, key: "username", value: ""},
+		{name: "nil stored extraConfig", carried: nil, key: "password", value: "s3cret"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(CarriedOver(tt.carried, "nova", tt.key, tt.value)).To(Equal(tt.want))
+		})
+	}
+}
+
+// TestCarriedRejectedKeyWarnings pins which keys get the carry-over warning:
+// only a Rejected key marked CarryOver that the update keeps at its stored
+// value. A Rejected key without CarryOver is refused by the webhook instead, so
+// warning that it "is kept" would contradict the rejection.
+func TestCarriedRejectedKeyWarnings(t *testing.T) {
+	registry := []OwnedKey{
+		{Section: "s", Key: "carried", Rejected: true, CarryOver: true, OwnedBy: "spec.x"},
+		{Section: "s", Key: "refused", Rejected: true, OwnedBy: "spec.y"},
+		{Section: "s", Key: "reported", CarryOver: true, OwnedBy: "spec.z"},
+	}
+	stored := map[string]map[string]string{"s": {"carried": "v", "refused": "v", "reported": "v"}}
+
+	tests := []struct {
+		name        string
+		extraConfig map[string]map[string]string
+		carried     map[string]map[string]string
+		want        []string
+	}{
+		{
+			name:        "carried unchanged",
+			extraConfig: map[string]map[string]string{"s": {"carried": "v"}},
+			carried:     stored,
+			want: []string{"spec.extraConfig[s][carried]: carried is managed via spec.x and is no longer " +
+				"accepted in extraConfig; the value this object was admitted with is kept so the object " +
+				"stays updatable, but a new or changed value is rejected, so move it to spec.x and remove " +
+				"the override"},
+		},
+		{
+			name:        "changed value",
+			extraConfig: map[string]map[string]string{"s": {"carried": "w"}},
+			carried:     stored,
+		},
+		{
+			name:        "Rejected key without CarryOver",
+			extraConfig: map[string]map[string]string{"s": {"refused": "v"}},
+			carried:     stored,
+		},
+		{
+			name:        "reported key",
+			extraConfig: map[string]map[string]string{"s": {"reported": "v"}},
+			carried:     stored,
+		},
+		{
+			name:        "key absent from the update",
+			extraConfig: map[string]map[string]string{"s": {}},
+			carried:     stored,
+		},
+		{
+			name:        "nil stored extraConfig",
+			extraConfig: map[string]map[string]string{"s": {"carried": "v"}},
+			carried:     nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			got := CarriedRejectedKeyWarnings(field.NewPath("spec"), tt.extraConfig, tt.carried, registry)
+			g.Expect([]string(got)).To(Equal(tt.want))
 		})
 	}
 }

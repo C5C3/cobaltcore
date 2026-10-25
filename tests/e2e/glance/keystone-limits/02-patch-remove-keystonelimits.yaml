@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: unset spec.keystoneLimits so the operator turns unified limits back
+# off on a Deployment that already enforces them. Removing the block is the
+# documented way to disable enforcement: use_keystone_limits, the whole
+# [oslo_limit] section and the OS_OSLO_LIMIT__PASSWORD env var all have to
+# disappear, and the Deployment rolls once to the new content-hashed
+# ConfigMap.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-keystone-limits
+  namespace: openstack
+spec:
+  keystoneLimits: null

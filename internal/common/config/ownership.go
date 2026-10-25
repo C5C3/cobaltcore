@@ -12,7 +12,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 )
@@ -25,13 +27,19 @@ import (
 // consequence note included verbatim in condition and event messages. Rejected
 // marks a key whose override is blocked at admission by the service's validating
 // webhook; the zero value marks a key whose override is honored but surfaced
-// through the ExtraConfigHealthy condition and a Warning event.
+// through the ExtraConfigHealthy condition and a Warning event. CarryOver marks
+// a Rejected key the webhook still admits on update when the stored object
+// already holds it with the same value (CarriedOver), reported through
+// CarriedRejectedKeyWarnings: a key that was the documented way to configure
+// something before the operator owned it, which objects admitted earlier may
+// carry.
 type OwnedKey struct {
-	Section  string
-	Key      string
-	OwnedBy  string
-	Impact   string
-	Rejected bool
+	Section   string
+	Key       string
+	OwnedBy   string
+	Impact    string
+	Rejected  bool
+	CarryOver bool
 }
 
 const (
@@ -70,6 +78,34 @@ func FindOwnedOverrides(extraConfig map[string]map[string]string, registry []Own
 	}
 	sortOwnedKeys(matched)
 	return matched
+}
+
+// CarriedOver reports whether carried, the stored object's extraConfig, already
+// held section/key with this same value.
+func CarriedOver(carried map[string]map[string]string, section, key, value string) bool {
+	stored, ok := carried[section][key]
+	return ok && stored == value
+}
+
+// CarriedRejectedKeyWarnings reports every Rejected CarryOver key the validating
+// webhook let through because the update carried it over unchanged, so the
+// override stays visible to whoever applies the object while the object stays
+// updatable.
+func CarriedRejectedKeyWarnings(
+	specPath *field.Path, extraConfig, carried map[string]map[string]string, registry []OwnedKey,
+) admission.Warnings {
+	var warnings admission.Warnings
+	for _, e := range registry {
+		value, ok := extraConfig[e.Section][e.Key]
+		if !e.Rejected || !e.CarryOver || !ok || !CarriedOver(carried, e.Section, e.Key, value) {
+			continue
+		}
+		warnings = append(warnings, fmt.Sprintf("%s: %s is managed via %s and is no longer accepted in "+
+			"extraConfig; the value this object was admitted with is kept so the object stays updatable, but "+
+			"a new or changed value is rejected, so move it to %s and remove the override",
+			specPath.Child("extraConfig").Key(e.Section).Key(e.Key), e.Key, e.OwnedBy, e.OwnedBy))
+	}
+	return warnings
 }
 
 // FindOwnedSettingOverrides is the flat variant of FindOwnedOverrides for
