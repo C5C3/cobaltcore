@@ -3627,12 +3627,14 @@ generation on its next pass). Its model:
   Each of the three is a `Ready=False` wait with the 10s requeue. Because that
   reference crosses namespaces and the caller controls it, the path then repeats
   **all four** pre-write gates the KeystoneService reconciler applies before it
-  touches the account: the plane's registration consent for the CR's namespace
+  touches the account, plus its system-role rule: the plane's registration consent for the CR's namespace
   (`NamespaceNotAllowed` — de-listing a namespace *freezes* its registrations, so
   the `User` is still there to nudge while the reconciler that would act on the
   nudge no longer runs), the role allowlist of the `spec.namespaceAssignments`
   entry for that namespace (`RoleNotAllowed`, which freezes the account the same
-  way; the message ends with `cannot rotate`), the plane's `AdminCredentialReady` condition
+  way; the message ends with `cannot rotate`), the system-role rule
+  (`SystemRoleNotAllowed` for `spec.account.systemRoles` outside the plane's own
+  namespaces, with the same `cannot rotate` ending), the plane's `AdminCredentialReady` condition
   (`WaitingForAdminCredential` — K-ORC cannot reach Keystone before the admin
   credential is minted, which freezes the registration the same way), and the
   ownership labels on the `User` itself (`ForeignServiceAccount` — a

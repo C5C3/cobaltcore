@@ -133,6 +133,7 @@ reaches for that block is not a failure of it.
 | `spec.controlPlaneRef` resolves | `ControlPlaneNotFound` | A status condition, not an admission error, because GitOps may apply the registration before the plane. Any read failure other than NotFound propagates instead, so the workqueue backs off instead of reporting a dangling reference it did not observe |
 | Namespace consent | `NamespaceNotAllowed` | `keystoneServiceNamespaceAllowed` admits the plane's own namespace, its dedicated service namespaces, then `spec.korc.serviceRegistrations.allowedNamespaces`. A nil block and an empty list are identical: both admit nothing beyond the implicit two. Nothing is projected |
 | `AdminCredentialReady` on the plane | `WaitingForAdminCredential` | K-ORC cannot talk to Keystone before the admin credential is minted |
+| System roles | `SystemRoleNotAllowed` | Account block only. `keystoneServiceSystemRoleRefusal` refuses `spec.account.systemRoles` on a CR outside the plane's own namespace and its dedicated service namespaces, because a role on the system reaches every project and no `allowedRoles` was written to grant one. It freezes the account the way the role allowlist does, is written after the sweep, and adds no requeue: only a spec edit lifts it. `RoleNotAllowed` wins when both apply |
 | Role allowlist | `RoleNotAllowed` | Account block only. `keystoneServiceRoleRefusal` looks up the management-cluster `spec.namespaceAssignments` entry for the CR's namespace and refuses every account role outside its `allowedRoles`. The plane's own namespace and its dedicated service namespaces are never bound, and a namespace without an entry stays unlimited. `ensureAccount` is skipped and the catalog block runs. The condition is written after the sweep, so the sweep's `WaitingForServiceAccounts` cannot mask it, and the gate adds no requeue: the ControlPlane watch brings the edit that lifts it |
 
 The role allowlist freezes the account the same way: the sweep keeps every
@@ -313,7 +314,14 @@ but its scheduling logic is deferred, and the deferral is not silent.
 **(5) Roles.** Per declared role, one unmanaged Role import filtered by name
 (Keystone roles are global, so the import carries no domain and reading one
 never mutates it) and one managed RoleAssignment binding that role to this
-account's user on its project. The imports are per CR, never shared:
+account's user on its project. Per declared system role, the same import (a
+role in both lists shares it) and one managed RoleAssignment with
+`system: all` and no `projectRef`, named `sys-<slug>`; its messages say
+`system role` where the project-role ones say `role`, after every project role.
+On keystone 29.0.0 (2026.1) the read-back of a new system grant depends on the
+image patch that invalidates Keystone's assignment cache
+([container images](../ci-cd/container-images.md#keystone)); without it the
+assignment stays unavailable for up to `[cache] expiration_time`. The imports are per CR, never shared:
 registrations are independently owned and deleted, so a shared import would
 have no single owner and the first CR deleted would pull it out from under the
 others. A role that does not exist in Keystone never resolves, and the wait
@@ -524,6 +532,7 @@ registration it belongs to.
 | `project`, `project-probe` | Project and its collision probe |
 | `domain` | Domain import, when the effective domain is not the plane's admin domain |
 | `role-<slug>`, `assign-<slug>` | Role import and RoleAssignment, per role |
+| `sys-<slug>` | System-scoped RoleAssignment, per system role; its import is the `role-<slug>` of the same name |
 | `password-v<N>` | Generation-scoped password Secret |
 | `source`, `backup` | Assembled source Secret and its PushSecret |
 

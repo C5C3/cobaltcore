@@ -474,9 +474,11 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServicePasswordSecret(
 // projected object is Available. Per role it applies an UNMANAGED Role import
 // filtered by name (Keystone roles are global, so the import carries no domain and
 // reading one never mutates it) and a MANAGED RoleAssignment binding that role to
-// this account's user on its project.
+// this account's user on its project. Per system role it applies the same import,
+// shared with a project role of the same name, and a MANAGED RoleAssignment on the
+// system scope.
 //
-// The imports are per CR rather than shared: registrations are independently
+// The imports are per CR rather than shared across CRs: registrations are independently
 // owned and deleted, so a shared import would have no single owner to tear it
 // down and the first CR deleted would pull it out from under the others.
 func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(
@@ -487,6 +489,35 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(
 	var pending []orcv1alpha1.ObjectWithConditions
 	waitMessage := ""
 
+	// relay folds one role's outcome into ready, pending and waitMessage, naming
+	// the role by label ("role" or "system role"). It returns false once K-ORC
+	// reported a terminal error, which it has stamped onto AccountReady.
+	relay := func(label, role string, out accountRoleOutcome) bool {
+		if termErr := out.terminalErr; termErr != nil {
+			keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonServiceAccountsFailed, fmt.Sprintf(
+				"K-ORC reported a terminal error on %s %q: %v", label, role, termErr,
+			))
+			return false
+		}
+		if out.blocked == nil {
+			return true
+		}
+		ready = false
+		pending = append(pending, out.blocked)
+		if waitMessage != "" {
+			return true
+		}
+		if _, isImport := out.blocked.(*orcv1alpha1.Role); isImport {
+			waitMessage = fmt.Sprintf("the Role import for %s %q is registered but not yet Available", label, role)
+			if out.stalled {
+				waitMessage += fmt.Sprintf("; %s %q may not exist in Keystone — create it there or fix the spelling", label, role)
+			}
+			return true
+		}
+		waitMessage = fmt.Sprintf("the RoleAssignment for %s %q is registered but not yet Available", label, role)
+		return true
+	}
+
 	for _, role := range ks.Spec.Account.Roles {
 		out, err := applyAccountRole(ctx, r.Client,
 			keystoneServiceRoleImportRef(ks, role), keystoneServiceRoleAssignmentRef(ks, role),
@@ -496,28 +527,26 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(
 		if err != nil {
 			return false, err
 		}
-		if termErr := out.terminalErr; termErr != nil {
-			keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonServiceAccountsFailed, fmt.Sprintf(
-				"K-ORC reported a terminal error on role %q: %v", role, termErr,
-			))
+		if !relay("role", role, out) {
 			return false, nil
 		}
-		if out.blocked == nil {
-			continue
+	}
+
+	// The system roles, the same way: a Role import, shared with a project role of
+	// the same name, plus a system-scoped RoleAssignment. They come after the
+	// project roles, so a stuck project role is the one a wait names first.
+	for _, role := range ks.Spec.Account.SystemRoles {
+		out, err := applyAccountSystemRole(ctx, r.Client,
+			keystoneServiceRoleImportRef(ks, role), keystoneServiceSystemRoleAssignmentRef(ks, role),
+			keystoneServiceChildNamespace(cp), role,
+			credRef, managedCredRef, keystoneServiceUserRef(ks),
+			r.keystoneServiceEnsure(ks))
+		if err != nil {
+			return false, err
 		}
-		ready = false
-		pending = append(pending, out.blocked)
-		if waitMessage != "" {
-			continue
+		if !relay("system role", role, out) {
+			return false, nil
 		}
-		if _, isImport := out.blocked.(*orcv1alpha1.Role); isImport {
-			waitMessage = fmt.Sprintf("the Role import for role %q is registered but not yet Available", role)
-			if out.stalled {
-				waitMessage += fmt.Sprintf("; role %q may not exist in Keystone — create it there or fix the spelling", role)
-			}
-			continue
-		}
-		waitMessage = fmt.Sprintf("the RoleAssignment for role %q is registered but not yet Available", role)
 	}
 
 	if !ready {

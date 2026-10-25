@@ -350,6 +350,16 @@ ControlPlane's own namespace and its dedicated service namespaces are never
 bound, and an entry alone never admits a registration. See
 [NamespaceAssignmentSpec](./controlplane-crd.md#namespaceassignmentspec).
 
+`spec.account.systemRoles` is never admitted from such a namespace. A role on
+the system reaches every project, which no `allowedRoles` list was written to
+grant, so a KeystoneService outside the ControlPlane's own namespace and its
+dedicated service namespaces that declares one reports
+`AccountReady=False/SystemRoleNotAllowed` and is frozen the same way:
+nothing is projected for the account, what it already holds stays, and a
+`CredentialRotation` of it refuses with the same reason. Removing the field
+lifts it. When a role refusal applies too, `RoleNotAllowed` is the reason
+reported.
+
 The [Register a Service the ControlPlane Does Not Manage](../../guides/register-a-foreign-service.md)
 guide walks the flow on the ControlPlane devstack, including what removing a
 namespace from the allowlist does and does not do.
@@ -450,11 +460,12 @@ idea.
 | `AccountReady` | False | `ServiceAccountCollision` | The user, or a `create: true` project, already exists without consent — or the registration resolves to the plane's [admin identity](#the-admin-identity-is-never-registrable). |
 | `AccountReady` | False | `ProbingForCollision` | The user or project collision probe has not resolved yet. |
 | `AccountReady` | False | `SecretStoreNotReady` | The ControlPlane's secret store is not ready in this CR's namespace; the upstream secret backend is unreachable. |
-| `AccountReady` | False | `WaitingForServiceAccounts` | A project, user, Role import, or RoleAssignment is registered but not yet Available; K-ORC has not applied the current password yet; or the OpenBao round-trip has not materialized the Secret yet. The message names the blocking dependency. |
+| `AccountReady` | False | `WaitingForServiceAccounts` | A project, user, Role import, or RoleAssignment (project or system scope) is registered but not yet Available; K-ORC has not applied the current password yet; or the OpenBao round-trip has not materialized the Secret yet. The message names the blocking dependency. |
 | `AccountReady` | False | `ServiceAccountsFailed` | K-ORC reported a terminal error on the account or one of its roles. A latched transport error is cleared first, so K-ORC retries. |
 | `AccountReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Project, the User or a role child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
 | `AccountReady` | False | `ServiceAccountError` | A Kubernetes-level failure projecting or delivering the account. |
 | `AccountReady` | False | `RoleNotAllowed` | The ControlPlane's `spec.namespaceAssignments` entry for this namespace does not list every role in `spec.account.roles`. Nothing is projected for the account, and what it already holds stays. See [Role allowlist](#role-allowlist). |
+| `AccountReady` | False | `SystemRoleNotAllowed` | `spec.account.systemRoles` is set on a CR outside the ControlPlane's own namespaces. Nothing is projected for the account, and what it already holds stays. See [Role allowlist](#role-allowlist). |
 | both | False | `ControlPlaneNotFound` | `spec.controlPlaneRef` does not resolve. Deferred, not failed: GitOps may apply the registration first. |
 | both | False | `NamespaceNotAllowed` | The ControlPlane does not admit registrations from this namespace. Nothing is projected. See [Namespace consent](#namespace-consent). |
 | both | False | `WaitingForAdminCredential` | The ControlPlane's `AdminCredentialReady` is not True, so K-ORC cannot reach Keystone yet. |

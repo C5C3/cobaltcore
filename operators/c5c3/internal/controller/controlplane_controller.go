@@ -443,7 +443,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_korc.go:389 (reconcileKORC) to patch applicationcredentials/status.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_korc.go:232 (reconcileKORC) to patch domains/status.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_catalog.go:195 (reconcileCatalog) to patch endpoints/status, regions/status and services/status.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/registration_projection.go:844 (applyAccountRole) to patch roleassignments/status and roles/status.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/registration_projection.go:894 (applyRoleImportAndAssignment) to patch roleassignments/status and roles/status.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/keystoneservice_catalog.go:129 (ensureCatalog) to patch registeredlimits/status.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/keystoneuser_provision.go:165 (provisionUser) to patch users/status.
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials/status;services/status;endpoints/status;users/status;domains/status;projects/status;roles/status;roleassignments/status;regions/status;registeredlimits/status,verbs=patch

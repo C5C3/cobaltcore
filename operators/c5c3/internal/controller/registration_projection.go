@@ -407,6 +407,28 @@ func unmanagedRegionImport(name, namespace, region string, credRef orcv1alpha1.C
 	}
 }
 
+// managedSystemRoleAssignmentChild builds the managed RoleAssignment binding one
+// role to an account's user on the system scope (all) instead of a project. Like
+// managedRoleAssignmentChild it authenticates via the admin PASSWORD cloud. K-ORC
+// keeps the whole resource spec immutable, which a deterministic name per (CR,
+// role) never needs to change.
+func managedSystemRoleAssignmentChild(
+	name, namespace, roleRef, userRef string, credRef orcv1alpha1.CloudCredentialsReference,
+) *orcv1alpha1.RoleAssignment {
+	return &orcv1alpha1.RoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.RoleAssignmentSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.RoleAssignmentResourceSpec{
+				RoleRef: orcv1alpha1.KubernetesNameRef(roleRef),
+				UserRef: ptr.To(orcv1alpha1.KubernetesNameRef(userRef)),
+				System:  ptr.To(orcv1alpha1.KeystoneSystemAll),
+			},
+		},
+	}
+}
+
 // managedRegisteredLimitChild builds the managed RegisteredLimit CR for one
 // registered limit of a catalog row: the per-project default of resourceName on
 // the service row serviceRef registers, in the Keystone region regionRef imports.
@@ -817,25 +839,53 @@ type accountRoleOutcome struct {
 // credential's revoke.
 //
 // Both names are deterministic per (account, role), so both applies are pure
-// projections. Only the object construction, the apply, the unlatch of a latched
-// transport error and the inspection live here; the per-role loop, the
-// precedence and every message stay in the caller.
+// projections. Only the object construction lives here; the apply, the unlatch
+// and the inspection are applyRoleImportAndAssignment's, and the per-role loop,
+// the precedence and every message stay in the caller.
 func applyAccountRole(
 	ctx context.Context, c client.Client,
 	importName, assignmentName, namespace, role string,
 	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference,
 	userRef, projectRef string, ensure registrationEnsure,
 ) (accountRoleOutcome, error) {
-	var out accountRoleOutcome
+	return applyRoleImportAndAssignment(ctx, c,
+		unmanagedRoleImport(importName, namespace, role, credRef),
+		managedRoleAssignmentChild(assignmentName, namespace, importName, userRef, projectRef, managedCredRef),
+		role, ensure)
+}
 
-	out.roleObj = unmanagedRoleImport(importName, namespace, role, credRef)
+// applyAccountSystemRole is applyAccountRole for a role on the system scope: the
+// same UNMANAGED Role import (a role declared in both lists shares it) and a
+// MANAGED RoleAssignment binding the role to the account's user on the system
+// instead of a project.
+func applyAccountSystemRole(
+	ctx context.Context, c client.Client,
+	importName, assignmentName, namespace, role string,
+	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference,
+	userRef string, ensure registrationEnsure,
+) (accountRoleOutcome, error) {
+	return applyRoleImportAndAssignment(ctx, c,
+		unmanagedRoleImport(importName, namespace, role, credRef),
+		managedSystemRoleAssignmentChild(assignmentName, namespace, importName, userRef, managedCredRef),
+		role, ensure)
+}
+
+// applyRoleImportAndAssignment applies a built Role import and the RoleAssignment
+// that references it, in that order, unlatches a latched transport error on
+// either, and inspects both into an accountRoleOutcome.
+func applyRoleImportAndAssignment(
+	ctx context.Context, c client.Client,
+	roleObj *orcv1alpha1.Role, assignment *orcv1alpha1.RoleAssignment, role string,
+	ensure registrationEnsure,
+) (accountRoleOutcome, error) {
+	out := accountRoleOutcome{roleObj: roleObj, assignment: assignment}
+
 	if err := ensure(ctx, out.roleObj); err != nil {
-		return out, fmt.Errorf("registration Role import %q: %w", importName, err)
+		return out, fmt.Errorf("registration Role import %q: %w", out.roleObj.Name, err)
 	}
 
-	out.assignment = managedRoleAssignmentChild(assignmentName, namespace, importName, userRef, projectRef, managedCredRef)
 	if err := ensure(ctx, out.assignment); err != nil {
-		return out, fmt.Errorf("registration RoleAssignment %q: %w", assignmentName, err)
+		return out, fmt.Errorf("registration RoleAssignment %q: %w", out.assignment.Name, err)
 	}
 
 	// A latched transport error is handed back to K-ORC first, so it retries the

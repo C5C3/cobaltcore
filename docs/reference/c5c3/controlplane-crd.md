@@ -2524,7 +2524,10 @@ reported twice in status, and the consent lookup uses the first entry.
 > limits the account roles of every `KeystoneService` there. A role outside
 > `allowedRoles` reports `AccountReady=False/RoleNotAllowed`, and the catalog
 > block keeps reconciling. A `CredentialRotation` of that account refuses the
-> same way. A namespace without an entry stays unlimited, and removing the entry
+> same way. A `KeystoneService` there that declares `spec.account.systemRoles`
+> reports `AccountReady=False/SystemRoleNotAllowed` whether or not an entry
+> exists: a role on the system is honored only in the control plane's own
+> namespaces. A namespace without an entry stays unlimited, and removing the entry
 > lifts the limit again. The control plane's own namespace and its dedicated
 > service namespaces are never bound, so the built-in registrations are
 > unaffected. An entry never admits a `KeystoneService` and never provisions a

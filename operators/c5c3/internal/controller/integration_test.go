@@ -16,6 +16,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1106,8 +1107,8 @@ func simulateRegistrationCatalogAvailableWhenPresent(
 // simulateRegistrationAccountConvergedWhenPresent drives the account block of a
 // KeystoneService child through to AccountReady, over the child's own names: the
 // collision probes resolve to ABSENT, the managed Project and User (with the
-// current generation's password applied), the Role import and the RoleAssignment
-// report Available, and the OpenBao round-trip behind the consumer Secret is
+// current generation's password applied), the Role imports and the project and
+// system RoleAssignments report Available, and the OpenBao round-trip behind the consumer Secret is
 // replayed by hand.
 //
 // The K-ORC children and the password Secret live in the ControlPlane's namespace;
@@ -1220,6 +1221,42 @@ func simulateRegistrationAccountConvergedWhenPresent(
 			Message:            "simulated available",
 		})
 		g.Expect(c.Status().Update(ctx, assignment)).To(Succeed(), "mark the %q RoleAssignment Available", role)
+	}
+
+	// The system roles: a role also declared in roles shares the import resolved
+	// above, so only a system-only role's import is resolved here; every system
+	// role gets its own system-scoped RoleAssignment.
+	for _, role := range ks.Spec.Account.SystemRoles {
+		if !slices.Contains(ks.Spec.Account.Roles, role) {
+			roleImport := &orcv1alpha1.Role{}
+			g.Eventually(func() error {
+				return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: keystoneServiceRoleImportRef(ks, role)}, roleImport)
+			}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the %q system Role import should be created", role)
+			meta.SetStatusCondition(&roleImport.Status.Conditions, metav1.Condition{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				ObservedGeneration: roleImport.Generation,
+				Message:            "simulated available",
+			})
+			roleImport.Status.ID = ptr.To("registration-role-id")
+			g.Expect(c.Status().Update(ctx, roleImport)).To(Succeed(), "resolve the %q system Role import", role)
+		}
+
+		assignment := &orcv1alpha1.RoleAssignment{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{
+				Namespace: ns, Name: keystoneServiceSystemRoleAssignmentRef(ks, role),
+			}, assignment)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the %q system RoleAssignment should be created", role)
+		meta.SetStatusCondition(&assignment.Status.Conditions, metav1.Condition{
+			Type:               orcv1alpha1.ConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             orcv1alpha1.ConditionReasonSuccess,
+			ObservedGeneration: assignment.Generation,
+			Message:            "simulated available",
+		})
+		g.Expect(c.Status().Update(ctx, assignment)).To(Succeed(), "mark the %q system RoleAssignment Available", role)
 	}
 
 	// PushSecret sync + consumer-Secret materialisation (the ESO round-trip the
