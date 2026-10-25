@@ -124,6 +124,7 @@ surfaces as `ControlPlaneNotFound` on every declared block, with
 | `serviceName` | `string` | No | `metadata.name` | Overrides the advertised catalog service name (pattern `^[^,]+$`, ≤ 255, mirroring K-ORC's `OpenStackName`). The fallback is the CR's own name, **not** K-ORC's default: K-ORC would advertise the child CR's name, which carries an operator-generated uniqueness suffix. **Immutable**, compared by effective value — see below. |
 | `adopt` | `bool` | No | `false` | Consent to take over a pre-existing catalog service row of this type and name. See [Collision and adoption](#collision-and-adoption). Mutable. |
 | `endpoints` | [`[]KeystoneServiceEndpointSpec`](#keystoneserviceendpointspec) | No | — | Endpoint rows for this entry, at most one per interface (`listType=map` keyed on `interface`, so the API server rejects a duplicate). An entry with no endpoints registers the service row alone. |
+| `registeredLimits` | [`[]KeystoneServiceRegisteredLimitSpec`](#keystoneserviceregisteredlimitspec) | No | — | Keystone registered limits on this entry's service row, at most one per resource (`listType=map` keyed on `resourceName`, ≤ 32 entries). Each entry is one per-project default of a unified-limits resource, projected as one **managed** K-ORC `RegisteredLimit` in the ControlPlane's `spec.region`, the region the endpoint rows are registered in. Mutable. |
 
 ### KeystoneServiceEndpointSpec
 
@@ -134,6 +135,29 @@ surfaces as `ControlPlaneNotFound` on every declared block, with
 
 Registering an endpoint row never connects to it, so the URL may point at a
 service that is not running yet.
+
+### KeystoneServiceRegisteredLimitSpec
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `resourceName` | `string` | Yes | The resource the limit bounds, as the consuming service names it (Glance's `image_count_total`, for example). Pattern `^\S+$`, 1 to 255 characters, mirroring K-ORC's own `RegisteredLimit` field. Keys the `listType=map` list. |
+| `defaultLimit` | `int32` | Yes | The limit every project gets unless a project limit overrides it, from -1 to 2147483647. `0` is rejected by a CEL rule (`defaultLimit 0 is refused by K-ORC when it creates a registered limit; use a positive bound`), because K-ORC cannot create a registered limit with 0. Keystone reads -1 as unlimited, but a consumer on oslo.limit below 2.12.0 (2026.1 pins 2.10.0) reads it as a limit below any usage; use 2147483647 for an unbounded default there. |
+
+A registered limit is the default; a per-project override is a Keystone
+**project limit**, which stays outside the CR. Create it in the region the
+registered limits live in:
+
+```bash
+openstack limit create --service <service> --project <project> \
+  --region <ControlPlane spec.region> --resource-limit <n> <resourceName>
+```
+
+A changed `defaultLimit` is updated in place, under the same RegisteredLimit
+name. A dropped entry is deleted from Keystone. Keystone refuses both with 403
+(`Unable to update or delete registered limit ... because there are project
+limits associated with it`) while a project limit of the same resource exists,
+so delete the overrides first; until then the catalog block holds at
+`CatalogReady=False`.
 
 After a `url` edit, K-ORC resources that call the service keep using the old URL
 until K-ORC's cached client expires, half the token lifetime after its login.
@@ -158,6 +182,7 @@ own namespace is the delivery namespace.
 | `adopt` | `bool` | No | `false` | Consent to take over a pre-existing Keystone user of this name, including a password takeover. See [Collision and adoption](#collision-and-adoption). Mutable. |
 | `project` | [`ServiceAccountProjectSpec`](#serviceaccountprojectspec) | Yes | — | The project the service user is associated with, referenced or created. |
 | `roles` | `[]string` | No | — | Role names bound to the user on the project (≤ 32 entries, each `^[^,]+$` and ≤ 255). Each becomes one **unmanaged** K-ORC Role import (Keystone roles are global, so a role is referenced by name and never created or deleted) plus one **managed** RoleAssignment. A role that does not exist in Keystone never resolves, and the account holds at `AccountReady=False/WaitingForServiceAccounts` naming it. |
+| `systemRoles` | `[]string` | No | — | Role names bound to the user on the system scope `all` (≤ 32 entries, each `^[^,]+$` and ≤ 255). Each becomes one **unmanaged** K-ORC Role import, shared with a `roles` entry of the same name, plus one **managed** system-scoped RoleAssignment. A role on the system reaches every project: `reader` there reads every user, project, role assignment and credential, EC2 and TOTP secrets included, and the service catalog. Honored only in the ControlPlane's own namespaces; see [Role allowlist](#role-allowlist). Mutable. |
 | `rotation` | [`ServiceAccountRotationSpec`](#serviceaccountrotationspec) | No | `{mode: Manual}` | How the account's password is rotated. |
 
 ### ServiceAccountProjectSpec
@@ -469,7 +494,10 @@ serviceType rejection; the immutability transition rules on
 `project.name`, and `project.create`; the name patterns and length caps
 mirroring K-ORC's `OpenStackName` and `KeystoneName` filters; the endpoint URL
 scheme pattern and its 1024-byte cap; the `listType=map` key on `endpoints`;
-and the 32-entry cap on `roles`.
+the 32-entry caps on `roles`, `systemRoles` and `registeredLimits`; the
+`listType=map` key on `registeredLimits`, the `resourceName` pattern
+`^\S+$`, the `defaultLimit` range -1 to 2147483647 and its CEL rule against
+`0`.
 
 **Validating webhook** (`KeystoneServiceWebhook`), which holds no client and
 reads nothing:
@@ -482,8 +510,9 @@ reads nothing:
   bytes, but the child CR names are composed from it, so a name admitted
   without this check would wedge the reconcile projecting a child the API
   server rejects, on a CR whose own admission already succeeded. The overhead
-  accounted for is the largest child name the CR will project, which is bigger
-  when the account declares roles.
+  accounted for is the largest child name the CR will project: 43 bytes, or 55
+  when the account declares roles or system roles or the catalog declares
+  registered limits.
 - A **defense-in-depth mirror** of the value rules above, for callers that
   bypass CRD schema admission.
 
@@ -510,7 +539,8 @@ authenticates them with is materialized. They are named from a per-CR prefix:
 The hash covers `<namespace>/<name>`, so two same-named registrations in
 different namespaces cannot collide on a child name. Discriminators are fixed
 per kind (`user`, `project`, `service`, `region`, `region-ep-<interface>`,
-`role-<slug>`, `assign-<slug>`, and the `-probe` twins of the three probed
+`limit-<slug>` per registered limit, `role-<slug>`, `assign-<slug>`,
+`sys-<slug>` per system role, and the `-probe` twins of the three probed
 kinds), which is what makes `kubectl get user -n <controlplane-namespace>` read
 as the registration each user belongs to.
 

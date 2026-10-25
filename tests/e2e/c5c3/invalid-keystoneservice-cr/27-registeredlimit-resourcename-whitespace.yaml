@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# catalog.registeredLimits[].resourceName carrying a space violates the CRD
+# pattern ^\S+$, which mirrors K-ORC's own RegisteredLimit resourceName. The
+# error names 'resourceName' and carries 'should match'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-limit-resourcename
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+    registeredLimits:
+    - resourceName: object count
+      defaultLimit: 10
