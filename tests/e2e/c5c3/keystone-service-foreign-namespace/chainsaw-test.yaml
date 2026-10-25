@@ -21,7 +21,7 @@
 # controller, and neither sees Keystone, OpenBao, ESO or cert-manager. This suite
 # is the only place the three meet.
 #
-# ── Four legs ────────────────────────────────────────────────────────────────
+# ── Five legs ────────────────────────────────────────────────────────────────
 #   POSITIVE  an allowlisted namespace registers a catalog entry and an account,
 #             its tenant store appears, its consumer Secret is materialized, and
 #             a Job in that namespace authenticates with it.
@@ -36,6 +36,10 @@
 #             reconciling, listing the role recovers, an assignment naming an
 #             unregistered cluster turns the plane's Ready False, and removing
 #             the assignments lifts the limit.
+#   SYSTEM    spec.account.systemRoles on the admitted registration is refused
+#             with AccountReady=False/SystemRoleNotAllowed and nothing is
+#             granted on the system, because a system role is honored only in
+#             the ControlPlane's own namespaces; removing the field recovers.
 #
 # ── Its own ControlPlane, and the two seeds it needs ─────────────────────────
 # The suite brings up a Keystone-only plane in chainsaw's ephemeral namespace
@@ -563,6 +567,34 @@ spec:
           wait_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady AccountProvisioned 600
           wait_ks_condition "${KS_NAME}" "${TENANT_NS}" Ready True 600
           echo "OK: removing the assignments lifted the limit."
+
+          # ══ LEG 5 — a system role is refused outside the plane's namespaces ═
+          # A role on the system reaches every project, and no allowlist entry
+          # was written to grant one, so an admitted registration in a foreign
+          # namespace that asks for one is refused and frozen like a refused
+          # project role, whether or not an assignment exists.
+          kubectl patch keystoneservice "${KS_NAME}" -n "${TENANT_NS}" --type merge \
+            -p '{"spec":{"account":{"systemRoles":["reader"]}}}'
+          wait_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady SystemRoleNotAllowed 300
+          if ! grep -q "honors spec.account.systemRoles only from its own namespaces" \
+               <<<"$(condition_message keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady)"; then
+            echo "ERROR: the refusal message does not say where a system role is honored"; exit 1
+          fi
+          if ! SYS_NAMES="$(kubectl get roleassignments.openstack.k-orc.cloud -n "${CP_NS}" -l "${KS_SELECTOR}" \
+               -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"; then
+            echo "ERROR: could not list the registration's RoleAssignments"; exit 1
+          fi
+          assert_eq "no system-scoped RoleAssignment is projected" "0" \
+            "$(grep -c -- '-registration-sys-' <<<"${SYS_NAMES}" || true)"
+          assert_eq "the Keystone user survives the refusal" "1" \
+            "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${KS_SELECTOR}")"
+          echo "OK: a system role outside the plane's namespaces is refused and nothing is granted."
+
+          kubectl patch keystoneservice "${KS_NAME}" -n "${TENANT_NS}" --type merge \
+            -p '{"spec":{"account":{"systemRoles":null}}}'
+          wait_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady AccountProvisioned 600
+          wait_ks_condition "${KS_NAME}" "${TENANT_NS}" Ready True 600
+          echo "OK: removing the system role recovered the registration."
 
           # ══ Teardown ══════════════════════════════════════════════════════
           kubectl delete job workflow-verify -n "${TENANT_NS}" --ignore-not-found

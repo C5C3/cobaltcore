@@ -16,6 +16,12 @@
 # declared role becomes an UNMANAGED K-ORC Role import, so a role that does not
 # exist in Keystone never resolves.
 #
+# The catalog block also declares one registered limit and the account one
+# system role, so the LIMITS leg can read both back from Keystone, change the
+# limit in place and remove both again. reader on the system is the grant a
+# unified-limits consumer needs; this CR sits in the ControlPlane's own
+# namespace, the only place a system role is honored.
+#
 # The user name and the catalog service name are both left to default to
 # metadata.name ("workflow"). The endpoints point at a Service that does not have
 # to exist, since registering a catalog row never connects to it. @CP_NS@ is
@@ -34,9 +40,14 @@ spec:
       url: "http://workflow-api.@CP_NS@.svc.cluster.local:8989/v2"
     - interface: internal
       url: "http://workflow-api.@CP_NS@.svc.cluster.local:8989/v2"
+    registeredLimits:
+    - resourceName: workflow_executions
+      defaultLimit: 10
   account:
     project:
       name: service-workflow
       create: true
     roles:
     - service
+    systemRoles:
+    - reader
