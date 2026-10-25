@@ -42,7 +42,7 @@ at the OpenBao source. It does not change the ControlPlane-owned child:
 
 The rest of this guide targets a standalone Keystone CR.
 
-> Names. The examples target the standalone Quick Start's Keystone: the CR is
+> Names. The examples target the standalone local Keystone: the CR is
 > `keystone` in the `openstack` namespace, and its admin password lives in the
 > Secret referenced by `spec.bootstrap.adminPasswordSecretRef`: `keystone-admin`,
 > under the key `password`; this guide calls it the *admin Secret*. The scheduled-rotation
@@ -56,7 +56,7 @@ The rest of this guide targets a standalone Keystone CR.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the [Quick Start](../../quick-start.md) devstack. Stand it up first:
+This guide is written against the [Deploy Keystone Locally](../../quick-start-extended.md) devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
@@ -147,7 +147,7 @@ unset BAO_CERT_DIR BAO_ADDR BAO_TOKEN VAULT_CACERT VAULT_CLIENT_CERT VAULT_CLIEN
 
 Point the admin ExternalSecret at the per-CR path. The ExternalSecret feeding
 the admin Secret must read the same per-CR path this rotation writes, or the
-rotated password never reaches Keystone. On the kind Quick Start the admin Secret
+rotated password never reaches Keystone. On the standalone kind environment the admin Secret
 `keystone-admin` is fed by the shim ExternalSecret
 `deploy/kind/infrastructure/keystone-admin-externalsecret.yaml`, which reads the
 default-identity path `bootstrap/openstack/controlplane-keystone/admin`, not

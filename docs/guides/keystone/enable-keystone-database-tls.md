@@ -30,7 +30,7 @@ and
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy a ControlPlane](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -308,8 +308,8 @@ above).
 
 ## Standalone Keystone, without a ControlPlane
 
-On the [Quick Start](../../quick-start.md) / [Quick Start (Extended)](../../quick-start-extended.md)
-devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
+In the [Deploy Keystone Locally](../../quick-start-extended.md)
+guide, a standalone Keystone CR named `keystone` runs with no ControlPlane
 projecting it, and the shared `openstack-db` MariaDB of the kind overlay runs
 without server TLS. Enable `spec.tls` on it first, by removing the `tls` patch
 from the kind overlay or by using a MariaDB that enables TLS through

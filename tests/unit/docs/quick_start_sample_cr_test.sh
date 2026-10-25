@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the Step 7 sample Keystone CR in docs/quick-start.md carries the
+# Verify the Step 7 sample Keystone CR in docs/quick-start-extended.md carries the
 # `spec.gateway` block introduced by (/):
 #   - spec.gateway.parentRef.name == "openstack-gw"
 #   - spec.gateway.hostname       == "keystone.127-0-0-1.nip.io"
@@ -27,7 +27,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-QUICK_START="$PROJECT_ROOT/docs/quick-start.md"
+QUICK_START="$PROJECT_ROOT/docs/quick-start-extended.md"
 
 if [[ ! -f "$QUICK_START" ]]; then
   echo "FAIL: $QUICK_START does not exist"

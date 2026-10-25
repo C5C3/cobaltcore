@@ -29,7 +29,7 @@ under the Fernet and credential sub-reconciler sections in
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy a ControlPlane](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -335,8 +335,7 @@ scheduled for aging-out.
 
 ## Standalone Keystone, without a ControlPlane
 
-The [Quick Start](../../quick-start.md) and
-[Quick Start (Extended)](../../quick-start-extended.md) devstacks run a standalone
+[Deploy Keystone Locally](../../quick-start-extended.md) runs a standalone
 Keystone CR named `keystone`. The rotation resources are named after that CR, so
 substitute the `controlplane-keystone-` prefix with `keystone-` throughout:
 

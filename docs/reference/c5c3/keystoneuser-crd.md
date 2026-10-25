@@ -20,7 +20,7 @@ OpenBao. The owner receives a Secret and nothing else.
 
 For the control loop, the watches and the teardown order, see
 [KeystoneUser Reconciler Architecture](./keystoneuser-reconciler.md). The
-[Order Resources from a ControlPlane](../../guides/order-resources-from-a-controlplane.md) guide walks the
+[Manage Provisioned Resources](../../guides/order-resources-from-a-controlplane.md) guide walks the
 flow on the ControlPlane devstack.
 
 ## API Group and Version

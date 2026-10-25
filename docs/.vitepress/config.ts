@@ -5,17 +5,16 @@ import { defineConfig } from 'vitepress'
 
 export default defineConfig({
   title: 'CobaltCore',
-  description: 'A Kubernetes-native OpenStack distribution — reference documentation',
+  description: 'Deploy and operate OpenStack on Kubernetes with CobaltCore',
   base: '/cobaltcore/',
   // Port-forward URLs (e.g. http://localhost:9080 for Flux Web UI) are
   // documented for reader use and never resolve during the build.
   ignoreDeadLinks: [/^https?:\/\/localhost(:\d+)?/],
   themeConfig: {
     nav: [
-      { text: 'Home', link: '/' },
-      { text: 'Architecture', link: '/architecture/' },
-      { text: 'Quick Start', link: '/quick-start' },
-      { text: 'Guides', link: '/guides/observability' },
+      { text: 'Getting Started', link: '/quick-start' },
+      { text: 'Deployment Guides', link: '/deployment/local-kubernetes' },
+      { text: 'Tutorials', link: '/quick-start-controlplane' },
       { text: 'Reference', link: '/reference/keystone/' },
       { text: 'Future', link: '/future/' },
       { text: 'Contributing', link: '/contributing/adding-a-new-operator' },
@@ -26,10 +25,23 @@ export default defineConfig({
         items: [
           { text: 'Overview', link: '/' },
           { text: 'Quick Start', link: '/quick-start' },
-          { text: 'Quick Start (Extended)', link: '/quick-start-extended' },
-          { text: 'Quick Start (ControlPlane)', link: '/quick-start-controlplane' },
-          { text: 'Quick Start (metal-stack)', link: '/quick-start-metal-stack' },
-          { text: 'Quick Start (Orders)', link: '/quick-start-orders' },
+        ],
+      },
+      {
+        text: 'Deployment Guides',
+        items: [
+          { text: 'Deploy on Local Kubernetes (kind)', link: '/deployment/local-kubernetes' },
+          { text: 'Deploy on an Existing Kubernetes Cluster', link: '/deployment/existing-kubernetes' },
+          { text: 'Deploy on Bare Metal (Gardener / metal-stack)', link: '/quick-start-metal-stack' },
+        ],
+      },
+      {
+        text: 'Tutorials',
+        items: [
+          { text: 'Deploy a ControlPlane', link: '/quick-start-controlplane' },
+          { text: 'Provision Resources', link: '/quick-start-orders' },
+          { text: 'Run E2E Tests', link: '/tutorials/run-e2e-tests' },
+          { text: 'Configure Your Deployment', link: '/guides/advanced-configuration' },
         ],
       },
       {
@@ -44,11 +56,10 @@ export default defineConfig({
         items: [
           { text: 'Observability & Diagnostics', link: '/guides/observability' },
           { text: 'Day 2 Operations', link: '/guides/day-2-operations' },
-          { text: 'Advanced Configuration', link: '/guides/advanced-configuration' },
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
           { text: 'Deploy Services into Dedicated Namespaces', link: '/guides/dedicated-service-namespaces' },
           { text: 'Register a Service the ControlPlane Does Not Manage', link: '/guides/register-a-foreign-service' },
-          { text: 'Order Resources from a ControlPlane', link: '/guides/order-resources-from-a-controlplane' },
+          { text: 'Manage Provisioned Resources', link: '/guides/order-resources-from-a-controlplane' },
           { text: 'End-to-End SSO', link: '/guides/end-to-end-sso' },
           { text: 'Deploy to a Target Cluster', link: '/guides/deploy-to-a-target-cluster' },
           {
@@ -364,6 +375,7 @@ export default defineConfig({
       {
         text: 'Contributing',
         items: [
+          { text: 'Build and Test Locally', link: '/contributing/build-and-test-locally' },
           { text: 'Adding a New Operator', link: '/contributing/adding-a-new-operator' },
           { text: 'Adding a New Release', link: '/contributing/adding-a-new-release' },
           { text: 'Guide Conventions', link: '/contributing/guide-conventions' },

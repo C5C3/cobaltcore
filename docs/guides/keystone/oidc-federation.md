@@ -24,7 +24,7 @@ For the full field reference, see the
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy a ControlPlane](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -374,7 +374,17 @@ not wanted.
 To let discovery run against a **trusted** in-cluster IdP instead, allowlist its
 address range on the operator deployment. The `federation.metadataAllowCidrs`
 chart value (rendered as the operator's `--federation-metadata-allow-cidrs` flag)
-lists the extra CIDRs the metadata client may dial:
+lists the extra CIDRs the metadata client may dial.
+
+On the tutorial deployment, Flux owns the operator's HelmRelease. Update its
+values so Flux preserves the change:
+
+```bash
+kubectl patch helmrelease keystone-operator -n keystone-system --type merge \
+  -p '{"spec":{"values":{"federation":{"metadataAllowCidrs":["10.96.0.0/12"]}}}}'
+```
+
+For an operator installed directly with Helm, use:
 
 ```bash
 helm upgrade keystone-operator oci://ghcr.io/c5c3/charts/keystone-operator \
@@ -450,8 +460,8 @@ this was already the case for public IdPs.
 
 ## Standalone Keystone, without a ControlPlane
 
-On the [Quick Start](../../quick-start.md) / [Quick Start (Extended)](../../quick-start-extended.md)
-devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
+In the [Deploy Keystone Locally](../../quick-start-extended.md)
+guide, a standalone Keystone CR named `keystone` runs with no ControlPlane
 projecting it, so there is no operator projecting the federation block onto it —
 you set it directly on the Keystone CR.
 

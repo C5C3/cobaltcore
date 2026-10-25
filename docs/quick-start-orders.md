@@ -1,5 +1,5 @@
 ---
-title: Quick Start (Orders)
+title: Provision Resources
 ---
 
 <!--
@@ -7,87 +7,66 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Quick Start (Orders): Keystone, MariaDB and RabbitMQ pieces from an assigned namespace
+# Provision Resources
 
-A service that the control plane does not manage orders its OpenStack
-footprint from a Kubernetes namespace. A `ControlPlane` assigns the namespace
-to the service's owner in `spec.namespaceAssignments`, and the owner orders
-seven kinds there: a `KeystoneUser`, a `KeystoneProject`, a
-`KeystoneRoleAssignment`, a `KeystoneCatalogEntry`, a
-`KeystoneApplicationCredential`, a `MariaDBDatabase` and a `RabbitMQVhost`.
-The c5c3-operator creates each piece against the ControlPlane's Keystone,
-MariaDB or message bus and writes the credentials as a Secret beside the order.
-In conversation this is called the seeder, after the seeding scripts other
-OpenStack distributions run to create users, projects, roles and endpoints up
-front; this page keeps the word order.
+Give a service the identity, database and messaging resources it needs from an
+existing CobaltCore ControlPlane. This tutorial provisions them in a namespace
+named `workflow`, delivers credentials as Kubernetes Secrets, and verifies
+that the service can use them.
 
-Part 1 orders the seven pieces on the ControlPlane devstack, where the owner's
-namespace sits on the management cluster beside the c5c3-operator and Keystone.
-Part 2 repeats them on a second kind cluster registered as a target cluster.
-The Secrets are written there, with addresses a pod on that cluster can reach.
+CobaltCore calls these requests **Orders**. An Order is a Kubernetes custom
+resource that asks a ControlPlane to provision a service dependency. You apply
+it in a namespace assigned to your service, then wait for `Ready`. CobaltCore
+creates the resource and maintains its credentials. Use the OpenStack APIs to
+create virtual machines, networks and other cloud workloads.
 
-On the map of the five quick starts this page is the box Quick Start (Orders):
-the ControlPlane devstack, extended by a second kind cluster.
+| What your service needs | Order kind |
+| --- | --- |
+| A Keystone user | `KeystoneUser` |
+| An OpenStack project | `KeystoneProject` |
+| A role on that project | `KeystoneRoleAssignment` |
+| A service endpoint in the catalog | `KeystoneCatalogEntry` |
+| An application credential | `KeystoneApplicationCredential` |
+| A database and credentials | `MariaDBDatabase` |
+| A RabbitMQ virtual host and credentials for messaging | `RabbitMQVhost` |
 
-![A map of the five quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other three run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. The Quick Start (Orders) extends the ControlPlane devstack without a teardown: a second kind cluster joins it as a registered target, a service owner orders seven pieces from an assigned namespace on each cluster, and it ends with four Secrets on the target and four Jobs that use them. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Four of them begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack.](./diagrams/quickstart-map.svg)
+[Part 1](#same-cluster) provisions these resources on the management cluster.
+It finishes with working credentials, database access and a messaging account.
+[Part 2](#target-cluster) is an optional advanced exercise that repeats the
+workflow from a second Kubernetes cluster.
 
-Every step of both parts follows the same path: the ControlPlane's entry admits
-the order, the c5c3-operator writes the order's children beside the
-ControlPlane and provisions against Keystone, MariaDB or the bus, and the
-credentials Secret lands beside the order.
-[What lands where](./guides/order-resources-from-a-controlplane.md#background-what-lands-where)
-lists the children. On the target cluster only the addresses in that Secret
-change.
-
-![An order and its Secret on two clusters. On the management cluster the ControlPlane in the namespace openstack assigns the owner's namespace, and the c5c3-operator writes the order's children into openstack: the K-ORC User, Project, RoleAssignment, Endpoints and ApplicationCredential, the Database, the Vhost, User and Permission, the password and source Secrets, the PushSecret and the ExternalSecret with its generator, all owned by label because no owner reference crosses a namespace. K-ORC creates the pieces in Keystone, the mariadb-operator creates the schema in MariaDB, the topology operator creates the user on RabbitMQ, and OpenBao holds the backup every credential goes to before it is delivered. The delivered Secret sits beside the order in the owner's namespace with a controller owner reference and carries the in-cluster addresses. On a target cluster the access chart's ServiceAccount and Role let the c5c3-operator reach the owner's namespace over the registration Secret's kubeconfig; the children stay on the management cluster, and the Secret beside the order carries the published addresses instead.](./diagrams/controlplane-order-flow.svg)
+For rotation, access policies and deletion behavior, see
+[Manage Provisioned Resources](./guides/order-resources-from-a-controlplane.md).
 
 ## Prerequisites
 
-::: info Devstack
-This quick start is written against the **[Quick Start (ControlPlane)](./quick-start-controlplane.md)** devstack. Stand it up first:
+Complete [Deploy a ControlPlane](./quick-start-controlplane.md), including its
+verification step. This tutorial uses its local kind environment:
 
 ```bash
-KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
-Follow that tutorial through to its final **Verify** step, Step 7, so a
-`ControlPlane` CR named `controlplane` is `Ready` in the `openstack` namespace.
-Every resource name below is one that devstack produces.
-:::
+Before continuing, the `controlplane` resource in `openstack` must be `Ready`,
+with Keystone, the shared MariaDB database and the managed RabbitMQ bus running.
+Run the commands from the repository root with `kubectl`, `jq` and the OpenStack
+CLI available. Part 2 also needs `kind` and `helm`.
 
-Run the commands from the root of the clone, with `jq` on `PATH` and, for Part
-2, `helm`. The `openstack` calls run on the workstation and need the shell set
-up as below. A second kind cluster beside a full devstack fails at
-`Preparing nodes` while `fs.inotify.max_user_instances` is at its default of
-128, so raise it before Part 2 with `sudo sysctl fs.inotify.max_user_instances=512`.
+### Connect to the ControlPlane {#shell}
 
-### Point the shell at the devstack {#shell}
+Set the OpenStack credentials in each new shell. The local kind environment
+exposes Keystone at `keystone.127-0-0-1.nip.io:8443` through Envoy Gateway.
 
-The `openstack` calls below reach Keystone the way
-[Step 7 of the ControlPlane quick start](./quick-start-controlplane.md#step-7-—-verify)
-does: through the shared Envoy Gateway at `keystone.127-0-0-1.nip.io:8443`,
-with the admin password from the operator-owned Secret. Those settings live in
-the shell that ran that step. A new shell, a second terminal or a workstation
-that reaches a devstack stood up elsewhere starts without them, and every
-`openstack` call then fails with `Missing value auth-url required for auth
-plugin password` or with a refused connection. Set them again before Part 1.
-
-The way to the Gateway depends on where the devstack runs. On the local kind
-devstack of the box above no port-forward is needed: `hack/kind-config.yaml`
-maps the host port 8443 to the Gateway's NodePort, and the hostname resolves to
-the loopback address. On any other cluster, the metal-stack lab among them, the
-Gateway has no host port. Open a port-forward of the local port 8443 to the
-Envoy proxy Service in a second terminal and keep it running for the rest of
-the page. It is the command of the `Access:` line `make deploy-infra` prints
-for such a cluster:
+If the management cluster runs elsewhere, keep this port-forward running in a
+second terminal. Use that cluster's context for the command:
 
 ```bash
 kubectl -n envoy-gateway-system port-forward \
   "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
 ```
 
-Then, in the shell that runs the page, point `kubectl` at the devstack and
-export the credentials:
+In the shell used for this tutorial, select the management cluster and export
+the credentials:
 
 ```bash
 kubectl config use-context kind-cobaltcore   # the local kind devstack; another cluster: its own context
@@ -100,22 +79,19 @@ export OS_PROJECT_DOMAIN_NAME=Default
 openstack --insecure token issue
 ```
 
-The token proves the path end to end. `--insecure` accepts the self-signed
-certificate of the Gateway's Keystone listener, as on the ControlPlane page. A
-local devstack brought up with the default `KIND_HOST_PORT=443` uses
-`https://keystone.127-0-0-1.nip.io/v3` instead. If the hostname does not
-resolve, the ControlPlane page's tip on `*.nip.io` names the cause and the
-`/etc/hosts` workaround. A ControlPlane with another name keeps its password in
+A returned token confirms that Keystone is reachable and the credentials work.
+`--insecure` accepts the local environment's self-signed certificate. If you
+used the default host port `443`, set `OS_AUTH_URL` to
+`https://keystone.127-0-0-1.nip.io/v3` instead. See
+[Deploy a ControlPlane](./quick-start-controlplane.md) for `*.nip.io` DNS
+troubleshooting. A differently named ControlPlane uses the Secret
 `{name}-keystone-admin-credentials`.
 
-## Part 1: The management cluster {#same-cluster}
+## Part 1: Provision resources for your service {#same-cluster}
 
-The owner's namespace `workflow` lives on the management cluster, beside the
-ControlPlane in `openstack`. Each step orders one piece, waits for it and uses
-it once. [Order Resources from a ControlPlane](./guides/order-resources-from-a-controlplane.md) takes each
-kind further: rotation, repair, collisions and deletion policies. The Jobs
-below come from the suites under `tests/e2e/c5c3/`, with the namespace
-substituted.
+Create the service namespace `workflow` alongside the ControlPlane's
+`openstack` namespace. Each step requests a resource, waits for it to become
+ready, and verifies it. The verification Jobs come from `tests/e2e/c5c3/`.
 
 ### Step 1: Create the namespace {#cp-namespace}
 
@@ -123,12 +99,11 @@ substituted.
 kubectl create namespace workflow
 ```
 
-### Step 2: Assign the namespace {#cp-assign}
+### Step 2: Allow resource requests from the namespace {#cp-assign}
 
-The assignment is the consent every order reads. This entry also lets a role
-assignment request the role `member` and admits catalog entries. The list is
-atomic, and a merge patch replaces every entry in it, so change it with a JSON
-patch. On a ControlPlane that assigns no namespace yet, create the list:
+Authorize `workflow` to request resources from this ControlPlane. The entry
+also permits the `member` role and catalog entries. Use a JSON patch to avoid
+replacing existing namespace assignments. If there are no assignments yet:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type json \
@@ -142,7 +117,7 @@ kubectl patch controlplane controlplane -n openstack --type json \
   -p '[{"op":"add","path":"/spec/namespaceAssignments/-","value":{"namespace":"workflow","allowedRoles":["member"],"allowCatalogEntries":true}}]'
 ```
 
-### Step 3: Order the user {#cp-user}
+### Step 3: Create a service user {#cp-user}
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -205,7 +180,7 @@ openstack --insecure catalog show dns
 The catalog lists the public URL in `RegionOne`. The entry admits catalog
 entries, so the row is registered at once.
 
-### Step 5: Order a project and a role {#cp-project}
+### Step 5: Create a project and grant access {#cp-project}
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -252,7 +227,7 @@ kubectl logs -n workflow job/workflow-scoped-verify
 
 The token table names the project, and the Job prints the entry's public URL.
 
-### Step 6: Order an application credential {#cp-appcred}
+### Step 6: Create an application credential {#cp-appcred}
 
 The operator creates the credential as the user, with a token scoped to the
 project, which needs the role of Step 5. The schedule's defaults are an
@@ -340,22 +315,20 @@ The status names generation 2, the new id, the superseded id and the time the
 superseded one is deleted, two minutes after the switch, and the list shows two
 K-ORC credentials in `openstack`.
 
-If the status reads a generation above 2, or generation 2 with an empty
-`previousCredentialID`, the grace period of generation 1 has passed. If it
-still reads generation 1, the schedule did not rotate within five minutes, and
-generation 1 has passed its Keystone expiry, five minutes after it was created.
-The operator rotates on that expiry by itself, so something keeps it from
-creating generation 2; `kubectl describe keystoneapplicationcredential workflow-appcred -n workflow`
-shows why. Fix that and run the commands above again. In each of these cases
-the copy `workflow-appcred-gen1` no longer authenticates: copy the current
-document and rotate by hand, then go on below. The new copy holds the
-credential this rotation supersedes, with a fresh grace period. The operator
-switches the status before it rewrites the Secret, so a loop bounded at three
-minutes first waits for the Secret to hold the credential the status names. A
-loop that runs out says so, and the copy then holds the superseded credential.
-The same `kubectl describe` shows why; fix that and run the commands again. A
-grace period that still runs delays the rotation until it ends, which the
-five-minute wait covers:
+If generation 2 has an empty `previousCredentialID`, or the generation is
+already above 2, the original grace period has ended. The saved
+`workflow-appcred-gen1` credential no longer works.
+
+If the status still shows generation 1, inspect
+`kubectl describe keystoneapplicationcredential workflow-appcred -n workflow`.
+Fix the reported problem and repeat the commands above before continuing.
+
+Only if the original grace period has ended, start a fresh one by copying the
+current credential and rotating it manually with the following commands.
+Otherwise skip this block. The first loop waits for the Secret to
+match the status, because CobaltCore updates the status before the Secret.
+If either wait times out, inspect the Order and resolve the problem before
+continuing. An existing grace period can delay the new rotation until it ends.
 
 ```bash
 read -r gen id <<<"$(kubectl get keystoneapplicationcredential workflow-appcred -n workflow \
@@ -467,10 +440,10 @@ A consumer reads the Secret again within the grace period, or mounts it as a
 volume and reconnects when it changes. A consumer that read the keys into
 environment variables at start must be restarted within the grace period.
 `spec.rotation.interval` and `spec.rotation.gracePeriod` change the schedule;
-[Order an application credential](./guides/order-resources-from-a-controlplane.md#order-an-application-credential)
+[Create an application credential](./guides/order-resources-from-a-controlplane.md#order-an-application-credential)
 covers the rest.
 
-### Step 8: Order a database {#cp-database}
+### Step 8: Create a database {#cp-database}
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -503,7 +476,7 @@ refresh, so a consumer reads it at least once a day.
 
 ![Database credentials in two modes. Static: a person writes username and password to an OpenBao KV path, an ExternalSecret copies them through the secret store into the Secret {cp}-{svc}-db-credentials, and MariaDB User and Grant resources create one long-lived SQL user from it. Dynamic: a VaultDynamicSecret generator logs in to OpenBao as the ServiceAccount {svc}-db-creds over a client certificate and draws a user from database/mariadb/creds/{svc}-{ns}, the database engine creates that user in MariaDB for one lease, and a changed credential rolls the Deployment through the db-connection-hash annotation. In both modes the service operator builds the DSN Secret that the pods read. A time strip shows the 24 hour refresh inside the 48 hour default TTL and the 72 hour maximum TTL.](./diagrams/secrets-db-credentials.svg)
 
-### Step 9: Order a vhost {#cp-vhost}
+### Step 9: Set up messaging {#cp-vhost}
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -532,11 +505,11 @@ Secret `workflow-bus-credentials` carries `transport_url`, `host`, `port`,
 credential, every 720 hours with a 24-hour grace period, as a new broker user
 `<vhost>-v2` beside the old one; Step 7 shows the mechanism.
 
-### Step 10: Tear the orders down {#cp-teardown}
+### Step 10: Remove the service resources {#cp-teardown}
 
-Deleting an order is what revokes it. Delete them in the order their holds
-allow: a user, a project or an assignment that a credential order uses holds
-its deletion, and a user or a project that an assignment names holds as well.
+Delete application credentials before their role assignments, users and
+projects. CobaltCore blocks deletion while another Order still references a
+resource.
 
 ```bash
 kubectl delete job workflow-verify workflow-scoped-verify workflow-appcred-verify workflow-db-verify -n workflow
@@ -571,19 +544,25 @@ kubectl delete namespace workflow
 The `test` operation rejects the patch if another entry sits at that index by
 the time it applies.
 
-## Part 2: A target cluster {#target-cluster}
+## Part 2: Provision resources from another cluster (optional) {#target-cluster}
 
-Part 2 puts the owner's namespace on a second kind cluster, `cobaltcore-target`,
-registered with the operators as a target cluster. The orders are applied
-there, and the c5c3-operator writes each Secret beside its order on the target,
-with the addresses the ControlPlane publishes for other clusters. On kind those
-addresses need three things the devstack does not set up: a route from the
-target's pods to `keystone.127-0-0-1.nip.io:8443`, a trust anchor for the
-Gateway's self-signed certificate, and NodePorts for the database and the bus.
+Use this section when the service runs on a different Kubernetes cluster from
+its ControlPlane. Register a second kind cluster, `cobaltcore-target`, and
+apply the same Orders there. CobaltCore delivers Secrets to that cluster with
+addresses the service can reach.
 
-Run Part 2 in one shell: later steps read `workdir` and `NODE_IP` from earlier
-ones. Every command on the target names `--context kind-cobaltcore-target`;
-every other command runs on the devstack's cluster, `kind-cobaltcore`.
+This local exercise adds routing, certificate trust and NodePorts for the
+second cluster. A deployed target cluster needs equivalent network access,
+trusted certificates and published service addresses.
+
+Run Part 2 in one shell: later steps use `workdir` and `NODE_IP`. Commands for
+the target include `--context kind-cobaltcore-target`; the other commands use
+`kind-cobaltcore`. Complete [Part 1 Step 10](#cp-teardown) first.
+
+If creating the second kind cluster fails at `Preparing nodes` because of
+inotify limits, increase `fs.inotify.max_user_instances` on the Linux host
+running Docker, for example with
+`sudo sysctl fs.inotify.max_user_instances=512`.
 
 ### The path from the target {#tc-path}
 
@@ -620,23 +599,22 @@ The cluster takes no kind config, so it binds no host port and nothing
 contends with the devstack's 8443 and 8428. `kind create cluster` switches the
 current context to the new cluster, and the second command switches it back.
 
-### Step 2: Install the access chart {#tc-chart}
+### Step 2: Grant access to the target namespace {#tc-chart}
 
 ```bash
+kubectl --context kind-cobaltcore-target create namespace workflow
 helm install --kube-context kind-cobaltcore-target \
   target-cluster-access deploy/target-cluster/target-cluster-access \
   -n c5c3-access --create-namespace \
   --set 'namespaces={openstack}' \
   --set 'assignedNamespaces={workflow}'
-kubectl --context kind-cobaltcore-target create namespace workflow
 ```
 
-The chart creates a ServiceAccount the management cluster authenticates as,
-with a Role in the placed namespace `openstack`, which it creates on the bare
-cluster, and a Role in `workflow` that covers the seven order kinds and Secrets
-and nothing else. It ships the order CRDs and creates no assigned namespace,
-hence the second command. [Assigned namespaces](./reference/target-clusters.md#assigned-namespaces)
-lists the grants.
+Create `workflow` before installing the chart: the chart creates access rules
+in assigned namespaces but does not create those namespaces. It creates
+`openstack` for placed resources, the access ServiceAccount, and the Order CRDs.
+See [Assigned namespaces](./reference/target-clusters.md#assigned-namespaces) for
+the permissions granted in `workflow`.
 
 ### Step 3: Register the target {#tc-register}
 
@@ -644,6 +622,8 @@ The registration Secret carries a kubeconfig with the chart's token and the
 target's address on the docker network both clusters share:
 
 ```bash
+kubectl --context kind-cobaltcore-target -n c5c3-access wait \
+  --for=jsonpath='{.data.token}' secret/target-cluster-access-token --timeout=2m
 kubectl --context kind-cobaltcore-target -n c5c3-access get secret target-cluster-access-token \
   -o jsonpath='{.data.token}' | base64 -d > "$workdir/token"
 kubectl --context kind-cobaltcore-target -n c5c3-access get secret target-cluster-access-token \
@@ -687,8 +667,9 @@ the proof that the assigned namespace stays out of a service operator's cache.
 
 An order on the target is delivered the ControlPlane's
 `spec.services.keystone.publicEndpoint`, which the devstack sets to
-`https://keystone.127-0-0-1.nip.io:8443/v3`. On the workstation that name
-resolves to the loopback address, and `hack/kind-config.yaml` bridges the host
+`https://keystone.127-0-0-1.nip.io:8443/v3`.
+
+On the workstation that name resolves to the loopback address, and `hack/kind-config.yaml` bridges the host
 port to the Envoy Gateway's NodePort 31443 on the devstack's node. A pod on the
 target cannot use the URL unchanged: the name points at the pod itself, and
 port 8443 is bound on the workstation only. The pod does reach the devstack's
@@ -756,7 +737,7 @@ The probe prints Keystone's version document. The delivered credentials carry
 no CA: a consumer verifies the endpoint against its own trust store, and on a
 real target that holds the CA the Gateway's certificate comes from.
 
-### Step 5: Publish the database and the bus {#tc-publish}
+### Step 5: Make database and messaging endpoints reachable {#tc-publish}
 
 A database order or a vhost order on the target is delivered the address the
 ControlPlane records in `spec.infrastructure.publishedDatabaseEndpoint` or
@@ -781,22 +762,30 @@ each twin. Publish before the orders exist: an order on a target cluster has no
 watch on the ControlPlane, and it reads a later edit only on its ten-minute
 refresh.
 
-### Step 6: Assign the namespace on the target {#tc-assign}
+### Step 6: Allow resource requests from the target {#tc-assign}
 
-The entry names the cluster in `targetClusterRef`. It is a second entry beside
-any for `workflow` on the management cluster, because an entry is the pair of
-namespace and cluster:
+The entry names the cluster in `targetClusterRef`. An entry is the pair of
+namespace and cluster. Create the list when Part 1 removed its last entry;
+otherwise append to preserve any other assignments:
 
 ```bash
-kubectl patch controlplane controlplane -n openstack --type json \
-  -p '[{"op":"add","path":"/spec/namespaceAssignments/-","value":{"namespace":"workflow","targetClusterRef":{"name":"cobaltcore-target"},"allowedRoles":["member"],"allowCatalogEntries":true}}]'
+patch=$(kubectl get controlplane controlplane -n openstack -o json | jq -c '
+  {namespace: "workflow", targetClusterRef: {name: "cobaltcore-target"},
+   allowedRoles: ["member"], allowCatalogEntries: true} as $entry |
+  [{op: "test", path: "/metadata/resourceVersion", value: .metadata.resourceVersion},
+   if .spec.namespaceAssignments == null then
+     {op: "add", path: "/spec/namespaceAssignments", value: [$entry]}
+   else
+     {op: "add", path: "/spec/namespaceAssignments/-", value: $entry}
+   end]')
+kubectl patch controlplane controlplane -n openstack --type json -p "$patch"
 kubectl wait --for=condition=NamespaceAssignmentsReady controlplane/controlplane -n openstack --timeout=5m
 ```
 
-On a ControlPlane that assigns no namespace any more, create the list as in
-Part 1 Step 2, with this entry.
+If the resource-version test fails because another update happened, rerun the
+block to read the current assignments before patching.
 
-### Step 7: Order the seven pieces {#tc-orders}
+### Step 7: Request the service resources {#tc-orders}
 
 The orders are the ones of Part 1, applied on the target. `controlPlaneRef`
 names the ControlPlane on the management cluster. The user, the database and
@@ -927,7 +916,7 @@ carries `auth_url: "https://keystone.127-0-0-1.nip.io:8443/v3"`, and the
 database and the bus carry the node's IP with their NodePorts. The last command
 finds none of the four on the management cluster.
 
-### Step 9: Use them from the target {#tc-verify}
+### Step 9: Verify access from the target {#tc-verify}
 
 The token Job mounts the trust anchor of Step 4 and points `OS_CACERT` at it.
 Save it once and run it for the user and the application credential:
@@ -1011,7 +1000,7 @@ printf '%s\n' "$password" | kubectl exec -i -n openstack openstack-rabbitmq-serv
   sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user "$1" "$pw"' _ "$user"
 ```
 
-### Step 10: Tear Part 2 down {#tc-teardown}
+### Step 10: Remove the target resources {#tc-teardown}
 
 Delete the Jobs and the orders on the target, in the order of Part 1 Step 10:
 
@@ -1044,22 +1033,24 @@ kubectl delete secret cobaltcore-target -n c5c3-clusters
 helm uninstall --kube-context kind-cobaltcore-target target-cluster-access -n c5c3-access
 kind delete cluster --name cobaltcore-target
 kind get clusters
+rm -rf "$workdir"
 ```
 
 The entry goes before the registration Secret: an entry whose cluster does not
 resolve turns the ControlPlane's `Ready` False. `kind get clusters` lists
 `cobaltcore` alone.
 
-## Teardown
+## Remove the local environment {#teardown}
 
 Part 2's teardown leaves the devstack as Part 1 found it. Remove the devstack
 with:
 
 ```bash
-make teardown-infra
+kubectl config use-context kind-cobaltcore
+EXTERNAL_CLUSTER=false make teardown-infra
 ```
 
-## Tested by
+## Run the related tests {#tested-by}
 
 ```bash
 chainsaw test --test-dir tests/e2e/c5c3/keystone-user
@@ -1067,22 +1058,14 @@ chainsaw test --test-dir tests/e2e/c5c3/messaging
 chainsaw test --test-dir tests/e2e-orders-multicluster/orders
 ```
 
-`keystone-user` runs the Keystone and database orders of Part 1 on the
-management cluster, with the rotation, repair, freeze and teardown walks of the
-how-to guide. It rotates the user's password by hand and on the schedule, and
-logs in with the superseded credential inside its grace period, as Step 7
-shows. `messaging` does the same for the vhost order. Both need the ControlPlane stack, which
-[ControlPlane E2E Test Suites](./reference/testing/controlplane-e2e-tests.md)
-describes. `tests/e2e-orders-multicluster/orders` runs Part 2 on two kind
-clusters; `make e2e-orders-multicluster` names the stack and the registration
-it needs, and the `e2e-orders-multicluster` CI job brings both up.
+The first two suites cover the management-cluster workflow, including
+credential rotation, recovery and deletion. They require the
+[ControlPlane test environment](./reference/testing/controlplane-e2e-tests.md).
 
-The suites are isolation-named. The two-cluster suite's plane is `cp` in
-chainsaw's own namespace, its owner's namespace on the target is
-`orders-tenant`, and its plane publishes Keystone, the database and the bus over
-plain http and AMQP on pinned NodePorts, so it needs neither the DNS rewrite nor
-the trust anchor of Part 2. The exhibits are its fixtures as it applies them;
-the walkthrough above uses the devstack's names.
+For the target-cluster workflow, `make e2e-orders-multicluster` prepares the two
+clusters and runs the suite. Its fixtures use the names `cp` and `orders-tenant`
+and expose services on test NodePorts. The tutorial uses TLS and DNS routing
+for the local environment instead.
 
 ::: details The suite's ControlPlane
 <<< @/../tests/e2e-orders-multicluster/orders/00-controlplane-cr.yaml#controlplane
@@ -1111,11 +1094,11 @@ the walkthrough above uses the devstack's names.
 - [Assigned namespaces](./reference/target-clusters.md#assigned-namespaces):
   what the access chart grants in an owner's namespace on a target, and the
   registration's `assignedNamespaces` key.
-- [Order Resources from a ControlPlane](./guides/order-resources-from-a-controlplane.md): each order kind in
+- [Manage Provisioned Resources](./guides/order-resources-from-a-controlplane.md): each order kind in
   depth, with rotation, repair and deletion policies.
 - [Deploy to a Target Cluster](./guides/deploy-to-a-target-cluster.md): the
   access chart and the registration for placed services.
 - [orders-target-cluster](./reference/testing/controlplane-e2e-tests.md#orders-target-cluster):
   the nine steps of the two-cluster suite.
-- [Quick Start (ControlPlane)](./quick-start-controlplane.md): the devstack
+- [Deploy a ControlPlane](./quick-start-controlplane.md): the devstack
   this page runs on.

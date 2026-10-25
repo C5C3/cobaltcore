@@ -34,7 +34,7 @@ in [Keystone Reconciler Architecture](../../reference/keystone/keystone-reconcil
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy a ControlPlane](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -326,8 +326,7 @@ only new authentications with the old password are rejected.
 
 ## Standalone Keystone, without a ControlPlane
 
-The [Quick Start](../../quick-start.md) and
-[Quick Start (Extended)](../../quick-start-extended.md) devstacks run a standalone
+[Deploy Keystone Locally](../../quick-start-extended.md) runs a standalone
 Keystone CR — no ControlPlane projects it. There the names are:
 
 | ControlPlane devstack | Standalone devstack |
@@ -341,7 +340,7 @@ Substitute those names in every command above. The re-bootstrap contract,
 condition transitions, and smoke check are identical.
 
 ::: warning The kind shim reads the default-identity path
-On the kind Quick Start, the `keystone-admin` ExternalSecret is a standalone
+In the standalone kind environment, the `keystone-admin` ExternalSecret is a standalone
 shim (`deploy/kind/infrastructure/keystone-admin-externalsecret.yaml`). It reads
 the **default ControlPlane identity's** per-CR path
 `bootstrap/openstack/controlplane-keystone/admin` — *not*

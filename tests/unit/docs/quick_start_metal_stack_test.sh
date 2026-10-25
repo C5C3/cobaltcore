@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify docs/quick-start-metal-stack.md, the lab's one runbook:
-#   1. the frontmatter holds `title: Quick Start (metal-stack)` and no other
+#   1. the frontmatter holds `title: Deploy on Bare Metal` and no other
 #      key, and the SPDX comment is present
 #   2. docs/.vitepress/config.ts lists the page after the ControlPlane quick
 #      start, in the Getting Started group
@@ -13,7 +13,7 @@
 #      their explicit anchors
 #   4. every directory the page applies holds a kustomization.yaml, every
 #      deploy/, hack/ or tests/ file it names exists and each such script is
-#      executable, the three code imports resolve, and every #anchor it links
+#      executable, the four code imports resolve, and every #anchor it links
 #      resolves on the target page
 #   5. the page holds the deploy and teardown commands, the guide
 #      conventions list it as a devstack with the same deploy command, and
@@ -219,8 +219,8 @@ test_frontmatter() {
   assert_eq "line 1 opens the frontmatter" "---" "$(head -n 1 "$QUICK_START_DOC")"
   local keys
   keys="$(awk 'NR == 1 && $0 != "---" { exit } NR > 1 && /^---$/ { exit } NR > 1 && /^[A-Za-z0-9_-]+:/ { print }' "$QUICK_START_DOC")"
-  assert_eq "the frontmatter holds 'title: Quick Start (metal-stack)' and no other key" \
-    "title: Quick Start (metal-stack)" "$keys"
+  assert_eq "the frontmatter holds 'title: Deploy on Bare Metal' and no other key" \
+    "title: Deploy on Bare Metal" "$keys"
   assert_file_contains_fixed "SPDX copyright line present" "$QUICK_START_DOC" \
     "SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company"
   assert_file_contains_fixed "SPDX license line present" "$QUICK_START_DOC" \
@@ -229,17 +229,17 @@ test_frontmatter() {
 
 # --- Test 2: the sidebar item ---
 test_sidebar() {
-  echo "Test: the sidebar lists the page after the ControlPlane quick start"
-  local controlplane metal_stack architecture
-  controlplane="$(grep -nF "link: '/quick-start-controlplane'" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  metal_stack="$(grep -nF "{ text: 'Quick Start (metal-stack)', link: '/quick-start-metal-stack' }" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  architecture="$(grep -nE "^[[:space:]]*text: 'Architecture',[[:space:]]*$" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  if [[ -n "$controlplane" && -n "$metal_stack" && -n "$architecture" ]] &&
-    ((controlplane < metal_stack && metal_stack < architecture)); then
-    echo "  PASS: sidebar item on line $metal_stack, between the ControlPlane item and the Architecture group"
+  echo "Test: the sidebar lists bare-metal deployment under Deployment Guides"
+  local deployment metal_stack tutorials
+  deployment="$(grep -nE "^[[:space:]]*text: 'Deployment Guides',[[:space:]]*$" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
+  metal_stack="$(grep -nF "{ text: 'Deploy on Bare Metal (Gardener / metal-stack)', link: '/quick-start-metal-stack' }" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
+  tutorials="$(grep -nE "^[[:space:]]*text: 'Tutorials',[[:space:]]*$" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
+  if [[ -n "$deployment" && -n "$metal_stack" && -n "$tutorials" ]] &&
+    ((deployment < metal_stack && metal_stack < tutorials)); then
+    echo "  PASS: bare-metal deployment is in Deployment Guides"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: sidebar item missing or out of place (ControlPlane '${controlplane}', metal-stack '${metal_stack}', Architecture group '${architecture}')"
+    echo "  FAIL: bare-metal deployment missing or outside Deployment Guides"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -332,7 +332,7 @@ test_references_resolve() {
       FAIL=$((FAIL + 1))
     fi
   done <<<"$imports"
-  assert_eq "the page holds three code imports" "3" "$found"
+  assert_eq "the page holds four code imports" "4" "$found"
 
   links="$(grep -oE '\]\((\./[^)#[:space:]]+\.md)?#[^)[:space:]]+\)' "$QUICK_START_DOC" | sort -u || true)"
   while IFS= read -r link; do
