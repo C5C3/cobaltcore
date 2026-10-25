@@ -1,0 +1,327 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: every keystone-operator pod killed in the middle of a
+# helm upgrade.
+#
+# The second pass of the keystone job of e2e-operator-upgrade. The job runs
+# ../keystone-helm-upgrade/ first, then uninstalls the operator and installs
+# the released baseline again (hack/ci-deploy-operator.sh with the pulled
+# chart), which also puts the released CRDs back. This suite brings its own
+# Keystone to Ready under that baseline, applies the in-repo CRDs, runs the
+# keystone-helm-upgrade `helm upgrade` without --wait and, once a :dev manager
+# container runs, kills every operator pod, old and new, with a PodChaos
+# pod-kill (01-podchaos.yaml).
+#
+# Claim, phase by phase:
+#   kill     Every operator pod UID recorded at the kill is gone, the
+#            Deployment finishes its rollout, every pod runs the :dev manager
+#            and readyReplicas == replicas.
+#   resume   The new operator reconciles a new generation (replicas 1 to 2) to
+#            Ready=True/AllReady with installedRelease 2026.1.
+#   once     The bootstrap Job keeps the UID it had under the baseline and is
+#            the only one (NO-REBOOTSTRAP-OK): the restarted operator did not
+#            bootstrap the Keystone a second time.
+#
+# Blast radius: the PodChaos selects the keystone-operator pods in
+# keystone-system alone. No Keystone of the cluster reconciles until a new
+# leader runs, and writes to the Keystone kinds are refused while the webhook
+# has no endpoint. The PodChaos is the shared state to undo, so the catch of
+# step 5 deletes it first.
+#
+# Workload: the token stream of ../../e2e-chaos/lib/workload.sh issues and
+# validates tokens against keystone-op-kill across the upgrade and the kill.
+# The operator is on no request path of a token, so the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-26, kind, failures 0/0/0, recovery 0/0/0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-operator-helm-upgrade-pod-kill
+spec:
+  namespace: openstack
+  steps:
+  # ── Step 1: CR to Ready under the RELEASED operator ────────────────────
+  - name: deploy-cr-on-released-operator
+    try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-op-kill
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          kubectl get keystone keystone-op-kill -n openstack -o yaml 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+          helm history keystone-operator -n keystone-system 2>&1 || true
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Capture the pre-upgrade bootstrap Job UID ──────────────────
+  # The bootstrap Job persists (TTLSecondsAfterFinished is unset), so its UID
+  # is the anchor for "no re-bootstrap", as in keystone-helm-upgrade step 2.
+  # The ConfigMap is script-created, so the step cleanup deletes it.
+  - name: capture-baseline
+    try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          BOOT_UID=$(kubectl get job keystone-op-kill-bootstrap -n openstack \
+            -o jsonpath='{.metadata.uid}')
+          if [ -z "$BOOT_UID" ]; then
+            echo "FAIL: could not read the bootstrap Job UID before the upgrade"
+            exit 1
+          fi
+          echo "Baseline bootstrap Job UID: ${BOOT_UID}"
+          kubectl create configmap keystone-op-kill-baseline -n openstack \
+            --from-literal=bootstrap-uid="${BOOT_UID}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+    cleanup:
+    - script:
+        content: kubectl delete configmap keystone-op-kill-baseline -n openstack --ignore-not-found 2>&1 || true
+  # ── Step 3: Apply the in-repo CRDs ─────────────────────────────────────
+  # The reinstall of the baseline put the released CRDs back, and an upgrade
+  # applies the new CRDs before it rolls the operator (Helm never upgrades
+  # crds/). keystone-helm-upgrade step 3 checks the CRD window itself; this
+  # suite only restores the order.
+  - name: apply-new-crds
+    try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          REPO_ROOT="$(cd ../../.. && pwd)"
+          kubectl apply --server-side --force-conflicts \
+            -f "${REPO_ROOT}/operators/keystone/helm/keystone-operator/crds/"
+          kubectl wait crd --all --for condition=Established --timeout=60s
+  # ── Step 4: Start the workload ─────────────────────────────────────────
+  - name: start-workload
+    try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../../e2e-chaos/lib/workload.sh start keystone-helm-upgrade-pod-kill --
+          --streams token
+          --keystone http://keystone-op-kill.openstack.svc:5000/v3
+    catch:
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../../e2e-chaos/lib/workload.sh dump keystone-helm-upgrade-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../../e2e-chaos/lib/workload.sh stop keystone-helm-upgrade-pod-kill
+  # ── Step 5: helm upgrade, kill every operator pod mid-rollout ──────────
+  # One script, so the recorded UIDs and the polls share state. The upgrade
+  # runs without --wait: the kill has to land while the Deployment rolls. A
+  # :dev manager container in state running is the observed rollout state
+  # the kill waits for; every pod at that moment, old and new, is recorded,
+  # and recovery is gated on all of those UIDs being gone.
+  - name: helm-upgrade-with-kill
+    try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          REPO_ROOT="$(cd ../../.. && pwd)"
+          CHART="${REPO_ROOT}/operators/keystone/helm/keystone-operator"
+          IMAGE_REPO="${IMAGE_PREFIX:-ghcr.io/c5c3}/keystone-operator"
+          NS=keystone-system
+          SEL=app.kubernetes.io/name=keystone-operator
+          pods_json() {
+            kubectl get pods -n "$NS" -l "$SEL" -o json
+          }
+          # dev_running: how many pods run a :dev manager container.
+          dev_running() {
+            pods_json | jq '[.items[]
+              | select(any(.spec.containers[]; .name == "manager" and (.image | endswith(":dev"))))
+              | select(any(.status.containerStatuses[]?; .name == "manager" and .state.running != null))]
+              | length'
+          }
+
+          BEFORE="$(pods_json | jq -r '[.items[].metadata.uid] | join(" ")')"
+          if [ -z "$BEFORE" ]; then
+            echo "FAIL: no keystone-operator pod before the upgrade"
+            exit 1
+          fi
+          echo "pre-upgrade operator pods: ${BEFORE}"
+
+          ../../e2e-chaos/lib/workload.sh mark keystone-helm-upgrade-pod-kill fault-start
+          helm dependency build --skip-refresh "${CHART}"
+          helm upgrade keystone-operator "${CHART}" \
+            --namespace "$NS" \
+            --set "image.repository=${IMAGE_REPO}" \
+            --set image.tag=dev \
+            --set image.pullPolicy=Never \
+            --set controller.defaultImagePullPolicy=IfNotPresent
+
+          deadline=$(( $(date +%s) + 120 ))
+          until [ "$(dev_running)" -ge 1 ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no :dev manager container ran within 120s of the helm upgrade"
+              kubectl get pods -n "$NS" -l "$SEL" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          KILLED="$(pods_json | jq -r '[.items[].metadata.uid] | join(" ")')"
+          echo "operator pods at the kill: ${KILLED}"
+          kubectl apply -f 01-podchaos.yaml
+
+          deadline=$(( $(date +%s) + 300 ))
+          while true; do
+            STATE="$(pods_json | jq -r --arg killed " ${KILLED} " '
+              ([.items[] | .metadata.uid as $uid | select($killed | contains(" " + $uid + " "))] | length) as $left
+              | ([.items[] | select(any(.spec.containers[]; .name == "manager" and ((.image | endswith(":dev")) | not)))] | length) as $old
+              | "\($left) \($old)"')"
+            LEFT="${STATE% *}"
+            OLD="${STATE#* }"
+            if [ "$LEFT" = "0" ] && [ "$OLD" = "0" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 300s after the kill: ${LEFT} killed pod(s) left, ${OLD} pod(s) not on :dev"
+              kubectl get pods -n "$NS" -l "$SEL" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: every operator pod recorded at the kill is gone"
+          kubectl -n "$NS" rollout status deploy/keystone-operator --timeout=300s
+          READY="$(kubectl get deploy keystone-operator -n "$NS" -o jsonpath='{.status.readyReplicas}')"
+          WANT="$(kubectl get deploy keystone-operator -n "$NS" -o jsonpath='{.spec.replicas}')"
+          IMAGES="$(pods_json | jq -r '[.items[].spec.containers[] | select(.name == "manager") | .image] | unique | join(" ")')"
+          case "$IMAGES" in
+            *:dev) ;;
+            *) echo "FAIL: the operator pods run ${IMAGES}, not only :dev"; exit 1 ;;
+          esac
+          if [ "${READY:-0}" != "$WANT" ]; then
+            echo "FAIL: deploy/keystone-operator readyReplicas ${READY:-0}, want ${WANT}"
+            exit 1
+          fi
+          echo "OK: the operator rolled onto ${IMAGES} with readyReplicas ${READY} of ${WANT}"
+
+          kubectl delete -f 01-podchaos.yaml --ignore-not-found
+          ../../e2e-chaos/lib/workload.sh mark keystone-helm-upgrade-pod-kill fault-end
+    catch:
+    - script:
+        content: kubectl delete -f 01-podchaos.yaml --ignore-not-found 2>&1 || true
+    - script:
+        content: |
+          kubectl get deploy,pods -n keystone-system -o wide 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history keystone-operator -n keystone-system 2>&1 || true
+          kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - *workload-dump
+    cleanup:
+    - script:
+        content: kubectl delete -f 01-podchaos.yaml --ignore-not-found 2>&1 || true
+  # ── Step 6: A new generation, Ready, and no re-bootstrap ───────────────
+  # The poke and the checks of keystone-helm-upgrade steps 7 and 8: a real
+  # spec change advances metadata.generation, so only a reconcile by the new
+  # operator brings observedGeneration level with it. The patch retries for
+  # 90 s, because the webhook endpoints just moved to new pods. Every status
+  # write stamps observedGeneration, a degraded one too, so the poll reads
+  # Ready and installedRelease from the same snapshot as observedGeneration,
+  # and the Keystone Deployment has to reach the two replicas of the poke.
+  - name: assert-after-kill
+    try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          GEN_BEFORE=$(kubectl get keystone keystone-op-kill -n openstack \
+            -o jsonpath='{.metadata.generation}')
+          deadline=$(( $(date +%s) + 90 ))
+          until kubectl patch keystone keystone-op-kill -n openstack --type=merge \
+              -p '{"spec":{"deployment":{"replicas":2}}}'; do
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: the webhook-gated spec patch kept failing after the kill"
+              exit 1
+            fi
+            echo "patch rejected (webhook not reachable yet?); retrying in 3s ..."
+            sleep 3
+          done
+          GEN_AFTER=$(kubectl get keystone keystone-op-kill -n openstack \
+            -o jsonpath='{.metadata.generation}')
+          echo "generation before poke=${GEN_BEFORE} after poke=${GEN_AFTER}"
+          if [ -z "${GEN_AFTER}" ] || [ "${GEN_AFTER}" -le "${GEN_BEFORE:-0}" ]; then
+            echo "FAIL: the spec patch did not advance metadata.generation (${GEN_BEFORE} -> ${GEN_AFTER})"
+            exit 1
+          fi
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 150 ))
+          while :; do
+            STATE=$(kubectl get keystone keystone-op-kill -n openstack \
+              -o jsonpath='{.metadata.generation}|{.status.observedGeneration}|{.status.installedRelease}|{.status.conditions[?(@.type=="Ready")].status}/{.status.conditions[?(@.type=="Ready")].reason}')
+            GEN="${STATE%%|*}"
+            REST="${STATE#*|}"
+            OBS="${REST%%|*}"
+            REST="${REST#*|}"
+            RELEASE="${REST%%|*}"
+            READY="${REST#*|}"
+            if [ -n "${OBS}" ] && [ "${OBS}" = "${GEN}" ] && [ "${RELEASE}" = "2026.1" ] && [ "${READY}" = "True/AllReady" ]; then
+              echo "OK: observedGeneration=${OBS} caught up to generation=${GEN} with Ready ${READY} and installedRelease ${RELEASE}"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: generation ${GEN} reads observedGeneration '${OBS}', installedRelease '${RELEASE}' and Ready '${READY}', want ${GEN}, 2026.1 and True/AllReady; the new operator did not reconcile the poke"
+              exit 1
+            fi
+            sleep 2
+          done
+          kubectl wait deploy/keystone-op-kill -n openstack \
+            --for=jsonpath='{.status.readyReplicas}'=2 --timeout=120s
+          echo "OK: deploy/keystone-op-kill runs the two replicas of the poke"
+          BASE=$(kubectl get configmap keystone-op-kill-baseline -n openstack \
+            -o jsonpath='{.data.bootstrap-uid}')
+          CUR=$(kubectl get job keystone-op-kill-bootstrap -n openstack \
+            -o jsonpath='{.metadata.uid}')
+          echo "bootstrap Job UID baseline=${BASE} current=${CUR}"
+          if [ -z "${BASE}" ] || [ "${BASE}" != "${CUR}" ]; then
+            echo "FAIL: the bootstrap Job UID changed across the kill; the operator bootstrapped again"
+            exit 1
+          fi
+          COUNT=$(kubectl get jobs -n openstack -o name 2>/dev/null \
+            | grep -c '/keystone-op-kill-bootstrap$' || true)
+          if [ "${COUNT}" != "1" ]; then
+            echo "FAIL: expected exactly one bootstrap Job, found ${COUNT}"
+            exit 1
+          fi
+          echo "NO-REBOOTSTRAP-OK: the bootstrap Job kept its UID and is the only one"
+    catch:
+    - script:
+        content: |
+          kubectl get keystone keystone-op-kill -n openstack -o yaml 2>&1 || true
+          kubectl get jobs -n openstack 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 --previous 2>&1 || true
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ──────────────────────
+  - name: verify-workload
+    try:
+    - script:
+        timeout: 15m
+        content: ../../e2e-chaos/lib/workload.sh verify keystone-helm-upgrade-pod-kill
+    catch:
+    - *workload-dump

@@ -19,6 +19,9 @@
 #   - the reusable workflow takes the three inputs and runs the leg table, the
 #     fetch script and the pinned baseline, and its c5c3 CRD list is the one
 #     of the e2e-operator and e2e-orders-multicluster jobs;
+#   - a job whose leg sets pod-kill-suite (keystone) gets Chaos Mesh, then
+#     reinstalls the baseline after the first suite and runs the pod-kill
+#     suite under a report name of its own;
 #   - make e2e-operator-upgrade deploys the image tag and chart directory the
 #     fetch script wrote, with the barbican grants of the workflow;
 #   - operator-upgrade.yaml runs after the CI and Build Images workflows
@@ -179,6 +182,12 @@ test_every_operator_has_an_upgrade_filter() {
       keystone)
         assert_contains "tests_operator_upgrade_keystone lists the CRD window check its suite calls" \
           "$block" "- 'hack/ci-operator-upgrade-crd-window.sh'"
+        assert_contains "tests_operator_upgrade_keystone lists the pod-kill suite of its second pass" \
+          "$block" "- 'tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**'"
+        assert_contains "and the workload harness that suite calls" \
+          "$block" "- 'tests/e2e-chaos/lib/workload.sh'"
+        assert_contains "and the workload the harness runs" \
+          "$block" "- 'tests/e2e-chaos/lib/workload.py'"
         ;;
     esac
   done
@@ -297,6 +306,47 @@ test_the_reusable_workflow_runs_the_pinned_baseline() {
   assert_eq "the workflow's barbican grants equal ci.yaml's" "$ci_grants" "$wf_grants"
 }
 
+test_the_keystone_job_runs_the_pod_kill_pass() {
+  echo "Test: a job whose leg sets pod-kill-suite reinstalls the baseline and runs the pod-kill suite"
+
+  local setup reinstall run job reinstall_at run_at first_at dump_at
+  setup="$(CI_YAML="$UPGRADE_YAML" job_step upgrade "Setup E2E infrastructure")"
+  assert_contains "Chaos Mesh comes from the leg table" "$setup" \
+    'WITH_CHAOS_MESH: ${{ steps.leg.outputs.with-chaos-mesh }}'
+
+  reinstall="$(CI_YAML="$UPGRADE_YAML" job_step upgrade "Reinstall released operator (pod-kill baseline)")"
+  assert_not_empty "a reinstall step exists" "$reinstall"
+  assert_eq "it runs when the leg asks for the pod-kill pass alone" \
+    "if: steps.leg.outputs.pod-kill-suite == 'true'" \
+    "$(grep -E '^ *if:' <<<"$reinstall" | sed 's/^ *//')"
+  assert_contains "it uninstalls the release the first suite upgraded" "$reinstall" \
+    'helm uninstall "${OPERATOR}-operator" -n "${OPERATOR}-system" --wait'
+  assert_contains "it installs through the shared deploy script" "$reinstall" "hack/ci-deploy-operator.sh"
+  assert_contains "with the pinned image tag" "$reinstall" \
+    'IMAGE_TAG: ${{ steps.baseline.outputs.image_tag }}'
+  assert_contains "and the pulled chart" "$reinstall" \
+    'CHART_DIR: ${{ steps.baseline.outputs.chart_dir }}'
+
+  run="$(CI_YAML="$UPGRADE_YAML" job_step upgrade "Run operator upgrade pod-kill E2E")"
+  assert_not_empty "a pod-kill run step exists" "$run"
+  assert_eq "it runs when the leg asks for the pod-kill pass alone" \
+    "if: steps.leg.outputs.pod-kill-suite == 'true'" \
+    "$(grep -E '^ *if:' <<<"$run" | sed 's/^ *//')"
+  assert_contains "it keeps the first suite's JUnit file" "$run" \
+    "--report-name chainsaw-operator-upgrade-pod-kill-report"
+  assert_contains "it runs the operator's pod-kill suite" "$run" \
+    'tests/e2e-operator-upgrade/${OPERATOR}-helm-upgrade-pod-kill/'
+
+  job="$(workflow_job "$UPGRADE_YAML" upgrade)"
+  first_at="$(grep -n -- '- name: Run operator upgrade E2E$' <<<"$job" | cut -d: -f1)"
+  reinstall_at="$(grep -n -- '- name: Reinstall released operator (pod-kill baseline)$' <<<"$job" | cut -d: -f1)"
+  run_at="$(grep -n -- '- name: Run operator upgrade pod-kill E2E$' <<<"$job" | cut -d: -f1)"
+  dump_at="$(grep -n -- '- name: Dump diagnostic info$' <<<"$job" | cut -d: -f1)"
+  assert_gte "the reinstall follows the first suite" "$reinstall_at" "$first_at"
+  assert_gte "the pod-kill suite follows the reinstall" "$run_at" "$reinstall_at"
+  assert_gte "the diagnostics dump follows both" "$dump_at" "$run_at"
+}
+
 test_the_make_target_deploys_what_the_fetch_wrote() {
   echo "Test: make e2e-operator-upgrade deploys the image tag and chart the fetch script wrote"
 
@@ -393,6 +443,7 @@ test_every_operator_has_an_upgrade_filter
 test_merge_operator_images_tags_the_chart_version
 test_ci_yaml_calls_the_reusable_workflow
 test_the_reusable_workflow_runs_the_pinned_baseline
+test_the_keystone_job_runs_the_pod_kill_pass
 test_the_make_target_deploys_what_the_fetch_wrote
 test_the_main_workflow_follows_the_publish_runs
 

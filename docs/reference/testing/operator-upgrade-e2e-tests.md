@@ -19,9 +19,10 @@ for fault-injection tests, see [Chaos E2E Test Suites](./chaos-e2e-tests.md).
 The suites live under `tests/e2e-operator-upgrade/<op>-helm-upgrade/`, outside
 `tests/e2e/`, because each manages its operator's Helm release itself. `make e2e`
 and the per-CR `e2e-operator` CI job both assume a single, already-deployed
-operator, so they must not pick these suites up. All ten share
-`tests/e2e-operator-upgrade/chainsaw-config.yaml`: a 300-second assert timeout and
-`parallel: 1`, since a suite rewrites the cluster-wide operator Deployment and CRDs.
+operator, so they must not pick these suites up. All ten, and the keystone
+pod-kill suite beside them, share `tests/e2e-operator-upgrade/chainsaw-config.yaml`:
+a 300-second assert timeout and `parallel: 1`, since a suite rewrites the
+cluster-wide operator Deployment and CRDs.
 
 The flow is:
 
@@ -33,6 +34,10 @@ The flow is:
    nine suites go straight to step 4.
 4. It `helm upgrade`s the release to the in-repo chart, CRDs and `:dev` image.
 5. It asserts what the upgrade has to leave alone.
+
+The keystone job then runs a second suite,
+[keystone-helm-upgrade-pod-kill](#suite-keystone-helm-upgrade-pod-kill), on a
+reinstalled baseline: it kills every operator pod while the upgrade rolls.
 
 ## Baseline
 
@@ -234,6 +239,37 @@ pods running under the released operator do not carry, so the narrowing must
 wait for the Deployment to roll onto the labelled template; see the
 [Keystone Reconciler reference](../keystone/keystone-reconciler.md).
 
+## Suite: keystone-helm-upgrade-pod-kill
+
+**File:** `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/chainsaw-test.yaml`
+
+The second pass of the keystone job kills every keystone-operator pod in the middle
+of the helm upgrade. After `keystone-helm-upgrade` passed, the job uninstalls the
+`:dev` release and installs the baseline again with the env of the first install.
+`hack/ci-deploy-operator.sh` applies the chart's `crds/` on every install, so the
+released CRDs come back with it. The suite brings the Keystone `keystone-op-kill`
+(database `keystone_op_kill`) to Ready under that baseline and sends the token
+stream of the [chaos workload harness](./chaos-e2e-tests.md#workload-and-consistency-harness)
+through the upgrade:
+
+| # | Step | Details |
+| --- | --- | --- |
+| 1 | `deploy-cr-on-released-operator` | Applies the CR and asserts `Ready=True` (AllReady) and `status.installedRelease: "2026.1"` under the released operator |
+| 2 | `capture-baseline` | Stashes the UID of Job `keystone-op-kill-bootstrap` in ConfigMap `keystone-op-kill-baseline`, which the step cleanup deletes |
+| 3 | `apply-new-crds` | Applies the in-repo CRDs server-side and waits for `Established`, the order every upgrade follows |
+| 4 | `start-workload` | `../../e2e-chaos/lib/workload.sh start keystone-helm-upgrade-pod-kill -- --streams token --keystone http://keystone-op-kill.openstack.svc:5000/v3` |
+| 5 | `helm-upgrade-with-kill` | Records the operator pod UIDs, marks `fault-start`, runs the `helm upgrade` of `keystone-helm-upgrade` without `--wait`, and waits up to 120 seconds for a `manager` container on `:dev` in state running. Then it records every operator pod UID, old and new, applies the PodChaos `kill-operator-mid-upgrade` (`pod-kill`, `mode: all`, `gracePeriod: 0`), and waits until none of those UIDs is left, `rollout status` succeeds, every pod runs the `:dev` manager and `readyReplicas == replicas`. It deletes the PodChaos and marks `fault-end` |
+| 6 | `assert-after-kill` | Patches `spec.deployment.replicas` from 1 to 2, then polls until one read shows `observedGeneration == generation`, `Ready=True` (AllReady) and `installedRelease: "2026.1"`, because every status write stamps `observedGeneration`. It waits for `readyReplicas` 2 on Deployment `keystone-op-kill` and checks the stashed bootstrap Job UID and exactly one bootstrap Job (`NO-REBOOTSTRAP-OK`) |
+| 7 | `verify-workload` | `../../e2e-chaos/lib/workload.sh verify keystone-helm-upgrade-pod-kill` |
+
+The header carries `# Chaos budget: failures=0 recovery=0s`: the operator is on no
+request path of a token, so a failed token in the run is a defect. The catch of
+step 5 deletes the PodChaos before it prints `helm history`, the operator logs and
+the workload dump. A `:dev` manager container in state running is the rollout state
+the kill waits on, so the kill meets both ReplicaSets. Recovery is gated on the
+UIDs: a Deployment that reads Ready again proves nothing while a pod the kill met
+is left.
+
 ## The CRD window
 
 An operator upgrade applies the new CRDs before it rolls the operator. Flux's
@@ -376,8 +412,8 @@ Every ref carries the prefix `ghcr.io/c5c3/`, and the service images are the
 | nova | `nova-operator:dev`, `nova:2026.1` | | `WITH_MESSAGING` |
 
 The keystone row alone prints `with-chaos-mesh=true` and `pod-kill-suite=true`
-for the second pass of its job, whose workload pod runs on the Tempest image.
-Every other row prints both empty.
+for the [second pass](#suite-keystone-helm-upgrade-pod-kill) of its job, whose
+workload pod runs on the Tempest image. Every other row prints both empty.
 
 The OVN version comes from `hack/ci-resolve-ovn-version.sh`. An operator without a
 row fails the script, and `tests/unit/hack/ci_operator_upgrade_leg_test.sh` fails
@@ -404,7 +440,24 @@ job:
   (`make image OPERATOR=<op> IMG=ghcr.io/c5c3/<op>-operator:dev`) and
   `kind load docker-image` it;
 - deploy each sibling operator at `:dev` first (neutron needs the ovn-operator);
-- for c5c3, apply the sibling CRDs and run `hack/ci-deploy-korc.sh`.
+- for c5c3, apply the sibling CRDs and run `hack/ci-deploy-korc.sh`;
+- for keystone, deploy with `WITH_CHAOS_MESH=true` and `kind load docker-image` the
+  `ghcr.io/c5c3/tempest:2026.1` image for the pod-kill pass.
+
+The keystone job's second pass has no make target. After
+`make e2e-operator-upgrade OPERATOR=keystone` passed, run the job's two steps by
+hand:
+
+```bash
+helm uninstall keystone-operator -n keystone-system --wait --timeout 120s
+OPERATOR=keystone IMAGE_REPO=ghcr.io/c5c3/keystone-operator \
+  IMAGE_TAG="$(sed -n 's/^image_tag=//p' _output/operator-upgrade/keystone.fetched)" \
+  CHART_DIR="$(sed -n 's/^chart_dir=//p' _output/operator-upgrade/keystone.fetched)" \
+  NAMESPACE=keystone-system hack/ci-deploy-operator.sh
+chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml \
+  --report-name chainsaw-operator-upgrade-pod-kill-report \
+  tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/
+```
 
 ## Running in CI
 
@@ -426,6 +479,12 @@ Two workflows run the suites, both through the reusable workflow
   commit's `Chart.yaml` version: that commit's publish moved the pinned tag and chart
   onto the commit itself, so the suite would upgrade the commit onto itself. The
   operator joins the matrix once a bump freezes its pin.
+
+On both paths the keystone job runs its second pass after a first suite that
+passed: `Reinstall released operator (pod-kill baseline)` and
+`Run operator upgrade pod-kill E2E`, gated on the `pod-kill-suite`
+output. The second report, `chainsaw-operator-upgrade-pod-kill-report`, sits beside
+the first in the job's JUnit artifact.
 
 See [CI Workflow: e2e-operator-upgrade](../ci-cd/ci-workflow.md#e2e-operator-upgrade)
 for the steps of the job and the filters.

@@ -569,6 +569,18 @@ assert what the restarted operators report. No operator reads the readiness of a
 database or a broker itself, and changing that is a product change outside the
 chaos suites.
 
+### Lifecycle faults outside this tree
+
+One lifecycle fault suite lives outside `tests/e2e-chaos/`.
+`tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/` kills every
+keystone-operator pod while a `helm upgrade` rolls the operator, and runs as the
+second pass of the keystone job of `e2e-operator-upgrade`, which already pulls the
+released chart and image it upgrades from. It adopts the harness of this page
+through `../../e2e-chaos/lib/workload.sh` and carries the same budget line
+(`failures=0 recovery=0s`), so a matrix that counts lifecycle faults counts it with
+the suites below. See
+[Suite: keystone-helm-upgrade-pod-kill](./operator-upgrade-e2e-tests.md#suite-keystone-helm-upgrade-pod-kill).
+
 ---
 
 ## Test Suite Details
