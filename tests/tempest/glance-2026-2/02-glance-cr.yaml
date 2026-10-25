@@ -59,6 +59,11 @@ spec:
   importFiltering:
     allowedSchemes: [http, https]
     allowedPorts: [80, 443]
+  # The Keystone region the catalog-setup Job registers the endpoints in.
+  region: RegionOne
+  # Unified limits on: the setup Job registers the four limits, and
+  # tempest.scenario.test_unified_limits overrides them for its own project.
+  keystoneLimits: {}
   keystoneEndpoint: http://keystone-glance-tempest-2026-2.openstack.svc.cluster.local:5000/v3
   serviceUser:
     username: admin
