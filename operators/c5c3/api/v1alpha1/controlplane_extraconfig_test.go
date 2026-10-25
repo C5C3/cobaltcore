@@ -547,6 +547,20 @@ func TestValidateUpdate_CarriedGlanceRejectedKeyStaysUpdatable(t *testing.T) {
 		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[oslo_limit][password]"))
 	})
 
+	// services.glance.quotas gives the child spec.keystoneLimits, which renders
+	// the section the carried key would override.
+	t.Run("an update that sets services.glance.quotas carries nothing over", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := stored()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Glance.Quotas = &GlanceQuotasSpec{}
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[oslo_limit][password]"))
+		g.Expect(warnings).NotTo(ContainElement(ContainSubstring("[oslo_limit] password")))
+	})
+
 	t.Run("create still forbids it", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		_, err := w.ValidateCreate(context.Background(), stored())

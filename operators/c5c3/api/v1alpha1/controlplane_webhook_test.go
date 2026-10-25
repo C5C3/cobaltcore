@@ -11725,3 +11725,108 @@ func TestValidateUpdate_NovaDeclaredInStatusFreezesTheNamespace(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.namespace"))
 	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
 }
+
+// --- services.glance.quotas ---
+
+// mustQuantity decodes a Quantity from its JSON form, the way a stored
+// ControlPlane reaches the webhook, so a huge exponent arrives in the internal
+// form the API server hands over.
+func mustQuantity(t *testing.T, raw string) *resource.Quantity {
+	t.Helper()
+	q := &resource.Quantity{}
+	if err := json.Unmarshal([]byte(strconv.Quote(raw)), q); err != nil {
+		t.Fatalf("decoding quantity %q: %v", raw, err)
+	}
+	return q
+}
+
+// TestValidateGlanceQuotas pins the admission rules of services.glance.quotas:
+// both sizes are whole MiB from 1Mi to 2147483647Mi, both counts at least 1, and
+// a value no int64 holds is refused without arithmetic that grows with its
+// exponent.
+func TestValidateGlanceQuotas(t *testing.T) {
+	path := field.NewPath("spec", "services", "glance", "quotas")
+
+	t.Run("a nil block and an empty block are valid", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(validateGlanceQuotas(path, nil)).To(BeEmpty())
+		g.Expect(validateGlanceQuotas(path, &GlanceQuotasSpec{})).To(BeEmpty())
+	})
+
+	for _, raw := range []string{"1Mi", "2147483647Mi", "50Gi", "1048576"} {
+		t.Run("admits "+raw, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			q := mustQuantity(t, raw)
+			g.Expect(validateGlanceQuotas(path, &GlanceQuotasSpec{ImageSizeTotal: q, ImageStageTotal: q})).To(BeEmpty())
+		})
+	}
+
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{"1536Ki", "must be a whole number of MiB: Keystone stores Glance's image quotas in MiB"},
+		{"0", "must be at least 1Mi"},
+		{"512Ki", "must be at least 1Mi"},
+		{"-1Mi", "must be at least 1Mi"},
+		{"2147483648Mi", "must be at most 2147483647Mi, the largest registered limit Keystone accepts"},
+		{"1e2000000000", "must be at most 2147483647Mi, the largest registered limit Keystone accepts"},
+		{"1.5", "must be at most 2147483647Mi, the largest registered limit Keystone accepts"},
+	} {
+		t.Run("rejects "+tc.raw, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			q := mustQuantity(t, tc.raw)
+
+			start := time.Now()
+			errs := validateGlanceQuotas(path, &GlanceQuotasSpec{ImageStageTotal: q})
+			g.Expect(time.Since(start)).To(BeNumerically("<", time.Second), "the check must not compute the value")
+
+			g.Expect(errs).To(HaveLen(1))
+			g.Expect(errs[0].Type).To(Equal(field.ErrorTypeInvalid))
+			g.Expect(errs[0].Field).To(Equal("spec.services.glance.quotas.imageStageTotal"))
+			g.Expect(errs[0].Detail).To(Equal(tc.want))
+		})
+	}
+
+	t.Run("a count below 1 is rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		errs := validateGlanceQuotas(path, &GlanceQuotasSpec{
+			ImageCountTotal: ptr.To(int32(0)), ImageCountUploading: ptr.To(int32(-1)),
+		})
+		g.Expect(errs).To(HaveLen(2))
+		g.Expect(errs[0].Field).To(Equal("spec.services.glance.quotas.imageCountTotal"))
+		g.Expect(errs[0].Detail).To(Equal("must be at least 1"))
+		g.Expect(errs[1].Field).To(Equal("spec.services.glance.quotas.imageCountUploading"))
+	})
+
+	t.Run("the ControlPlane webhook runs the check", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.Quotas = &GlanceQuotasSpec{ImageSizeTotal: mustQuantity(t, "1536Ki")}
+
+		_, err := (&ControlPlaneWebhook{}).ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.quotas.imageSizeTotal"))
+		g.Expect(err.Error()).To(ContainSubstring("must be a whole number of MiB"))
+	})
+}
+
+// TestGlanceQuotaMiB pins the conversion the reconciler registers.
+func TestGlanceQuotaMiB(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int32
+	}{
+		{"1Mi", 1},
+		{"50Gi", 51200},
+		{"2147483647Mi", 2147483647},
+		{"1Ti", 1048576},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			got, err := GlanceQuotaMiB(*mustQuantity(t, tc.raw))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(got).To(Equal(tc.want))
+		})
+	}
+}

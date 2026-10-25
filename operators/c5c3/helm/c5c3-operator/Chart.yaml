@@ -16,6 +16,10 @@ annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
     - kind: added
+      description: "services.glance.quotas enforces per-project Glance image quotas through Keystone unified limits. Upgrade K-ORC (apply deploy/flux-system again) to commit fdf2df5ce62c or later before setting it: an older K-ORC rejects the system-scoped RoleAssignment, and the Glance registration then holds at AccountReady=False/ServiceAccountError. The glance-operator chart of the same release is required too, since it serves spec.keystoneLimits"
+    - kind: changed
+      description: "services.glance.extraConfig and globalExtraConfig refuse [DEFAULT] use_keystone_limits and the [oslo_limit] credential, scope and endpoint keys while services.glance is set. A ControlPlane that already carries one of them keeps it with an admission warning, but a new or changed value is refused, and so is a kept one once the update sets services.glance.quotas. Move hand-configured unified limits to services.glance.quotas and remove the keys in the same update"
+    - kind: added
       description: RBAC for get, list, watch, create, patch and delete on the K-ORC registeredlimits and patch on registeredlimits/status, for the RegisteredLimit children a KeystoneService's catalog.registeredLimits projects
     - kind: added
       description: "KeystoneService spec.catalog.registeredLimits (Keystone registered limits on the service row, in the ControlPlane's region) and spec.account.systemRoles (roles on the system scope, honored only in the ControlPlane's own namespaces)"

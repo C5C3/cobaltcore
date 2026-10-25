@@ -193,7 +193,7 @@ func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, fi
 		blocks := []iniBlock{{cp.Spec.GlobalExtraConfig, globalPath}, {gl.ExtraConfig, glancePath}}
 		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, gl.ExtraConfig)
 		var stored map[string]map[string]string
-		if old != nil && old.Spec.Services.Glance != nil {
+		if old != nil && old.Spec.Services.Glance != nil && gl.Quotas == nil {
 			stored = MergedExtraConfig(old.Spec.GlobalExtraConfig, old.Spec.Services.Glance.ExtraConfig)
 		}
 		for _, owned := range config.FindOwnedOverrides(merged, glancev1alpha1.OwnedConfigKeys) {
@@ -223,7 +223,10 @@ func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, fi
 			// existed; forbidding it on every update, the finalizer removal on
 			// delete included, would leave a ControlPlane admitted with it no
 			// update to remove it through. A new or changed value is still
-			// forbidden, and so is every other Rejected key.
+			// forbidden, and so is every other Rejected key. With
+			// services.glance.quotas set nothing carries over: the child then
+			// renders the unified-limits section, and a carried key would
+			// override it.
 			if owned.Rejected {
 				if owned.CarryOver && config.CarriedOver(stored, owned.Section, owned.Key, merged[owned.Section][owned.Key]) {
 					warnings = append(warnings, carriedRejectedINIWarning(owned, paths))

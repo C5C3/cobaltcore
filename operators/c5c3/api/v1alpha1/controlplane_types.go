@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -943,6 +944,35 @@ type ServiceHorizonSpec struct {
 	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
 }
 
+// GlanceQuotasSpec declares the per-project default of each of the four
+// resources Glance enforces through Keystone unified limits. An unset field
+// resolves at reconcile time to 2147483647 (MiB for the two sizes), the
+// largest registered limit Keystone accepts, never to -1: oslo.limit 2.10.0,
+// which 2026.1 pins, reads -1 as a limit below any usage.
+type GlanceQuotasSpec struct {
+	// ImageSizeTotal bounds the total stored image data per project
+	// (image_size_total). A whole number of MiB, from 1Mi to 2147483647Mi.
+	// +optional
+	ImageSizeTotal *resource.Quantity `json:"imageSizeTotal,omitempty"`
+
+	// ImageStageTotal bounds the total image data staged for import per project
+	// (image_stage_total). A whole number of MiB, from 1Mi to 2147483647Mi.
+	// +optional
+	ImageStageTotal *resource.Quantity `json:"imageStageTotal,omitempty"`
+
+	// ImageCountTotal bounds the number of non-deleted images per project
+	// (image_count_total).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ImageCountTotal *int32 `json:"imageCountTotal,omitempty"`
+
+	// ImageCountUploading bounds the number of images per project in any upload
+	// or import state (image_count_uploading).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	ImageCountUploading *int32 `json:"imageCountUploading,omitempty"`
+}
+
 // ServiceGlanceSpec is a CURATED LOCAL subset of the knobs the ControlPlane
 // exposes for the Glance image service, mirroring the ServiceKeystoneSpec and
 // ServiceHorizonSpec DECISION above: the reconciler (L2) PROJECTS this struct
@@ -1099,6 +1129,39 @@ type ServiceGlanceSpec struct {
 	// documented on ImportFiltering applies to this copied schema too.
 	// +optional
 	ImportPlugins *glancev1alpha1.ImportPluginsSpec `json:"importPlugins,omitempty"`
+
+	// Quotas turns on per-project image quotas through Keystone unified limits
+	// and declares the default every project gets. Setting the block enables
+	// enforcement: the ControlPlane registers the four values as Keystone
+	// registered limits on its Glance registration's image service, in
+	// spec.region, grants the glance service user reader on the system, and only
+	// then sets spec.keystoneLimits on the Glance child. quotas: {} enables
+	// enforcement with every default unbounded, for a platform that sets
+	// per-project overrides only. Removing the block turns enforcement off again;
+	// the registered limits are deleted once no glance-api pod still enforces.
+	//
+	// The values apply per project. A per-project override is Keystone data,
+	// created with `openstack limit create --service glance --project <p>
+	// --region <spec.region> --resource-limit <n> <resource>`, and Glance reads it
+	// on every request. Keystone refuses to change or delete a registered limit
+	// while a project limit of its resource exists, so delete the overrides
+	// before lowering a default or removing the block. The storage limits are
+	// soft: a single upload may overshoot image_size_total, and the next one is
+	// refused.
+	//
+	// Enabling or disabling enforcement rolls glance-api once; changing a value
+	// does not roll it, because Glance reads the limits on every request. The
+	// glance user gains reader on the system, which oslo.limit needs to look
+	// Glance's endpoint up. With it the glance credential reads whatever
+	// Keystone shows a system reader: every user, project and role assignment,
+	// and every user's credentials, EC2 and TOTP secrets included. Every quota
+	// check costs about five Keystone requests. K-ORC must run at commit
+	// fdf2df5ce62c or later, which supports system-scoped role assignments, and
+	// the glance-operator must be of the same release, which knows
+	// spec.keystoneLimits. The type is local to this API, so the chart-skew
+	// caveat of ImportFiltering does not apply.
+	// +optional
+	Quotas *GlanceQuotasSpec `json:"quotas,omitempty"`
 
 	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
 	// for THIS service on the managed SHARED database, so a staged migration can run

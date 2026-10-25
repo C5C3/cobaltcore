@@ -3308,6 +3308,57 @@ FIXTURES: tuple[Fixture, ...] = (
         keystone="",
         infrastructure=MANAGED_INFRA,
     ),
+    # --- services.glance.quotas (issue #732, create-rejection matrix) ---
+    Fixture(
+        filename="160-glance-quotas-size-not-whole-mib.yaml",
+        comment=(
+            "services.glance.quotas.imageSizeTotal of 1536Ki is rejected by the webhook\n"
+            "(validateGlanceQuotas): Keystone stores Glance's image quotas in MiB, and 1536Ki\n"
+            "is 1.5Mi. A Quantity carries no marker for that, so the rule is webhook-only."
+        ),
+        name="cp-glance-quotas-size",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      quotas:\n"
+            + "        imageSizeTotal: 1536Ki\n"
+        ),
+    ),
+    Fixture(
+        filename="161-glance-quotas-count-zero.yaml",
+        comment=(
+            "services.glance.quotas.imageCountTotal of 0 violates the Minimum=1 marker (CRD\n"
+            "schema): a count quota of 0 would refuse every image, and K-ORC cannot create a\n"
+            "registered limit of 0 at all."
+        ),
+        name="cp-glance-quotas-count",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      quotas:\n"
+            + "        imageCountTotal: 0\n"
+        ),
+    ),
+    Fixture(
+        filename="162-glance-extraconfig-owned-use-keystone-limits.yaml",
+        comment=(
+            "services.glance.extraConfig setting [DEFAULT] use_keystone_limits is forbidden\n"
+            "by the webhook: the key belongs to the Glance child's spec.keystoneLimits, which\n"
+            "services.glance.quotas drives, and a hand-set value refuses every image create\n"
+            "or drops the quotas."
+        ),
+        name="cp-glance-extraconfig-limits",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      extraConfig:\n"
+            + "        DEFAULT:\n"
+            + '          use_keystone_limits: "true"\n'
+        ),
+    ),
 )
 
 

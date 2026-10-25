@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -4274,6 +4275,105 @@ func TestIntegration_ControlPlaneDeletion_SequencesORCTeardown(t *testing.T) {
 		return apierrors.IsNotFound(acErr) && apierrors.IsNotFound(cpErr)
 	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
 		"AC and ControlPlane must be removed once the K-ORC finalizer clears")
+}
+
+// TestIntegration_GlanceQuotas_EnableAndDisableOrder drives a ControlPlane with
+// services.glance.quotas to GlanceReady=True with both controllers on one
+// manager: the registration carries the four registered limits and reader on the
+// system from its first projection, and the Glance child gets spec.keystoneLimits
+// only once the registration reports CatalogReady and AccountReady for that spec.
+// Removing the block then runs the other order through the real status and
+// watch path: the child drops spec.keystoneLimits first, and the registration
+// keeps the limits and reader until the child reports status.rolledOutGeneration
+// at its generation.
+func TestIntegration_GlanceQuotas_EnableAndDisableOrder(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupRegisteringControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-glance-quotas-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Services.Glance = integrationGlanceService()
+	cp.Spec.Services.Glance.Quotas = &c5c3v1alpha1.GlanceQuotasSpec{
+		ImageSizeTotal:  ptr.To(resource.MustParse("50Gi")),
+		ImageCountTotal: ptr.To(int32(1000)),
+	}
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cp)
+
+	regKey := client.ObjectKey{Name: glanceName(cp), Namespace: cp.GlanceNamespace()}
+	reg := waitForBuiltinRegistration(t, ctx, c, regKey)
+	g.Expect(reg.Spec.Catalog.RegisteredLimits).To(Equal([]c5c3v1alpha1.KeystoneServiceRegisteredLimitSpec{
+		{ResourceName: "image_size_total", DefaultLimit: 51200},
+		{ResourceName: "image_stage_total", DefaultLimit: 2147483647},
+		{ResourceName: "image_count_total", DefaultLimit: 1000},
+		{ResourceName: "image_count_uploading", DefaultLimit: 2147483647},
+	}), "the registration carries the four registered limits from its first projection")
+	g.Expect(reg.Spec.Account.SystemRoles).To(Equal([]string{"reader"}))
+
+	simulateRegistrationCatalogAvailableWhenPresent(t, ctx, c, cp, reg)
+	simulateRegistrationAccountConvergedWhenPresent(t, ctx, c, cp, reg)
+	simulateGlanceDBCredentialSyncWhenPresent(t, ctx, c, cp)
+
+	gl := &glancev1alpha1.Glance{}
+	g.Eventually(func() (*glancev1alpha1.KeystoneLimitsSpec, error) {
+		if err := c.Get(ctx, regKey, gl); err != nil {
+			return nil, err
+		}
+		return gl.Spec.KeystoneLimits, nil
+	}, itEventuallyTimeout, itPollInterval).ShouldNot(BeNil(),
+		"the Glance child enforces once the registration reports its limits and system role ready")
+
+	simulateGlanceReadyWhenPresent(t, ctx, c, regKey)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeGlanceReady, metav1.ConditionTrue, itEventuallyTimeout)
+	g.Expect(c.Get(ctx, regKey, gl)).To(Succeed())
+	g.Expect(gl.Spec.KeystoneLimits).To(Equal(&glancev1alpha1.KeystoneLimitsSpec{}))
+
+	// Disable. RetryOnConflict because the controller writes the CR's status
+	// concurrently.
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, live); err != nil {
+			return err
+		}
+		live.Spec.Services.Glance.Quotas = nil
+		return c.Update(ctx, live)
+	})).To(Succeed(), "remove services.glance.quotas")
+
+	g.Eventually(func() (*glancev1alpha1.KeystoneLimitsSpec, error) {
+		if err := c.Get(ctx, regKey, gl); err != nil {
+			return nil, err
+		}
+		return gl.Spec.KeystoneLimits, nil
+	}, itEventuallyTimeout, itPollInterval).Should(BeNil(), "the Glance child stops enforcing first")
+
+	// No glance operator runs here, so status.rolledOutGeneration stays below the
+	// generation that dropped keystoneLimits, as it does while old pods serve.
+	heldFields := func() (int, error) {
+		if err := c.Get(ctx, regKey, reg); err != nil {
+			return 0, err
+		}
+		return len(reg.Spec.Catalog.RegisteredLimits) + len(reg.Spec.Account.SystemRoles), nil
+	}
+	g.Consistently(heldFields, 5*time.Second, itPollInterval).Should(Equal(5),
+		"the registration keeps the four limits and reader while a glance-api pod may still enforce")
+
+	g.Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := c.Get(ctx, regKey, gl); err != nil {
+			return err
+		}
+		gl.Status.RolledOutGeneration = gl.Generation
+		return c.Status().Update(ctx, gl)
+	})).To(Succeed(), "report the template without keystoneLimits rolled out")
+
+	g.Eventually(heldFields, itEventuallyTimeout, itPollInterval).Should(BeZero(),
+		"the hold releases once the Glance child is rolled out")
 }
 
 // TestIntegration_ControlPlaneDeletion_SweepsProjectedRegistrationsFirst proves

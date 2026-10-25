@@ -52,7 +52,7 @@ _CHART_WEBHOOK_TEMPLATE = (
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 160
+_EXPECTED_FIXTURE_COUNT = 163
 
 
 def _load_generator() -> types.ModuleType:

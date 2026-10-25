@@ -6,7 +6,10 @@ package v1alpha1
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"net/url"
 	"regexp"
 	"slices"
@@ -16,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -957,8 +961,112 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 		glPath, gl.ImportPlugins, gl.Staging,
 	)...)
 	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
+	allErrs = append(allErrs, validateGlanceQuotas(glPath.Child("quotas"), gl.Quotas)...)
 
 	return allErrs
+}
+
+// The bounds of a Glance size quota: Keystone stores image_size_total and
+// image_stage_total in MiB, and a registered limit is at most 2147483647.
+const (
+	glanceQuotaMiBBytes = int64(1) << 20
+	glanceQuotaMaxMiB   = int64(math.MaxInt32)
+)
+
+// errGlanceQuotaTooLarge is GlanceQuotaMiB's error for a size above
+// glanceQuotaMaxMiB.
+var errGlanceQuotaTooLarge = fmt.Errorf(
+	"must be at most %dMi, the largest registered limit Keystone accepts", glanceQuotaMaxMiB)
+
+// GlanceQuotaMiB converts a size quota of services.glance.quotas to the MiB
+// value Keystone stores, or returns the error the webhook reports for it: below
+// 1Mi, not a whole number of MiB, or above 2147483647Mi. The reconciler converts
+// through the same function, so a value the webhook admits is the value it
+// registers.
+//
+// No arithmetic grows with the Quantity's exponent. A value the int64 amount
+// cannot hold exactly is read through its inf.Dec only while the decimal scale
+// stays within 18 digits either way, which covers every value up to the bound
+// (the binary-suffix parse stores 2147483647Mi as an inf.Dec with scale 9), and
+// is otherwise refused as too large: 1e2000000000 is answered without computing
+// 10^2000000000. A fraction is refused the same way.
+func GlanceQuotaMiB(q resource.Quantity) (int32, error) {
+	bytes, ok := quantityExactInt64(q)
+	switch {
+	case !ok:
+		return 0, errGlanceQuotaTooLarge
+	case bytes < glanceQuotaMiBBytes:
+		return 0, errors.New("must be at least 1Mi")
+	case bytes%glanceQuotaMiBBytes != 0:
+		return 0, errors.New("must be a whole number of MiB: Keystone stores Glance's image quotas in MiB")
+	case bytes/glanceQuotaMiBBytes > glanceQuotaMaxMiB:
+		return 0, errGlanceQuotaTooLarge
+	}
+	return int32(bytes / glanceQuotaMiBBytes), nil
+}
+
+// quantityExactInt64 returns q as an exact int64 of its base unit, or false when
+// it is fractional or does not fit. See GlanceQuotaMiB for the bound on the work.
+func quantityExactInt64(q resource.Quantity) (int64, bool) {
+	if v, ok := q.AsInt64(); ok {
+		return v, true
+	}
+	dec := q.AsDec()
+	scale := int64(dec.Scale())
+	if scale > 18 || scale < -18 {
+		return 0, false
+	}
+	n := new(big.Int).Set(dec.UnscaledBig())
+	if scale < 0 {
+		n.Mul(n, new(big.Int).Exp(big.NewInt(10), big.NewInt(-scale), nil))
+	} else {
+		var rem big.Int
+		n.QuoRem(n, new(big.Int).Exp(big.NewInt(10), big.NewInt(scale), nil), &rem)
+		if rem.Sign() != 0 {
+			return 0, false
+		}
+	}
+	if !n.IsInt64() {
+		return 0, false
+	}
+	return n.Int64(), true
+}
+
+// validateGlanceQuotas checks services.glance.quotas: each size through
+// GlanceQuotaMiB, which no schema marker can express for a Quantity, and each
+// count against the Minimum=1 marker it mirrors. A nil block and quotas: {} are
+// both valid.
+func validateGlanceQuotas(path *field.Path, q *GlanceQuotasSpec) field.ErrorList {
+	if q == nil {
+		return nil
+	}
+	var errs field.ErrorList
+	for _, size := range []struct {
+		name string
+		q    *resource.Quantity
+	}{
+		{"imageSizeTotal", q.ImageSizeTotal},
+		{"imageStageTotal", q.ImageStageTotal},
+	} {
+		if size.q == nil {
+			continue
+		}
+		if _, err := GlanceQuotaMiB(*size.q); err != nil {
+			errs = append(errs, field.Invalid(path.Child(size.name), size.q.String(), err.Error()))
+		}
+	}
+	for _, count := range []struct {
+		name string
+		v    *int32
+	}{
+		{"imageCountTotal", q.ImageCountTotal},
+		{"imageCountUploading", q.ImageCountUploading},
+	} {
+		if count.v != nil && *count.v < 1 {
+			errs = append(errs, field.Invalid(path.Child(count.name), *count.v, "must be at least 1"))
+		}
+	}
+	return errs
 }
 
 // validateGlancePublicEndpoint enforces the rules on

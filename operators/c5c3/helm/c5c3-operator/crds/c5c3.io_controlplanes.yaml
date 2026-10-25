@@ -3392,6 +3392,72 @@ spec:
                         maxLength: 512
                         pattern: ^https?://
                         type: string
+                      quotas:
+                        description: |-
+                          Quotas turns on per-project image quotas through Keystone unified limits
+                          and declares the default every project gets. Setting the block enables
+                          enforcement: the ControlPlane registers the four values as Keystone
+                          registered limits on its Glance registration's image service, in
+                          spec.region, grants the glance service user reader on the system, and only
+                          then sets spec.keystoneLimits on the Glance child. quotas: {} enables
+                          enforcement with every default unbounded, for a platform that sets
+                          per-project overrides only. Removing the block turns enforcement off again;
+                          the registered limits are deleted once no glance-api pod still enforces.
+
+                          The values apply per project. A per-project override is Keystone data,
+                          created with `openstack limit create --service glance --project <p>
+                          --region <spec.region> --resource-limit <n> <resource>`, and Glance reads it
+                          on every request. Keystone refuses to change or delete a registered limit
+                          while a project limit of its resource exists, so delete the overrides
+                          before lowering a default or removing the block. The storage limits are
+                          soft: a single upload may overshoot image_size_total, and the next one is
+                          refused.
+
+                          Enabling or disabling enforcement rolls glance-api once; changing a value
+                          does not roll it, because Glance reads the limits on every request. The
+                          glance user gains reader on the system, which oslo.limit needs to look
+                          Glance's endpoint up. With it the glance credential reads whatever
+                          Keystone shows a system reader: every user, project and role assignment,
+                          and every user's credentials, EC2 and TOTP secrets included. Every quota
+                          check costs about five Keystone requests. K-ORC must run at commit
+                          fdf2df5ce62c or later, which supports system-scoped role assignments, and
+                          the glance-operator must be of the same release, which knows
+                          spec.keystoneLimits. The type is local to this API, so the chart-skew
+                          caveat of ImportFiltering does not apply.
+                        properties:
+                          imageCountTotal:
+                            description: |-
+                              ImageCountTotal bounds the number of non-deleted images per project
+                              (image_count_total).
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          imageCountUploading:
+                            description: |-
+                              ImageCountUploading bounds the number of images per project in any upload
+                              or import state (image_count_uploading).
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          imageSizeTotal:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              ImageSizeTotal bounds the total stored image data per project
+                              (image_size_total). A whole number of MiB, from 1Mi to 2147483647Mi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          imageStageTotal:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              ImageStageTotal bounds the total image data staged for import per project
+                              (image_stage_total). A whole number of MiB, from 1Mi to 2147483647Mi.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                        type: object
                       staging:
                         description: |-
                           Staging bounds the node-local scratch space an image import may consume on
