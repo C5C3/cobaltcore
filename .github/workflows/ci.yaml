@@ -2107,6 +2107,7 @@ jobs:
               tests/e2e-chaos/envoy-gateway-outage
               tests/e2e-chaos/envoy-proxy-pod-kill
               tests/e2e-chaos/mariadb-operator-cascading-failure
+              tests/e2e-chaos/fernet-rotation-operator-outage
           - suite: network
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health

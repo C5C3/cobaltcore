@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos holding every keystone-operator pod down across the second
+# rotation's staging write. pod-failure, not pod-kill: a killed operator is
+# back within seconds and its new leader promotes the staged keys at once, so
+# "staged but not promoted" is a state only a held outage makes observable.
+# duration bounds a run that dies before the suite deletes this CR; the suite
+# lifts it after the 60-second staged window. The selector matches the
+# operator's pods in keystone-system and nothing else.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: hold-keystone-operator
+  namespace: openstack
+spec:
+  action: pod-failure
+  mode: all
+  duration: "600s"
+  selector:
+    namespaces:
+    - keystone-system
+    labelSelectors:
+      app.kubernetes.io/name: keystone-operator

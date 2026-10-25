@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 60 chaos test suites validate operator behavior during and after fault
+The 61 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -83,7 +83,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 60 test suites require the infrastructure stack to be deployed and healthy.
+All 61 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -398,8 +398,9 @@ an alias for it.
 of the keystone stack, the Keystone outage suites of Glance, Placement and
 Barbican, `horizon-dashboard-pod-kill`, and the eight platform suites of #1390
 that need only the standalone stack, from `cert-manager-outage` to
-`mariadb-operator-cascading-failure`. It deploys the horizon, glance, placement
-and barbican operators beside keystone. The `network` entry runs the
+`mariadb-operator-cascading-failure`, and `fernet-rotation-operator-outage` of
+#1394. It deploys the horizon, glance, placement and barbican operators beside
+keystone. The `network` entry runs the
 NetworkChaos suites and every suite that needs the neutron, cinder or ovn
 operators: the four Neutron suites (`neutron-mariadb-outage`,
 `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`),
@@ -557,6 +558,7 @@ entry runs two Cinder upgrades of about 20 minutes each after the bring-up.
 | [korc-network-partition](#korc-network-partition) | — | `korc-part` | K-ORC partitioned from a ControlPlane's Keystone (NetworkChaos) | `PARTITIONED-OK`: for 120 s the KeystoneService `korc-part` not `Ready=True` and its Project child `service-korc-part` without `Available=True`; `korc-part` at `Ready=True/AllReady` within 900 s of the lift and the ControlPlane at `Ready=True/AllReady`; `NO-DUPLICATE-OK`: one project, one service of type `korcpart` and two endpoints in Keystone, workload budget zero |
 | [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) | — | `cp-c5c3-kill` | c5c3-operator pod kill during provisioning | The kill before `DBCredentialsReady` with no Keystone CR yet, every pre-kill operator pod UID gone and `readyReplicas` back, the plane at `Ready=True/AllReady` after the database tenant is onboarded, `OWNED-ONCE-OK`: MariaDB and Memcached with their pre-kill UIDs and exactly one Keystone, MariaDB, Memcached and ApplicationCredential, each owned by `cp-c5c3-kill` |
 | [cinder-upgrade-db-partition](#cinder-upgrade-db-partition) | — | `cinder-upg-part` | Phase Jobs of a release upgrade partitioned from MariaDB (NetworkPolicy) | `EXPAND-HELD-OK` and `CONTRACT-HELD-OK`: for 90 s each, `upgradePhase` at `Expanding` or `Contracting` with the phase Job not succeeded; then `upgradePhase` empty, `installedRelease: "2026.2"`, `Ready=True/AllReady`, the three phase Jobs succeeded on `ghcr.io/c5c3/cinder:2026.2`, the three Deployments rolled onto `:2026.2`, `NO-PHASE-FAILURE-OK`, `verify` with `CONSISTENCY-OK volumes` |
+| [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) | — | `keystone-chaos-fernet` | keystone-operator outage across a Fernet rotation | `CONTINUITY-1-OK` after a rotation under traffic; `STAGED-NOT-PROMOTED-OK`: for 60 s with the operator held, the staging Secret holds rotation 2 while the production Secret keeps its data; `PROMOTED-ONCE-OK`: after the lift the production data equals the staged data, the staging Secret absent or empty, `FernetKeysRotated` once; `FernetKeysReady=True`, `Ready=True/AllReady`, `CONTINUITY-2-OK` on both API pods, API pod UIDs unchanged, workload budget zero |
 | [cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) | — | `cinder-upg-bus` | Broker pod kill in the RollingUpdate of a release upgrade | `KILLED-IN-ROLLOUT-OK`: the broker pod UID gone while `upgradePhase` reads `RollingUpdate`; the new broker pod Ready within 300 s; `upgradePhase` empty, `installedRelease: "2026.2"`, `SchedulerReady`, `VolumeServicesReady` and `Ready=True/AllReady`, the three Deployments rolled onto `:2026.2`, the three phase Jobs succeeded, `verify` within the measured budget |
 
 ---
@@ -4101,6 +4103,68 @@ ConfigMap.
 
 ---
 
+### fernet-rotation-operator-outage
+
+**File:** `tests/e2e-chaos/fernet-rotation-operator-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` holds every keystone-operator pod down
+while the second of two Fernet rotations writes the staging Secret. Nothing but
+the operator may promote staged keys into the production Secret, so the staged set
+must wait for it, and the operator must promote it once when it returns, with no
+token lost and no rollout of the API pods.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring up the Keystone | `apply` + `assert` (5m) + `script` (4m) | `keystone-chaos-fernet` (two API replicas) at `Ready=True/AllReady` with both API pods Ready; their UIDs go into ConfigMap `fernet-outage-state` |
+| 2 | Start the workload | `script` (6m) | `workload.sh start` with the `token` stream |
+| 3 | Rotation 1 under traffic | `script` (8m) | Issues T0, runs Job `keystone-chaos-fernet-rotate-1` from the CronJob, waits up to 60 s for the production data to change and up to 60 s for the staging Secret to be back empty, waits until both API pods project the production key set, and validates T0 on both (`CONTINUITY-1-OK`) |
+| 4 | Hold the operator | `script` (8m) | Issues T1 and stashes it in Secret `fernet-outage-t1`, records the `FernetKeysRotated` count, `workload.sh mark fault-start`, applies `01-podchaos.yaml`, waits for `AllInjected` and the operator Deployment without a ready replica, runs Job `keystone-chaos-fernet-rotate-2`, then for 60 s requires the staging Secret to hold the staged keys with `cobaltcore.c5c3.io/rotation-completed-at` and the production data to stay the same (`STAGED-NOT-PROMOTED-OK`). Deletes the `PodChaos`, `workload.sh mark fault-end` |
+| 5 | The promotion | `script` (10m) + `assert` + `script` (5m) | The operator back at `readyReplicas` within 300 s; within 120 s the production data equals the staged data, the staging Secret is absent or empty, and the `FernetKeysRotated` count rose by one and stays there for 20 s (`PROMOTED-ONCE-OK`); `FernetKeysReady=True` and `Ready=True/AllReady`; both API pods project the new set and T1 validates on both (`CONTINUITY-2-OK`); the API pod UIDs are unchanged |
+| 6 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-keystone-cr.yaml` (`keystone-chaos-fernet`, database
+`keystone_chaos_fernet`, `rotationSchedule: "0 0 1 1 *"`, cache off),
+`01-podchaos.yaml` (`hold-keystone-operator`, `pod-failure`, `mode: all`,
+`duration: "600s"`), and `probe-lib.sh` with the token and Secret helpers.
+
+**Workload:** the `token` stream against `keystone-chaos-fernet`, started in step 2
+and judged in step 6 against `failures=0 recovery=0s`. The stream reaches both API
+pods through the Service. Rotation 1 lies before `fault-start`, so a failed token
+there fails `verify` as well. The suite runs in the `pod` matrix entry.
+
+**Catch blocks:** step 4 deletes the `PodChaos` first. Every catch calls
+`../diagnostics.sh chaos keystone-chaos-fernet` with the keystone-operator as the
+dependency, dumps the two rotation Jobs, the key indices and annotations of the two
+Secrets without their data, the operator pods and the Keystone's events, and dumps
+the workload. The step cleanup of step 1 deletes the state ConfigMap, the token
+stash and the rotation Jobs.
+
+**Design notes:**
+
+- A `pod-kill` restarts the operator within seconds, and the new leader promotes
+  the staged keys at once. Holding it with `pod-failure` makes "staged but not
+  promoted" a state the suite can observe.
+- A rotation's new primary key is the key every pod held as staged, so a token
+  signed with it validates on a pod that still projects the old set. Two API
+  replicas make the stream cross pods during the projection, and the budget stays
+  zero.
+- The operator writes `FernetKeysReady=True/FernetKeysRotated` only on the pass that
+  applies a rotation and `FernetKeysAvailable` on the next
+  (`operators/keystone/internal/controller/reconcile_fernet.go`), so the promotion
+  is counted by its event, as `tests/e2e/keystone/fernet-rotation` counts it.
+- The commit deletes the staging Secret and the next pass creates it again empty
+  (`EnsureStagingSecret` in `internal/common/rotation/rotation.go`). The checks
+  therefore read "absent or empty", and rotation 2 starts once the empty Secret is
+  back: its Job may only get and patch it.
+- One suite covers a rotation under traffic and a rotation across an operator
+  outage, because `evaluate` fails every failed record outside the fault window.
+
+---
+
 ## Test Patterns
 
 ![The six step patterns of the chaos suites, each a numbered chain. Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003), where a critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, assert the sub-condition is False, delete the PodChaos, assert the sub-condition is True and Ready=True. No-Regression (SC-CHAOS-002), where a non-critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, poll readyReplicas below the desired count, poll readyReplicas back at the desired count, assert all conditions True, delete the PodChaos, assert Ready=True. Operator Self-Recovery (SC-CHAOS-004), where one operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos, wait until one pre-chaos UID is gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert Ready=True. Workload Fault Tolerance (SC-CHAOS-005), where a Job of the operator fails: apply the CR, assert Ready=True, inject a pod-failure PodChaos, trigger the Job, assert the conditions are maintained, delete the PodChaos, assert Ready=True. PDB Availability Guarantee (SC-CHAOS-008), where one API pod of three is killed: apply the CR with three replicas, assert Ready=True, assert the PDB has minAvailable 1, inject the PodChaos, verify availableReplicas is at least 1, assert DeploymentReady=True and Ready=True, delete the PodChaos, assert Ready=True. Operator Pod Kill All with Failover Reconciliation (SC-CHAOS-009), where every operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos with mode all, wait until all pre-chaos UIDs are gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert all 6 conditions True, patch the replicas from 1 to 2, assert the Deployment has 2 replicas and Ready=True.](../../diagrams/test-chaos-patterns.svg)
@@ -4333,7 +4397,7 @@ also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state
 SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
 SC-CHAOS-008 describes the PDB in Step 3.
 
-The forty-eight suites that start a workload also call `../lib/workload.sh dump <id>`
+The forty-nine suites that start a workload also call `../lib/workload.sh dump <id>`
 in the catch block of every step from `start` to `verify`. It prints the phase
 of the workload pod, its two fault marks and the last 200 lines of its log.
 
@@ -4467,6 +4531,11 @@ tests/e2e-chaos/
 │   ├── 01-externalsecret.yaml        ExternalSecret eso-kill-probe, synced again after the kill
 │   ├── 02-podchaos.yaml              PodChaos pod-kill of every ESO controller pod
 │   └── chainsaw-test.yaml            Test: every controller pod replaced, a forced sync succeeds
+├── fernet-rotation-operator-outage/  keystone-operator outage across a Fernet rotation
+│   ├── 00-keystone-cr.yaml           Keystone keystone-chaos-fernet, two API replicas, cache off
+│   ├── 01-podchaos.yaml              PodChaos pod-failure on every keystone-operator pod
+│   ├── chainsaw-test.yaml            Test: staged keys wait for the operator, promoted once
+│   └── probe-lib.sh                  Token, key projection and Secret helpers
 ├── glance-garage-outage/             Garage S3 partition under the Glance API
 │   ├── 00-glance-cr.yaml             Glance CR glance-garage-chaos, API open without a token
 │   ├── 01-glancebackend-cr.yaml      Default S3 store glance-garage-chaos-s3
