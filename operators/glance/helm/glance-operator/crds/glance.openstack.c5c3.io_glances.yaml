@@ -4324,6 +4324,17 @@ spec:
                   reconciled, so a stale status is distinguishable from a current one.
                 format: int64
                 type: integer
+              rolledOutGeneration:
+                description: |-
+                  RolledOutGeneration is the metadata.generation whose glance-api pod
+                  template every replica runs; it trails metadata.generation while a rollout
+                  still has a pod of an older template. Unlike the surge-tolerant
+                  DeploymentReady condition it ignores readiness: it is stamped once the
+                  Deployment controller has observed the applied template, every pod it
+                  counts belongs to that template, and its status.terminatingReplicas, where
+                  the cluster reports it, is 0.
+                format: int64
+                type: integer
               targetRelease:
                 description: |-
                   TargetRelease is the spec.openStackRelease being converged to during an

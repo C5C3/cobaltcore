@@ -168,6 +168,23 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, children cli
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
 
+	// Stamp the generation whose pod template every replica now runs. The
+	// surge-tolerant DeploymentReady turns True while old-template pods still
+	// serve, so a consumer that must know no pod of an older template remains
+	// (the ControlPlane's hold on Glance's registered limits after
+	// spec.keystoneLimits is dropped) reads status.rolledOutGeneration instead.
+	// TemplateConverged ignores readiness, so a replica pending on resources
+	// does not strand the signal. It also counts no terminating pod, and an
+	// old-template pod still serves through its preStop sleep and graceful
+	// shutdown, so the stamp waits for status.terminatingReplicas to reach 0 as
+	// well. A cluster without the DeploymentReplicaSetTerminatingReplicas
+	// feature leaves that field nil and stamps on convergence alone. An
+	// unconverged pass leaves the previous value.
+	converged := deployment.TemplateConverged(deploy)
+	if converged && ptr.Deref(deploy.Status.TerminatingReplicas, 0) == 0 {
+		glance.Status.RolledOutGeneration = glance.Generation
+	}
+
 	// Narrow the Service selector to the API component only once every live pod
 	// carries that label. EnsureDeployment is a Server-Side Apply: it returns as
 	// soon as the API server accepts the pod template, long before the rollout
@@ -188,7 +205,7 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, children cli
 	// fresh write exactly like the local one, and a latch decided from it would
 	// re-widen the selector. The reader is nil only in unit tests, whose fake
 	// client is read-your-writes anyway.
-	narrowSelector := deployment.TemplateConverged(deploy)
+	narrowSelector := converged
 	if !narrowSelector {
 		reader, err := commonmulticluster.ResolveChildrenAPIReader(
 			ctx, r.Resolver, r.apiReader, glance.Spec.TargetClusterRef)

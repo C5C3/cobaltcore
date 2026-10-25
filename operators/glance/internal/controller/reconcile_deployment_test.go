@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"strings"
 	"testing"
@@ -19,11 +20,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
@@ -938,6 +942,99 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
 		"an already narrowed Service selector must never widen again — every pod template this operator builds carries the component label")
+}
+
+// TestReconcileDeployment_StampsRolledOutGeneration pins status.rolledOutGeneration,
+// the signal the ControlPlane's hold on Glance's registered limits waits for: it
+// moves to the CR's generation only once the applied Deployment reports its
+// latest generation observed, every counted pod updated and no pod terminating,
+// and never on a pass that still sees an old-template pod, a draining pod, or a
+// Deployment the controller has not acted on yet.
+func TestReconcileDeployment_StampsRolledOutGeneration(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*appsv1.Deployment)
+		want   int64
+	}{
+		{name: "every replica runs the template", mutate: func(*appsv1.Deployment) {}, want: 5},
+		{name: "an old-template pod remains", mutate: func(d *appsv1.Deployment) {
+			d.Status.Replicas = 3
+			d.Status.UpdatedReplicas = 2
+		}, want: 3},
+		{name: "the template is not observed yet", mutate: func(d *appsv1.Deployment) {
+			d.Generation = 2
+			d.Status.ObservedGeneration = 1
+		}, want: 3},
+		{name: "no pod is reported yet", mutate: func(d *appsv1.Deployment) {
+			d.Status.Replicas = 0
+			d.Status.UpdatedReplicas = 0
+			d.Status.ReadyReplicas = 0
+		}, want: 3},
+		{name: "a scaled-down old pod is still terminating", mutate: func(d *appsv1.Deployment) {
+			d.Status.TerminatingReplicas = ptr.To(int32(1))
+		}, want: 3},
+		{name: "the cluster reports no terminating pod", mutate: func(d *appsv1.Deployment) {
+			d.Status.TerminatingReplicas = ptr.To(int32(0))
+		}, want: 5},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			glance := deployGlance("2026.1")
+			glance.Spec.Deployment.Replicas = 3
+			glance.Generation = 5
+			glance.Status.RolledOutGeneration = 3
+			art := testArtifacts()
+			deploy := readyGlanceDeployment(glance, art)
+			tc.mutate(deploy)
+			r := newGlanceTestReconciler(glance, deploy)
+
+			_, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(glance.Status.RolledOutGeneration).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestReconcileDeployment_RolledOutGenerationSurvivesApplyError verifies that a
+// pass whose Deployment apply fails leaves status.rolledOutGeneration where it
+// was: the pass knows nothing about the pods, so it must neither advance nor
+// reset the signal.
+func TestReconcileDeployment_RolledOutGenerationSurvivesApplyError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := deployGlance("2026.1")
+	glance.Generation = 5
+	glance.Status.RolledOutGeneration = 3
+	art := testArtifacts()
+	boom := errors.New("apply refused")
+	c := glanceFakeClientBuilder(glance, readyGlanceDeployment(glance, art)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration,
+				opts ...client.ApplyOption,
+			) error {
+				if co, ok := obj.(client.Object); ok && co.GetObjectKind().GroupVersionKind().Kind == "Deployment" {
+					return boom
+				}
+				return cl.Apply(ctx, obj, opts...)
+			},
+			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch,
+				opts ...client.PatchOption,
+			) error {
+				if _, ok := obj.(*appsv1.Deployment); ok {
+					return boom
+				}
+				return cl.Patch(ctx, obj, patch, opts...)
+			},
+		}).
+		Build()
+	r := &GlanceReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+	_, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
+	g.Expect(err).To(MatchError(ContainSubstring("apply refused")))
+	g.Expect(glance.Status.RolledOutGeneration).To(Equal(int64(3)))
 }
 
 func TestReconcileDeployment_ReadyStampsEndpoint(t *testing.T) {

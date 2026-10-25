@@ -813,6 +813,16 @@ type GlanceStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// RolledOutGeneration is the metadata.generation whose glance-api pod
+	// template every replica runs; it trails metadata.generation while a rollout
+	// still has a pod of an older template. Unlike the surge-tolerant
+	// DeploymentReady condition it ignores readiness: it is stamped once the
+	// Deployment controller has observed the applied template, every pod it
+	// counts belongs to that template, and its status.terminatingReplicas, where
+	// the cluster reports it, is 0.
+	// +optional
+	RolledOutGeneration int64 `json:"rolledOutGeneration,omitempty"`
+
 	// Endpoint is the Glance API endpoint URL clients use.
 	Endpoint string `json:"endpoint,omitempty"`
 
