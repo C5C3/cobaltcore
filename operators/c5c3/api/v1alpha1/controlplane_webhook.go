@@ -3244,8 +3244,8 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	// Family A (shape/ownership) always re-runs: it depends on nothing a
 	// regenerated catalog can invalidate, and a newly-derived Horizon endpoint
 	// can turn a previously-admitted trusted_dashboard override into a rejection.
-	// It reads oldObj for one thing, the Rejected neutron keys the stored object
-	// already carried (see validateExtraConfigOwnership).
+	// It reads oldObj for one thing, the Rejected neutron and glance keys the
+	// stored object already carried (see validateExtraConfigOwnership).
 	ownershipWarnings, ownershipErrs := validateExtraConfigOwnership(newObj, oldObj)
 	warnings = append(warnings, ownershipWarnings...)
 	allErrs = append(allErrs, ownershipErrs...)

@@ -419,6 +419,142 @@ func TestValidateUpdate_CarriedNeutronRejectedKeyStaysUpdatable(t *testing.T) {
 	})
 }
 
+// TestValidateCreate_ForbidsGlanceKeystoneLimitsKeys pins the unified-limits
+// keys the glance registry rejects: [DEFAULT] use_keystone_limits, the rendered
+// [oslo_limit] keys and the unrendered ones that override the scope, the user or
+// the endpoint lookup are Forbidden from either block, while any other
+// [oslo_limit] option stays settable.
+func TestValidateCreate_ForbidsGlanceKeystoneLimitsKeys(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for _, tc := range []struct {
+		name    string
+		section string
+		key     string
+		global  bool
+		want    string
+	}{
+		{
+			name: "use_keystone_limits in glance extraConfig", section: "DEFAULT", key: "use_keystone_limits",
+			want: "spec.services.glance.extraConfig[DEFAULT][use_keystone_limits]",
+		},
+		{
+			name: "system_scope in glance extraConfig", section: "oslo_limit", key: "system_scope",
+			want: "spec.services.glance.extraConfig[oslo_limit][system_scope]",
+		},
+		{
+			name: "use_keystone_limits in globalExtraConfig", section: "DEFAULT", key: "use_keystone_limits", global: true,
+			want: "spec.globalExtraConfig[DEFAULT][use_keystone_limits]",
+		},
+		{
+			name: "project_name in globalExtraConfig", section: "oslo_limit", key: "project_name", global: true,
+			want: "spec.globalExtraConfig[oslo_limit][project_name]",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cfg := map[string]map[string]string{tc.section: {tc.key: "true"}}
+			if tc.global {
+				cp.Spec.GlobalExtraConfig = cfg
+			} else {
+				cp.Spec.Services.Glance.ExtraConfig = cfg
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.want))
+			g.Expect(err.Error()).To(ContainSubstring(
+				tc.key + " is managed via spec.keystoneLimits and must not be set in extraConfig"))
+		})
+	}
+
+	t.Run("an unrendered oslo_limit option is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{"oslo_limit": {"timeout": "30"}}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateUpdate_CarriedGlanceRejectedKeyStaysUpdatable covers a Rejected
+// glance key a stored ControlPlane was admitted with before the glance registry
+// owned it: enabling unified limits by hand through extraConfig, [oslo_limit]
+// password included, was the only way before services.glance.quotas existed.
+// Forbidding it on every update would forbid the finalizer removal too, so a
+// carried-over value is kept with a warning while a new or changed one is still
+// forbidden.
+func TestValidateUpdate_CarriedGlanceRejectedKeyStaysUpdatable(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	stored := func() *ControlPlane {
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{
+			"oslo_limit": {"password": "hunter2"},
+		}
+		return cp
+	}
+
+	t.Run("an unrelated edit carries it over", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := stored()
+		newCP := oldCP.DeepCopy()
+		newCP.Finalizers = nil
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ContainElement(And(
+			ContainSubstring("[oslo_limit] password is managed via spec.keystoneLimits"),
+			ContainSubstring("spec.services.glance.extraConfig[oslo_limit][password]"),
+		)))
+	})
+
+	t.Run("a changed value is forbidden", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := stored()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Glance.ExtraConfig["oslo_limit"]["password"] = "rotated"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(
+			"password is managed via spec.keystoneLimits and must not be set in extraConfig"))
+	})
+
+	t.Run("a carried Rejected key outside the unified-limits keys is forbidden", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := glanceControlPlane()
+		oldCP.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{
+			"keystone_authtoken": {"password": "hunter2"},
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Finalizers = nil
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[keystone_authtoken][password]"))
+		g.Expect(warnings).NotTo(ContainElement(ContainSubstring("[keystone_authtoken] password")))
+	})
+
+	t.Run("a stored object without services.glance carries nothing over", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := stored()
+		oldCP.Spec.Services.Glance = nil
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, stored())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[oslo_limit][password]"))
+	})
+
+	t.Run("create still forbids it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, err := w.ValidateCreate(context.Background(), stored())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("must not be set in extraConfig"))
+	})
+}
+
 // TestValidateCreate_AcceptsEmptyNeutronExtraConfig pins that a declared but
 // empty block is admitted and raises nothing: the merge normalizes it to nil, so
 // there is no config to scan and no catalog to fail open on.
