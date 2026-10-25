@@ -919,6 +919,7 @@ operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
 | --- | --- |
 | `conditions` | List-map keyed by `type`; see the [reconciler reference](./glance-reconciler.md#conditions) for the vocabulary |
 | `observedGeneration` | The `.metadata.generation` last reconciled |
+| `rolledOutGeneration` | The `.metadata.generation` whose glance-api pod template every replica runs. It trails `.metadata.generation` while a rollout still has a pod of an older template, terminating ones included where the cluster reports `status.terminatingReplicas` on the Deployment, and it ignores readiness, unlike the surge-tolerant `DeploymentReady`. The ControlPlane reads it to hold Glance's registered limits until no pod enforces them any more |
 | `endpoint` | The Glance API URL: `https://{gateway.hostname}/` when a gateway is set, otherwise the cluster-local Service URL |
 | `installedRelease` | The OpenStack release whose schema is currently installed, promoted to `spec.openStackRelease` after the upgrade completes (or after the first `db sync` on a fresh install) |
 | `targetRelease` | The `spec.openStackRelease` being upgraded to during an active release transition. Set when the upgrade initiates, cleared on completion or abort; empty in steady state |
