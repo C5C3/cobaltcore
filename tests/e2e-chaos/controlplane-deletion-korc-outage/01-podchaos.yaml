@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos holding K-ORC down across the deletion of the plane: Deployment
+# orc-controller-manager in orc-system, one replica, its pods labelled
+# control-plane: controller-manager, the selector of
+# ../korc-provisioning-outage/01-podchaos.yaml. pod-failure keeps the
+# controller down until the suite deletes this CR after its 120-second hold,
+# well inside the 7-minute orcTeardownDeadline. The duration of 600 s bounds a
+# run that dies before the delete. The suite applies it into its own
+# namespace.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: hold-korc-deletion
+spec:
+  action: pod-failure
+  mode: all
+  duration: "600s"
+  selector:
+    namespaces:
+    - orc-system
+    labelSelectors:
+      control-plane: controller-manager

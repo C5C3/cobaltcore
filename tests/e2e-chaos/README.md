@@ -61,13 +61,20 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   OVNChassis of `neutron-metadata-agent-pod-kill`, within a wall of 170
   minutes. That leg stays `continue-on-error` as well, because three of its
   suites are NetworkChaos partitions on the same kernel modules. The
-  `controlplane` leg runs the five suites that bring up a ControlPlane of
+  `controlplane` leg runs the eight suites that bring up a ControlPlane of
   their own in a short namespace of their own (`korc-provisioning-outage`,
   `korc-network-partition`, `controlplane-keystone-degraded`,
-  `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure`) on the
+  `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure`,
+  `controlplane-provisioning-mariadb-kill`,
+  `controlplane-deletion-korc-outage`,
+  `keystoneuser-rotation-keystone-outage`) on the
   `self-hosted` runners, with `WITH_CONTROLPLANE=true` and
   `CONTROLPLANE_OPERATORS=external`, K-ORC and the c5c3-operator deployed
-  beside the keystone stack, within a wall of 120 minutes. It stays
+  beside the keystone stack, within a wall of 120 minutes.
+  `controlplane-provisioning-mariadb-kill` sits under the entry's
+  `isolated_test_dirs` and runs after the others in an invocation of its
+  own: it fails on the current keystone-operator, and `failFast` would skip
+  the suites behind it. The leg stays
   `continue-on-error` too, for the NetworkChaos partition of
   `korc-network-partition`. The `upgrade` leg runs the two suites that fault
   a Cinder release upgrade from 2026.1 to 2026.2

@@ -2160,9 +2160,9 @@ jobs:
               tests/e2e-chaos/nova-keystone-outage
               tests/e2e-chaos/nova-operator-pod-kill
               tests/e2e-chaos/neutron-metadata-agent-pod-kill
-          # The suites of #1390 that bring up a ControlPlane of their own in a
-          # namespace of their own: K-ORC, the c5c3-operator and a Keystone-only
-          # plane per suite. They get an entry of their own so
+          # The suites of #1390 and #1394 that bring up a ControlPlane of their
+          # own in a namespace of their own: K-ORC, the c5c3-operator and a
+          # Keystone-only plane per suite. They get an entry of their own so
           # the pod entry keeps the standalone stack its suites assume.
           # Non-blocking (see continue-on-error below): korc-network-partition
           # is a NetworkChaos partition on the sch_netem/ip_set dependency the
@@ -2175,6 +2175,15 @@ jobs:
               tests/e2e-chaos/controlplane-keystone-degraded
               tests/e2e-chaos/korc-network-partition
               tests/e2e-chaos/c5c3-operator-pod-kill
+              tests/e2e-chaos/controlplane-deletion-korc-outage
+              tests/e2e-chaos/keystoneuser-rotation-keystone-outage
+            # Run by "Run isolated chaos E2E tests (controlplane leg)" after
+            # test_dirs: controlplane-provisioning-mariadb-kill fails on the
+            # current keystone-operator (see its header), and inside test_dirs
+            # the failFast of the shared config would skip every suite behind
+            # it.
+            isolated_test_dirs: >-
+              tests/e2e-chaos/controlplane-provisioning-mariadb-kill
           # The suites of #1394 that fault a Cinder release upgrade from
           # 2026.1 to 2026.2: the only entry that loads a 2026.2 image. Each
           # brings a Cinder of its own on the NFS export, one on a vhost of
@@ -2190,13 +2199,15 @@ jobs:
     # 170 minutes for the nova leg, 135 for network, 135 for pod, 120 for
     # controlplane, 80 for upgrade and 45 for ovn: 685 minutes for the six,
     # which the author of #1394 accepted on 2026-10-25 against the 600 that
-    # D6 of #1386 allows; the estimated run is about 555 minutes. The last
+    # D6 of #1386 allows; the estimated run is about 575 minutes. The last
     # full run, on PR #1444 (2026-10-17), took 110 minutes on pod, 140 on
     # network, which hit its wall, 12 on ovn, 133 on nova and 46 on
     # controlplane. #1394 adds a Fernet rotation suite to pod, a drain suite
     # to nova and three ControlPlane suites to controlplane, at about 12
     # minutes each, and the upgrade leg brings up the keystone, OVN and
     # Cinder stacks and runs two Cinder upgrades of about 20 minutes each.
+    # controlplane-provisioning-mariadb-kill takes about 30 minutes while it
+    # fails: its 720-second KeystoneReady wait and a teardown of up to 13.
     # The controlplane leg brings up the keystone stack, K-ORC and the
     # c5c3-operator, and each of its suites a Keystone-only ControlPlane:
     # about 15 minutes for the bring-up and 8 to 12 per suite, the 7 min 45 s
@@ -2622,10 +2633,22 @@ jobs:
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
           NAMESPACE: nova-system
       - name: Run chaos E2E tests
+        id: chaos
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \
             ${{ matrix.test_dirs }}
+      # The controlplane entry's isolated_test_dirs, in an invocation of their
+      # own after the step above and whatever its outcome, under a report name
+      # of their own so both JUnit files reach the artifact. A failed setup
+      # step skips the step above, and this one with it.
+      - name: Run isolated chaos E2E tests (controlplane leg)
+        if: matrix.suite == 'controlplane' && !cancelled() && steps.chaos.outcome != 'skipped'
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \
+            --report-name chainsaw-chaos-report-isolated \
+            ${{ matrix.isolated_test_dirs }}
       # Use shared diagnostic dump script. It derives the operator namespace
       # from OPERATOR, and the ovn leg has no keystone-system to dump.
       - name: Dump diagnostic info

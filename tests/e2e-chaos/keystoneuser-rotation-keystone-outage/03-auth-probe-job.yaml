@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Authenticates with a delivered clouds.yaml from inside the order's
+# namespace, as tests/e2e/c5c3/keystone-user/03-openstack-verify-job.yaml
+# does: `token issue` fails unless the password in the Secret is the one
+# Keystone holds. The ordered user has no project, so the token is unscoped.
+#
+# The suite renders it three times with sed: @NAME@ is the Job, @SECRET@ the
+# Secret whose clouds.yaml it mounts, and @NS@ the suite's namespace. It
+# expects ku-rot-auth-gen1 and ku-rot-auth-new to complete and
+# ku-rot-auth-old, on the copy of the generation-1 Secret, to fail with
+# HTTP 401 in its log. backoffLimit 0, so a refused password fails the Job on
+# its first pod.
+#
+# The image is the Tempest tag the controlplane leg loads into kind, with
+# IfNotPresent so the node's copy is used.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "@NAME@"
+  namespace: "@NS@-tenant"
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: osc
+        image: ghcr.io/c5c3/tempest:2026.1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          echo "== openstack --os-cloud admin token issue =="
+          openstack --os-cloud admin token issue
+          echo "OK: the credentials authenticate"
+        volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      volumes:
+      - name: clouds
+        secret:
+          secretName: "@SECRET@"

@@ -1,0 +1,378 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: a scheduled KeystoneUser password rotation that
+# falls due while the plane's Keystone API is down.
+#
+# Fault: a PodChaos pod-failure holds the API pods of cp-ku-rot-keystone down
+# (02-podchaos.yaml). Under it the suite turns the order's schedule on with a
+# one-minute interval, so the rotation is due at once, and holds it across two
+# more due passes. The schedule stays on through the lift and goes off again
+# once generation 2 has held for most of the interval after its apply.
+#
+# Claim, phase by phase:
+#   due        The operator writes generation 2 and re-points the K-ORC User at
+#              <prefix>password-v2, and for 150 s nothing more happens
+#              (DUE-HELD-OK): status.passwordGeneration stays 1, no
+#              <prefix>password-v3 appears, UserReady reads False with
+#              WaitingForServiceAccounts or ServiceAccountsFailed, and the
+#              delivered Secret keeps the generation-1 data. The operator never
+#              moves past max(desired, current)
+#              (registration_projection.go), so the due passes of an outage
+#              longer than the interval do not stack rotations.
+#   applied    After the lift K-ORC applies generation 2: passwordGeneration 2,
+#              UserReady, DeliveryReady and Ready True, <prefix>password-v1
+#              gone, and the delivered Secret changed. The new password
+#              authenticates (NEW-PASSWORD-OK) and the generation-1 password
+#              gets HTTP 401 (OLD-PASSWORD-REVOKED-OK).
+#   once       The pass that sees generation 2 applied stamps
+#              lastPasswordRotation again, after the lift, so
+#              nextPasswordRotation reads one interval after the apply and not
+#              the due time the outage left behind; passwordGeneration still
+#              reads 2 until 15 s before it (ROTATED-ONCE-OK). The suite sees
+#              the apply at least 30 s before that due time or fails. With the
+#              schedule off again, nextPasswordRotation is empty at generation
+#              2, the K-ORC User still points at <prefix>password-v2, and no
+#              <prefix>password-v3 exists.
+#
+# Blast radius: the plane's identity endpoint alone; the order's controller
+# and K-ORC keep running. The PodChaos is the shared state to undo, so the
+# catch of step 4 deletes it first. The order's namespace chaos-ku-rot-tenant
+# is the suite's own: step 1 creates it and its cleanup deletes it after the
+# plane.
+#
+# Leg: controlplane. The suite runs in namespace chaos-ku-rot, short for the
+# reason ../lib/controlplane.sh gives.
+#
+# Workload: the token stream of ../lib/workload.sh issues and validates tokens
+# against cp-ku-rot-keystone, the Keystone the fault takes, so the budget is
+# measured, as for ../controlplane-keystone-degraded/.
+# Chaos budget: failures=410 recovery=70s
+# Chaos budget measured: 2026-10-26, kind, failures 205/205/205, recovery 38/38/38 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystoneuser-rotation-keystone-outage
+spec:
+  namespace: chaos-ku-rot
+  timeouts:
+    assert: 5m
+    cleanup: 15m
+  steps:
+  # ── Step 1: The order's namespace, then the plane ──────────────────────
+  # The namespace comes first: the plane reads NamespaceAssignmentsReady into
+  # its Ready. cp_bring_up applies its fixture as it is, so the @NS@ of the
+  # assignment is rendered into a scratch file first.
+  - try:
+    - script:
+        timeout: 40m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          kubectl create namespace "${NAMESPACE}-tenant" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create configmap ku-rot-state -n "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+          fixture="$(mktemp)"
+          trap 'rm -f "$fixture"' EXIT
+          cp_render 00-controlplane-cr.yaml >"$fixture"
+          cp_bring_up cp-ku-rot "$fixture"
+    catch:
+    - &cp-dump
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_dump cp-ku-rot
+          echo "=== KeystoneUser ku-rot ==="
+          kubectl get keystoneuser ku-rot -n "${NAMESPACE}-tenant" \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          kubectl get keystoneuser ku-rot -n "${NAMESPACE}-tenant" -o jsonpath='{.status}{"\n"}' 2>&1 || true
+          echo "=== K-ORC Users and password Secrets ==="
+          kubectl get users.openstack.k-orc.cloud -n "$NAMESPACE" \
+            -o jsonpath='{range .items[*]}{.metadata.name} passwordRef={.spec.resource.passwordRef} applied={.status.resource.appliedPasswordRef}{"\n"}{end}' 2>&1 || true
+          kubectl get secrets -n "$NAMESPACE" -o name 2>&1 | grep password-v || true
+          echo "=== Auth probe Jobs ==="
+          kubectl get jobs,pods -n "${NAMESPACE}-tenant" -o wide 2>&1 || true
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump keystoneuser-rotation-keystone-outage
+    cleanup:
+    - script:
+        timeout: 6m
+        content: kubectl delete keystoneuser ku-rot -n "${NAMESPACE}-tenant" --ignore-not-found --wait --timeout=300s 2>&1 || true
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 02-podchaos.yaml 2>&1 || true
+          cp_teardown cp-ku-rot
+          kubectl delete namespace "${NAMESPACE}-tenant" --ignore-not-found --wait=false 2>&1 || true
+  # ── Step 2: The order at generation 1, and its credentials work ────────
+  # The prefix and the hash of the delivered data go into ConfigMap
+  # ku-rot-state; the generation-1 Secret is copied for step 5's revocation
+  # check.
+  - try:
+    - script:
+        timeout: 20m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          . ./probe-lib.sh
+          # The order lives in the tenant namespace, so it is applied without
+          # the -n of cp_apply_file.
+          cp_render 01-keystoneuser.yaml | kubectl apply -f -
+          deadline=$(( $(date +%s) + 900 ))
+          while true; do
+            ready="$(ku_condition Ready 2>/dev/null || true)"
+            gen="$(ku_field '{.status.passwordGeneration}' 2>/dev/null || true)"
+            if [ "${ready%%/*}" = "True" ] && [ "$gen" = "1" ] &&
+              kubectl get secret "$CREDS" -n "$TENANT_NS" >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the order is not Ready at generation 1 with Secret ${CREDS} within 900s (Ready ${ready:-<none>}, generation ${gen:-<none>})"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the order is Ready at generation 1 and ${CREDS} is delivered"
+          PREFIX="$(prefix)"
+          state_set prefix "$PREFIX"
+          state_set gen1-hash "$(secret_hash "$CREDS")"
+          echo "OK: the order's children carry the prefix ${PREFIX}"
+          copy_gen1
+          run_auth_job ku-rot-auth-gen1 "$GEN1_COPY" complete
+          echo "GEN1-AUTH-OK: the generation-1 credentials authenticate"
+    catch:
+    - *cp-dump
+    - *workload-dump
+  # ── Step 3: Start the workload ─────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: CHAOS_WORKLOAD_ADMIN_SECRET=cp-ku-rot-keystone-admin-credentials ../lib/workload.sh start keystoneuser-rotation-keystone-outage -- --streams token --keystone "http://cp-ku-rot-keystone.${NAMESPACE}.svc:5000/v3"
+    catch:
+    - *cp-dump
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop keystoneuser-rotation-keystone-outage
+  # ── Step 4: The rotation falls due under the outage ────────────────────
+  - try:
+    - script:
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          . ./probe-lib.sh
+          PREFIX="$(state_get prefix)"
+          GEN1="$(state_get gen1-hash)"
+          ../lib/workload.sh mark keystoneuser-rotation-keystone-outage fault-start
+          cp_apply_file 02-podchaos.yaml
+          kubectl wait podchaos/fail-cp-keystone -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          cp_wait_condition keystone cp-ku-rot-keystone Ready False 300
+
+          kubectl patch keystoneuser "$ORDER" -n "$TENANT_NS" --type=merge \
+            -p '{"spec":{"rotation":{"interval":"1m"}}}'
+          deadline=$(( $(date +%s) + 180 ))
+          until [ "$(password_ref "$PREFIX" || true)" = "${PREFIX}password-v2" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the K-ORC User does not point at ${PREFIX}password-v2 within 180s (it reads $(password_ref "$PREFIX" || true))"
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "OK: the rotation fell due and the K-ORC User points at ${PREFIX}password-v2"
+
+          end=$(( $(date +%s) + 150 ))
+          while true; do
+            gen="$(ku_field '{.status.passwordGeneration}')"
+            if [ "$gen" != "1" ]; then
+              echo "FAIL: status.passwordGeneration reads ${gen} while Keystone is down"
+              exit 1
+            fi
+            if kubectl get secret "${PREFIX}password-v3" -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "FAIL: ${PREFIX}password-v3 appeared: a second rotation stacked on the first"
+              exit 1
+            fi
+            user="$(ku_condition UserReady)"
+            case "$user" in
+              False/WaitingForServiceAccounts | False/ServiceAccountsFailed) ;;
+              *)
+                echo "FAIL: UserReady reads ${user} while Keystone is down"
+                exit 1
+                ;;
+            esac
+            if [ "$(secret_hash "$CREDS")" != "$GEN1" ]; then
+              echo "FAIL: ${CREDS} changed while Keystone is down"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "DUE-HELD-OK: for 150s generation 2 waited for Keystone, with no generation 3 and the generation-1 credentials delivered"
+
+          # The schedule stays on through the lift, and step 5 reads the
+          # anchor the apply stamps against the time of the lift.
+          state_set lifted-at "$(date +%s)"
+          cp_delete_file 02-podchaos.yaml
+          ../lib/workload.sh mark keystoneuser-rotation-keystone-outage fault-end
+    catch:
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 02-podchaos.yaml 2>&1 || true
+    - *cp-dump
+    - *workload-dump
+  # ── Step 5: K-ORC applies generation 2 once Keystone is back ───────────
+  - try:
+    - script:
+        timeout: 25m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          . ./probe-lib.sh
+          PREFIX="$(state_get prefix)"
+          GEN1="$(state_get gen1-hash)"
+          cond() {
+            printf "{.status.conditions[?(@.type=='%s')].status}/{.status.conditions[?(@.type=='%s')].reason}" "$1" "$1"
+          }
+          SNAP="{.status.passwordGeneration}|$(cond UserReady)|$(cond DeliveryReady)|$(cond Ready)|{.status.lastPasswordRotation}|{.status.nextPasswordRotation}"
+          # The hold below starts at the first read of generation 2 applied.
+          # The delivery waits for an ESO push and the pass after it, which
+          # the hold does not need, so it is judged once the schedule is off,
+          # within the same 600 s.
+          lift_deadline=$(( $(date +%s) + 600 ))
+          while true; do
+            IFS='|' read -r gen user delivery ready last next <<<"$(ku_field "$SNAP" 2>/dev/null || true)"
+            if [ "$gen" = "2" ] && [ -n "$next" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$lift_deadline" ]; then
+              echo "FAIL: 600s after the lift: generation ${gen:-<none>}, UserReady ${user}, DeliveryReady ${delivery}, Ready ${ready}, lastPasswordRotation '${last}', nextPasswordRotation '${next}'"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: generation 2 is applied, the next rotation is due at ${next}"
+
+          # The schedule is still on. The pass that sees generation 2 applied
+          # stamps the anchor again, so the next rotation is one interval
+          # after the apply, not after the re-point under the outage, whose
+          # due time is long past. The schedule has to be off before that
+          # rotation falls due.
+          LIFTED="$(state_get lifted-at)"
+          last_s="$(date -d "$last" +%s)"
+          next_s="$(date -d "$next" +%s)"
+          if [ "$last_s" -lt "$LIFTED" ] || [ "$(( next_s - last_s ))" != "60" ]; then
+            echo "FAIL: lastPasswordRotation ${last} and nextPasswordRotation ${next}, want an anchor stamped after the lift at $(date -u -d "@${LIFTED}" +%FT%TZ) and the next rotation 1m after it"
+            exit 1
+          fi
+          if [ "$(date +%s)" -ge "$(( next_s - 30 ))" ]; then
+            echo "FAIL: generation 2 was first seen applied less than 30s before ${next}: too late to hold it and turn the schedule off before the next rotation"
+            exit 1
+          fi
+          while [ "$(date +%s)" -lt "$(( next_s - 15 ))" ]; do
+            gen="$(ku_field '{.status.passwordGeneration}')"
+            if [ "$gen" != "2" ]; then
+              echo "FAIL: status.passwordGeneration moved to ${gen} before ${next}: a second rotation followed the one the outage held"
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "ROTATED-ONCE-OK: the schedule counts from the apply at ${last}, and generation 2 held until 15s before ${next}"
+          kubectl patch keystoneuser "$ORDER" -n "$TENANT_NS" --type=merge \
+            -p '{"spec":{"rotation":{"interval":"0s"}}}'
+          deadline=$(( $(date +%s) + 30 ))
+          until [ "$(ku_field '{.status.passwordGeneration}|{.status.nextPasswordRotation}' || true)" = "2|" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 30s after the schedule went off the order reads generation|nextPasswordRotation '$(ku_field '{.status.passwordGeneration}|{.status.nextPasswordRotation}' || true)', want '2|'"
+              exit 1
+            fi
+            sleep 2
+          done
+          # passwordGeneration moves only once K-ORC applies a generation, so
+          # a rotation that started before the schedule went off shows first
+          # on the K-ORC User and in a third password Secret. A failed read is
+          # retried and never judged: --ignore-not-found tells a missing
+          # Secret apart from a read that did not happen.
+          deadline=$(( $(date +%s) + 30 ))
+          until ref="$(password_ref "$PREFIX")" &&
+            v3="$(kubectl get secret "${PREFIX}password-v3" -n "$NAMESPACE" --ignore-not-found -o name)"; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the K-ORC User ${PREFIX}user and Secret ${PREFIX}password-v3 could not be read within 30s"
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$ref" != "${PREFIX}password-v2" ] || [ -n "$v3" ]; then
+            echo "FAIL: a rotation past generation 2 started before the schedule went off (the K-ORC User points at ${ref:-<none>}, and ${v3:-no ${PREFIX}password-v3} exists)"
+            exit 1
+          fi
+          echo "OK: the schedule is off at generation 2, and no rotation is scheduled"
+
+          while true; do
+            IFS='|' read -r gen user delivery ready last next <<<"$(ku_field "$SNAP" 2>/dev/null || true)"
+            if [ "${user%%/*}" = "True" ] && [ "${delivery%%/*}" = "True" ] && [ "${ready%%/*}" = "True" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$lift_deadline" ]; then
+              echo "FAIL: 600s after the lift: generation ${gen:-<none>}, UserReady ${user}, DeliveryReady ${delivery}, Ready ${ready}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: generation 2 is delivered, with UserReady, DeliveryReady and Ready True"
+
+          deadline=$(( $(date +%s) + 300 ))
+          while kubectl get secret "${PREFIX}password-v1" -n "$NAMESPACE" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: ${PREFIX}password-v1 outlived the rotation by 300s"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: ${PREFIX}password-v1 is gone"
+          if [ "$(secret_hash "$CREDS")" = "$GEN1" ]; then
+            echo "FAIL: ${CREDS} still holds the generation-1 data"
+            exit 1
+          fi
+          echo "OK: ${CREDS} holds the generation-2 data"
+
+          run_auth_job ku-rot-auth-new "$CREDS" complete
+          echo "NEW-PASSWORD-OK: the delivered generation-2 credentials authenticate"
+          run_auth_job ku-rot-auth-old "$GEN1_COPY" failed
+          echo "OLD-PASSWORD-REVOKED-OK: the generation-1 password is refused"
+    catch:
+    - *cp-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload, then delete the order and the plane ────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify keystoneuser-rotation-keystone-outage
+    - script:
+        timeout: 6m
+        content: kubectl delete keystoneuser ku-rot -n "${NAMESPACE}-tenant" --wait --timeout=300s
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_teardown cp-ku-rot
+    catch:
+    - *cp-dump
+    - *workload-dump

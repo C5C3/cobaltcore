@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the controlplane entry of the e2e-chaos matrix in
-# .github/workflows/ci.yaml (#1390): the entry and its suites, the
-# c5c3-operator image it loads, the infrastructure it asks setup-e2e-infra for,
+# .github/workflows/ci.yaml (#1390, #1394): the entry and its suites, the
+# suite it runs in an invocation of its own, the c5c3-operator image it loads, the infrastructure it asks setup-e2e-infra for,
 # the K-ORC and c5c3-operator deploys, its diagnostics, its wall and its place
 # among the non-blocking legs.
 #
@@ -34,10 +34,16 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-# The suites of #1390 that bring up a ControlPlane of their own.
+# The suites of #1390 and #1394 that bring up a ControlPlane of their own.
 CONTROLPLANE_SUITES=(rabbitmq-operator-cascading-failure
   korc-provisioning-outage controlplane-keystone-degraded
-  korc-network-partition c5c3-operator-pod-kill)
+  korc-network-partition c5c3-operator-pod-kill
+  controlplane-provisioning-mariadb-kill controlplane-deletion-korc-outage
+  keystoneuser-rotation-keystone-outage)
+# The suites the entry holds under isolated_test_dirs and runs after the
+# others: inside test_dirs a suite known to fail would make failFast skip
+# every suite behind it.
+ISOLATED_SUITES=(controlplane-provisioning-mariadb-kill)
 # The suites of #1390 that need only the standalone stack, on the pod leg.
 POD_SUITES=(cert-manager-outage eso-down eso-pod-kill openbao-sealed
   openbao-tenant-policy-narrowed envoy-gateway-outage envoy-proxy-pod-kill
@@ -68,6 +74,36 @@ test_the_entry_runs_the_controlplane_suites() {
   done
   assert_eq "it runs nothing but the health check and the ControlPlane suites" \
     "$((1 + ${#CONTROLPLANE_SUITES[@]}))" "$(grep -cE '^ +tests/' <<<"$entry")"
+}
+
+# entry_key <key>: the tests/ paths under one key of the controlplane entry.
+entry_key() {
+  e2e_chaos_matrix_entry controlplane | awk -v key="$1:" '
+    $1 == key { on = 1; next }
+    /^ +[a-z_]+:/ { on = 0 }
+    on' | grep -oE 'tests/[^ ]+'
+}
+
+test_the_isolated_suites_run_after_the_others() {
+  echo "Test: the controlplane leg runs its isolated suites after the others, in an invocation of their own"
+  local suite step job run_at isolated_at
+  for suite in "${ISOLATED_SUITES[@]}"; do
+    assert_contains "isolated_test_dirs holds ${suite}" "$(entry_key isolated_test_dirs)" "tests/e2e-chaos/${suite}"
+    assert_not_contains "test_dirs does not hold ${suite}" "$(entry_key test_dirs)" "tests/e2e-chaos/${suite}"
+  done
+  step="$(job_step e2e-chaos "Run isolated chaos E2E tests (controlplane leg)")"
+  assert_not_empty "an isolated run step exists" "$step"
+  assert_eq "it runs on the controlplane leg once the step before it ran, whatever its outcome" \
+    "if: matrix.suite == 'controlplane' && !cancelled() && steps.chaos.outcome != 'skipped'" \
+    "$(step_if "Run isolated chaos E2E tests (controlplane leg)")"
+  assert_contains "the step before it carries the id its if: reads" \
+    "$(job_step e2e-chaos "Run chaos E2E tests")" "id: chaos"
+  assert_contains "it drives chainsaw over isolated_test_dirs" "$step" "\${{ matrix.isolated_test_dirs }}"
+  assert_contains "under a report name of its own" "$step" "--report-name chainsaw-chaos-report-isolated"
+  job="$(job_block e2e-chaos)"
+  run_at="$(grep -n -- '- name: Run chaos E2E tests$' <<<"$job" | cut -d: -f1)"
+  isolated_at="$(grep -n -- '- name: Run isolated chaos E2E tests (controlplane leg)$' <<<"$job" | cut -d: -f1)"
+  assert_gte "it runs after the entry's test_dirs" "$isolated_at" "$run_at"
 }
 
 test_the_leg_loads_the_c5c3_operator_image() {
@@ -154,6 +190,7 @@ test_the_leg_has_its_wall_and_does_not_gate() {
 }
 
 test_the_entry_runs_the_controlplane_suites
+test_the_isolated_suites_run_after_the_others
 test_the_leg_loads_the_c5c3_operator_image
 test_the_leg_asks_for_the_controlplane_path
 test_the_leg_deploys_korc_and_the_c5c3_operator
