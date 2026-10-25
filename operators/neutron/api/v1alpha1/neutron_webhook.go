@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/validation"
@@ -247,7 +248,7 @@ func (w *NeutronWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Neu
 		oldObj.Spec.TargetClusterRef,
 		newObj.Spec.TargetClusterRef,
 	)...)
-	warnings = append(warnings, carriedRejectedKeyWarnings(
+	warnings = append(warnings, config.CarriedRejectedKeyWarnings(
 		field.NewPath("spec"), newObj.Spec.ExtraConfig, oldObj.Spec.ExtraConfig, OwnedConfigKeys)...)
 	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
 		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
