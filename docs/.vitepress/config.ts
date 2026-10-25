@@ -85,6 +85,7 @@ export default defineConfig({
               { text: 'Enable Glance Image Conversion', link: '/guides/glance/enable-glance-image-conversion' },
               { text: 'Enable Glance Operator Metrics', link: '/guides/glance/enable-glance-operator-metrics' },
               { text: 'Enable Glance Operator NetworkPolicy', link: '/guides/glance/enable-glance-operator-networkpolicy' },
+              { text: 'Enforce Glance Image Quotas', link: '/guides/glance/enforce-glance-image-quotas' },
               { text: 'Filter web-download Image Imports', link: '/guides/glance/filter-web-download-imports' },
               { text: 'Large Image Uploads through the Gateway', link: '/guides/glance/large-image-uploads' },
               { text: 'Migrate Glance DB to Dynamic Credentials', link: '/guides/glance/migrate-glance-db-to-dynamic-credentials' },
