@@ -58,7 +58,9 @@ spec:
               set -euo pipefail
               PROJECT=barbican-policy-check
               # A fresh password per run, set on every probe user below, so a
-              # retry after a partial run still authenticates.
+              # retry after a partial run still authenticates. token_urlsafe can
+              # start with "-", which argparse reads as an option after a bare
+              # --password, so the value is attached with "=".
               PROBE_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
 
               # --or-show keeps the creates idempotent, and re-adding an existing
@@ -68,7 +70,7 @@ spec:
                 user="$1"
                 role="$2"
                 openstack user create --or-show --domain Default "${user}" >/dev/null
-                openstack user set --password "${PROBE_PASSWORD}" "${user}"
+                openstack user set --password="${PROBE_PASSWORD}" "${user}"
                 openstack role add --user "${user}" --user-domain Default \
                   --project "${PROJECT}" --project-domain Default "${role}"
               }
