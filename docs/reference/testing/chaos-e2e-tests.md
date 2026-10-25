@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 58 chaos test suites validate operator behavior during and after fault
+The 60 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -27,8 +27,9 @@ asserts a healthy baseline, injects a fault, asserts the expected degradation
 with a [Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos`.
 `deletion-stuck-finalizer`, `cinder-nfs-outage` and `eso-down` scale a
 Deployment to zero with `kubectl scale` instead, `openbao-sealed` seals OpenBao
-with `bao operator seal`, and `openbao-tenant-policy-narrowed` writes a narrowed
-policy with `bao policy write`. Tests use
+with `bao operator seal`, `openbao-tenant-policy-narrowed` writes a narrowed
+policy with `bao policy write`, and `cinder-upgrade-db-partition` applies two
+egress NetworkPolicies. Tests use
 [Chainsaw](https://kyverno.github.io/chainsaw/) to orchestrate the assertion
 lifecycle.
 
@@ -72,15 +73,17 @@ step under its number.
 steps without a chaos resource: step 2 scales a Deployment to zero, and step 5
 scales it back. `openbao-sealed` seals OpenBao in step 2 and unseals it in step
 5, and `openbao-tenant-policy-narrowed` narrows a policy and writes the captured
-one back. The suites of the first four matrix entries run in the namespace
-`openstack`. The five of the `controlplane` entry each bring up a ControlPlane in a
-short namespace of their own, `chaos-korc-out` and its siblings.
+one back. `cinder-upgrade-db-partition` applies its NetworkPolicies in step 2 and
+deletes them in step 5. The suites of the `pod`, `network`, `ovn`, `nova` and
+`upgrade` matrix entries run in the namespace `openstack`. The five of the
+`controlplane` entry each bring up a ControlPlane in a short namespace of their
+own, `chaos-korc-out` and its siblings.
 [Test Suite Inventory](#test-suite-inventory) lists every suite with its
 scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 58 test suites require the infrastructure stack to be deployed and healthy.
+All 60 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -112,6 +115,7 @@ describes them and holds their record.
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` namespace |
 | OpenBao instance | Running in `shared-services` namespace |
 | ControlPlane stack | For the `controlplane` matrix entry: `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external` on the infrastructure bring-up, K-ORC from `hack/ci-deploy-korc.sh` and the c5c3-operator in `c5c3-system` |
+| Upgrade entry | For the `upgrade` matrix entry: `WITH_NFS=true WITH_MESSAGING=true` on the infrastructure bring-up, the cinder-operator in `cinder-system`, and the `cinder:2026.1` and `cinder:2026.2` images on the node |
 
 ## Running the Tests
 
@@ -350,9 +354,9 @@ always exit 0. A local run pulls the Tempest image from GHCR unless
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
-The job is path-filtered, and its five matrix entries gate differently. The
-`pod` entry is blocking; the `network`, `ovn`, `nova` and `controlplane` entries
-are not (see below). See [CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos)
+The job is path-filtered, and its six matrix entries gate differently. The
+`pod` entry is blocking; the `network`, `ovn`, `nova`, `controlplane` and `upgrade`
+entries are not (see below). See [CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos)
 for full job documentation.
 
 **Path filter (`tests_chaos`):** Only changes under `tests/e2e-chaos/**` trigger the job.
@@ -375,15 +379,18 @@ a pull request that changes something else.
 `e2e-operator`. It only runs if `build-e2e-images` succeeded and no dependency failed or was
 cancelled.
 
-**Gating per matrix entry (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}</code>):**
+**Gating per matrix entry (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}</code>):**
 The `pod` entry is **blocking**: a failure in any PodChaos suite (operator
 restart, PDB, rotation) fails the build. The `network`, `ovn`, `nova` and
 `controlplane` entries stay **non-blocking**, because the `ip_set`/`sch_netem`
 kernel-module dependency their NetworkChaos partitions carry remains prone to
 environment flakiness; their failures are visible but do not block merges. In
-the `controlplane` entry that partition is `korc-network-partition`. The
-expression names the four non-blocking entries instead of negating the blocking
-one, so a sixth entry gates merges until it is argued out of that. The `ci:chaos`
+the `controlplane` entry that partition is `korc-network-partition`. The `upgrade`
+entry is non-blocking for reasons of its own: the partitions of
+`cinder-upgrade-db-partition` rest on kindnet's NetworkPolicy enforcement, and the
+broker kill of `cinder-upgrade-broker-pod-kill` is new. The expression names the
+five non-blocking entries instead of negating the blocking one, so a seventh entry
+gates merges until it is argued out of that. The `ci:chaos`
 PR label runs every entry on demand for pre-validation. `run-chaos` still works as
 an alias for it.
 
@@ -462,16 +469,30 @@ and deploys the c5c3-operator into `c5c3-system` at the chart default of two
 replicas. A `Dump diagnostic info (controlplane leg)` step dumps the
 c5c3-operator and 500 lines of the K-ORC log.
 
+The `upgrade` entry is the sixth, on the `self-hosted` runners and
+`continue-on-error` like the other four. Its two suites
+(`cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill`) move a Cinder of
+their own from 2026.1 to 2026.2 and fault the upgrade: it is the only entry that
+loads a 2026.2 image. On top of the keystone and OVN stacks it loads
+`cinder-operator:dev`, `cinder:2026.1` and `cinder:2026.2`, deploys the
+cinder-operator into `cinder-system` through `Deploy cinder operator (upgrade leg)`,
+and sets `WITH_NFS=true` and `WITH_MESSAGING=true`: both suites attach an NFS
+backend, `cinder-upgrade-db-partition` takes a vhost on the shared broker, and
+`cinder-upgrade-broker-pod-kill` brings a RabbitmqCluster of its own. A
+`Dump diagnostic info (upgrade leg)` step dumps the cinder-operator.
+
 Every entry but `ovn` loads `ghcr.io/c5c3/tempest:2026.1` with the keystone
 stack, the image the [workload pod](#workload-and-consistency-harness) runs on.
 
-**Timeout:** 150 minutes for the `nova` entry, 135 for `network`, 120 for `pod`,
-100 for `controlplane` and 45 for `ovn`, 550 minutes in all, to accommodate serial
-test execution and longer recovery assertion windows. The author of #1390
-accepted that sum on 2026-10-16. Run 38903206716 took 62, 125, 11 and 130 minutes
-on `pod`, `network`, `ovn` and `nova`. The eight platform suites of #1390 add
-about 5 minutes each to `pod`, and the `controlplane` entry needs about 15
-minutes for its bring-up and 8 to 12 for each of its five suites.
+**Timeout:** 170 minutes for the `nova` entry, 135 for `network`, 135 for `pod`,
+120 for `controlplane`, 80 for `upgrade` and 45 for `ovn`, 685 minutes in all, to
+accommodate serial test execution and longer recovery assertion windows. The
+author of #1394 accepted that sum on 2026-10-25, against the 600 minutes D6 of
+#1386 allows; the estimated run is about 555 minutes. The last full run, on
+PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where it hit
+the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of #1394
+add about 12 minutes each to `pod`, `nova` and `controlplane`, and the `upgrade`
+entry runs two Cinder upgrades of about 20 minutes each after the bring-up.
 
 ## Test Suite Inventory
 
@@ -535,6 +556,8 @@ minutes for its bring-up and 8 to 12 for each of its five suites.
 | [controlplane-keystone-degraded](#controlplane-keystone-degraded) | — | `cp-ks-degraded` | ControlPlane over a degraded Keystone | Within 300 s the Keystone CR `Ready=False`, the ControlPlane at `KeystoneReady=False/WaitingForKeystone` and `Ready=False/NotAllReady` with `status.services` keystone `ready: false`; `NO-MASK-OK`: 60 s without the ControlPlane at `Ready=True` over a Keystone that is not; `Ready=True/AllReady` after the lift, the token stream within its measured budget |
 | [korc-network-partition](#korc-network-partition) | — | `korc-part` | K-ORC partitioned from a ControlPlane's Keystone (NetworkChaos) | `PARTITIONED-OK`: for 120 s the KeystoneService `korc-part` not `Ready=True` and its Project child `service-korc-part` without `Available=True`; `korc-part` at `Ready=True/AllReady` within 900 s of the lift and the ControlPlane at `Ready=True/AllReady`; `NO-DUPLICATE-OK`: one project, one service of type `korcpart` and two endpoints in Keystone, workload budget zero |
 | [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) | — | `cp-c5c3-kill` | c5c3-operator pod kill during provisioning | The kill before `DBCredentialsReady` with no Keystone CR yet, every pre-kill operator pod UID gone and `readyReplicas` back, the plane at `Ready=True/AllReady` after the database tenant is onboarded, `OWNED-ONCE-OK`: MariaDB and Memcached with their pre-kill UIDs and exactly one Keystone, MariaDB, Memcached and ApplicationCredential, each owned by `cp-c5c3-kill` |
+| [cinder-upgrade-db-partition](#cinder-upgrade-db-partition) | — | `cinder-upg-part` | Phase Jobs of a release upgrade partitioned from MariaDB (NetworkPolicy) | `EXPAND-HELD-OK` and `CONTRACT-HELD-OK`: for 90 s each, `upgradePhase` at `Expanding` or `Contracting` with the phase Job not succeeded; then `upgradePhase` empty, `installedRelease: "2026.2"`, `Ready=True/AllReady`, the three phase Jobs succeeded on `ghcr.io/c5c3/cinder:2026.2`, the three Deployments rolled onto `:2026.2`, `NO-PHASE-FAILURE-OK`, `verify` with `CONSISTENCY-OK volumes` |
+| [cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) | — | `cinder-upg-bus` | Broker pod kill in the RollingUpdate of a release upgrade | `KILLED-IN-ROLLOUT-OK`: the broker pod UID gone while `upgradePhase` reads `RollingUpdate`; the new broker pod Ready within 300 s; `upgradePhase` empty, `installedRelease: "2026.2"`, `SchedulerReady`, `VolumeServicesReady` and `Ready=True/AllReady`, the three Deployments rolled onto `:2026.2`, the three phase Jobs succeeded, `verify` within the measured budget |
 
 ---
 
@@ -3959,6 +3982,125 @@ in its own namespace, `chaos-c5c3-kill`.
 
 ---
 
+### cinder-upgrade-db-partition
+
+**File:** `tests/e2e-chaos/cinder-upgrade-db-partition/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Two egress NetworkPolicies cut the pods of the expand and the contract
+Job of a Cinder release upgrade off from MariaDB, one phase at a time. A phase Job
+whose database is unreachable must hold its phase without failing it, finish once
+the partition goes, and leave an upgrade that completes once: no phase failed, none
+repeated, every Job on the new image.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring-up at 2026.1 | `script` (2m) + `apply` + `assert` (10m) | `broker-vhost.sh create`, then `cinder-upg-part` (database `cinder_upg_part`, vhost `cinder-upg-part-messaging`, noauth) and `upg-part-nfs1` reach `Ready=True/AllReady` with `installedRelease: "2026.1"`. The step cleanup deletes the vhost |
+| 2 | Start the workload | `script` (6m) | `workload.sh start` with the `volume` stream |
+| 3 | Partition, then trigger | `script` (2m) + `patch` | Applies `02-netpol-expand.yaml` and `03-netpol-contract.yaml`, `workload.sh mark fault-start`, then patches `openStackRelease` and `image.tag` to `2026.2`. The step cleanup deletes both policies |
+| 4 | Hold the expand | `script` (8m) | `hold_phase expand Expanding 300` of `probe-lib.sh`: waits for a `Running` pod with `job-name=cinder-upg-part-db-expand`, then for 90 s requires `upgradePhase: Expanding` and no `.status.succeeded` every 5 s (`EXPAND-HELD-OK`), and deletes `02` |
+| 5 | Hold the contract | `script` (15m) | `hold_phase contract Contracting 600` the same way (`CONTRACT-HELD-OK`), deletes `03`, `workload.sh mark fault-end` |
+| 6 | The upgrade finishes once | `script` (12m) + `assert` + `script` (1m) | Within 600 s `upgradePhase` empty, `installedRelease: "2026.2"` and `Ready=True/AllReady`; the three phase Jobs at `succeeded: 1` on `ghcr.io/c5c3/cinder:2026.2`; `cinder-upg-part`, `-scheduler` and `-volume-upg-part-nfs1` on `:2026.2` with `updatedReplicas == replicas`; no Warning event on the Cinder whose reason ends in `Failed` (`NO-PHASE-FAILURE-OK`) |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`,
+`02-netpol-expand.yaml` (`cinder-upg-part-cut-expand`), `03-netpol-contract.yaml`
+(`cinder-upg-part-cut-contract`), `04-patch-upgrade.yaml`, and `probe-lib.sh` with
+`hold_phase`.
+
+**Workload:** the noauth `volume` stream against `cinder-upg-part`, started in step
+2 and judged in step 7 against `failures=0 recovery=30s`. The partitions select the
+phase Job pods alone, so they are on no request path of the stream, but the
+RollingUpdate inside the one fault window replaces the API, the scheduler and the
+volume service. Three kind runs lost no cycle in that window. The suite runs in the
+`upgrade` matrix entry.
+
+**Catch blocks:** every step from 3 to 5 deletes both policies first. Every catch
+calls `../diagnostics.sh chaos cinder-upg-part` with `--cr-kind=cinder`, dumps the
+NetworkPolicies, the Deployments, the four Jobs with their pods and logs and the
+Cinder's events, and dumps the workload.
+
+**Design notes:**
+
+- The partitions are NetworkPolicies, not NetworkChaos. A phase Job's pod appears
+  only once the operator enters the phase, and every NetworkChaos selects pods that
+  exist when it is injected. A `podSelector` also covers pods created later, so each
+  policy is in place before its pod starts.
+- The operator puts no label on a phase Job's pod template (`database.BuildJob`),
+  so the `job-name` label Kubernetes sets is the selector. The one egress rule
+  admits DNS to the kube-dns pods; kindnet drops the SYN of every other connection,
+  so `cinder-manage` sees a partition and its connect times out.
+- One attempt against an unreachable database takes about three and a half
+  minutes, the oslo.db connect-retry span. The 90-second hold sits inside the first
+  attempt, so the attempt connects after the lift, and each Job's four retries are
+  the margin.
+- `hold_phase` fails with `FAIL: the db-<phase> Job finished while its partition
+  should hold` when the Job succeeds, the phase moves on, or the upgrade finishes
+  before the hold ends. kindnet adds a new pod to its policy set after a short
+  delay, so a connect that got through first fails the suite by name instead of
+  passing it. A copy without the expand policy fails step 4 that way.
+- One fault window spans both holds, because `verify` reads one pair of marks.
+
+---
+
+### cinder-upgrade-broker-pod-kill
+
+**File:** `tests/e2e-chaos/cinder-upgrade-broker-pod-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` kills the broker pod of a Cinder in managed messaging mode
+while its upgrade from 2026.1 to 2026.2 sits in `RollingUpdate`. The new scheduler
+and volume pods of the rollout cannot reach readiness without the broker, so the
+operator holds `RollingUpdate` until the broker is back. The suite pins that the
+upgrade then finishes with the bus consumers reconnected.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring up the broker | `apply` + `script` (11m) | `RabbitmqCluster/cinder-upg-bus-rabbitmq` waited on `AllReplicasReady` |
+| 2 | Bring-up at 2026.1 | `apply` + `assert` (10m) | `cinder-upg-bus` (database `cinder_upg_bus`, `messaging.clusterRef`, noauth) and `upg-bus-nfs1` at `Ready=True/AllReady` with `installedRelease: "2026.1"` |
+| 3 | Start the workload | `script` (6m) | `workload.sh start` with the `volume` stream |
+| 4 | Trigger and kill | `script` (12m) | Patches with `03-patch-upgrade.yaml`, polls `upgradePhase` every second for up to 600 s until it reads `RollingUpdate` (`FAIL: upgradePhase never read RollingUpdate (seen: <list>)` when it clears first), records the UID of `cinder-upg-bus-rabbitmq-server-0` in ConfigMap `cinder-upg-bus-state`, `workload.sh mark fault-start`, applies `04-podchaos.yaml`, waits up to 30 s for the UID to change and requires `RollingUpdate` still (`KILLED-IN-ROLLOUT-OK`) |
+| 5 | The broker comes back | `script` (6m) | Within 300 s the server pod is Ready with a new UID; deletes the `PodChaos`, `workload.sh mark fault-end` |
+| 6 | The upgrade finishes | `script` (12m) + `assert` | Within 600 s `upgradePhase` empty and `installedRelease: "2026.2"`; `SchedulerReady=True/SchedulerReady`, `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady`; the three Deployments on `:2026.2` with `updatedReplicas == replicas`; the three phase Jobs at `succeeded: 1` |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` |
+| 8 | Tear the broker down | `script` (8m) | Deletes the Cinder CR and waits for its pods, then deletes the RabbitmqCluster with foreground propagation and waits for its pod |
+
+**Fixtures:** `00-rabbitmqcluster.yaml`, `01-cinder-cr.yaml`,
+`02-cinderbackend-cr.yaml`, `03-patch-upgrade.yaml`, `04-podchaos.yaml`
+(`kill-cinder-upg-bus`, `pod-kill`, `mode: all`, `gracePeriod: 0`).
+
+**Workload:** the noauth `volume` stream against `cinder-upg-bus`, started in step
+3 and judged in step 7 against `failures=10 recovery=40s`, from three kind runs
+with 3, 3 and 5 failures and a recovery of at most 8 seconds. A create whose cast
+meets the missing broker, or a process the rollout replaces, does not reach
+`available` within the stream's 120 seconds. The suite runs in the `upgrade` matrix
+entry.
+
+**Catch blocks:** steps 4 and 5 delete the `PodChaos` first. Every catch calls
+`../diagnostics.sh chaos cinder-upg-bus` with `--cr-kind=cinder`, dumps the
+Deployments, pods and phase Jobs of the CR, the `PodChaos`, the RabbitmqCluster and
+the broker pod, and dumps the workload. The step cleanup of step 4 deletes the
+ConfigMap.
+
+**Design notes:**
+
+- The scheduler and volume readiness probes watch the broker socket, and the
+  operator moves `RollingUpdate` to `Contracting` only once every Deployment has
+  rolled (`reconcile_scheduler.go`, `reconcile_volumeservices.go`). A broker killed
+  in `RollingUpdate` therefore keeps the phase there until it is back.
+- The phase is read again once the kill is observed, which is stricter than a read
+  right after the apply.
+- Step 8 tears the bus down as `cinder-broker-pod-kill` does, because the broker pod
+  carries a grace period of seven days.
+
+---
+
 ## Test Patterns
 
 ![The six step patterns of the chaos suites, each a numbered chain. Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003), where a critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, assert the sub-condition is False, delete the PodChaos, assert the sub-condition is True and Ready=True. No-Regression (SC-CHAOS-002), where a non-critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, poll readyReplicas below the desired count, poll readyReplicas back at the desired count, assert all conditions True, delete the PodChaos, assert Ready=True. Operator Self-Recovery (SC-CHAOS-004), where one operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos, wait until one pre-chaos UID is gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert Ready=True. Workload Fault Tolerance (SC-CHAOS-005), where a Job of the operator fails: apply the CR, assert Ready=True, inject a pod-failure PodChaos, trigger the Job, assert the conditions are maintained, delete the PodChaos, assert Ready=True. PDB Availability Guarantee (SC-CHAOS-008), where one API pod of three is killed: apply the CR with three replicas, assert Ready=True, assert the PDB has minAvailable 1, inject the PodChaos, verify availableReplicas is at least 1, assert DeploymentReady=True and Ready=True, delete the PodChaos, assert Ready=True. Operator Pod Kill All with Failover Reconciliation (SC-CHAOS-009), where every operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos with mode all, wait until all pre-chaos UIDs are gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert all 6 conditions True, patch the replicas from 1 to 2, assert the Deployment has 2 replicas and Ready=True.](../../diagrams/test-chaos-patterns.svg)
@@ -4191,7 +4333,7 @@ also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state
 SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
 SC-CHAOS-008 describes the PDB in Step 3.
 
-The forty-six suites that start a workload also call `../lib/workload.sh dump <id>`
+The forty-eight suites that start a workload also call `../lib/workload.sh dump <id>`
 in the catch block of every step from `start` to `verify`. It prints the phase
 of the workload pod, its two fault marks and the last 200 lines of its log.
 
@@ -4274,6 +4416,21 @@ tests/e2e-chaos/
 │   ├── 02-podchaos.yaml              PodChaos targeting cinder-operator in cinder-system
 │   ├── 03-patch-scale.yaml           Patch API replicas to 2 after the operator pod kill
 │   └── chainsaw-test.yaml            Test: one operator pod replaced, workload UIDs kept, replica patch
+├── cinder-upgrade-broker-pod-kill/   Broker pod kill in the RollingUpdate of a Cinder upgrade
+│   ├── 00-rabbitmqcluster.yaml       RabbitmqCluster cinder-upg-bus-rabbitmq
+│   ├── 01-cinder-cr.yaml             Cinder cinder-upg-bus at 2026.1, managed messaging, noauth
+│   ├── 02-cinderbackend-cr.yaml      NFS backend upg-bus-nfs1
+│   ├── 03-patch-upgrade.yaml         Patch to 2026.2
+│   ├── 04-podchaos.yaml              PodChaos pod-kill of the broker pod
+│   └── chainsaw-test.yaml            Test: killed in RollingUpdate, the upgrade finishes
+├── cinder-upgrade-db-partition/      Phase Jobs of a Cinder upgrade partitioned from MariaDB
+│   ├── 00-cinder-cr.yaml             Cinder cinder-upg-part at 2026.1, noauth
+│   ├── 01-cinderbackend-cr.yaml      NFS backend upg-part-nfs1
+│   ├── 02-netpol-expand.yaml         NetworkPolicy cutting the db-expand Job's pods to DNS
+│   ├── 03-netpol-contract.yaml       NetworkPolicy cutting the db-contract Job's pods to DNS
+│   ├── 04-patch-upgrade.yaml         Patch to 2026.2
+│   ├── chainsaw-test.yaml            Test: each phase held for 90 s, the upgrade finishes once
+│   └── probe-lib.sh                  hold_phase: the wait for a phase and its hold
 ├── cinder-volume-pod-kill/           Volume-service kill in the middle of an attach
 │   ├── 00-cinder-cr.yaml             Cinder cinder-volume-kill, noauth
 │   ├── 01-cinderbackend-cr.yaml      NFS backend vol-kill-nfs1
@@ -4564,7 +4721,10 @@ tests/e2e-chaos/
    the workload with `CHAOS_WORKLOAD_ADMIN_SECRET=<cp>-keystone-admin-credentials`,
    and add the directory to the `controlplane` entry in `.github/workflows/ci.yaml`
    and to `CONTROLPLANE_SUITES` in `tests/unit/ci/controlplane_chaos_matrix_test.sh`
-8. All files must include the `SPDX-License-Identifier: Apache-2.0` header
+8. For a suite that faults a release upgrade, add the directory to the `upgrade`
+   entry in `.github/workflows/ci.yaml`, the entry that loads the 2026.2 image, and
+   to `UPGRADE_SUITES` in `tests/unit/ci/upgrade_chaos_matrix_test.sh`
+9. All files must include the `SPDX-License-Identifier: Apache-2.0` header
 
 ## Related Resources
 - [Keystone E2E Test Suites](./keystone-e2e-tests.md): Happy-path E2E tests

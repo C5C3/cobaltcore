@@ -1077,11 +1077,12 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # All three faults are NetworkChaos partitions, so the leg carries the same
   # sch_netem/ip_set dependency that keeps the network leg non-blocking. The
   # whole expression is read, not the nova arm alone: the other legs stay
-  # where they were, and the controlplane leg of #1390 joined them for its
-  # korc-network-partition.
-  assert_contains "the nova leg is named non-blocking beside the other three" \
+  # where they were, the controlplane leg of #1390 joined them for its
+  # korc-network-partition, and the upgrade leg of #1394 for its
+  # NetworkPolicy partitions.
+  assert_contains "the nova leg is named non-blocking beside the other four" \
     "$job" \
-    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}"
+    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}"
 
   # Six refs on top of the keystone stack every non-ovn leg loads and the OVN
   # pair the `!= 'pod'` entries already cover here. The tempest image the
@@ -1110,13 +1111,14 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # nova-mariadb-outage and nova-placement-outage take a vhost on the shared
   # broker (nova-broker-outage brings its own RabbitmqCluster, the one its
   # fault severs), so the leg asks deploy-infra.sh for it. The NFS export is
-  # not widened: no nova suite mounts a volume.
+  # not widened to it: no nova suite mounts a volume. Both lines also carry
+  # the upgrade leg of #1394, whose Cinders attach an NFS backend.
   local setup
   setup=$(job_step e2e-chaos "Setup E2E infrastructure")
   assert_contains "the nova leg opts into the shared broker" "$setup" \
-    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova') && 'true' || '' }}"
-  assert_contains "the NFS export stays network-only" "$setup" \
-    "WITH_NFS: \${{ matrix.suite == 'network' && 'true' || '' }}"
+    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade') && 'true' || '' }}"
+  assert_contains "the NFS export stays off the nova leg" "$setup" \
+    "WITH_NFS: \${{ (matrix.suite == 'network' || matrix.suite == 'upgrade') && 'true' || '' }}"
   # neutron-metadata-agent-pod-kill runs an OVNChassis, whose DaemonSets need
   # the openvswitch and geneve modules on the host, as the ovn leg's do.
   assert_contains "the nova leg loads the OVN kernel modules beside the ovn leg" "$setup" \
@@ -1216,11 +1218,12 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # shorter wall would arrive mid-suite: chainsaw is killed outright, no catch
   # block runs and no JUnit report is written, and a non-blocking leg then
   # reports a cancellation that names no suite. The whole expression is read:
-  # the network and ovn walls moved with #1389, and #1390 added the
-  # controlplane leg and moved the pod wall, so the five sum to the 550
-  # minutes its author accepted (150 + 135 + 100 + 45 + 120).
+  # the network and ovn walls moved with #1389, #1390 added the controlplane
+  # leg, and #1394 added the upgrade leg and moved the nova, controlplane and
+  # pod walls, so the six sum to the 685 minutes its author accepted
+  # (170 + 135 + 120 + 80 + 45 + 135).
   assert_contains "each leg gets its wall" "$job" \
-    "timeout-minutes: \${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}"
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}"
 
   # And the leg is its own: the network leg was not widened into these
   # suites.

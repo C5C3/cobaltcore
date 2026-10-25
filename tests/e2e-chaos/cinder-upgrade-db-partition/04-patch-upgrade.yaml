@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to move cinder-upg-part from 2026.1 to 2026.2. Both fields move
+# together, as in ../../e2e/cinder/release-upgrade/03-patch-upgrade.yaml: the
+# operator refuses a release bump that leaves the image untouched.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-upg-part
+  namespace: openstack
+spec:
+  openStackRelease: "2026.2"
+  image:
+    tag: "2026.2"

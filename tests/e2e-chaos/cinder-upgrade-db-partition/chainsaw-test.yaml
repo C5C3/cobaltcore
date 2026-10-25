@@ -1,0 +1,334 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the phase Jobs of a Cinder release upgrade cut off
+# from MariaDB.
+#
+# Fault: two egress NetworkPolicies, applied before the 2026.1 to 2026.2 patch,
+# leave the pods of Jobs cinder-upg-part-db-expand (02-netpol-expand.yaml) and
+# cinder-upg-part-db-contract (03-netpol-contract.yaml) nothing but DNS. The
+# suite lifts each one after a 90-second hold inside its phase.
+#
+# Claim, phase by phase:
+#   expand    Once the expand Job's pod runs, upgradePhase stays Expanding and
+#             the Job does not succeed for 90 s (EXPAND-HELD-OK). One attempt
+#             against an unreachable database takes about three and a half
+#             minutes, the oslo.db connect-retry span, so the attempt that
+#             waits connects once the policy goes, and the Job's four retries
+#             are the margin.
+#   contract  The same for the contract Job, after Migrating and RollingUpdate
+#             ran with no fault (CONTRACT-HELD-OK).
+#   settle    The upgrade finishes once: upgradePhase empty, installedRelease
+#             2026.2, Ready=True/AllReady, the three phase Jobs succeeded on
+#             ghcr.io/c5c3/cinder:2026.2, the three Deployments rolled onto
+#             :2026.2, and no Warning event on the Cinder whose reason ends in
+#             Failed (NO-PHASE-FAILURE-OK): a held phase is neither failed nor
+#             repeated.
+#
+# A Job that finished while its partition should hold fails the hold with
+# "FAIL: the db-<phase> Job finished while its partition should hold": a
+# connect got through, for example before kindnet put a new pod into its
+# policy set.
+#
+# Blast radius: the pods of the two phase Jobs of cinder-upg-part alone. The
+# API, the scheduler and the volume service keep their database, and no other
+# pod carries either job-name label. The policies are the shared state to
+# undo, so every catch from step 3 to step 5 deletes both first.
+#
+# Leg: upgrade, the leg that loads the 2026.2 image.
+#
+# Workload: the noauth volume stream of ../lib/workload.sh against
+# cinder-upg-part. The partitions are not on its request path, but the
+# RollingUpdate inside the fault window replaces the API, the scheduler and
+# the volume service, and a volume whose cast meets a replaced process would
+# not reach available within the stream's 120 s. One window spans both holds,
+# because verify reads one pair of marks, so the budget is measured: three
+# kind runs lost no cycle, which gives zero failures and the 30 s the
+# measurement rule adds to the recovery.
+# Chaos budget: failures=0 recovery=30s
+# Chaos budget measured: 2026-10-26, kind, failures 0/0/0, recovery 0/0/0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-upgrade-db-partition
+spec:
+  namespace: openstack
+  timeouts:
+    # The 2026.1 bring-up (schema migration, API cold start, NFS mount) precedes
+    # the first assert, as in ../../e2e/cinder/release-upgrade/.
+    assert: 10m
+  steps:
+  # ── Step 1: Give the suite its vhost, bring up Cinder at 2026.1 ──────────
+  # One vhost per suite: Cinder's RPC topics are named after the deployment.
+  # See ../../e2e/cinder/broker-vhost.sh. The step cleanup runs at the end of
+  # the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh create cinder-upg-part cinder-upg-part-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-upg-part
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - &cr-dump
+      script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos cinder-upg-part --cr-kind=cinder --dep-label=app.kubernetes.io/name=cinder-operator --dep-ns=cinder-system --log-label=app.kubernetes.io/instance=cinder-upg-part
+    - &job-dump
+      script:
+        timeout: 2m
+        content: |
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n "$NAMESPACE" -o wide 2>&1 || true
+          echo "=== Deployments ==="
+          kubectl get deploy -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-upg-part -o wide 2>&1 || true
+          for j in db-sync db-expand db-migrate db-contract; do
+            echo "--- Job cinder-upg-part-$j ---"
+            kubectl describe job "cinder-upg-part-$j" -n "$NAMESPACE" 2>&1 | tail -30 || true
+            kubectl get pods -n "$NAMESPACE" -l "job-name=cinder-upg-part-$j" -o wide 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "job/cinder-upg-part-$j" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Cinder events ==="
+          kubectl get events -n "$NAMESPACE" \
+            --field-selector involvedObject.kind=Cinder,involvedObject.name=cinder-upg-part 2>&1 || true
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-upgrade-db-partition
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../../e2e/cinder/broker-vhost.sh delete cinder-upg-part || true
+  # ── Step 2: Start the workload ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start cinder-upgrade-db-partition --
+          --streams volume
+          --cinder http://cinder-upg-part.openstack.svc:8776
+    catch:
+    - *cr-dump
+    - *job-dump
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cinder-upgrade-db-partition
+  # ── Step 3: Apply both partitions, then trigger the upgrade ───────────────
+  # The policies go in before the patch, so each covers its Job's pod from the
+  # moment the Job creates it. The fault window opens on the workload's clock
+  # between the two.
+  - try:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl apply -f 02-netpol-expand.yaml -f 03-netpol-contract.yaml
+          ../lib/workload.sh mark cinder-upgrade-db-partition fault-start
+    - patch:
+        file: 04-patch-upgrade.yaml
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        content: kubectl delete -f 02-netpol-expand.yaml -f 03-netpol-contract.yaml --ignore-not-found 2>&1 || true
+    - *cr-dump
+    - *job-dump
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete -f 02-netpol-expand.yaml -f 03-netpol-contract.yaml --ignore-not-found 2>&1 || true
+  # ── Step 4: Hold the expand phase, then lift its partition ───────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          hold_phase expand Expanding 300
+          kubectl delete -f 02-netpol-expand.yaml
+    catch:
+    - *lift
+    - *cr-dump
+    - *job-dump
+    - *workload-dump
+  # ── Step 5: Hold the contract phase, then lift its partition ─────────────
+  # Migrating and RollingUpdate run with no fault on the way here.
+  - try:
+    - script:
+        shell: bash
+        timeout: 15m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          hold_phase contract Contracting 600
+          kubectl delete -f 03-netpol-contract.yaml
+          ../lib/workload.sh mark cinder-upgrade-db-partition fault-end
+    catch:
+    - *lift
+    - *cr-dump
+    - *job-dump
+    - *workload-dump
+  # ── Step 6: The upgrade finishes once ─────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          deadline=$(( $(date +%s) + 600 ))
+          while true; do
+            state="$(cr_state || true)"
+            ready="$(kubectl get cinder "$CR" -n "$NAMESPACE" \
+              -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}/{.status.conditions[?(@.type=='Ready')].reason}" 2>/dev/null || true)"
+            if [ "$state" = "|2026.2" ] && [ "$ready" = "True/AllReady" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the upgrade did not settle within 600s (upgradePhase|installedRelease '${state}', Ready ${ready:-<none>})"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: upgradePhase is empty, installedRelease is 2026.2, Ready=True/AllReady"
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upg-part-db-expand
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-expand
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upg-part-db-migrate
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-migrate
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upg-part-db-contract
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-contract
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upg-part
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: cinder-api
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upg-part-scheduler
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: scheduler
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upg-part-volume-upg-part-nfs1
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: volume-upg-part-nfs1
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            (updatedReplicas == replicas): true
+    # A held phase is neither failed nor repeated: the upgrade flow reports a
+    # failed phase Job with a Warning event of reason <Phase>Failed
+    # (internal/common/database/upgrade.go).
+    - script:
+        shell: bash
+        timeout: 1m
+        content: |
+          set -euo pipefail
+          failed="$(kubectl get events -n "$NAMESPACE" \
+            --field-selector involvedObject.kind=Cinder,involvedObject.name=cinder-upg-part,type=Warning \
+            -o 'jsonpath={range .items[*]}{.reason}{" "}{.message}{"\n"}{end}' | grep -E '^[A-Za-z]*Failed ' || true)"
+          if [ -n "$failed" ]; then
+            echo "FAIL: the Cinder carries Warning events whose reason ends in Failed:"
+            echo "$failed"
+            exit 1
+          fi
+          echo "NO-PHASE-FAILURE-OK: no Warning event on the Cinder carries a reason ending in Failed"
+    catch:
+    - *cr-dump
+    - *job-dump
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cinder-upgrade-db-partition
+    catch:
+    - *cr-dump
+    - *workload-dump

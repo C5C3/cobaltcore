@@ -1,0 +1,427 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the broker pod killed while a Cinder release
+# upgrade sits in RollingUpdate.
+#
+# Fault: a PodChaos pod-kill of the one pod of the RabbitmqCluster the Cinder
+# uses in managed messaging mode (04-podchaos.yaml), applied once
+# status.upgradePhase reads RollingUpdate on the way from 2026.1 to 2026.2.
+#
+# Claim, phase by phase:
+#   kill     The kill lands in RollingUpdate: the broker pod UID changes while
+#            upgradePhase still reads RollingUpdate (KILLED-IN-ROLLOUT-OK). The
+#            scheduler and volume readiness probes watch the broker socket, so
+#            the new pods of the rollout stay unready while the broker is gone,
+#            and the operator holds RollingUpdate until every Deployment has
+#            rolled (operators/cinder/internal/controller/reconcile_scheduler.go,
+#            reconcile_volumeservices.go).
+#   back     The StatefulSet creates the broker pod again: a new UID, Ready
+#            within 300 s.
+#   settle   The upgrade finishes: upgradePhase empty, installedRelease 2026.2,
+#            SchedulerReady, VolumeServicesReady and Ready=True/AllReady, the
+#            three Deployments rolled onto :2026.2 and the three phase Jobs
+#            succeeded.
+#
+# Blast radius: the PodChaos selects app.kubernetes.io/name:
+# cinder-upg-bus-rabbitmq, the broker of this suite alone. The PodChaos is the
+# shared state to undo, so the catches of steps 4 and 5 delete it first.
+#
+# Leg: upgrade, the leg that loads the 2026.2 image.
+#
+# Workload: the noauth volume stream of ../lib/workload.sh against
+# cinder-upg-bus. A create that reaches the API while the broker is gone, or
+# whose cast meets a process the rollout replaces, does not reach available
+# within the stream's 120 s, so the budget is measured.
+# Chaos budget: failures=10 recovery=40s
+# Chaos budget measured: 2026-10-26, kind, failures 3/3/5, recovery 0/0/8 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-upgrade-broker-pod-kill
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 10m
+  steps:
+  # ── Step 1: Bring up the broker ───────────────────────────────────────────
+  # The RabbitMQ Cluster Operator publishes no Ready condition, so the wait
+  # follows AllReplicasReady, as in ../cinder-broker-pod-kill/.
+  - try:
+    - apply:
+        file: 00-rabbitmqcluster.yaml
+    - script:
+        timeout: 11m
+        content: |
+          set -eu
+          BUS=cinder-upg-bus-rabbitmq
+          DEADLINE=$(( $(date +%s) + 600 ))
+          while true; do
+            STATUS="$(kubectl get rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+              -o "jsonpath={.status.conditions[?(@.type=='AllReplicasReady')].status}" 2>/dev/null || true)"
+            if [ "${STATUS}" = "True" ]; then
+              echo "OK: rabbitmqcluster/${BUS} AllReplicasReady=True"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: rabbitmqcluster/${BUS} AllReplicasReady not True within 600s (last: '${STATUS:-<none>}')"
+              kubectl get pods,pvc -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+    catch:
+    - script:
+        content: kubectl get rabbitmqcluster -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl describe pod -n openstack -l app.kubernetes.io/name=cinder-upg-bus-rabbitmq 2>&1 || true
+    - script:
+        content: kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --all-containers --tail=100 2>&1 || true
+  # ── Step 2: Bring up Cinder at 2026.1 ─────────────────────────────────────
+  - try:
+    - apply:
+        file: 01-cinder-cr.yaml
+    - apply:
+        file: 02-cinderbackend-cr.yaml
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-upg-bus
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - &cr-dump
+      script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos cinder-upg-bus --cr-kind=cinder --dep-label=app.kubernetes.io/name=cinder-operator --dep-ns=cinder-system --log-label=app.kubernetes.io/instance=cinder-upg-bus
+    - &bus-dump
+      script:
+        timeout: 2m
+        content: |
+          echo "=== Cinder children ==="
+          kubectl get deploy,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-upg-bus -o wide 2>&1 || true
+          for j in db-sync db-expand db-migrate db-contract; do
+            echo "--- Job cinder-upg-bus-$j ---"
+            kubectl get job "cinder-upg-bus-$j" -n "$NAMESPACE" -o wide 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "job/cinder-upg-bus-$j" --all-containers --tail=40 2>&1 || true
+          done
+          echo "=== Broker ==="
+          kubectl get podchaos -n "$NAMESPACE" 2>&1 || true
+          kubectl get rabbitmqcluster cinder-upg-bus-rabbitmq -n "$NAMESPACE" -o wide 2>&1 || true
+          kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=cinder-upg-bus-rabbitmq -o wide 2>&1 || true
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump cinder-upgrade-broker-pod-kill
+  # ── Step 3: Start the workload ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start cinder-upgrade-broker-pod-kill --
+          --streams volume
+          --cinder http://cinder-upg-bus.openstack.svc:8776
+    catch:
+    - *cr-dump
+    - *bus-dump
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop cinder-upgrade-broker-pod-kill
+  # ── Step 4: Trigger the upgrade, kill the broker in RollingUpdate ─────────
+  # The patch, the wait for RollingUpdate, the UID record, the mark and the
+  # kill share one script, so the kill follows the observed phase within a
+  # second. The phase is read again once the kill is observed, which is
+  # stricter than a read right after the apply.
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          CR=cinder-upg-bus
+          POD=cinder-upg-bus-rabbitmq-server-0
+          kubectl patch cinder "$CR" -n "$NAMESPACE" --type=merge --patch-file 03-patch-upgrade.yaml
+
+          SEEN=""
+          LAST=""
+          deadline=$(( $(date +%s) + 600 ))
+          while true; do
+            OUT="$(kubectl get cinder "$CR" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.upgradePhase}|{.status.installedRelease}' 2>/dev/null || true)"
+            PHASE="${OUT%%|*}"
+            RELEASE="${OUT##*|}"
+            if [ -n "$PHASE" ] && [ "$PHASE" != "$LAST" ]; then
+              SEEN="${SEEN}${SEEN:+ }${PHASE}"
+              LAST="$PHASE"
+            fi
+            if [ "$PHASE" = "RollingUpdate" ]; then
+              break
+            fi
+            if [ -z "$PHASE" ] && [ "$RELEASE" = "2026.2" ]; then
+              echo "FAIL: upgradePhase never read RollingUpdate (seen: ${SEEN:-none})"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: upgradePhase never read RollingUpdate within 600s (seen: ${SEEN:-none})"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "OK: upgradePhase reads RollingUpdate (seen: ${SEEN})"
+
+          OLD_UID="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+          if [ -z "$OLD_UID" ]; then
+            echo "FAIL: no broker pod $POD before the kill"
+            exit 1
+          fi
+          kubectl create configmap cinder-upg-bus-state -n "$NAMESPACE" \
+            --from-literal=broker-uid="$OLD_UID" --dry-run=client -o yaml | kubectl apply -f -
+          echo "broker pod UID before the kill: $OLD_UID"
+          ../lib/workload.sh mark cinder-upgrade-broker-pod-kill fault-start
+          kubectl apply -f 04-podchaos.yaml
+
+          deadline=$(( $(date +%s) + 30 ))
+          until [ "$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)" != "$OLD_UID" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: broker pod $POD still carries UID $OLD_UID 30s after the PodChaos"
+              exit 1
+            fi
+            sleep 1
+          done
+          PHASE="$(kubectl get cinder "$CR" -n "$NAMESPACE" -o 'jsonpath={.status.upgradePhase}')"
+          if [ "$PHASE" != "RollingUpdate" ]; then
+            echo "FAIL: the rollout finished before the broker kill landed (upgradePhase '${PHASE}')"
+            exit 1
+          fi
+          echo "KILLED-IN-ROLLOUT-OK: the broker pod $OLD_UID is gone and upgradePhase still reads RollingUpdate"
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        content: kubectl delete -f 04-podchaos.yaml --ignore-not-found 2>&1 || true
+    - *cr-dump
+    - *bus-dump
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: |
+          kubectl delete -f 04-podchaos.yaml --ignore-not-found 2>&1 || true
+          kubectl delete configmap cinder-upg-bus-state -n openstack --ignore-not-found 2>&1 || true
+  # ── Step 5: The broker comes back ─────────────────────────────────────────
+  # The StatefulSet creates the pod again on the same volume; the broker is
+  # back once that pod is Ready with a UID other than the recorded one.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          POD=cinder-upg-bus-rabbitmq-server-0
+          OLD_UID="$(kubectl get configmap cinder-upg-bus-state -n "$NAMESPACE" -o jsonpath='{.data.broker-uid}')"
+          STATE=""
+          deadline=$(( $(date +%s) + 300 ))
+          while true; do
+            STATE="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o jsonpath='{.metadata.uid} {.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+            UID_NOW="${STATE%% *}"
+            READY="${STATE##* }"
+            if [ -n "$UID_NOW" ] && [ "$UID_NOW" != "$OLD_UID" ] && [ "$READY" = "True" ]; then
+              echo "OK: broker pod $POD is Ready again with UID $UID_NOW"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no Ready broker pod $POD with a UID other than $OLD_UID within 300s (last: '${STATE:-<none>}')"
+              kubectl get pods,pvc -n "$NAMESPACE" -l app.kubernetes.io/name=cinder-upg-bus-rabbitmq -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 2
+          done
+          kubectl delete -f 04-podchaos.yaml
+          ../lib/workload.sh mark cinder-upgrade-broker-pod-kill fault-end
+    catch:
+    - *lift
+    - *cr-dump
+    - *bus-dump
+    - *workload-dump
+  # ── Step 6: The upgrade finishes ──────────────────────────────────────────
+  # SchedulerReady and VolumeServicesReady follow the broker socket of their
+  # pods' readiness probes, so the two conditions return once oslo.messaging
+  # reconnected and the rollout could finish.
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 600 ))
+          while true; do
+            OUT="$(kubectl get cinder cinder-upg-bus -n "$NAMESPACE" \
+              -o 'jsonpath={.status.upgradePhase}|{.status.installedRelease}' 2>/dev/null || true)"
+            if [ "$OUT" = "|2026.2" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the upgrade did not settle within 600s (upgradePhase|installedRelease '${OUT}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: upgradePhase is empty and installedRelease is 2026.2"
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-upg-bus
+            namespace: openstack
+          status:
+            installedRelease: "2026.2"
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upg-bus
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: cinder-api
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upg-bus-scheduler
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: scheduler
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upg-bus-volume-upg-bus-nfs1
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: volume-upg-bus-nfs1
+                  image: ghcr.io/c5c3/cinder:2026.2
+          status:
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upg-bus-db-expand
+            namespace: openstack
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upg-bus-db-migrate
+            namespace: openstack
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upg-bus-db-contract
+            namespace: openstack
+          status:
+            succeeded: 1
+    catch:
+    - *cr-dump
+    - *bus-dump
+    - *workload-dump
+  # ── Step 7: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify cinder-upgrade-broker-pod-kill
+    catch:
+    - *cr-dump
+    - *workload-dump
+  # ── Step 8: Tear the broker down through its own operator ─────────────────
+  # The broker pod carries a seven-day grace period, and Chainsaw's cleanup
+  # deletes what the suite applied under the 120 s the chaos config allows.
+  # The suite deletes the Cinder that consumes the bus first, then the
+  # RabbitmqCluster with foreground propagation, as ../cinder-broker-pod-kill/
+  # does for the reasons it gives (rabbitmq/cluster-operator#1864).
+  - try:
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          BUS=cinder-upg-bus-rabbitmq
+          kubectl delete cinder cinder-upg-bus -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=cinder-upg-bus -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a cinder pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=cinder-upg-bus -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Cinder CR and its pods are gone"
+
+          kubectl delete rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+            --ignore-not-found --cascade=foreground --wait=true --timeout=180s
+          BUS_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pod "${BUS}-server-0" -n "$NAMESPACE" -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${BUS_DEADLINE}" ]; then
+              echo "FAIL: ${BUS}-server-0 outlived its RabbitmqCluster by 180s; chainsaw's cleanup cannot wait it out"
+              kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the RabbitmqCluster and its broker pod are gone"
+    catch:
+    - script:
+        content: kubectl get rabbitmqcluster,cinder,cinderbackend -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get pods -n openstack -o wide 2>&1 || true
+    - script:
+        content: kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --all-containers --tail=100 2>&1 || true

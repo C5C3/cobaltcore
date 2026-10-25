@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the broker pod kill across a release upgrade, installed at
+# 2026.1. The release-upgrade fixture (../../e2e/cinder/release-upgrade/) under
+# the name cinder-upg-bus, on the schema cinder_upg_bus, in managed messaging
+# mode: messaging.clusterRef points at the RabbitmqCluster of
+# 00-rabbitmqcluster.yaml, so the operator builds the transport URL from that
+# cluster's default-user Secret, as in ../cinder-broker-pod-kill/.
+#
+# No keystoneEndpoint and no serviceUser, so the API renders auth_strategy =
+# noauth. One API replica: the rollout is read off updatedReplicas ==
+# replicas.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-upg-bus
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_upg_bus
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: cinder-upg-bus-rabbitmq

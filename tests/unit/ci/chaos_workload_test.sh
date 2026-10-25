@@ -18,7 +18,7 @@
 #      each input error exits 2, and the summary line carries the counts.
 #   3. workload.sh, against a stub kubectl: the pod start passes, each
 #      verb's failure paths, the budget line and the two out-of-band checks.
-#   4. The adoption: the forty-six suites that start a workload carry one
+#   4. The adoption: the forty-eight suites that start a workload carry one
 #      valid budget line, verify and stop it and time every call;
 #      deletion-stuck-finalizer and c5c3-operator-pod-kill say why they have
 #      none. keystone-helm-upgrade-pod-kill under tests/e2e-operator-upgrade/
@@ -2070,6 +2070,7 @@ CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
 ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-mariadb-outage \
 barbican-operator-pod-kill cert-manager-outage cinder-broker-pod-kill \
 cinder-keystone-outage cinder-mariadb-outage cinder-operator-pod-kill \
+cinder-upgrade-broker-pod-kill cinder-upgrade-db-partition \
 cinder-volume-pod-kill controlplane-keystone-degraded \
 cronjob-rotation-failure envoy-gateway-outage envoy-proxy-pod-kill eso-down \
 eso-pod-kill glance-keystone-outage glance-mariadb-outage \
@@ -2125,7 +2126,7 @@ check_adopter() {
 
 # --- Test 22 --------------------------------------------------------------
 test_every_suite_adopts_the_harness_or_declines_it() {
-  echo "Test: the forty-six adopters keep the harness contract, deletion-stuck-finalizer and c5c3-operator-pod-kill decline it"
+  echo "Test: the forty-eight adopters keep the harness contract, deletion-stuck-finalizer and c5c3-operator-pod-kill decline it"
   local file suite found=""
   for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
     suite="$(basename "$(dirname "$file")")"
@@ -2135,7 +2136,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     fi
   done
   # shellcheck disable=SC2086 # word splitting builds the sorted list
-  assert_eq "exactly the forty-six suites call workload.sh start" "$(echo $ADOPTERS)" \
+  assert_eq "exactly the forty-eight suites call workload.sh start" "$(echo $ADOPTERS)" \
     "$(printf '%s\n' $found | sort | xargs)"
   local finalizer="$CHAOS_DIR/deletion-stuck-finalizer/chainsaw-test.yaml"
   assert_file_contains_fixed "deletion-stuck-finalizer says why it has no workload" "$finalizer" \
