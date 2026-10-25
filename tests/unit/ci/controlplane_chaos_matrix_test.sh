@@ -144,11 +144,11 @@ test_the_leg_dumps_its_operators() {
 }
 
 test_the_leg_has_its_wall_and_does_not_gate() {
-  echo "Test: the controlplane leg has a 100-minute wall and is named non-blocking"
+  echo "Test: the controlplane leg has a 120-minute wall and is named non-blocking"
   local job
   job="$(job_block e2e-chaos)"
-  assert_contains "its arm of the wall reads 100 minutes" \
-    "$(grep -E '^ +timeout-minutes:' <<<"$job")" "matrix.suite == 'controlplane' && 100"
+  assert_contains "its arm of the wall reads 120 minutes" \
+    "$(grep -E '^ +timeout-minutes:' <<<"$job")" "matrix.suite == 'controlplane' && 120"
   assert_contains "it is named in the non-blocking allowlist" \
     "$(grep -E '^ +continue-on-error:' <<<"$job")" "matrix.suite == 'controlplane'"
 }

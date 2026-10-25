@@ -2058,10 +2058,10 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The split into five matrix entries is kept so PodChaos, NetworkChaos, the
-    # OVN datapath suite, the Nova stack and the ControlPlane suites stay
-    # independently gated (see continue-on-error below) and so the suites run
-    # in parallel.
+    # The split into six matrix entries is kept so PodChaos, NetworkChaos, the
+    # OVN datapath suite, the Nova stack, the ControlPlane suites and the
+    # Cinder release-upgrade suites stay independently gated (see
+    # continue-on-error below) and so the suites run in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly, so a new test
     # directory must be added to the appropriate suite below when introduced.
@@ -2174,22 +2174,36 @@ jobs:
               tests/e2e-chaos/controlplane-keystone-degraded
               tests/e2e-chaos/korc-network-partition
               tests/e2e-chaos/c5c3-operator-pod-kill
+          # The suites of #1394 that fault a Cinder release upgrade from
+          # 2026.1 to 2026.2: the only entry that loads a 2026.2 image. Each
+          # brings a Cinder of its own on the NFS export, one on a vhost of
+          # the shared broker and one on a RabbitmqCluster of its own.
+          # Non-blocking (see continue-on-error below): its partitions rest
+          # on kindnet's NetworkPolicy enforcement.
+          - suite: upgrade
+            test_dirs: >-
+              tests/e2e/infrastructure/chaos-mesh-health
+              tests/e2e-chaos/cinder-upgrade-db-partition
+              tests/e2e-chaos/cinder-upgrade-broker-pod-kill
     runs-on: self-hosted
-    # 150 minutes for the nova leg, 135 for network, 120 for pod, 100 for
-    # controlplane and 45 for ovn: 550 minutes for the five, which the author
-    # of #1390 accepted on 2026-10-16 against the seven hours D6 of #1386 gave
-    # the four legs before it. Run 38903206716 (PR #1420) took 62 minutes on
-    # pod, 125 on network, 11 on ovn and 130 on nova. The pod leg gains the
-    # eight suites of #1390 that need only the standalone stack, at about 5
-    # minutes each: a kind run took 105 to 334 seconds per suite, most of it
-    # in fixed hold and observe windows. The controlplane leg brings up the
-    # keystone stack, K-ORC and the c5c3-operator, and each of its five suites
-    # a Keystone-only ControlPlane: about 15 minutes for the bring-up and 8 to
-    # 12 per suite, the 7 min 45 s the keystone-service suite took in run
-    # 38788542824 plus the fault and a teardown of up to 12 minutes. Every
-    # suite runs one after the other: tests/e2e-chaos/chainsaw-config.yaml
-    # sets parallel: 1, where the e2e-operator nova leg fits comparable suites
-    # into 90 minutes only because it runs them two at a time. The nova leg
+    # 170 minutes for the nova leg, 135 for network, 135 for pod, 120 for
+    # controlplane, 80 for upgrade and 45 for ovn: 685 minutes for the six,
+    # which the author of #1394 accepted on 2026-10-25 against the 600 that
+    # D6 of #1386 allows; the estimated run is about 555 minutes. The last
+    # full run, on PR #1444 (2026-10-17), took 110 minutes on pod, 140 on
+    # network, which hit its wall, 12 on ovn, 133 on nova and 46 on
+    # controlplane. #1394 adds a Fernet rotation suite to pod, a drain suite
+    # to nova and three ControlPlane suites to controlplane, at about 12
+    # minutes each, and the upgrade leg brings up the keystone, OVN and
+    # Cinder stacks and runs two Cinder upgrades of about 20 minutes each.
+    # The controlplane leg brings up the keystone stack, K-ORC and the
+    # c5c3-operator, and each of its suites a Keystone-only ControlPlane:
+    # about 15 minutes for the bring-up and 8 to 12 per suite, the 7 min 45 s
+    # the keystone-service suite took in run 38788542824 plus the fault and a
+    # teardown of up to 12 minutes. Every suite runs one after the other:
+    # tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1, where the
+    # e2e-operator nova leg fits comparable suites into 90 minutes only
+    # because it runs them two at a time. The nova leg
     # loads eighteen images and runs eight operator deploys before its first
     # suite, and each of its six suites stands up a Keystone, an OVNCentral, a
     # Neutron, a Placement, a Glance and a five-workload Nova.
@@ -2205,7 +2219,7 @@ jobs:
     # times of the new suites are the estimate in these sums; read each leg's
     # duration off the first green run with them and re-derive if one
     # overruns.
-    timeout-minutes: ${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}
+    timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}
     # Pod-chaos is blocking; network-chaos, ovn and nova stay non-blocking
     # (their kernel-module dependency keeps them flakiness-prone). See the
     # gating note above the job. The nova leg is the third of them because
@@ -2213,13 +2227,17 @@ jobs:
     # ip_set modules, the same dependency the network leg's suites have, and
     # neutron-metadata-agent-pod-kill needs the OVN kernel modules the ovn leg
     # needs. The controlplane leg is the fourth: korc-network-partition is a
-    # NetworkChaos partition on the same sch_netem and ip_set modules.
+    # NetworkChaos partition on the same sch_netem and ip_set modules. The
+    # upgrade leg of #1394 is the fifth, for its own reasons rather than a
+    # kernel module: cinder-upgrade-db-partition partitions through
+    # NetworkPolicies, which rest on kindnet's enforcement, and the broker
+    # kill of cinder-upgrade-broker-pod-kill is new.
     #
-    # The four non-blocking legs are named, rather than negating the blocking
-    # one: a sixth leg added to the matrix above then gates merges by default
-    # and has to be argued out of it here, instead of arriving silently
-    # non-blocking and passing green while it fails.
-    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}
+    # The five non-blocking legs are named, rather than negating the blocking
+    # one: a seventh leg added to the matrix above then gates merges by
+    # default and has to be argued out of it here, instead of arriving
+    # silently non-blocking and passing green while it fails.
+    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}
     permissions:
       contents: read
       packages: read
@@ -2317,6 +2335,11 @@ jobs:
             # The controlplane leg's own operator; its Keystone children run
             # the keystone image the keystone stack above already loads.
             ${{ matrix.suite == 'controlplane' && format('{0}/c5c3-operator:dev', env.IMAGE_PREFIX) || '' }}
+            # The upgrade leg's two suites move a Cinder from 2026.1 to
+            # 2026.2, so they need the operator and both service images.
+            ${{ matrix.suite == 'upgrade' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'upgrade' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'upgrade' && format('{0}/cinder:2026.2', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
         if: matrix.suite != 'ovn'
         run: |
@@ -2379,6 +2402,15 @@ jobs:
         if: matrix.suite == 'controlplane'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+      # The upgrade leg's Cinder pair and the 2026.2 image its patch moves to.
+      # The cinder step above is gated on the network leg, which never runs a
+      # 2026.2 image.
+      - name: Load upgrade leg images into kind
+        if: matrix.suite == 'upgrade'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
       # The chassis DaemonSets of the ovn leg's ovn-southbound-outage and of
@@ -2399,10 +2431,12 @@ jobs:
           # the shared one would take the rest of the leg down with it. Five
           # of the six nova-stack suites take a vhost there too;
           # nova-broker-outage brings its own broker for the same reason. The
-          # NFS export stays on the network leg alone. Empty elsewhere, where deploy-infra.sh
-          # keeps its default of installing neither.
-          WITH_NFS: ${{ matrix.suite == 'network' && 'true' || '' }}
-          WITH_MESSAGING: ${{ (matrix.suite == 'network' || matrix.suite == 'nova') && 'true' || '' }}
+          # two upgrade suites attach an NFS backend too, and
+          # cinder-upgrade-db-partition takes a vhost on the shared broker;
+          # cinder-upgrade-broker-pod-kill brings its own. Empty elsewhere,
+          # where deploy-infra.sh keeps its default of installing neither.
+          WITH_NFS: ${{ (matrix.suite == 'network' || matrix.suite == 'upgrade') && 'true' || '' }}
+          WITH_MESSAGING: ${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade') && 'true' || '' }}
           # The controlplane leg prepares the ControlPlane path the way the
           # e2e-controlplane job does: the infrastructure overlay without the
           # standalone MariaDB, Memcached and shim ExternalSecrets, and the
@@ -2545,6 +2579,16 @@ jobs:
           OPERATOR: cinder
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
           NAMESPACE: cinder-system
+      # The upgrade leg's two Cinder suites. The name carries a suffix because
+      # tests/lib/ci_yaml.sh returns the first step of an exact name, and the
+      # network leg's step above is pinned by its own.
+      - name: Deploy cinder operator (upgrade leg)
+        if: matrix.suite == 'upgrade'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
       # The six nova-stack suites run on the nova leg alone, so the three
       # operators they need beyond the ovn one deploy there alone. The first two names carry a
       # "(nova leg)" suffix because tests/lib/ci_yaml.sh returns the first step
@@ -2621,6 +2665,11 @@ jobs:
         run: |
           OPERATOR=c5c3 OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           kubectl logs -n orc-system deployment/orc-controller-manager --tail=500 || true
+      # The upgrade leg's cinder-operator, whose log carries the phases of
+      # both upgrades.
+      - name: Dump diagnostic info (upgrade leg)
+        if: always() && matrix.suite == 'upgrade'
+        run: OPERATOR=cinder OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
