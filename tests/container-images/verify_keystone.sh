@@ -151,6 +151,50 @@ with mock.patch.object(core, "PROVIDERS") as providers:
   assert_eq "implied roles expand in linear time and each role is looked up once" "0" "$exit_code"
 }
 
+# --- Test 6: the system-grant cache patch is applied ---
+test_system_grant_patch_applied() {
+  echo "Test: a system grant invalidates the computed assignment cache"
+  # Proves that the image carries the three invalidations of
+  # patches/keystone/2026.1/0003-invalidate-assignment-cache-on-modify-operations.patch
+  # (#732): both system grants and the domain-deletion callback. Keystone
+  # 30.0.0 (2026.2) carries the upstream change natively, so both release
+  # images pass. Without it, a system grant leaves the cached
+  # list_role_assignments result in place, and K-ORC's read-back of a new
+  # system-scoped RoleAssignment stays empty until [cache] expiration_time;
+  # a deleted domain's assignments stay listed just as long. The driver, the
+  # role API and the cache region are mocked, so neither a database nor a
+  # configuration file is needed.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+from keystone.assignment import core
+
+manager = object.__new__(core.Manager)
+manager.driver = mock.Mock()
+region = mock.Mock()
+with mock.patch.object(core, "PROVIDERS") as providers, \
+        mock.patch.object(core, "COMPUTED_ASSIGNMENTS_REGION", region):
+    providers.role_api.get_role.return_value = {"id": "r", "domain_id": None}
+    manager.create_system_grant_for_user("u", "r")
+    if region.invalidate.call_count != 1:
+        sys.exit("create_system_grant_for_user did not invalidate "
+                 "COMPUTED_ASSIGNMENTS_REGION")
+    manager.create_system_grant_for_group("g", "r")
+    if region.invalidate.call_count != 2:
+        sys.exit("create_system_grant_for_group did not invalidate "
+                 "COMPUTED_ASSIGNMENTS_REGION")
+    manager._delete_domain_assignments(None, None, None, {"resource_info": "d"})
+    if region.invalidate.call_count != 3:
+        sys.exit("the domain-deletion callback did not invalidate "
+                 "COMPUTED_ASSIGNMENTS_REGION")' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "a system grant invalidates the computed assignment cache" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== keystone container verification tests ==="
 echo "Image: $IMAGE"
@@ -164,6 +208,8 @@ echo ""
 test_runtime_libraries_present
 echo ""
 test_implied_role_patch_applied
+echo ""
+test_system_grant_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
