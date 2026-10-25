@@ -426,6 +426,11 @@ func (r *ControlPlaneReconciler) reconcileBuiltinRegistration(
 //   - endpoints is a listType=map keyed on interface, and a map-list apply
 //     reconciles only the keys it carries. An admin endpoint row added by another
 //     manager is published in the catalog and never reclaimed.
+//   - registeredLimits is a listType=map keyed on resourceName for the same
+//     reason. A limit added by another manager becomes a Keystone default for
+//     every project.
+//   - systemRoles is unasserted while the projection carries none (an absent
+//     field owns nothing), and a role on the system reaches every project.
 //
 // Everything else the builder names — the URLs, the service and user names, the
 // project, the roles, the controlPlaneRef — IS in the apply body, so
@@ -451,6 +456,17 @@ func builtinRegistrationForeignFields(
 				foreign = append(foreign, fmt.Sprintf("spec.catalog.endpoints[interface=%s]", ep.Interface))
 			}
 		}
+		declaredLimits := make(map[string]struct{})
+		if asserted != nil {
+			for _, rl := range asserted.RegisteredLimits {
+				declaredLimits[rl.ResourceName] = struct{}{}
+			}
+		}
+		for _, rl := range live.RegisteredLimits {
+			if _, ok := declaredLimits[rl.ResourceName]; !ok {
+				foreign = append(foreign, fmt.Sprintf("spec.catalog.registeredLimits[resourceName=%s]", rl.ResourceName))
+			}
+		}
 	}
 
 	if live := child.Spec.Account; live != nil {
@@ -461,15 +477,18 @@ func builtinRegistrationForeignFields(
 		if live.Rotation != nil && (asserted == nil || asserted.Rotation == nil) {
 			foreign = append(foreign, "spec.account.rotation")
 		}
+		if len(live.SystemRoles) > 0 && (asserted == nil || len(asserted.SystemRoles) == 0) {
+			foreign = append(foreign, "spec.account.systemRoles")
+		}
 	}
 
 	return foreign
 }
 
-// reclaimBuiltinRegistrationFields resets the four spec fields Server-Side Apply
-// cannot reclaim — both adopt flags, the account rotation block, and the catalog
-// endpoint list — to what this ControlPlane projected, through an ordinary
-// Update.
+// reclaimBuiltinRegistrationFields resets the six spec fields Server-Side Apply
+// cannot reclaim — both adopt flags, the account rotation block and system
+// roles, and the catalog endpoint and registered-limit lists — to what this
+// ControlPlane projected, through an ordinary Update.
 //
 // Update is the right verb precisely because apply is not: field ownership is a
 // property of apply requests, so a manager that owns adopt or an extra endpoint
@@ -477,9 +496,9 @@ func builtinRegistrationForeignFields(
 // just made, so its resourceVersion carries the optimistic-concurrency check and
 // a racing write loses to a conflict rather than being clobbered.
 //
-// Only the four fields are touched, and the endpoint list is REPLACED rather than
-// merged: an endpoint row keyed on an interface the projection does not declare
-// is exactly what must not survive.
+// Only the six fields are touched, and the two lists are REPLACED rather than
+// merged: an endpoint row or a registered limit keyed on an entry the projection
+// does not declare is exactly what must not survive.
 func (r *ControlPlaneReconciler) reclaimBuiltinRegistrationFields(
 	ctx context.Context, projected *c5c3v1alpha1.KeystoneServiceSpec, child *c5c3v1alpha1.KeystoneService,
 ) error {
@@ -487,10 +506,12 @@ func (r *ControlPlaneReconciler) reclaimBuiltinRegistrationFields(
 	if live, asserted := reclaimed.Spec.Catalog, projected.Catalog; live != nil && asserted != nil {
 		live.Adopt = asserted.Adopt
 		live.Endpoints = asserted.Endpoints
+		live.RegisteredLimits = asserted.RegisteredLimits
 	}
 	if live, asserted := reclaimed.Spec.Account, projected.Account; live != nil && asserted != nil {
 		live.Adopt = asserted.Adopt
 		live.Rotation = asserted.Rotation
+		live.SystemRoles = asserted.SystemRoles
 	}
 	if err := r.Update(ctx, reclaimed); err != nil {
 		return fmt.Errorf("resetting the foreign spec fields on KeystoneService %q: %w", child.Name, err)
