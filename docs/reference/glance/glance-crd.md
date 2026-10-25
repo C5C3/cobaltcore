@@ -36,6 +36,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `importPlugins` | [`*ImportPluginsSpec`](#importpluginsspec) | no | Selects the image-import plugins Glance runs, rendered as `[image_import_opts] image_import_plugins` plus the section each enabled plugin reads. Presence of a sub-block enables that plugin, nil enables none; the rendered order is fixed (`image_decompression`, `image_conversion`, `inject_image_metadata`) and is not an input. Every default resolves at render time, so an unset field keeps tracking the operator default |
 | `dbPurge` | [`*DBPurgeSpec`](#dbpurgespec) | no | Recurring database purge that hard-deletes rows Glance only ever soft-deletes. The operator resolves the effective settings at reconcile time, so a nil block and an empty struct behave alike: 30-day retention, daily at `1 0 * * *`, task rows only, not suspended |
 | `staging` | [`*StagingSpec`](#stagingspec) | no | Bounds the node-local scratch space an image import may consume. The operator resolves the effective limit at reconcile time, so a nil block, an empty struct, and a set block leaving `sizeLimit` unset all behave alike: `10Gi` on each of the two scratch volumes. `unbounded: true` opts out of the bound entirely |
+| `keystoneLimits` | [`*KeystoneLimitsSpec`](#keystonelimitsspec) | no | Turns on per-project image quotas through Keystone unified limits: presence of the block enables them, nil disables them. The operator renders `[DEFAULT] use_keystone_limits = true` and a system-scoped `[oslo_limit]` section and injects `OS_OSLO_LIMIT__PASSWORD`; the limits themselves live in Keystone. Enabling or disabling it rolls the Deployment once |
 | `imageCache` | [`*ImageCacheSpec`](#imagecachespec) | no | Turns on the per-replica local image cache: presence of the block enables it, nil disables it. `sizeLimit` bounds the cache `emptyDir` (default `10Gi`, floor `1Mi`), `maintenanceInterval` sets the pruner/cleaner cadence (default `5m`, floor `1m`), and `maintenanceResources` sizes the maintenance sidecar (default `25m` CPU request, `256Mi` memory request and limit). All three resolve at render time, so an unset field keeps tracking the operator default |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 9292; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (the ports of DNS, the database, the cache and the attached S3 backends, to any destination). At least one ingress source is required (fail-closed) |
@@ -46,7 +47,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `policyOverrides` | `*PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders a `policy.yaml` and wires `oslo_policy.policy_file` |
 | `middleware` | `[]MiddlewareSpec` | no | WSGI middleware filters injected into the `api-paste.ini` pipeline |
 | `plugins` | `[]PluginSpec` | no | Service plugins/drivers, modeled as a list-map keyed by `configSection` so duplicate sections are rejected structurally |
-| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for options with no dedicated knob of their own. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap, the six `[import_filtering_opts]` keys, which it rejects so the `web-download` URI filter stays reachable only through [`spec.importFiltering`](#importfilteringspec) and its admission gates, and the three `[DEFAULT] image_cache_*` keys, which it rejects because each of them ends in an evicted glance-api pod or in database rows nothing reclaims — see [ImageCacheSpec](#imagecachespec). The four image-import plugin keys are rejected on the same footing, so the plugin pipeline stays reachable only through [`spec.importPlugins`](#importpluginsspec) and the order, enum, and property-name rules it carries. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins`, operator-owned keys, and the reserved store sections `os_glance_staging_store` and `os_glance_tasks_store` are exempt. An unknown section or option is rejected with the section and key named, so an arbitrary backend-named section is refused; backend options belong to the [`GlanceBackend`](./glance-backend-crd.md) CR. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing only — a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject arbitrary config lines past the ownership and catalog gates. Every rule here is webhook-only with no CEL backstop |
+| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for options with no dedicated knob of their own. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap, the six `[import_filtering_opts]` keys, which it rejects so the `web-download` URI filter stays reachable only through [`spec.importFiltering`](#importfilteringspec) and its admission gates, and the three `[DEFAULT] image_cache_*` keys, which it rejects because each of them ends in an evicted glance-api pod or in database rows nothing reclaims — see [ImageCacheSpec](#imagecachespec). The four image-import plugin keys are rejected on the same footing, so the plugin pipeline stays reachable only through [`spec.importPlugins`](#importpluginsspec) and the order, enum, and property-name rules it carries. `[DEFAULT] use_keystone_limits` and the `[oslo_limit]` credential, scope and endpoint keys of [KeystoneLimitsSpec](#keystonelimitsspec) are rejected too: a hand-set value refuses every image create or drops the quotas. An update that carries one of these unified-limits keys with the value the stored object already holds is admitted with a warning, so an object that enabled unified limits by hand before the keys became rejected stays updatable and deletable; a new key or a changed value is refused, and so is every other rejected key. An update that sets `spec.keystoneLimits` carries none of them over, because a hand-set key would override the section the block renders. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins`, operator-owned keys, and the reserved store sections `os_glance_staging_store` and `os_glance_tasks_store` are exempt. An unknown section or option is rejected with the section and key named, so an arbitrary backend-named section is refused; backend options belong to the [`GlanceBackend`](./glance-backend-crd.md) CR. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing only — a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject arbitrary config lines past the ownership and catalog gates. Every rule here is webhook-only with no CEL backstop |
 
 ### ServiceUserSpec
 
@@ -326,8 +327,9 @@ trusted callers by `oslo.policy`, and size `spec.staging.sizeLimit` against the
 largest **unpacked** image the deployment expects rather than the largest
 download. Where the import path must stay open, run imports on a glance-api
 replica set of their own so an eviction cannot take the serving path with it —
-a per-tenant import quota is the other control, and neither is something this
-block can express.
+a per-tenant import quota is the other control (see
+[KeystoneLimitsSpec](#keystonelimitsspec): `image_stage_total` bounds the bytes a
+project may stage), and neither is something this block can express.
 :::
 
 **Conversion shells out to `qemu-img`.** The plugin runs `qemu-img info` on the
@@ -749,6 +751,87 @@ live Deployment, and the volume is absent while the block is nil:
 kubectl get deploy glance -n openstack \
   -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="image-cache")].emptyDir.sizeLimit}{"\n"}'
 ```
+
+### KeystoneLimitsSpec
+
+Glance's per-project image quotas are Keystone unified limits: Keystone stores a
+registered limit per resource (the default for every project) and an optional
+project limit per project (the override), and Glance asks Keystone for both on
+every image create, upload and import. This block turns that enforcement on. It
+carries no fields, because the limits are Keystone data and every option the
+operator renders derives from `spec.serviceUser`, `spec.keystoneEndpoint` and
+`spec.region`. With the block nil the operator renders none of the keys below
+and injects no env var, so an existing Glance keeps its config across an
+operator upgrade.
+
+Glance enforces four resources:
+
+| Resource | Counts |
+| --- | --- |
+| `image_size_total` | Stored image data per project, in MiB |
+| `image_stage_total` | Image data staged for import per project, in MiB |
+| `image_count_total` | Non-deleted images per project |
+| `image_count_uploading` | Images in an upload or import state per project |
+
+While the block is set the operator renders these keys:
+
+| Key | Value |
+| --- | --- |
+| `[DEFAULT] use_keystone_limits` | `true` |
+| `[oslo_limit] auth_type` | `password` |
+| `[oslo_limit] auth_url` | `spec.keystoneEndpoint` |
+| `[oslo_limit] username` | `spec.serviceUser.username` |
+| `[oslo_limit] user_domain_name` | `spec.serviceUser.userDomainName` |
+| `[oslo_limit] system_scope` | `all` |
+| `[oslo_limit] endpoint_service_type` | `image` |
+| `[oslo_limit] endpoint_interface` | `internal` |
+| `[oslo_limit] endpoint_override` | `spec.keystoneEndpoint`, with `/v3` appended when the URL does not end in it |
+| `[oslo_limit] endpoint_region_name` | `spec.region`, only when it is set |
+
+The `glance-api` container also reads `OS_OSLO_LIMIT__PASSWORD` from the
+`spec.serviceUser.secretRef` key (`password` when `key` is empty), the same key
+the `[keystone_authtoken]` password comes from, so a password rotation rolls the
+pods through the existing digest annotation. The db-sync Job, the purge CronJob
+and the cache sidecar get no such variable: none of them checks a quota.
+
+The token is system-scoped because oslo.limit finds Glance's endpoint through
+`GET /v3/services` and `GET /v3/endpoints`, which Keystone allows only to an
+admin or to a reader on the system, and the service user holds neither on its
+project. The limits themselves need no system scope: since 29.0.0 Keystone lists
+every project's limits to a token with the `admin` or `service` role.
+keystoneauth refuses a project scope beside a system scope, so `project_name`
+and `project_domain_name` are not rendered. `endpoint_interface` overrides
+oslo.limit's default `public`, and `endpoint_region_name` keeps the lookup to
+one endpoint where the image service is registered in more than one region.
+`endpoint_override` points the identity calls at the Keystone URL the pods
+reach, because the catalog's identity entry is public only.
+
+The block has three prerequisites the operator does not create:
+
+1. Registered limits for all four resources on the `image` service in
+   `spec.region`. oslo.limit counts a resource without any limit as limit 0, so
+   without them every image create is refused with HTTP 413.
+2. The service user holding a role on the system (`reader` is enough).
+3. An `internal` endpoint of the `image` service in `spec.region`.
+
+A ControlPlane-managed Glance gets all three from the ControlPlane's
+`spec.services.glance.quotas`; a hand-managed Glance creates them itself.
+A Keystone outage, a missing endpoint or two matching endpoints make the quota
+check fail, and Glance answers the request with HTTP 500.
+
+All eleven keys (`use_keystone_limits` and the ten `[oslo_limit]` keys,
+`password` included) are registered as operator-owned and **Rejected**, whether
+or not the block is set. So are fifteen `[oslo_limit]` keys the operator does
+not render, because each overrides what it renders: `project_id`,
+`project_name`, `project_domain_id`, `project_domain_name`, `tenant_id`,
+`tenant_name`, `domain_id`, `domain_name` and `trust_id` add a scope
+keystoneauth refuses next to `system_scope`, `user_id`, `user_domain_id`,
+`default_domain_id` (the password plugin's fallback for `user_domain_id`, which
+wins over the rendered `user_domain_name`) and the deprecated `user_name` log in
+as another user, and `endpoint_id` and `endpoint_service_name` replace the
+endpoint lookup. Other `[oslo_limit]`
+options, such as `cafile`, `insecure` and `timeout`, stay settable through
+`extraConfig`.
 
 ### Defaulting and validation
 

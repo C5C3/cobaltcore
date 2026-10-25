@@ -654,6 +654,59 @@ func TestBuildGlanceDeployment_EnvVars(t *testing.T) {
 	g.Expect(pw.ValueFrom.SecretKeyRef.Key).To(Equal("password"))
 }
 
+// TestBuildGlanceDeployment_KeystoneLimitsPasswordEnv pins the [oslo_limit]
+// password env var: absent without spec.keystoneLimits, read from the
+// service-user Secret key the authtoken password uses (the key "password" when
+// secretRef.key is empty) with it, and on the glance-api container only, never
+// on the cache-maintenance sidecar, which enforces no quota.
+func TestBuildGlanceDeployment_KeystoneLimitsPasswordEnv(t *testing.T) {
+	envOf := func(c corev1.Container) map[string]corev1.EnvVar {
+		names := map[string]corev1.EnvVar{}
+		for _, e := range c.Env {
+			names[e.Name] = e
+		}
+		return names
+	}
+
+	t.Run("nil block injects no env var", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		deploy := buildGlanceDeployment(deployGlance("2026.1"), testArtifacts(), "", "")
+		g.Expect(envOf(deploy.Spec.Template.Spec.Containers[0])).NotTo(HaveKey(keystoneauth.LimitPasswordEnvVarName))
+	})
+
+	cases := []struct {
+		name    string
+		key     string
+		wantKey string
+	}{
+		{name: "explicit secretRef key", key: "glance-password", wantKey: "glance-password"},
+		{name: "empty secretRef key falls back to password", key: "", wantKey: "password"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := deployGlance("2026.1")
+			glance.Spec.ServiceUser.SecretRef.Key = tc.key
+			glance.Spec.KeystoneLimits = &glancev1alpha1.KeystoneLimitsSpec{}
+			glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
+
+			containers := buildGlanceDeployment(glance, testArtifacts(), "", "").Spec.Template.Spec.Containers
+			g.Expect(containers[0].Name).To(Equal("glance-api"))
+			api := envOf(containers[0])
+			g.Expect(api).To(HaveKey(keystoneauth.LimitPasswordEnvVarName))
+			pw := api[keystoneauth.LimitPasswordEnvVarName]
+			g.Expect(pw.ValueFrom).NotTo(BeNil())
+			g.Expect(pw.ValueFrom.SecretKeyRef.Name).To(Equal("glance-service-user"))
+			g.Expect(pw.ValueFrom.SecretKeyRef.Key).To(Equal(tc.wantKey))
+			g.Expect(api[keystoneauth.PasswordEnvVarName].ValueFrom.SecretKeyRef.Key).To(Equal(tc.wantKey),
+				"both passwords come from the same Secret key")
+
+			g.Expect(containers).To(HaveLen(2), "the image cache adds the maintenance sidecar")
+			g.Expect(envOf(containers[1])).NotTo(HaveKey(keystoneauth.LimitPasswordEnvVarName))
+		})
+	}
+}
+
 // A request on a connection a MariaDB outage killed pins its worker for the TCP
 // retransmit window unless pymysql bounds the socket, so the API container
 // carries the bound by default. A user's own connection_parameters stays

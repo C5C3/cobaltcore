@@ -2219,6 +2219,152 @@ func TestGlanceValidate_ExtraConfigImageCacheOwnedKeyRejected(t *testing.T) {
 	}
 }
 
+// TestGlanceValidate_ExtraConfigKeystoneLimitsOwnedKeyRejected pins the
+// unified-limits keys spec.keystoneLimits owns: [DEFAULT] use_keystone_limits,
+// the rendered [oslo_limit] keys and the unrendered ones that override the
+// scope, the user or the endpoint lookup are refused on create whether or not
+// the block is set, while any other [oslo_limit] option, such as timeout, stays
+// settable.
+func TestGlanceValidate_ExtraConfigKeystoneLimitsOwnedKeyRejected(t *testing.T) {
+	tests := []struct {
+		section    string
+		key        string
+		value      string
+		wantImpact string
+	}{
+		{"DEFAULT", "use_keystone_limits", "true", "refuses every image create with 413"},
+		{"oslo_limit", "system_scope", "all", "every image create answers 500"},
+		{"oslo_limit", "endpoint_interface", "public", "every image create answers 500"},
+		{"oslo_limit", "password", "s3cret", "OS_OSLO_LIMIT__PASSWORD"},
+		{"oslo_limit", "project_name", "service", "every image create answers 500"},
+		{"oslo_limit", "trust_id", "t", "every image create answers 500"},
+		{"oslo_limit", "user_name", "admin", "every image create answers 500"},
+		{"oslo_limit", "default_domain_id", "d", "every image create answers 500"},
+		{"oslo_limit", "endpoint_id", "e", "every image create answers 500"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.section+"/"+tc.key, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &GlanceWebhook{}
+			for _, enabled := range []bool{true, false} {
+				obj := validGlance()
+				if enabled {
+					obj.Spec.KeystoneLimits = &KeystoneLimitsSpec{}
+				}
+				obj.Spec.ExtraConfig = map[string]map[string]string{tc.section: {tc.key: tc.value}}
+
+				_, err := w.ValidateCreate(context.Background(), obj)
+				g.Expect(err).To(gomega.HaveOccurred(), "create must reject [%s] %s (keystoneLimits set: %t)", tc.section, tc.key, enabled)
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.key + " is managed via spec.keystoneLimits"))
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantImpact))
+			}
+		})
+	}
+
+	t.Run("an unrendered oslo_limit option stays settable", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		obj := validGlance()
+		obj.Spec.KeystoneLimits = &KeystoneLimitsSpec{}
+		obj.Spec.ExtraConfig = map[string]map[string]string{"oslo_limit": {"timeout": "30"}}
+
+		_, err := (&GlanceWebhook{}).ValidateCreate(context.Background(), obj)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+	})
+}
+
+// TestGlanceValidateUpdate_CarriedRejectedKey pins the carry-over rule: an
+// update that keeps a Rejected key the stored object already holds with the
+// same value is admitted with a warning naming the owning field, so a Glance
+// that enabled unified limits by hand before the keys became Rejected stays
+// updatable and deletable. A changed value or a newly added Rejected key is
+// still refused.
+func TestGlanceValidateUpdate_CarriedRejectedKey(t *testing.T) {
+	stored := func() *Glance {
+		obj := validGlance()
+		obj.Spec.ExtraConfig = map[string]map[string]string{"oslo_limit": {"password": "s3cret"}}
+		return obj
+	}
+
+	t.Run("unchanged value is admitted with a warning", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		updated := stored()
+		updated.Spec.Deployment.Replicas = 3
+
+		warnings, err := (&GlanceWebhook{}).ValidateUpdate(context.Background(), stored(), updated)
+		g.Expect(err).NotTo(gomega.HaveOccurred())
+		g.Expect(warnings).To(gomega.ContainElement(gomega.And(
+			gomega.ContainSubstring("spec.extraConfig[oslo_limit][password]"),
+			gomega.ContainSubstring("password is managed via spec.keystoneLimits"),
+			gomega.ContainSubstring("a new or changed value is rejected"),
+		)))
+	})
+
+	t.Run("changed value is rejected", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		updated := stored()
+		updated.Spec.ExtraConfig["oslo_limit"]["password"] = "other"
+
+		_, err := (&GlanceWebhook{}).ValidateUpdate(context.Background(), stored(), updated)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("password is managed via spec.keystoneLimits"))
+	})
+
+	t.Run("a newly added Rejected key is rejected beside a carried one", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		updated := stored()
+		updated.Spec.ExtraConfig["oslo_limit"]["system_scope"] = "all"
+
+		_, err := (&GlanceWebhook{}).ValidateUpdate(context.Background(), stored(), updated)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("system_scope is managed via spec.keystoneLimits"))
+		g.Expect(err.Error()).NotTo(gomega.ContainSubstring("password is managed via"))
+	})
+
+	t.Run("create never carries a key over", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		_, err := (&GlanceWebhook{}).ValidateCreate(context.Background(), stored())
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("password is managed via spec.keystoneLimits"))
+	})
+
+	// spec.keystoneLimits renders the section the carried key would override,
+	// so the update that turns it on has to drop the hand-set key.
+	t.Run("an update that sets spec.keystoneLimits carries nothing over", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		old := validGlance()
+		old.Spec.ExtraConfig = map[string]map[string]string{"oslo_limit": {"project_name": "service"}}
+		updated := old.DeepCopy()
+		updated.Spec.KeystoneLimits = &KeystoneLimitsSpec{}
+
+		warnings, err := (&GlanceWebhook{}).ValidateUpdate(context.Background(), old, updated)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("project_name is managed via spec.keystoneLimits"))
+		g.Expect(warnings).NotTo(gomega.ContainElement(gomega.ContainSubstring("is no longer accepted in extraConfig")))
+	})
+
+	// Only the unified-limits keys carry over: the authtoken password and the
+	// web-download filter were Rejected before any object could store them, so
+	// a stored one is refused on the next update and has to go.
+	for _, tc := range []struct{ section, key, owner string }{
+		{"keystone_authtoken", "password", "spec.serviceUser.secretRef"},
+		{"import_filtering_opts", "allowed_hosts", "spec.importFiltering"},
+	} {
+		t.Run("an unchanged "+tc.section+" "+tc.key+" is still rejected", func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			old := validGlance()
+			old.Spec.ExtraConfig = map[string]map[string]string{tc.section: {tc.key: "v"}}
+			updated := old.DeepCopy()
+			updated.Spec.Deployment.Replicas = 3
+
+			warnings, err := (&GlanceWebhook{}).ValidateUpdate(context.Background(), old, updated)
+			g.Expect(err).To(gomega.HaveOccurred())
+			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.key + " is managed via " + tc.owner))
+			g.Expect(warnings).NotTo(gomega.ContainElement(gomega.ContainSubstring("is no longer accepted in extraConfig")))
+		})
+	}
+}
+
 // TestGlanceValidate_ExtraConfigImportFilteringUnknownKeyRejected pins the other
 // half of that exemption: only the six registered keys are admitted under
 // [import_filtering_opts]. Any other key falls through to the unknown-section

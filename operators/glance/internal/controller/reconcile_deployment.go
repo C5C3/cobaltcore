@@ -358,6 +358,12 @@ func effectiveStagingSizeLimit(glance *glancev1alpha1.Glance) *resource.Quantity
 // glanceImageCachePath, and the cacheMaintenanceContainer sidecar that prunes
 // and cleans it. With the cache off the pod template is byte-identical to the
 // one built before the cache existed.
+//
+// spec.keystoneLimits adds the [oslo_limit] password env var, read from the
+// service-user Secret key the [keystone_authtoken] password comes from, to the
+// glance-api container alone: the db-sync Job, the purge CronJob and the cache
+// sidecar enforce no quota. The authtoken digest annotation already rolls the
+// pods on a rotation of that key.
 func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, dsnDigest, authtokenDigest string) *appsv1.Deployment {
 	selector := selectorLabels(glance)
 	labels := componentLabels(glance, naming.ComponentAPI)
@@ -369,6 +375,14 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 	var tasksLimit *resource.Quantity
 	if stagingLimit != nil {
 		tasksLimit = ptr.To(stagingLimit.DeepCopy())
+	}
+
+	env := append([]corev1.EnvVar{
+		database.ConnectionEnvVar(glance.Name),
+		keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
+	}, database.SocketTimeoutEnvVars(glance.Spec.ExtraConfig, "database")...)
+	if glance.Spec.KeystoneLimits != nil {
+		env = append(env, keystoneauth.LimitPasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)))
 	}
 
 	deploy := deployment.BuildWorkload(deployment.WorkloadParams{
@@ -385,10 +399,7 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 			Image:           glance.Spec.Image.Reference(),
 			ImagePullPolicy: glance.Spec.Image.EffectivePullPolicy(),
 			Command:         glanceUWSGICommand(glance.Spec.APIServer),
-			Env: append([]corev1.EnvVar{
-				database.ConnectionEnvVar(glance.Name),
-				keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
-			}, database.SocketTimeoutEnvVars(glance.Spec.ExtraConfig, "database")...),
+			Env:             env,
 			Ports: []corev1.ContainerPort{{
 				Name:          "glance-api",
 				ContainerPort: glanceAPIPort,

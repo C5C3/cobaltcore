@@ -219,6 +219,16 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 	if importPlugins.InjectMetadata != nil {
 		importPluginNames = append(importPluginNames, "inject_image_metadata")
 	}
+	authParams := keystoneauth.SectionParams{
+		AuthURL:            glance.Spec.KeystoneEndpoint,
+		WWWAuthenticateURI: glance.Spec.EffectiveKeystonePublicEndpoint(),
+		Username:           glance.Spec.ServiceUser.Username,
+		ProjectName:        glance.Spec.ServiceUser.ProjectName,
+		UserDomainName:     glance.Spec.ServiceUser.UserDomainName,
+		ProjectDomainName:  glance.Spec.ServiceUser.ProjectDomainName,
+		RegionName:         glance.Spec.Region,
+		MemcachedServers:   cache.ResolveServers(&glance.Spec.Cache),
+	}
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
 			"enabled_backends": projection.enabledBackends,
@@ -241,16 +251,7 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 			// derived Secret and injected at runtime via OS_DATABASE__CONNECTION.
 			"connection": dbConnectionPlaceholder,
 		},
-		"keystone_authtoken": keystoneauth.Section(keystoneauth.SectionParams{
-			AuthURL:            glance.Spec.KeystoneEndpoint,
-			WWWAuthenticateURI: glance.Spec.EffectiveKeystonePublicEndpoint(),
-			Username:           glance.Spec.ServiceUser.Username,
-			ProjectName:        glance.Spec.ServiceUser.ProjectName,
-			UserDomainName:     glance.Spec.ServiceUser.UserDomainName,
-			ProjectDomainName:  glance.Spec.ServiceUser.ProjectDomainName,
-			RegionName:         glance.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&glance.Spec.Cache),
-		}),
+		"keystone_authtoken": keystoneauth.Section(authParams),
 		"glance_store": {
 			"default_backend": projection.defaultBackend,
 		},
@@ -351,6 +352,16 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 			"inject":            config.RenderSortedPairs(importPlugins.InjectMetadata.Properties, ":"),
 			"ignore_user_roles": strings.Join(importPlugins.InjectMetadata.IgnoreUserRoles, ","),
 		}
+	}
+	// Keystone unified limits, rendered only while spec.keystoneLimits is set, so
+	// an existing Glance renders the same config across an operator upgrade and
+	// does not roll. [oslo_limit] authenticates as the service user,
+	// system-scoped, against the image service's internal endpoint in
+	// spec.region; the password arrives through OS_OSLO_LIMIT__PASSWORD (see
+	// buildGlanceDeployment).
+	if glance.Spec.KeystoneLimits != nil {
+		defaults["DEFAULT"]["use_keystone_limits"] = "true"
+		defaults["oslo_limit"] = keystoneauth.LimitSection(authParams, "image")
 	}
 
 	return defaults

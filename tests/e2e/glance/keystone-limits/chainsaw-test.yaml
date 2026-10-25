@@ -1,0 +1,229 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for Glance's Keystone unified limits (spec.keystoneLimits).
+# The unit tests pin the render against a built config map; this suite asserts
+# the same contract against a running API, in three legs:
+#
+#   Leg 1 — shape. The CR goes Ready with keystoneLimits: {} and a region,
+#     and so does its default S3 backend. glance asks Keystone only when it
+#     checks a quota, so the API starts without one.
+#   Leg 2 — rendered config and env. The ConfigMap the glance-api Deployment
+#     mounts carries use_keystone_limits = true and the system-scoped
+#     [oslo_limit] section (system_scope, the internal interface, the region),
+#     and the glance-api container reads OS_OSLO_LIMIT__PASSWORD from the
+#     service-user Secret.
+#   Leg 3 — revert. spec.keystoneLimits is unset again: the Deployment rolls to
+#     a config without use_keystone_limits and [oslo_limit], the env var is
+#     gone, and status.rolledOutGeneration catches up with metadata.generation,
+#     the signal the ControlPlane waits for before it deletes the registered
+#     limits.
+#
+# ── DECISION: no quota is checked ───────────────────────────────────
+# No Keystone is deployed in the glance e2e leg, so no registered limit exists
+# and an image create would answer 500 (the Keystone lookup fails) rather than
+# reach a quota decision. The live quota checks run in full-controlplane-keystone
+# (a 413 on image_count_total) and the glance tempest legs
+# (tempest.scenario.test_unified_limits).
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-keystone-limits
+spec:
+  namespace: openstack
+  # The revert leg waits out a full Deployment rollout; everything else is a
+  # read against the API server.
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1 (leg 1): deploy with unified limits on ────────────────────────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-keystone-limits
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-keystone-limits-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-keystone-limits
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-keystone-limits -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-keystone-limits-s3 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== glance-api Deployment ==="
+          kubectl describe deployment glance-keystone-limits -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-keystone-limits -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2 (leg 2): the rendered [oslo_limit] config and the env var ──────
+  # The ConfigMap is resolved off the Deployment's `config` volume rather than
+  # by name: the name carries the content hash, so it changes with every render.
+  - try:
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy glance-keystone-limits -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n "$NAMESPACE" -o 'jsonpath={.data.glance-api\.conf}' \
+            > /tmp/glance-keystone-limits-api.conf
+          grep -q '^use_keystone_limits = true$' /tmp/glance-keystone-limits-api.conf
+          grep -q '^\[oslo_limit\]$' /tmp/glance-keystone-limits-api.conf
+          # System scope, because Keystone answers oslo.limit's service and
+          # endpoint lookups only to an admin or to a reader on the system.
+          grep -q '^system_scope = all$' /tmp/glance-keystone-limits-api.conf
+          # The internal interface every ControlPlane registration projects,
+          # not oslo.limit's default public.
+          grep -q '^endpoint_interface = internal$' /tmp/glance-keystone-limits-api.conf
+          grep -q '^endpoint_region_name = RegionOne$' /tmp/glance-keystone-limits-api.conf
+          grep -q '^endpoint_service_type = image$' /tmp/glance-keystone-limits-api.conf
+          # The password never lands in the ConfigMap.
+          if sed -n '/^\[oslo_limit\]$/,/^\[/p' /tmp/glance-keystone-limits-api.conf | grep -q '^password'; then
+            echo "ERROR: [oslo_limit] carries a password in the ConfigMap"
+            exit 1
+          fi
+          SECRET=$(kubectl get deploy glance-keystone-limits -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.containers[?(@.name=="glance-api")].env[?(@.name=="OS_OSLO_LIMIT__PASSWORD")].valueFrom.secretKeyRef.name}')
+          KEY=$(kubectl get deploy glance-keystone-limits -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.containers[?(@.name=="glance-api")].env[?(@.name=="OS_OSLO_LIMIT__PASSWORD")].valueFrom.secretKeyRef.key}')
+          test "$SECRET" = keystone-admin
+          test "$KEY" = password
+          echo "OK: $CM renders the system-scoped [oslo_limit] section and glance-api reads OS_OSLO_LIMIT__PASSWORD from $SECRET/$KEY"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-keystone-limits -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== rendered unified-limits config ==="
+          CM="$(kubectl get deploy glance-keystone-limits -n $NAMESPACE \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)"
+          kubectl get cm "$CM" -n $NAMESPACE -o 'jsonpath={.data.glance-api\.conf}' 2>/dev/null \
+            | sed -n '/^\[oslo_limit\]$/,/^\[/p' || true
+          echo "=== glance-api env names ==="
+          kubectl get deploy glance-keystone-limits -n $NAMESPACE \
+            -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="glance-api")].env[*]}{.name}{"\n"}{end}' 2>&1 || true
+  # ── Step 3 (leg 3): take unified limits back off a live Deployment ───────
+  # The operator writes an immutable, content-hashed ConfigMap and points the
+  # Deployment at it, so the limit-free config only becomes observable once the
+  # render, the new ConfigMap and the pod-template update have all landed. That
+  # is why this leg polls instead of reading once.
+  - try:
+    - patch:
+        file: 02-patch-remove-keystonelimits.yaml
+    - script:
+        timeout: 5m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CONF=/tmp/glance-keystone-limits-api-reverted.conf
+
+          # The config, the env var and the rollout signal have to agree on the
+          # SAME pass. 36 x 5s = 3m, inside the 5m step timeout, so a stuck
+          # rollout is reported with its diagnostics rather than killed by
+          # chainsaw.
+          CM=""
+          REVERTED=""
+          for _ in $(seq 1 36); do
+            CM="$(kubectl get deploy glance-keystone-limits -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)"
+            ENV="$(kubectl get deploy glance-keystone-limits -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.containers[?(@.name=="glance-api")].env[*].name}' 2>/dev/null || true)"
+            GEN="$(kubectl get glance glance-keystone-limits -n "$NAMESPACE" -o 'jsonpath={.metadata.generation}' 2>/dev/null || true)"
+            ROLLED="$(kubectl get glance glance-keystone-limits -n "$NAMESPACE" -o 'jsonpath={.status.rolledOutGeneration}' 2>/dev/null || true)"
+            if [ -n "${CM}" ] \
+              && kubectl get cm "${CM}" -n "$NAMESPACE" \
+                -o 'jsonpath={.data.glance-api\.conf}' > "${CONF}" 2>/dev/null \
+              && ! grep -q '^use_keystone_limits' "${CONF}" \
+              && ! grep -q '^\[oslo_limit\]$' "${CONF}" \
+              && ! grep -qw 'OS_OSLO_LIMIT__PASSWORD' <<<"${ENV}" \
+              && [ -n "${GEN}" ] && [ "${ROLLED}" = "${GEN}" ]; then
+              REVERTED="yes"
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${REVERTED}" ]; then
+            echo "ERROR: unified limits are still on after 3m. Wanted no"
+            echo "       use_keystone_limits, no [oslo_limit] section, no"
+            echo "       OS_OSLO_LIMIT__PASSWORD and status.rolledOutGeneration"
+            echo "       equal to metadata.generation."
+            echo "--- ConfigMap on the config volume: ${CM} ---"
+            grep -E '^(\[|use_keystone_limits)' "${CONF}" 2>&1 || true
+            echo "--- env: ${ENV} ---"
+            echo "--- generation ${GEN}, rolledOutGeneration ${ROLLED} ---"
+            kubectl describe deployment glance-keystone-limits -n "$NAMESPACE" 2>&1 | tail -40 || true
+            exit 1
+          fi
+          echo "OK: ${CM} renders no unified limits, the env var is gone, and generation ${GEN} is rolled out"
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-keystone-limits
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-keystone-limits -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== config volume the Deployment points at ==="
+          kubectl get deploy glance-keystone-limits -n $NAMESPACE \
+            -o 'jsonpath={range .spec.template.spec.volumes[*]}volume={.name}{" cm="}{.configMap.name}{"\n"}{end}' 2>&1 || true
+          echo "=== rollout ==="
+          kubectl describe deployment glance-keystone-limits -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-keystone-limits -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

@@ -171,6 +171,25 @@ type GlanceSpec struct {
 	// +optional
 	ImportPlugins *ImportPluginsSpec `json:"importPlugins,omitempty"`
 
+	// KeystoneLimits turns on per-project image quotas through Keystone unified
+	// limits: the operator renders [DEFAULT] use_keystone_limits = true and a
+	// system-scoped [oslo_limit] section, and injects the service user's
+	// password as OS_OSLO_LIMIT__PASSWORD into the glance-api container. Glance
+	// then checks image_size_total, image_stage_total, image_count_total and
+	// image_count_uploading against Keystone on every create, upload and import.
+	// Nil renders neither, and Glance enforces no quota.
+	//
+	// The block has three prerequisites the operator does not create: registered
+	// limits for all four resources on the image service in spec.region, the
+	// service user holding a role on the system (reader is enough), so its
+	// system-scoped token can look the image endpoint up, and an internal image
+	// endpoint in spec.region. oslo.limit counts a resource without any limit as
+	// limit 0, so without the registered limits every image create is refused
+	// with 413. A ControlPlane-managed Glance gets all three from
+	// spec.services.glance.quotas; a hand-managed one creates them itself.
+	// +optional
+	KeystoneLimits *KeystoneLimitsSpec `json:"keystoneLimits,omitempty"`
+
 	// DBPurge tunes the recurring database purge that hard-deletes the rows
 	// glance only ever soft-deletes. The operator resolves the effective
 	// retention and schedule at reconcile time — DefaultDBPurgeRetentionDays and
@@ -540,6 +559,14 @@ type ImportPluginsSpec struct {
 // a bool so a future upstream option can be added without changing the shape a
 // stored CR carries.
 type ImportDecompressionSpec struct{}
+
+// KeystoneLimitsSpec enables Keystone unified-limits enforcement (see
+// GlanceSpec.KeystoneLimits). It carries no fields: the limits live in
+// Keystone, and every option the operator renders derives from the service
+// user, spec.keystoneEndpoint and spec.region, so the presence of the block is
+// the entire configuration. It is a struct rather than a bool so a later option
+// can be added without changing the shape a stored CR carries.
+type KeystoneLimitsSpec struct{}
 
 // ImportConversionSpec enables the image_conversion plugin, which converts the
 // staged image to a single disk format before it reaches the backing store.
