@@ -386,3 +386,88 @@ func TestClientPasswordEnvVar_UppercasesSection(t *testing.T) {
 		})
 	}
 }
+
+// TestLimitSection pins the exact key set of the system-scoped [oslo_limit]
+// section, the /v3 rule of endpoint_override, and the keys it must never carry:
+// a project scope keystoneauth refuses beside system_scope, the region_name the
+// override makes meaningless, and the env-injected password.
+func TestLimitSection(t *testing.T) {
+	base := SectionParams{
+		AuthURL:            "http://keystone.svc:5000/v3",
+		WWWAuthenticateURI: "https://keystone.example.com/v3",
+		Username:           "glance",
+		ProjectName:        "service",
+		UserDomainName:     "Default",
+		ProjectDomainName:  "Default",
+		RegionName:         "RegionOne",
+		MemcachedServers:   "mc:11211",
+	}
+	tests := []struct {
+		name         string
+		authURL      string
+		region       string
+		wantOverride string
+		wantKeys     int
+	}{
+		{name: "versioned auth URL with region", authURL: "http://keystone.svc:5000/v3", region: "RegionOne", wantOverride: "http://keystone.svc:5000/v3", wantKeys: 9},
+		{name: "unversioned auth URL gains /v3", authURL: "http://keystone.svc:5000", region: "RegionOne", wantOverride: "http://keystone.svc:5000/v3", wantKeys: 9},
+		{name: "trailing slash is trimmed", authURL: "http://keystone.svc:5000/v3/", region: "RegionOne", wantOverride: "http://keystone.svc:5000/v3", wantKeys: 9},
+		{name: "unversioned auth URL with trailing slash", authURL: "http://keystone.svc:5000/", region: "RegionOne", wantOverride: "http://keystone.svc:5000/v3", wantKeys: 9},
+		{name: "empty region omits endpoint_region_name", authURL: "http://keystone.svc:5000/v3", region: "", wantOverride: "http://keystone.svc:5000/v3", wantKeys: 8},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base
+			p.AuthURL = tc.authURL
+			p.RegionName = tc.region
+			got := LimitSection(p, "image")
+
+			want := map[string]string{
+				"auth_type":             "password",
+				"auth_url":              tc.authURL,
+				"username":              "glance",
+				"user_domain_name":      "Default",
+				"system_scope":          "all",
+				"endpoint_service_type": "image",
+				"endpoint_interface":    "internal",
+				"endpoint_override":     tc.wantOverride,
+			}
+			if tc.region != "" {
+				want["endpoint_region_name"] = tc.region
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("LimitSection() = %#v, want %#v", got, want)
+			}
+			if len(got) != tc.wantKeys {
+				t.Errorf("LimitSection() has %d keys, want %d", len(got), tc.wantKeys)
+			}
+			for _, k := range []string{"project_name", "project_domain_name", "region_name", "password", "www_authenticate_uri", "memcached_servers"} {
+				if _, ok := got[k]; ok {
+					t.Errorf("LimitSection() unexpectedly contains key %q", k)
+				}
+			}
+		})
+	}
+}
+
+func TestLimitPasswordEnvVar(t *testing.T) {
+	env := LimitPasswordEnvVar("glance-keystone", "password")
+
+	if env.Name != LimitPasswordEnvVarName {
+		t.Errorf("EnvVar name = %q, want %q", env.Name, LimitPasswordEnvVarName)
+	}
+	if env.Name != "OS_OSLO_LIMIT__PASSWORD" {
+		t.Errorf("EnvVar name = %q, want %q", env.Name, "OS_OSLO_LIMIT__PASSWORD")
+	}
+	if env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("EnvVar is not sourced from a Secret key: %#v", env)
+	}
+	sel := env.ValueFrom.SecretKeyRef
+	if sel.Name != "glance-keystone" {
+		t.Errorf("SecretKeySelector name = %q, want %q", sel.Name, "glance-keystone")
+	}
+	if sel.Key != "password" {
+		t.Errorf("SecretKeySelector key = %q, want %q", sel.Key, "password")
+	}
+}
