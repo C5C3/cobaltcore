@@ -336,3 +336,44 @@ spec:
             (contains($error, 'domainName is immutable')): true
             (contains($error, 'admission webhook')): false
             (contains($error, 'vkeystoneservice.kb.io')): false
+  # ── Registered limits and system roles (create rejections) ─────────────
+  # catalog.registeredLimits[].defaultLimit 0 is rejected by the CEL rule on
+  # the field: K-ORC cannot create a registered limit with defaultLimit 0.
+  - try:
+    - apply:
+        file: 26-registeredlimit-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'defaultLimit 0 is refused by K-ORC')): true
+  # A resourceName with whitespace is rejected by the CRD pattern ^\S+$, which
+  # mirrors K-ORC's own RegisteredLimit resourceName.
+  - try:
+    - apply:
+        file: 27-registeredlimit-resourcename-whitespace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'resourceName')): true
+            (contains($error, 'should match')): true
+  # Two entries for one resourceName are rejected by the apiserver
+  # (listType=map keyed by resourceName).
+  - try:
+    - apply:
+        file: 28-registeredlimit-duplicate-resourcename.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'registeredLimits')): true
+            (contains($error, 'Duplicate value')): true
+  # An account.systemRoles entry carrying a comma is rejected by the CRD items
+  # pattern, which answers before the webhook's korcOpenStackNameCommaMessage
+  # twin can.
+  - try:
+    - apply:
+        file: 29-account-systemrole-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'systemRoles')): true
+            (contains($error, 'should match')): true

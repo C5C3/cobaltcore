@@ -624,6 +624,88 @@ FIXTURES: tuple[Fixture, ...] = (
             "    - service\n"
         ),
     ),
+    # --- registered limits and system roles (create rejections) ---
+    Fixture(
+        filename="26-registeredlimit-zero.yaml",
+        comment=(
+            "catalog.registeredLimits[].defaultLimit 0 is rejected by the CEL rule on the\n"
+            "field: K-ORC refuses to create a registered limit with defaultLimit 0\n"
+            "(gophercloud/gophercloud#3866), so an admitted 0 would wedge the RegisteredLimit\n"
+            "child. The error carries the substring:\n"
+            "defaultLimit 0 is refused by K-ORC"
+        ),
+        name="ks-invalid-limit-zero",
+        catalog=(
+            "  catalog:\n"
+            "    serviceType: object-store\n"
+            "    endpoints:\n"
+            "    - interface: public\n"
+            "      url: https://swift.example.com\n"
+            "    registeredLimits:\n"
+            "    - resourceName: object_count\n"
+            "      defaultLimit: 0\n"
+        ),
+    ),
+    Fixture(
+        filename="27-registeredlimit-resourcename-whitespace.yaml",
+        comment=(
+            "catalog.registeredLimits[].resourceName carrying a space violates the CRD\n"
+            "pattern ^\\S+$, which mirrors K-ORC's own RegisteredLimit resourceName. The\n"
+            "error names 'resourceName' and carries 'should match'."
+        ),
+        name="ks-invalid-limit-resourcename",
+        catalog=(
+            "  catalog:\n"
+            "    serviceType: object-store\n"
+            "    endpoints:\n"
+            "    - interface: public\n"
+            "      url: https://swift.example.com\n"
+            "    registeredLimits:\n"
+            "    - resourceName: object count\n"
+            "      defaultLimit: 10\n"
+        ),
+    ),
+    Fixture(
+        filename="28-registeredlimit-duplicate-resourcename.yaml",
+        comment=(
+            "Two catalog.registeredLimits entries with the same resourceName are rejected\n"
+            "by the apiserver (listType=map keyed by resourceName): Keystone holds one\n"
+            "registered limit per service, region and resource. The error names\n"
+            "'registeredLimits' and carries 'Duplicate value'."
+        ),
+        name="ks-invalid-limit-duplicate",
+        catalog=(
+            "  catalog:\n"
+            "    serviceType: object-store\n"
+            "    endpoints:\n"
+            "    - interface: public\n"
+            "      url: https://swift.example.com\n"
+            "    registeredLimits:\n"
+            "    - resourceName: object_count\n"
+            "      defaultLimit: 10\n"
+            "    - resourceName: object_count\n"
+            "      defaultLimit: 20\n"
+        ),
+    ),
+    Fixture(
+        filename="29-account-systemrole-comma.yaml",
+        comment=(
+            "An account.systemRoles entry carrying a comma is rejected by the CRD items\n"
+            "pattern, as an account.roles entry is (fixture 10): each system role becomes a\n"
+            "K-ORC Role import filtered by that name. The webhook twin answers only for a\n"
+            "caller that bypassed the schema. The error names 'systemRoles' and carries\n"
+            "'should match'."
+        ),
+        name="ks-invalid-systemrole-comma",
+        account=(
+            "  account:\n"
+            "    userName: svc-object-store\n"
+            "    project:\n"
+            "      name: service\n"
+            "    systemRoles:\n"
+            '    - "reader,admin"\n'
+        ),
+    ),
 )
 
 

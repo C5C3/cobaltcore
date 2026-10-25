@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# An account.systemRoles entry carrying a comma is rejected by the CRD items
+# pattern, as an account.roles entry is (fixture 10): each system role becomes a
+# K-ORC Role import filtered by that name. The webhook twin answers only for a
+# caller that bypassed the schema. The error names 'systemRoles' and carries
+# 'should match'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-systemrole-comma
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  account:
+    userName: svc-object-store
+    project:
+      name: service
+    systemRoles:
+    - "reader,admin"

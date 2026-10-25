@@ -48,15 +48,19 @@ const (
 	keystoneServiceChildNameOverhead = keystoneServiceChildPrefixOverhead + len("password-v") + 10
 
 	// keystoneServiceRoleChildNameOverhead is the same bound for a CR that
-	// declares roles: it additionally mints the managed RoleAssignment
-	// "<prefix>assign-<slug>", where slug is bounded at 25 bytes by
-	// serviceAccountRoleSlug (16 bytes of readable base, a separator, and 8 hash
-	// characters). That is the longest child name any KeystoneService reaches.
+	// declares roles, system roles or registered limits: it additionally mints
+	// the managed RoleAssignment "<prefix>assign-<slug>", where slug is bounded
+	// at 25 bytes by serviceAccountRoleSlug (16 bytes of readable base, a
+	// separator, and 8 hash characters). That is the longest child name any
+	// KeystoneService reaches: the system-scoped RoleAssignment
+	// "<prefix>sys-<slug>" (29 bytes after the prefix) and the RegisteredLimit
+	// "<prefix>limit-<slug>" (31 bytes) both fit inside its 32.
 	//
-	// Only a CR WITH roles is charged it. A roles-less CR mints no assignment,
-	// so charging it the wider budget would reject a name the reconciler handles
-	// fine — and, because this check also runs on update, would wedge every
-	// later edit to a CR an earlier operator level already admitted.
+	// Only a CR WITH one of those lists is charged it. A CR without them mints
+	// none of those children, so charging it the wider budget would reject a
+	// name the reconciler handles fine — and, because this check also runs on
+	// update, would wedge every later edit to a CR an earlier operator level
+	// already admitted.
 	keystoneServiceRoleChildNameOverhead = keystoneServiceChildPrefixOverhead + len("assign-") + 25
 )
 
@@ -245,6 +249,8 @@ func validateKeystoneServiceCatalog(catalogPath *field.Path, catalog *KeystoneSe
 		}
 	}
 
+	errs = append(errs, validateKeystoneServiceRegisteredLimits(catalogPath.Child("registeredLimits"), catalog.RegisteredLimits)...)
+
 	return errs
 }
 
@@ -281,7 +287,48 @@ func validateKeystoneServiceAccount(accountPath *field.Path, account *KeystoneSe
 				korcOpenStackNameCommaMessage))
 		}
 	}
+	for i, role := range account.SystemRoles {
+		if strings.Contains(role, ",") {
+			errs = append(errs, field.Invalid(accountPath.Child("systemRoles").Index(i), role,
+				korcOpenStackNameCommaMessage))
+		}
+	}
 
+	return errs
+}
+
+// registeredLimitZeroMessage is the CEL message on
+// KeystoneServiceRegisteredLimitSpec.DefaultLimit, repeated verbatim by the
+// webhook twin.
+const registeredLimitZeroMessage = "defaultLimit 0 is refused by K-ORC when it creates a registered limit; use a positive bound"
+
+// validateKeystoneServiceRegisteredLimits mirrors the declarative constraints on
+// catalog.registeredLimits for callers that bypassed the CRD schema: the
+// resourceName pattern (^\S+$, the ASCII whitespace RE2's \S excludes), the
+// defaultLimit range and its CEL rule against 0, and the listType=map key.
+func validateKeystoneServiceRegisteredLimits(limitsPath *field.Path, limits []KeystoneServiceRegisteredLimitSpec) field.ErrorList {
+	var errs field.ErrorList
+	seen := make(map[string]struct{}, len(limits))
+	for i, limit := range limits {
+		limitPath := limitsPath.Index(i)
+		if limit.ResourceName == "" || strings.ContainsAny(limit.ResourceName, " \t\n\f\r") {
+			errs = append(errs, field.Invalid(limitPath.Child("resourceName"), limit.ResourceName,
+				"must be a non-empty name without whitespace"))
+		}
+		if _, dup := seen[limit.ResourceName]; dup {
+			errs = append(errs, field.Duplicate(limitPath.Child("resourceName"), limit.ResourceName))
+		}
+		seen[limit.ResourceName] = struct{}{}
+
+		switch {
+		case limit.DefaultLimit == 0:
+			errs = append(errs, field.Invalid(limitPath.Child("defaultLimit"), limit.DefaultLimit,
+				registeredLimitZeroMessage))
+		case limit.DefaultLimit < -1:
+			errs = append(errs, field.Invalid(limitPath.Child("defaultLimit"), limit.DefaultLimit,
+				"must be between -1 and 2147483647"))
+		}
+	}
 	return errs
 }
 
@@ -292,7 +339,8 @@ func validateKeystoneServiceAccount(accountPath *field.Path, account *KeystoneSe
 // projecting a child the apiserver rejects — on a CR admission already accepted.
 func validateKeystoneServiceChildName(ks *KeystoneService) field.ErrorList {
 	overhead := keystoneServiceChildNameOverhead
-	if ks.Spec.Account != nil && len(ks.Spec.Account.Roles) > 0 {
+	if (ks.Spec.Account != nil && (len(ks.Spec.Account.Roles) > 0 || len(ks.Spec.Account.SystemRoles) > 0)) ||
+		(ks.Spec.Catalog != nil && len(ks.Spec.Catalog.RegisteredLimits) > 0) {
 		overhead = keystoneServiceRoleChildNameOverhead
 	}
 	n := len(ks.Name) + overhead
@@ -301,7 +349,8 @@ func validateKeystoneServiceChildName(ks *KeystoneService) field.ErrorList {
 	}
 	return field.ErrorList{field.Invalid(field.NewPath("metadata", "name"), ks.Name, fmt.Sprintf(
 		"the child K-ORC CR name would be %d bytes; shorten the KeystoneService name (or drop the "+
-			"account's roles) so the total stays within the %d-byte Kubernetes object-name limit",
+			"account's roles, system roles and registered limits) so the total stays within the %d-byte "+
+			"Kubernetes object-name limit",
 		n, maxObjectNameBytes,
 	))}
 }
@@ -312,8 +361,9 @@ func validateKeystoneServiceChildName(ks *KeystoneService) field.ErrorList {
 // are compared only when both sides carry it.
 //
 // adopt stays mutable on both blocks: flipping it to true is the documented
-// collision remediation. So do the endpoint rows, the roles and the rotation
-// policy, none of which re-point an existing identity.
+// collision remediation. So do the endpoint rows, the registered limits, the
+// roles, the system roles and the rotation policy, none of which re-point an
+// existing identity.
 //
 // Two fields are compared by their EFFECTIVE value rather than the declared
 // one, because the reconciler acts on the effective value and admission can

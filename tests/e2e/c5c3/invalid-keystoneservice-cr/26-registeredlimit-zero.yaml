@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# catalog.registeredLimits[].defaultLimit 0 is rejected by the CEL rule on the
+# field: K-ORC refuses to create a registered limit with defaultLimit 0
+# (gophercloud/gophercloud#3866), so an admitted 0 would wedge the RegisteredLimit
+# child. The error carries the substring:
+# defaultLimit 0 is refused by K-ORC
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-limit-zero
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+    registeredLimits:
+    - resourceName: object_count
+      defaultLimit: 0
