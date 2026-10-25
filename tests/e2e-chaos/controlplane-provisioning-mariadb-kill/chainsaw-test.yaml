@@ -1,0 +1,308 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: a ControlPlane's MariaDB killed while its
+# Keystone's db-sync Job runs.
+#
+# Fault: a PodChaos pod-kill with mode: all and gracePeriod: 0 on the pod of
+# MariaDB openstack-db in the plane's namespace (01-podchaos.yaml), once Job
+# cp-db-kill-keystone-db-sync has a Running pod.
+#
+# Claim, phase by phase:
+#   kill       The kill lands in the provisioning, before the plane reads
+#              KeystoneReady=True (KILLED-IN-PROVISIONING-OK). The MariaDB pod
+#              comes back with a new UID and the MariaDB CR is Ready within
+#              180 s.
+#   converge   The plane reaches Ready=True/AllReady with no help: the db-sync
+#              Job's retries and the bootstrap Job behind it finish on the
+#              restarted database.
+#   once       Jobs cp-db-kill-keystone-db-sync and
+#              cp-db-kill-keystone-bootstrap each succeeded, the Keystone reads
+#              DatabaseReady=True and BootstrapReady=True, Keystone lists one
+#              user named admin in the default domain (ONE-ADMIN-OK), and the
+#              namespace holds one Keystone, MariaDB, Memcached and
+#              ApplicationCredential, each owned by cp-db-kill
+#              (OWNED-ONCE-OK): the interrupted provisioning created nothing
+#              twice.
+#
+# The current keystone-operator fails the converge claim (two of two kind
+# runs on 2026-10-26). The kill lands inside Keystone's initial alembic
+# revision 27e647c0fad4. MariaDB commits DDL implicitly, so the tables that
+# revision created stay without an alembic_version row, and every db-sync
+# retry fails with error 1050 "Table ... already exists" until the Job
+# reaches its backoff limit of 4 (internal/common/database/jobs.go). The
+# operator does not re-create a failed Job whose re-run key is unchanged
+# (internal/common/job/job.go), so the Keystone stays at
+# DatabaseReady=False/DBSyncFailed, the plane at KeystoneReady=False, and
+# cp_wait_keystone fails after 720 s. Nothing but a manual drop of the
+# half-built schema recovers the install. The suite stays red until the
+# keystone-operator recovers an interrupted first db_sync, and CI runs it
+# after the other suites of its leg in an invocation of its own, so the
+# failFast of the shared config skips none of them.
+#
+# Blast radius: the plane's own MariaDB; every other MariaDB of the cluster
+# lives in another namespace. The PodChaos is the shared state to undo, so
+# the catch of step 2 deletes it first; the cleanup of step 1 deletes the
+# ControlPlane.
+#
+# Leg: controlplane. The suite runs in namespace chaos-cp-dbkill, short for the
+# reason ../lib/controlplane.sh gives.
+#
+# Workload: the kill lands before the plane's Keystone serves a token, so the
+# token stream of ../lib/workload.sh runs after the plane is Ready, as a run
+# without marks, the precedent of ../nova-placement-outage/: every record is
+# judged, and a token the converged plane refuses is a defect.
+# The suite has not passed yet, so its budget is an estimate.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-25, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: controlplane-provisioning-mariadb-kill
+spec:
+  namespace: chaos-cp-dbkill
+  timeouts:
+    assert: 5m
+    cleanup: 15m
+  steps:
+  # ── Step 1: Seed, apply, infrastructure, database tenant ───────────────
+  - try:
+    - script:
+        timeout: 25m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_seed cp-db-kill
+          kubectl apply -n "$NAMESPACE" -f 00-controlplane-cr.yaml
+          cp_wait_infrastructure cp-db-kill
+          cp_onboard_database cp-db-kill
+    catch:
+    - &cp-dump
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_dump cp-db-kill
+          echo "=== Keystone Jobs ==="
+          for job in cp-db-kill-keystone-db-sync cp-db-kill-keystone-bootstrap; do
+            kubectl describe job "$job" -n "$NAMESPACE" 2>&1 | tail -25 || true
+            kubectl logs -n "$NAMESPACE" "job/$job" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== MariaDB ==="
+          kubectl get mariadb,pods -n "$NAMESPACE" -l app.kubernetes.io/name=mariadb -o wide 2>&1 || true
+    cleanup:
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml 2>&1 || true
+          cp_teardown cp-db-kill
+  # ── Step 2: Kill the MariaDB while db-sync runs ────────────────────────
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          JOB=cp-db-kill-keystone-db-sync
+          SEL=app.kubernetes.io/name=mariadb
+          deadline=$(( $(date +%s) + 300 ))
+          while true; do
+            succeeded="$(kubectl get job "$JOB" -n "$NAMESPACE" -o jsonpath='{.status.succeeded}' 2>/dev/null || true)"
+            if [ -n "$succeeded" ] && [ "$succeeded" != "0" ]; then
+              echo "FAIL: the db-sync Job finished before the kill could land"
+              exit 1
+            fi
+            running="$(kubectl get pods -n "$NAMESPACE" -l "job-name=${JOB}" \
+              --field-selector=status.phase=Running -o name 2>/dev/null || true)"
+            if [ -n "$running" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no Running pod of Job ${JOB} within 300s"
+              kubectl get jobs,pods -n "$NAMESPACE" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "OK: ${JOB} runs ${running}"
+
+          old="$(kubectl get pods -n "$NAMESPACE" -l "$SEL" -o jsonpath='{.items[*].metadata.uid}')"
+          if [ -z "$old" ]; then
+            echo "FAIL: no MariaDB pod in ${NAMESPACE} to kill"
+            exit 1
+          fi
+          cp_apply_file 01-podchaos.yaml
+          keystone="$(cp_status controlplane cp-db-kill KeystoneReady)"
+          if [ "$keystone" = "True" ]; then
+            echo "FAIL: the plane already read KeystoneReady=True when the kill landed"
+            exit 1
+          fi
+          echo "KILLED-IN-PROVISIONING-OK: the MariaDB pod ${old} was killed with KeystoneReady ${keystone:-<none>}"
+
+          deadline=$(( $(date +%s) + 180 ))
+          while true; do
+            now="$(kubectl get pods -n "$NAMESPACE" -l "$SEL" -o jsonpath='{.items[*].metadata.uid}' 2>/dev/null || true)"
+            ready="$(cp_status mariadb openstack-db Ready 2>/dev/null || true)"
+            if [ -n "$now" ] && [ "$now" != "$old" ] && [ "$ready" = "True" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 180s after the kill: MariaDB pods [${now}] (pre-kill ${old}), mariadb/openstack-db Ready ${ready:-<none>}"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: the MariaDB pod is back as ${now} and mariadb/openstack-db is Ready"
+          cp_delete_file 01-podchaos.yaml
+    catch:
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml 2>&1 || true
+    - *cp-dump
+  # ── Step 3: The plane converges on the restarted database ──────────────
+  - try:
+    - script:
+        timeout: 35m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_wait_keystone cp-db-kill
+          cp_wait_tail cp-db-kill
+    catch:
+    - *cp-dump
+  # ── Step 4: Converged once ─────────────────────────────────────────────
+  # The admin lookup runs in a pod on the Tempest image, with the password
+  # from the Secret through secretKeyRef, so it never enters an argument.
+  - try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          for job in cp-db-kill-keystone-db-sync cp-db-kill-keystone-bootstrap; do
+            succeeded="$(kubectl get job "$job" -n "$NAMESPACE" -o jsonpath='{.status.succeeded}')"
+            if [ "$succeeded" != "1" ]; then
+              echo "FAIL: Job ${job} has succeeded=${succeeded:-<none>}, want 1"
+              exit 1
+            fi
+          done
+          echo "OK: the db-sync and bootstrap Jobs each succeeded"
+          for ctype in DatabaseReady BootstrapReady; do
+            status="$(cp_status keystone cp-db-kill-keystone "$ctype")"
+            if [ "$status" != "True" ]; then
+              echo "FAIL: the Keystone reads ${ctype}=${status:-<none>}"
+              exit 1
+            fi
+          done
+          echo "OK: the Keystone reads DatabaseReady=True and BootstrapReady=True"
+
+          POD=cp-db-kill-admin-probe
+          PY="$(cat <<'EOF'
+          import json, os, sys, urllib.request
+          base = sys.argv[1]
+          body = {"auth": {"identity": {"methods": ["password"], "password": {"user": {
+              "name": "admin", "domain": {"id": "default"}, "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}
+          req = urllib.request.Request(base + "/auth/tokens", data=json.dumps(body).encode(),
+                                       headers={"Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=30) as r:
+              token = r.headers["X-Subject-Token"]
+          req = urllib.request.Request(base + "/users?name=admin&domain_id=default",
+                                       headers={"X-Auth-Token": token})
+          with urllib.request.urlopen(req, timeout=30) as r:
+              users = json.load(r)["users"]
+          print("ADMIN-USERS %d %s" % (len(users), " ".join(u["id"] for u in users)))
+          EOF
+          )"
+          OVERRIDES="$(cat <<EOF
+          {"apiVersion": "v1", "spec": {"automountServiceAccountToken": false,
+            "containers": [{"name": "${POD}",
+            "env": [{"name": "OS_PASSWORD", "valueFrom": {"secretKeyRef":
+              {"name": "cp-db-kill-keystone-admin-credentials", "key": "password"}}}],
+            "resources": {"requests": {"cpu": "50m", "memory": "128Mi"}, "limits": {"memory": "256Mi"}},
+            "securityContext": {"runAsNonRoot": true, "runAsUser": 42424, "runAsGroup": 42424,
+              "allowPrivilegeEscalation": false, "capabilities": {"drop": ["ALL"]},
+              "seccompProfile": {"type": "RuntimeDefault"}}}]}}
+          EOF
+          )"
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=true
+          trap 'kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/tempest:2026.1 --restart=Never \
+            --override-type=strategic --overrides="$OVERRIDES" \
+            --command -- python3 -c "$PY" "http://cp-db-kill-keystone.${NAMESPACE}.svc:5000/v3"
+          phase=""
+          deadline=$(( $(date +%s) + 240 ))
+          while true; do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded | Failed) break ;; esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the admin probe did not finish within 240s (phase ${phase:-<none>})"
+              kubectl describe pod "$POD" -n "$NAMESPACE" 2>&1 | tail -20 || true
+              exit 1
+            fi
+            sleep 3
+          done
+          out="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "$out"
+          if [ "$phase" != "Succeeded" ] || ! grep -qE '^ADMIN-USERS 1 ' <<<"$out"; then
+            echo "FAIL: Keystone does not list exactly one user named admin in the default domain"
+            exit 1
+          fi
+          echo "ONE-ADMIN-OK: Keystone lists one user named admin in the default domain"
+
+          for kind in keystones.keystone.openstack.c5c3.io mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io applicationcredentials.openstack.k-orc.cloud; do
+            owned="$(kubectl get "$kind" -n "$NAMESPACE" -o json | jq -r '.items[]
+              | "\(.metadata.name) \([.metadata.ownerReferences[]? | select(.kind == "ControlPlane" and .name == "cp-db-kill")] | length)"')"
+            count="$(grep -c . <<<"$owned" || true)"
+            if [ "$count" -ne 1 ]; then
+              echo "FAIL: ${NAMESPACE} holds ${count} ${kind}, want one: ${owned}"
+              exit 1
+            fi
+            if [ "${owned##* }" -lt 1 ]; then
+              echo "FAIL: ${kind} ${owned% *} carries no ownerReference to ControlPlane cp-db-kill"
+              exit 1
+            fi
+          done
+          echo "OWNED-ONCE-OK: one Keystone, MariaDB, Memcached and ApplicationCredential, each owned by cp-db-kill"
+    catch:
+    - *cp-dump
+  # ── Step 5: Tokens on the converged plane, without marks ───────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: CHAOS_WORKLOAD_ADMIN_SECRET=cp-db-kill-keystone-admin-credentials ../lib/workload.sh start controlplane-provisioning-mariadb-kill -- --streams token --keystone "http://cp-db-kill-keystone.${NAMESPACE}.svc:5000/v3"
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify controlplane-provisioning-mariadb-kill
+    catch:
+    - *cp-dump
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump controlplane-provisioning-mariadb-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop controlplane-provisioning-mariadb-kill
+  # ── Step 6: Tear the plane down ────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_teardown cp-db-kill
+    catch:
+    - *cp-dump

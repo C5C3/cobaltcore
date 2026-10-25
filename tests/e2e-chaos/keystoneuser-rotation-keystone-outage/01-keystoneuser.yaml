@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The order under test: a Keystone user ordered from the assigned namespace,
+# with the schedule off. The suite turns it on with a one-minute interval
+# while the plane's Keystone is down, so the rotation falls due under the
+# outage, and turns it off again once the due passes are seen. userName
+# defaults to metadata.name and passwordGeneration to 1. @NS@ is replaced
+# with the suite's namespace.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneUser
+metadata:
+  name: ku-rot
+  namespace: "@NS@-tenant"
+spec:
+  controlPlaneRef:
+    name: cp-ku-rot
+    namespace: "@NS@"
+  rotation:
+    interval: 0s

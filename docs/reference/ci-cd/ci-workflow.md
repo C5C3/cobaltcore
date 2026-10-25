@@ -1291,7 +1291,7 @@ leg needs:
 | `network` | keystone, horizon, glance, placement, barbican, ovn, neutron, cinder | the NetworkChaos suites and every suite that needs the neutron, cinder or ovn operators: the four Neutron suites (`neutron-mariadb-outage`, `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`), `ovn-operator-pod-kill`, the seven Cinder suites (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`, `cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`, `cinder-broker-pod-kill`), the database outages of Glance, Placement and Barbican, and `memcached-network-partition` |
 | `ovn` | ovn | `ovn-southbound-outage` |
 | `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill` |
-| `controlplane` | keystone, horizon, glance, barbican, ovn, K-ORC, c5c3 | the five suites that bring up a ControlPlane of their own: `korc-provisioning-outage`, `korc-network-partition`, `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure` |
+| `controlplane` | keystone, horizon, glance, barbican, ovn, K-ORC, c5c3 | the eight suites that bring up a ControlPlane of their own: `korc-provisioning-outage`, `korc-network-partition`, `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure`, `controlplane-provisioning-mariadb-kill`, `controlplane-deletion-korc-outage`, `keystoneuser-rotation-keystone-outage` |
 | `upgrade` | keystone, horizon, glance, barbican, ovn, cinder | the two suites that fault a Cinder release upgrade from 2026.1 to 2026.2: `cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill` |
 
 All six legs run on the `self-hosted` runners. The split keeps the legs
@@ -1333,7 +1333,13 @@ applies the Placement CRD the c5c3-operator's cache needs and runs
 `hack/ci-deploy-korc.sh` with `GITHUB_TOKEN`, and `Deploy c5c3 operator`
 installs the c5c3-operator into `c5c3-system` at the chart default of two
 replicas. Each suite of the entry brings up a Keystone-only ControlPlane in a
-namespace of its own through `tests/e2e-chaos/lib/controlplane.sh`.
+namespace of its own through `tests/e2e-chaos/lib/controlplane.sh`. The entry
+lists `controlplane-provisioning-mariadb-kill` under `isolated_test_dirs`, and
+`Run isolated chaos E2E tests (controlplane leg)` runs it after `Run chaos E2E
+tests`, whatever that step's outcome, under the report name
+`chainsaw-chaos-report-isolated`. A failed setup step skips both. The suite
+fails on the current keystone-operator, and inside `test_dirs` the `failFast`
+of the shared config would skip every suite behind it.
 `Dump diagnostic info (controlplane leg)` adds the c5c3-operator sections and
 500 lines of the K-ORC log. The `!= 'pod'` OVN steps and the `!= 'ovn'` keystone
 stack run on it as well, which costs about two minutes.
@@ -1349,11 +1355,13 @@ stack loads.
 The wall is
 `timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}`,
 685 minutes in all, which the author of #1394 accepted on 2026-10-25 against the
-600 that D6 of #1386 allows; the estimated run is about 555 minutes. The last full
+600 that D6 of #1386 allows; the estimated run is about 575 minutes. The last full
 run, on PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where
 it hit the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of
 #1394 add about 12 minutes each to `pod`, `nova` and `controlplane`, and the
-`upgrade` entry runs two Cinder upgrades of about 20 minutes each. The
+`upgrade` entry runs two Cinder upgrades of about 20 minutes each.
+`controlplane-provisioning-mariadb-kill` takes about 30 minutes while it fails:
+its 720-second `KeystoneReady` wait and a teardown of up to 13 minutes. The
 `controlplane` entry needs about 15 minutes for its bring-up and 8 to 12 for each
 of its suites, from the 7 min 45 s the `keystone-service` suite took in run
 38788542824 plus the fault and a teardown of up to 12 minutes. The `nova` leg loads eighteen images and runs

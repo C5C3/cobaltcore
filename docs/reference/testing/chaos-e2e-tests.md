@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 61 chaos test suites validate operator behavior during and after fault
+The 64 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -75,15 +75,17 @@ scales it back. `openbao-sealed` seals OpenBao in step 2 and unseals it in step
 5, and `openbao-tenant-policy-narrowed` narrows a policy and writes the captured
 one back. `cinder-upgrade-db-partition` applies its NetworkPolicies in step 2 and
 deletes them in step 5. The suites of the `pod`, `network`, `ovn`, `nova` and
-`upgrade` matrix entries run in the namespace `openstack`. The five of the
+`upgrade` matrix entries run in the namespace `openstack`. The eight of the
 `controlplane` entry each bring up a ControlPlane in a short namespace of their
 own, `chaos-korc-out` and its siblings.
+`keystoneuser-rotation-keystone-outage` adds `chaos-ku-rot-tenant` for its
+order.
 [Test Suite Inventory](#test-suite-inventory) lists every suite with its
 scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 61 test suites require the infrastructure stack to be deployed and healthy.
+All 64 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -455,11 +457,17 @@ OVNChassis and a metadata agent on the node, and the chassis DaemonSets need the
 because their stack does not fit beside the suites of the `network` entry.
 
 The `controlplane` entry is the fifth, on the `self-hosted` runners and
-`continue-on-error` like the other three. Its five suites
+`continue-on-error` like the other three. Its eight suites
 (`korc-provisioning-outage`, `korc-network-partition`,
 `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`,
-`rabbitmq-operator-cascading-failure`) each bring up a Keystone-only ControlPlane
-in a namespace of its own through `tests/e2e-chaos/lib/controlplane.sh`.
+`rabbitmq-operator-cascading-failure`, and `controlplane-provisioning-mariadb-kill`,
+`controlplane-deletion-korc-outage` and `keystoneuser-rotation-keystone-outage` of
+#1394) each bring up a Keystone-only ControlPlane in a namespace of its own through
+`tests/e2e-chaos/lib/controlplane.sh`. `controlplane-provisioning-mariadb-kill`
+runs last, in a chainsaw invocation of its own: it fails on the current
+keystone-operator (see its [design notes](#controlplane-provisioning-mariadb-kill)),
+and inside one invocation the `failFast` of the shared config would skip every
+suite behind it.
 The entry sets `WITH_CONTROLPLANE=true` and `CONTROLPLANE_OPERATORS=external` on
 the infrastructure bring-up, the environment of the `e2e-controlplane` job: the
 infrastructure overlay comes without the standalone MariaDB, Memcached and shim
@@ -489,11 +497,13 @@ stack, the image the [workload pod](#workload-and-consistency-harness) runs on.
 120 for `controlplane`, 80 for `upgrade` and 45 for `ovn`, 685 minutes in all, to
 accommodate serial test execution and longer recovery assertion windows. The
 author of #1394 accepted that sum on 2026-10-25, against the 600 minutes D6 of
-#1386 allows; the estimated run is about 555 minutes. The last full run, on
+#1386 allows; the estimated run is about 575 minutes. The last full run, on
 PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where it hit
 the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of #1394
 add about 12 minutes each to `pod`, `nova` and `controlplane`, and the `upgrade`
 entry runs two Cinder upgrades of about 20 minutes each after the bring-up.
+`controlplane-provisioning-mariadb-kill` takes about 30 minutes while it fails:
+its 720-second `KeystoneReady` wait and a teardown of up to 13 minutes.
 
 ## Test Suite Inventory
 
@@ -558,6 +568,9 @@ entry runs two Cinder upgrades of about 20 minutes each after the bring-up.
 | [korc-network-partition](#korc-network-partition) | — | `korc-part` | K-ORC partitioned from a ControlPlane's Keystone (NetworkChaos) | `PARTITIONED-OK`: for 120 s the KeystoneService `korc-part` not `Ready=True` and its Project child `service-korc-part` without `Available=True`; `korc-part` at `Ready=True/AllReady` within 900 s of the lift and the ControlPlane at `Ready=True/AllReady`; `NO-DUPLICATE-OK`: one project, one service of type `korcpart` and two endpoints in Keystone, workload budget zero |
 | [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) | — | `cp-c5c3-kill` | c5c3-operator pod kill during provisioning | The kill before `DBCredentialsReady` with no Keystone CR yet, every pre-kill operator pod UID gone and `readyReplicas` back, the plane at `Ready=True/AllReady` after the database tenant is onboarded, `OWNED-ONCE-OK`: MariaDB and Memcached with their pre-kill UIDs and exactly one Keystone, MariaDB, Memcached and ApplicationCredential, each owned by `cp-c5c3-kill` |
 | [cinder-upgrade-db-partition](#cinder-upgrade-db-partition) | — | `cinder-upg-part` | Phase Jobs of a release upgrade partitioned from MariaDB (NetworkPolicy) | `EXPAND-HELD-OK` and `CONTRACT-HELD-OK`: for 90 s each, `upgradePhase` at `Expanding` or `Contracting` with the phase Job not succeeded; then `upgradePhase` empty, `installedRelease: "2026.2"`, `Ready=True/AllReady`, the three phase Jobs succeeded on `ghcr.io/c5c3/cinder:2026.2`, the three Deployments rolled onto `:2026.2`, `NO-PHASE-FAILURE-OK`, `verify` with `CONSISTENCY-OK volumes` |
+| [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) | — | `cp-db-kill` | MariaDB kill during a ControlPlane's provisioning | `KILLED-IN-PROVISIONING-OK`: the MariaDB pod killed while the db-sync Job runs and before `KeystoneReady=True`, back with a new UID and Ready within 180 s; the plane at `Ready=True/AllReady`; db-sync and bootstrap Jobs succeeded, `DatabaseReady` and `BootstrapReady` `True`, `ONE-ADMIN-OK`, `OWNED-ONCE-OK`; a `verify` without marks at zero failures |
+| [controlplane-deletion-korc-outage](#controlplane-deletion-korc-outage) | — | `cp-del-korc` | K-ORC outage across a ControlPlane's deletion | `HELD-OK`: for 120 s the plane keeps its `deletionTimestamp` and finalizer at `KORCReady=False/FinalizingORC`, with its Keystone undeleted at `Ready=True` and its ApplicationCredential CR in place; `CLEAN-TEARDOWN-OK`: the plane gone within 360 s of the delete with `ORCTeardownComplete` and neither `ORCTeardownStalled` nor `ORCResourcesOrphaned`; no K-ORC CR, Keystone, MariaDB or Memcached left |
+| [keystoneuser-rotation-keystone-outage](#keystoneuser-rotation-keystone-outage) | — | `cp-ku-rot` | KeystoneUser rotation due under a Keystone outage | `GEN1-AUTH-OK`; `DUE-HELD-OK`: for 150 s generation 2 re-pointed but not applied, no generation 3, `UserReady=False`, the delivered Secret unchanged; after the lift generation 2 with `UserReady`, `DeliveryReady` and `Ready` `True`; `ROTATED-ONCE-OK`: `lastPasswordRotation` stamped after the lift, `nextPasswordRotation` one minute later and generation 2 until 15 s before it; `NEW-PASSWORD-OK`, `OLD-PASSWORD-REVOKED-OK`; the token stream within its measured budget |
 | [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) | — | `keystone-chaos-fernet` | keystone-operator outage across a Fernet rotation | `CONTINUITY-1-OK` after a rotation under traffic; `STAGED-NOT-PROMOTED-OK`: for 60 s with the operator held, the staging Secret holds rotation 2 while the production Secret keeps its data; `PROMOTED-ONCE-OK`: after the lift the production data equals the staged data, the staging Secret absent or empty, `FernetKeysRotated` once; `FernetKeysReady=True`, `Ready=True/AllReady`, `CONTINUITY-2-OK` on both API pods, API pod UIDs unchanged, workload budget zero |
 | [cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) | — | `cinder-upg-bus` | Broker pod kill in the RollingUpdate of a release upgrade | `KILLED-IN-ROLLOUT-OK`: the broker pod UID gone while `upgradePhase` reads `RollingUpdate`; the new broker pod Ready within 300 s; `upgradePhase` empty, `installedRelease: "2026.2"`, `SchedulerReady`, `VolumeServicesReady` and `Ready=True/AllReady`, the three Deployments rolled onto `:2026.2`, the three phase Jobs succeeded, `verify` within the measured budget |
 
@@ -4165,6 +4178,188 @@ stash and the rotation Jobs.
 
 ---
 
+### controlplane-provisioning-mariadb-kill
+
+**File:** `tests/e2e-chaos/controlplane-provisioning-mariadb-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-kill` takes the MariaDB of ControlPlane `cp-db-kill`
+away while the keystone-operator's db-sync Job migrates the plane's schema. The
+db-sync connection breaks in the middle of the migration. The suite pins that the
+plane converges on the restarted database with no help, and that the interrupted
+provisioning created nothing twice: one admin user, one of each owned child.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Seed, apply, infrastructure, database tenant | `script` (25m) | `lib/controlplane.sh`: seed, apply `cp-db-kill`, wait for `InfrastructureReady`, onboard the database tenant. The step cleanup deletes the ControlPlane |
+| 2 | Kill during db-sync | `script` (10m) | Waits up to 300 s, every second, for Job `cp-db-kill-keystone-db-sync` with a `Running` pod (`FAIL: the db-sync Job finished before the kill could land` when it succeeds first), records the MariaDB pod UID, applies `01-podchaos.yaml`, requires `KeystoneReady` not `True` (`KILLED-IN-PROVISIONING-OK`), waits up to 180 s for a new MariaDB pod UID and `mariadb/openstack-db` Ready, and deletes the `PodChaos` |
+| 3 | The plane converges | `script` (35m) | `cp_wait_keystone` and `cp_wait_tail` to `Ready=True/AllReady` |
+| 4 | Converged once | `script` (8m) | Both Jobs at `succeeded: 1`; the Keystone at `DatabaseReady=True` and `BootstrapReady=True`; a pod on `ghcr.io/c5c3/tempest:2026.1` issues a token from the `password` of Secret `cp-db-kill-keystone-admin-credentials` and finds one user for `GET /v3/users?name=admin&domain_id=default` (`ONE-ADMIN-OK`); one Keystone, MariaDB, Memcached and ApplicationCredential, each owned by `cp-db-kill` (`OWNED-ONCE-OK`) |
+| 5 | Tokens on the converged plane | `script` (6m) + `script` (15m) | `workload.sh start` with the `token` stream, then `workload.sh verify` without marks |
+| 6 | Tear the plane down | `script` (13m) | `cp_teardown cp-db-kill` |
+
+**Fixtures:** `00-controlplane-cr.yaml` (`cp-db-kill`), `01-podchaos.yaml`
+(`kill-cp-mariadb`, `pod-kill`, `mode: all`, `gracePeriod: 0`, selecting
+`app.kubernetes.io/name: mariadb` in the suite's namespace).
+
+**Workload:** the `token` stream against `cp-db-kill-keystone`, started and judged
+in step 5 against `failures=0 recovery=0s`. The kill lands before the plane's
+Keystone serves a token, so the stream runs after the plane is Ready, as a run
+without marks, the precedent of `nova-placement-outage`: every record is judged.
+The suite runs in the `controlplane` matrix entry, in its own namespace,
+`chaos-cp-dbkill`.
+
+**Catch blocks:** step 2 deletes the `PodChaos` first. Every catch calls `cp_dump`
+of `lib/controlplane.sh` and dumps the db-sync and bootstrap Jobs and the MariaDB
+pods; step 5 dumps the workload.
+
+**Design notes:**
+
+- The keystone-operator runs Job `<ks>-db-sync`, then `<ks>-bootstrap`, both with a
+  backoff limit of 4 (`internal/common/database/jobs.go`,
+  `operators/keystone/internal/controller/reconcile_bootstrap.go`). The retries do
+  not carry the migration past the kill, and the suite fails on the current
+  keystone-operator (two of two kind runs on 2026-10-26). The kill lands inside
+  Keystone's initial alembic revision `27e647c0fad4`. MariaDB commits DDL
+  implicitly, so the tables that revision created stay without an
+  `alembic_version` row, and every retry fails with error 1050 "Table ... already
+  exists". Once the Job reaches its backoff limit, `internal/common/job/job.go`
+  keeps a failed Job whose re-run key is unchanged and returns `ErrJobFailed`. The
+  Keystone stays at `DatabaseReady=False/DBSyncFailed` and the plane at
+  `KeystoneReady=False` until the half-built schema is dropped by hand. The suite
+  stays red until the keystone-operator recovers an interrupted first `db_sync`,
+  and its budget stays an estimate until it passes.
+- The admin lookup reads the password through `secretKeyRef`, so it never enters an
+  argument.
+- The `OWNED-ONCE-OK` loop is the one of `c5c3-operator-pod-kill`, without its UID
+  comparison: the MariaDB here is the object the fault restarts.
+
+---
+
+### controlplane-deletion-korc-outage
+
+**File:** `tests/e2e-chaos/controlplane-deletion-korc-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` holds K-ORC down while ControlPlane
+`cp-del-korc` is deleted. The finalizer `c5c3.io/orc-teardown` deletes the owned
+K-ORC CRs first and waits for K-ORC to revoke them against a Keystone that still
+serves. The suite pins that the plane waits through the outage with its Keystone
+in place, then tears down cleanly once K-ORC is back, inside the deadline after
+which the finalizer would force-strip the K-ORC finalizers.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Bring the plane up | `script` (40m) | `cp_bring_up cp-del-korc`. The step cleanup lifts the fault and runs `cp_teardown`, a no-op once the plane is gone |
+| 2 | Hold K-ORC | `script` (5m) | Records the UID of Keystone `cp-del-korc-keystone` in ConfigMap `cp-del-state` (and requires at least one K-ORC CR), applies `01-podchaos.yaml`, waits for `AllInjected` and the K-ORC pod at `Ready=false` |
+| 3 | Delete under the outage | `script` (5m) | `kubectl delete controlplane cp-del-korc --wait=false`, records the time, waits up to 30 s for `KORCReady=False/FinalizingORC`, then for 120 s requires the `deletionTimestamp` and the finalizer, `KORCReady=False/FinalizingORC`, the Keystone with the recorded UID, no `deletionTimestamp` and `Ready=True`, and the `cp-del-korc-admin-app-credential` CR (`HELD-OK`), and deletes the `PodChaos` |
+| 4 | The teardown completes | `script` (10m) | Within 360 s of the delete the ControlPlane is gone; its events carry `ORCTeardownComplete` and neither `ORCTeardownStalled` nor `ORCResourcesOrphaned` (`CLEAN-TEARDOWN-OK`); within 180 s more no CR of `CP_KORC_KINDS`, no Keystone, no MariaDB and no Memcached is left |
+
+**Fixtures:** `00-controlplane-cr.yaml` (`cp-del-korc`), `01-podchaos.yaml`
+(`hold-korc-deletion`, `pod-failure`, `mode: all`, `duration: "600s"`).
+
+**Workload:** none. The ControlPlane under test is being deleted, which the suite
+header records in its `# Chaos workload: none` line. The suite runs in the
+`controlplane` matrix entry, in its own namespace, `chaos-cp-del`.
+
+**Catch blocks:** steps 2 and 3 delete the `PodChaos` first. Every catch calls
+`cp_dump` of `lib/controlplane.sh` and dumps the events of the ControlPlane.
+
+**Design notes:**
+
+- While a managed K-ORC CR remains within `orcTeardownDeadline` (2 minutes plus 5,
+  `operators/c5c3/internal/controller/requeue_intervals.go`), the plane reports
+  `KORCReady=False/FinalizingORC` and requeues every 10 seconds, and it deletes its
+  Keystone only once nothing remains (`reconcile_delete.go`).
+- The hold of 120 seconds and the 360 seconds for the teardown stay inside that
+  deadline, so the suite proves the path without a stall. The stall path, with
+  `ORCTeardownStalled` and `ORCResourcesOrphaned`, takes more than 7 minutes of
+  K-ORC downtime; `tests/e2e/c5c3/deletion-orchestration` admits it.
+
+---
+
+### keystoneuser-rotation-keystone-outage
+
+**File:** `tests/e2e-chaos/keystoneuser-rotation-keystone-outage/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-failure` holds the Keystone API of ControlPlane
+`cp-ku-rot` down while the scheduled password rotation of KeystoneUser `ku-rot`
+falls due. The operator writes the next generation and re-points the K-ORC User,
+and K-ORC, which calls Keystone, cannot apply it. The suite pins that the
+generation waits without stacking a third one and without delivering anything,
+and that K-ORC applies it once Keystone is back: the new password authenticates,
+the old one is revoked, and the order rotated once.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | The tenant namespace, then the plane | `script` (40m) | Creates `chaos-ku-rot-tenant` before the plane, because `NamespaceAssignmentsReady` is part of the plane's `Ready`, renders `@NS@` into the fixture and runs `cp_bring_up cp-ku-rot`. The step cleanup deletes the order, runs `cp_teardown` and deletes the tenant namespace |
+| 2 | Generation 1 | `script` (20m) | Applies `01-keystoneuser.yaml` (`rotation.interval: 0s`), waits up to 900 s for `Ready=True`, `status.passwordGeneration: 1` and Secret `ku-rot-credentials`, derives the prefix from the K-ORC User, copies the Secret's type and data to `ku-rot-gen1-credentials`, and runs Job `ku-rot-auth-gen1` on the copy (`GEN1-AUTH-OK`) |
+| 3 | Start the workload | `script` (6m) | `workload.sh start` with the `token` stream and `CHAOS_WORKLOAD_ADMIN_SECRET=cp-ku-rot-keystone-admin-credentials` |
+| 4 | Due under the outage | `script` (12m) | `workload.sh mark fault-start`, applies `02-podchaos.yaml`, waits for `AllInjected` and the Keystone CR at `Ready=False`, patches `rotation.interval: 1m`, waits up to 180 s for `spec.resource.passwordRef` of the K-ORC User to read `<prefix>password-v2`, then for 150 s requires `passwordGeneration` 1, no `<prefix>password-v3`, `UserReady=False` with `WaitingForServiceAccounts` or `ServiceAccountsFailed`, and the delivered data unchanged (`DUE-HELD-OK`). Records the time of the lift in `ku-rot-state` with the schedule still on, deletes the `PodChaos`, `workload.sh mark fault-end` |
+| 5 | After the lift | `script` (25m) | Within 600 s one read shows `passwordGeneration` 2 and a `nextPasswordRotation`. `lastPasswordRotation` is no earlier than the lift and `nextPasswordRotation` is one minute after it, that read comes at least 30 s before it, and `passwordGeneration` reads 2 until 15 s before it (`ROTATED-ONCE-OK`). Then `rotation.interval: 0s`, and within 30 s generation 2 with `nextPasswordRotation` empty, the K-ORC User still at `<prefix>password-v2` and no `<prefix>password-v3`; `UserReady`, `DeliveryReady` and `Ready` `True` within the 600 s; `<prefix>password-v1` gone within 300 s; the delivered data changed; Job `ku-rot-auth-new` completes (`NEW-PASSWORD-OK`); Job `ku-rot-auth-old` on the generation-1 copy fails with `HTTP 401` (`OLD-PASSWORD-REVOKED-OK`) |
+| 6 | Judge, then tear down | `script` (15m) + `script` (6m) + `script` (13m) | `workload.sh verify`, then deletes the order and runs `cp_teardown cp-ku-rot` |
+
+**Fixtures:** `00-controlplane-cr.yaml` (`cp-ku-rot`, with
+`namespaceAssignments: [{namespace: "@NS@-tenant"}]`), `01-keystoneuser.yaml`
+(`ku-rot`), `02-podchaos.yaml` (`fail-cp-keystone` on the three API labels of
+`cp-ku-rot-keystone`), `03-auth-probe-job.yaml` (a Job on
+`ghcr.io/c5c3/tempest:2026.1` with `backoffLimit: 0` that runs
+`openstack --os-cloud admin token issue` on a mounted `clouds.yaml`), and
+`probe-lib.sh`.
+
+**Workload:** the `token` stream against `cp-ku-rot-keystone`, started in step 3
+and judged in step 6 against `failures=410 recovery=70s`, from three kind runs with
+205 failures and a recovery of 38 seconds each. The fault takes that Keystone, so
+every token in the window fails.
+The suite runs in the `controlplane` matrix entry, in its own namespace,
+`chaos-ku-rot`.
+
+**Catch blocks:** step 4 deletes the `PodChaos` first. Every catch calls `cp_dump`
+of `lib/controlplane.sh`, dumps the order's conditions and status, the K-ORC Users
+with their password references, the password Secrets and the auth Jobs, and dumps
+the workload.
+
+**Design notes:**
+
+- `keystoneUserScheduledGeneration` moves the desired generation to
+  `status.passwordGeneration + 1` once `lastPasswordRotation` plus the interval has
+  passed, and `ensureManagedAccountUser` never moves past `max(desired, current)`
+  (`operators/c5c3/internal/controller/keystoneuser_provision.go`,
+  `registration_projection.go`). The re-point resets the anchor, so a one-minute
+  interval falls due twice more in the 150-second hold and still yields
+  generation 2 alone.
+- By the lift the anchor of the re-point is more than a minute old, so the
+  rotation is due again. The pass that sees generation 2 applied stamps
+  `lastPasswordRotation` once more (`keystoneuser_provision.go`), and the schedule
+  counts from the apply. Step 5 keeps the schedule on until 15 seconds before the
+  next due time, so a missing stamp shows as an anchor older than the lift and as
+  a third generation. The hold starts at the first read of the apply, and the
+  delivery, which waits for an ESO push and the pass after it, is judged once the
+  schedule is off, so the hold does not depend on how long ESO takes. A read of
+  the apply less than 30 seconds before the due time fails the step, and after
+  the schedule is off the K-ORC User still points at `<prefix>password-v2`: a
+  third generation shows there first, because `passwordGeneration` moves only
+  once K-ORC applies it.
+- `spec.resource.passwordRef` of a K-ORC User is a string, the name of the password
+  Secret, so the suite reads `{.spec.resource.passwordRef}`.
+- The order's only ControlPlane gate is `AdminCredentialReady`, which keeps its last
+  value while the plane's pipeline stops at its Keystone step, so the order still
+  reaches the re-point during the outage.
+- The log of a successful auth Job holds a token, so `run_auth_job` prints it only
+  when the outcome is wrong.
+
+---
+
 ## Test Patterns
 
 ![The six step patterns of the chaos suites, each a numbered chain. Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003), where a critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, assert the sub-condition is False, delete the PodChaos, assert the sub-condition is True and Ready=True. No-Regression (SC-CHAOS-002), where a non-critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, poll readyReplicas below the desired count, poll readyReplicas back at the desired count, assert all conditions True, delete the PodChaos, assert Ready=True. Operator Self-Recovery (SC-CHAOS-004), where one operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos, wait until one pre-chaos UID is gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert Ready=True. Workload Fault Tolerance (SC-CHAOS-005), where a Job of the operator fails: apply the CR, assert Ready=True, inject a pod-failure PodChaos, trigger the Job, assert the conditions are maintained, delete the PodChaos, assert Ready=True. PDB Availability Guarantee (SC-CHAOS-008), where one API pod of three is killed: apply the CR with three replicas, assert Ready=True, assert the PDB has minAvailable 1, inject the PodChaos, verify availableReplicas is at least 1, assert DeploymentReady=True and Ready=True, delete the PodChaos, assert Ready=True. Operator Pod Kill All with Failover Reconciliation (SC-CHAOS-009), where every operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos with mode all, wait until all pre-chaos UIDs are gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert all 6 conditions True, patch the replicas from 1 to 2, assert the Deployment has 2 replicas and Ready=True.](../../diagrams/test-chaos-patterns.svg)
@@ -4397,7 +4592,7 @@ also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state
 SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
 SC-CHAOS-008 describes the PDB in Step 3.
 
-The forty-nine suites that start a workload also call `../lib/workload.sh dump <id>`
+The fifty-one suites that start a workload also call `../lib/workload.sh dump <id>`
 in the catch block of every step from `start` to `verify`. It prints the phase
 of the workload pod, its two fault marks and the last 200 lines of its log.
 
@@ -4500,10 +4695,18 @@ tests/e2e-chaos/
 │   ├── 01-cinderbackend-cr.yaml      NFS backend vol-kill-nfs1
 │   ├── 02-podchaos.yaml              PodChaos pod-kill of the volume service of vol-kill-nfs1
 │   └── chainsaw-test.yaml            Test: killed mid-attach, the sweep leaves nothing transitional
+├── controlplane-deletion-korc-outage/ K-ORC outage across a ControlPlane's deletion
+│   ├── 00-controlplane-cr.yaml       ControlPlane cp-del-korc, Keystone only
+│   ├── 01-podchaos.yaml              PodChaos pod-failure on the K-ORC controller
+│   └── chainsaw-test.yaml            Test: the plane waits for K-ORC, then tears down cleanly
 ├── controlplane-keystone-degraded/   ControlPlane over a degraded Keystone
 │   ├── 00-controlplane-cr.yaml       ControlPlane cp-ks-degraded, Keystone only
 │   ├── 01-podchaos.yaml              PodChaos pod-failure on the plane Keystone API pods
 │   └── chainsaw-test.yaml            Test: the plane reports the Keystone, never masks it
+├── controlplane-provisioning-mariadb-kill/ MariaDB kill during a ControlPlane's provisioning
+│   ├── 00-controlplane-cr.yaml       ControlPlane cp-db-kill, Keystone only
+│   ├── 01-podchaos.yaml              PodChaos pod-kill of the plane MariaDB (@NS@)
+│   └── chainsaw-test.yaml            Test: killed during db-sync, the plane converges once
 ├── cronjob-rotation-failure/         SC-CHAOS-005: CronJob fault tolerance
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-cron)
 │   ├── 01-podchaos.yaml              PodChaos pod-failure targeting job pods
@@ -4578,6 +4781,13 @@ tests/e2e-chaos/
 │   ├── 02-backend-cr.yaml            OIDC KeystoneIdentityBackend keycloak-chaos
 │   ├── 03-container-kill.yaml        PodChaos container-kill on federation-proxy in one pod
 │   └── chainsaw-test.yaml            Test: sidecar restart → recovery, IdP outage fails closed
+├── keystoneuser-rotation-keystone-outage/ KeystoneUser rotation due under a Keystone outage
+│   ├── 00-controlplane-cr.yaml       ControlPlane cp-ku-rot assigning @NS@-tenant
+│   ├── 01-keystoneuser.yaml          KeystoneUser ku-rot in @NS@-tenant, schedule off
+│   ├── 02-podchaos.yaml              PodChaos pod-failure on the plane Keystone API pods
+│   ├── 03-auth-probe-job.yaml        Job that runs token issue on a delivered clouds.yaml
+│   ├── chainsaw-test.yaml            Test: generation 2 waits, applies once, revokes generation 1
+│   └── probe-lib.sh                  Order, prefix, Secret copy and auth Job helpers
 ├── korc-network-partition/           K-ORC partitioned from a ControlPlane Keystone
 │   ├── 00-controlplane-cr.yaml       ControlPlane cp-korc-part, Keystone only
 │   ├── 01-keystoneservice.yaml       KeystoneService korc-part, applied under the partition

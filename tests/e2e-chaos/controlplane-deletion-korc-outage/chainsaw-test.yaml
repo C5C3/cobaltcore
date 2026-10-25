@@ -1,0 +1,230 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: K-ORC held down while a ControlPlane is deleted.
+#
+# Fault: a PodChaos pod-failure holds K-ORC (orc-controller-manager in
+# orc-system) down from before the delete of ControlPlane cp-del-korc until a
+# 120-second hold is over (01-podchaos.yaml).
+#
+# Claim, phase by phase:
+#   held      For 120 s the ControlPlane stays with its deletionTimestamp and
+#             its finalizer c5c3.io/orc-teardown, reports
+#             KORCReady=False/FinalizingORC, and keeps its Keystone (the UID
+#             recorded before the delete, no deletionTimestamp, Ready=True) and
+#             the admin ApplicationCredential CR (HELD-OK): the finalizer waits
+#             for K-ORC to revoke against a Keystone that still serves, and
+#             deletes the Keystone only once no K-ORC CR is left
+#             (reconcile_delete.go).
+#   teardown  Within 360 s of the delete the ControlPlane is gone, its events
+#             carry ORCTeardownComplete and neither ORCTeardownStalled nor
+#             ORCResourcesOrphaned (CLEAN-TEARDOWN-OK), and no K-ORC CR, no
+#             Keystone, no MariaDB and no Memcached is left in the namespace.
+#
+# The hold of 120 s and the 360 s for the teardown both stay inside the
+# orcTeardownDeadline of 7 minutes (2 m plus 5 m, requeue_intervals.go), the
+# point past which the finalizer force-strips the K-ORC finalizers. The suite
+# proves the clean path; the stall path is the one
+# tests/e2e/c5c3/deletion-orchestration admits.
+#
+# Blast radius: K-ORC reconciles no CR of the cluster while it is held. The
+# PodChaos is the shared state to undo, so the catches of steps 2 and 3 delete
+# it first; the cleanup of step 1 tears down a plane a failed run left
+# behind.
+#
+# Leg: controlplane. The suite runs in namespace chaos-cp-del, short for the
+# reason ../lib/controlplane.sh gives.
+#
+# Chaos workload: none (the ControlPlane under test is being deleted)
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: controlplane-deletion-korc-outage
+spec:
+  namespace: chaos-cp-del
+  timeouts:
+    assert: 5m
+    cleanup: 15m
+  steps:
+  # ── Step 1: Bring the plane up ─────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 40m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          cp_bring_up cp-del-korc 00-controlplane-cr.yaml
+    catch:
+    - &cp-dump
+      script:
+        timeout: 3m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_dump cp-del-korc
+          echo "=== ControlPlane events ==="
+          kubectl get events -n "$NAMESPACE" \
+            --field-selector involvedObject.kind=ControlPlane,involvedObject.name=cp-del-korc 2>&1 || true
+    # cp_teardown is --ignore-not-found, so it is a no-op once step 4 saw the
+    # plane go.
+    cleanup:
+    - script:
+        timeout: 13m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml 2>&1 || true
+          kubectl delete configmap cp-del-state -n "$NAMESPACE" --ignore-not-found 2>&1 || true
+          cp_teardown cp-del-korc
+  # ── Step 2: Hold K-ORC down ────────────────────────────────────────────
+  # The Keystone UID goes into ConfigMap cp-del-state.
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          keystone="$(kubectl get keystone cp-del-korc-keystone -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+          korc="$(kubectl get "$CP_KORC_KINDS" -n "$NAMESPACE" -o name | grep -c . || true)"
+          if [ -z "$keystone" ] || [ "$korc" -lt 1 ]; then
+            echo "FAIL: the plane has no Keystone (${keystone:-none}) or no K-ORC CR (${korc}) to hold"
+            exit 1
+          fi
+          kubectl create configmap cp-del-state -n "$NAMESPACE" \
+            --from-literal=keystone-uid="$keystone" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "before the delete: Keystone ${keystone}, ${korc} K-ORC CRs"
+          cp_apply_file 01-podchaos.yaml
+          kubectl wait podchaos/hold-korc-deletion -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          # AllInjected lands when the pod spec is patched; K-ORC is gone once
+          # its pod is not Ready.
+          kubectl wait pod -n orc-system -l control-plane=controller-manager \
+            --for=condition=Ready=false --timeout=120s
+          echo "OK: K-ORC is down"
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        shell: bash
+        content: |
+          . ../lib/controlplane.sh
+          cp_delete_file 01-podchaos.yaml 2>&1 || true
+    - *cp-dump
+  # ── Step 3: Delete the plane under the outage ──────────────────────────
+  - try:
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          AC=applicationcredentials.openstack.k-orc.cloud/cp-del-korc-admin-app-credential
+          keystone="$(kubectl get configmap cp-del-state -n "$NAMESPACE" -o jsonpath='{.data.keystone-uid}')"
+          kubectl delete controlplane cp-del-korc -n "$NAMESPACE" --wait=false
+          kubectl patch configmap cp-del-state -n "$NAMESPACE" --type=merge \
+            -p "{\"data\":{\"deleted-at\":\"$(date +%s)\"}}"
+
+          deadline=$(( $(date +%s) + 30 ))
+          while true; do
+            korc="$(cp_status controlplane cp-del-korc KORCReady || true)/$(cp_reason controlplane cp-del-korc KORCReady || true)"
+            if [ "$korc" = "False/FinalizingORC" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the ControlPlane does not report KORCReady=False/FinalizingORC within 30s of the delete (last: ${korc})"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: the ControlPlane reports KORCReady=False/FinalizingORC"
+
+          end=$(( $(date +%s) + 120 ))
+          while true; do
+            state="$(kubectl get controlplane cp-del-korc -n "$NAMESPACE" \
+              -o jsonpath='{.metadata.deletionTimestamp}|{.metadata.finalizers}')"
+            case "$state" in
+              "|"*) echo "FAIL: the ControlPlane carries no deletionTimestamp"; exit 1 ;;
+              *c5c3.io/orc-teardown*) ;;
+              *) echo "FAIL: the ControlPlane lost its finalizer c5c3.io/orc-teardown under the outage (${state})"; exit 1 ;;
+            esac
+            korc="$(cp_status controlplane cp-del-korc KORCReady)/$(cp_reason controlplane cp-del-korc KORCReady)"
+            if [ "$korc" != "False/FinalizingORC" ]; then
+              echo "FAIL: KORCReady reads ${korc} under the outage, want False/FinalizingORC"
+              exit 1
+            fi
+            now="$(kubectl get keystone cp-del-korc-keystone -n "$NAMESPACE" \
+              -o jsonpath='{.metadata.uid}|{.metadata.deletionTimestamp}|{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "$now" != "${keystone}||True" ]; then
+              echo "FAIL: the Keystone reads uid|deletionTimestamp|Ready '${now}', want '${keystone}||True' while K-ORC is down"
+              exit 1
+            fi
+            if ! kubectl get "$AC" -n "$NAMESPACE" >/dev/null; then
+              echo "FAIL: ${AC} is gone while K-ORC is down"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "HELD-OK: for 120s the ControlPlane waited at FinalizingORC with its finalizer, its undeleted Ready Keystone and its ApplicationCredential"
+          cp_delete_file 01-podchaos.yaml
+    catch:
+    - *lift
+    - *cp-dump
+  # ── Step 4: K-ORC tears down, the plane goes cleanly ───────────────────
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ../lib/controlplane.sh
+          deleted="$(kubectl get configmap cp-del-state -n "$NAMESPACE" -o jsonpath='{.data.deleted-at}')"
+          deadline=$(( deleted + 360 ))
+          while kubectl get controlplane cp-del-korc -n "$NAMESPACE" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the ControlPlane still exists 360s after its delete"
+              kubectl get controlplane cp-del-korc -n "$NAMESPACE" \
+                -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the ControlPlane is gone $(( $(date +%s) - deleted ))s after its delete"
+
+          reasons="$(kubectl get events -n "$NAMESPACE" \
+            --field-selector involvedObject.kind=ControlPlane,involvedObject.name=cp-del-korc \
+            -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}')"
+          if ! grep -qx ORCTeardownComplete <<<"$reasons"; then
+            echo "FAIL: no ORCTeardownComplete event on the ControlPlane"
+            echo "$reasons"
+            exit 1
+          fi
+          if grep -qxE 'ORCTeardownStalled|ORCResourcesOrphaned' <<<"$reasons"; then
+            echo "FAIL: the ControlPlane went through the stall path"
+            echo "$reasons"
+            exit 1
+          fi
+          echo "CLEAN-TEARDOWN-OK: ORCTeardownComplete, neither ORCTeardownStalled nor ORCResourcesOrphaned"
+
+          deadline=$(( $(date +%s) + 180 ))
+          while true; do
+            left="$(kubectl get "${CP_KORC_KINDS},keystones.keystone.openstack.c5c3.io,mariadbs.k8s.mariadb.com,memcacheds.memcached.c5c3.io" \
+              -n "$NAMESPACE" -o name)"
+            if [ -z "$left" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 180s after the ControlPlane went, the namespace still holds:"
+              echo "$left"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: no K-ORC CR, Keystone, MariaDB or Memcached is left"
+    catch:
+    - *cp-dump
