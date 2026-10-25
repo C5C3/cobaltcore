@@ -1034,7 +1034,7 @@ test_nova_leg_loads_the_tempest_image() {
 }
 
 test_chaos_nova_leg_runs_the_nova_suites() {
-  echo "Test: the e2e-chaos nova leg runs all six nova-stack suites"
+  echo "Test: the e2e-chaos nova leg runs all seven nova-stack suites"
 
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite missing from the list is
@@ -1061,6 +1061,20 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "tests/e2e-chaos/nova-operator-pod-kill"
   assert_contains "it runs the metadata agent pod-kill suite" "$entry" \
     "tests/e2e-chaos/neutron-metadata-agent-pod-kill"
+  assert_contains "it runs the drain kill suite" "$entry" \
+    "tests/e2e-chaos/novacompute-drain-compute-kill"
+  # The drain suite labels the node and runs a chassis of its own, so it comes
+  # after the metadata agent suite, whose chassis is gone by then.
+  local metadata_at drain_at
+  metadata_at=$(printf '%s\n' "$entry" |
+    grep -nF "tests/e2e-chaos/neutron-metadata-agent-pod-kill" | head -1 | cut -d: -f1)
+  drain_at=$(printf '%s\n' "$entry" |
+    grep -nF "tests/e2e-chaos/novacompute-drain-compute-kill" | head -1 | cut -d: -f1)
+  assert_gte "the drain suite runs after the metadata agent suite" \
+    "$drain_at" "$metadata_at"
+  assert_eq "and last of the leg" \
+    "tests/e2e-chaos/novacompute-drain-compute-kill" \
+    "$(grep -oE 'tests/[^ ]+' <<<"$entry" | tail -1)"
 
   # The health check comes first, so a Chaos Mesh that never answers is read
   # off one short suite instead of three that each stand a six-service stack up
@@ -1084,8 +1098,9 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     "$job" \
     "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}"
 
-  # Six refs on top of the keystone stack every non-ovn leg loads and the OVN
-  # pair the `!= 'pod'` entries already cover here. The tempest image the
+  # Seven refs on top of the keystone stack every non-ovn leg loads and the OVN
+  # pair the `!= 'pod'` entries already cover here, the last of them the
+  # nova-compute image of novacompute-drain-compute-kill's pool. The tempest image the
   # catalog, seed and verify Jobs run arrives with the keystone stack, which
   # also carries it for the workload pod of tests/e2e-chaos/lib/workload.sh;
   # test_ci_loads_the_tempest_image_on_the_keystone_stack_legs in
@@ -1097,7 +1112,7 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   assert_contains "that load runs on the nova leg alone" "$kind_load" \
     "if: matrix.suite == 'nova'"
   for ref in placement-operator:dev placement:2026.1 neutron-operator:dev \
-    neutron:2026.1 nova-operator:dev nova:2026.1; do
+    neutron:2026.1 nova-operator:dev nova:2026.1 nova-compute:2026.1; do
     # Pulled from GHCR ...
     assert_contains "the leg pulls ${ref}" "$load" \
       "matrix.suite == 'nova' && format('{0}/${ref}', env.IMAGE_PREFIX)"

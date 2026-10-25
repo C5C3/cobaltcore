@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 64 chaos test suites validate operator behavior during and after fault
+The 65 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -85,7 +85,7 @@ scenario, its service resource and its assertions.
 
 ## Prerequisites
 
-All 64 test suites require the infrastructure stack to be deployed and healthy.
+All 65 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -146,8 +146,9 @@ settings tuned for fault injection scenarios:
 | `report.name` | `chainsaw-chaos-report` | `chainsaw-report` | Distinct JUnit report artifact |
 
 Most suites restate the assert timeout of 5 minutes (`5m`) at the spec level.
-`mariadb-network-partition` raises it to `8m`, the six suites on the Nova stack raise single
-asserts to `8m`, and `deletion-stuck-finalizer` and `ovn-southbound-outage` set no suite-level timeout.
+`mariadb-network-partition` raises it to `8m`, the six older suites on the Nova stack raise single
+asserts to `8m`, the two Cinder upgrade suites and `novacompute-drain-compute-kill` raise it to
+`10m`, and `deletion-stuck-finalizer` and `ovn-southbound-outage` set no suite-level timeout.
 
 ## Workload and Consistency Harness
 
@@ -160,15 +161,18 @@ overrides the image), marks the fault window on the pod clock, and judges the
 records against the error budget in the suite header. The directory holds no
 `chainsaw-test.yaml`, so `make e2e-chaos` does not run it as a suite.
 
-Forty-six suites start a workload: the fifteen pod and network suites that send
+Fifty-two suites start a workload: the fifteen pod and network suites that send
 no OpenStack traffic of their own, `nova-placement-outage`, which runs it after its
 partition as the proof run of the server, network and image streams, the eighteen
 dependency-fault suites of #1389, from `glance-keystone-outage` to
-`neutron-metadata-agent-pod-kill`, and twelve of the thirteen platform suites of
-#1390, from `cert-manager-outage` to `rabbitmq-operator-cascading-failure`. The
-last two groups run it through their fault. `deletion-stuck-finalizer` and
-`c5c3-operator-pod-kill` start none and say why in a `# Chaos workload: none`
-line. The `Workload` line of each suite section below names its streams and its
+`neutron-metadata-agent-pod-kill`, twelve of the thirteen platform suites of
+#1390, from `cert-manager-outage` to `rabbitmq-operator-cascading-failure`, and six
+of the seven lifecycle suites of #1394, from `cinder-upgrade-db-partition` to
+`novacompute-drain-compute-kill`. The last three groups run it through their fault,
+except `controlplane-provisioning-mariadb-kill`, which runs it after its plane is
+Ready. `deletion-stuck-finalizer`, `c5c3-operator-pod-kill` and
+`controlplane-deletion-korc-outage` start none and say why in a
+`# Chaos workload: none` line. The `Workload` line of each suite section below names its streams and its
 budget.
 
 ### Streams
@@ -442,18 +446,21 @@ at the same time.
 
 The `nova` entry is the fourth, on the `self-hosted` runners and
 `continue-on-error` like the other two. It carries the heaviest stack in the job:
-each of its six suites (`nova-broker-outage`, `nova-mariadb-outage`,
+each of its seven suites (`nova-broker-outage`, `nova-mariadb-outage`,
 `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`,
-`neutron-metadata-agent-pod-kill`) brings up a Keystone, and all but
-`nova-mariadb-outage` add an OVNCentral, a Neutron, a Placement, a Glance and a
-fake-driver compute behind the Nova. On top of the keystone stack it deploys the
-placement, ovn, neutron and nova operators, and it sets `WITH_MESSAGING=true`:
-every Nova process dials the bus, five of the six suites take a vhost on the
-shared broker, and `nova-broker-outage` brings a RabbitmqCluster of its own,
-because its fault severs a whole broker. It also sets
+`neutron-metadata-agent-pod-kill`, `novacompute-drain-compute-kill`) brings up a
+Keystone, and all but `nova-mariadb-outage` add an OVNCentral, a Neutron, a
+Placement, a Glance and a fake-driver compute behind the Nova. On top of the
+keystone stack it deploys the placement, ovn, neutron and nova operators, loads
+`nova-compute:2026.1` for the NovaCompute pool of `novacompute-drain-compute-kill`,
+and sets `WITH_MESSAGING=true`: every Nova process dials the bus, six of the seven
+suites take a vhost on the shared broker, and `nova-broker-outage` brings a
+RabbitmqCluster of its own, because its fault severs a whole broker. It also sets
 `WITH_OVN_KERNEL_MODULES=true`: `neutron-metadata-agent-pod-kill` runs an
-OVNChassis and a metadata agent on the node, and the chassis DaemonSets need the
-`openvswitch` and `geneve` modules. The suites run in a matrix entry of their own
+OVNChassis and a metadata agent on the node, `novacompute-drain-compute-kill` an
+OVNChassis behind its pool, and the chassis DaemonSets need the `openvswitch` and
+`geneve` modules. The drain suite runs last, after the metadata agent suite's
+chassis is gone. The suites run in a matrix entry of their own
 because their stack does not fit beside the suites of the `network` entry.
 
 The `controlplane` entry is the fifth, on the `self-hosted` runners and
@@ -571,6 +578,7 @@ its 720-second `KeystoneReady` wait and a teardown of up to 13 minutes.
 | [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) | — | `cp-db-kill` | MariaDB kill during a ControlPlane's provisioning | `KILLED-IN-PROVISIONING-OK`: the MariaDB pod killed while the db-sync Job runs and before `KeystoneReady=True`, back with a new UID and Ready within 180 s; the plane at `Ready=True/AllReady`; db-sync and bootstrap Jobs succeeded, `DatabaseReady` and `BootstrapReady` `True`, `ONE-ADMIN-OK`, `OWNED-ONCE-OK`; a `verify` without marks at zero failures |
 | [controlplane-deletion-korc-outage](#controlplane-deletion-korc-outage) | — | `cp-del-korc` | K-ORC outage across a ControlPlane's deletion | `HELD-OK`: for 120 s the plane keeps its `deletionTimestamp` and finalizer at `KORCReady=False/FinalizingORC`, with its Keystone undeleted at `Ready=True` and its ApplicationCredential CR in place; `CLEAN-TEARDOWN-OK`: the plane gone within 360 s of the delete with `ORCTeardownComplete` and neither `ORCTeardownStalled` nor `ORCResourcesOrphaned`; no K-ORC CR, Keystone, MariaDB or Memcached left |
 | [keystoneuser-rotation-keystone-outage](#keystoneuser-rotation-keystone-outage) | — | `cp-ku-rot` | KeystoneUser rotation due under a Keystone outage | `GEN1-AUTH-OK`; `DUE-HELD-OK`: for 150 s generation 2 re-pointed but not applied, no generation 3, `UserReady=False`, the delivered Secret unchanged; after the lift generation 2 with `UserReady`, `DeliveryReady` and `Ready` `True`; `ROTATED-ONCE-OK`: `lastPasswordRotation` stamped after the lift, `nextPasswordRotation` one minute later and generation 2 until 15 s before it; `NEW-PASSWORD-OK`, `OLD-PASSWORD-REVOKED-OK`; the token stream within its measured budget |
+| [novacompute-drain-compute-kill](#novacompute-drain-compute-kill) | — | `nova-drain-pool` | nova-compute kill during a node drain | The node `Draining` with the service `disabled` and `ServicesReady=True/Draining`; the nova-compute pod UID replaced on the node within 300 s; `DRAIN-KEPT-OK`: for 120 s the node stays `Draining` with the recorded reason, Nova lists the service `disabled` (and `up` once) and one hypervisor for the node, one `ComputeServiceDisabled` event; after the server delete no node entry, no `nova-compute` service for the host, a `ComputeServiceDeleted` event and no pool pod; workload budget zero with a passing placement audit |
 | [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) | — | `keystone-chaos-fernet` | keystone-operator outage across a Fernet rotation | `CONTINUITY-1-OK` after a rotation under traffic; `STAGED-NOT-PROMOTED-OK`: for 60 s with the operator held, the staging Secret holds rotation 2 while the production Secret keeps its data; `PROMOTED-ONCE-OK`: after the lift the production data equals the staged data, the staging Secret absent or empty, `FernetKeysRotated` once; `FernetKeysReady=True`, `Ready=True/AllReady`, `CONTINUITY-2-OK` on both API pods, API pod UIDs unchanged, workload budget zero |
 | [cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) | — | `cinder-upg-bus` | Broker pod kill in the RollingUpdate of a release upgrade | `KILLED-IN-ROLLOUT-OK`: the broker pod UID gone while `upgradePhase` reads `RollingUpdate`; the new broker pod Ready within 300 s; `upgradePhase` empty, `installedRelease: "2026.2"`, `SchedulerReady`, `VolumeServicesReady` and `Ready=True/AllReady`, the three Deployments rolled onto `:2026.2`, the three phase Jobs succeeded, `verify` within the measured budget |
 
@@ -4360,6 +4368,80 @@ the workload.
 
 ---
 
+### novacompute-drain-compute-kill
+
+**File:** `tests/e2e-chaos/novacompute-drain-compute-kill/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A `PodChaos` `pod-kill` takes the nova-compute pod of NovaCompute
+`nova-drain-pool` away while its node drains: the node left the pool's selector
+with a server on it, and the pool disabled its compute service. The pool never
+migrates, so the drain is a ledger the pool keeps in its status and in Nova's
+service record. The suite pins that the ledger outlives the process: the
+restarted nova-compute keeps the service disabled and registers no second compute
+node, and the release still ends with the service deleted.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Label the node | `script` (1m) | `openstack.c5c3.io/chassis=true`, `topology.kubernetes.io/zone=nova-drain-az1` and `openstack.c5c3.io/nova-compute-pool=drain`; the node's name goes into ConfigMap `nova-drain-verify`. The step cleanup removes the three labels |
+| 2 | Bring up the stack and the chassis | `script` (25m) | The `nova-drain` stack of fixtures `00` to `11` on a vhost of its own, as `compute-node-pool` step 2 brings up its own. The step cleanup deletes the seed image through Glance before it deletes the stack |
+| 3 | Apply the pool | `apply` + `assert` (10m) | `nova-drain-pool` at `Ready=True/AllReady` with its node `Active`, the service `enabled` and `up`. The step cleanup deletes the pool, with the finalizer escape |
+| 4 | Boot a server | `script` (10m) | Job `nova-drain-boot-server` boots `drain-guest` onto the node |
+| 5 | Start the workload | `script` (6m) | `workload.sh start` with the `token` and `network` streams |
+| 6 | Drain | `script` + `assert` (10m) + `script` (2m) | Removes the pool label; the node reads `phase: Draining`, `serviceStatus: disabled` with `disabledReason: "c5c3.io: leaving NovaCompute openstack/nova-drain-pool"` and `instances: 1`, and `ServicesReady=True/Draining`; records the UID of the pool's one pod |
+| 7 | Kill nova-compute | `script` (6m) | `workload.sh mark fault-start`, applies `17-podchaos.yaml`, waits up to 300 s for a Ready pod with a new UID on the node, deletes the `PodChaos`, `workload.sh mark fault-end` |
+| 8 | The drain holds | `script` (6m) | For 120 s the node entry stays `Draining` with `disabled`, the recorded reason and `instances: 1`, and `ServicesReady=True/Draining`; a probe pod samples `openstack compute service list --host <node> --service nova-compute` and `openstack --os-compute-api-version 2.87 hypervisor list` over the same window, every sample `disabled` with one service and one hypervisor for the node and at least one `up`; the `ComputeServiceDisabled` count on the pool stays 1 (`DRAIN-KEPT-OK`) |
+| 9 | Release | `script` (12m) | Job `nova-drain-delete-server` deletes the server; within 600 s `status.nodes` is empty and the pool runs no pod; the pool carries a `ComputeServiceDeleted` event; Nova lists no `nova-compute` service for the host |
+| 10 | Judge the workload | `script` (25m) | `workload.sh verify` with `--placement-audit nova-drain` |
+
+**Fixtures:** `00` to `11`, the stack of `tests/e2e/nova/compute-node-pool/` with
+`nova-pool` renamed to `nova-drain` and the seed image id
+`4e0a0000-0000-4000-8000-000000001394`; `12-novacompute-pool.yaml`
+(`nova-drain-pool`, no traits); `15-boot-server-job.yaml` and
+`16-delete-server-job.yaml`; `17-podchaos.yaml` (`kill-nova-compute`, `pod-kill`,
+`mode: all`, `gracePeriod: 0`, on the three pod labels of the pool's DaemonSet);
+and `probe-lib.sh` with the pool helpers and `os_probe`.
+
+**Workload:** the `token` and `network` streams against `keystone-nova-drain` and
+`neutron-nova-drain`, started in step 5 and judged in step 10 against
+`failures=0 recovery=0s`, with the placement audit of `nova-drain`. nova-compute
+is on no request path of either stream. The suite runs last in the `nova` matrix
+entry, after the chassis of `neutron-metadata-agent-pod-kill` is gone.
+
+**Catch blocks:** step 7 deletes the `PodChaos` first. Every catch dumps the pool,
+the nova-compute DaemonSet and pods with their current and previous logs, the
+Nova's conditions and workloads, the Job logs, the pool's events, the `PodChaos`
+and the nova-operator log, and dumps the workload from step 5 on.
+
+**Design notes:**
+
+- `drainNode` disables the service once and counts the host's servers on every
+  poll, and each poll disables a service it reads `enabled` again
+  (`operators/nova/internal/controller/reconcile_novacompute_services.go`). A
+  restart that re-enabled the service would be hidden within one poll, so the
+  suite counts `ComputeServiceDisabled` events as well as sampling Nova.
+- The DaemonSet keeps a `metadata.name In [<node>]` term for every Draining node in
+  its node affinity (`reconcile_novacompute_daemonset.go`), so the killed pod is
+  recreated on the drained node although the node lost the pool label.
+- A pool without traits never reads a Hypervisor
+  (`reconcile_novacompute_traits.go`), so the suite needs no stand-in Hypervisor
+  CRD.
+- The probe pod runs the openstack client in a loop for the whole window, since
+  one invocation costs seconds; one pod per sample would leave few samples.
+- The hypervisor list is pinned to microversion 2.87. From 2.88 on the detail view
+  asks each compute host for its uptime over RPC, and right after the kill that
+  call times out and the API answers 500, which says nothing about the compute
+  node records the claim is about.
+- Every Glance of the matrix entry writes into the one `glance-images` bucket keyed
+  by image id, and deleting a Glance leaves its images there. The cleanup deletes the seed
+  image through Glance first, or a second run on the same cluster fails its upload
+  with a 500.
+
+---
+
 ## Test Patterns
 
 ![The six step patterns of the chaos suites, each a numbered chain. Degradation and Recovery (SC-CHAOS-001, SC-CHAOS-003), where a critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, assert the sub-condition is False, delete the PodChaos, assert the sub-condition is True and Ready=True. No-Regression (SC-CHAOS-002), where a non-critical dependency is killed: apply the CR, assert Ready=True, inject the PodChaos, poll readyReplicas below the desired count, poll readyReplicas back at the desired count, assert all conditions True, delete the PodChaos, assert Ready=True. Operator Self-Recovery (SC-CHAOS-004), where one operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos, wait until one pre-chaos UID is gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert Ready=True. Workload Fault Tolerance (SC-CHAOS-005), where a Job of the operator fails: apply the CR, assert Ready=True, inject a pod-failure PodChaos, trigger the Job, assert the conditions are maintained, delete the PodChaos, assert Ready=True. PDB Availability Guarantee (SC-CHAOS-008), where one API pod of three is killed: apply the CR with three replicas, assert Ready=True, assert the PDB has minAvailable 1, inject the PodChaos, verify availableReplicas is at least 1, assert DeploymentReady=True and Ready=True, delete the PodChaos, assert Ready=True. Operator Pod Kill All with Failover Reconciliation (SC-CHAOS-009), where every operator pod is killed: apply the CR, assert Ready=True, snapshot the operator pod UIDs, inject the PodChaos with mode all, wait until all pre-chaos UIDs are gone, wait until readyReplicas equals the desired count, delete the PodChaos, assert all 6 conditions True, patch the replicas from 1 to 2, assert the Deployment has 2 replicas and Ready=True.](../../diagrams/test-chaos-patterns.svg)
@@ -4592,7 +4674,7 @@ also dumps the NetworkChaos CR status in Step 4 to confirm fault injection state
 SC-CHAOS-005 also collects CronJob/Job-specific diagnostics in Steps 4 and 5, and
 SC-CHAOS-008 describes the PDB in Step 3.
 
-The fifty-one suites that start a workload also call `../lib/workload.sh dump <id>`
+The fifty-two suites that start a workload also call `../lib/workload.sh dump <id>`
 in the catch block of every step from `start` to `verify`. It prints the phase
 of the workload pod, its two fault marks and the last 200 lines of its log.
 
@@ -4927,6 +5009,14 @@ tests/e2e-chaos/
 │   ├── 15-failclosed-job.yaml        The build ends in ERROR, nothing else fails (FAILCLOSED-OK)
 │   ├── 16-recovered-job.yaml         The scheduler places servers again (RECOVERED-OK)
 │   └── chainsaw-test.yaml            Test: Ready maintained, the build fails closed
+├── novacompute-drain-compute-kill/   nova-compute kill during a node drain
+│   ├── 00-… to 11-*.yaml             The compute-node-pool stack as nova-drain, with its chassis
+│   ├── 12-novacompute-pool.yaml      NovaCompute nova-drain-pool, no traits
+│   ├── 15-boot-server-job.yaml       Boots drain-guest onto the node
+│   ├── 16-delete-server-job.yaml     Deletes drain-guest, the release
+│   ├── 17-podchaos.yaml              PodChaos pod-kill of the pool's nova-compute pod
+│   ├── chainsaw-test.yaml            Test: the drain outlives the restart, the release completes
+│   └── probe-lib.sh                  Pool helpers and os_probe, the openstack client in a pod
 ├── openbao-pod-kill/                 SC-CHAOS-003: OpenBao pod kill
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-bao)
 │   ├── 01-podchaos.yaml              PodChaos targeting openbao in shared-services

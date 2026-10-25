@@ -1290,7 +1290,7 @@ leg needs:
 | `pod` | keystone, horizon, glance, placement, barbican | the PodChaos suites of the keystone stack, the Keystone outage suites of Glance, Placement and Barbican, `horizon-dashboard-pod-kill`, the eight platform suites that need only the standalone stack (`cert-manager-outage`, `eso-down`, `eso-pod-kill`, `openbao-sealed`, `openbao-tenant-policy-narrowed`, `envoy-gateway-outage`, `envoy-proxy-pod-kill`, `mariadb-operator-cascading-failure`), and `fernet-rotation-operator-outage` |
 | `network` | keystone, horizon, glance, placement, barbican, ovn, neutron, cinder | the NetworkChaos suites and every suite that needs the neutron, cinder or ovn operators: the four Neutron suites (`neutron-mariadb-outage`, `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`), `ovn-operator-pod-kill`, the seven Cinder suites (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`, `cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`, `cinder-broker-pod-kill`), the database outages of Glance, Placement and Barbican, and `memcached-network-partition` |
 | `ovn` | ovn | `ovn-southbound-outage` |
-| `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill` |
+| `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill`, `novacompute-drain-compute-kill` |
 | `controlplane` | keystone, horizon, glance, barbican, ovn, K-ORC, c5c3 | the eight suites that bring up a ControlPlane of their own: `korc-provisioning-outage`, `korc-network-partition`, `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure`, `controlplane-provisioning-mariadb-kill`, `controlplane-deletion-korc-outage`, `keystoneuser-rotation-keystone-outage` |
 | `upgrade` | keystone, horizon, glance, barbican, ovn, cinder | the two suites that fault a Cinder release upgrade from 2026.1 to 2026.2: `cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill` |
 
@@ -1307,9 +1307,10 @@ load `placement-operator:dev` and `placement:2026.1` for their Placement suites,
 and the `ovn` leg loads none of the keystone stack. The keystone stack carries `tempest:2026.1`, which the
 workload pod of `tests/e2e-chaos/lib/workload.sh` runs on and whose `openstack`
 client the `nova` leg's catalog, seed and verify Jobs run. The `nova` leg names
-six images of its own: `placement-operator:dev`, `placement:2026.1`,
-`neutron-operator:dev`, `neutron:2026.1`, `nova-operator:dev` and
-`nova:2026.1`. The `upgrade` entry names `cinder-operator:dev`, `cinder:2026.1` and
+seven images of its own: `placement-operator:dev`, `placement:2026.1`,
+`neutron-operator:dev`, `neutron:2026.1`, `nova-operator:dev`, `nova:2026.1` and
+`nova-compute:2026.1`, the last for the NovaCompute pool of
+`novacompute-drain-compute-kill`. The `upgrade` entry names `cinder-operator:dev`, `cinder:2026.1` and
 `cinder:2026.2`, the only 2026.2 image of the job, and loads them through
 `Load upgrade leg images into kind`. `WITH_MESSAGING` is set on the `network`,
 `nova` and `upgrade` legs: for the vhosts the Cinder suites take, and because
@@ -1364,8 +1365,8 @@ it hit the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites
 its 720-second `KeystoneReady` wait and a teardown of up to 13 minutes. The
 `controlplane` entry needs about 15 minutes for its bring-up and 8 to 12 for each
 of its suites, from the 7 min 45 s the `keystone-service` suite took in run
-38788542824 plus the fault and a teardown of up to 12 minutes. The `nova` leg loads eighteen images and runs
-eight operator deploys before its first suite, and its six suites each stand up
+38788542824 plus the fault and a teardown of up to 12 minutes. The `nova` leg loads nineteen images and runs
+eight operator deploys before its first suite, and its seven suites each stand up
 a Keystone, an OVNCentral, a Neutron, a Placement, a Glance and a five-workload
 Nova, one after the other because `tests/e2e-chaos/chainsaw-config.yaml` sets
 `parallel: 1`. A wall that arrives mid-suite kills chainsaw outright: no
@@ -1381,7 +1382,7 @@ green run with them.
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
 | 5 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
-| 6 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the seven nova-leg images (`nova`), `c5c3-operator:dev` (`controlplane`), and the three cinder images of `upgrade` |
+| 6 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the eight nova-leg images (`nova`), `c5c3-operator:dev` (`controlplane`), and the three cinder images of `upgrade` |
 | 7 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs, `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane`, `WITH_NFS=true` on `network` and `upgrade`, and `WITH_MESSAGING=true` on `network`, `nova` and `upgrade` |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, each with the coverage counter volume of the job-level `E2E_COVERAGE: "true"`, the placement-operator on the `pod` and `network` legs; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator`; `upgrade` adds `Deploy cinder operator (upgrade leg)` |
 | 9 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |

@@ -51,15 +51,17 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `hack/deploy-infra.sh` loads the `openvswitch`/`geneve` modules the
   chassis DaemonSets need, and only the ovn-operator deployed, within a wall
   of 45 minutes. It stays `continue-on-error` too: the suite builds a
-  datapath on the node itself. The `nova` leg runs the six suites on the
+  datapath on the node itself. The `nova` leg runs the seven suites on the
   Nova stack (`nova-broker-outage`, `nova-mariadb-outage`,
   `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`,
-  `neutron-metadata-agent-pod-kill`) with the keystone stack plus the
-  placement, ovn, neutron and nova operators, `WITH_MESSAGING=true` (five of
-  the six take a vhost on the shared broker, and `nova-broker-outage` brings
-  a `RabbitmqCluster` of its own) and `WITH_OVN_KERNEL_MODULES=true` for the
-  OVNChassis of `neutron-metadata-agent-pod-kill`, within a wall of 170
-  minutes. That leg stays `continue-on-error` as well, because three of its
+  `neutron-metadata-agent-pod-kill`, `novacompute-drain-compute-kill`, the
+  last after the metadata agent suite's chassis is gone) with the keystone
+  stack plus the placement, ovn, neutron and nova operators and the
+  `nova-compute` image, `WITH_MESSAGING=true` (six of the seven take a vhost
+  on the shared broker, and `nova-broker-outage` brings a `RabbitmqCluster`
+  of its own) and `WITH_OVN_KERNEL_MODULES=true` for the OVNChassis of
+  `neutron-metadata-agent-pod-kill` and `novacompute-drain-compute-kill`,
+  within a wall of 170 minutes. That leg stays `continue-on-error` as well, because three of its
   suites are NetworkChaos partitions on the same kernel modules. The
   `controlplane` leg runs the eight suites that bring up a ControlPlane of
   their own in a short namespace of their own (`korc-provisioning-outage`,

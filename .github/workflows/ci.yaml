@@ -2141,11 +2141,13 @@ jobs:
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/ovn-southbound-outage
-          # The six nova-stack suites bring up the heaviest stack in this job:
+          # The seven nova-stack suites bring up the heaviest stack in this job:
           # a Keystone, a Placement, an OVNCentral, a Neutron, a Glance and a
           # Nova with a fake compute behind it, and
           # neutron-metadata-agent-pod-kill adds an OVNChassis and a metadata
-          # agent on the node. They get a leg of their own instead of widening
+          # agent on the node. novacompute-drain-compute-kill runs a
+          # NovaCompute pool on the node behind an OVNChassis of its own, so
+          # it runs last, after the metadata agent suite's chassis is gone. They get a leg of their own instead of widening
           # the network leg, which carries the neutron, cinder and ovn suites.
           # Like the ovn leg this one is non-blocking (see continue-on-error
           # below): three of its faults are NetworkChaos partitions on the
@@ -2160,6 +2162,7 @@ jobs:
               tests/e2e-chaos/nova-keystone-outage
               tests/e2e-chaos/nova-operator-pod-kill
               tests/e2e-chaos/neutron-metadata-agent-pod-kill
+              tests/e2e-chaos/novacompute-drain-compute-kill
           # The suites of #1390 and #1394 that bring up a ControlPlane of their
           # own in a namespace of their own: K-ORC, the c5c3-operator and a
           # Keystone-only plane per suite. They get an entry of their own so
@@ -2216,9 +2219,9 @@ jobs:
     # tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1, where the
     # e2e-operator nova leg fits comparable suites into 90 minutes only
     # because it runs them two at a time. The nova leg
-    # loads eighteen images and runs eight operator deploys before its first
-    # suite, and each of its six suites stands up a Keystone, an OVNCentral, a
-    # Neutron, a Placement, a Glance and a five-workload Nova.
+    # loads nineteen images and runs eight operator deploys before its first
+    # suite, and each of its seven suites stands up a Keystone, an OVNCentral,
+    # a Neutron, a Placement, a Glance and a five-workload Nova.
     #
     # The wall has to outlast that bring-up plus the suites that pass plus the
     # step a stalling suite times out in and the catch block after it —
@@ -2328,10 +2331,10 @@ jobs:
             # operator one.
             ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The six nova-stack suites run on the nova leg alone. The OVN
+            # The seven nova-stack suites run on the nova leg alone. The OVN
             # pair above already covers that leg (!= 'pod'), and the keystone,
             # glance and tempest images arrive with the keystone stack on every
-            # non-ovn leg, so six refs are left to name here.
+            # non-ovn leg, so seven refs are left to name here.
             # A Nova boots no server without a Placement to claim from.
             ${{ matrix.suite == 'nova' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Placement API that operator rolls out.
@@ -2340,10 +2343,13 @@ jobs:
             ${{ matrix.suite == 'nova' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Neutron API and the metadata agent beside it.
             ${{ matrix.suite == 'nova' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The operator whose CRs the six suites drive.
+            # The operator whose CRs the seven suites drive.
             ${{ matrix.suite == 'nova' && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The five Nova workloads and the fake compute beside them.
             ${{ matrix.suite == 'nova' && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
+            # The nova-compute DaemonSet of novacompute-drain-compute-kill's
+            # NovaCompute pool.
+            ${{ matrix.suite == 'nova' && format('{0}/nova-compute:2026.1', env.IMAGE_PREFIX) || '' }}
             # The controlplane leg's own operator; its Keystone children run
             # the keystone image the keystone stack above already loads.
             ${{ matrix.suite == 'controlplane' && format('{0}/c5c3-operator:dev', env.IMAGE_PREFIX) || '' }}
@@ -2394,7 +2400,7 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
-      # The nova leg's own six. None of the per-leg steps above reaches them:
+      # The nova leg's own seven. None of the per-leg steps above reaches them:
       # the placement pair is gated on the pod and network legs and the
       # neutron pair on the network one. The OVN pair this leg also needs is
       # loaded by the `!= 'pod'` step above.
@@ -2407,6 +2413,7 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1 --name ${{ env.KIND_CLUSTER }}
       # The controlplane leg's c5c3-operator. The keystone stack step above
       # covers its Keystone children and the Tempest image of the workload
       # and the admin Jobs.
@@ -2440,8 +2447,8 @@ jobs:
           # of them take a vhost on the shared broker; cinder-broker-outage and
           # cinder-broker-pod-kill bring a RabbitmqCluster of their own,
           # because their faults take the whole broker away and doing that to
-          # the shared one would take the rest of the leg down with it. Five
-          # of the six nova-stack suites take a vhost there too;
+          # the shared one would take the rest of the leg down with it. Six
+          # of the seven nova-stack suites take a vhost there too;
           # nova-broker-outage brings its own broker for the same reason. The
           # two upgrade suites attach an NFS backend too, and
           # cinder-upgrade-db-partition takes a vhost on the shared broker;
@@ -2601,7 +2608,7 @@ jobs:
           OPERATOR: cinder
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
           NAMESPACE: cinder-system
-      # The six nova-stack suites run on the nova leg alone, so the three
+      # The seven nova-stack suites run on the nova leg alone, so the three
       # operators they need beyond the ovn one deploy there alone. The first two names carry a
       # "(nova leg)" suffix because tests/lib/ci_yaml.sh returns the first step
       # of an exact name and the placement and neutron steps above are pinned
