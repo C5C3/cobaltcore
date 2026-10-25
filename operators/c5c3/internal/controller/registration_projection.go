@@ -407,6 +407,31 @@ func unmanagedRegionImport(name, namespace, region string, credRef orcv1alpha1.C
 	}
 }
 
+// managedRegisteredLimitChild builds the managed RegisteredLimit CR for one
+// registered limit of a catalog row: the per-project default of resourceName on
+// the service row serviceRef registers, in the Keystone region regionRef imports.
+// K-ORC keeps serviceRef, resourceName and regionRef immutable and updates
+// defaultLimit in place, so a changed default re-applies the same CR. It carries
+// no description: nothing reads one, and Keystone stores the field verbatim.
+func managedRegisteredLimitChild(
+	name, namespace, serviceRef, regionRef, resourceName string, defaultLimit int32,
+	credRef orcv1alpha1.CloudCredentialsReference,
+) *orcv1alpha1.RegisteredLimit {
+	return &orcv1alpha1.RegisteredLimit{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.RegisteredLimitSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.RegisteredLimitResourceSpec{
+				ServiceRef:   orcv1alpha1.KubernetesNameRef(serviceRef),
+				RegionRef:    ptr.To(orcv1alpha1.KubernetesNameRef(regionRef)),
+				ResourceName: resourceName,
+				DefaultLimit: ptr.To(defaultLimit),
+			},
+		},
+	}
+}
+
 // managedCatalogEndpointChild builds the managed Endpoint CR for one interface of
 // a catalog row, pointing at that row's Service CR and, when regionRef is not
 // empty, at the Region CR whose Keystone region the row is registered in.

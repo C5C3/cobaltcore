@@ -94,7 +94,7 @@ spec:
           CREDS_SECRET=workflow-credentials
           KS_SELECTOR="c5c3.io/keystoneservice-name=${KS_NAME},c5c3.io/keystoneservice-namespace=${CP_NS}"
           LEGACY_SELECTOR="c5c3.io/keystoneservice-name=${LEGACY_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
-          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud
+          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud
           WORKFLOW_URL="http://workflow-api.${CP_NS}.svc.cluster.local:8989/v2"
           LEGACY_URL="http://legacy-api.${CP_NS}.svc.cluster.local:8777/"
           WORKFLOW_KV="openstack/keystone/${CP_NS}/${KS_NAME}/service-accounts/credentials"
@@ -130,6 +130,7 @@ spec:
             endpoints.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
             regions.openstack.k-orc.cloud \
+            registeredlimits.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             pushsecrets.external-secrets.io \
             secretstores.external-secrets.io \
@@ -1062,7 +1063,7 @@ spec:
           echo "=== KeystoneServices and CredentialRotations ==="
           kubectl get keystoneservice,credentialrotation -n "${NAMESPACE}" -o yaml 2>&1 || true
           echo "=== K-ORC children in the plane's namespace ==="
-          kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud -n "${NAMESPACE}" -o wide 2>&1 || true
+          kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud -n "${NAMESPACE}" -o wide 2>&1 || true
           echo "=== Delivery objects ==="
           kubectl get externalsecret,pushsecret,secretstore -n "${NAMESPACE}" 2>&1 || true
           echo "=== Secrets (names only) ==="
@@ -1154,7 +1155,7 @@ spec:
           # that far. When this ordering loses a race, the operators' bounded
           # stall breakers still converge the namespace, inside chainsaw's
           # cleanup budget instead of past it.
-          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
           while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
             if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then

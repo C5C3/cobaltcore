@@ -429,20 +429,24 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // users + projects are also managed/owned by the KeystoneService registration
 // projection (registration_projection.go). Roles are imported and RoleAssignments
 // minted for the registrations' role projection. Regions are the bootstrap Region
-// reconcileCatalog adopts for the ControlPlane.
-// patch on the nine status subresources is what unlatchKORCTransportErrors
+// reconcileCatalog adopts for the ControlPlane. RegisteredLimits are managed and
+// owned by the registrations' catalog projection (ensureCatalog), one per declared
+// catalog.registeredLimits entry; update is not granted, because the sweep and
+// teardown delete them and patchAwayKORCFinalizers patches.
+// patch on the ten status subresources is what unlatchKORCTransportErrors
 // (korc_unlatch.go) uses to clear a latched transport error from a child's
 // Progressing condition. No other status verb is granted.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_credentialrotation.go:520 (clearPasswordHashAnnotation) to update applicationcredentials.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:2260 (forceRemoveKORCFinalizers) to update domains, endpoints, regions and services.
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;regions,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=projects;roles;roleassignments,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=projects;roles;roleassignments;registeredlimits,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_korc.go:389 (reconcileKORC) to patch applicationcredentials/status.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_korc.go:232 (reconcileKORC) to patch domains/status.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_catalog.go:195 (reconcileCatalog) to patch endpoints/status, regions/status and services/status.
-// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/registration_projection.go:819 (applyAccountRole) to patch roleassignments/status and roles/status.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/registration_projection.go:844 (applyAccountRole) to patch roleassignments/status and roles/status.
+// Unexercised by the e2e suites; used by operators/c5c3/internal/controller/keystoneservice_catalog.go:129 (ensureCatalog) to patch registeredlimits/status.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/keystoneuser_provision.go:165 (provisionUser) to patch users/status.
-// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials/status;services/status;endpoints/status;users/status;domains/status;projects/status;roles/status;roleassignments/status;regions/status,verbs=patch
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials/status;services/status;endpoints/status;users/status;domains/status;projects/status;roles/status;roleassignments/status;regions/status;registeredlimits/status,verbs=patch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // Required so the operator can observe the shared cluster store's Ready condition
 // and reflect upstream secret-backend outages. A ControlPlane that sets an

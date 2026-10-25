@@ -1000,7 +1000,8 @@ func simulateBuiltinRegistrationConvergedWhenPresent(
 // simulateRegistrationCatalogAvailableWhenPresent resolves the catalog block of a
 // KeystoneService child: the collision probe reports the row ABSENT so the
 // registration creates the managed objects, and the managed Service plus one
-// Endpoint per declared interface report Available for their current generation
+// Endpoint per declared interface and one RegisteredLimit per declared registered
+// limit report Available for their current generation
 // (korcAvailableUpToDate refuses a stale condition). That is what flips the child's
 // CatalogReady.
 //
@@ -1078,6 +1079,27 @@ func simulateRegistrationCatalogAvailableWhenPresent(
 		})
 		g.Expect(c.Status().Update(ctx, ep)).To(Succeed(),
 			"set the %q catalog Endpoint Available=True", entry.Interface)
+	}
+
+	// One managed RegisteredLimit per declared registered limit, registered once
+	// the endpoints are.
+	for _, entry := range ks.Spec.Catalog.RegisteredLimits {
+		limit := &orcv1alpha1.RegisteredLimit{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{
+				Namespace: ns, Name: keystoneServiceRegisteredLimitRef(ks, entry.ResourceName),
+			}, limit)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"the %q RegisteredLimit should be registered", entry.ResourceName)
+		meta.SetStatusCondition(&limit.Status.Conditions, metav1.Condition{
+			Type:               orcv1alpha1.ConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             orcv1alpha1.ConditionReasonSuccess,
+			ObservedGeneration: limit.Generation,
+			Message:            "simulated available",
+		})
+		g.Expect(c.Status().Update(ctx, limit)).To(Succeed(),
+			"set the %q RegisteredLimit Available=True", entry.ResourceName)
 	}
 }
 

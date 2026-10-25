@@ -438,12 +438,12 @@ idea.
 | Type | Status | Reason | Meaning |
 | --- | --- | --- | --- |
 | `CatalogReady` | True | `CatalogNotDeclared` | No catalog block is declared. |
-| `CatalogReady` | True | `CatalogRegistered` | The service row and every declared endpoint row are registered in the ControlPlane's region and Available. |
+| `CatalogReady` | True | `CatalogRegistered` | The service row, every declared endpoint row and every declared registered limit are registered in the ControlPlane's region and Available. |
 | `CatalogReady` | False | `ServiceCollision` | A catalog entry of this type and name already exists and `catalog.adopt` is not set. Nothing was touched. |
 | `CatalogReady` | False | `ProbingForCollision` | The collision probe has not resolved yet. |
-| `CatalogReady` | False | `WaitingForCatalog` | The Service, the Region import or an Endpoint child is registered but not yet Available, or the region-less Endpoint an earlier version registered is being removed now that its regioned replacement is Available. |
-| `CatalogReady` | False | `CatalogFailed` | K-ORC reported a terminal error on the Service, the Region import or an Endpoint; it has stopped retrying. A latched transport error is cleared first, so K-ORC retries. |
-| `CatalogReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Service, the Region import or an Endpoint child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
+| `CatalogReady` | False | `WaitingForCatalog` | The Service, the Region import, an Endpoint or a RegisteredLimit child is registered but not yet Available, a RegisteredLimit's changed default has not reached Keystone yet (K-ORC reports `Progressing=True` for its generation, as it does while Keystone refuses the update because a project limit of the resource exists), an undeclared child is still being removed, or the region-less Endpoint an earlier version registered is being removed now that its regioned replacement is Available. |
+| `CatalogReady` | False | `CatalogFailed` | K-ORC reported a terminal error on the Service, the Region import, an Endpoint or a RegisteredLimit; it has stopped retrying. A latched transport error is cleared first, so K-ORC retries. |
+| `CatalogReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Service, the Region import, an Endpoint or a RegisteredLimit child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
 | `CatalogReady` | False | `CatalogError` | A Kubernetes-level failure applying a catalog child (not a K-ORC or OpenStack failure). |
 | `AccountReady` | True | `AccountNotDeclared` | No account block is declared. |
 | `AccountReady` | True | `AccountProvisioned` | The account exists in Keystone with its roles bound, and its credentials are materialized in the consumer Secret. |

@@ -397,6 +397,7 @@ spec:
             endpoints.openstack.k-orc.cloud \
             roleassignments.openstack.k-orc.cloud \
             regions.openstack.k-orc.cloud \
+            registeredlimits.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             vaultdynamicsecrets.generators.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
@@ -2336,7 +2337,7 @@ spec:
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== Projected child CRs ==="
           kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
-          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud -n openstack 2>&1 || true
+          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud -n openstack 2>&1 || true
           echo "=== Service registrations (KeystoneService children) ==="
           kubectl get keystoneservice -n openstack -o yaml 2>&1 || true
           echo "=== K-ORC children the registrations own ==="
