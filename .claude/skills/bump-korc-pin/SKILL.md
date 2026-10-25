@@ -19,7 +19,8 @@ description: >-
 # Bump the K-ORC pin
 
 K-ORC is pinned to an upstream **main commit**, not a release: the
-c5c3-operator `Owns()` the `RoleAssignment` and `Region` kinds, and no
+c5c3-operator `Owns()` the `RoleAssignment` and `Region` kinds and creates
+`RegisteredLimit` and system-scoped `RoleAssignment` children, and no
 release ships them (v2.6.0 is still the latest). Upstream publishes an image
 per main commit as `quay.io/orc/openstack-resource-controller:commit-<7 hex>`,
 and quay expires every `commit-*` tag **four weeks after the push**
@@ -103,7 +104,7 @@ directory and flags every `api/` and `config/` file.
 | Range touches | Means | Do |
 |---|---|---|
 | neither `api/` nor `config/` | CRDs, RBAC, manager and Go API unchanged | move the three manifest sites; move go.mod too unless this is an emergency expiry re-pin |
-| `config/` | CRD schemas, RBAC or the manager Deployment changed | read the `config/crd/bases/` diffs of the kinds the c5c3-operator creates (ApplicationCredential, Domain, Endpoint, Project, Region, Role, RoleAssignment, Service, User) |
+| `config/` | CRD schemas, RBAC or the manager Deployment changed | read the `config/crd/bases/` diffs of the kinds the c5c3-operator creates (ApplicationCredential, Domain, Endpoint, Project, Region, RegisteredLimit, Role, RoleAssignment, Service, User) |
 | `api/` | Go types changed | move go.mod, build and vet c5c3, read the type diffs of those kinds; a new required field or a renamed one breaks the projection |
 | upstream `go.mod` / `go.sum` | transitive bumps | run [[check-go-workspace-deps]] after the tidy |
 
