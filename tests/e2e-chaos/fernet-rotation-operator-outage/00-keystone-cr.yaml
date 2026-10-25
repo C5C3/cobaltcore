@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR for the keystone-operator outage across a Fernet rotation: the
+# fixture of ../../e2e/keystone/fernet-rotation/ under the name
+# keystone-chaos-fernet and the database keystone_chaos_fernet, with three
+# changes:
+#   - two API replicas, so a token is often issued by one pod and validated by
+#     the other while the kubelet projects a new key set;
+#   - rotationSchedule "0 0 1 1 *", so no scheduled rotation lands in the run:
+#     the suite triggers both rotations itself;
+#   - the dogpile cache stays off, as in the source fixture: every Keystone on
+#     the leg shares openstack-memcached, and its keys carry no instance.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-chaos-fernet
+  namespace: openstack
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 2
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_chaos_fernet
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 1 1 *"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  extraConfig:
+    cache:
+      enabled: "false"

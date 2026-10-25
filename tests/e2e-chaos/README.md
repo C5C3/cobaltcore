@@ -76,8 +76,8 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `WITH_MESSAGING=true`, within a wall of 80 minutes. It stays
   `continue-on-error` as well: its partitions are NetworkPolicies that rest
   on kindnet's enforcement, and its broker kill is new. The `pod` leg runs the
-  eight platform suites of #1390 that need only the standalone stack on top
-  of its own, within 135 minutes; the six walls sum to 685 minutes, which the
+  eight platform suites of #1390 that need only the standalone stack and
+  `fernet-rotation-operator-outage` on top of its own, within 135 minutes; the six walls sum to 685 minutes, which the
   author of #1394 accepted on 2026-10-25.
 - **Shared state is restored in every catch.** A step that changes shared
   platform state (a scale-down, a narrowed policy, a sealed OpenBao, a chaos

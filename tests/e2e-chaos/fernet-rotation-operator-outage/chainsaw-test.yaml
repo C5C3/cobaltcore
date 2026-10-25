@@ -1,0 +1,370 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the keystone-operator held down across a Fernet
+# rotation's staging write.
+#
+# Fault: a PodChaos pod-failure holds every keystone-operator pod down
+# (01-podchaos.yaml) while the second of two rotations, a Job from the
+# rotation CronJob, writes the staging Secret.
+#
+# Claim, phase by phase:
+#   rotation 1  Before the fault window, a rotation under token traffic: the
+#               production Secret changes, the staging Secret comes back empty,
+#               both API pods project the new key set, and a token issued
+#               before the rotation still validates (CONTINUITY-1-OK). Any
+#               failed token record here fails verify, because it lies outside
+#               the window.
+#   held        With the operator down, rotation 2 completes and for 60 s the
+#               staging Secret holds the new keys with its completion
+#               annotation while the production Secret keeps its data
+#               (STAGED-NOT-PROMOTED-OK): nothing but the operator promotes.
+#   promoted    After the lift the operator promotes the staged keys once: the
+#               production data equals the staged data, the staging Secret is
+#               gone or empty again, and the FernetKeysRotated count rose by
+#               one (PROMOTED-ONCE-OK). FernetKeysReady=True and
+#               Ready=True/AllReady, both API pods project the new set, a token
+#               issued before rotation 2 validates on both (CONTINUITY-2-OK),
+#               and the API pods keep their UIDs: the keys reach them through
+#               the kubelet's Secret projection, with no rollout.
+#
+# The operator writes FernetKeysReady=True/FernetKeysRotated on the pass that
+# applies a rotation alone, and FernetKeysAvailable on the next, so the
+# promotion is counted by its event (reconcile_fernet.go). The commit deletes
+# the staging Secret and the next pass creates it again empty
+# (EnsureStagingSecret), so "gone" is a moment and the checks read "absent or
+# empty". The rotation Job may only get and patch the staging Secret, which is
+# why rotation 2 starts once rotation 1's staging Secret is back.
+#
+# Blast radius: the PodChaos selects the keystone-operator pods in
+# keystone-system alone. No Keystone of the cluster reconciles while it holds,
+# and writes to the Keystone kinds are refused while the webhook has no
+# endpoint; the suite writes none in that window. The PodChaos is the shared
+# state to undo, so the catch of step 4 deletes it first.
+#
+# Leg: pod.
+#
+# Workload: the token stream of ../lib/workload.sh issues a fresh token every
+# cycle and validates it at once, through the Service and so across both API
+# pods. A rotation's new primary key is the key every pod held as staged, so a
+# token signed with it validates on a pod that still projects the old set, and
+# the operator is on no request path of a token: the budget is zero.
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-26, kind, failures 0/0/0, recovery 0/0/0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: fernet-rotation-operator-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Bring up the Keystone with two API pods ───────────────────────
+  # The API pod UIDs go into ConfigMap fernet-outage-state, which step 5
+  # compares against.
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-fernet
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          deadline=$(( $(date +%s) + 180 ))
+          while true; do
+            ready="$(kubectl get pods -n "$NAMESPACE" -l "$API_SELECTOR" \
+              -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep -c '^True$' || true)"
+            if [ "$ready" = "2" ] && [ "$(api_pods | grep -c .)" = "2" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: ${ready} of 2 API pods Ready after 180s"
+              kubectl get pods -n "$NAMESPACE" -l "$API_SELECTOR" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 3
+          done
+          kubectl create configmap "$STATE" -n "$NAMESPACE" \
+            --from-literal=api-uids="$(api_uids)" --dry-run=client -o yaml | kubectl apply -f -
+          echo "OK: both API pods are Ready: $(api_uids)"
+    catch:
+    - &ks-dump
+      script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-chaos-fernet --dep-label=app.kubernetes.io/name=keystone-operator --dep-ns=keystone-system --log-label=app.kubernetes.io/instance=keystone-chaos-fernet
+    - &rotation-dump
+      script:
+        timeout: 2m
+        content: |
+          echo "=== Rotation Jobs ==="
+          for job in keystone-chaos-fernet-rotate-1 keystone-chaos-fernet-rotate-2; do
+            kubectl get job "$job" -n "$NAMESPACE" -o wide 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "job/$job" --all-containers --tail=40 2>&1 || true
+          done
+          echo "=== Fernet Secrets (data redacted) ==="
+          for secret in keystone-chaos-fernet-fernet-keys keystone-chaos-fernet-fernet-keys-rotation; do
+            kubectl get secret "$secret" -n "$NAMESPACE" -o json 2>/dev/null \
+              | jq '{name: .metadata.name, uid: .metadata.uid, annotations: .metadata.annotations, keys: (.data // {} | keys)}' 2>&1 || true
+          done
+          echo "=== keystone-operator ==="
+          kubectl get deploy,pods -n keystone-system -o wide 2>&1 || true
+          kubectl get podchaos -n "$NAMESPACE" 2>&1 || true
+          echo "=== Keystone events ==="
+          kubectl get events -n "$NAMESPACE" \
+            --field-selector involvedObject.kind=Keystone,involvedObject.name=keystone-chaos-fernet 2>&1 || true
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump fernet-rotation-operator-outage
+    # The state ConfigMap, the token stash and the rotation Jobs are created by
+    # scripts, so chainsaw does not track them.
+    cleanup:
+    - script:
+        timeout: 1m
+        content: |
+          kubectl delete configmap fernet-outage-state -n openstack --ignore-not-found 2>&1 || true
+          kubectl delete secret fernet-outage-t1 -n openstack --ignore-not-found 2>&1 || true
+          kubectl delete job keystone-chaos-fernet-rotate-1 keystone-chaos-fernet-rotate-2 \
+            -n openstack --ignore-not-found 2>&1 || true
+  # ── Step 2: Start the workload ────────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start fernet-rotation-operator-outage --
+          --streams token
+          --keystone http://keystone-chaos-fernet.openstack.svc:5000/v3
+    catch:
+    - *ks-dump
+    - *rotation-dump
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop fernet-rotation-operator-outage
+  # ── Step 3: Rotation 1 under traffic, before the fault window ─────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          POD="$(api_pods | head -1)"
+          T0="$(issue_token "$POD")"
+          if [ -z "$T0" ]; then
+            echo "FAIL: no token from ${POD} before rotation 1"
+            exit 1
+          fi
+          H0="$(data_hash "$PROD")"
+          run_rotation keystone-chaos-fernet-rotate-1
+
+          deadline=$(( $(date +%s) + 60 ))
+          until [ "$(data_hash "$PROD")" != "$H0" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the production Secret did not change within 60s of rotation 1"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: the operator promoted rotation 1"
+          # The commit deletes the staging Secret and the next pass creates it
+          # again empty, which rotation 2 needs: its Job may only patch it.
+          deadline=$(( $(date +%s) + 60 ))
+          until [ "$(staging_state)" = "empty" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the staging Secret is not back empty within 60s of the promotion (state $(staging_state))"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: the staging Secret is back empty"
+          wait_projection 150
+          validate_everywhere "$T0" "the token issued before rotation 1"
+          echo "CONTINUITY-1-OK: a token issued before rotation 1 validates on both API pods"
+    catch:
+    - *ks-dump
+    - *rotation-dump
+    - *workload-dump
+  # ── Step 4: Hold the operator across rotation 2's staging write ───────────
+  # T1 goes into a Secret, the rotation count and the staged hash into the
+  # state ConfigMap.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          T1="$(issue_token "$(api_pods | head -1)")"
+          if [ -z "$T1" ]; then
+            echo "FAIL: no token before rotation 2"
+            exit 1
+          fi
+          stash_t1 "$T1"
+          C1="$(rotated_count)"
+          H1="$(data_hash "$PROD")"
+          state_set rotated-before "$C1"
+          echo "before rotation 2: FernetKeysRotated count ${C1}, production hash ${H1}"
+
+          ../lib/workload.sh mark fernet-rotation-operator-outage fault-start
+          kubectl apply -f 01-podchaos.yaml
+          kubectl wait podchaos/hold-keystone-operator -n "$NAMESPACE" --for=condition=AllInjected --timeout=120s
+          deadline=$(( $(date +%s) + 120 ))
+          until [ "$(kubectl get deploy keystone-operator -n keystone-system -o jsonpath='{.status.readyReplicas}')" = "" ] ||
+            [ "$(kubectl get deploy keystone-operator -n keystone-system -o jsonpath='{.status.readyReplicas}')" = "0" ]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: deploy/keystone-operator still has ready replicas 120s into the hold"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: the keystone-operator has no ready replica"
+
+          run_rotation keystone-chaos-fernet-rotate-2
+          end=$(( $(date +%s) + 60 ))
+          S2=""
+          while true; do
+            state="$(staging_state)"
+            case "$state" in
+              staged:*) ;;
+              *)
+                echo "FAIL: the staging Secret reads '${state}' under the hold, want the staged keys with ${COMPLETED_AT}"
+                exit 1
+                ;;
+            esac
+            if [ -n "$S2" ] && [ "${state#staged:}" != "$S2" ]; then
+              echo "FAIL: the staged data changed under the hold"
+              exit 1
+            fi
+            S2="${state#staged:}"
+            if [ "$(data_hash "$PROD")" != "$H1" ]; then
+              echo "FAIL: the production Secret changed while the operator was held"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          state_set staged-hash "$S2"
+          echo "STAGED-NOT-PROMOTED-OK: for 60s the staging Secret held rotation 2 and the production Secret kept its data"
+
+          kubectl delete -f 01-podchaos.yaml
+          ../lib/workload.sh mark fernet-rotation-operator-outage fault-end
+    catch:
+    - &lift
+      script:
+        timeout: 1m
+        content: kubectl delete -f 01-podchaos.yaml --ignore-not-found 2>&1 || true
+    - *ks-dump
+    - *rotation-dump
+    - *workload-dump
+  # ── Step 5: The operator promotes rotation 2 once ─────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          deadline=$(( $(date +%s) + 300 ))
+          while true; do
+            want="$(kubectl get deploy keystone-operator -n keystone-system -o jsonpath='{.spec.replicas}')"
+            ready="$(kubectl get deploy keystone-operator -n keystone-system -o jsonpath='{.status.readyReplicas}')"
+            if [ -n "$want" ] && [ "${ready:-0}" = "$want" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: deploy/keystone-operator at readyReplicas ${ready:-0} of ${want} 300s after the lift"
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "OK: the keystone-operator is back at readyReplicas ${ready}"
+
+          C1="$(state_get rotated-before)"
+          S2="$(state_get staged-hash)"
+          deadline=$(( $(date +%s) + 120 ))
+          while true; do
+            prod="$(data_hash "$PROD" || true)"
+            state="$(staging_state || true)"
+            count="$(rotated_count || true)"
+            case "$state" in
+              absent | empty) promoted=yes ;;
+              *) promoted=no ;;
+            esac
+            if [ "$prod" = "$S2" ] && [ "$promoted" = yes ] && [ "$count" = "$((C1 + 1))" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 120s after the operator returned: production data is the staged data: $([ "$prod" = "$S2" ] && echo yes || echo no), staging '${state}', FernetKeysRotated count ${count} (want $((C1 + 1)))"
+              exit 1
+            fi
+            sleep 3
+          done
+          # The recorder sends events asynchronously; a second promotion would
+          # raise the count again within a pass or two.
+          sleep 20
+          count="$(rotated_count)"
+          if [ "$count" != "$((C1 + 1))" ]; then
+            echo "FAIL: FernetKeysRotated count is ${count} 20s after the promotion, want $((C1 + 1))"
+            exit 1
+          fi
+          echo "PROMOTED-ONCE-OK: the production Secret holds the staged keys, the staging Secret is ${state}, FernetKeysRotated rose once"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-chaos-fernet
+            namespace: openstack
+          status:
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          wait_projection 150
+          T1="$(read_t1)"
+          validate_everywhere "$T1" "the token issued before rotation 2"
+          echo "CONTINUITY-2-OK: a token issued before rotation 2 validates on both API pods"
+          before="$(state_get api-uids)"
+          now="$(api_uids)"
+          if [ "$before" != "$now" ]; then
+            echo "FAIL: the API pods changed across the rotations: [${before}] -> [${now}]"
+            exit 1
+          fi
+          echo "OK: both API pods kept their UIDs, so no rollout happened"
+    catch:
+    - *ks-dump
+    - *rotation-dump
+    - *workload-dump
+  # ── Step 6: Judge the workload against the budget ─────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify fernet-rotation-operator-outage
+    catch:
+    - *ks-dump
+    - *workload-dump
