@@ -4,6 +4,7 @@
   "hash": "sha256-KeVOQTv6am5tY5DFfexDA8+wWqB9m2Za3RvN55GqoXk=",
   "project": "keystone",
   "patches": [
-    "patches/keystone/2026.2/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch"
+    "patches/keystone/2026.2/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch",
+    "patches/keystone/2026.2/0002-fix-clock-race-in-totp-previous-windows-tests.patch"
   ]
 }

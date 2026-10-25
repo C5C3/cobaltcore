@@ -132,6 +132,22 @@ They retire once a keystone tag carries the change, which
 `.claude/skills/add-image-patch/scripts/check-image-patches.sh --apply`
 reports as reverse-applying.
 
+`patches/keystone/2026.1/0002-fix-clock-race-in-totp-previous-windows-tests.patch`
+and its 2026.2 twin are test-only. Three tests of `TestAuthTOTP` in
+`keystone/tests/unit/test_v3_auth.py` build a passcode for a time derived from
+the current time and only then stop the clock with `TimeFixture()`, which reads
+the current time again. The TOTP plugin accepts the window of the stopped clock
+and `[totp] included_previous_windows` windows before it, so a 30-second window
+boundary between the two reads makes the passcode one window too old. The test
+then fails with "Bad response: 401 UNAUTHORIZED (not 201)", as
+`test_with_passcode_in_previous_windows_default` did once in
+`test-service-images (keystone, 2026.1)` on 2026-10-24. The two previous-windows
+tests now stop the clock at the instant they derived the passcode's time from,
+and `test_with_passcode_no_previous_windows` stops it before it builds the
+passcode; the assertions are unchanged. The patch changes nothing at runtime.
+Upstream status: proposed as
+[openstack/keystone change 1012064](https://review.opendev.org/c/openstack/keystone/+/1012064).
+
 ### horizon
 
 **Location:** `images/horizon/image.nix`, built from the lock
