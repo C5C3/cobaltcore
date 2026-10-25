@@ -815,7 +815,8 @@ The block has three prerequisites the operator does not create:
 3. An `internal` endpoint of the `image` service in `spec.region`.
 
 A ControlPlane-managed Glance gets all three from the ControlPlane's
-`spec.services.glance.quotas`; a hand-managed Glance creates them itself.
+`spec.services.glance.quotas`; a hand-managed Glance creates them itself. See
+[Enforce Glance Image Quotas](../../guides/glance/enforce-glance-image-quotas.md).
 A Keystone outage, a missing endpoint or two matching endpoints make the quota
 check fail, and Glance answers the request with HTTP 500.
 
