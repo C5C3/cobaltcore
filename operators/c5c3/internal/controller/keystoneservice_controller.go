@@ -530,6 +530,13 @@ func keystoneServiceRoleAssignmentRef(ks *c5c3v1alpha1.KeystoneService, role str
 	return keystoneServiceChildPrefix(ks) + "assign-" + serviceAccountRoleSlug(role)
 }
 
+// keystoneServiceRegisteredLimitRef names the RegisteredLimit CR of one declared
+// catalog.registeredLimits entry. The slug bounds the name the way a role's does,
+// so "limit-" plus the slug (31 bytes) fits the webhook's role-sized budget.
+func keystoneServiceRegisteredLimitRef(ks *c5c3v1alpha1.KeystoneService, resourceName string) string {
+	return keystoneServiceChildPrefix(ks) + "limit-" + serviceAccountRoleSlug(resourceName)
+}
+
 func keystoneServiceCatalogServiceRef(ks *c5c3v1alpha1.KeystoneService) string {
 	return keystoneServiceChildPrefix(ks) + "service"
 }
@@ -771,6 +778,9 @@ func keystoneServiceDeclaredChildNames(ks *c5c3v1alpha1.KeystoneService) map[str
 			// catalog never goes without the interface in between.
 			keep[keystoneServiceLegacyCatalogEndpointRef(ks, ep.Interface)] = true
 		}
+		for _, limit := range ks.Spec.Catalog.RegisteredLimits {
+			keep[keystoneServiceRegisteredLimitRef(ks, limit.ResourceName)] = true
+		}
 	}
 	if ks.Spec.Account != nil {
 		keep[keystoneServiceUserRef(ks)] = true
@@ -794,13 +804,15 @@ func keystoneServiceDeclaredChildNames(ks *c5c3v1alpha1.KeystoneService) map[str
 //
 // One sweep serves both callers: the per-pass prune passes the declared names,
 // and the teardown passes nothing so everything goes. The split is by KIND rather
-// than by name, which is exact here — Service, Endpoint and Region are only ever
-// catalog children, and User / Project / Domain / Role / RoleAssignment and the
-// delivery objects are only ever account children — so a pending removal always
-// holds the condition of the block that actually owns it.
+// than by name, which is exact here — Service, Endpoint, Region and
+// RegisteredLimit are only ever catalog children, and User / Project / Domain /
+// Role / RoleAssignment and the delivery objects are only ever account children —
+// so a pending removal always holds the condition of the block that actually
+// owns it.
 //
-// Deletion runs dependents-first (assignments before roles, endpoints before the
-// region and service they reference, all before the user and project they bind).
+// Deletion runs dependents-first (assignments before roles, registered limits and
+// endpoints before the region and service they reference, all before the user
+// and project they bind).
 // K-ORC enforces its own ordering through finalizers, but issuing the deletes in
 // dependency order keeps the intent legible and avoids a guaranteed retry.
 //
@@ -859,6 +871,15 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 	}
 	for i := range roles.Items {
 		if err := sweep(&roles.Items[i], &accountSwept); err != nil {
+			return nil, nil, err
+		}
+	}
+	var limits orcv1alpha1.RegisteredLimitList
+	if err := r.List(ctx, &limits, client.InNamespace(childNS)); err != nil {
+		return nil, nil, fmt.Errorf("listing registration RegisteredLimits: %w", err)
+	}
+	for i := range limits.Items {
+		if err := sweep(&limits.Items[i], &catalogSwept); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -1237,7 +1258,7 @@ func (r *KeystoneServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 //
 // The watch surface, beyond the CR itself:
 //   - Owns: every same-namespace child the projections create with a controller
-//     reference — the eight K-ORC kinds, the ESO delivery pair, and the
+//     reference — the nine K-ORC kinds, the ESO delivery pair, and the
 //     operator-written password/source Secrets.
 //   - ControlPlane, WITHOUT a predicate: the AdminCredentialReady flip the
 //     shared gate waits on, the allowlist edits that admit or de-list a
@@ -1266,6 +1287,7 @@ func (r *KeystoneServiceReconciler) setupWithOptions(mgr ctrl.Manager, opts crco
 		Watches(&orcv1alpha1.Service{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Region{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.RegisteredLimit{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.User{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Project{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).

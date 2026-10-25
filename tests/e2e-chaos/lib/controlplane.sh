@@ -26,7 +26,7 @@ CP_BOOTSTRAP_DIR="${CP_LIB_DIR}/../../../deploy/openbao/bootstrap"
 # shellcheck source=tests/e2e-chaos/lib/openbao.sh
 . "${CP_LIB_DIR}/openbao.sh"
 # The K-ORC kinds a Keystone-only ControlPlane and its registrations project.
-CP_KORC_KINDS=applicationcredentials.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,services.openstack.k-orc.cloud,users.openstack.k-orc.cloud
+CP_KORC_KINDS=applicationcredentials.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,services.openstack.k-orc.cloud,users.openstack.k-orc.cloud
 
 # cp_wait_condition <resource> <name> <type> <status> <seconds>: poll the
 # condition every 5 s rather than `kubectl wait`, so a condition that is

@@ -962,6 +962,66 @@ func TestKeystoneService_PrunesARemovedEndpointInterface(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("still being removed"))
 }
 
+// A registered limit dropped from the spec is deleted on the next pass, before
+// any Endpoint, and holds CatalogReady until K-ORC has removed the Keystone row
+// and released its finalizer.
+func TestKeystoneService_PrunesARemovedRegisteredLimit(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := keystoneServiceCR()
+	ks.Spec.Catalog = ksCatalogSpec()
+	ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+		{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/public"},
+	}
+
+	staleLimit := ksRegisteredLimit(ks, "r1", 0, 0)
+	staleLimit.Finalizers = []string{"openstack.k-orc.cloud/registeredlimit"}
+	staleEndpoint := &orcv1alpha1.Endpoint{ObjectMeta: metav1.ObjectMeta{
+		Name:      keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypeInternal),
+		Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
+	}}
+
+	var order []string
+	s := korcTestScheme(t)
+	seeded := append(ksConvergedCatalog(ks), cp, ks, readyTenantStoreFor(cp), staleLimit, staleEndpoint,
+		ksAvailableEndpoint(ks, c5c3v1alpha1.ExternalEndpointTypePublic, "ep-public-id"))
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+		WithStatusSubresource(&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				order = append(order, obj.GetName())
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &KeystoneServiceReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ksTestNamespace, Name: ksTestName}}
+
+	_, err := r.Reconcile(context.Background(), req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(order).To(Equal([]string{staleLimit.Name, staleEndpoint.Name}),
+		"the registered limit is deleted before any Endpoint")
+
+	got := &c5c3v1alpha1.KeystoneService{}
+	g.Expect(c.Get(context.Background(), req.NamespacedName, got)).To(Succeed())
+	cond := ksCatalogCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+	g.Expect(cond.Message).To(ContainSubstring("still being removed"))
+
+	// K-ORC removes the Keystone row and releases its finalizer.
+	live := &orcv1alpha1.RegisteredLimit{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(staleLimit), live)).To(Succeed())
+	g.Expect(live.DeletionTimestamp).NotTo(BeNil())
+	live.Finalizers = nil
+	g.Expect(c.Update(context.Background(), live)).To(Succeed())
+
+	_, err = r.Reconcile(context.Background(), req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(c.Get(context.Background(), req.NamespacedName, got)).To(Succeed())
+	g.Expect(ksCatalogCondition(got).Status).To(Equal(metav1.ConditionTrue))
+}
+
 func TestKeystoneService_PrunesUndeclaredRoleChildren(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1158,6 +1218,12 @@ func TestKeystoneService_DeleteRemovesDependentsFirst(t *testing.T) {
 		&orcv1alpha1.Service{ObjectMeta: metav1.ObjectMeta{
 			Name: keystoneServiceCatalogServiceRef(ks), Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
 		}},
+		&orcv1alpha1.Region{ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneServiceCatalogRegionRef(ks), Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
+		}},
+		&orcv1alpha1.RegisteredLimit{ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneServiceRegisteredLimitRef(ks, "r1"), Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
+		}},
 		&orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{
 			Name: keystoneServiceUserRef(ks), Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
 		}},
@@ -1185,8 +1251,8 @@ func TestKeystoneService_DeleteRemovesDependentsFirst(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// A dependent must be deleted before the object it references: an assignment
-	// before its role, an endpoint before the service it hangs off, and both
-	// before the user and project they bind.
+	// before its role, an endpoint and a registered limit before the service and
+	// region they hang off, and all of them before the user and project they bind.
 	indexOf := func(suffix string) int {
 		for i, name := range order {
 			if strings.HasSuffix(name, suffix) {
@@ -1199,12 +1265,17 @@ func TestKeystoneService_DeleteRemovesDependentsFirst(t *testing.T) {
 	role := indexOf(keystoneServiceRoleImportRef(ks, "member"))
 	endpoint := indexOf(keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic))
 	service := indexOf(keystoneServiceCatalogServiceRef(ks))
+	region := indexOf(keystoneServiceCatalogRegionRef(ks))
+	limit := indexOf(keystoneServiceRegisteredLimitRef(ks, "r1"))
 	user := indexOf(keystoneServiceUserRef(ks))
 	project := indexOf(keystoneServiceProjectRef(ks))
 
 	g.Expect(order).To(HaveLen(len(children)))
 	g.Expect(assignment).To(BeNumerically("<", role))
 	g.Expect(endpoint).To(BeNumerically("<", service))
+	g.Expect(limit).To(BeNumerically(">=", 0))
+	g.Expect(limit).To(BeNumerically("<", service), "a registered limit goes before the Service it references")
+	g.Expect(limit).To(BeNumerically("<", region), "a registered limit goes before the Region it references")
 	g.Expect(assignment).To(BeNumerically("<", user))
 	g.Expect(user).To(BeNumerically("<", project))
 }
