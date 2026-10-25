@@ -708,6 +708,123 @@ func TestKeystoneService_RoleRefusalIsNotMaskedBySweep(t *testing.T) {
 	g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
 }
 
+// ksSystemRolePlane returns a ControlPlane that admits registrations from
+// tenant-a without limiting their project roles.
+func ksSystemRolePlane() *c5c3v1alpha1.ControlPlane {
+	cp := ksControlPlane()
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: []string{"tenant-a"},
+	}
+	return cp
+}
+
+// TestKeystoneServiceSystemRoleRefusal pins which registrations may hold a role
+// on the system: only those in a namespace the ControlPlane occupies.
+func TestKeystoneServiceSystemRoleRefusal(t *testing.T) {
+	ksIn := func(namespace string, systemRoles ...string) *c5c3v1alpha1.KeystoneService {
+		ks := keystoneServiceCR()
+		ks.Namespace = namespace
+		ks.Spec.Account = ksAccountSpec()
+		ks.Spec.Account.SystemRoles = systemRoles
+		return ks
+	}
+	cases := []struct {
+		name      string
+		ks        *c5c3v1alpha1.KeystoneService
+		dedicated string
+		want      bool
+	}{
+		{name: "the ControlPlane's own namespace", ks: ksIn(ksTestNamespace, "reader")},
+		{name: "a dedicated service namespace", ks: ksIn("tenant-a", "reader"), dedicated: "tenant-a"},
+		{name: "an allowlisted foreign namespace", ks: ksIn("tenant-a", "reader"), want: true},
+		{name: "a foreign namespace without system roles", ks: ksIn("tenant-a")},
+		{name: "a foreign catalog-only registration", ks: func() *c5c3v1alpha1.KeystoneService {
+			ks := ksIn("tenant-a")
+			ks.Spec.Account = nil
+			return ks
+		}()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := ksSystemRolePlane()
+			if tc.dedicated != "" {
+				cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+					Name: tc.dedicated, Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+				}
+			}
+			g.Expect(keystoneServiceSystemRoleRefusal(cp, tc.ks)).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestKeystoneService_SystemRoleOutsideTheControlPlaneNamespacesIsRefused pins
+// that an allowlisted registration in a foreign namespace may not hold a role
+// on the system: AccountReady=False/SystemRoleNotAllowed, nothing projected for
+// the account, the declared children kept, and the catalog block unaffected.
+func TestKeystoneService_SystemRoleOutsideTheControlPlaneNamespacesIsRefused(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksSystemRolePlane()
+	ks := ksForeignCR(cp)
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+	childNS := keystoneServiceChildNamespace(cp)
+
+	// A User from before the field was added: the freeze keeps it.
+	user := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{
+		Name: keystoneServiceUserRef(ks), Namespace: childNS, Labels: keystoneServiceChildLabels(ks),
+	}}
+
+	got, c := reconcileForeignKS(t, cp, ks, user, readyTenantStoreFor(cp))
+
+	account := ksAccountCondition(got)
+	g.Expect(account.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(account.Reason).To(Equal(reasonKeystoneServiceSystemRoleNotAllowed))
+	g.Expect(account.Message).To(Equal(`ControlPlane default/cp honors spec.account.systemRoles only from its own ` +
+		`namespaces (["default"]); namespace "tenant-a" is not one of them`))
+	g.Expect(ksCatalogCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceSystemRoleNotAllowed),
+		"the catalog block keeps reconciling")
+
+	err := c.Get(context.Background(), types.NamespacedName{
+		Namespace: childNS, Name: keystoneServiceSystemRoleAssignmentRef(ks, "reader"),
+	}, &orcv1alpha1.RoleAssignment{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a refused system role is never assigned")
+	var roles orcv1alpha1.RoleList
+	g.Expect(c.List(context.Background(), &roles)).To(Succeed())
+	g.Expect(roles.Items).To(BeEmpty(), "a refused account projects nothing")
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(user), &orcv1alpha1.User{})).To(Succeed(),
+		"the freeze keeps every child the spec still declares")
+}
+
+// TestKeystoneService_RoleRefusalTakesPrecedenceOverSystemRoleRefusal pins the
+// reason a registration refused on both counts reports.
+func TestKeystoneService_RoleRefusalTakesPrecedenceOverSystemRoleRefusal(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksRoleLimitedPlane("member")
+	ks := ksForeignAccountCR(cp, "service")
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+
+	got, _ := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
+}
+
+// TestKeystoneService_SystemRoleInADedicatedServiceNamespaceIsHonored pins that
+// a namespace the ControlPlane places a service in counts as its own.
+func TestKeystoneService_SystemRoleInADedicatedServiceNamespaceIsHonored(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "tenant-a", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	ks := ksForeignCR(cp)
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+
+	got, _ := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksAccountCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceSystemRoleNotAllowed))
+	g.Expect(ksAccountCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceNamespaceNotAllowed))
+}
+
 // TestKeystoneService_AllowlistedForeignNamespaceIsAdmitted pins the widened
 // gate: a listed namespace passes and the catalog block projects. The observable
 // is the collision PROBE, not the managed Service row — ensureCatalog probes
