@@ -239,8 +239,9 @@ particular chart.
 `github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
 — still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`
 — pinned by `ref.commit` to an upstream `main` commit. No released K-ORC ships the
-`RoleAssignment` and `Region` kinds the c5c3-operator owns, so the pin returns to a
-release tag once one does. `spec.sparseCheckout` limits the checkout to `config`, and
+`RoleAssignment` and `Region` kinds the c5c3-operator owns, nor the `RegisteredLimit`
+kind and the system-scoped `RoleAssignment` its KeystoneService registrations create,
+so the pin returns to a release tag once one does. `spec.sparseCheckout` limits the checkout to `config`, and
 `spec.ignore` scopes the artifact to the same directory. The sparse checkout is what
 keeps the source working while upstream moves: for a `ref.commit` the source-controller
 clones the tip of `main` and hard-resets to the pin, and that reset fails when the tip
@@ -766,9 +767,9 @@ Flux merges `valuesFrom` first and `spec.values` on top per-key, so
 | --- | --- |
 | Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
 | Target namespace | `orc-system` (the upstream installer self-namespaces) |
-| Source | `k-orc` `GitRepository` (commit `da276e44b40ca218ed9bb7b62114f6a461a29689` on `main`) |
+| Source | `k-orc` `GitRepository` (commit `fdf2df5ce62c8baf782d2fb0df9deb633c095a2a` on `main`) |
 | Path | `./config/default` |
-| Image | `quay.io/orc/openstack-resource-controller:commit-da276e4`, pulled by digest |
+| Image | `quay.io/orc/openstack-resource-controller:commit-fdf2df5`, pulled by digest |
 | Dependencies | None |
 
 K-ORC (the OpenStack Resource Controller) installs the declarative Keystone resource
