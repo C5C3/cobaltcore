@@ -364,7 +364,7 @@ Every ref carries the prefix `ghcr.io/c5c3/`, and the service images are the
 
 | Operator | Images | Sibling operators | Infrastructure |
 | --- | --- | --- | --- |
-| keystone | `keystone-operator:dev`, `keystone:2026.1` | | |
+| keystone | `keystone-operator:dev`, `keystone:2026.1`, `tempest:2026.1` | | `WITH_CHAOS_MESH` |
 | c5c3 | `c5c3-operator:dev` | | the keystone, horizon, glance and placement CRDs and K-ORC |
 | horizon | `horizon-operator:dev`, `horizon:2026.1` | | |
 | glance | `glance-operator:dev`, `glance:2026.1` | | |
@@ -374,6 +374,10 @@ Every ref carries the prefix `ghcr.io/c5c3/`, and the service images are the
 | neutron | `neutron-operator:dev`, `neutron:2026.1`, `ovn-operator:dev`, `ovn:<OVN version>` | ovn | `WITH_OVN_KERNEL_MODULES` |
 | cinder | `cinder-operator:dev`, `cinder:2026.1` | | `WITH_NFS`, `WITH_MESSAGING` |
 | nova | `nova-operator:dev`, `nova:2026.1` | | `WITH_MESSAGING` |
+
+The keystone row alone prints `with-chaos-mesh=true` and `pod-kill-suite=true`
+for the second pass of its job, whose workload pod runs on the Tempest image.
+Every other row prints both empty.
 
 The OVN version comes from `hack/ci-resolve-ovn-version.sh`. An operator without a
 row fails the script, and `tests/unit/hack/ci_operator_upgrade_leg_test.sh` fails

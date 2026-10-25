@@ -31,6 +31,12 @@
 #                             the baseline
 #   sibling-crds            — "true" when the c5c3-operator's watched CRDs and
 #                             K-ORC are installed first, otherwise empty
+#   with-chaos-mesh         — "true" or empty; deploy-infra installs Chaos Mesh
+#                             for the second pass below
+#   pod-kill-suite          — "true" when the job runs
+#                             tests/e2e-operator-upgrade/<op>-helm-upgrade-pod-kill/
+#                             as a second pass over a reinstalled baseline,
+#                             otherwise empty; keystone alone sets it
 #
 # The ovn and neutron rows read the OVN version from
 # hack/ci-resolve-ovn-version.sh. Errors go to stderr, so a caller that captures
@@ -65,9 +71,19 @@ with_nfs=""
 with_messaging=""
 with_ovn_kernel_modules=""
 sibling_crds=""
+with_chaos_mesh=""
+pod_kill_suite=""
 
 case "${OPERATOR}" in
-  keystone | horizon | glance | placement | barbican)
+  # The second pass kills every operator pod in the middle of the helm
+  # upgrade, under the token stream of tests/e2e-chaos/lib/workload.sh, whose
+  # pod runs on the Tempest image.
+  keystone)
+    refs="keystone-operator:dev keystone:${RELEASE} tempest:${RELEASE}"
+    with_chaos_mesh=true
+    pod_kill_suite=true
+    ;;
+  horizon | glance | placement | barbican)
     refs="${OPERATOR}-operator:dev ${OPERATOR}:${RELEASE}"
     ;;
   # The ControlPlane controller watches the keystone, horizon, glance,
@@ -122,4 +138,6 @@ esac
   echo "with-ovn-kernel-modules=${with_ovn_kernel_modules}"
   echo "siblings=${siblings}"
   echo "sibling-crds=${sibling_crds}"
+  echo "with-chaos-mesh=${with_chaos_mesh}"
+  echo "pod-kill-suite=${pod_kill_suite}"
 } | tee -a "${GITHUB_OUTPUT}"

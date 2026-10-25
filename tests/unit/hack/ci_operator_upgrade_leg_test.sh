@@ -5,7 +5,9 @@
 
 # Verify hack/ci-operator-upgrade-leg.sh, the table of what each operator
 # upgrade suite loads and deploys:
-#   - every operator's refs, siblings and flags, with the ovn and neutron rows
+#   - every operator's refs, siblings and flags, the keystone row alone with
+#     the Tempest image, Chaos Mesh and the pod-kill pass, with the ovn and
+#     neutron rows
 #     taking the OVN version from a stubbed hack/ci-resolve-ovn-version.sh,
 #     IMAGE_PREFIX prefixing every ref, and GITHUB_OUTPUT receiving what
 #     stdout shows;
@@ -68,8 +70,9 @@ run_leg() {
 }
 
 # expected <refs> <with-nfs> <with-messaging> <with-ovn-kernel-modules>
-#   <siblings> <sibling-crds> — the output a row should print, refs given
-#   space-separated and prefixed with ghcr.io/c5c3/.
+#   <siblings> <sibling-crds> <with-chaos-mesh> <pod-kill-suite> — the output a
+#   row should print, refs given space-separated and prefixed with
+#   ghcr.io/c5c3/.
 expected() {
   local ref
   echo "refs<<EOF"
@@ -80,6 +83,8 @@ expected() {
   echo "with-ovn-kernel-modules=$4"
   echo "siblings=$5"
   echo "sibling-crds=$6"
+  echo "with-chaos-mesh=$7"
+  echo "pod-kill-suite=$8"
 }
 
 # ---------------------------------------------------------------------------
@@ -89,24 +94,24 @@ expected() {
 test_every_row() {
   echo "Test: each operator's refs, siblings and flags match the table"
 
-  local row operator refs nfs messaging kernel siblings crds
-  # operator|refs|with-nfs|with-messaging|with-ovn-kernel-modules|siblings|sibling-crds
+  local row operator refs nfs messaging kernel siblings crds chaos podkill
+  # operator|refs|with-nfs|with-messaging|with-ovn-kernel-modules|siblings|sibling-crds|with-chaos-mesh|pod-kill-suite
   for row in \
-    "keystone|keystone-operator:dev keystone:2026.1||||" \
-    "c5c3|c5c3-operator:dev|||||true" \
-    "horizon|horizon-operator:dev horizon:2026.1||||" \
-    "glance|glance-operator:dev glance:2026.1||||" \
-    "placement|placement-operator:dev placement:2026.1||||" \
-    "barbican|barbican-operator:dev barbican:2026.1||||" \
-    "ovn|ovn-operator:dev ovn:99.1.2|||true||" \
-    "neutron|neutron-operator:dev neutron:2026.1 ovn-operator:dev ovn:99.1.2|||true|ovn|" \
-    "cinder|cinder-operator:dev cinder:2026.1|true|true|||" \
-    "nova|nova-operator:dev nova:2026.1||true|||"; do
-    IFS='|' read -r operator refs nfs messaging kernel siblings crds <<<"$row"
+    "keystone|keystone-operator:dev keystone:2026.1 tempest:2026.1||||||true|true" \
+    "c5c3|c5c3-operator:dev|||||true||" \
+    "horizon|horizon-operator:dev horizon:2026.1||||||" \
+    "glance|glance-operator:dev glance:2026.1||||||" \
+    "placement|placement-operator:dev placement:2026.1||||||" \
+    "barbican|barbican-operator:dev barbican:2026.1||||||" \
+    "ovn|ovn-operator:dev ovn:99.1.2|||true||||" \
+    "neutron|neutron-operator:dev neutron:2026.1 ovn-operator:dev ovn:99.1.2|||true|ovn|||" \
+    "cinder|cinder-operator:dev cinder:2026.1|true|true|||||" \
+    "nova|nova-operator:dev nova:2026.1||true|||||"; do
+    IFS='|' read -r operator refs nfs messaging kernel siblings crds chaos podkill <<<"$row"
     run_leg "$operator"
     assert_eq "$operator exits 0" "0" "$RC"
     assert_eq "$operator prints its row" \
-      "$(expected "$refs" "$nfs" "$messaging" "$kernel" "$siblings" "$crds")" "$OUT"
+      "$(expected "$refs" "$nfs" "$messaging" "$kernel" "$siblings" "$crds" "$chaos" "$podkill")" "$OUT"
     assert_eq "$operator writes to GITHUB_OUTPUT what stdout shows" "$OUT" "$WRITTEN"
   done
 }
