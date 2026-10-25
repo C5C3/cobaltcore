@@ -137,7 +137,7 @@ test_published_operators_form_the_matrix() {
   script="$(stage_tree glance keystone nova)"
   reset_registry
   set_mode digest "$P/keystone-operator:sha-$SHA" "$P/nova-operator:sha-$SHA" \
-    "$P/keystone:2026.1" "$P/nova:2026.1"
+    "$P/keystone:2026.1" "$P/tempest:2026.1" "$P/nova:2026.1"
 
   run_matrix "$script"
   [ "$RC" -eq 0 ] || echo "$OUT"
@@ -289,7 +289,7 @@ test_a_pin_main_still_publishes_is_left_out() {
   pin keystone 0.2.0
   reset_registry
   set_mode digest "$P/keystone-operator:sha-$SHA" "$P/nova-operator:sha-$SHA" \
-    "$P/keystone:2026.1" "$P/nova:2026.1"
+    "$P/keystone:2026.1" "$P/tempest:2026.1" "$P/nova:2026.1"
 
   run_matrix "$script"
   assert_eq "the script exits 0" "0" "$RC"
