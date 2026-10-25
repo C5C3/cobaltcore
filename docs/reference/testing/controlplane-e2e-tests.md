@@ -100,7 +100,7 @@ images of that release as well as those of the start release: kind-loaded, as th
 
 | Suite | CR Name(s) | Behaviour Validated |
 | --- | --- | --- |
-| [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check, and a release hop from the start release to its successor |
+| [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check (Glance quotas enforced through Keystone unified limits included), and a release hop from the start release to its successor |
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, a namespace assignment's role allowlist refuses and freezes the account, and a system role outside the plane's namespaces is refused with `SystemRoleNotAllowed` |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, a registered limit and a system role reach Keystone (the system grant Available within 120 s), change in place and leave again, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
 | [healthcheck](#healthcheck) | `cp` (ephemeral namespace) | The plane holds `KeystoneReady` at `WaitingForKeystone` until the Keystone child's API probe passes, never reports `KeystoneReady` or `Ready` ahead of it, and Keystone `/v3` answers 200 on a single attempt when the plane first reports `Ready`, with the reasons and the `lastTransitionTime` order to match |
@@ -177,8 +177,10 @@ paths any other chassis or metadata agent would share.
 5b. **Registrations** — one `KeystoneService` child per built-in service
    (`…-glance`, `…-placement`, `…-barbican`, `…-neutron`), each carrying that
    service's catalog entry and its service account: a managed User and Project,
-   an unmanaged K-ORC Role import, and a managed RoleAssignment. Every child
-   reports `Ready=AllReady`. The ControlPlane's `ServiceAccountsReady` is
+   an unmanaged K-ORC Role import, and a managed RoleAssignment. The glance
+   registration carries `services.glance.quotas`, so it also holds four
+   RegisteredLimits and a second, system-scoped RoleAssignment for `reader`.
+   Every child reports `Ready=AllReady`. The ControlPlane's `ServiceAccountsReady` is
    awaited later, in link 5m: it also aggregates the hypervisor operator's
    registration, which the Nova leg projects only once the Nova child is Ready.
 
@@ -186,7 +188,11 @@ paths any other chassis or metadata agent would share.
    database/cache clusterRefs, an engine-issued (Dynamic) DB credential, the
    derived Keystone endpoint, the registered `glance` service user, and its
    `controlplane-keystone-glance-default` GlanceBackend against the Garage S3
-   bucket; `GlanceReady=True`.
+   bucket; `GlanceReady=True`. The child sets `spec.keystoneLimits: {}`, and the
+   glance registration's four RegisteredLimits carry the declared defaults
+   (`image_size_total=51200`, `image_stage_total=51200`,
+   `image_count_total=1000`, `image_count_uploading=100`), are Available, name
+   the registration's Region import and are owned by the registration.
 
 5d. **Image catalog** — owned K-ORC image Service
    (`controlplane-keystone-image-service`) plus an internal and a public
@@ -384,6 +390,16 @@ paths any other chassis or metadata agent would share.
    and the image are deleted again (`OK: compute round-trip`). The suite greps
    the Job's logs for each of those five lines, pinning the host to the node it
    labelled.
+
+   The Glance quotas close the Job. `registered limit list --service glance
+   --region RegionOne` has to list the four defaults, and `role assignment list
+   --user glance --system all` has to name `reader`. The Job then creates a
+   RegionOne project limit `image_count_total=0` for the project its own token is
+   scoped to, expects the next `image create` to fail with output naming
+   `image_count_total`, deletes the limit again (a trap deletes it on any exit,
+   since Keystone refuses to delete a registered limit a project limit still
+   references), and expects a further `image create` to succeed. The suite greps
+   the four `OK:` lines of that block too.
 
    Two log assertions follow the Job, on the two services the notifier wires
    together. The nova API has to have logged an `os-server-external-events` call

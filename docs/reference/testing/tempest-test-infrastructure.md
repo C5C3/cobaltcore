@@ -23,7 +23,7 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `releases/<release>/test-refs.yaml` | PyPI version pins for test tooling (single source of truth), per release |
 | `tests/tempest/keystone-2026-1/` | Keystone 2026.1 Tempest configuration (`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`) |
 | `tests/tempest/keystone-2026-2/` | Keystone 2026.2 Tempest configuration |
-| `tests/tempest/glance-2026-1/` | Glance 2026.1 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-glance-tempest-2026-1`, and four extra fixtures the CI job applies — `01-catalog-setup-job.yaml` (image-catalog bootstrap Job), `02-glance-cr.yaml` (Glance CR), `03-glancebackend-cr.yaml` (default GlanceBackend CR), `04-glancebackend2-cr.yaml` (second, non-default store so the copy-image import test has a copy target) |
+| `tests/tempest/glance-2026-1/` | Glance 2026.1 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-glance-tempest-2026-1`, and four extra fixtures the CI job applies — `01-catalog-setup-job.yaml` (image-catalog bootstrap Job, which also registers the four Glance registered limits in RegionOne at 2147483647), `02-glance-cr.yaml` (Glance CR with `region: RegionOne` and `keystoneLimits: {}`), `03-glancebackend-cr.yaml` (default GlanceBackend CR), `04-glancebackend2-cr.yaml` (second, non-default store so the copy-image import test has a copy target) |
 | `tests/tempest/glance-2026-2/` | Glance 2026.2 Tempest configuration (same file set; identity CR `keystone-glance-tempest-2026-2`) |
 | `tests/tempest/barbican-2026-1/` | Barbican 2026.1 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-barbican-tempest-2026-1`, and four extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the key-manager catalog bootstrap Job; `02-barbican-cr.yaml`, the Barbican CR; `03-barbicansecretstore-cr.yaml`, the default BarbicanSecretStore the job waits on before the Barbican CR; `04-policy-check-job.yaml`, the Job that checks Barbican enforces its secure-RBAC policy defaults) |
 | `tests/tempest/barbican-2026-2/` | Barbican 2026.2 Tempest configuration (same file set; identity CR `keystone-barbican-tempest-2026-2`) |
@@ -242,8 +242,9 @@ causes the runner to abort with a clear error — this guards against silent
 drops when new include patterns are added.
 
 Either phase may be empty, and both runners treat that case the same way. The
-glance legs ship a pure core-tempest include list (`tempest.api.image` only),
-which leaves `phase-2-plugin.txt` empty; the barbican legs ship a pure plugin
+glance legs ship a pure core-tempest include list (`tempest.api.image` and
+`tempest.scenario.test_unified_limits`), which leaves `phase-2-plugin.txt`
+empty; the barbican legs ship a pure plugin
 list (`barbican_tempest_plugin.tests.api` only), which leaves
 `phase-1-core.txt` empty. `hack/tempest/run-tests.sh` skips whichever phase
 file is empty and writes an empty subunit stream in its place so the
@@ -318,6 +319,7 @@ infrastructure not available in the CI kind cluster:
 | `keystone_tempest_plugin\.tests\..*ldap` | Requires a live LDAP server |
 | `keystone_tempest_plugin\.tests\..*federation` | Requires an external IdP (SAML2/OAuth2) |
 | `keystone_tempest_plugin\.tests\..*oauth2` | Requires an external authorization server |
+| `tempest\.scenario\.test_unified_limits\.ImageQuotaTest\.test_image_count_uploading_quota`, `...test_image_stage_quota` (glance legs) | Stage an image through the glance-direct import method, which the glance-operator does not offer (`[DEFAULT] enabled_import_methods` is `web-download` and `copy-image`). Setting `[image-feature-enabled] import_image = false` would skip them, but also the web-download and copy-image tests the legs run |
 
 #### Tracking version-coupled RBAC excludes
 
