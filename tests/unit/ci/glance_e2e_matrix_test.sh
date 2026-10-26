@@ -37,6 +37,12 @@
 # rest: any one of them missing leaves the leg burning its wait on a resource
 # that never comes up, or two legs overwriting each other's results.
 #
+# hack/ci-run-tempest.sh reaches Glance through hack/tempest/tcp-relay.py and a
+# NodePort Service, never through a kubectl port-forward. Glance answers an
+# upload it refuses before it reads the streamed body, and client-go closes a
+# whole forward on the write that follows, so every later test of the glance,
+# cinder and nova legs met a refused connection.
+#
 # Usage: bash tests/unit/ci/glance_e2e_matrix_test.sh
 
 set -uo pipefail
@@ -339,6 +345,110 @@ test_tempest_glance_leg_is_wired() {
     "name: tempest-\${{ matrix.service }}-\${{ matrix.release }}-results"
 }
 
+# make_relay_stubs <dir>
+# Writes kubectl, curl, docker and sleep stubs into <dir>. kubectl records its
+# argv in $STUB_KUBECTL_LOG and answers the three reads the runner makes: the
+# admin password, the node address and the relay Service's node port. A
+# port-forward lands in $STUB_PF_LOG and stays up. docker records its argv in
+# $STUB_DOCKER_LOG; the relay container also logs its listen port to
+# $STUB_PF_LOG and stays up, and every other docker call returns at once. curl
+# answers only for a port something listens on, so the readiness poll proves
+# the relay was started. sleep returns at once.
+make_relay_stubs() {
+  local dir="$1"
+
+  cat >"$dir/kubectl" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_KUBECTL_LOG"
+case "$1 $2" in
+  "port-forward "*)
+    printf '%s\n' "$*" >>"$STUB_PF_LOG"
+    exec /bin/sleep 600
+    ;;
+  "get secret") printf 'c2VjcmV0' ;;
+  "get nodes") printf '172.18.0.2' ;;
+  "get service") printf '31999' ;;
+esac
+exit 0
+STUB
+  chmod +x "$dir/kubectl"
+
+  cat >"$dir/curl" <<'STUB'
+#!/bin/bash
+url="${*: -1}"
+port="${url#*localhost:}"
+port="${port%%/*}"
+grep -qF " ${port}:${port}" "$STUB_PF_LOG" || exit 7
+exit 0
+STUB
+  chmod +x "$dir/curl"
+
+  cat >"$dir/docker" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_DOCKER_LOG"
+case "$*" in
+  *tcp-relay.py*)
+    printf 'relay %s:%s\n' "${*: -3:1}" "${*: -3:1}" >>"$STUB_PF_LOG"
+    exec /bin/sleep 600
+    ;;
+esac
+exit 0
+STUB
+  chmod +x "$dir/docker"
+
+  cat >"$dir/sleep" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$dir/sleep"
+}
+
+test_runner_relays_glance() {
+  echo "Test: ci-run-tempest.sh reaches Glance through the relay, not a kubectl port-forward"
+
+  local tmp out code kubectl_log docker_log
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_relay_stubs "$tmp"
+  : >"$tmp/pf.log"
+  : >"$tmp/kubectl.log"
+  : >"$tmp/docker.log"
+
+  out=$(
+    PATH="$tmp:$PATH" OUTPUT_DIR="$tmp/output" GITHUB_WORKSPACE="$tmp" \
+      SERVICE_K8S_NAME=keystone-glance-tempest-2026-1 \
+      GLANCE_K8S_NAME=glance-tempest-2026-1 \
+      STUB_PF_LOG="$tmp/pf.log" STUB_KUBECTL_LOG="$tmp/kubectl.log" \
+      STUB_DOCKER_LOG="$tmp/docker.log" \
+      bash "$PROJECT_ROOT/hack/ci-run-tempest.sh" 2>&1
+  )
+  code=$?
+  kubectl_log="$(cat "$tmp/kubectl.log")"
+  docker_log="$(cat "$tmp/docker.log")"
+
+  assert_eq "the glance leg reaches the container and returns its code" "0" "$code"
+  assert_not_contains "Glance gets no kubectl port-forward" "$(cat "$tmp/pf.log")" \
+    "svc/glance-tempest-2026-1"
+  assert_contains "Keystone keeps its port-forward" "$(cat "$tmp/pf.log")" \
+    "svc/keystone-glance-tempest-2026-1 -n openstack 5000:5000"
+  assert_contains "the Glance Service is exposed as a NodePort" "$kubectl_log" \
+    "expose service glance-tempest-2026-1 -n openstack --name glance-tempest-2026-1-tempest-relay --type NodePort --port 9292 --target-port 9292"
+  assert_contains "the relay runs under an init, named for the cleanup" \
+    "$docker_log" "run --rm --init --name tempest-relay-Glance-"
+  assert_contains "the relay listens on 9292 and dials the node port" "$docker_log" \
+    "/relay/tcp-relay.py 9292 172.18.0.2 31999"
+  assert_contains "the container still resolves the Glance FQDN to localhost" "$docker_log" \
+    "glance-tempest-2026-1.openstack.svc.cluster.local:127.0.0.1"
+  assert_contains "the cleanup removes the relay container" "$docker_log" \
+    "rm -f tempest-relay-Glance-"
+  assert_contains "the cleanup removes the NodePort Service" "$kubectl_log" \
+    "delete service glance-tempest-2026-1-tempest-relay"
+  assert_not_contains "a relay that held is not reported as dropped" "$out" \
+    "port-forward on 9292 died"
+  assert_eq "the relay script the container mounts exists" "yes" \
+    "$(test -f "$PROJECT_ROOT/hack/tempest/tcp-relay.py" && echo yes || echo no)"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -355,6 +465,7 @@ test_a_keystone_only_change_produces_no_glance_leg
 test_chaos_legs_run_the_glance_suites
 test_controlplane_leg_deploys_glance
 test_tempest_glance_leg_is_wired
+test_runner_relays_glance
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

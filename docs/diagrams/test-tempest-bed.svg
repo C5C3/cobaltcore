@@ -105,6 +105,6 @@
 <polygon points="1500,320 1515,312.8 1515,327.2" fill="#2457C5"/>
 <text x="1688" y="798.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="end">http to the cluster DNS names</text>
 <text x="40" y="1374.2" font-size="20" font-weight="400" fill="#55606E">{keystone}, {glance} and so on: the service resource of that kind, which names its Service. {service}: the service under test. {release}: its release.</text>
-<text x="40" y="1408.2" font-size="20" font-weight="400" fill="#55606E">A forward binds to localhost and stays with one pod of its Service. No hop uses TLS, and none passes the Gateway.</text>
+<text x="40" y="1408.2" font-size="20" font-weight="400" fill="#55606E">A forward binds to localhost. kubectl stays with one pod of its Service; the Glance relay goes through a NodePort Service. No hop uses TLS or the Gateway.</text>
 <text x="40" y="1442.2" font-size="20" font-weight="400" fill="#55606E">A dashed part exists where the job deploys that service. A keystone job forwards port 5000 only and runs no seed Job.</text>
 </svg>
