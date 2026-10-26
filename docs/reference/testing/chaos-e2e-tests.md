@@ -528,7 +528,7 @@ its 720-second `KeystoneReady` wait and a teardown of up to 13 minutes.
 | [deletion-stuck-finalizer](#deletion-stuck-finalizer) | SC-CHAOS-010 | `keystone-chaos-stuck` | Deletion with a downed dependency operator | Keystone CR removed, `FinalizingDatabase`/`DatabaseFinalized` emitted, MariaDB CRs Terminating → removed after recovery |
 | [keystone-federation](#keystone-federation) | — | `keystone-chaos-fed` | Federation sidecar container-kill + IdP outage (fail-closed) | Sidecar `restartCount` gated recovery, `Ready=True` restored, federated auth recovers; during IdP outage federated auth non-2xx while password auth stays 201 |
 | [ovn-southbound-outage](#ovn-southbound-outage) | — | `ovn-sb-chaos` | Southbound database outage (datapath no-regression) | Ping across the datapath answers under the fault, chassis containers stay at `restartCount: 0`, `SouthboundReady=True` and chassis `Ready=True/AllReady` restored after it |
-| [neutron-mariadb-outage](#neutron-mariadb-outage) | — | `neutron-db-chaos` | Database partition (fail-closed write) | `NeutronAPIReady=True/APIHealthy` and `DeploymentReady=True/DeploymentReady` maintained, `POST /v2.0/networks` non-2xx during the partition and 201 after it |
+| [neutron-mariadb-outage](#neutron-mariadb-outage) | — | `neutron-db-chaos` | Database partition (fail-closed write) | `NeutronAPIReady=True/APIHealthy` and `DeploymentReady=True/DeploymentReady` maintained, `POST /v2.0/networks` non-2xx during the partition, the parked write with the outcome its request-log status says (`PARKED-WRITE-ABSENT-OK` or `PARKED-WRITE-LANDED-ONCE-OK`) and a fresh `POST` 201 after it |
 | [neutron-broker-outage](#neutron-broker-outage) | — | `neutron-broker-chaos` | Message-bus partition (no-regression) | `Ready=True/AllReady` maintained, `POST /v2.0/networks` answers 201 throughout, `rabbitmqctl list_connections` empty before, during and after |
 | [cinder-operator-pod-kill](#cinder-operator-pod-kill) | — | `cinder-chaos-op` | Operator self-recovery | Every pre-chaos operator and workload pod UID snapshotted, `PodChaos mode: one` replaces one operator pod, a workload pod restart fails the suite, a replica patch afterwards reaches the API Deployment |
 | [cinder-broker-outage](#cinder-broker-outage) | — | `cinder-broker-chaos` | Message-bus partition (degrade and recover) | `SchedulerReady=False/WaitingForScheduler` and `VolumeServicesReady=False/WaitingForVolumeServices` within 180 s, `/healthcheck` 200 and API `restartCount` 0 throughout, `POST /v3/volumes` unanswered within 20 s (`BLOCKED-OK`), the blocked create settling to `available` after the partition (`RECOVERED-OK`) |
@@ -1238,8 +1238,9 @@ datapath pod, and the namespace events.
 **Purpose:** A `NetworkChaos` partition severs neutron-api from MariaDB, enforced on the
 MariaDB (server) side for the reason `mariadb-network-partition` documents. The suite
 pins the fail-closed contract of a partitioned database: a write that cannot reach it
-must not answer 2xx, and the record it would have created must be absent once the
-database is back. The counterpart is pinned in the same window: all three Neutron
+must not answer 2xx, and once the database is back the record it would have created
+has the outcome the API's request log records, absent after a 5xx and present once
+after a 201. The counterpart is pinned in the same window: all three Neutron
 container probes GET the API root, which serves the version document without a token
 and without touching a table, so `NeutronAPIReady` and `DeploymentReady` stay `True`
 and the pod stays pooled while database-backed requests fail. That is the difference
@@ -1255,9 +1256,9 @@ depools the pods and `DeploymentReady` goes `False`.
 | 3 | Baseline write | `script` (5m) | A python probe on the neutron image takes a project-scoped admin token and `POST /v2.0/networks` answers 201; sentinel `WRITE-OK` |
 | 4 | Inject NetworkChaos | `apply` | `partition-mariadb-neutron` (`action: partition`, `direction: both`, `duration: 600s`) drops traffic between the MariaDB pods and the API pods of this CR. The step cleanup deletes it |
 | 5 | Assert injection active | `script` (60s) | `kubectl wait networkchaos/partition-mariadb-neutron --for=condition=AllInjected` |
-| 6 | Assert fail-closed | `script` (5m) + `assert` | `GET /` stays 200, a token is still obtainable, and a `POST` named `db-outage-failclosed` returns 5xx or times out within 90s and never 2xx (`FAILCLOSED-OK`); `NeutronAPIReady=True/APIHealthy` and `DeploymentReady=True/DeploymentReady` |
+| 6 | Assert fail-closed | `script` (5m) + `assert` | The `POST /v2.0/networks` lines of the API's request log are counted into the ConfigMap `neutron-db-outage-marks`; then `GET /` stays 200, a token is still obtainable, and a `POST` named `db-outage-failclosed` returns 5xx or loses its connection within 90s and never 2xx (`FAILCLOSED-OK`); `NeutronAPIReady=True/APIHealthy` and `DeploymentReady=True/DeploymentReady` |
 | 7 | Lift the partition | `delete` | Removes the NetworkChaos |
-| 8 | Assert recovery | `script` (5m) | `GET /v2.0/networks?name=db-outage-failclosed` returns an empty list and a fresh `POST` answers 201; sentinel `RECOVERY-OK` |
+| 8 | Assert recovery | `script` (8m) | Waits up to 300 s for the next `POST /v2.0/networks` request-log line, the parked write's, and reads its status; `GET /v2.0/networks?name=db-outage-failclosed` then returns an empty list after a 5xx (`PARKED-WRITE-ABSENT-OK`) or one network after a 201, which the probe deletes (`PARKED-WRITE-LANDED-ONCE-OK`); a fresh `POST` answers 201; sentinel `RECOVERY-OK` |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-messaging-secret.yaml`, `02-ovncentral-cr.yaml`,
 `03-neutron-cr.yaml`, `04-networkchaos.yaml`.
@@ -1275,9 +1276,17 @@ dump, `kubectl get networkchaos -o yaml`, and the neutron-operator logs from
   for proof.
 - The fail-closed `POST` is attempted once, bounded at 90 seconds. A retry could create a
   second network under the same name and blur what step 8 reads.
-- Step 8 exists because a timeout only proves the client gave up. The request could
-  still have been completed by the uWSGI worker it was parked in, and listing by name
-  once the database is reachable again is what separates the two outcomes.
+- Step 8 judges the parked write by the API's request log, not by a listing alone.
+  uWSGI's http router closes the client's connection after about 60 s without a
+  response, while the request stays parked in the worker: neutron-lib retries a
+  `DBConnectionError` up to 20 times with a growing interval (`is_retriable` in
+  `neutron_lib.db.api`), so the worker lands the write once the partition lifts
+  inside that budget. On run 39264061866 the request log read
+  `POST /v2.0/networks => generated 710 bytes in 65764 msecs (HTTP/1.1 201)` one
+  second after the lift, and a listing that ran before the worker's next retry would
+  have read empty. The count of request-log lines taken in step 6 tells step 8 which
+  line is the parked write's; the wait allows five minutes, because a pooled
+  connection waits on TCP's retransmit, which backs off to two minutes.
 - The recovery probe retries a 5xx for up to two minutes. The SQLAlchemy pool holds
   connections that died inside the partition and hands them out once more before it
   reconnects. A 4xx stays fatal there.
