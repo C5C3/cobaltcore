@@ -223,12 +223,20 @@ func copyService(entry *novav1alpha1.NovaComputeNodeStatus, svc computeapi.Servi
 // the host: Draining while there are any, Releasing once there are none. A
 // service someone else disabled keeps its reason. With no service registered
 // the count still runs, since a server outlives its host's service record.
+//
+// Nova stores a disable before it calls the compute host over RPC to sync the
+// COMPUTE_STATUS_DISABLED trait, and answers only after that call, which can
+// outlast the client's request timeout. A failed disable is therefore read
+// back: one that Nova lists with this pool's reason landed, and this pass
+// records it, since the next pass would find the service disabled and stay
+// silent.
 func (r *NovaComputeReconciler) drainNode(ctx context.Context, api *computeapi.Client, cr *novav1alpha1.NovaCompute,
 	entry *novav1alpha1.NovaComputeNodeStatus, registered bool,
 ) error {
 	if registered && entry.ServiceStatus == serviceStatusEnabled {
 		reason := fmt.Sprintf("c5c3.io: leaving NovaCompute %s/%s", cr.Namespace, cr.Name)
-		if err := api.DisableService(ctx, entry.ServiceID, reason); err != nil {
+		err := api.DisableService(ctx, entry.ServiceID, reason)
+		if err != nil && !disableLanded(ctx, api, entry.Name, reason) {
 			return fmt.Errorf("disabling the compute service of %s: %w", entry.Name, err)
 		}
 		entry.ServiceStatus = serviceStatusDisabled
@@ -248,6 +256,21 @@ func (r *NovaComputeReconciler) drainNode(ctx context.Context, api *computeapi.C
 	entry.Instances = nil
 	entry.Phase = novav1alpha1.NovaComputeNodeReleasing
 	return nil
+}
+
+// disableLanded reports whether Nova lists the service of host disabled with
+// reason. A failed read reports false, so the disable's own error stands.
+func disableLanded(ctx context.Context, api *computeapi.Client, host, reason string) bool {
+	services, err := api.ListComputeServices(ctx)
+	if err != nil {
+		return false
+	}
+	for _, svc := range services {
+		if svc.Host == host {
+			return svc.Status == serviceStatusDisabled && svc.DisabledReason == reason
+		}
+	}
+	return false
 }
 
 // releaseNode finishes a Releasing node whose pod is gone. It reports whether
