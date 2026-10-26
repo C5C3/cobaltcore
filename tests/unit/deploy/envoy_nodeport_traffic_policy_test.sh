@@ -5,7 +5,7 @@
 
 # Verify that the kind EnvoyProxy override pins the proxy Service to
 # externalTrafficPolicy: Cluster:
-#   - deploy/kind/infrastructure/envoy-nodeport.yaml sets
+#   - deploy/kind/base/envoy-nodeport.yaml sets
 #     spec.provider.kubernetes.envoyService.externalTrafficPolicy: Cluster.
 #     EnvoyProxy defaults the field to Local, and with a NodePort Service
 #     Envoy Gateway then assigns the Gateway only the addresses of nodes that
@@ -14,6 +14,14 @@
 #     Gateway/openstack-gw at Programmed=False (AddressNotAssigned), and
 #     hack/deploy-infra.sh times out on it after 600 s.
 #   - The Service stays type: NodePort, which is what the policy qualifies.
+#   - The base overlay lists envoy-nodeport.yaml and the infrastructure overlay
+#     does not. hack/deploy-infra.sh applies the base before the envoy-gateway
+#     controller starts, so the controller's first render of the proxy Service
+#     already has the EnvoyProxy. Rendered without it, the Service starts as a
+#     LoadBalancer with externalTrafficPolicy: Local and a random
+#     healthCheckNodePort; when that port is 31443, the switch to nodePort
+#     31443 fails with "provided port is already allocated" on every retry and
+#     the Gateway stays at AddressNotAssigned.
 # Usage: bash tests/unit/deploy/envoy_nodeport_traffic_policy_test.sh
 
 set -euo pipefail
@@ -28,7 +36,15 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-ENVOY_NODEPORT="$PROJECT_ROOT/deploy/kind/infrastructure/envoy-nodeport.yaml"
+ENVOY_NODEPORT="$PROJECT_ROOT/deploy/kind/base/envoy-nodeport.yaml"
+KIND_BASE_KUSTOMIZATION="$PROJECT_ROOT/deploy/kind/base/kustomization.yaml"
+KIND_INFRA_KUSTOMIZATION="$PROJECT_ROOT/deploy/kind/infrastructure/kustomization.yaml"
+
+# How many uncommented resource entries of a kustomization name the file.
+resource_entries() {
+  local kustomization="$1" file="$2"
+  grep -cE "^[[:space:]]*-[[:space:]]+${file}[[:space:]]*\$" "$kustomization" || true
+}
 
 # The value of a direct child key of the envoyService block, or empty when the
 # key is absent. Comment lines are skipped, so the DECISION notes in the file
@@ -71,9 +87,20 @@ test_envoy_service_type_is_nodeport() {
   assert_eq "envoyService.type" "NodePort" "$(envoy_service_field type)"
 }
 
+# --- Test 3: the base overlay applies the EnvoyProxy, the infrastructure one not ---
+test_envoy_proxy_ships_with_the_base_overlay() {
+  echo "Test: deploy/kind/base lists envoy-nodeport.yaml and deploy/kind/infrastructure does not"
+
+  assert_eq "envoy-nodeport.yaml entries in the base overlay" "1" \
+    "$(resource_entries "$KIND_BASE_KUSTOMIZATION" envoy-nodeport.yaml)"
+  assert_eq "envoy-nodeport.yaml entries in the infrastructure overlay" "0" \
+    "$(resource_entries "$KIND_INFRA_KUSTOMIZATION" envoy-nodeport.yaml)"
+}
+
 # --- Run ---
 test_envoy_service_traffic_policy_is_cluster
 test_envoy_service_type_is_nodeport
+test_envoy_proxy_ships_with_the_base_overlay
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

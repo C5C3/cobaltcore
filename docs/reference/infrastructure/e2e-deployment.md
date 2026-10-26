@@ -441,8 +441,12 @@ and `WITH_NFS`.
 3. **Apply the base overlay**, `deploy/kind/base/` or `base/` of
    `EXTERNAL_OVERLAY`: the Namespaces, the Flux sources, the HelmReleases and
    the two Flux Kustomizations of `deploy/flux-system/`, and what the kind
-   overlay adds, among it the `envoy-gateway` HelmRelease, `GatewayClass/envoy`
-   and `Gateway/openstack-gw` on port 443. The production
+   overlay adds, among it the `envoy-gateway` HelmRelease, the NodePort
+   `EnvoyProxy` on 31443, `GatewayClass/envoy` and `Gateway/openstack-gw` on
+   port 443. The `EnvoyProxy` lands here so it exists before the controller
+   first renders the proxy Service; rendered without it, the Service starts as
+   a `LoadBalancer` whose random health-check node port can take 31443 and
+   block the switch to that port. The production
    `deploy/flux-system/` ships no Gateway, and the lab overlay inherits this
    one. Still in Step 3:
    - Each of `WITH_CHAOS_MESH`, `WITH_PROMETHEUS`, `WITH_DIZZY` and `WITH_NFS`
@@ -487,13 +491,14 @@ and `WITH_NFS`.
      turns on the ServiceMonitor of the nine service operators.
 5. **Apply the infrastructure overlay**, `deploy/kind/infrastructure/` or
    `infrastructure/` of `EXTERNAL_OVERLAY`. The step starts with
-   `wait_for_crds` (`POD_TIMEOUT`) on ten operator CRDs: `memcacheds`,
-   `externalsecrets`, `clustersecretstores`, `mariadbs`, `envoyproxies`, the
-   three Garage kinds, `openbaoclusters` and `rabbitmqclusters.rabbitmq.com`.
+   `wait_for_crds` (`POD_TIMEOUT`) on twelve operator CRDs: `memcacheds`,
+   `externalsecrets`, `clustersecretstores`, `mariadbs`, the three Garage
+   kinds, `openbaoclusters`, `rabbitmqclusters.rabbitmq.com` and the three
+   messaging-topology kinds `vhosts`, `users` and `permissions`.
    The overlay holds the ClusterIssuers, the CA certificates, the Gateway
    certificates that `selfsigned-cluster-issuer` signs (the one for
-   `keystone.127-0-0-1.nip.io` among them), the NodePort `EnvoyProxy` on
-   31443, the MariaDB, Memcached and Garage CRs, the proving `OpenBaoCluster`
+   `keystone.127-0-0-1.nip.io` among them), the MariaDB, Memcached and Garage
+   CRs, the proving `OpenBaoCluster`
    and the ESO resources. Under `WITH_CONTROLPLANE=true` the script applies
    the render without `MariaDB`, `Memcached` and the three ExternalSecrets of
    Step 8. Under `WITH_CEPH=true` it then waits for the CRDs
@@ -503,7 +508,7 @@ and `WITH_NFS`.
    and waits for `rabbitmqcluster/shared-rabbitmq`. The step ends with
    `wait_for_gateway_programmed`, which polls `Programmed=True` on
    `Gateway/openstack-gw` (`HELMRELEASE_TIMEOUT`): the Gateway is programmed
-   only once the `EnvoyProxy` of this overlay exists.
+   only once the Gateway certificates of this overlay are issued.
 6. **Wait for the OpenBao pods** to reach the phase `Running`
    (`POD_TIMEOUT`). A sealed pod is not Ready yet.
 7. **Bootstrap OpenBao.** `openbao_init_unseal` initialises and unseals it.
