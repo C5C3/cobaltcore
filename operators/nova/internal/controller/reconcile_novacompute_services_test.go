@@ -159,6 +159,33 @@ func TestReconcileNovaComputeServices_Draining(t *testing.T) {
 		g.Expect(api.CallsTo(http.MethodPut, "/v2.1/os-services/")).To(HaveLen(1))
 	})
 
+	t.Run("a disable whose answer is lost is read back and counted once", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		api := computeapitest.New()
+		api.AddService(testNodeName, "enabled", "up")
+		api.SetServers(testNodeName, 1)
+		// Nova stores the disable, then waits for its RPC call to the compute
+		// host before it answers, which can outlast the client's timeout.
+		api.LoseNextAnswer(http.MethodPut, "/v2.1/os-services/")
+		cr := poolWith(novav1alpha1.NovaComputeNodeDraining)
+
+		_, rec := runServices(t, api, cr, nil)
+
+		entry := onlyEntry(g, cr)
+		g.Expect(entry.ServiceStatus).To(Equal("disabled"))
+		g.Expect(entry.DisabledReason).To(Equal("c5c3.io: leaving NovaCompute openstack/pool-a"))
+		g.Expect(entry.Instances).To(Equal(ptr.To(int32(1))))
+		g.Expect(collectEvents(rec)).To(ConsistOf(ContainSubstring("Normal ComputeServiceDisabled")))
+		cond := novaComputeCondition(cr, conditionTypeServicesReady)
+		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		g.Expect(cond.Reason).To(Equal(conditionReasonDraining))
+
+		// The next pass finds it disabled: no second disable and no second event.
+		_, rec = runServices(t, api, cr, nil)
+		g.Expect(api.CallsTo(http.MethodPut, "/v2.1/os-services/")).To(HaveLen(1))
+		g.Expect(collectEvents(rec)).To(BeEmpty())
+	})
+
 	t.Run("a service someone else disabled keeps its reason", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		api := computeapitest.New()
