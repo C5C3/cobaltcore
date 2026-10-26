@@ -3551,6 +3551,25 @@ spec:
                 minLength: 1
                 pattern: ^https?://
                 type: string
+              keystoneLimits:
+                description: |-
+                  KeystoneLimits turns on per-project image quotas through Keystone unified
+                  limits: the operator renders [DEFAULT] use_keystone_limits = true and a
+                  system-scoped [oslo_limit] section, and injects the service user's
+                  password as OS_OSLO_LIMIT__PASSWORD into the glance-api container. Glance
+                  then checks image_size_total, image_stage_total, image_count_total and
+                  image_count_uploading against Keystone on every create, upload and import.
+                  Nil renders neither, and Glance enforces no quota.
+
+                  The block has three prerequisites the operator does not create: registered
+                  limits for all four resources on the image service in spec.region, the
+                  service user holding a role on the system (reader is enough), so its
+                  system-scoped token can look the image endpoint up, and an internal image
+                  endpoint in spec.region. oslo.limit counts a resource without any limit as
+                  limit 0, so without the registered limits every image create is refused
+                  with 413. A ControlPlane-managed Glance gets all three from
+                  spec.services.glance.quotas; a hand-managed one creates them itself.
+                type: object
               keystonePublicEndpoint:
                 description: |-
                   KeystonePublicEndpoint is the browser/client-facing Keystone base URL Glance
@@ -4319,6 +4338,17 @@ spec:
                 description: |-
                   ObservedGeneration is the .metadata.generation the controller last
                   reconciled, so a stale status is distinguishable from a current one.
+                format: int64
+                type: integer
+              rolledOutGeneration:
+                description: |-
+                  RolledOutGeneration is the metadata.generation whose glance-api pod
+                  template every replica runs; it trails metadata.generation while a rollout
+                  still has a pod of an older template. Unlike the surge-tolerant
+                  DeploymentReady condition it ignores readiness: it is stamped once the
+                  Deployment controller has observed the applied template, every pod it
+                  counts belongs to that template, and its status.terminatingReplicas, where
+                  the cluster reports it, is 0.
                 format: int64
                 type: integer
               targetRelease:

@@ -113,6 +113,16 @@ spec:
             region: garage
             credentialsSecretRef:
               name: garage-s3-credentials
+      # Per-project image quotas through Keystone unified limits: the four
+      # values become registered limits on the image service in RegionOne, the
+      # glance user gets reader on the system, and the Glance child enforces
+      # once both are in Keystone. The verify Job overrides image_count_total
+      # for its own project to prove a create is refused.
+      quotas:
+        imageSizeTotal: 50Gi
+        imageStageTotal: 50Gi
+        imageCountTotal: 1000
+        imageCountUploading: 100
     # Placement takes the bare shape Keystone does: it needs no backends and no
     # extra blocks, so a single API replica against the shared database and cache
     # is the whole declaration.

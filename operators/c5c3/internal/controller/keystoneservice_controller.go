@@ -100,6 +100,9 @@ const (
 	// reasonKeystoneServiceRoleNotAllowed reports an account role outside the
 	// allowedRoles of the spec.namespaceAssignments entry for the CR's namespace.
 	reasonKeystoneServiceRoleNotAllowed = "RoleNotAllowed"
+	// reasonKeystoneServiceSystemRoleNotAllowed reports spec.account.systemRoles
+	// on a KeystoneService outside the ControlPlane's own namespaces.
+	reasonKeystoneServiceSystemRoleNotAllowed = "SystemRoleNotAllowed"
 	// reasonKeystoneServiceAccountProvisioned is the True reason once the account
 	// is provisioned in Keystone and its credentials are materialized.
 	reasonKeystoneServiceAccountProvisioned = "AccountProvisioned"
@@ -208,11 +211,13 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
-	// A namespace assignment limits the roles the account may request. A refused
+	// A namespace assignment limits the roles the account may request, and a
+	// system role is honored only in the ControlPlane's own namespaces. A refused
 	// account is frozen: nothing is projected for it, and the sweep below keeps
 	// every child the spec still declares, so a role granted earlier stays. The
 	// catalog block runs unchanged.
 	roleEntry, refusedRoles := keystoneServiceRoleRefusal(cp, ks)
+	systemRoleRefused := keystoneServiceSystemRoleRefusal(cp, ks)
 
 	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
 
@@ -229,7 +234,7 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 		}
 		requeue = requeue || !res.IsZero()
 	}
-	if ks.Spec.Account != nil && len(refusedRoles) == 0 {
+	if ks.Spec.Account != nil && len(refusedRoles) == 0 && !systemRoleRefused {
 		res, err := instrumenter.Instrument(ctx, "KeystoneServiceAccount", func(ctx context.Context) (ctrl.Result, error) {
 			return r.ensureAccount(ctx, ks, cp, credRef, managedCredRef)
 		})
@@ -261,10 +266,15 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 		requeue = true
 	}
 	// Written after the sweep, so its interim message cannot mask the refusal. No
-	// requeue: the ControlPlane watch brings the edit that lifts it.
-	if len(refusedRoles) > 0 {
+	// requeue: the ControlPlane watch brings the edit that lifts a role refusal,
+	// and only a spec edit, which the CR watch brings, lifts a system-role one.
+	switch {
+	case len(refusedRoles) > 0:
 		keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonKeystoneServiceRoleNotAllowed,
 			namespaceAssignmentRoleMessage(cp, roleEntry, refusedRoles))
+	case systemRoleRefused:
+		keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonKeystoneServiceSystemRoleNotAllowed,
+			keystoneServiceSystemRoleMessage(cp, ks))
 	}
 
 	if requeue {
@@ -400,6 +410,24 @@ func keystoneServiceNamespaceAllowed(cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1al
 	return false
 }
 
+// keystoneServiceSystemRoleRefusal reports whether ks declares a system role it
+// may not have: a role on the system reaches every project, so it is honored
+// only for a KeystoneService in one of the ControlPlane's own namespaces (its
+// own and its dedicated service namespaces), never for one an allowlist
+// admitted, whose spec.namespaceAssignments entry, if any, was written for
+// project roles.
+func keystoneServiceSystemRoleRefusal(cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1alpha1.KeystoneService) bool {
+	return ks.Spec.Account != nil && len(ks.Spec.Account.SystemRoles) > 0 &&
+		!slices.Contains(controlPlaneNamespaces(cp), ks.Namespace)
+}
+
+// keystoneServiceSystemRoleMessage is the AccountReady message of a system-role
+// refusal.
+func keystoneServiceSystemRoleMessage(cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1alpha1.KeystoneService) string {
+	return fmt.Sprintf("ControlPlane %s/%s honors spec.account.systemRoles only from its own namespaces (%q); "+
+		"namespace %q is not one of them", cp.Namespace, cp.Name, controlPlaneNamespaces(cp), ks.Namespace)
+}
+
 // keystoneServiceRoleRefusal returns the spec.namespaceAssignments entry that
 // limits ks's account roles and the roles it refuses, or (nil, nil) when nothing
 // is refused.
@@ -528,6 +556,21 @@ func keystoneServiceRoleImportRef(ks *c5c3v1alpha1.KeystoneService, role string)
 
 func keystoneServiceRoleAssignmentRef(ks *c5c3v1alpha1.KeystoneService, role string) string {
 	return keystoneServiceChildPrefix(ks) + "assign-" + serviceAccountRoleSlug(role)
+}
+
+// keystoneServiceRegisteredLimitRef names the RegisteredLimit CR of one declared
+// catalog.registeredLimits entry. The slug bounds the name the way a role's does,
+// so "limit-" plus the slug (31 bytes) fits the webhook's role-sized budget.
+func keystoneServiceRegisteredLimitRef(ks *c5c3v1alpha1.KeystoneService, resourceName string) string {
+	return keystoneServiceChildPrefix(ks) + "limit-" + serviceAccountRoleSlug(resourceName)
+}
+
+// keystoneServiceSystemRoleAssignmentRef names the system-scoped RoleAssignment
+// of one declared system role. Its Role import is keystoneServiceRoleImportRef's,
+// so a role declared in both roles and systemRoles shares one import and gets two
+// assignments.
+func keystoneServiceSystemRoleAssignmentRef(ks *c5c3v1alpha1.KeystoneService, role string) string {
+	return keystoneServiceChildPrefix(ks) + "sys-" + serviceAccountRoleSlug(role)
 }
 
 func keystoneServiceCatalogServiceRef(ks *c5c3v1alpha1.KeystoneService) string {
@@ -771,6 +814,9 @@ func keystoneServiceDeclaredChildNames(ks *c5c3v1alpha1.KeystoneService) map[str
 			// catalog never goes without the interface in between.
 			keep[keystoneServiceLegacyCatalogEndpointRef(ks, ep.Interface)] = true
 		}
+		for _, limit := range ks.Spec.Catalog.RegisteredLimits {
+			keep[keystoneServiceRegisteredLimitRef(ks, limit.ResourceName)] = true
+		}
 	}
 	if ks.Spec.Account != nil {
 		keep[keystoneServiceUserRef(ks)] = true
@@ -785,6 +831,10 @@ func keystoneServiceDeclaredChildNames(ks *c5c3v1alpha1.KeystoneService) map[str
 			keep[keystoneServiceRoleImportRef(ks, role)] = true
 			keep[keystoneServiceRoleAssignmentRef(ks, role)] = true
 		}
+		for _, role := range ks.Spec.Account.SystemRoles {
+			keep[keystoneServiceRoleImportRef(ks, role)] = true
+			keep[keystoneServiceSystemRoleAssignmentRef(ks, role)] = true
+		}
 	}
 	return keep
 }
@@ -794,13 +844,15 @@ func keystoneServiceDeclaredChildNames(ks *c5c3v1alpha1.KeystoneService) map[str
 //
 // One sweep serves both callers: the per-pass prune passes the declared names,
 // and the teardown passes nothing so everything goes. The split is by KIND rather
-// than by name, which is exact here — Service, Endpoint and Region are only ever
-// catalog children, and User / Project / Domain / Role / RoleAssignment and the
-// delivery objects are only ever account children — so a pending removal always
-// holds the condition of the block that actually owns it.
+// than by name, which is exact here — Service, Endpoint, Region and
+// RegisteredLimit are only ever catalog children, and User / Project / Domain /
+// Role / RoleAssignment and the delivery objects are only ever account children —
+// so a pending removal always holds the condition of the block that actually
+// owns it.
 //
-// Deletion runs dependents-first (assignments before roles, endpoints before the
-// region and service they reference, all before the user and project they bind).
+// Deletion runs dependents-first (assignments before roles, registered limits and
+// endpoints before the region and service they reference, all before the user
+// and project they bind).
 // K-ORC enforces its own ordering through finalizers, but issuing the deletes in
 // dependency order keeps the intent legible and avoids a guaranteed retry.
 //
@@ -859,6 +911,15 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 	}
 	for i := range roles.Items {
 		if err := sweep(&roles.Items[i], &accountSwept); err != nil {
+			return nil, nil, err
+		}
+	}
+	var limits orcv1alpha1.RegisteredLimitList
+	if err := r.List(ctx, &limits, client.InNamespace(childNS)); err != nil {
+		return nil, nil, fmt.Errorf("listing registration RegisteredLimits: %w", err)
+	}
+	for i := range limits.Items {
+		if err := sweep(&limits.Items[i], &catalogSwept); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -1237,7 +1298,7 @@ func (r *KeystoneServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 //
 // The watch surface, beyond the CR itself:
 //   - Owns: every same-namespace child the projections create with a controller
-//     reference — the eight K-ORC kinds, the ESO delivery pair, and the
+//     reference — the nine K-ORC kinds, the ESO delivery pair, and the
 //     operator-written password/source Secrets.
 //   - ControlPlane, WITHOUT a predicate: the AdminCredentialReady flip the
 //     shared gate waits on, the allowlist edits that admit or de-list a
@@ -1266,6 +1327,7 @@ func (r *KeystoneServiceReconciler) setupWithOptions(mgr ctrl.Manager, opts crco
 		Watches(&orcv1alpha1.Service{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Region{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.RegisteredLimit{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.User{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
 		Watches(&orcv1alpha1.Project{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).

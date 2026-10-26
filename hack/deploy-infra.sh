@@ -3868,9 +3868,6 @@ main() {
   # Wait for operator CRDs to be registered before applying CRD-dependent
   # resources. HelmRelease Ready does not guarantee CRDs are available in
   # the API server — the operator pods may still be starting.
-  # envoyproxies.gateway.envoyproxy.io is installed by the envoy-gateway
-  # HelmRelease (Phase 3 above) and is required by the EnvoyProxy CR in
-  # deploy/kind/infrastructure/envoy-nodeport.yaml.
   # openbaoclusters.openbao.org is registered by the openbao-operator
   # HelmRelease (Phase 3 above); waiting on it keeps the overlay apply from
   # racing that registration.
@@ -3887,7 +3884,6 @@ main() {
     clustersecretstores.external-secrets.io \
     externalsecrets.external-secrets.io \
     mariadbs.k8s.mariadb.com \
-    envoyproxies.gateway.envoyproxy.io \
     garageclusters.garage.rajsingh.info \
     garagebuckets.garage.rajsingh.info \
     garagekeys.garage.rajsingh.info \

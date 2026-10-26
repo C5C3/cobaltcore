@@ -762,6 +762,45 @@ func TestIntegration_CRD_CELOnly_KeystoneService(t *testing.T) {
 			expectUpdate(t, ctx, c, base(newNamespace(t, ctx, c, "celonly-ks-")), tc.mutate, tc.wantSub)
 		})
 	}
+
+	// catalog.registeredLimits goes through unstructured objects, because a Go
+	// int32 cannot carry 2147483648, the first value past the Maximum marker.
+	for _, tc := range []struct {
+		name    string
+		limits  []any
+		wantSub string // empty: the object must be admitted
+	}{
+		{name: "limit-bounds", limits: []any{
+			map[string]any{"resourceName": "r1", "defaultLimit": int64(-1)},
+			map[string]any{"resourceName": "r2", "defaultLimit": int64(2147483647)},
+		}},
+		{name: "limit-above-int32", limits: []any{
+			map[string]any{"resourceName": "r1", "defaultLimit": int64(2147483648)},
+		}, wantSub: "should be less than or equal to 2147483647"},
+		{name: "limit-below-minus-one", limits: []any{
+			map[string]any{"resourceName": "r1", "defaultLimit": int64(-2)},
+		}, wantSub: "should be greater than or equal to -1"},
+		{name: "limit-zero", limits: []any{
+			map[string]any{"resourceName": "r1", "defaultLimit": int64(0)},
+		}, wantSub: "defaultLimit 0 is refused by K-ORC when it creates a registered limit; use a positive bound"},
+		{name: "limit-resourcename-whitespace", limits: []any{
+			map[string]any{"resourceName": "image count", "defaultLimit": int64(1)},
+		}, wantSub: "should match"},
+		{name: "limit-duplicate-resourcename", limits: []any{
+			map[string]any{"resourceName": "r1", "defaultLimit": int64(1)},
+			map[string]any{"resourceName": "r1", "defaultLimit": int64(2)},
+		}, wantSub: "Duplicate value"},
+	} {
+		t.Run("create-"+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(base(newNamespace(t, ctx, c, "celonly-ks-")))
+			g.Expect(err).NotTo(HaveOccurred())
+			u := &unstructured.Unstructured{Object: raw}
+			u.SetGroupVersionKind(GroupVersion.WithKind("KeystoneService"))
+			g.Expect(unstructured.SetNestedSlice(u.Object, tc.limits, "spec", "catalog", "registeredLimits")).To(Succeed())
+			expectAdmission(t, c.Create(ctx, u), tc.wantSub)
+		})
+	}
 }
 
 // --- Order kinds (no webhook on any cluster) ---

@@ -451,3 +451,23 @@ spec:
             ($error != null): true
             (contains($error, 'openStackRelease')): true
             (contains($error, 'must be 2026.1 or later')): true
+  # spec.extraConfig setting [DEFAULT] use_keystone_limits must be rejected by
+  # the validating webhook: spec.keystoneLimits owns it, and a hand-set value
+  # either refuses every image create or silently drops the quotas.
+  - try:
+    - apply:
+        file: 43-extraconfig-owned-use-keystone-limits.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'use_keystone_limits is managed via spec.keystoneLimits')): true
+  # spec.extraConfig setting [oslo_limit] system_scope must be rejected by the
+  # validating webhook: the rendered [oslo_limit] auth and endpoint keys are
+  # owned by spec.keystoneLimits.
+  - try:
+    - apply:
+        file: 44-extraconfig-owned-oslo-limit-system-scope.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'system_scope is managed via spec.keystoneLimits')): true

@@ -172,6 +172,50 @@ type KeystoneServiceCatalogSpec struct {
 	// +listType=map
 	// +listMapKey=interface
 	Endpoints []KeystoneServiceEndpointSpec `json:"endpoints,omitempty"`
+
+	// RegisteredLimits declares the Keystone registered limits of this
+	// registration's service row: each entry is one per-project default of a
+	// unified-limits resource, projected as one MANAGED K-ORC RegisteredLimit.
+	// The limits live in the ControlPlane's region (spec.region), the region
+	// the endpoints above are registered in, so a consuming service that
+	// enforces unified limits must look its endpoint up in that region. A
+	// per-project override is Keystone data and stays outside this field:
+	// create it with `openstack limit create --region <that region> ...`.
+	// A changed defaultLimit is updated in place and a dropped entry is deleted
+	// from Keystone. Keystone refuses both with 403 while a project limit of
+	// the same resource exists (RegisteredLimitError), so delete the overrides
+	// first.
+	// +optional
+	// +listType=map
+	// +listMapKey=resourceName
+	// +kubebuilder:validation:MaxItems=32
+	RegisteredLimits []KeystoneServiceRegisteredLimitSpec `json:"registeredLimits,omitempty"`
+}
+
+// KeystoneServiceRegisteredLimitSpec declares one Keystone registered limit:
+// the default limit of a resource for every project that has no project limit
+// of its own.
+type KeystoneServiceRegisteredLimitSpec struct {
+	// ResourceName is the resource the limit bounds, as the consuming service
+	// names it (Glance's image_count_total, for example). It keys the
+	// listType=map RegisteredLimits list, and the bounds and pattern mirror
+	// K-ORC's own RegisteredLimitResourceSpec.ResourceName.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^\S+$`
+	ResourceName string `json:"resourceName"`
+
+	// DefaultLimit is the limit every project gets unless a project limit
+	// overrides it. Keystone reads -1 as unlimited, but a consumer on
+	// oslo.limit below 2.12.0 (2026.1 pins 2.10.0) compares usage + delta >
+	// limit without a special case, so it reads -1 as a limit below any
+	// usage and refuses every request; use 2147483647 for an unbounded
+	// default there. 0 is refused: K-ORC cannot create a registered limit
+	// with defaultLimit 0 (gophercloud/gophercloud#3866).
+	// +kubebuilder:validation:Minimum=-1
+	// +kubebuilder:validation:Maximum=2147483647
+	// +kubebuilder:validation:XValidation:rule="self != 0",message="defaultLimit 0 is refused by K-ORC when it creates a registered limit; use a positive bound"
+	DefaultLimit int32 `json:"defaultLimit"`
 }
 
 // KeystoneServiceEndpointSpec declares one endpoint row of a registered
@@ -274,6 +318,26 @@ type KeystoneServiceAccountSpec struct {
 	// +kubebuilder:validation:items:MaxLength=255
 	// +kubebuilder:validation:items:Pattern=`^[^,]+$`
 	Roles []string `json:"roles,omitempty"`
+
+	// SystemRoles are the OpenStack role names assigned to the user on the
+	// system scope (all). Each declared role is projected as one UNMANAGED
+	// K-ORC Role import, shared with a project role of the same name, plus one
+	// MANAGED system-scoped K-ORC RoleAssignment. A role on the system reaches
+	// every project: reader on the system reads every user, project, role
+	// assignment and credential, EC2 and TOTP secrets included, and the service
+	// catalog a service enforcing unified limits looks its endpoint up in.
+	//
+	// It is honored only for a KeystoneService in one of the referenced
+	// ControlPlane's own namespaces. Anywhere else the account reports
+	// AccountReady=False/SystemRoleNotAllowed and is frozen, because no
+	// spec.namespaceAssignments entry's allowedRoles was written to grant a
+	// role on every project.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=255
+	// +kubebuilder:validation:items:Pattern=`^[^,]+$`
+	SystemRoles []string `json:"systemRoles,omitempty"`
 
 	// Rotation tunes how the account's password is rotated. When nil the mode
 	// defaults to Manual (on-demand rotation via a CredentialRotation CR).

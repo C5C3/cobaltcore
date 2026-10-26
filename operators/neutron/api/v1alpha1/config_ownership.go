@@ -36,8 +36,10 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 // OwnedConfigKeys is the registry of neutron.conf and ml2_conf.ini keys the
 // operator owns for the Neutron kind. Reported entries are honored-but-surfaced
 // when overridden in spec.extraConfig; the Rejected entries are blocked at
-// admission by the validating webhook instead. The [keystone_authtoken] entries
-// mirror the map keystoneauth.Section renders.
+// admission by the validating webhook instead. Every Rejected entry is CarryOver
+// as well: the webhook admits an update that keeps a value the stored Neutron
+// already holds, with a warning. The [keystone_authtoken] entries mirror the map
+// keystoneauth.Section renders.
 var OwnedConfigKeys = []config.OwnedKey{
 	// [DEFAULT]
 	{Section: "DEFAULT", Key: "core_plugin", OwnedBy: "operator-computed", Impact: "the operator deploys the ML2 plugin; another core plugin loads a mechanism stack the rendered ml2 sections do not configure"},
@@ -50,7 +52,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// and reachable from outside the cluster when spec.gateway is set. The damage
 	// is done the moment the pods load the rendered file, long before the
 	// ExtraConfigHealthy condition could report it.
-	{Section: "DEFAULT", Key: "auth_strategy", Rejected: true, OwnedBy: "operator-computed", Impact: "an override puts the API on the selected auth middleware; anything but keystone disables token validation entirely"},
+	{Section: "DEFAULT", Key: "auth_strategy", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "an override puts the API on the selected auth middleware; anything but keystone disables token validation entirely"},
 	{Section: "DEFAULT", Key: "state_path", OwnedBy: "operator-computed", Impact: "the operator mounts a writable volume at this path; another path names a directory the container cannot write"},
 	{Section: "DEFAULT", Key: "rpc_workers", OwnedBy: "operator-computed", Impact: "the count is fixed at zero because nothing in this deployment consumes RPC (OVN answers DHCP and metadata from the logical model and no agent talks RPC) and neutron-rpc-server is not projected"},
 	{Section: "DEFAULT", Key: "rpc_state_report_workers", OwnedBy: "operator-computed", Impact: "the count is fixed at zero for the same reason as rpc_workers, since without an RPC consumer there are no agent state reports to serve"},
@@ -68,20 +70,20 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// file the pod does not carry fails the API on start, and a path that names
 	// one it does carry can drop the auth filter, and both are done before the
 	// ExtraConfigHealthy condition could surface the override.
-	{Section: "DEFAULT", Key: "api_paste_config", Rejected: true, OwnedBy: "operator-computed", Impact: "the pipeline is what puts keystonemiddleware in front of the API, so another paste file can serve the API unauthenticated"},
+	{Section: "DEFAULT", Key: "api_paste_config", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "the pipeline is what puts keystonemiddleware in front of the API, so another paste file can serve the API unauthenticated"},
 	// transport_url is never emitted into the file — it arrives through the
 	// OS_DEFAULT__TRANSPORT_URL env override sourced from the transport-URL
 	// Secret, so a file value is inert at runtime. It is Rejected because
 	// rendering it would copy the broker credentials into the config Secret every
 	// pod mounts.
-	{Section: "DEFAULT", Key: "transport_url", Rejected: true, OwnedBy: "spec.messaging", Impact: "the transport URL is env-injected via OS_DEFAULT__TRANSPORT_URL; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
+	{Section: "DEFAULT", Key: "transport_url", Rejected: true, CarryOver: true, OwnedBy: "spec.messaging", Impact: "the transport URL is env-injected via OS_DEFAULT__TRANSPORT_URL; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
 	// [database]
 	//
 	// connection carries the database password. It is env-injected via
 	// OS_DATABASE__CONNECTION, so a file value is inert at runtime and only
 	// achieves putting the credential into the rendered config Secret.
-	{Section: "database", Key: "connection", Rejected: true, OwnedBy: "spec.database", Impact: "the runtime value comes from the OS_DATABASE__CONNECTION env override; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
+	{Section: "database", Key: "connection", Rejected: true, CarryOver: true, OwnedBy: "spec.database", Impact: "the runtime value comes from the OS_DATABASE__CONNECTION env override; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
 	// [keystone_authtoken] — rendered by keystoneauth.Section.
 	{Section: "keystone_authtoken", Key: "auth_type", OwnedBy: "operator-computed"},
@@ -96,7 +98,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// password is never emitted by keystoneauth.Section — the middleware reads it
 	// from the OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is
 	// inert at runtime. It is Rejected for the same reason transport_url is.
-	{Section: "keystone_authtoken", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the middleware password is env-injected via OS_KEYSTONE_AUTHTOKEN__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
+	{Section: "keystone_authtoken", Key: "password", Rejected: true, CarryOver: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the middleware password is env-injected via OS_KEYSTONE_AUTHTOKEN__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
 	// [nova] — the account the port notifier posts os-server-external-events
 	// with, rendered by keystoneauth.ClientSection while spec.nova is set and
@@ -112,7 +114,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// password is never emitted by keystoneauth.ClientSection — the notifier
 	// reads it from the OS_NOVA__PASSWORD env override, so a file value is inert
 	// at runtime. It is Rejected for the same reason the two other passwords are.
-	{Section: "nova", Key: "password", Rejected: true, OwnedBy: "spec.nova.serviceUser.secretRef", Impact: "the notifier password is env-injected via OS_NOVA__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
+	{Section: "nova", Key: "password", Rejected: true, CarryOver: true, OwnedBy: "spec.nova.serviceUser.secretRef", Impact: "the notifier password is env-injected via OS_NOVA__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
 	// [oslo_messaging_notifications] / [oslo_messaging_rabbit]
 	{Section: "oslo_messaging_notifications", Key: "driver", OwnedBy: "operator-computed", Impact: "the driver decides whether oslo notifications are published; the Nova port events are REST calls to os-server-external-events and are governed by the two notify_nova_on_port_* switches"},
@@ -142,20 +144,20 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// instance port is reachable from every other one and the rules the user
 	// wrote are no longer enforced. That is done as soon as the pods load the
 	// file, which is the criterion above.
-	{Section: "securitygroup", Key: "enable_security_group", Rejected: true, OwnedBy: "operator-computed", Impact: "disabling it drops the port security the OVN ACLs implement, so every instance port becomes reachable from every other"},
+	{Section: "securitygroup", Key: "enable_security_group", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "disabling it drops the port security the OVN ACLs implement, so every instance port becomes reachable from every other"},
 
 	// [ovn] — the ML2/OVN mechanism driver's own section. The connection strings
 	// and the client certificate paths are Rejected: they point the driver at a
 	// database and identify it to that database, so an override either rewrites
 	// another deployment's logical model or silently drops the authentication.
-	{Section: "ovn", Key: "ovn_nb_connection", Rejected: true, OwnedBy: "spec.ovn.centralRef", Impact: "the connection string is resolved from the referenced OVNCentral; another address points the mechanism driver at a logical model it does not own"},
-	{Section: "ovn", Key: "ovn_sb_connection", Rejected: true, OwnedBy: "spec.ovn.centralRef", Impact: "the connection string is resolved from the referenced OVNCentral; another address points the mechanism driver at a logical model it does not own"},
-	{Section: "ovn", Key: "ovn_nb_private_key", Rejected: true, OwnedBy: "operator-computed", Impact: "the operator mounts the client keypair the OVNCentral issuer signed; another path names a file the pod does not carry, and the connection falls back to no client identity"},
-	{Section: "ovn", Key: "ovn_nb_certificate", Rejected: true, OwnedBy: "operator-computed", Impact: "the operator mounts the client keypair the OVNCentral issuer signed; another path names a file the pod does not carry, and the connection falls back to no client identity"},
-	{Section: "ovn", Key: "ovn_nb_ca_cert", Rejected: true, OwnedBy: "operator-computed", Impact: "the CA bundle is what verifies the database endpoint; another path either fails the handshake or trusts a server the operator did not provision"},
-	{Section: "ovn", Key: "ovn_sb_private_key", Rejected: true, OwnedBy: "operator-computed", Impact: "the operator mounts the client keypair the OVNCentral issuer signed; another path names a file the pod does not carry, and the connection falls back to no client identity"},
-	{Section: "ovn", Key: "ovn_sb_certificate", Rejected: true, OwnedBy: "operator-computed", Impact: "the operator mounts the client keypair the OVNCentral issuer signed; another path names a file the pod does not carry, and the connection falls back to no client identity"},
-	{Section: "ovn", Key: "ovn_sb_ca_cert", Rejected: true, OwnedBy: "operator-computed", Impact: "the CA bundle is what verifies the database endpoint; another path either fails the handshake or trusts a server the operator did not provision"},
+	{Section: "ovn", Key: "ovn_nb_connection", Rejected: true, CarryOver: true, OwnedBy: "spec.ovn.centralRef", Impact: "the connection string is resolved from the referenced OVNCentral; another address points the mechanism driver at a logical model it does not own"},
+	{Section: "ovn", Key: "ovn_sb_connection", Rejected: true, CarryOver: true, OwnedBy: "spec.ovn.centralRef", Impact: "the connection string is resolved from the referenced OVNCentral; another address points the mechanism driver at a logical model it does not own"},
+	{Section: "ovn", Key: "ovn_nb_private_key", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "the operator mounts the client keypair the OVNCentral issuer signed; another path names a file the pod does not carry, and the connection falls back to no client identity"},
+	{Section: "ovn", Key: "ovn_nb_certificate", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "the operator mounts the client keypair the OVNCentral issuer signed; another path names a file the pod does not carry, and the connection falls back to no client identity"},
+	{Section: "ovn", Key: "ovn_nb_ca_cert", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "the CA bundle is what verifies the database endpoint; another path either fails the handshake or trusts a server the operator did not provision"},
+	{Section: "ovn", Key: "ovn_sb_private_key", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "the operator mounts the client keypair the OVNCentral issuer signed; another path names a file the pod does not carry, and the connection falls back to no client identity"},
+	{Section: "ovn", Key: "ovn_sb_certificate", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "the operator mounts the client keypair the OVNCentral issuer signed; another path names a file the pod does not carry, and the connection falls back to no client identity"},
+	{Section: "ovn", Key: "ovn_sb_ca_cert", Rejected: true, CarryOver: true, OwnedBy: "operator-computed", Impact: "the CA bundle is what verifies the database endpoint; another path either fails the handshake or trusts a server the operator did not provision"},
 	{Section: "ovn", Key: "ovn_l3_scheduler", OwnedBy: "operator-computed"},
 	{Section: "ovn", Key: "ovn_metadata_enabled", OwnedBy: "operator-computed", Impact: "it is what makes OVN serve 169.254.169.254 to the instances the NeutronMetadataAgent answers for"},
 }

@@ -148,6 +148,31 @@ passcode; the assertions are unchanged. The patch changes nothing at runtime.
 Upstream status: proposed as
 [openstack/keystone change 1012064](https://review.opendev.org/c/openstack/keystone/+/1012064).
 
+`patches/keystone/2026.1/0003-invalidate-assignment-cache-on-modify-operations.patch`
+backports upstream commit `b5abcae8e9` to 29.0.0 (issue #732). Keystone 29.0.0
+memoizes `list_role_assignments` in `COMPUTED_ASSIGNMENTS_REGION`
+(`keystone/assignment/core.py`), but `create_system_grant_for_user`,
+`create_system_grant_for_group` and the domain-deletion callback do not
+invalidate it. The keystone-operator renders `[cache] enabled = true`, so a
+listing cached before a system grant answers until `[cache] expiration_time`
+passes (600 s by default). K-ORC lists a `RoleAssignment` before it creates it
+and reads it back afterwards, so a system-scoped `RoleAssignment` stays
+unavailable for up to ten minutes, and with it the `AccountReady` condition of
+the KeystoneService that asks for a system role: on a ControlPlane that enforces
+Glance quotas, `GlanceReady` waits that long. The patch adds
+`COMPUTED_ASSIGNMENTS_REGION.invalidate()` after the driver call in both grant
+methods and after `delete_domain_assignments`, as upstream does. Upstream added
+no test and no upstream unit test pins the missing invalidation, so the patch
+carries no test hunk. `test_system_grant_patch_applied` in
+`tests/container-images/verify_keystone.sh` grants a role to a user and a group
+on the system and runs the domain-deletion callback, with the driver and the
+cache region mocked, and asserts one invalidation per call; both release images
+pass it, because keystone 30.0.0
+(2026.2) carries the change and needs no twin. The patch needs no operator
+configuration. Upstream status: merged on master as
+[openstack/keystone change 997392](https://review.opendev.org/c/openstack/keystone/+/997392),
+not backported to stable/2026.1.
+
 ### horizon
 
 **Location:** `images/horizon/image.nix`, built from the lock

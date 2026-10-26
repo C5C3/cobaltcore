@@ -72,7 +72,7 @@ that bypassed admission) indexes nothing, not a dangling key.
 | Resource | Watch Type | Effect |
 | --- | --- | --- |
 | `KeystoneService` | `For()` | Filtered by `watch.CRUpdatePredicate()` so the controller's own status writes do not re-wake it |
-| K-ORC `Service`, `Endpoint`, `Region`, `User`, `Domain`, `Project`, `Role`, `RoleAssignment` | `Watches()` | Mapped back to the owning CR by the ownership labels every child carries (`keystoneServiceChildToRequest`). These children live in the ControlPlane's namespace, so a registration from any other namespace can hold no owner reference to them and `Owns()` would miss it; one label mapper per kind covers both placements |
+| K-ORC `Service`, `Endpoint`, `Region`, `RegisteredLimit`, `User`, `Domain`, `Project`, `Role`, `RoleAssignment` | `Watches()` | Mapped back to the owning CR by the ownership labels every child carries (`keystoneServiceChildToRequest`). These children live in the ControlPlane's namespace, so a registration from any other namespace can hold no owner reference to them and `Owns()` would miss it; one label mapper per kind covers both placements |
 | `Secret` | `Watches()` | Same label mapper: it reaches the generation-scoped password Secret beside the User and the assembled source Secret beside the consumer |
 | `ExternalSecret`, `PushSecret` | `Owns()` | The delivery objects stay in the CR's own namespace, where a controller reference is legal and the garbage collector reaps them |
 | `ControlPlane` | `Watches()` | Index-backed fan-out (`controlPlaneToKeystoneServicesMapper`) with **no** generation predicate: the `AdminCredentialReady` flip the shared gate waits on and the allowlist edits that admit or de-list a namespace both arrive as ControlPlane updates, and both must re-enqueue at watch latency rather than at the next poll |
@@ -102,7 +102,12 @@ teardown finalizer; it never creates or deletes a KeystoneService. Every other
 kind it touches (the K-ORC kinds and their `status` subresources, the ESO
 kinds, Secrets, events, ControlPlane reads) is already granted by the
 ControlPlane and CredentialRotation marker blocks, and the Helm chart mirrors
-the deduplicated union.
+the deduplicated union. The `RegisteredLimit` grant (`get`, `list`, `watch`,
+`create`, `patch`, `delete` on `registeredlimits` and `patch` on
+`registeredlimits/status`) sits in the ControlPlane block although only this
+controller creates the kind. Its CRD is a startup hard dependency like the
+other K-ORC kinds: a cluster without it fails the manager start instead of
+wedging a reconcile.
 
 ## Reconciliation Flow
 
@@ -128,6 +133,7 @@ reaches for that block is not a failure of it.
 | `spec.controlPlaneRef` resolves | `ControlPlaneNotFound` | A status condition, not an admission error, because GitOps may apply the registration before the plane. Any read failure other than NotFound propagates instead, so the workqueue backs off instead of reporting a dangling reference it did not observe |
 | Namespace consent | `NamespaceNotAllowed` | `keystoneServiceNamespaceAllowed` admits the plane's own namespace, its dedicated service namespaces, then `spec.korc.serviceRegistrations.allowedNamespaces`. A nil block and an empty list are identical: both admit nothing beyond the implicit two. Nothing is projected |
 | `AdminCredentialReady` on the plane | `WaitingForAdminCredential` | K-ORC cannot talk to Keystone before the admin credential is minted |
+| System roles | `SystemRoleNotAllowed` | Account block only. `keystoneServiceSystemRoleRefusal` refuses `spec.account.systemRoles` on a CR outside the plane's own namespace and its dedicated service namespaces, because a role on the system reaches every project and no `allowedRoles` was written to grant one. It freezes the account the way the role allowlist does, is written after the sweep, and adds no requeue: only a spec edit lifts it. `RoleNotAllowed` wins when both apply |
 | Role allowlist | `RoleNotAllowed` | Account block only. `keystoneServiceRoleRefusal` looks up the management-cluster `spec.namespaceAssignments` entry for the CR's namespace and refuses every account role outside its `allowedRoles`. The plane's own namespace and its dedicated service namespaces are never bound, and a namespace without an entry stays unlimited. `ensureAccount` is skipped and the catalog block runs. The condition is written after the sweep, so the sweep's `WaitingForServiceAccounts` cannot mask it, and the gate adds no requeue: the ControlPlane watch brings the edit that lifts it |
 
 The role allowlist freezes the account the same way: the sweep keeps every
@@ -164,10 +170,10 @@ label. See [Metrics Instrumentation](#metrics-instrumentation).
 ### Pruning
 
 `sweepChildren` removes every child this CR owns that the current spec no
-longer declares (a removed role, a removed endpoint interface, a whole removed
-block) and reports what it swept, split by the block that owns the kind. The
-split is by kind, which is exact here: Service, Endpoint and Region are only
-ever catalog children, and User / Project / Domain / Role / RoleAssignment and
+longer declares (a removed role, a removed endpoint interface, a removed
+registered limit, a whole removed block) and reports what it swept, split by the
+block that owns the kind. The split is by kind, which is exact here: Service,
+Endpoint, Region and RegisteredLimit are only ever catalog children, and User / Project / Domain / Role / RoleAssignment and
 the delivery objects only ever account children.
 
 A swept name is reported on the pass that issued its Delete, not once the
@@ -188,8 +194,9 @@ references.
 ## Catalog Projection
 
 `ensureCatalog` projects one managed K-ORC Service for the catalog row, an
-unmanaged Region import, and one managed Endpoint per declared interface,
-registered in that region.
+unmanaged Region import, one managed Endpoint per declared interface,
+registered in that region, and one managed RegisteredLimit per
+`catalog.registeredLimits` entry, in the same region.
 
 It is mode-independent, and unlike the ControlPlane's own catalog
 reconciler. That one imports instead of creating in External mode, because the
@@ -214,9 +221,18 @@ a Managed and an External Keystone alike.
    rather than referenced from the plane's own adopted `Region`, because K-ORC
    holds a Region CR while an Endpoint names it, which would tie the plane's
    teardown to every registration, and an External plane adopts no Region.
+   Each `RegisteredLimit` names the Service as `serviceRef` and the Region
+   import as `regionRef`, and carries `resourceName` and `defaultLimit`. A
+   consumer that enforces unified limits finds its endpoint in that region and
+   queries the limits with the endpoint's region, so a region-less limit would
+   match nothing. K-ORC updates `defaultLimit` in place, so an edit re-applies
+   the same CR; the other three fields are immutable on the K-ORC side and are
+   fixed by the CR name, which derives from `resourceName`. An apply error gives
+   `CatalogError` naming the resource.
 3. **Terminal errors.** The Service's and the Region import's terminal errors
-   are reported before the Endpoints', so the root stuck dependency surfaces
-   instead of an Endpoint merely blocked behind it. Either gives `CatalogFailed`: K-ORC has stopped
+   are reported before the Endpoints', and those before the RegisteredLimits',
+   so the root stuck dependency surfaces instead of a child merely blocked
+   behind it. Either gives `CatalogFailed`: K-ORC has stopped
    retrying, so a bounded wait would never resolve. A latched transport failure
    is cleared ahead of this check, so K-ORC retries and the block reports
    `WaitingForCatalog`; a clear that fails gives `TransportErrorRetryFailed`.
@@ -225,7 +241,14 @@ a Managed and an External Keystone alike.
    rows. The block reports ready only once every child is Available for its
    current generation, or a failing registration would read Ready while the
    catalog stayed empty. An unresolved Region import reports
-   `WaitingForCatalog` naming the region.
+   `WaitingForCatalog` naming the region, a RegisteredLimit that is not yet
+   Available reports it naming the CR. A RegisteredLimit also waits while
+   K-ORC reports `Progressing=True` for its generation: K-ORC keeps it
+   Available when Keystone refuses a changed default, as Keystone does while a
+   project limit of the resource exists (403), and only `Progressing` carries
+   the refusal, which the message relays. With at least one registered limit the
+   `CatalogRegistered` message reads `... with N endpoint(s) and M registered
+   limit(s) in region "<region>"`.
 5. **Retiring region-less rows.** Earlier versions registered each interface
    without a region, under the discriminator `endpoint-<interface>`. K-ORC
    neither updates an endpoint's region nor accepts a changed `regionRef`, so
@@ -291,7 +314,14 @@ but its scheduling logic is deferred, and the deferral is not silent.
 **(5) Roles.** Per declared role, one unmanaged Role import filtered by name
 (Keystone roles are global, so the import carries no domain and reading one
 never mutates it) and one managed RoleAssignment binding that role to this
-account's user on its project. The imports are per CR, never shared:
+account's user on its project. Per declared system role, the same import (a
+role in both lists shares it) and one managed RoleAssignment with
+`system: all` and no `projectRef`, named `sys-<slug>`; its messages say
+`system role` where the project-role ones say `role`, after every project role.
+On keystone 29.0.0 (2026.1) the read-back of a new system grant depends on the
+image patch that invalidates Keystone's assignment cache
+([container images](../ci-cd/container-images.md#keystone)); without it the
+assignment stays unavailable for up to `[cache] expiration_time`. The imports are per CR, never shared:
 registrations are independently owned and deleted, so a shared import would
 have no single owner and the first CR deleted would pull it out from under the
 others. A role that does not exist in Keystone never resolves, and the wait
@@ -393,7 +423,7 @@ on the block's condition and returns the error; that is a Forbidden from RBAC
 predating the status-subresource grant, not a passing apiserver failure. A
 `429`, `503`, server timeout or etcd timeout is deferred to the next pass
 instead: the repair is opportunistic, and reporting it would overwrite the K-ORC
-failure the block relays. The patches need `patch` on the nine K-ORC
+failure the block relays. The patches need `patch` on the ten K-ORC
 `<kind>/status` resources, granted by the ControlPlane marker block, and the
 annotation is written with the `patch` the same block already grants on the
 resources themselves.
@@ -434,7 +464,8 @@ namespace, and `{prefix}` for the child-name prefix of
    `<prefix>password-v<N>` with a generated password under the key `password`,
    the account children (`User`, `Project`, one `Role` import and one
    `RoleAssignment` per role) and the catalog children (`Service`, the `Region`
-   import, one `Endpoint` per interface). Each child carries the labels
+   import, one `Endpoint` per interface, one `RegisteredLimit` per registered
+   limit). Each child carries the labels
    `c5c3.io/keystoneservice-name` and `c5c3.io/keystoneservice-namespace`,
    because an owner reference cannot cross the namespace.
 3. K-ORC creates the user in Keystone with the password its `User` names in
@@ -496,10 +527,12 @@ registration it belongs to.
 | `region` | Import of the ControlPlane's Keystone region the endpoints are registered in |
 | `region-ep-<interface>` | One Endpoint per declared interface, in that region |
 | `endpoint-<interface>` | The region-less Endpoint an earlier version registered; retired once its `region-ep-<interface>` replacement is Available |
+| `limit-<slug>` | One RegisteredLimit per declared registered limit, the slug derived from `resourceName` |
 | `user`, `user-probe` | Managed User and its collision probe |
 | `project`, `project-probe` | Project and its collision probe |
 | `domain` | Domain import, when the effective domain is not the plane's admin domain |
 | `role-<slug>`, `assign-<slug>` | Role import and RoleAssignment, per role |
+| `sys-<slug>` | System-scoped RoleAssignment, per system role; its import is the `role-<slug>` of the same name |
 | `password-v<N>` | Generation-scoped password Secret |
 | `source`, `backup` | Assembled source Secret and its PushSecret |
 
@@ -518,8 +551,8 @@ limit.
 `reconcileDelete` runs the `c5c3.io/keystoneservice-teardown` finalizer. It
 reuses the same `sweepChildren` the per-pass prune uses, passing an empty keep
 set so everything goes, and issues the deletes dependents-first: assignments
-before roles, endpoints before the region import and the service they
-reference, all before the user and project they bind. K-ORC enforces its own ordering through finalizers, but
+before roles, registered limits and endpoints before the region import and the
+service they reference, all before the user and project they bind. K-ORC enforces its own ordering through finalizers, but
 issuing them in dependency order keeps the intent legible and avoids a
 guaranteed retry.
 

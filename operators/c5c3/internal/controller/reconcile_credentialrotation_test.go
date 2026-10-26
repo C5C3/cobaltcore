@@ -623,6 +623,29 @@ func TestRotation_RoleRefusedAccountIsNotRotated(t *testing.T) {
 		"a refused rotation must not latch the generation, so lifting the limit later does not skip it")
 }
 
+// TestRotation_SystemRoleRefusedAccountIsNotRotated pins that a system role
+// outside the ControlPlane's own namespaces freezes the rotation the way a
+// refused project role does: the KeystoneService reconciler no longer projects
+// the account, so a nudge would report success and rotate nothing.
+func TestRotation_SystemRoleRefusedAccountIsNotRotated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp, ks, cr := foreignNamespaceRotation()
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+
+	key := types.NamespacedName{Namespace: "tenant", Name: cr.Name}
+	got, c, result := runRotationReconcileAt(t, key, cp, ks, cr, managedSAUser(ks, cp, "1"))
+	cond := rotationReadyCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceSystemRoleNotAllowed))
+	g.Expect(cond.Message).To(Equal(keystoneServiceSystemRoleMessage(cp, ks) +
+		"; its KeystoneService reconciler is frozen on the account and cannot rotate"))
+	g.Expect(result.RequeueAfter).To(Equal(credentialRotationRequeueAfter))
+
+	g.Expect(getSAUser(t, c, ks, cp).Annotations[serviceAccountPasswordGenerationAnnotation]).To(Equal("1"),
+		"a refused account must not have its User nudged")
+	g.Expect(got.Status.LastTriggeredGeneration).To(BeZero())
+}
+
 // TestRotation_RoleRefusalMessageIsTruncated pins that a refusal naming
 // tenant-controlled roles stays within the Condition message bound. %q escapes a
 // non-printable rune to ten characters, so 32 roles of 250 such runes, each

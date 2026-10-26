@@ -100,9 +100,9 @@ images of that release as well as those of the start release: kind-loaded, as th
 
 | Suite | CR Name(s) | Behaviour Validated |
 | --- | --- | --- |
-| [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check, and a release hop from the start release to its successor |
-| [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, and a namespace assignment's role allowlist refuses and freezes the account |
-| [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
+| [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check (Glance quotas enforced through Keystone unified limits included), and a release hop from the start release to its successor |
+| [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, a namespace assignment's role allowlist refuses and freezes the account, and a system role outside the plane's namespaces is refused with `SystemRoleNotAllowed` |
+| [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, a registered limit and a system role reach Keystone (the system grant Available within 120 s), change in place and leave again, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
 | [healthcheck](#healthcheck) | `cp` (ephemeral namespace) | The plane holds `KeystoneReady` at `WaitingForKeystone` until the Keystone child's API probe passes, never reports `KeystoneReady` or `Ready` ahead of it, and Keystone `/v3` answers 200 on a single attempt when the plane first reports `Ready`, with the reasons and the `lastTransitionTime` order to match |
 | [pod-security-restricted](#pod-security-restricted) | `cp` (ephemeral namespace) | A managed plane in a namespace labelled `enforce=restricted`, `enforce-version=latest` reaches `Ready=True/AllReady`: the owned MariaDB and Memcached carry the projected restricted security contexts, their pods run, and no event carries a PodSecurity violation |
 | [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` + `KeystoneProject` `workflow-project` + `KeystoneRoleAssignment` `workflow-member` + `KeystoneCatalogEntry` `workflow-dns` + `KeystoneApplicationCredential` `workflow-appcred` + `MariaDBDatabase` `workflow-db` | Keystone and database orders: a user order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates and a one-minute schedule rotates once more before it is turned off; a project is provisioned, a role and a catalog entry are refused until the entry admits them, a Job scopes a token to the project and reads the entry out of the catalog, a duplicate assignment and a colliding entry are refused; an application credential is refused without the role, then created as the user and delivered, rotated on its schedule and by hand, and the superseded credential stops working after its grace period; a database order gets its Secret, a Job writes a row with it, and a forced ESO refresh delivers a new user; an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes every order, and deletion revokes the database order's leases and keeps or drops its schema by `deletionPolicy`, holds the assignment on the credential order and the user on the assignment, and removes everything down to the OpenBao paths |
@@ -177,8 +177,10 @@ paths any other chassis or metadata agent would share.
 5b. **Registrations** — one `KeystoneService` child per built-in service
    (`…-glance`, `…-placement`, `…-barbican`, `…-neutron`), each carrying that
    service's catalog entry and its service account: a managed User and Project,
-   an unmanaged K-ORC Role import, and a managed RoleAssignment. Every child
-   reports `Ready=AllReady`. The ControlPlane's `ServiceAccountsReady` is
+   an unmanaged K-ORC Role import, and a managed RoleAssignment. The glance
+   registration carries `services.glance.quotas`, so it also holds four
+   RegisteredLimits and a second, system-scoped RoleAssignment for `reader`.
+   Every child reports `Ready=AllReady`. The ControlPlane's `ServiceAccountsReady` is
    awaited later, in link 5m: it also aggregates the hypervisor operator's
    registration, which the Nova leg projects only once the Nova child is Ready.
 
@@ -186,7 +188,11 @@ paths any other chassis or metadata agent would share.
    database/cache clusterRefs, an engine-issued (Dynamic) DB credential, the
    derived Keystone endpoint, the registered `glance` service user, and its
    `controlplane-keystone-glance-default` GlanceBackend against the Garage S3
-   bucket; `GlanceReady=True`.
+   bucket; `GlanceReady=True`. The child sets `spec.keystoneLimits: {}`, and the
+   glance registration's four RegisteredLimits carry the declared defaults
+   (`image_size_total=51200`, `image_stage_total=51200`,
+   `image_count_total=1000`, `image_count_uploading=100`), are Available, name
+   the registration's Region import and are owned by the registration.
 
 5d. **Image catalog** — owned K-ORC image Service
    (`controlplane-keystone-image-service`) plus an internal and a public
@@ -384,6 +390,16 @@ paths any other chassis or metadata agent would share.
    and the image are deleted again (`OK: compute round-trip`). The suite greps
    the Job's logs for each of those five lines, pinning the host to the node it
    labelled.
+
+   The Glance quotas close the Job. `registered limit list --service glance
+   --region RegionOne` has to list the four defaults, and `role assignment list
+   --user glance --system all` has to name `reader`. The Job then creates a
+   RegionOne project limit `image_count_total=0` for the project its own token is
+   scoped to, expects the next `image create` to fail with output naming
+   `image_count_total`, deletes the limit again (a trap deletes it on any exit,
+   since Keystone refuses to delete a registered limit a project limit still
+   references), and expects a further `image create` to succeed. The suite greps
+   the four `OK:` lines of that block too.
 
    Two log assertions follow the Job, on the two services the notifier wires
    together. The nova API has to have logged an `os-server-external-events` call
@@ -1027,7 +1043,7 @@ K-ORC children into the ControlPlane's namespace, beside the admin credential
 K-ORC authenticates them with, and delivers only the consumer Secret into the
 registration's own namespace.
 
-The suite runs four legs against a live Keystone, OpenBao, ESO and cert-manager:
+The suite runs five legs against a live Keystone, OpenBao, ESO and cert-manager:
 
 1. **Positive**: an allowlisted namespace registers a catalog entry and an
    account. Its tenant-store trio appears, the seven projected K-ORC children
@@ -1059,6 +1075,13 @@ The suite runs four legs against a live Keystone, OpenBao, ESO and cert-manager:
    the field returns the plane to `NoNamespaceAssignments` and `Ready=True` and
    lifts the refusal: the account returns to `AccountProvisioned` and the
    registration to `Ready=True`.
+5. **System roles**: patching `account.systemRoles: [reader]` onto the admitted
+   registration reports `AccountReady=False/SystemRoleNotAllowed` with no
+   assignment in place, because a system role is honored only in the
+   ControlPlane's own namespaces. No `…-registration-sys-…` RoleAssignment
+   carries the registration's labels, and the Keystone user stays. Removing the
+   field returns the account to `AccountProvisioned` and the registration to
+   `Ready=True`.
 
 Its ControlPlane is its own. The webhook admits one ControlPlane per namespace,
 and the canonical `controlplane-keystone` belongs to the full-chain suite, so this
@@ -1095,13 +1118,15 @@ client and again in envtest with K-ORC as schema, and neither of those sees
 Keystone, OpenBao, ESO or cert-manager. No other e2e asserts `ServiceCollision`
 or `ServiceAccountCollision`.
 
-Five legs run against the live stack:
+Six legs run against the live stack:
 
 1. **Round-trip**: `workflow` declares both blocks with
-   `controlPlaneRef.namespace` unset and reaches `Ready=True/AllReady`,
-   `CatalogReady=CatalogRegistered`, `AccountReady=AccountProvisioned`. Seven
-   K-ORC children named `workflow-<hash>-registration-<discriminator>` reach
-   `Available` in the plane's namespace, each carrying a controller owner
+   `controlPlaneRef.namespace` unset, one registered limit
+   (`workflow_executions`, default 10) and one system role (`reader`), and
+   reaches `Ready=True/AllReady`, `CatalogReady=CatalogRegistered`,
+   `AccountReady=AccountProvisioned`. Eleven K-ORC children named
+   `workflow-<hash>-registration-<discriminator>` reach `Available` in the
+   plane's namespace, each carrying a controller owner
    reference to the CR, which the suite asserts. The consumer
    Secret `workflow-credentials` is materialised with its `password` and
    `clouds.yaml` keys, the OpenBao leaf under
@@ -1110,7 +1135,17 @@ Five legs run against the live stack:
    catalog row. The plane reports
    `ServiceAccountsReady=NoServiceRegistrationsProjected` and
    `RegistrationTenantStoresReady=NoRegistrationNamespaces`.
-2. **Latched errors**: the suite injects a terminal
+2. **Limits**: the `sys-reader-…` RoleAssignment carries `system: all` and its
+   `Available` condition turned True at most 120 s after its creation, which on
+   2026.1 needs the keystone image patch that invalidates the assignment cache
+   on a system grant. The `limits` mode of the admin Job reads
+   `REGISTERED_LIMITS=workflow_executions=10@RegionOne` and a `SYSTEM_ROLES`
+   value containing `reader`. Patching the default to 20 updates the
+   `RegisteredLimit` in place (same `metadata.uid`) and the Job reads
+   `workflow_executions=20@RegionOne`. Removing both fields deletes the
+   `RegisteredLimit`, the system RoleAssignment and the `reader` import, and
+   both values read `NONE`.
+3. **Latched errors**: the suite injects a terminal
    `Progressing=False/InvalidConfiguration` condition on the registration's
    Project child through the status subresource, because the pinned K-ORC
    retries transport errors itself. With a 409 message, `AccountReady` holds at
@@ -1119,14 +1154,14 @@ Five legs run against the live stack:
    180 s, the registration returns to `Ready=True` with
    `AccountReady=AccountProvisioned` within 300 s, and
    `status.account.projectID` is unchanged.
-3. **Rotation**: a `CredentialRotation` with `reMint: true` rotates the account
+4. **Rotation**: a `CredentialRotation` with `reMint: true` rotates the account
    password. Within 300 s the consumer password changes,
    `status.account.passwordGeneration` reaches 2, `lastPasswordRotation` is set,
    `…-password-v2` appears and `…-password-v1` is pruned. The User child's
    `appliedPasswordRef` and its `cobaltcore.c5c3.io/password-generation`
    annotation follow. The verify Job then runs with the old password in hand and
    proves the new one authenticates while the old one is rejected.
-4. **Collision** (decision D6): an admin Job seeds a `metering` catalog row and a
+5. **Collision** (decision D6): an admin Job seeds a `metering` catalog row and a
    `legacy` user, then `legacy` registers against both with no `adopt` and holds
    at `CatalogReady=False/ServiceCollision` and
    `AccountReady=False/ServiceAccountCollision`, each message naming the field
@@ -1138,7 +1173,7 @@ Five legs run against the live stack:
    row from Keystone while the never-adopted user stays. The suite stops short of
    account adoption: with the pinned K-ORC an adopted user keeps its pre-existing
    password at generation 1, tracked as #920.
-5. **Deletion**: deleting `workflow` leaves no K-ORC object under its labels, no
+6. **Deletion**: deleting `workflow` leaves no K-ORC object under its labels, no
    consumer Secret, ExternalSecret, PushSecret, source Secret or password Secret,
    no live value at the OpenBao leaf, and no service or user row in Keystone. The
    plane stays `Ready=True` with `NoServiceRegistrationsProjected`.
@@ -1164,7 +1199,10 @@ lands in the Job object.
 `admin-osc-seed` and `admin-osc-show` mount the plane's `k-orc-clouds-yaml` and
 drive the same CLI as the cloud admin, for the rows only an admin can see or
 create. Both print a `SERVICE_ID=` and a `USER_ID=` line the test script parses
-out of the Job log, with `ABSENT` for a row that is gone.
+out of the Job log, with `ABSENT` for a row that is gone. `admin-osc-limits`
+prints the registered limits of the `workflow` row as
+`REGISTERED_LIMITS=<resource>=<default>@<region>,...` and the user's system
+roles as `SYSTEM_ROLES=<role>,...`, each `NONE` when there is none.
 
 The teardown proves the order the ControlPlane's finalizer keeps for its
 Keystone and leaves the Keystone to that finalizer. Before the plane is deleted the
@@ -1741,15 +1779,15 @@ tests/e2e/c5c3/
 │   ├── test_generate.py                Generator unit tests (make verify-invalid-cr-fixtures)
 │   └── NN-*.yaml                       One rejected SizingProfile per rule
 ├── keystone-service/
-│   ├── chainsaw-test.yaml              Own-namespace registration, five legs
+│   ├── chainsaw-test.yaml              Own-namespace registration, six legs
 │   ├── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; no allowlist)
 │   ├── 01-keystoneservice-workflow.yaml  The round-trip registration (workflow)
 │   ├── 02-keystoneservice-legacy.yaml  The colliding registration (legacy)
 │   ├── 03-openstack-verify-job.yaml    openstack CLI verify Job on the consumer Secret
-│   ├── 04-openstack-admin-job.yaml     openstack CLI admin Job (seed / show)
+│   ├── 04-openstack-admin-job.yaml     openstack CLI admin Job (seed / show / limits)
 │   └── 05-credentialrotation-workflow.yaml  Rotation trigger for workflow
 ├── keystone-service-foreign-namespace/
-│   ├── chainsaw-test.yaml              Cross-namespace registration, three legs
+│   ├── chainsaw-test.yaml              Cross-namespace registration, five legs
 │   ├── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; @TENANT_NS@ token)
 │   ├── 01-keystoneservice-tenant.yaml  The admitted registration (workflow)
 │   ├── 02-keystoneservice-outsider.yaml  The refused registration (outsider)

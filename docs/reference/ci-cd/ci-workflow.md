@@ -2105,12 +2105,12 @@ configuration, Keystone CRs, and K8s service names. Pulls pre-built images from
 GHCR (run-scoped tag) via the `load-e2e-images` composite action.
 
 The figure shows the test bed of one job: Tempest runs in a container on the
-runner host and reaches the Services through port-forwards, and the seed Jobs
-run inside the cluster.
+runner host and reaches the Services through port-forwards (Glance through a
+relay to a NodePort Service), and the seed Jobs run inside the cluster.
 [Data Flow (CI End-to-End)](../testing/tempest-test-infrastructure.md#data-flow-ci-end-to-end)
 lists the commands of a job in order.
 
-![The test bed of one tempest job in CI. On the runner host, the step Run Tempest API tests runs hack/ci-run-tempest.sh. The script reads the admin password from the Secret keystone-admin in the namespace openstack of the kind cluster, starts one kubectl port-forward per Service on localhost and, once every port answers, starts the Tempest container with docker run on the host network. The container mounts the directory with the rendered tempest.conf and the test lists at /etc/tempest and the output directory at /output. It calls the APIs over plain http: --add-host points the cluster DNS names of the Services at 127.0.0.1, where the forwards listen. Every job forwards the Keystone Service on port 5000. Depending on the service under test, further forwards reach Glance on 9292, Barbican on 9311, Neutron on 9696, Cinder on 8776, Nova on 8774, the noVNC proxy on 6080 and Placement on 8778. Inside the cluster, seed Jobs run the same Tempest image and call the APIs by their cluster DNS names: a catalog set-up Job, an image seed Job, a flavor seed Job and, for Barbican, a policy check Job.](../../diagrams/test-tempest-bed.svg)
+![The test bed of one tempest job in CI. On the runner host, the step Run Tempest API tests runs hack/ci-run-tempest.sh. The script reads the admin password from the Secret keystone-admin in the namespace openstack of the kind cluster, starts one kubectl port-forward per Service on localhost (for Glance a relay in the Tempest image to a NodePort Service instead) and, once every port answers, starts the Tempest container with docker run on the host network. The container mounts the directory with the rendered tempest.conf and the test lists at /etc/tempest and the output directory at /output. It calls the APIs over plain http: --add-host points the cluster DNS names of the Services at 127.0.0.1, where the forwards listen. Every job forwards the Keystone Service on port 5000. Depending on the service under test, further forwards reach Glance on 9292, Barbican on 9311, Neutron on 9696, Cinder on 8776, Nova on 8774, the noVNC proxy on 6080 and Placement on 8778. Inside the cluster, seed Jobs run the same Tempest image and call the APIs by their cluster DNS names: a catalog set-up Job, an image seed Job, a flavor seed Job and, for Barbican, a policy check Job.](../../diagrams/test-tempest-bed.svg)
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]`
 **Condition:** Runs only when `tempest == 'true'`, `build-e2e-images` succeeded, and no other E2E job failed or was cancelled; tempest is the last E2E job in the chain. Without a label it runs for a change to its own sources, and the matrix is narrowed to the services whose configuration changed.
@@ -2676,7 +2676,9 @@ handles local execution including image building).
 
 The script:
 1. Extracts the admin password from the Kubernetes secret
-2. Sets up `kubectl port-forward` to the service and waits for readiness
+2. Sets up `kubectl port-forward` to the service and waits for readiness. A
+   leg that sets `GLANCE_K8S_NAME` reaches Glance through a relay instead, see
+   [Tempest Test Infrastructure](../testing/tempest-test-infrastructure.md)
 3. Generates `tempest.conf` from the template, substituting endpoint and credentials
 4. Runs Tempest in a Docker container with `--network host` and host-alias DNS entries
 5. Converts subunit output to JUnit XML and checks for failures

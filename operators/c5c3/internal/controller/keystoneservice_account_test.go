@@ -864,6 +864,161 @@ func TestKSAccount_TerminalRoleErrorFailsLoudly(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("member"))
 }
 
+// ksAvailableRoleChildren seeds a Role import and a RoleAssignment as K-ORC
+// reports them once resolved.
+func ksAvailableRoleChildren(ks *c5c3v1alpha1.KeystoneService, importName, assignmentName string) []client.Object {
+	return []client.Object{
+		&orcv1alpha1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: importName, Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks)},
+			Status:     orcv1alpha1.RoleStatus{Conditions: availableImportConditions(), ID: ptr.To("role-id")},
+		},
+		&orcv1alpha1.RoleAssignment{
+			ObjectMeta: metav1.ObjectMeta{Name: assignmentName, Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks)},
+			Status:     orcv1alpha1.RoleAssignmentStatus{Conditions: availableImportConditions()},
+		},
+	}
+}
+
+// A system role is projected as a Role import plus a RoleAssignment on the
+// system scope, without a project, and the account waits for both.
+func TestKSAccount_SystemRoleProjectsAnImportAndASystemAssignment(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+	importName := keystoneServiceRoleImportRef(ks, "reader")
+	assignmentName := keystoneServiceSystemRoleAssignmentRef(ks, "reader")
+	g.Expect(importName).To(Equal(keystoneServiceChildPrefix(ks) + "role-" + serviceAccountRoleSlug("reader")))
+	g.Expect(assignmentName).To(Equal(keystoneServiceChildPrefix(ks) + "sys-" + serviceAccountRoleSlug("reader")))
+
+	cond, c := runKSAccount(t, ks, cp, ksConvergedAccount(ks, cp)...)
+
+	roleObj := &orcv1alpha1.Role{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: importName, Namespace: ks.Namespace}, roleObj)).To(Succeed())
+	g.Expect(roleObj.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
+	g.Expect(roleObj.Spec.Import.Filter.Name).To(Equal(ptr.To(orcv1alpha1.KeystoneName("reader"))))
+
+	assignment := &orcv1alpha1.RoleAssignment{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: assignmentName, Namespace: ks.Namespace}, assignment)).To(Succeed())
+	g.Expect(assignment.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged))
+	_, managedCredRef := keystoneServiceCredentialRefs(cp)
+	g.Expect(assignment.Spec.CloudCredentialsRef).To(Equal(managedCredRef))
+	g.Expect(string(assignment.Spec.Resource.RoleRef)).To(Equal(importName))
+	g.Expect(assignment.Spec.Resource.UserRef).To(Equal(ptr.To(orcv1alpha1.KubernetesNameRef(keystoneServiceUserRef(ks)))))
+	g.Expect(assignment.Spec.Resource.System).To(Equal(ptr.To(orcv1alpha1.KeystoneSystemAll)))
+	g.Expect(assignment.Spec.Resource.ProjectRef).To(BeNil())
+	g.Expect(assignment.Spec.Resource.DomainRef).To(BeNil())
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(cond.Message).To(ContainSubstring(`system role "reader"`))
+
+	// The import resolved, the assignment did not: still waiting, on the assignment.
+	children := ksAvailableRoleChildren(ks, importName, assignmentName)
+	children[1].(*orcv1alpha1.RoleAssignment).Status = orcv1alpha1.RoleAssignmentStatus{}
+	cond, _ = runKSAccount(t, ks, cp, append(ksConvergedAccount(ks, cp), children...)...)
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(cond.Message).To(ContainSubstring(`the RoleAssignment for system role "reader" is registered but not yet Available`))
+
+	// Both resolved: the account is provisioned.
+	cond, _ = runKSAccount(t, ks, cp, append(ksConvergedAccount(ks, cp),
+		ksAvailableRoleChildren(ks, importName, assignmentName)...)...)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceAccountProvisioned))
+}
+
+// An empty systemRoles projects no system-scoped assignment, and a role named in
+// both lists shares one import between its two assignments.
+func TestKSAccount_SystemRoleAssignmentsPerList(t *testing.T) {
+	t.Run("empty systemRoles projects no sys- assignment", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		cp := ksControlPlane()
+		ks := ksWithAccount()
+		ks.Spec.Account.Roles = []string{"reader"}
+		ks.Spec.Account.SystemRoles = []string{}
+
+		_, c := runKSAccount(t, ks, cp, ksConvergedAccount(ks, cp)...)
+
+		var assignments orcv1alpha1.RoleAssignmentList
+		g.Expect(c.List(context.Background(), &assignments, client.InNamespace(ks.Namespace))).To(Succeed())
+		g.Expect(assignments.Items).To(HaveLen(1))
+		g.Expect(assignments.Items[0].Name).To(Equal(keystoneServiceRoleAssignmentRef(ks, "reader")))
+		g.Expect(assignments.Items[0].Spec.Resource.System).To(BeNil())
+	})
+
+	t.Run("a role in both lists shares one import", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		cp := ksControlPlane()
+		ks := ksWithAccount()
+		ks.Spec.Account.Roles = []string{"reader"}
+		ks.Spec.Account.SystemRoles = []string{"reader"}
+
+		_, c := runKSAccount(t, ks, cp, ksConvergedAccount(ks, cp)...)
+
+		var roles orcv1alpha1.RoleList
+		g.Expect(c.List(context.Background(), &roles, client.InNamespace(ks.Namespace))).To(Succeed())
+		g.Expect(roles.Items).To(HaveLen(1))
+		g.Expect(roles.Items[0].Name).To(Equal(keystoneServiceRoleImportRef(ks, "reader")))
+
+		var assignments orcv1alpha1.RoleAssignmentList
+		g.Expect(c.List(context.Background(), &assignments, client.InNamespace(ks.Namespace))).To(Succeed())
+		names := []string{}
+		for _, a := range assignments.Items {
+			g.Expect(string(a.Spec.Resource.RoleRef)).To(Equal(roles.Items[0].Name))
+			names = append(names, a.Name)
+		}
+		g.Expect(names).To(ConsistOf(
+			keystoneServiceRoleAssignmentRef(ks, "reader"), keystoneServiceSystemRoleAssignmentRef(ks, "reader")))
+		keep := keystoneServiceDeclaredChildNames(ks)
+		g.Expect(keep).To(HaveKey(keystoneServiceSystemRoleAssignmentRef(ks, "reader")))
+	})
+}
+
+func TestKSAccount_StalledSystemRoleImportHintsAtAMissingRole(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.SystemRoles = []string{"typo-role"}
+
+	stalled := &orcv1alpha1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceRoleImportRef(ks, "typo-role"), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.RoleStatus{Conditions: pendingImportConditions(2 * externalImportStallGrace)},
+	}
+
+	cond, _ := runKSAccount(t, ks, cp, append(ksConvergedAccount(ks, cp), stalled)...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(cond.Message).To(ContainSubstring(`the Role import for system role "typo-role" is registered but not yet Available`))
+	g.Expect(cond.Message).To(ContainSubstring(`system role "typo-role" may not exist in Keystone`))
+}
+
+func TestKSAccount_TerminalSystemRoleErrorFailsLoudly(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+
+	broken := &orcv1alpha1.RoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceSystemRoleAssignmentRef(ks, "reader"), Namespace: ks.Namespace},
+		Status: orcv1alpha1.RoleAssignmentStatus{
+			Conditions: terminalImportConditions("Keystone refused the system grant"),
+		},
+	}
+
+	cond, _ := runKSAccount(t, ks, cp, append(ksConvergedAccount(ks, cp), broken)...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsFailed))
+	g.Expect(cond.Message).To(ContainSubstring(`K-ORC reported a terminal error on system role "reader"`))
+	g.Expect(cond.Message).To(ContainSubstring("Keystone refused the system grant"))
+}
+
 // --- the publish leg ---
 
 func TestKSAccount_PublishAssemblesTheDocumentedContract(t *testing.T) {

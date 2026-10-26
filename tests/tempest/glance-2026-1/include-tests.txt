@@ -10,3 +10,7 @@
 
 # Core Tempest image API tests
 tempest.api.image
+
+# Glance quotas through Keystone unified limits (the CR sets keystoneLimits);
+# exclude-tests.txt drops the two tests that stage through glance-direct.
+tempest.scenario.test_unified_limits

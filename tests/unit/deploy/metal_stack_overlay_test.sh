@@ -9,17 +9,17 @@
 #      with SPDX headers, and each lists exactly one resource: the matching
 #      kind overlay (../../../kind/base, ../../../kind/infrastructure).
 #   2. The base render carries the OpenBao HelmRelease in standalone mode
-#      with no storage class, the envoy-gateway HelmRelease, the
-#      twelve-listener openstack-gw Gateway and the nine suspended
-#      service-operator releases, no metrics-server or vertical-pod-autoscaler
-#      release (the platform runs both), and the Gardener apiserver-proxy
-#      opt-out label and the chaos-mesh.org/inject: enabled annotation on
-#      every rendered Namespace, none of which is a platform namespace,
-#      flux-system or chaos-mesh.
+#      with no storage class, the envoy-gateway HelmRelease, the NodePort
+#      EnvoyProxy on 31443, the twelve-listener openstack-gw Gateway and the
+#      nine suspended service-operator releases, no metrics-server or
+#      vertical-pod-autoscaler release (the platform runs both), and the
+#      Gardener apiserver-proxy opt-out label and the chaos-mesh.org/inject:
+#      enabled annotation on every rendered Namespace, none of which is a
+#      platform namespace, flux-system or chaos-mesh.
 #   3. The infrastructure render carries MariaDB and both Garage volumes at
-#      one replica with no storage class, the NodePort EnvoyProxy on 31443,
-#      the paused proving OpenBaoCluster without egress fields
-#      (hack/deploy-infra.sh patches those in) and the openstack OpenBaoTenant.
+#      one replica with no storage class, the paused proving OpenBaoCluster
+#      without egress fields (hack/deploy-infra.sh patches those in) and the
+#      openstack OpenBaoTenant.
 #   4. Neither render names local-path, ceph-rbd or any storage class: no
 #      line sets storageClass or storageClassName, so every volume binds to
 #      the cluster's default class.
@@ -95,6 +95,10 @@ test_base_render() {
     "$(count_named HelmRelease envoy-gateway)"
   assert_eq "Gateway openstack-gw carries twelve listeners" "12" \
     "$(val Gateway openstack-gw '.spec.listeners | length')"
+  assert_eq "EnvoyProxy envoy-nodeport keeps the NodePort Service" "NodePort" \
+    "$(val EnvoyProxy envoy-nodeport '.spec.provider.kubernetes.envoyService.type')"
+  assert_eq "EnvoyProxy envoy-nodeport keeps nodePort 31443" "31443" \
+    "$(val EnvoyProxy envoy-nodeport '.spec.provider.kubernetes.envoyService.patch.value.spec.ports[0].nodePort')"
 
   local svc
   for svc in $SERVICE_OPERATORS; do
@@ -154,10 +158,6 @@ test_infrastructure_render() {
     "$(val GarageCluster garage '.spec.storage.data | has("storageClassName")')"
   assert_eq "GarageCluster garage keeps one storage node (inherited)" "1" \
     "$(val GarageCluster garage '.spec.storage.replicas')"
-  assert_eq "EnvoyProxy envoy-nodeport keeps the NodePort Service" "NodePort" \
-    "$(val EnvoyProxy envoy-nodeport '.spec.provider.kubernetes.envoyService.type')"
-  assert_eq "EnvoyProxy envoy-nodeport keeps nodePort 31443" "31443" \
-    "$(val EnvoyProxy envoy-nodeport '.spec.provider.kubernetes.envoyService.patch.value.spec.ports[0].nodePort')"
   assert_eq "OpenBaoCluster openbao-instance starts paused" "true" \
     "$(val OpenBaoCluster openbao-instance '.spec.paused')"
   # hack/deploy-infra.sh patches both in from the live cluster together with

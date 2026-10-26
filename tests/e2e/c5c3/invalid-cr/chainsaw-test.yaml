@@ -1386,6 +1386,38 @@ spec:
             ($error != null): true
             (contains($error, 'spec.services.cinder.backupBackend.rbd.networks[0]')): true
             (contains($error, 'must be a canonical IPv4 CIDR')): true
+  # A services.glance.quotas size that is not a whole number of MiB must be
+  # rejected by the validating webhook: Keystone stores Glance's image quotas in
+  # MiB, and no Quantity marker can say so (webhook-only).
+  - try:
+    - apply:
+        file: 160-glance-quotas-size-not-whole-mib.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.glance.quotas.imageSizeTotal')): true
+            (contains($error, 'must be a whole number of MiB')): true
+  # A services.glance.quotas count of 0 must be rejected by the Minimum=1
+  # marker (CRD schema).
+  - try:
+    - apply:
+        file: 161-glance-quotas-count-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'imageCountTotal')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # [DEFAULT] use_keystone_limits in services.glance.extraConfig must be
+  # forbidden by the validating webhook: the Glance child's spec.keystoneLimits
+  # owns it.
+  - try:
+    - apply:
+        file: 162-glance-extraconfig-owned-use-keystone-limits.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.services.glance.extraConfig[DEFAULT][use_keystone_limits]')): true
+            (contains($error, 'use_keystone_limits is managed via spec.keystoneLimits')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

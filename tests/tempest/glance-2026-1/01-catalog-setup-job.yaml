@@ -5,7 +5,8 @@
 # Registers the Glance image service and its public/internal endpoints in the
 # keystone-glance-tempest-2026-1 catalog so Tempest's image client can discover
 # the glance-tempest-2026-1 API. keystone-manage bootstrap only creates the
-# identity service, so the image service/endpoints must be added out-of-band.
+# identity service, so the image service/endpoints must be added out-of-band,
+# and so must the four registered limits the CR's keystoneLimits enforces.
 #
 # It authenticates as the bootstrap admin (keystone-admin Secret) and is written
 # idempotently so a Job retry converges rather than duplicating or erroring.
@@ -75,3 +76,25 @@ spec:
 
               echo "OK: glance service and endpoints registered"
               openstack endpoint list --service glance --format value -c Interface -c URL
+
+              # The four registered limits the CR's keystoneLimits enforces
+              # against, in RegionOne, where the endpoints are and where tempest
+              # creates its project limits (CONF.identity.region). Without them
+              # oslo.limit counts every resource as limit 0 and refuses every
+              # image create. The default is the largest Keystone accepts, so
+              # tempest.api.image stays unbounded.
+              # The lookup is captured before it is tested, so a failed call
+              # is an error rather than "no limit yet".
+              for r in image_size_total image_stage_total image_count_total image_count_uploading; do
+                if ! ids="$(openstack registered limit list --service glance --region RegionOne \
+                     --resource-name "${r}" -f value -c ID)"; then
+                  echo "ERROR: the registered-limit lookup for ${r} failed" >&2
+                  exit 1
+                fi
+                if [ -z "${ids}" ]; then
+                  openstack registered limit create --service glance --region RegionOne \
+                    --default-limit 2147483647 "${r}"
+                fi
+              done
+              echo "OK: glance registered limits registered"
+              openstack registered limit list --service glance --format value -c "Resource Name" -c "Default Limit"

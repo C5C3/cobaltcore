@@ -110,8 +110,8 @@ func joinPaths(paths []*field.Path) string {
 // overrides — attributing every finding to the concrete block(s) that carry it.
 //
 // old is the stored object on update and nil on create. It is read by the
-// Neutron arm alone, whose registry gained a Rejected key a stored ControlPlane
-// may already carry (see there).
+// Neutron and Glance arms, whose registries gained Rejected keys a stored
+// ControlPlane may already carry (see there).
 func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, field.ErrorList) {
 	var warnings admission.Warnings
 	var errs field.ErrorList
@@ -192,9 +192,13 @@ func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, fi
 	if gl := cp.Spec.Services.Glance; gl != nil {
 		blocks := []iniBlock{{cp.Spec.GlobalExtraConfig, globalPath}, {gl.ExtraConfig, glancePath}}
 		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, gl.ExtraConfig)
+		var stored map[string]map[string]string
+		if old != nil && old.Spec.Services.Glance != nil && gl.Quotas == nil {
+			stored = MergedExtraConfig(old.Spec.GlobalExtraConfig, old.Spec.Services.Glance.ExtraConfig)
+		}
 		for _, owned := range config.FindOwnedOverrides(merged, glancev1alpha1.OwnedConfigKeys) {
 			paths := contributingKeyPaths(owned.Section, owned.Key, blocks...)
-			// Every Rejected glance key is always forbidden: rendering
+			// Every Rejected glance key is forbidden: rendering
 			// [keystone_authtoken] password would leak the service password into the
 			// namespace-readable ConfigMap, rendering an [import_filtering_opts]
 			// key would loosen the web-download URI filter past every gate
@@ -206,8 +210,28 @@ func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, fi
 			// ignore_user_roles key bypasses what services.glance.importPlugins
 			// guarantees about them: the fixed decompression-before-conversion
 			// order, the output-format enum, and the oslo Dict syntax the injected
-			// property names are validated against.
+			// property names are validated against. [DEFAULT] use_keystone_limits
+			// and the [oslo_limit] keys belong to the unified-limits enforcement
+			// services.glance.quotas turns on: a hand-set value refuses every image
+			// create, drops the quotas, or fails every quota check, and the
+			// [oslo_limit] password would leak like the authtoken one.
+			//
+			// A CarryOver key (the unified-limits ones) an update carries over
+			// unchanged is reported rather than forbidden, as in the Neutron arm.
+			// Enabling unified limits by hand through extraConfig, [oslo_limit]
+			// password included, was the only way before services.glance.quotas
+			// existed; forbidding it on every update, the finalizer removal on
+			// delete included, would leave a ControlPlane admitted with it no
+			// update to remove it through. A new or changed value is still
+			// forbidden, and so is every other Rejected key. With
+			// services.glance.quotas set nothing carries over: the child then
+			// renders the unified-limits section, and a carried key would
+			// override it.
 			if owned.Rejected {
+				if owned.CarryOver && config.CarriedOver(stored, owned.Section, owned.Key, merged[owned.Section][owned.Key]) {
+					warnings = append(warnings, carriedRejectedINIWarning(owned, paths))
+					continue
+				}
 				for _, p := range paths {
 					errs = append(errs, field.Forbidden(p, rejectedOwnedKeyMessage(owned)))
 				}
@@ -299,7 +323,7 @@ func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, fi
 			// admitted with it no update to remove it through. A new or changed value
 			// is still forbidden.
 			if owned.Rejected {
-				if value, ok := stored[owned.Section][owned.Key]; ok && value == merged[owned.Section][owned.Key] {
+				if owned.CarryOver && config.CarriedOver(stored, owned.Section, owned.Key, merged[owned.Section][owned.Key]) {
 					warnings = append(warnings, carriedRejectedINIWarning(owned, paths))
 					continue
 				}

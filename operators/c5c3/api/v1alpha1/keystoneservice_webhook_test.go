@@ -120,6 +120,17 @@ func TestKeystoneServiceValidateCreate_AcceptsValidCRs(t *testing.T) {
 		{"an explicit own-namespace controlPlaneRef", func(ks *KeystoneService) {
 			ks.Spec.ControlPlaneRef.Namespace = "openstack"
 		}},
+		{"registeredLimits omitted", func(ks *KeystoneService) { ks.Spec.Catalog.RegisteredLimits = nil }},
+		{"registeredLimits empty", func(ks *KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{}
+		}},
+		{"registered limits at both bounds", func(ks *KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{
+				{ResourceName: "image_count_total", DefaultLimit: -1},
+				{ResourceName: "image_size_total", DefaultLimit: 2147483647},
+			}
+		}},
+		{"a system role", func(ks *KeystoneService) { ks.Spec.Account.SystemRoles = []string{"reader"} }},
 	}
 
 	for _, tc := range cases {
@@ -201,6 +212,28 @@ func TestKeystoneServiceValidateCreate_RejectsInvalidSpecs(t *testing.T) {
 		{"comma in a role", func(ks *KeystoneService) {
 			ks.Spec.Account.Roles = []string{"admin", "service,evil"}
 		}, "spec.account.roles[1]"},
+		{"comma in a system role", func(ks *KeystoneService) {
+			ks.Spec.Account.SystemRoles = []string{"reader", "admin,evil"}
+		}, "spec.account.systemRoles[1]: Invalid value: \"admin,evil\": " + korcOpenStackNameCommaMessage},
+
+		{"registered limit 0", func(ks *KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{{ResourceName: "r1", DefaultLimit: 0}}
+		}, "spec.catalog.registeredLimits[0].defaultLimit: Invalid value: 0: defaultLimit 0 is refused by K-ORC"},
+		{"registered limit below -1", func(ks *KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{{ResourceName: "r1", DefaultLimit: -2}}
+		}, "must be between -1 and 2147483647"},
+		{"empty registered limit resourceName", func(ks *KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{{ResourceName: "", DefaultLimit: 1}}
+		}, "spec.catalog.registeredLimits[0].resourceName: Invalid value: \"\": must be a non-empty name without whitespace"},
+		{"whitespace in a registered limit resourceName", func(ks *KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{{ResourceName: "image count", DefaultLimit: 1}}
+		}, "must be a non-empty name without whitespace"},
+		{"duplicate registered limit resourceName", func(ks *KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{
+				{ResourceName: "r1", DefaultLimit: 1},
+				{ResourceName: "r1", DefaultLimit: 2},
+			}
+		}, "spec.catalog.registeredLimits[1].resourceName: Duplicate value"},
 	}
 
 	for _, tc := range cases {
@@ -257,6 +290,58 @@ func TestKeystoneServiceValidateCreate_BoundsChildNameLength(t *testing.T) {
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring("object-name limit"))
 			g.Expect(err.Error()).To(ContainSubstring("254 bytes"))
+		})
+	}
+}
+
+// TestKeystoneServiceValidateCreate_ChargesRoleOverheadForAnyRoleOrLimitList
+// pins which lists widen the child-name budget: account.systemRoles mints the
+// "<prefix>sys-<slug>" assignment and catalog.registeredLimits the
+// "<prefix>limit-<slug>" RegisteredLimit, so a CR whose only list is either one
+// is charged keystoneServiceRoleChildNameOverhead (55 bytes), while a
+// catalog-only CR without registered limits stays at
+// keystoneServiceChildNameOverhead (43).
+func TestKeystoneServiceValidateCreate_ChargesRoleOverheadForAnyRoleOrLimitList(t *testing.T) {
+	onlyLimits := func(ks *KeystoneService) {
+		ks.Spec.Account = nil
+		ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{{ResourceName: "r1", DefaultLimit: 10}}
+	}
+	onlySystemRoles := func(ks *KeystoneService) {
+		ks.Spec.Catalog = nil
+		ks.Spec.Account.Roles = nil
+		ks.Spec.Account.SystemRoles = []string{"reader"}
+	}
+	catalogOnly := func(ks *KeystoneService) { ks.Spec.Account = nil }
+
+	cases := []struct {
+		name     string
+		mutate   func(*KeystoneService)
+		overhead int
+	}{
+		{"registered limits only", onlyLimits, keystoneServiceRoleChildNameOverhead},
+		{"system roles only", onlySystemRoles, keystoneServiceRoleChildNameOverhead},
+		{"catalog only without registered limits", catalogOnly, keystoneServiceChildNameOverhead},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(keystoneServiceRoleChildNameOverhead).To(Equal(55))
+			g.Expect(keystoneServiceChildNameOverhead).To(Equal(43))
+
+			atLimit := validKeystoneService()
+			tc.mutate(atLimit)
+			atLimit.Name = strings.Repeat("a", maxObjectNameBytes-tc.overhead)
+			_, err := (&KeystoneServiceWebhook{}).ValidateCreate(context.Background(), atLimit)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			over := validKeystoneService()
+			tc.mutate(over)
+			over.Name = strings.Repeat("a", maxObjectNameBytes-tc.overhead+1)
+			_, err = (&KeystoneServiceWebhook{}).ValidateCreate(context.Background(), over)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("254 bytes"))
+			g.Expect(err.Error()).To(ContainSubstring("drop the account's roles, system roles and registered limits"))
 		})
 	}
 }
@@ -333,6 +418,10 @@ func TestKeystoneServiceValidateUpdate_AdmitsMutableChanges(t *testing.T) {
 			ks.Spec.Account.Roles = append(ks.Spec.Account.Roles, "reader")
 		}},
 		{"a removed role", func(ks *KeystoneService) { ks.Spec.Account.Roles = nil }},
+		{"an added system role", func(ks *KeystoneService) { ks.Spec.Account.SystemRoles = []string{"reader"} }},
+		{"an added registered limit", func(ks *KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = []KeystoneServiceRegisteredLimitSpec{{ResourceName: "r1", DefaultLimit: 10}}
+		}},
 		{"a rotation policy", func(ks *KeystoneService) {
 			ks.Spec.Account.Rotation = &ServiceAccountRotationSpec{Mode: ServiceAccountRotationModeScheduled}
 		}},

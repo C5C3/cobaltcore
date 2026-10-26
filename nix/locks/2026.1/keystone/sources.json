@@ -5,6 +5,7 @@
   "project": "keystone",
   "patches": [
     "patches/keystone/2026.1/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch",
-    "patches/keystone/2026.1/0002-fix-clock-race-in-totp-previous-windows-tests.patch"
+    "patches/keystone/2026.1/0002-fix-clock-race-in-totp-previous-windows-tests.patch",
+    "patches/keystone/2026.1/0003-invalidate-assignment-cache-on-modify-operations.patch"
   ]
 }

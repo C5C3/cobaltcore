@@ -11,6 +11,8 @@ import (
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v3/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -19,7 +21,8 @@ import (
 
 // ensureCatalog projects the declared catalog block: one managed K-ORC Service
 // for the catalog row, an unmanaged import of the ControlPlane's Keystone region,
-// and one managed Endpoint per declared interface, registered in that region.
+// one managed Endpoint per declared interface, registered in that region, and one
+// managed RegisteredLimit per declared registered limit, in the same region.
 //
 // It is MODE-INDEPENDENT, and deliberately unlike the ControlPlane's own catalog
 // reconciler: that one imports rather than creates in External mode, because the
@@ -99,13 +102,31 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 		status.Endpoints = append(status.Endpoints, row)
 	}
 
+	// The registered limits live in the region the endpoints are registered in: a
+	// consumer enforcing unified limits finds its endpoint in that region and then
+	// queries the limits with the endpoint's region_id, so a region-less limit
+	// would match nothing.
+	limits := make([]*orcv1alpha1.RegisteredLimit, 0, len(catalog.RegisteredLimits))
+	for _, rl := range catalog.RegisteredLimits {
+		limit := managedRegisteredLimitChild(keystoneServiceRegisteredLimitRef(ks, rl.ResourceName),
+			keystoneServiceChildNamespace(cp), service.Name, region.Name, rl.ResourceName, rl.DefaultLimit, managedCredRef)
+		if err := r.ensureKeystoneServiceChild(ctx, ks, limit); err != nil {
+			fail(reasonKeystoneServiceCatalogError, fmt.Sprintf("applying the %q registered limit: %v", rl.ResourceName, err))
+			return ctrl.Result{}, err
+		}
+		limits = append(limits, limit)
+	}
+
 	// A latched transport error is handed back to K-ORC first, so it retries the
 	// create it gave up on; korc_unlatch.go states the policy. Every latch this
 	// leaves in place still fails loud below.
-	objs := make([]orcv1alpha1.ObjectWithConditions, 0, 2+len(endpoints))
+	objs := make([]orcv1alpha1.ObjectWithConditions, 0, 2+len(endpoints)+len(limits))
 	objs = append(objs, service, region)
 	for _, endpoint := range endpoints {
 		objs = append(objs, endpoint)
+	}
+	for _, limit := range limits {
+		objs = append(objs, limit)
 	}
 	if err := unlatchKORCTransportErrors(ctx, r.Client, objs...); err != nil {
 		fail(conditionReasonTransportErrorRetryFailed, err.Error())
@@ -113,8 +134,8 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 	}
 
 	// The Service's and the Region's terminal errors are reported before the
-	// Endpoints', so the ROOT stuck dependency surfaces rather than an Endpoint
-	// merely blocked on it.
+	// Endpoints' and the RegisteredLimits', so the ROOT stuck dependency surfaces
+	// rather than a child merely blocked on it.
 	if termErr := orcv1alpha1.GetTerminalError(service); termErr != nil {
 		fail(conditionReasonCatalogFailed, fmt.Sprintf(
 			"K-ORC reported a terminal error registering the catalog Service %q: %v", service.Name, termErr,
@@ -131,6 +152,14 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 		if termErr := orcv1alpha1.GetTerminalError(endpoint); termErr != nil {
 			fail(conditionReasonCatalogFailed, fmt.Sprintf(
 				"K-ORC reported a terminal error registering the catalog Endpoint %q: %v", endpoint.Name, termErr,
+			))
+			return requeue, nil
+		}
+	}
+	for _, limit := range limits {
+		if termErr := orcv1alpha1.GetTerminalError(limit); termErr != nil {
+			fail(conditionReasonCatalogFailed, fmt.Sprintf(
+				"K-ORC reported a terminal error registering the registered limit %q: %v", limit.Name, termErr,
 			))
 			return requeue, nil
 		}
@@ -164,6 +193,26 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 			return requeue, nil
 		}
 	}
+	for _, limit := range limits {
+		if !korcAvailableUpToDate(limit) {
+			r.keystoneServiceWaitOrClassify(ks, cp, conditionTypeKeystoneServiceCatalogReady,
+				conditionReasonWaitingForCatalog,
+				fmt.Sprintf("the registered limit %q is registered but not yet Available", limit.Name),
+				limit)
+			return requeue, nil
+		}
+		// K-ORC keeps a RegisteredLimit Available for its new generation when
+		// Keystone refuses the update, as it does while a project limit of the
+		// resource exists (403), and reports the refusal on Progressing only.
+		if cond := korcStillProgressing(limit); cond != nil {
+			r.keystoneServiceWaitOrClassify(ks, cp, conditionTypeKeystoneServiceCatalogReady,
+				conditionReasonWaitingForCatalog,
+				fmt.Sprintf("the registered limit %q has not reached Keystone with its current default yet: %s",
+					limit.Name, cond.Message),
+				limit)
+			return requeue, nil
+		}
+	}
 
 	retiring, err := r.retireLegacyCatalogEndpoints(ctx, ks, keystoneServiceChildNamespace(cp))
 	if err != nil {
@@ -178,10 +227,27 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 		return requeue, nil
 	}
 
+	// The registered-limit count joins the message only when there is one, so a
+	// registration without limits reads as it always has.
+	var limitCount string
+	if len(limits) > 0 {
+		limitCount = fmt.Sprintf("and %d registered limit(s) ", len(limits))
+	}
 	keystoneServiceSetTrue(ks, conditionTypeKeystoneServiceCatalogReady, reasonKeystoneServiceCatalogRegistered,
-		fmt.Sprintf("catalog entry %q of type %q is registered with %d endpoint(s) in region %q",
-			serviceName, catalog.ServiceType, len(catalog.Endpoints), korcRegion(cp)))
+		fmt.Sprintf("catalog entry %q of type %q is registered with %d endpoint(s) %sin region %q",
+			serviceName, catalog.ServiceType, len(catalog.Endpoints), limitCount, korcRegion(cp)))
 	return ctrl.Result{}, nil
+}
+
+// korcStillProgressing returns obj's Progressing condition when it is True for
+// the object's current generation, and nil otherwise. A K-ORC object that has
+// applied its spec reports Progressing=False; a missing condition counts as done.
+func korcStillProgressing(obj orcv1alpha1.ObjectWithConditions) *metav1.Condition {
+	cond := apimeta.FindStatusCondition(obj.GetConditions(), orcv1alpha1.ConditionProgressing)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.ObservedGeneration != obj.GetGeneration() {
+		return nil
+	}
+	return cond
 }
 
 // retireLegacyCatalogEndpoints deletes the region-less Endpoint CR an earlier

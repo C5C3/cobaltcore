@@ -106,12 +106,12 @@ spec:
           # label its K-ORC children carry. BARBICAN_REG repeats BARBICAN_CR's
           # value but names a different object: the registration is a
           # keystoneservices.c5c3.io CR, while BARBICAN_CR names the
-          # barbicans.barbican.openstack.c5c3.io child. The kinds are the eight
+          # barbicans.barbican.openstack.c5c3.io child. The kinds are the nine
           # the KeystoneService controller projects, and they live in the
           # ControlPlane's namespace rather than in the registration's.
           BARBICAN_REG="${CP_NAME}-barbican"
           REG_LABEL="c5c3.io/keystoneservice-name=${BARBICAN_REG}"
-          REG_KORC_KINDS="services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,domains.openstack.k-orc.cloud"
+          REG_KORC_KINDS="services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,domains.openstack.k-orc.cloud"
           # The raft volume the openbao-operator's StatefulSet claims for the
           # single instance replica.
           BARBICAN_BAO_PVC="data-${BARBICAN_BAO}-0"
@@ -186,6 +186,7 @@ spec:
             roleassignments.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
             regions.openstack.k-orc.cloud \
+            registeredlimits.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
               missing="${missing} ${crd}"
@@ -454,7 +455,7 @@ spec:
           kubectl get controlplane deletion-orch -n "${NAMESPACE}" \
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== K-ORC CRs (may be Terminating) ==="
-          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud -n "${NAMESPACE}" 2>&1 || true
+          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud -n "${NAMESPACE}" 2>&1 || true
           echo "=== Projected child CRs ==="
           kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n "${NAMESPACE}" 2>&1 || true
           echo "=== Projected KeystoneService registrations (may be Terminating) ==="

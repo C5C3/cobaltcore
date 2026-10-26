@@ -1088,6 +1088,10 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 				Properties: map[string]string{"hw_disk_bus": "scsi"},
 			},
 		}
+		// Unified limits with the region set (glanceForConfig sets RegionOne),
+		// so [DEFAULT] use_keystone_limits and every [oslo_limit] key the
+		// operator renders, endpoint_region_name included, are covered.
+		glance.Spec.KeystoneLimits = &glancev1alpha1.KeystoneLimitsSpec{}
 		defaults := operatorDefaults(glance, validProjection())
 		return config.InjectOsloPolicyConfig(defaults, policyFilePath)
 	}
@@ -1121,11 +1125,29 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	}
 
 	// Reverse check: every registered key is rendered by operatorDefaults or on
-	// the extras list. keystone_authtoken/password is never rendered —
-	// keystoneauth.Section omits it — but is registered because a user putting
-	// it in spec.extraConfig leaks the credential.
+	// the extras list. keystone_authtoken/password and oslo_limit/password are
+	// never rendered — keystoneauth.Section and LimitSection omit them — but are
+	// registered because a user putting one in spec.extraConfig leaks the
+	// credential. The other oslo_limit extras are never rendered either, but
+	// each overrides the scope, the user or the endpoint LimitSection renders.
 	reverseExtras := map[[2]string]struct{}{
-		{"keystone_authtoken", "password"}: {},
+		{"keystone_authtoken", "password"}:      {},
+		{"oslo_limit", "password"}:              {},
+		{"oslo_limit", "project_id"}:            {},
+		{"oslo_limit", "project_name"}:          {},
+		{"oslo_limit", "project_domain_id"}:     {},
+		{"oslo_limit", "project_domain_name"}:   {},
+		{"oslo_limit", "tenant_id"}:             {},
+		{"oslo_limit", "tenant_name"}:           {},
+		{"oslo_limit", "domain_id"}:             {},
+		{"oslo_limit", "domain_name"}:           {},
+		{"oslo_limit", "trust_id"}:              {},
+		{"oslo_limit", "user_id"}:               {},
+		{"oslo_limit", "user_domain_id"}:        {},
+		{"oslo_limit", "default_domain_id"}:     {},
+		{"oslo_limit", "user_name"}:             {},
+		{"oslo_limit", "endpoint_id"}:           {},
+		{"oslo_limit", "endpoint_service_name"}: {},
 	}
 	for _, o := range glancev1alpha1.OwnedConfigKeys {
 		if _, ok := defaults[o.Section][o.Key]; ok {
@@ -1137,6 +1159,84 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 		t.Errorf("registry key [%s] %s is not rendered by operatorDefaults: remove it "+
 			"from glancev1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Section, o.Key)
 	}
+}
+
+// --- Keystone unified limits ---
+
+// TestOperatorDefaults_KeystoneLimits pins the unified-limits render: nothing
+// at all without spec.keystoneLimits, so an existing Glance keeps its config
+// and its pods across the operator upgrade; with it, use_keystone_limits and
+// exactly the [oslo_limit] keys of keystoneauth.LimitSection for the image
+// service, system-scoped, with no project scope, region_name or password.
+func TestOperatorDefaults_KeystoneLimits(t *testing.T) {
+	t.Run("nil block renders nothing", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+
+		defaults := operatorDefaults(glance, validProjection())
+		g.Expect(defaults["DEFAULT"]).NotTo(HaveKey("use_keystone_limits"))
+		g.Expect(defaults).NotTo(HaveKey("oslo_limit"))
+	})
+
+	t.Run("empty block with a region renders nine oslo_limit keys", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		glance.Spec.KeystoneLimits = &glancev1alpha1.KeystoneLimitsSpec{}
+
+		defaults := operatorDefaults(glance, validProjection())
+		g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("use_keystone_limits", "true"))
+		g.Expect(defaults["oslo_limit"]).To(Equal(map[string]string{
+			"auth_type":             "password",
+			"auth_url":              "http://keystone.default.svc:5000",
+			"username":              "glance",
+			"user_domain_name":      "Default",
+			"system_scope":          "all",
+			"endpoint_service_type": "image",
+			"endpoint_interface":    "internal",
+			"endpoint_override":     "http://keystone.default.svc:5000/v3",
+			"endpoint_region_name":  "RegionOne",
+		}))
+		for _, key := range []string{"project_name", "project_domain_name", "region_name", "password"} {
+			g.Expect(defaults["oslo_limit"]).NotTo(HaveKey(key))
+		}
+	})
+
+	t.Run("without a region the section has eight keys", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		glance.Spec.Region = ""
+		glance.Spec.KeystoneLimits = &glancev1alpha1.KeystoneLimitsSpec{}
+
+		section := operatorDefaults(glance, validProjection())["oslo_limit"]
+		g.Expect(section).To(HaveLen(8))
+		g.Expect(section).NotTo(HaveKey("endpoint_region_name"))
+	})
+}
+
+// TestReconcileConfig_KeystoneLimitsRotatesConfigMap verifies that turning
+// unified limits on rotates the content-hashed ConfigMap, which is what rolls
+// glance-api once, and that the rendered file carries the section.
+func TestReconcileConfig_KeystoneLimitsRotatesConfigMap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := glanceForConfig()
+	r := newGlanceTestReconciler(glance)
+
+	_, before, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(renderedConfig(t, r, before)).NotTo(ContainSubstring("use_keystone_limits"))
+
+	glance.Spec.KeystoneLimits = &glancev1alpha1.KeystoneLimitsSpec{}
+	_, after, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(after.configMapName).NotTo(Equal(before.configMapName),
+		"enabling keystoneLimits must rotate the content-hashed ConfigMap")
+
+	conf := renderedConfig(t, r, after)
+	g.Expect(conf).To(ContainSubstring("\nuse_keystone_limits = true\n"))
+	g.Expect(conf).To(ContainSubstring("\n[oslo_limit]\n"))
+	g.Expect(conf).To(ContainSubstring("\nsystem_scope = all\n"))
+	g.Expect(conf).To(ContainSubstring("\nendpoint_interface = internal\n"))
+	g.Expect(conf).To(ContainSubstring("\nendpoint_region_name = RegionOne\n"))
 }
 
 // --- image cache ---

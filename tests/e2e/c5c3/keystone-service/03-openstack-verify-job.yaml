@@ -14,10 +14,12 @@
 # When the rotation leg has created the Secret @KS_NAME@-verify-oldpw, the Job
 # additionally proves the pre-rotation password is rejected. The value arrives
 # through an optional secretKeyRef rather than a substituted `value:` field, so
-# the cleartext never lands in the Job object. It goes in as --os-password, which
-# overrides the password of the cloud --os-cloud selects, and the rejection has
-# to look like one — a failed call is only a proof if it failed on the
-# credential, not on an unreachable Keystone.
+# the cleartext never lands in the Job object. It goes in as --os-password,
+# which overrides the password of the cloud --os-cloud selects. The value is
+# attached with "=": a generated password is base64url and starts with "-" once
+# in 64, which argparse reads as an option after a bare --os-password ("expected
+# one argument"). The rejection has to look like one — a failed call is only a
+# proof if it failed on the credential, not on an unreachable Keystone.
 #
 # All of these are identity calls, so the region workaround the full-chain suite
 # needs for its non-identity commands does not apply here: the identity endpoints
@@ -69,7 +71,7 @@ spec:
           grep -q "${ENDPOINT_URL}" /tmp/catalog.txt
           if [ -n "${OLD_PASSWORD}" ]; then
             echo "== the pre-rotation password must be rejected =="
-            if OLD_OUT="$(openstack --os-cloud admin --os-password "${OLD_PASSWORD}" token issue 2>&1)"; then
+            if OLD_OUT="$(openstack --os-cloud admin --os-password="${OLD_PASSWORD}" token issue 2>&1)"; then
               echo "ERROR: the pre-rotation password still authenticates"
               exit 1
             fi

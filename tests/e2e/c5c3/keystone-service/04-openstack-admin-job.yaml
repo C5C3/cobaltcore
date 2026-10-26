@@ -7,7 +7,10 @@
 # Secret the full-chain suite's verify Job mounts.
 #
 # seed creates the stray catalog row and the stray user the collision leg
-# registers against. show reports what Keystone holds, so the test can assert
+# registers against. limits reports the registered limits of the SERVICE_NAME
+# row as REGISTERED_LIMITS=<resource>=<default>@<region>,... and the roles
+# USER_NAME holds on the system as SYSTEM_ROLES=<role>,..., each NONE when
+# there is none. show reports what Keystone holds, so the test can assert
 # that a row was adopted rather than duplicated, and later that the adopted row
 # left with its CR while the never-adopted user stayed. Both modes print a
 # SERVICE_ID= and a USER_ID= line the test parses out of the Job's log; in show
@@ -101,6 +104,30 @@ spec:
               USER_IDS="$(user_ids)"
               echo "SERVICE_ID=${SERVICE_IDS:-ABSENT}"
               echo "USER_ID=${USER_IDS:-ABSENT}"
+              ;;
+            limits)
+              echo "== looking up the registered limits and the system roles as the cloud admin =="
+              SERVICE_IDS="$(service_ids)"
+              if [ -z "${SERVICE_IDS}" ]; then
+                echo "ERROR: no catalog row named ${SERVICE_NAME} of type ${SERVICE_TYPE}"
+                exit 1
+              fi
+              # The registered limits of that row, in every region, so a limit
+              # registered without one would show up as @None.
+              if ! LIMITS="$(openstack --os-cloud admin registered limit list --service "${SERVICE_IDS%%,*}" \
+                  -f value -c "Resource Name" -c "Default Limit" -c "Region ID")"; then
+                echo "ERROR: the registered-limit lookup failed; absence cannot be told from an unreachable Keystone" >&2
+                exit 1
+              fi
+              REGISTERED_LIMITS="$(printf '%s\n' "${LIMITS}" | awk 'NF { print $1 "=" $2 "@" $3 }' | sort | paste -sd, -)"
+              if ! ROLES="$(openstack --os-cloud admin role assignment list --user "${USER_NAME}" \
+                  --user-domain "${USER_DOMAIN}" --system all --names -f value -c Role)"; then
+                echo "ERROR: the system role-assignment lookup failed; absence cannot be told from an unreachable Keystone" >&2
+                exit 1
+              fi
+              SYSTEM_ROLES="$(printf '%s\n' "${ROLES}" | awk 'NF' | sort | paste -sd, -)"
+              echo "REGISTERED_LIMITS=${REGISTERED_LIMITS:-NONE}"
+              echo "SYSTEM_ROLES=${SYSTEM_ROLES:-NONE}"
               ;;
             *)
               echo "ERROR: unknown MODE '${MODE}'"

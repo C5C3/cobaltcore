@@ -98,6 +98,7 @@ spec:
             endpoints.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
             regions.openstack.k-orc.cloud \
+            registeredlimits.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             pushsecrets.external-secrets.io \
             secretstores.external-secrets.io \
@@ -383,7 +384,7 @@ spec:
 
           kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
 
-          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
           while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
             if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then

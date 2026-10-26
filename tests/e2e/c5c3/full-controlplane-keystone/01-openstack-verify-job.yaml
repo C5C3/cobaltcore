@@ -32,7 +32,15 @@
 # with the ControlPlane-generated shared secret and compares the 200 it answers
 # against the 403 a wrong signature gets, and deletes what it made. It also reads
 # the RegionOne description back and compares it against the literal the
-# ControlPlane's `spec.regionDescription` sets.
+# ControlPlane's `spec.regionDescription` sets. Last, it proves the Glance quotas
+# services.glance.quotas declares: the four registered limits in RegionOne, the
+# reader role glance holds on the system, and a RegionOne override of
+# image_count_total=0 for the Job's own project that refuses the next image
+# create until the override is deleted again.
+#
+# The overrides use the admin application credential, project-scoped: keystone
+# 29.0.0 allows create_limits, delete_limit and list_role_assignments for
+# rule:admin_required (keystone/common/policies/limit.py, role_assignment.py).
 #
 # the orc-system copy of k-orc-clouds-yaml was removed; the
 # operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
@@ -484,6 +492,69 @@ spec:
               osc network delete cp-compute-net
               osc image delete cp-boot
               echo "OK: compute round-trip"
+              # ── Glance quotas (services.glance.quotas) ─────────────────────
+              # Every Keystone call is captured first and branched on: /bin/sh
+              # reports a pipeline's status as the last command's, so a failed
+              # lookup piped into grep would read as a missing row.
+              echo "== glance registered limits in RegionOne =="
+              if ! LIMITS="$(openstack --os-cloud admin registered limit list --service glance --region RegionOne \
+                  -f value -c "Resource Name" -c "Default Limit")"; then
+                echo "ERROR: the registered-limit lookup failed"; exit 1
+              fi
+              echo "${LIMITS}"
+              for want in "image_size_total 51200" "image_stage_total 51200" \
+                  "image_count_total 1000" "image_count_uploading 100"; do
+                printf '%s\n' "${LIMITS}" | grep -qx "${want}" \
+                  || { echo "ERROR: registered limit '${want}' missing in RegionOne"; exit 1; }
+              done
+              echo "OK: the four registered limits are in RegionOne"
+              echo "== glance holds reader on the system =="
+              if ! SYSTEM_ROLES="$(openstack --os-cloud admin role assignment list --user glance --system all \
+                  --names -f value -c Role)"; then
+                echo "ERROR: the system role-assignment lookup failed"; exit 1
+              fi
+              printf '%s\n' "${SYSTEM_ROLES}" | grep -qx reader \
+                || { echo "ERROR: glance holds no reader role on the system (got: ${SYSTEM_ROLES})"; exit 1; }
+              echo "OK: glance holds reader on the system"
+              echo "== a project override refuses an image create =="
+              if ! PROJECT_ID="$(openstack --os-cloud admin token issue -f value -c project_id)"; then
+                echo "ERROR: could not read the token's project"; exit 1
+              fi
+              # A retried Job finds the override an earlier attempt left. The
+              # resource name is Glance's alone, so no --service filter: the
+              # 2026.1 client (python-openstackclient 9.0.0, upstream bug
+              # 2161546, fixed in 10.3.0) sends the whole service object as
+              # service_id, and Keystone answers 400.
+              if ! STALE="$(openstack --os-cloud admin limit list --project "${PROJECT_ID}" \
+                  --region RegionOne --resource-name image_count_total -f value -c ID)"; then
+                echo "ERROR: the project-limit lookup failed"; exit 1
+              fi
+              for id in ${STALE}; do
+                openstack --os-cloud admin limit delete "${id}"
+              done
+              if ! LIMIT_ID="$(openstack --os-cloud admin limit create --service glance --project "${PROJECT_ID}" \
+                  --region RegionOne --resource-limit 0 image_count_total -f value -c id)"; then
+                echo "ERROR: creating the image_count_total override failed"; exit 1
+              fi
+              # Keystone refuses to delete a registered limit a project limit
+              # still references, so the override goes on every exit, or the
+              # ControlPlane teardown would hold on it.
+              trap 'openstack --os-cloud admin limit delete "${LIMIT_ID}" >/dev/null 2>&1 || true' EXIT
+              if OUT="$(openstack --os-cloud admin image create --disk-format raw --container-format bare \
+                  cp-quota-refused 2>&1)"; then
+                echo "ERROR: image create succeeded under image_count_total=0: ${OUT}"; exit 1
+              fi
+              printf '%s\n' "${OUT}" | grep -q image_count_total \
+                || { echo "ERROR: the refusal does not name image_count_total: ${OUT}"; exit 1; }
+              echo "OK: the override refused the create (${OUT})"
+              openstack --os-cloud admin limit delete "${LIMIT_ID}"
+              trap - EXIT
+              if ! QUOTA_IMAGE="$(openstack --os-cloud admin image create --disk-format raw --container-format bare \
+                  cp-quota-allowed -f value -c id)"; then
+                echo "ERROR: image create failed after the override was deleted"; exit 1
+              fi
+              openstack --os-cloud admin image delete "${QUOTA_IMAGE}"
+              echo "OK: Glance quotas round-trip"
           volumeMounts:
             - name: clouds
               mountPath: /etc/openstack

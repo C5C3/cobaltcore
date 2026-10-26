@@ -374,6 +374,7 @@ rules:
   - endpoints/status
   - projects/status
   - regions/status
+  - registeredlimits/status
   - roleassignments/status
   - roles/status
   - services/status
@@ -384,6 +385,7 @@ rules:
   - openstack.k-orc.cloud
   resources:
   - projects
+  - registeredlimits
   - roleassignments
   - roles
   verbs:

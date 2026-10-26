@@ -15,11 +15,22 @@ and the quay tag API on 2026-09-23.
 | c236aeb8 | 2026-09-16 | `ddb5fbb` | move to main HEAD; docs rewritten to the commit-pin form | moved | 31 commits, 7 `api/` + 10 `config/` files: Limit controller, RegionRef on Endpoint and RegisteredLimit, all new fields optional |
 | 6a0dc505 | 2026-09-20 | `ae54590` | upstream PR 913: transport errors retryable | moved; docs mirror moved | 9 commits, 22 `api/` files, no `config/` file |
 | ca34b418 | 2026-10-14 | `da276e4` | upstream PR 967 evicts the stale catalog; #1202 | moved across the v3 module path (`/v2` to `/v3`) | 98 commits, 35 `api/` + 20 `config/` files: DNSZone and SubnetPool kinds, `Unrestricted` and `Enabled` status fields to `*bool` |
+| a448cb2b | 2026-10-25 | `fdf2df5` | upstream PR 972: system-scoped RoleAssignment; #732; one merge short of main HEAD `721d37a` (see below) | moved | 43 commits, 5 `api/` + 10 `config/` files: RecordSet kind, `system` on RoleAssignment (optional, exclusive with `projectRef` and `domainRef`) |
 
-The current pin's tag `commit-da276e4` expires **2026-11-11 16:03:22 UTC**
-(quay `expiration`; `end_ts` 1794413002). Every `commit-*` tag expires
+The current pin's tag `commit-fdf2df5` expires **2026-11-21 08:21:10 UTC**
+(quay `expiration`; `end_ts` 1795249270). Every `commit-*` tag expires
 28 days after its push (`end_ts - start_ts` = 2419200 s, give or take a
 second), so a fresh candidate buys four weeks at most.
+
+**Hold before `721d37a`.** Upstream PR 1014 (merged as `721d37a`) makes
+`GetApplicationCredential` return the error of its users-list fallback
+instead of skipping it. With the user's own cloud, which the c5c3-operator
+uses for every application credential it mints, that fallback gets 403 on
+`GET /v3/users` once the credential is deleted, and the K-ORC
+ApplicationCredential keeps its finalizer for good. The `orders-target-cluster`
+suite of `e2e-orders-multicluster` shows it as a KeystoneApplicationCredential
+that is still present after 600 s; a candidate check does not. Move past
+`fdf2df5` only to an upstream commit that skips or narrows that fallback again.
 
 ## CI symptoms
 

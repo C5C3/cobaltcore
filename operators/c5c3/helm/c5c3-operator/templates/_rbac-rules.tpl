@@ -375,6 +375,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - endpoints/status
   - projects/status
   - regions/status
+  - registeredlimits/status
   - roleassignments/status
   - roles/status
   - services/status
@@ -385,6 +386,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - openstack.k-orc.cloud
   resources:
   - projects
+  - registeredlimits
   - roleassignments
   - roles
   verbs:

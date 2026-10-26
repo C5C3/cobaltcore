@@ -166,6 +166,7 @@ spec:
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
             regions.openstack.k-orc.cloud \
+            registeredlimits.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             pushsecrets.external-secrets.io \
             secretstores.external-secrets.io \
@@ -1346,14 +1347,14 @@ spec:
           wait_gone keystonecatalogentry "${DNS}" "${TENANT_NS}" 300
           wait_gone keystoneproject "${PROJECT}" "${TENANT_NS}" 300
           assert_eq "no catalog row or Region import carries the entry's labels" "0" \
-            "$(count_of services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud "${CP_NS}" "${DNS_SELECTOR}")"
+            "$(count_of services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud "${CP_NS}" "${DNS_SELECTOR}")"
           assert_eq "no Project carries the project's labels" "0" \
             "$(count_of projects.openstack.k-orc.cloud "${CP_NS}" "${PROJECT_SELECTOR}")"
           echo "OK: the project and the catalog entry went with their orders."
 
           # The plane goes down through its own finalizer, in the order the
           # foreign-namespace suite documents and checks.
-          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=false
           DRAIN_DEADLINE=$(( $(date +%s) + 300 ))
           while [ "$(count_of "${CP_KORC_RESIDUE}" "${CP_NS}")" != "0" ]; do
@@ -1392,7 +1393,7 @@ spec:
           kubectl get users.openstack.k-orc.cloud,pushsecrets.external-secrets.io,secrets \
             -n "${NAMESPACE}" -l c5c3.io/keystoneuser-name -o wide 2>&1 || true
           for label in c5c3.io/keystoneproject-name c5c3.io/keystoneroleassignment-name c5c3.io/keystonecatalogentry-name; do
-            kubectl get projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud \
+            kubectl get projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud \
               -n "${NAMESPACE}" -l "${label}" \
               -o jsonpath='{range .items[*]}{.kind}/{.metadata.name}: {range .status.conditions[*]}{.type}={.status} ({.message}) {end}{"\n"}{end}' 2>&1 || true
           done
@@ -1496,7 +1497,7 @@ spec:
           gone_within keystoneuser outsider "${OUTSIDER_NS}" 30 || true
 
           kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
-          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
           while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
             if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then

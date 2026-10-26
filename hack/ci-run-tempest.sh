@@ -34,14 +34,17 @@
 #   OUTPUT_DIR    — Test output directory (default: _output/tempest)
 #   TEMPEST_IMAGE    — Tempest container image (default: c5c3/tempest:local)
 #   SERVICE_K8S_NAME — K8s Service name for port-forward (default: ${SERVICE}-tempest-2026-1)
-#   GLANCE_K8S_NAME  — K8s Service name of a Glance API to port-forward on 9292
-#                   (default: empty). When set, the script also forwards
-#                   svc/${GLANCE_K8S_NAME} 9292:9292, waits for its /healthcheck,
-#                   and add-hosts its cluster-local DNS names to 127.0.0.1 so the
-#                   catalog's image endpoint resolves to the forwarded port. Used
-#                   by the glance leg (tempest.api.image against a real Glance)
-#                   and by the cinder leg, whose volume tests create volumes
-#                   from an image and upload volumes back to one.
+#   GLANCE_K8S_NAME  — K8s Service name of a Glance API to reach on 9292
+#                   (default: empty). When set, the script also exposes
+#                   svc/${GLANCE_K8S_NAME} as a NodePort Service, relays
+#                   localhost:9292 to it (hack/tempest/tcp-relay.py, see step 3
+#                   for why Glance gets no kubectl port-forward), waits for its
+#                   /healthcheck, and add-hosts its cluster-local DNS names to
+#                   127.0.0.1 so the catalog's image endpoint resolves to the
+#                   relayed port. Used by the glance leg (tempest.api.image
+#                   against a real Glance) and by the cinder leg, whose volume
+#                   tests create volumes from an image and upload volumes back
+#                   to one.
 #   BARBICAN_K8S_NAME — K8s Service name of a Barbican API to port-forward on
 #                   9311 (default: empty). The barbican counterpart of
 #                   GLANCE_K8S_NAME: same forward, /healthcheck poll and
@@ -86,7 +89,9 @@
 #                   it drives — the Keystone target, and on the glance, barbican,
 #                   neutron, cinder and nova legs their service target too. Every
 #                   port-forward pins to a single pod, so capacity is raised via
-#                   uwsgi.processes in the target CR, not via replicas.
+#                   uwsgi.processes in the target CR, not via replicas. The
+#                   Glance relay's NodePort spreads connections over the Glance
+#                   replicas instead; the legs run one.
 #
 # The include list is scope-split into a core (tempest.*) and a plugin
 # (<service>_tempest_plugin.*) phase. Every non-comment line must land in exactly
@@ -183,16 +188,58 @@ kubectl port-forward "svc/${SERVICE_K8S_NAME}" -n "${NAMESPACE}" 5000:5000 \
   >"${OUTPUT_DIR}/port-forward-Keystone.log" 2>&1 &
 PF_PID=$!
 OPTIONAL_PF_PIDS=()
+RELAY_CONTAINERS=()
+RELAY_SERVICES=()
 cleanup() {
   kill "${PF_PID}" 2>/dev/null || true
-  local pid
+  local pid container svc
   if [[ ${#OPTIONAL_PF_PIDS[@]} -gt 0 ]]; then
     for pid in "${OPTIONAL_PF_PIDS[@]}"; do
       kill "${pid}" 2>/dev/null || true
     done
   fi
+  # A relay container outlives its killed docker client and would keep the
+  # port bound for the next run on the same host, so it is removed by name.
+  if [[ ${#RELAY_CONTAINERS[@]} -gt 0 ]]; then
+    for container in "${RELAY_CONTAINERS[@]}"; do
+      docker rm -f "${container}" >/dev/null 2>&1 || true
+    done
+  fi
+  if [[ ${#RELAY_SERVICES[@]} -gt 0 ]]; then
+    for svc in "${RELAY_SERVICES[@]}"; do
+      kubectl delete service "${svc}" -n "${NAMESPACE}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    done
+  fi
 }
 trap cleanup EXIT
+
+# Glance gets a relay instead of a kubectl port-forward. Glance answers an
+# upload it refuses (413 over quota, 404 for a disabled import method) before
+# it reads the streamed body, the kubelet's write into the closed socket fails,
+# and client-go then closes the whole forward rather than that one connection
+# (tools/portforward, handleConnection), so every later test of the leg meets a
+# refused connection. The relay runs in the Tempest image on the host network
+# and opens one connection per client to a NodePort Service cloned from the
+# Glance Service, so a reset ends that connection alone. It writes its log to
+# the same file a forward would, and its PID joins the forwards' list, so the
+# cleanup and the post-run check below treat it like one.
+start_relay() { # <display name> <Service> <port>
+  local name="$1" svc="$2" port="$3" relay_svc="$2-tempest-relay" container="tempest-relay-$1-$$"
+  local node_ip node_port
+  kubectl delete service "${relay_svc}" -n "${NAMESPACE}" --ignore-not-found >/dev/null
+  kubectl expose service "${svc}" -n "${NAMESPACE}" --name "${relay_svc}" --type NodePort \
+    --port "${port}" --target-port "${port}" --labels app.kubernetes.io/name=tempest-relay >/dev/null
+  RELAY_SERVICES+=("${relay_svc}")
+  node_ip="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
+  node_port="$(kubectl get service "${relay_svc}" -n "${NAMESPACE}" -o jsonpath='{.spec.ports[0].nodePort}')"
+  # --init: python3 as PID 1 would ignore the SIGTERM the docker client relays.
+  RELAY_CONTAINERS+=("${container}")
+  docker run --rm --init --name "${container}" --network host \
+    -v "${SCRIPT_DIR}/tempest/tcp-relay.py:/relay/tcp-relay.py:ro" \
+    --entrypoint python3 "${TEMPEST_IMAGE}" \
+    /relay/tcp-relay.py "${port}" "${node_ip}" "${node_port}" \
+    >"${OUTPUT_DIR}/port-forward-${name}.log" 2>&1 &
+}
 
 # Forward every configured optional API alongside Keystone, each into a log of
 # its own for the reason above.
@@ -200,8 +247,12 @@ OPTIONAL_PF_NAMES=()
 for target in "${OPTIONAL_TARGETS[@]}"; do
   IFS=: read -r name var port path <<<"${target}"
   [[ -n "${!var}" ]] || continue
-  kubectl port-forward "svc/${!var}" -n "${NAMESPACE}" "${port}:${port}" \
-    >"${OUTPUT_DIR}/port-forward-${name}.log" 2>&1 &
+  if [[ "${name}" == Glance ]]; then
+    start_relay "${name}" "${!var}" "${port}"
+  else
+    kubectl port-forward "svc/${!var}" -n "${NAMESPACE}" "${port}:${port}" \
+      >"${OUTPUT_DIR}/port-forward-${name}.log" 2>&1 &
+  fi
   OPTIONAL_PF_PIDS+=("$!")
   OPTIONAL_PF_NAMES+=("${name}:${port}")
 done

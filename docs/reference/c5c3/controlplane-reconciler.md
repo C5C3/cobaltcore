@@ -297,7 +297,8 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `rbac.authorization.k8s.io` | `roles`, `rolebindings`, `clusterrolebindings` | get, create, patch, delete |
 | `rbac.authorization.k8s.io` | `clusterroles` (`resourceNames: system:auth-delegator`) | bind |
 | `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints`, `regions`, `users`, `domains`, `projects`, `roles`, `roleassignments` | get, list, watch, create, update, patch, delete |
-| `openstack.k-orc.cloud` | `applicationcredentials/status`, `services/status`, `endpoints/status`, `regions/status`, `users/status`, `domains/status`, `projects/status`, `roles/status`, `roleassignments/status` | patch |
+| `openstack.k-orc.cloud` | `registeredlimits` | get, list, watch, create, patch, delete |
+| `openstack.k-orc.cloud` | `applicationcredentials/status`, `services/status`, `endpoints/status`, `regions/status`, `users/status`, `domains/status`, `projects/status`, `roles/status`, `roleassignments/status`, `registeredlimits/status` | patch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `generators.external-secrets.io` | `vaultdynamicsecrets`, `passwords` | get, list, watch, create, update, patch, delete |
@@ -1743,7 +1744,7 @@ aggregate condition over every projected registration, see
 | Condition | `GlanceReady` |
 | Gate | `KeystoneReady == True` (Glance validates every token against the Keystone child) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)) |
 | Projects / Owns | one `Glance` child named `{controlplane.Name}-glance` (`glanceNameSuffix`) in `cp.GlanceNamespace()`; one `GlanceBackend` child per `services.glance.backends` entry, named `{controlplane.Name}-glance-{entry}`; and — managed database only — the per-ControlPlane DB-credential objects in the Glance service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `glance-db-creds`, an mTLS client Certificate `{controlplane.Name}-glance-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/glance-{glance-namespace}` (auth role `glance-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-glance-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/glance/{glance-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.glance` is set |
-| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the child is not Ready |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready or the quota gate is closed; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the child is not Ready |
 
 `reconcileGlance` is the fifth member of the tail group and runs before
 `reconcileServiceAccounts`. It gates on the `AccountReady` of the registration
@@ -1830,6 +1831,56 @@ A child placed outside the ControlPlane's namespace (`services.glance.namespace`
 carries no owner reference — it is stamped with the ownership labels and applied
 unowned, and the finalizer sweeps it by those labels.
 
+#### Quotas
+
+`services.glance.quotas` turns on Keystone unified-limits enforcement
+(`reconcile_glance_quotas.go`). oslo.limit counts a resource without any limit
+as limit 0, so a glance-api pod that enforces before the registered limits exist,
+or after they are gone, refuses every image create. The registration and the
+child therefore move in a fixed order.
+
+Before the registration is applied, the pass reads the live Glance child and the
+live registration. A read error other than NotFound sets `GlanceError` (the child)
+or `ServiceRegistrationError` (the registration) and returns the error.
+
+- **Registration.** `glanceQuotaRegisteredLimits` resolves the block into four
+  registered limits, in the order `image_size_total`, `image_stage_total`,
+  `image_count_total`, `image_count_uploading`: a size in MiB through
+  `GlanceQuotaMiB`, the conversion the webhook validates with, a count as
+  given, an unset field as 2147483647. `withGlanceQuotaRegistration` sets them as
+  `catalog.registeredLimits` and adds `account.systemRoles: [reader]`. Without
+  the block both fields stay unset, so an existing registration keeps its spec
+  and generation across the operator upgrade.
+- **Enable gate.** The child gets `spec.keystoneLimits` once the registration
+  names all four limits and `reader`, and reports `CatalogReady` and
+  `AccountReady` True for its current generation (`glanceQuotaRegistrationReady`).
+  Until then the child is projected without the field and, once it is Ready,
+  `GlanceReady` reports `WaitingForGlanceQuotas` with a 10s requeue. This check
+  runs before the registration readiness fold, so a `CatalogReady=False` while the
+  limits register reads as the quota wait, with the blocking sub-condition
+  appended to the message. While `AccountReady` is False the registration gate
+  halts the pass first with `WaitingForServiceRegistration`.
+- **Latch.** A child that already sets `spec.keystoneLimits` keeps it whatever
+  the registration reports, so a value change, which bumps the registration's
+  generation, does not roll glance-api off and on. A value change rolls nothing:
+  K-ORC updates the registered limit in place and Glance reads it on its next
+  request. While a project limit of the resource exists Keystone refuses the
+  update; the registration then holds at `CatalogReady=False` with Keystone's
+  403, `GlanceReady` relays it, and the child keeps enforcing the old value.
+- **Disable hold.** With the block removed the child loses `spec.keystoneLimits`
+  at once, but `glanceQuotaHoldRequired` keeps the live registration's four
+  limits and `reader` while the live child still sets the field or reports
+  `status.rolledOutGeneration` below its `metadata.generation`. The child's
+  `Ready` condition is surge-tolerant and turns True while old-template pods
+  still serve, so it is not consulted. The first pass on a child whose
+  `rolledOutGeneration` equals its generation drops both fields, and K-ORC
+  deletes the registered limits and revokes the system role. The hold never adds
+  a limit the live registration does not already carry.
+
+`builtinRegistrationForeignFields` also reports a `registeredLimits` entry the
+projection lacks and `systemRoles` the projection does not assert, and
+`reclaimBuiltinRegistrationFields` resets both.
+
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | `spec.services.glance` unset | True | `GlanceNotManaged` | staged adoption; a previously-projected child is preserved unless `c5c3.io/allow-glance-deletion: "true"` is set — but its dynamic DB-credential generator, ServiceAccount, and client Certificate are torn down either way, so no credential minter outlives the service |
@@ -1843,6 +1894,8 @@ unowned, and the finalizer sweeps it by those labels.
 | projected `GlanceBackend` rejected (HTTP 422 Invalid) | False | `GlanceBackendProjectionRejected` | returns the error; reconcile the `services.glance.backends` entries to a valid projection to recover |
 | `GlanceBackend` project/prune fails | False | `GlanceBackendError` | returns the error |
 | Glance child not yet Ready | False | `WaitingForGlance` | requeue 15s |
+| `services.glance.quotas` set, registration not ready for its generation | False | `WaitingForGlanceQuotas` | requeue 10s; the child is projected without `spec.keystoneLimits` |
+| reading the live Glance child fails, or a webhook-bypassed quota size | False | `GlanceError` | returns the error |
 | projected Glance spec rejected (HTTP 422 Invalid) | False | `GlanceProjectionRejected` | returns the error; the projection violates a Glance CRD/webhook rule — reconcile the ControlPlane spec to a valid projection to recover |
 | Glance create/update fails | False | `GlanceError` | returns the error |
 | Glance child Ready | True | `GlanceReady` | — |
@@ -3626,12 +3679,14 @@ generation on its next pass). Its model:
   Each of the three is a `Ready=False` wait with the 10s requeue. Because that
   reference crosses namespaces and the caller controls it, the path then repeats
   **all four** pre-write gates the KeystoneService reconciler applies before it
-  touches the account: the plane's registration consent for the CR's namespace
+  touches the account, plus its system-role rule: the plane's registration consent for the CR's namespace
   (`NamespaceNotAllowed` — de-listing a namespace *freezes* its registrations, so
   the `User` is still there to nudge while the reconciler that would act on the
   nudge no longer runs), the role allowlist of the `spec.namespaceAssignments`
   entry for that namespace (`RoleNotAllowed`, which freezes the account the same
-  way; the message ends with `cannot rotate`), the plane's `AdminCredentialReady` condition
+  way; the message ends with `cannot rotate`), the system-role rule
+  (`SystemRoleNotAllowed` for `spec.account.systemRoles` outside the plane's own
+  namespaces, with the same `cannot rotate` ending), the plane's `AdminCredentialReady` condition
   (`WaitingForAdminCredential` — K-ORC cannot reach Keystone before the admin
   credential is minted, which freezes the registration the same way), and the
   ownership labels on the `User` itself (`ForeignServiceAccount` — a

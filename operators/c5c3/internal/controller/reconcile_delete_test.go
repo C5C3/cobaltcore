@@ -5097,3 +5097,43 @@ func TestProjectedRegistrationKeys_IncludesNovaAndTheNotifier(t *testing.T) {
 		client.ObjectKey{Name: "cp-nova-hypervisor-operator", Namespace: "compute"}),
 		"the notifier is swept from the network namespace, the compute registrations from their own")
 }
+
+// TestReleaseStalledRegistrationChildren_ReleasesRegisteredLimits pins that the
+// stall escape covers the RegisteredLimit children a registration's
+// catalog.registeredLimits projects: a stalled limit is deleted and stripped of
+// K-ORC's finalizer like every other kind sweepChildren lists, so it cannot hold
+// the ControlPlane's teardown.
+func TestReleaseStalledRegistrationChildren_ReleasesRegisteredLimits(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingControlPlane(orcTeardownDeadline)
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       glanceName(cp),
+			Namespace:  cp.Namespace,
+			Labels:     controlPlaneChildLabels(cp),
+			Finalizers: []string{keystoneServiceFinalizerName},
+		},
+	}
+	limit := &orcv1alpha1.RegisteredLimit{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServiceRegisteredLimitRef(ks, "image_count_total"),
+			Namespace:  childNamespace(cp),
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"openstack.k-orc.cloud/registeredlimit"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, limit).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	err = c.Get(ctx, client.ObjectKeyFromObject(limit), &orcv1alpha1.RegisteredLimit{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the stalled registration's RegisteredLimit must be deleted and released")
+}

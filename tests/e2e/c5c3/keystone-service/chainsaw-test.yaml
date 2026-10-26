@@ -14,11 +14,15 @@
 # controller, and neither sees Keystone, OpenBao, ESO or cert-manager. No other
 # e2e asserts ServiceCollision or ServiceAccountCollision anywhere.
 #
-# ── Five legs ────────────────────────────────────────────────────────────────
+# ── Six legs ─────────────────────────────────────────────────────────────────
 #   ROUND-TRIP  the registration registers a catalog entry and an account from
-#               the plane's own namespace, its eight K-ORC children come up
+#               the plane's own namespace, its eleven K-ORC children come up
 #               owner-referenced to the CR, the consumer Secret materializes,
 #               and a Job authenticates with it and sees the catalog row.
+#   LIMITS      the registered limit and the system role the registration
+#               declares are in Keystone, the system grant became Available
+#               within 120s, the limit changes in place from 10 to 20, and
+#               removing both fields takes both out of Keystone.
 #   LATCH       a terminal K-ORC error injected on the Project child. A 409
 #               message holds AccountReady at ServiceAccountsFailed for 60s
 #               and the child keeps its condition, while a refused-connection
@@ -94,7 +98,7 @@ spec:
           CREDS_SECRET=workflow-credentials
           KS_SELECTOR="c5c3.io/keystoneservice-name=${KS_NAME},c5c3.io/keystoneservice-namespace=${CP_NS}"
           LEGACY_SELECTOR="c5c3.io/keystoneservice-name=${LEGACY_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
-          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud
+          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud
           WORKFLOW_URL="http://workflow-api.${CP_NS}.svc.cluster.local:8989/v2"
           LEGACY_URL="http://legacy-api.${CP_NS}.svc.cluster.local:8777/"
           WORKFLOW_KV="openstack/keystone/${CP_NS}/${KS_NAME}/service-accounts/credentials"
@@ -130,6 +134,7 @@ spec:
             endpoints.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
             regions.openstack.k-orc.cloud \
+            registeredlimits.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             pushsecrets.external-secrets.io \
             secretstores.external-secrets.io \
@@ -609,10 +614,12 @@ spec:
           # discriminator>". The two role children carry a slug of the role name
           # as their discriminator: "service-9df6b026" for the "service" role this
           # suite declares, from sha256("service")[:8].
-          assert_eq "eight K-ORC children sit in the plane's namespace" "8" \
+          # The registered limit's slug is "workflow-executi-4d94d25e" for
+          # "workflow_executions", and the system role's "reader-3d094196".
+          assert_eq "eleven K-ORC children sit in the plane's namespace" "11" \
             "$(count_of "${KORC_KINDS}" "${CP_NS}" "${KS_SELECTOR}")"
-          CHILD_NAME_RE='^workflow-[0-9a-f]{8}-registration-(user|project|role-service-9df6b026|assign-service-9df6b026|service|region|region-ep-public|region-ep-internal)$'
-          for kind in users projects roles roleassignments services regions endpoints; do
+          CHILD_NAME_RE='^workflow-[0-9a-f]{8}-registration-(user|project|role-service-9df6b026|assign-service-9df6b026|role-reader-3d094196|sys-reader-3d094196|service|region|region-ep-public|region-ep-internal|limit-workflow-executi-4d94d25e)$'
+          for kind in users projects roles roleassignments services regions endpoints registeredlimits; do
             for child in $(kubectl get "${kind}.openstack.k-orc.cloud" -n "${CP_NS}" \
               -l "${KS_SELECTOR}" -o jsonpath='{.items[*].metadata.name}'); do
               if ! grep -Eq "${CHILD_NAME_RE}" <<<"${child}"; then
@@ -682,6 +689,85 @@ spec:
 
           run_verify_job "${KS_NAME}" "${KS_NAME}" "${WORKFLOW_URL}"
           echo "OK: a service in the plane's namespace authenticates with what it was delivered."
+
+          # ══ LEG 1b — registered limits and a system role ══════════════════
+          # The registration declared catalog.registeredLimits and
+          # account.systemRoles from the start, and LEG 1 waited for both to
+          # become Available. K-ORC lists a system grant before it creates it and
+          # reads it back after, and keystone 29.0.0 (2026.1) caches that list
+          # until [cache] expiration_time unless the image carries
+          # patches/keystone/2026.1/0003-invalidate-assignment-cache-on-modify-operations.patch.
+          # The bound below holds only with the patch: without it the grant
+          # turns Available up to 600s after its creation.
+          LIMIT_CR="${PREFIX}limit-workflow-executi-4d94d25e"
+          SYS_CR="${PREFIX}sys-reader-3d094196"
+          SYS_CREATED="$(child_field roleassignments "${SYS_CR}" '{.metadata.creationTimestamp}')"
+          SYS_AVAILABLE="$(child_field roleassignments "${SYS_CR}" \
+            "{.status.conditions[?(@.type=='Available')].lastTransitionTime}")"
+          assert_nonempty "the system RoleAssignment carries a creation time" "${SYS_CREATED}"
+          assert_nonempty "the system RoleAssignment reports when it became Available" "${SYS_AVAILABLE}"
+          assert_eq "the system RoleAssignment is Available" "True" \
+            "$(child_field roleassignments "${SYS_CR}" "{.status.conditions[?(@.type=='Available')].status}")"
+          assert_eq "the system RoleAssignment is scoped to the system" "all" \
+            "$(child_field roleassignments "${SYS_CR}" '{.spec.resource.system}')"
+          SYS_ELAPSED="$(jq -n --arg a "${SYS_AVAILABLE}" --arg c "${SYS_CREATED}" \
+            '(($a | fromdateiso8601) - ($c | fromdateiso8601))')"
+          if [ "${SYS_ELAPSED}" -gt 120 ]; then
+            echo "ERROR: the system RoleAssignment became Available ${SYS_ELAPSED}s after its creation (bound 120s);"
+            echo "       a keystone image without the system-grant cache patch holds it for [cache] expiration_time"
+            exit 1
+          fi
+          echo "OK: the system RoleAssignment became Available ${SYS_ELAPSED}s after its creation."
+
+          LIMIT_UID="$(child_field registeredlimits "${LIMIT_CR}" '{.metadata.uid}')"
+          assert_nonempty "the RegisteredLimit child exists" "${LIMIT_UID}"
+          assert_eq "the RegisteredLimit names the registration's Region import" "${PREFIX}region" \
+            "$(child_field registeredlimits "${LIMIT_CR}" '{.spec.resource.regionRef}')"
+          admin_osc limits "${KS_NAME}" "${KS_NAME}" "${KS_NAME}"
+          assert_eq "Keystone holds the registered limit in the plane's region" \
+            "workflow_executions=10@RegionOne" "$(sed -n 's/^REGISTERED_LIMITS=//p' <<<"${ADMIN_OUT}")"
+          if ! grep -qE '^SYSTEM_ROLES=(.*,)?reader(,.*)?$' <<<"${ADMIN_OUT}"; then
+            echo "ERROR: the workflow user holds no reader role on the system"
+            exit 1
+          fi
+          echo "OK: the workflow user holds reader on the system."
+
+          # ── defaultLimit changes in place ─────────────────────────────────
+          kubectl patch keystoneservice "${KS_NAME}" -n "${CP_NS}" --type=merge \
+            -p '{"spec":{"catalog":{"registeredLimits":[{"resourceName":"workflow_executions","defaultLimit":20}]}}}'
+          LIMIT_DEADLINE=$(( $(date +%s) + 300 ))
+          until [ "$(child_field registeredlimits "${LIMIT_CR}" '{.spec.resource.defaultLimit}')" = "20" ] \
+            && [ "$(ks_field "${KS_NAME}" "{.status.conditions[?(@.type=='CatalogReady')].observedGeneration}")" \
+              = "$(ks_field "${KS_NAME}" '{.metadata.generation}')" ] \
+            && [ "$(condition_reason keystoneservice "${KS_NAME}" "${CP_NS}" CatalogReady)" = "CatalogRegistered" ]; do
+            if [ "$(date +%s)" -ge "${LIMIT_DEADLINE}" ]; then
+              echo "ERROR: the registered limit did not converge on 20 within 300s"
+              kubectl get registeredlimits.openstack.k-orc.cloud "${LIMIT_CR}" -n "${CP_NS}" -o yaml 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          assert_eq "the RegisteredLimit was updated, not replaced" "${LIMIT_UID}" \
+            "$(child_field registeredlimits "${LIMIT_CR}" '{.metadata.uid}')"
+          admin_osc limits "${KS_NAME}" "${KS_NAME}" "${KS_NAME}"
+          assert_eq "Keystone holds the changed limit" \
+            "workflow_executions=20@RegionOne" "$(sed -n 's/^REGISTERED_LIMITS=//p' <<<"${ADMIN_OUT}")"
+
+          # ── removing both fields takes both out of Keystone ───────────────
+          kubectl patch keystoneservice "${KS_NAME}" -n "${CP_NS}" --type=merge \
+            -p '{"spec":{"catalog":{"registeredLimits":null},"account":{"systemRoles":null}}}'
+          wait_gone registeredlimits.openstack.k-orc.cloud "${LIMIT_CR}" "${CP_NS}" 300
+          wait_gone roleassignments.openstack.k-orc.cloud "${SYS_CR}" "${CP_NS}" 300
+          wait_gone roles.openstack.k-orc.cloud "${PREFIX}role-reader-3d094196" "${CP_NS}" 300
+          wait_ks_condition "${KS_NAME}" "${CP_NS}" Ready True 300
+          admin_osc limits "${KS_NAME}" "${KS_NAME}" "${KS_NAME}"
+          assert_eq "no registered limit is left on the row" "NONE" \
+            "$(sed -n 's/^REGISTERED_LIMITS=//p' <<<"${ADMIN_OUT}")"
+          assert_eq "no system role is left on the user" "NONE" \
+            "$(sed -n 's/^SYSTEM_ROLES=//p' <<<"${ADMIN_OUT}")"
+          assert_eq "eight K-ORC children remain" "8" \
+            "$(count_of "${KORC_KINDS}" "${CP_NS}" "${KS_SELECTOR}")"
+          echo "OK: the registered limit and the system role follow the spec in and out of Keystone."
 
           # ══ LEG 2 — a latched K-ORC error, held and then cleared ══════════
           # The pinned K-ORC retries a transport failure itself and writes no
@@ -1005,7 +1091,7 @@ spec:
           echo "OK: the registration left nothing behind in Kubernetes, OpenBao or Keystone."
 
           # ══ Teardown ══════════════════════════════════════════════════════
-          kubectl delete job "${KS_NAME}-verify" admin-osc-seed admin-osc-show \
+          kubectl delete job "${KS_NAME}-verify" admin-osc-seed admin-osc-show admin-osc-limits \
             -n "${CP_NS}" --ignore-not-found
 
           # The plane goes down through its own finalizer, and the suite only
@@ -1062,7 +1148,7 @@ spec:
           echo "=== KeystoneServices and CredentialRotations ==="
           kubectl get keystoneservice,credentialrotation -n "${NAMESPACE}" -o yaml 2>&1 || true
           echo "=== K-ORC children in the plane's namespace ==="
-          kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud -n "${NAMESPACE}" -o wide 2>&1 || true
+          kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud -n "${NAMESPACE}" -o wide 2>&1 || true
           echo "=== Delivery objects ==="
           kubectl get externalsecret,pushsecret,secretstore -n "${NAMESPACE}" 2>&1 || true
           echo "=== Secrets (names only) ==="
@@ -1072,6 +1158,7 @@ spec:
           echo "=== Admin Jobs ==="
           kubectl logs -n "${NAMESPACE}" job/admin-osc-seed --tail=100 2>&1 || true
           kubectl logs -n "${NAMESPACE}" job/admin-osc-show --tail=100 2>&1 || true
+          kubectl logs -n "${NAMESPACE}" job/admin-osc-limits --tail=100 2>&1 || true
           echo "=== c5c3-operator ==="
           kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator -o wide 2>&1 || true
           OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
@@ -1129,7 +1216,7 @@ spec:
           # suite; the pod is shared with the two earlier suites on this job.
           kubectl exec -n shared-services openbao-0 -- \
             rm -f /tmp/.bao-token 2>&1 || true
-          kubectl delete job workflow-verify admin-osc-seed admin-osc-show \
+          kubectl delete job workflow-verify admin-osc-seed admin-osc-show admin-osc-limits \
             -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
           # run_verify_job removes this one itself on every path it returns from.
           kubectl delete secret workflow-verify-oldpw \
@@ -1154,7 +1241,7 @@ spec:
           # that far. When this ordering loses a race, the operators' bounded
           # stall breakers still converge the namespace, inside chainsaw's
           # cleanup budget instead of past it.
-          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
           DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
           while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
             if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then

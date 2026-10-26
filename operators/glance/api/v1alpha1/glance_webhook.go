@@ -348,7 +348,7 @@ func (w *GlanceWebhook) ValidateCreate(ctx context.Context, obj *Glance) (admiss
 	)...)
 	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "openStackRelease"), "", obj.Spec.OpenStackRelease)
 	createErrs = append(createErrs, floorErrs...)
-	return warnings, w.validate(ctx, obj, createErrs)
+	return warnings, w.validate(ctx, obj, nil, createErrs)
 }
 
 // validateNameLength bounds metadata.name by the child object with the tightest
@@ -393,6 +393,15 @@ func validateNameLength(name string) field.ErrorList {
 // (validation.OpenStackReleaseFloor): a change to a release below
 // release.MinimumSupported is rejected, and an unchanged value below it is
 // admitted with a warning, so an unrelated edit never wedges the CR.
+//
+// A CarryOver extraConfig key (the unified-limits keys spec.keystoneLimits owns)
+// the stored object already holds with the same value is admitted with a
+// warning (config.CarriedRejectedKeyWarnings): a deployment that enabled unified
+// limits by hand before the keys became Rejected, [oslo_limit] password
+// included, stays updatable and deletable, while a new key or a changed value
+// is still refused. Nothing carries over once newObj sets spec.keystoneLimits:
+// a carried key would override the section it renders, for example a project
+// scope beside its system_scope.
 func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glance) (admission.Warnings, error) {
 	if newObj.DeletionTimestamp != nil {
 		stored := oldObj.DeepCopy()
@@ -423,17 +432,27 @@ func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glan
 		field.NewPath("spec", "openStackRelease"), oldObj.Spec.OpenStackRelease, newObj.Spec.OpenStackRelease)
 	updateErrs = append(updateErrs, floorErrs...)
 	warnings = append(warnings, floorWarnings...)
-	return warnings, w.validate(ctx, newObj, updateErrs)
+	carried := oldObj.Spec.ExtraConfig
+	if newObj.Spec.KeystoneLimits != nil {
+		// spec.keystoneLimits renders the unified-limits keys and an extraConfig
+		// value wins over the render, so a hand-set one has to go in this update.
+		carried = nil
+	}
+	warnings = append(warnings, config.CarriedRejectedKeyWarnings(
+		field.NewPath("spec"), newObj.Spec.ExtraConfig, carried, OwnedConfigKeys)...)
+	return warnings, w.validate(ctx, newObj, carried, updateErrs)
 }
 
 // validate runs all validation rules against the Glance spec, accumulating
 // every violation so users see the full list in one admission response.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
-// extra carries errors accumulated by the caller (the extraConfig option-catalog
+// oldExtraConfig is the stored object's spec.extraConfig on update and nil on
+// create; a CarryOver key it holds with the same value is carried over instead
+// of refused. extra carries errors accumulated by the caller (the extraConfig option-catalog
 // check, on create the metadata.name bound, and on update the targetClusterRef
 // immutability check) so they aggregate into the single Invalid error alongside
 // the rest.
-func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.ErrorList) error {
+func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, oldExtraConfig map[string]map[string]string, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
@@ -824,17 +843,23 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	}
 
 	// Reject an extraConfig override of any Rejected owned key. The rejection
-	// list is driven by the owned-config-key registry's Rejected flag; for glance
-	// it is [keystone_authtoken] password, whose file value is inert at runtime
-	// (env-injected via OS_KEYSTONE_AUTHTOKEN__PASSWORD) but would leak the
-	// service password into the namespace-readable ConfigMap if rendered.
-	// Admission is the only gate before the credential reaches the ConfigMap, so
-	// this is a rejection, not a reported-but-honored override.
+	// list is driven by the owned-config-key registry's Rejected flag; for the
+	// two password keys ([keystone_authtoken] and [oslo_limit]) the file value
+	// is inert at runtime (env-injected) but would leak the service password
+	// into the namespace-readable ConfigMap if rendered, and for the others an
+	// override does its damage before the ExtraConfigHealthy condition could
+	// surface it. Admission is the only gate, so this is a rejection, not a
+	// reported-but-honored override. A CarryOver key the stored object already
+	// holds with the same value is carried over, so an object admitted before
+	// the key became Rejected stays updatable; ValidateUpdate warns about it.
 	for _, e := range OwnedConfigKeys {
 		if !e.Rejected {
 			continue
 		}
-		if _, ok := g.Spec.ExtraConfig[e.Section][e.Key]; ok {
+		if value, ok := g.Spec.ExtraConfig[e.Section][e.Key]; ok {
+			if e.CarryOver && config.CarriedOver(oldExtraConfig, e.Section, e.Key, value) {
+				continue
+			}
 			msg := fmt.Sprintf("%s is managed via %s and must not be set in extraConfig", e.Key, e.OwnedBy)
 			if e.Impact != "" {
 				msg += fmt.Sprintf(" (%s)", e.Impact)
