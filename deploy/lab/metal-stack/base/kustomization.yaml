@@ -74,7 +74,7 @@
 # hostnames, each with a certificate of its own, behind a NodePort proxy that
 # kind maps to the host. The lab's address is the one the shoot's MetalLB
 # hands the proxy Service, known only once that Service exists, so no hostname
-# can be fixed here. The last two patches:
+# can be fixed here. The last three patches:
 #   - point the GatewayClass envoy at the EnvoyProxy envoy-public of
 #     ../infrastructure/envoy-public.yaml, a Service of type LoadBalancer;
 #   - replace the twelve listeners by one HTTPS listener on *.nip.io. A
@@ -85,7 +85,9 @@
 #     (../infrastructure/gateway-certificate.yaml); until then the listener
 #     reports ResolvedRefs=False. It admits the routes of openstack, where
 #     the ControlPlane projects them, and of dizzy, where the Grafana route
-#     of ../dizzy lives.
+#     of ../dizzy lives;
+#   - remove the kind base's NodePort EnvoyProxy envoy-nodeport, which the
+#     GatewayClass no longer names.
 #
 # The kind base sits outside this directory. A directory reference is allowed
 # under kustomize's default LoadRestrictionsRootOnly check (the kind base
@@ -176,3 +178,18 @@ patches:
                       values:
                         - openstack
                         - dizzy
+
+  # The public Gateway: the kind base's NodePort EnvoyProxy goes, since the
+  # GatewayClass of the lab names envoy-public instead.
+  - target:
+      group: gateway.envoyproxy.io
+      version: v1alpha1
+      kind: EnvoyProxy
+      name: envoy-nodeport
+    patch: |
+      $patch: delete
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: EnvoyProxy
+      metadata:
+        name: envoy-nodeport
+        namespace: envoy-gateway-system

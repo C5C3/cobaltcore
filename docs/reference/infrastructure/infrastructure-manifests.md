@@ -3111,7 +3111,7 @@ platform's namespaces and CRDs alone. Both are described in
 
 ### Public Gateway
 
-**Files:** `deploy/lab/metal-stack/base/kustomization.yaml` (its last two
+**Files:** `deploy/lab/metal-stack/base/kustomization.yaml` (its last three
 patches), `deploy/lab/metal-stack/infrastructure/envoy-public.yaml`,
 `deploy/lab/metal-stack/infrastructure/lab-ca.yaml`,
 `deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml`

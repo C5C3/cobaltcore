@@ -21,6 +21,10 @@ resources:
   - flux-web.yaml
   # Envoy Gateway controller + EnvoyProxy NodePort config (kind-only).
   - envoy-gateway.yaml
+  # EnvoyProxy/envoy-nodeport, which GatewayClass/envoy references; here and
+  # not in the infrastructure overlay so it exists before the controller
+  # first renders the proxy Service (see envoy-nodeport.yaml header).
+  - envoy-nodeport.yaml
   # GatewayClass/envoy + Certificate + Gateway/openstack-gw (kind-only).
   - openstack-gateway.yaml
 
