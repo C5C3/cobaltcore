@@ -443,8 +443,13 @@ test_concurrency_isolates_a_noop_label_event() {
     "$group" "github.event.label.name != 'run-chaos'"
   assert_contains "everything else gets a group of its own" \
     "$group" "format('noop-{0}', github.run_id)"
-  assert_contains "the normal group is unchanged" \
-    "$group" "format('{0}-{1}', github.ref, github.workflow)"
+  # A night in main's push group would delay main's publish or be cancelled by
+  # the next push, so the normal group names the event.
+  assert_contains "the normal group is per ref, workflow and event" \
+    "$group" "|| format('{0}-{1}-{2}', github.ref, github.workflow, github.event_name) }}"
+  assert_eq "only a pull request cancels the run in flight" \
+    "  cancel-in-progress: \${{ github.event_name == 'pull_request' }}" \
+    "$(grep -A2 '^concurrency:$' "$CI_YAML" | grep 'cancel-in-progress:')"
 }
 
 test_tempest_matrix_is_narrowed_by_service() {

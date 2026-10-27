@@ -34,13 +34,15 @@ interpretation.
 
 ## Trigger Events
 
-The workflow triggers on two event types in three scopes:
+The workflow triggers on four event types:
 
 | Event | Scope | Description |
 | --- | --- | --- |
 | `push` | `branches: [main]` | Runs on every push to the main branch |
 | `push` | `tags: ["v*"]` | Runs on every v-prefixed tag push (triggers publish and release jobs) |
 | `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; the `labeled` type lets a `ci:*` label schedule jobs the paths alone did not |
+| `schedule` | `cron: "0 22 * * *"` | The nightly chaos run against `main` at 22:00 UTC |
+| `workflow_dispatch` | no inputs | The same run on demand, for example `gh workflow run ci.yaml --ref main` |
 
 Most gate, test, and E2E jobs run **only on `pull_request` events** — they each carry a
 `github.event_name == 'pull_request'` guard. `test-shell` is the exception. It carries no
@@ -52,6 +54,12 @@ the next PR branch. Otherwise, pushes to `main` and tag pushes
 already green, so the E2E suite is not re-run on push ("publish-only-on-merge"). On tag
 pushes the `changes` job forces all areas and all operators active, so every operator's
 images and charts are published regardless of which files the tagged commit touched.
+
+A scheduled or dispatched run is the nightly chaos run of #1388. It runs `changes`,
+`test-shell`, `build-e2e-images`, the five [`e2e-chaos`](#e2e-chaos) matrix entries
+and `cleanup-e2e-tags`, and on a schedule [`report-nightly-chaos`](#report-nightly-chaos)
+files what went red. Every other job keeps its `pull_request` or `push` guard and
+skips.
 
 The operator upgrade suites run after a push to `main` from a workflow of their own.
 When the CI or the Build Images run of such a push succeeds,
@@ -204,6 +212,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 | --- | --- | --- |
 | `build-e2e-images` | `packages: write` | Push the E2E images to GHCR under run-scoped tags |
 | `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
+| `report-nightly-chaos` | `issues: write`, `actions: read` | List the jobs of the nightly chaos run and file what went red on tracking issues |
 | `cleanup-e2e-tags` | `packages: write` | Delete the run-scoped tags from GHCR |
 | `build-and-push` | `packages: write` | Push per-platform operator image digests to GHCR |
 | `merge-operator-images` | `packages: write` | Push final multi-arch operator image manifest list |
@@ -213,16 +222,18 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 39 jobs. `changes` and `test-shell` run on every event. The
-gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard, and
-`cleanup-e2e-tags` follows `build-e2e-images`, which runs on a pull request
-only. The publish and release jobs run on push events only.
+The workflow defines 40 jobs. `changes` and `test-shell` run on every event. The
+gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard.
+`build-e2e-images` and `e2e-chaos` also run on a `schedule` or `workflow_dispatch`
+event, the nightly chaos run, and `report-nightly-chaos` runs on a `schedule` event
+alone. `cleanup-e2e-tags` follows `build-e2e-images`. The publish and release jobs
+run on push events only.
 
 The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, and report-nightly-chaos follows e2e-chaos on a schedule only. tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -248,6 +259,7 @@ section that describes the job.
 | [`e2e-operator`](#e2e-operator) | E2E fan-out | `changes`, `build-e2e-images` |
 | [`e2e-operator-upgrade`](#e2e-operator-upgrade) | E2E fan-out | `changes`, `build-e2e-images` |
 | [`e2e-chaos`](#e2e-chaos) | Chaos | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images`, `e2e-operator` |
+| [`report-nightly-chaos`](#report-nightly-chaos) | Chaos | `changes`, `build-e2e-images`, `e2e-chaos` |
 | [`e2e-prometheus`](#e2e-prometheus) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-controlplane`](#e2e-controlplane) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-controlplane-sso`](#e2e-controlplane-sso) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
@@ -282,22 +294,23 @@ other job except `test-shell` lists it in `needs`.
 
 **Dependencies:** none (the job has no `needs:`)
 **Condition:** none. The job has no `if:` and runs on every event that starts
-the workflow: a push to `main`, a `v*` tag push, and a `pull_request` event of
-type `opened`, `synchronize`, `reopened` or `labeled`.
+the workflow: a push to `main`, a `v*` tag push, a `pull_request` event of
+type `opened`, `synchronize`, `reopened` or `labeled`, and the `schedule` and
+`workflow_dispatch` events of the nightly chaos run.
 
 The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches |
+| 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches. Runs on `pull_request` and `push` events only; on the nightly chaos run its outputs are empty |
 | 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets`, `e2e-operators` and `e2e-operator-upgrade-operators` |
 | 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
 | 5 | `Generate keystone-pressure release matrix` | Step id `keystone-pressure-matrix`. Runs `hack/ci-service-image-releases.sh` with `OPERATOR=keystone` and writes `keystone-pressure-releases` with one entry per release whose `releases/<release>/source-refs.yaml` carries a Keystone ref |
 | 6 | `Generate cleanup package matrix` | Step id `cleanup-matrix`. Runs `hack/ci-generate-cleanup-matrix.sh`, which derives the GHCR package names from `images/*/` and from every `operators/*/` directory that holds a `go.mod`. It writes `cleanup-packages` and `cleanup-e2e-packages`. The job exports the second |
 | 7 | `Shard the e2e-operator matrix` | Step id `e2e-operator-legs`. A `jq` filter turns `e2e-operators` into an `include` list and splits `nova` into two entries, `shard: "1"` and `shard: "2"`. It writes `legs` |
 
-Step 3 has three special cases. A `labeled` event whose label is
+Step 3 has four special cases. A `labeled` event whose label is
 neither a `ci:*` label nor `run-chaos` resolves to `noop=true`: every other flag
 is `false`, the change sets are `[]`, and `test-targets`, `e2e-operators` and
 `e2e-operator-upgrade-operators` hold the placeholder `__none__`. The `ci:full` label and a `v*` tag push force
@@ -305,7 +318,11 @@ every job flag on and select every operator. `measure-sizing` is the exception:
 only the `ci:measure-sizing` label sets it. On a push to `main` the script sets
 `build-e2e-images` to `false`, and `e2e-operators` holds every operator when the
 `go_common` or `publish_legacy` class changed, otherwise the operators whose own
-class or `image_<op>` class changed.
+class or `image_<op>` class changed. A `schedule` or `workflow_dispatch` event
+ignores every class and label: `e2e-chaos` and `build-e2e-images` are `true`,
+every other flag is `false`, the change sets are `[]`, and the three matrices
+hold `__none__`. That case runs last, so neither a tag ref nor the push case
+undoes it.
 [Change classes and labels](#change-classes-and-labels) describes the classes
 and the labels.
 
@@ -570,8 +587,9 @@ Timeout: 8 minutes.
 
 Runs every `*_test.sh` under `tests/unit/`, found by discovery, and fails on a `.sh`
 file there whose name would make the discovery skip it. The job carries no event
-guard, so it runs on pull requests and on the push
-runs for `main` and `v*` tags: a breakage that lands on `main` fails main's own run.
+guard, so it runs on pull requests, on the push
+runs for `main` and `v*` tags, and on the nightly chaos run: a breakage that lands
+on `main` fails main's own run.
 Tests read repo files only (no cluster, no untrusted input) and the job takes six to
 eight minutes. Tests that depend on `yq` or `kustomize` are written to
 skip gracefully when those tools are missing; the job installs `kustomize` explicitly so
@@ -892,8 +910,10 @@ the `load-e2e-images` composite action instead of rebuilding.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]`
 
-**Condition:** Runs only when `build-e2e-images == 'true'` and no gate job
-failed. The resolver sets that flag when any job downstream of this one is
+**Condition:** Runs on a `pull_request`, `schedule` or `workflow_dispatch` event,
+and only when `build-e2e-images == 'true'` and no gate job failed. On the nightly
+chaos run the resolver sets the flag for the five `e2e-chaos` entries, and the job
+builds their coverage-instrumented `:cover` operator images. The resolver sets that flag when any job downstream of this one is
 scheduled, so the four-way OR the job used to carry lives in one place. Uses `always()` so the job runs when upstream Go jobs are
 skipped (e.g. pure E2E test-definition PRs where `go=false`). Skipped on PRs from
 forks (the workflow's `GITHUB_TOKEN` is read-only on `packages:` for forked
@@ -1254,7 +1274,7 @@ its number.
 ![Two panels. The first shows the chaos test bed and the six steps of a suite. Chainsaw on the runner applies the service resources and asserts the baseline, applies the chaos resource, a PodChaos or a NetworkChaos, waits until the fault is injected, asserts the behaviour under the fault, deletes the chaos resource and asserts recovery. In the cluster, the chaos-controller-manager in the namespace chaos-mesh reconciles the chaos resource and calls the chaos-daemon on the node of a victim. The daemon kills the pod or a container, or sets rules in the network namespace of the pod. The victims are pods in the namespace openstack or in another namespace: shared-services, or the namespace of an operator. The second panel shows why a partition rule sits on the server pods. A client pod dials the ClusterIP of a Service, and kube-proxy rewrites the destination to the address of a server pod only in the root network namespace of the node. A rule in the client pods that matches the addresses of the server pods never sees one, so the partition does nothing. A rule in the server pods matches the source address of the client pod, which the packet still carries, and drops it.](../../diagrams/test-chaos-bed.svg)
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]`
-**Condition:** Runs only when `e2e-chaos == 'true'`, `build-e2e-images` succeeded, and no dependency failed or was cancelled. The resolver sets that flag from the `tests_chaos` class or the `ci:chaos` label, so the job's own condition no longer reads the label set.
+**Condition:** Runs on a `pull_request`, `schedule` or `workflow_dispatch` event, and only when `e2e-chaos == 'true'`, `build-e2e-images` succeeded, and no dependency failed or was cancelled. On a pull request the resolver sets that flag from the `tests_chaos` class or the `ci:chaos` label, so the job's own condition no longer reads the label set. A scheduled or dispatched run always sets it: that run is the nightly chaos run of every entry against `main`.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
@@ -1385,7 +1405,7 @@ green run with them.
 | 6 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the eight nova-leg images (`nova`), `c5c3-operator:dev` (`controlplane`), and the three cinder images of `upgrade` |
 | 7 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs, `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane`, `WITH_NFS=true` on `network` and `upgrade`, and `WITH_MESSAGING=true` on `network`, `nova` and `upgrade` |
 | 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, each with the coverage counter volume of the job-level `E2E_COVERAGE: "true"`, the placement-operator on the `pod` and `network` legs; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator`; `upgrade` adds `Deploy cinder operator (upgrade leg)` |
-| 9 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
+| 9 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml`. On every event but `pull_request` it adds `--fail-fast=false`, which overrides the config's `failFast: true`, so a red suite skips none of the entry's later suites |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` leg repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log, and one on `upgrade` the cinder-operator under `OPERATOR_ONLY=1` |
 | 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
 | 12 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh chaos`: final flush, one profile per operator, the totals in the job summary |
@@ -1458,6 +1478,51 @@ answer. The `nova` leg loads the modules too: its `compute-node-pool` suite runs
 a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above,
 and so do the `ovn` leg of `e2e-chaos` and, for
 `neutron-metadata-agent-pod-kill`, its `nova` leg.
+
+### report-nightly-chaos
+
+Files a red nightly chaos run on tracking issues. It runs after the five
+`e2e-chaos` entries of a scheduled run and reads the run's job listing and the
+entries' JUnit reports.
+
+**Dependencies:** `needs: [changes, build-e2e-images, e2e-chaos]`
+**Condition:** `always() && github.event_name == 'schedule'`. It runs on a green
+night too, for the step summary, and never on a dispatch, as in `flux-path.yaml`.
+**Permissions:** `contents: read`, `issues: write`, `actions: read`. It is the only
+job of the workflow that holds `issues: write`, and it runs on `ubuntu-latest`;
+no `self-hosted` job writes to the repository.
+
+The job runs on `ubuntu-latest` with `timeout-minutes: 10`.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `actions/download-artifact@v8` | Downloads every `e2e-chaos-junit-report-*` artifact into `_output/nightly/<artifact>/`, under `continue-on-error: true`: an entry that hit its wall uploaded no report |
+| 3 | `Report the night` | Runs `hack/ci-report-nightly-chaos.sh` with `RUN_ID`, `RUN_URL`, `REPORT_SHA`, `REPORTS_DIR: _output/nightly` and `BUDGET_MINUTES: "600"` |
+
+The script lists the run's jobs (`gh api --paginate .../jobs?filter=latest`) and
+files each finding through `hack/ci-report-red-run.sh`, which comments on the open
+`github-actions[bot]` issue of that title or opens one:
+
+| Title | Filed when |
+| --- | --- |
+| `Nightly chaos suite <suite> is red` | Once per failed suite of an entry that is not green, read from its JUnit report by `hack/ci-junit-failed-suites.py` |
+| `Nightly chaos leg <leg> is red` | An entry that is not green and names no failed suite: it hit its wall, a step outside the suites failed, or its report is missing or unreadable. The result is the job's conclusion |
+| `Nightly chaos run is red` | No entry ran. The result is the conclusion of `changes`, else of `build-e2e-images`, and `missing` when the listing lacks the job |
+| `Nightly chaos run is over its runner budget` | The completed `self-hosted` jobs of the run took more than `BUDGET_MINUTES` together, with a table of each job's minutes |
+
+A suite or entry issue names the entry, the suite and the job URL, and carries the
+failure message inside a fence, so an `@name` in it notifies nobody. A failed
+listing files nothing and fails the job. A failed filing does not stop the next
+one, and the job fails naming each title it could not file. Every night writes a
+table of the entries, their conclusions, minutes and failed suites, plus the
+self-hosted total against the budget, to the step summary. A green night files
+nothing, and a human closes an issue once its cause is fixed. Re-running the job
+comments on the same open issues and opens none.
+
+The budget is D6 of #1386 counted in measured minutes. The walls of the five
+entries sum to 550 minutes and `build-e2e-images` adds a wall of 120, so the walls
+allow 670 minutes; green runs measure about 450.
 
 ### e2e-ovn-overlay
 
@@ -2981,7 +3046,7 @@ The workflow uses a concurrency group scoped per-branch per-workflow:
 
 ```yaml
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}', github.ref, github.workflow) }}
+  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}-{2}', github.ref, github.workflow, github.event_name) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
@@ -2997,6 +3062,12 @@ job resolves it to nothing; the run costs one `ubuntu-latest` runner for about
 twenty seconds. A `ci:*` label (or `run-chaos`) stays in the branch's group and is
 meant to supersede the run in flight, since it asks for jobs that run did not
 schedule.
+
+The group names the event, so a scheduled run (`refs/heads/main-CI-schedule`) and a
+dispatched run never join main's push group (`refs/heads/main-CI-push`). GitHub
+keeps one pending run per group and cancels the older pending one, so a night in
+main's push group would delay main's publish jobs or be cancelled by the next push.
+Neither event cancels a run in flight: a second dispatch waits for the first.
 
 The `Operator Upgrade` workflow (`.github/workflows/operator-upgrade.yaml`) has a
 group of its own, `operator-upgrade-main`, with `cancel-in-progress: true`: a newer
