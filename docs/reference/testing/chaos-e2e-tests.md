@@ -1258,7 +1258,7 @@ depools the pods and `DeploymentReady` goes `False`.
 | 5 | Assert injection active | `script` (60s) | `kubectl wait networkchaos/partition-mariadb-neutron --for=condition=AllInjected` |
 | 6 | Assert fail-closed | `script` (5m) + `assert` | The `POST /v2.0/networks` lines of the API's request log are counted into the ConfigMap `neutron-db-outage-marks`; then `GET /` stays 200, a token is still obtainable, and a `POST` named `db-outage-failclosed` returns 5xx or loses its connection within 90s and never 2xx (`FAILCLOSED-OK`); `NeutronAPIReady=True/APIHealthy` and `DeploymentReady=True/DeploymentReady` |
 | 7 | Lift the partition | `delete` | Removes the NetworkChaos |
-| 8 | Assert recovery | `script` (8m) | Waits up to 300 s for the next `POST /v2.0/networks` request-log line, the parked write's, and reads its status; `GET /v2.0/networks?name=db-outage-failclosed` then returns an empty list after a 5xx (`PARKED-WRITE-ABSENT-OK`) or one network after a 201, which the probe deletes (`PARKED-WRITE-LANDED-ONCE-OK`); a fresh `POST` answers 201; sentinel `RECOVERY-OK` |
+| 8 | Assert recovery | `script` (10m) | Waits up to 300 s for the next `POST /v2.0/networks` request-log line, the parked write's, and reads its status; `GET /v2.0/networks?name=db-outage-failclosed` then returns an empty list after a 5xx (`PARKED-WRITE-ABSENT-OK`) or one network after a 201, which the probe deletes (`PARKED-WRITE-LANDED-ONCE-OK`); a fresh `POST` answers 201; sentinel `RECOVERY-OK` |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-messaging-secret.yaml`, `02-ovncentral-cr.yaml`,
 `03-neutron-cr.yaml`, `04-networkchaos.yaml`.
