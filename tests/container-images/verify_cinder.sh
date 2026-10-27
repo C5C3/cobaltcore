@@ -567,6 +567,55 @@ if host != "reported-host" or asked:
   assert_eq "HostManager falls back to the service registry without a backup report" "0" "$exit_code"
 }
 
+# --- Test 11c: the coordinator shutdown patch is applied ---
+test_coordinator_shutdown_patch_applied() {
+  echo "Test: the coordinator stops only after the RPC servers drained"
+  # Proves both build paths applied
+  # patches/cinder/<release>/000N-service-stop-the-coordinator-after-the-rpc-servers-drained.patch.
+  # Service.stop() runs from the SIGTERM handler and ends the consumption
+  # of new messages; the handlers already dispatched run on until
+  # Service.wait() returns from rpcserver.wait(). An unpatched image stops
+  # the coordinator in stop(), so a handler that takes a coordination lock
+  # in that window fails with LockCreationFailed and leaves its volume in
+  # error or error_deleting. The patched image stops it in wait(), after
+  # the RPC server drained. The Service is built without __init__, because
+  # the image carries no message bus, and the RPC server, the coordinator
+  # and oslo.service's own stop and wait are mocks. Stderr is echoed on
+  # failure so the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+from oslo_service import service as base
+from cinder import coordination
+from cinder import service
+
+order = []
+serv = service.Service.__new__(service.Service)
+serv.coordination = True
+serv.rpcserver = mock.Mock()
+serv.rpcserver.wait.side_effect = lambda: order.append("rpcserver")
+serv.backend_rpcserver = None
+serv.cluster_rpcserver = None
+with mock.patch.object(base.Service, "stop"), \
+        mock.patch.object(base.Service, "wait"), \
+        mock.patch.object(coordination, "COORDINATOR") as coordinator:
+    coordinator.stop.side_effect = lambda: order.append("coordinator")
+    serv.stop()
+    if order:
+        sys.exit("stop() stopped the coordinator before the RPC server "
+                 "drained (%s)" % ", ".join(order))
+    serv.wait()
+if order != ["rpcserver", "coordinator"]:
+    sys.exit("wait() ran %r, want the RPC server drained before the "
+             "coordinator stops" % (order,))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "Service stops the coordinator after the RPC server drained" "0" "$exit_code"
+}
+
 # --- Test 12: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
@@ -726,6 +775,8 @@ echo ""
 test_create_from_image_patch_applied
 echo ""
 test_backup_placement_patch_applied
+echo ""
+test_coordinator_shutdown_patch_applied
 echo ""
 test_runs_as_openstack_user
 echo ""

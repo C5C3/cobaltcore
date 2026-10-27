@@ -1,0 +1,137 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Stop the coordinator only after the RPC servers drained
+
+`Service.stop()` (cinder/service.py) stops the RPC servers and then the
+tooz coordinator, one call after the other. Stopping an oslo.messaging
+server only ends the consumption of new messages: the handlers it
+dispatched before run on until `Service.wait()` returns from
+`rpcserver.wait()`. Every coordination lock such a handler takes after
+`COORDINATOR.stop()` fails with "LockCreationFailed: Coordinator
+uninitialized.", because `Coordinator.get_lock` (cinder/coordination.py)
+raises once the coordinator is gone. oslo.service's eventlet backend
+runs `stop()` from the SIGTERM handler and `wait()` after it, so every
+graceful shutdown of a cinder-volume or cinder-backup, the two services
+started with coordination=True, opens that window.
+
+What the failed lock leaves behind depends on where the handler stood.
+`NfsDriver.create_volume` and `NfsDriver.delete_volume` take their
+`coordination.synchronized` lock inside the manager's error handling: a
+create fails, and with no other backend to reschedule to the volume ends
+in `error`; a delete ends in `error_deleting`. The API refuses to delete
+an `error_deleting` volume again, and no startup cleanup revisits it,
+because the failed delete released its worker row. CobaltCore's chaos
+suite cinder-upgrade-broker-pod-kill hit this on CI run 40409391608: a
+delete the API accepted 13.5 s after the broker came back left its
+volume undeletable (HTTP 400 for 176 s) and outside every transitional
+status, which `error_deleting` alone fits. The log of the volume service
+went with its pod, but the delete fell into the window in which the
+upgrade's Recreate rollout stops the 2026.1 cinder-volume (a local rerun
+puts that stop 18 s after the broker returns). A local rerun of that
+upgrade with four create/delete loops caught a create dispatched 4.4 s
+after the SIGTERM of the 2026.1 cinder-volume failing with that
+exception.
+
+The coordinator now stops in `Service.wait()`, after the three
+`rpcserver.wait()` calls, so it outlives every handler the servers
+dispatched; `stop()` keeps the rest of its work. Under oslo.service's
+threading backend, cotyledon calls `stop()` alone before the worker
+exits; the coordinator then ends with the process, as it does after a
+crash, and the file driver's locks go with the process's descriptors.
+
+No upstream test pins where the coordinator stops: test_service.py
+mocks the RPC server and never passes coordination=True. The patch adds
+`test_service_stop_keeps_coordinator_until_rpcserver_drained` to
+`ServiceTestCase` in cinder/tests/unit/test_service.py, which fails on
+the unpatched tree ("Expected 'stop' to not have been called").
+
+tests/container-images/verify_cinder.sh drives `Service.stop()` and
+`Service.wait()` against the built image with a mocked RPC server and
+coordinator, and asserts that the coordinator stops after the RPC
+server drained.
+
+Its 2026.2 twin,
+patches/cinder/2026.2/0005-service-stop-the-coordinator-after-the-rpc-servers-drained.patch,
+carries the same hunks, cut from 29.0.0.
+
+Applies to cinder 28.0.0 (2026.1).
+
+Upstream status: not yet proposed.
+
+diff --git a/cinder/service.py b/cinder/service.py
+index 41b3e85..6735939 100644
+--- a/cinder/service.py
++++ b/cinder/service.py
+@@ -433,11 +433,6 @@ class Service(service.Service):
+         except Exception:
+             pass
+ 
+-        if self.coordination:
+-            try:
+-                coordination.COORDINATOR.stop()
+-            except Exception:
+-                pass
+         super(Service, self).stop(graceful=True)
+ 
+     def wait(self) -> None:
+@@ -447,6 +442,16 @@ class Service(service.Service):
+             self.backend_rpcserver.wait()
+         if self.cluster_rpcserver:
+             self.cluster_rpcserver.wait()
++        # The handlers the RPC servers dispatched before stop() run until the
++        # waits above return, and every coordination lock they take needs the
++        # coordinator. Stopping it in stop() failed those locks with
++        # LockCreationFailed, which left a volume being deleted in
++        # error_deleting.
++        if self.coordination:
++            try:
++                coordination.COORDINATOR.stop()
++            except Exception:
++                pass
+         super(Service, self).wait()
+ 
+     def periodic_tasks(self, raise_on_error: bool = False) -> None:
+diff --git a/cinder/tests/unit/test_service.py b/cinder/tests/unit/test_service.py
+index 95560e8..9d1ec02 100644
+--- a/cinder/tests/unit/test_service.py
++++ b/cinder/tests/unit/test_service.py
+@@ -318,6 +318,38 @@ class ServiceTestCase(test.TestCase):
+         serv.rpcserver.stop.assert_called_once_with()
+         serv.rpcserver.wait.assert_called_once_with()
+ 
++    @mock.patch('cinder.coordination.COORDINATOR')
++    @mock.patch.object(rpc, 'get_server')
++    @mock.patch('cinder.db.api')
++    def test_service_stop_keeps_coordinator_until_rpcserver_drained(
++            self, mock_db, mock_rpc, mock_coordinator):
++        """A handler dispatched before stop() can still take its locks.
++
++        stop() only ends the consumption of new messages; the handlers the
++        RPC server dispatched before it run on until rpcserver.wait()
++        returns, and every coordination lock they take needs the
++        coordinator.
++        """
++        serv = service.Service(
++            self.host,
++            self.binary,
++            self.topic,
++            'cinder.tests.unit.test_service.FakeManager',
++            coordination=True,
++        )
++        serv.start()
++        mock_coordinator.start.assert_called_once_with()
++
++        serv.stop()
++        mock_coordinator.stop.assert_not_called()
++
++        order = []
++        serv.rpcserver.wait.side_effect = lambda: order.append('rpcserver')
++        mock_coordinator.stop.side_effect = (
++            lambda: order.append('coordinator'))
++        serv.wait()
++        self.assertEqual(['rpcserver', 'coordinator'], order)
++
+     @mock.patch('cinder.service.Service.report_state')
+     @mock.patch('cinder.service.Service.periodic_tasks')
+     @mock.patch.object(rpc, 'get_server')

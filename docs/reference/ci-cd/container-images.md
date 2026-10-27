@@ -719,6 +719,31 @@ built image with mocks: an empty report set resolves to the registered
 service, and a report wins without consulting the registry. Upstream status:
 not yet proposed.
 
+`patches/cinder/2026.2/0005-service-stop-the-coordinator-after-the-rpc-servers-drained.patch`
+and its 2026.1 twin
+`patches/cinder/2026.1/0006-service-stop-the-coordinator-after-the-rpc-servers-drained.patch`
+(the same hunks, cut from 28.0.0) keep the coordinator of a cinder-volume or
+cinder-backup until the RPC handlers it dispatched have finished.
+`Service.stop()` in `cinder/service.py` stops the RPC servers and then
+`coordination.COORDINATOR`, one call after the other, while the handlers the
+servers dispatched before run on until `Service.wait()` returns from
+`rpcserver.wait()`. A handler that takes a coordination lock in that window
+fails with `LockCreationFailed: Coordinator uninitialized.`: a create through
+`NfsDriver.create_volume` leaves its volume in `error`, a delete through
+`NfsDriver.delete_volume` in `error_deleting`, which the API refuses to delete
+again and no startup cleanup revisits. Every graceful stop of a cinder-volume
+opens the window, the Recreate rollout of an upgrade among them: CI run
+40409391608 left a volume of `cinder-upgrade-broker-pod-kill` undeletable that
+way, and a local rerun caught a create failing 4.4 s after the SIGTERM of the
+2026.1 cinder-volume. The patch moves `COORDINATOR.stop()` into
+`Service.wait()`, after the three `rpcserver.wait()` calls. No upstream test
+pins where the coordinator stops, so the patch adds
+`test_service_stop_keeps_coordinator_until_rpcserver_drained` to
+`ServiceTestCase` in `cinder/tests/unit/test_service.py`.
+`tests/container-images/verify_cinder.sh` drives `stop()` and `wait()` against
+the built image with a mocked RPC server and coordinator and asserts the
+order. Upstream status: not yet proposed.
+
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
 (decision D2 of issue #979). None of the three serves an HTTP port, so
