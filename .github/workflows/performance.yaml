@@ -13,13 +13,16 @@ name: Performance
 # the one measured, so a release move forces a new baseline.
 #
 # The operator is the keystone-operator:latest image every main push publishes,
-# deployed with the chart of the checked-out commit. A red night fails the run
-# and GitHub notifies the user who last changed the cron line of this file; the
-# workflow opens no issue (#1388 can adopt it into its per-suite reporting).
+# deployed with the chart of the checked-out commit. A red scheduled night
+# fails the run, and the report job files it on one tracking issue, "Scheduled
+# performance run is red", through hack/ci-report-red-run.sh: it comments on
+# the open github-actions[bot] issue of that title or opens one, with the
+# comparison of the night. The report job alone holds issues: write and runs on
+# ubuntu-latest; a dispatch never reports.
 #
 # A workflow of its own rather than a trigger on ci.yaml: every ci.yaml job
-# gates on pull_request or on the changes resolver, and
-# hack/ci-resolve-changes.sh knows two event types.
+# gates on pull_request or on the changes resolver, and ci.yaml's own schedule
+# runs the chaos legs alone.
 # docs/reference/testing/reconcile-performance-benchmark.md describes the
 # measurements and how to re-baseline.
 
@@ -121,12 +124,21 @@ jobs:
           IMAGE_TAG: ${{ env.RELEASE }}
           RESULT_JSON: _output/perf/reconcile.json
       # After both measurements, so a failed measurement leaves no comparison.
+      # The comparison also goes into _output/perf/summary.md, inside a fence,
+      # for the report job; the performance-results upload below carries it.
+      # pipefail keeps a regression failing the step through the tee.
       - name: Compare against the baseline
         run: |
+          set -o pipefail
+          echo '```text' >_output/perf/summary.md
+          rc=0
           python3 hack/perf-baseline.py compare \
             --baseline tests/perf/baseline.json \
             --tolerance-percent 20 \
-            --measured _output/perf/token.json _output/perf/reconcile.json
+            --measured _output/perf/token.json _output/perf/reconcile.json 2>&1 |
+            tee -a _output/perf/summary.md || rc=$?
+          echo '```' >>_output/perf/summary.md
+          exit "${rc}"
       - name: Upload performance results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -144,3 +156,35 @@ jobs:
       - name: Delete kind cluster
         if: always()
         run: hack/ci-delete-kind-cluster.sh
+
+  # Files a red scheduled night on its tracking issue, as the report job of
+  # flux-path.yaml does. The only job of the workflow with a write permission,
+  # on a GitHub-hosted runner.
+  report:
+    needs: baseline
+    if: always() && github.event_name == 'schedule' && needs.baseline.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A night that failed before the comparison wrote no summary; the
+      # report then points at the run log.
+      - name: Download the results
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: performance-results
+          path: _output/perf
+      - name: Report the red night
+        run: hack/ci-report-red-run.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPORT_TITLE: Scheduled performance run is red
+          REPORT_RESULT: ${{ needs.baseline.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT_SHA: ${{ github.sha }}
+          SUMMARY_FILE: _output/perf/summary.md
