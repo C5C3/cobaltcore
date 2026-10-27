@@ -583,6 +583,52 @@ test_push_keeps_the_publish_matrix() {
 }
 
 # ---------------------------------------------------------------------------
+# The nightly chaos run
+# ---------------------------------------------------------------------------
+
+# expect_night — the outputs of a scheduled or dispatched run: the chaos legs
+# and the image build they load, nothing else.
+expect_night() {
+  expect_all true e2e-chaos build-e2e-images
+  expect noop false
+  expect_all false go docs helm target-cluster-chart e2e-infra e2e-prometheus \
+    e2e-controlplane e2e-controlplane-sso e2e-external-keystone \
+    e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-ovn-overlay \
+    e2e-nova-libvirt e2e-operator-upgrade tempest keystone-pressure \
+    measure-sizing actionlint changed-tempest changed-proxy changed-ovn \
+    changed-libvirt has-e2e-operators
+  expect_all '[]' changed-operators changed-services tempest-services
+  expect test-targets "$SENTINEL_TARGETS"
+  expect_all "$SENTINEL_OPERATORS" e2e-operators e2e-operator-upgrade-operators
+}
+
+test_schedule_runs_only_the_chaos_legs() {
+  scenario "a scheduled run with no filter and no labels" refs/heads/main \
+    EVENT_NAME=schedule
+  expect_night
+
+  scenario "a dispatched run" refs/heads/main EVENT_NAME=workflow_dispatch
+  expect_night
+}
+
+test_the_night_ignores_paths_and_labels() {
+  # On a night the paths-filter step is skipped, and nothing a filter or a
+  # label says may widen the run.
+  scenario "a scheduled run with filters and ci:full" refs/heads/main \
+    EVENT_NAME=schedule FILTER_go_common=true FILTER_tests_chaos=true \
+    PR_LABELS='["ci:full"]'
+  expect_night
+
+  scenario "a dispatched run on a v* tag" refs/tags/v1.2.3 \
+    EVENT_NAME=workflow_dispatch
+  expect_night
+
+  scenario "a scheduled run with a labeled action" refs/heads/main \
+    EVENT_NAME=schedule EVENT_ACTION=labeled EVENT_LABEL=bug
+  expect_night
+}
+
+# ---------------------------------------------------------------------------
 # Shadow paths
 # ---------------------------------------------------------------------------
 
@@ -653,6 +699,14 @@ test_outputs_are_complete() {
     assert_not_empty "the no-op path emits $key" \
       "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
   done
+
+  # And on the night.
+  scenario "the emitted output set on a scheduled run" refs/heads/main \
+    EVENT_NAME=schedule
+  for key in $expected; do
+    assert_not_empty "the scheduled path emits $key" \
+      "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -691,6 +745,8 @@ test_non_ci_label_resolves_to_nothing
 test_ci_label_event_is_not_a_noop
 test_tag_push_forces_everything
 test_push_keeps_the_publish_matrix
+test_schedule_runs_only_the_chaos_legs
+test_the_night_ignores_paths_and_labels
 test_no_filters_at_all
 test_malformed_labels_mean_no_labels
 test_missing_required_inputs_fail_loudly
