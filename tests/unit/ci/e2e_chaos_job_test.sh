@@ -96,12 +96,14 @@ test_the_gate_blocks_on_a_failed_or_cancelled_need() {
 
   # always() lets the job run when the Go jobs were skipped for a pull request
   # that touches only suites; the two contains() guards keep a failed or a
-  # cancelled need blocking all the same.
+  # cancelled need blocking all the same. A scheduled or dispatched run is the
+  # nightly chaos run, and a push never runs the legs.
   local block
   block=$(job_block e2e-chaos)
   assert_contains "the gate survives a skipped need" "$block" "always() &&"
-  assert_contains "the gate runs on pull requests alone" "$block" \
-    "github.event_name == 'pull_request'"
+  assert_contains "the gate runs on a pull request and on the night" "$block" \
+    "(github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&"
+  assert_not_contains "the gate never runs on a push" "$block" "'push'"
   assert_contains "the gate reads the resolver's chaos flag" "$block" \
     "needs.changes.outputs.e2e-chaos == 'true'"
   assert_contains "the gate waits for the images" "$block" \
@@ -148,6 +150,14 @@ test_the_run_step_drives_chainsaw_over_the_entry() {
     "chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \\"
   assert_contains "over the entry's test directories" "$step" \
     "\${{ matrix.test_dirs }}"
+
+  # The config's failFast: true holds on a pull request; a night runs every
+  # suite of the leg, so one red suite hides no other from the report.
+  assert_eq "a run that is no pull request turns failFast off, between the config and the directories" \
+    "          chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \\
+            \${{ github.event_name != 'pull_request' && '--fail-fast=false' || '' }} \\
+            \${{ matrix.test_dirs }}" \
+    "$(grep -A2 'chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml' <<<"$step")"
 }
 
 test_diagnostics_and_the_report_survive_a_failure() {

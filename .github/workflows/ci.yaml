@@ -11,6 +11,15 @@ name: CI
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled]
+  # The nightly chaos run (#1388): every e2e-chaos leg against main, after
+  # build-e2e-images, and nothing else (hack/ci-resolve-changes.sh). A green
+  # night takes about 18 minutes of image build and the 137-minute nova leg,
+  # so it ends around 00:40, before Performance (01:30) and the Flux path
+  # (02:45). report-nightly-chaos files a red scheduled night; a dispatch
+  # (gh workflow run ci.yaml --ref main) runs the same jobs and files nothing.
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -47,8 +56,11 @@ env:
 # nothing, so it costs one ubuntu-latest runner for about twenty seconds. A
 # ci:* label (or the run-chaos alias) lands in the normal group and is meant to
 # supersede the run in flight: it asks for more jobs than that run scheduled.
+# The group names the event, so a scheduled or dispatched night never delays or
+# cancels main's push run, and a second dispatch waits for the first instead
+# of cancelling it.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}', github.ref, github.workflow) }}
+  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}-{2}', github.ref, github.workflow, github.event_name) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -78,6 +90,10 @@ jobs:
   # On tag pushes the full release pipeline must always run, so all areas and
   # all operators are forced active regardless of which files were touched. On a
   # push to main the operator matrix keeps the publish semantics it has today.
+  #
+  # A scheduled or dispatched run is the nightly chaos run: the paths filter is
+  # skipped, and the resolver ignores paths and labels and switches on
+  # e2e-chaos and build-e2e-images alone.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -122,6 +138,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
+        # A night has no change set; its outputs read as empty strings.
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         with:
           filters: |
             # ---------------------------------------------------------------
@@ -1332,9 +1350,13 @@ jobs:
     # maintainer can run E2E by pushing the change to a same-repo branch.
     # Reintroducing an artifact-based fallback for forks would bring back
     # the 5-minute download-artifact timeouts that GH-310 fixed.
+    #
+    # A scheduled or dispatched run builds the images of the nightly chaos
+    # run; the fork guard reads true there, since such a run has no pull
+    # request.
     if: |
       always() &&
-      github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.changes.outputs.build-e2e-images == 'true' &&
       github.event.pull_request.head.repo.fork != true &&
       !contains(needs.*.result, 'failure') &&
@@ -2053,7 +2075,7 @@ jobs:
     # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
       always() &&
-      github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.changes.outputs.e2e-chaos == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
@@ -2639,11 +2661,16 @@ jobs:
           OPERATOR: nova
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
           NAMESPACE: nova-system
+      # The config sets failFast: true, so on a pull request the first red
+      # suite skips the rest of its leg. A night runs every suite of the leg
+      # with --fail-fast=false, which chainsaw 0.2.15 lets override the
+      # config, so one red suite hides no other from the night's report.
       - name: Run chaos E2E tests
         id: chaos
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \
+            ${{ github.event_name != 'pull_request' && '--fail-fast=false' || '' }} \
             ${{ matrix.test_dirs }}
       # The controlplane entry's isolated_test_dirs, in an invocation of their
       # own after the step above and whatever its outcome, under a report name
@@ -2739,6 +2766,44 @@ jobs:
       - name: Delete kind cluster
         if: always()
         run: hack/ci-delete-kind-cluster.sh
+
+  # Files a red nightly chaos run (#1388): one issue per failed suite, per
+  # red leg that names no suite, for a night where no leg ran, and for a
+  # night whose self-hosted jobs took longer than 600 minutes together (D6
+  # of #1386), each through hack/ci-report-red-run.sh
+  # (hack/ci-report-nightly-chaos.sh). This GitHub-hosted job is the only one
+  # in this workflow that holds issues: write; actions: read lists the jobs
+  # of the run. A dispatch never reports, as in flux-path.yaml. A re-run
+  # comments on the same open issues and opens none.
+  report-nightly-chaos:
+    needs: [changes, build-e2e-images, e2e-chaos]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A leg that hit its wall uploaded no report; the script files the leg
+      # then.
+      - name: Download the JUnit reports
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: e2e-chaos-junit-report-*
+          path: _output/nightly
+      - name: Report the night
+        run: hack/ci-report-nightly-chaos.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT_SHA: ${{ github.sha }}
+          REPORTS_DIR: _output/nightly
+          BUDGET_MINUTES: "600"
 
   # End-to-end Prometheus stack tests using kind cluster,
   # kube-prometheus-stack, and Chainsaw.  Loads the keystone-operator and
