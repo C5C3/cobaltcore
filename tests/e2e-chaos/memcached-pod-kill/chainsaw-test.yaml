@@ -7,7 +7,7 @@
 # regression) when a Memcached pod is killed, confirming that cache
 # failures are treated as performance degradation only.
 #
-# SC-CHAOS-002,
+# Chaos scenario: SC-CHAOS-002
 #
 # Workload: the token stream of ../lib/workload.sh issues and validates tokens
 # against keystone-chaos-mc through the fault. The budget is what three kind
@@ -15,6 +15,8 @@
 # requests: pymemcache raises MemcacheUnexpectedCloseError and "All servers
 # seem to be down" through oslo.cache, the request ends in a 500 or in a
 # connection closed without an answer, and the budget covers that.
+# Chaos matrix: keystone cache pod-kill
+# Chaos matrix: memcached self pod-kill
 # Chaos budget: failures=190 recovery=150s
 # Chaos budget measured: 2026-10-14, kind, failures 13/95/84, recovery 8/114/113 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

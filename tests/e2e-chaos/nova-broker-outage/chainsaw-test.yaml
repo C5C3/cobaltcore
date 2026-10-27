@@ -50,6 +50,8 @@
 # broker of its own the Nova can use managed messaging, which is the mode the
 # fault is about; managed mode always lands on the root vhost, and one Nova on
 # one broker has no second tenant to keep apart.
+# Chaos matrix: nova broker partition
+# Chaos matrix: rabbitmq self partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

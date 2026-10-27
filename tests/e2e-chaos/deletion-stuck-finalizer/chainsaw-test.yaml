@@ -26,6 +26,9 @@
 # mid-test failure never leaves mariadb-operator wedged for later suites.
 #
 # Chaos workload: none (the Keystone under test is being deleted)
+# Chaos scenario: SC-CHAOS-010
+# Chaos matrix: keystone database scale-to-zero
+# Chaos matrix: mariadb operator scale-to-zero
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

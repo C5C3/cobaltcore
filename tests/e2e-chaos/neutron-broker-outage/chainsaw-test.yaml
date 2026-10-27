@@ -25,6 +25,8 @@
 # The Neutron API rejects an unauthenticated request, so this suite brings its
 # own Keystone (00-keystone-cr.yaml) and every probe asks it for a
 # project-scoped admin token before touching the Neutron API.
+# Chaos matrix: neutron broker partition
+# Chaos matrix: rabbitmq self partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

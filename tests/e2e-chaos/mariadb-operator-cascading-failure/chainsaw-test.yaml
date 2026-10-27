@@ -37,6 +37,9 @@
 # Workload: the token stream of ../lib/workload.sh issues and validates tokens
 # against keystone-chaos-cascade through the fault. Token issue needs the
 # database, so the budget is what three kind runs measured.
+# Chaos matrix: keystone database pod-failure
+# Chaos matrix: mariadb operator pod-kill
+# Chaos matrix: mariadb self pod-failure
 # Chaos budget: failures=156 recovery=70s
 # Chaos budget measured: 2026-10-16, kind, failures 70/78/71, recovery 30/36/28 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

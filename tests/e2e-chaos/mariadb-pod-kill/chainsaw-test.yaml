@@ -7,11 +7,13 @@
 # (DatabaseReady=False) and recovers autonomously when the
 # StatefulSet restarts the killed pod.
 #
-# SC-CHAOS-001,
+# Chaos scenario: SC-CHAOS-001
 #
 # Workload: the token stream of ../lib/workload.sh issues and validates tokens
 # against keystone-chaos-db through the fault. The budget is what three kind
 # runs measured.
+# Chaos matrix: keystone database pod-kill
+# Chaos matrix: mariadb self pod-kill
 # Chaos budget: failures=36 recovery=50s
 # Chaos budget measured: 2026-10-14, kind, failures 13/18/13, recovery 19/20/19 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

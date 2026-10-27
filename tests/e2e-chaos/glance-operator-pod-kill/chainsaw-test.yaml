@@ -17,6 +17,7 @@
 # Workload: the http stream of ../lib/workload.sh GETs
 # http://glance-chaos-op.openstack.svc:9292/healthcheck while the fault is
 # active. The operator is not on that request path, so the budget is zero.
+# Chaos matrix: glance operator pod-kill
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

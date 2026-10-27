@@ -45,6 +45,7 @@
 # against this suite's Keystone and Nova. The agent is on no boot path of the
 # fake driver, so the budget is zero and a failed server cycle is a defect to
 # find.
+# Chaos matrix: neutron self pod-kill
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-15, estimate, failures 0, recovery 0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

@@ -26,6 +26,8 @@
 # zero servers is the smallest request that reaches both nova schemas, and a
 # deployment with nothing else in it leaves one possible cause for a list that
 # fails.
+# Chaos matrix: nova database partition
+# Chaos matrix: mariadb self partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

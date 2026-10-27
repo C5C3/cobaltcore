@@ -29,6 +29,8 @@
 # The suite brings its own broker (00-rabbitmqcluster.yaml) rather than taking
 # a vhost on the kind-only shared-rabbitmq: the fault severs a whole broker,
 # and doing that to the shared one would take the rest of the leg with it.
+# Chaos matrix: cinder broker partition
+# Chaos matrix: rabbitmq self partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

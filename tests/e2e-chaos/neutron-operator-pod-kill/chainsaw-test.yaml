@@ -28,6 +28,7 @@
 # ../lib/workload.sh create and delete networks and ports through
 # neutron-chaos-op while the operator is gone. The operator is not on that
 # request path, so the budget is zero and a failed record is a defect to find.
+# Chaos matrix: neutron operator pod-kill
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-15, estimate, failures 0, recovery 0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

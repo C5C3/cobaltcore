@@ -38,6 +38,7 @@
 # The token stream fails from the PodChaos until the Keystone answers again;
 # the network stream fails once Neutron needs a token it has not cached. The
 # budget is an estimate of that window: no run has measured it yet.
+# Chaos matrix: neutron keystone pod-failure
 # Chaos budget: failures=400 recovery=150s
 # Chaos budget measured: 2026-10-15, estimate, failures 200, recovery 120 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

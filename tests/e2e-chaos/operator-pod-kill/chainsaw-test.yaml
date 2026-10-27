@@ -17,6 +17,8 @@
 # Workload: the token stream of ../lib/workload.sh issues and validates tokens
 # against keystone-chaos-opk through the fault. The fault never touches the
 # token path, so the budget is zero.
+# Chaos scenario: SC-CHAOS-009
+# Chaos matrix: keystone operator pod-kill
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

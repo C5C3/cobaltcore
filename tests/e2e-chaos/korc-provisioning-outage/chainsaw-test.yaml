@@ -46,6 +46,8 @@
 # Workload: the token stream of ../lib/workload.sh issues and validates tokens
 # against the plane's Keystone, cp-korc-out-keystone, during the blind window.
 # K-ORC is on no request path of a token, so the budget is zero.
+# Chaos matrix: controlplane backend pod-failure
+# Chaos matrix: k-orc self pod-failure
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-17, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

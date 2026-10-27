@@ -36,6 +36,8 @@
 # and validates tokens against keystone-chaos-mc-part through the fault. The
 # budget is an estimate that assumes the worst case, a failure in every cycle
 # of the window; no run has measured it yet.
+# Chaos matrix: keystone cache partition
+# Chaos matrix: memcached self partition
 # Chaos budget: failures=500 recovery=180s
 # Chaos budget measured: 2026-10-15, estimate, failures 250, recovery 150 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

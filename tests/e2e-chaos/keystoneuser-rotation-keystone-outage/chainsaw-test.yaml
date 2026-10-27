@@ -48,6 +48,8 @@
 # Workload: the token stream of ../lib/workload.sh issues and validates tokens
 # against cp-ku-rot-keystone, the Keystone the fault takes, so the budget is
 # measured, as for ../controlplane-keystone-degraded/.
+# Chaos matrix: controlplane keystone pod-failure
+# Chaos matrix: k-orc keystone pod-failure
 # Chaos budget: failures=410 recovery=70s
 # Chaos budget measured: 2026-10-26, kind, failures 205/205/205, recovery 38/38/38 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

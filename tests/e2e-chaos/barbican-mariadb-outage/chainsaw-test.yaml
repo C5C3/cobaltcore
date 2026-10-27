@@ -35,6 +35,8 @@
 # workload's 15 s timeout or the operator's default socket timeouts, whichever
 # ends first. The budget is an estimate of that window: no run has
 # measured it yet.
+# Chaos matrix: barbican database partition
+# Chaos matrix: mariadb self partition
 # Chaos budget: failures=40 recovery=90s
 # Chaos budget measured: 2026-10-15, estimate, failures 20, recovery 60 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

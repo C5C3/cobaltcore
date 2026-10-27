@@ -34,6 +34,8 @@
 # cinder-upg-bus. A create that reaches the API while the broker is gone, or
 # whose cast meets a process the rollout replaces, does not reach available
 # within the stream's 120 s, so the budget is measured.
+# Chaos matrix: cinder broker pod-kill
+# Chaos matrix: rabbitmq self pod-kill
 # Chaos budget: failures=10 recovery=40s
 # Chaos budget measured: 2026-10-26, kind, failures 3/3/5, recovery 0/0/8 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
