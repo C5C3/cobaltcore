@@ -469,6 +469,20 @@ gen-helm-schema:
 verify-helm-schema:
 	python3 hack/gen-helm-values-schema.py --check
 
+.PHONY: gen-chaos-matrix
+# gen-chaos-matrix regenerates the component x role matrix and the suite table
+# of docs/reference/testing/chaos-e2e-tests.md from the `# Chaos matrix:`,
+# `# Chaos scenario:` and `# Chaos budget:` lines of the chaos suite headers.
+# Run it after a header change.
+gen-chaos-matrix:
+	hack/gen-chaos-matrix.sh
+
+.PHONY: verify-chaos-matrix
+# verify-chaos-matrix fails if the generated tables of the chaos page have
+# drifted from the suite headers.
+verify-chaos-matrix:
+	hack/gen-chaos-matrix.sh --check
+
 .PHONY: verify-helm-released-values
 # verify-helm-released-values renders every operator chart with the values.yaml
 # of its released chart (the highest tag under oci://ghcr.io/c5c3/charts) and
