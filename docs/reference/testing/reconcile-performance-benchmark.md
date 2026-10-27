@@ -244,13 +244,23 @@ with a 75-minute wall and read-only `contents` and `packages` permissions:
 4. It runs the token measurement and then the reconcile benchmark with
    `CR_COUNTS="1 3"`, `SETTLE_SECONDS=120` and `GATE_P95_SECONDS=2`, each
    writing its JSON under `_output/perf/`.
-5. It runs `perf-baseline.py compare --tolerance-percent 20` on both files.
-   A failed measurement ends the job before this step.
+5. It runs `perf-baseline.py compare --tolerance-percent 20` on both files
+   and writes its output, inside a text fence, to `_output/perf/summary.md`
+   through `tee`. The step runs under `set -o pipefail` and exits with the
+   status of `compare`, so a regression still fails it. A failed measurement
+   ends the job before this step.
 6. It uploads `_output/perf/` as the artifact `performance-results`, kept for
    90 days, dumps diagnostics when a step failed, and deletes the cluster.
 
-A red night fails the run. GitHub notifies the user who last changed the cron
-schedule of the workflow file; the workflow opens no issue. The workflow pins
+A red night fails the run. On a scheduled run the `report` job then files it
+on one tracking issue, "Scheduled performance run is red", through
+`hack/ci-report-red-run.sh`: it comments on the open issue of that title that
+`github-actions[bot]` opened, or opens one, with `_output/perf/summary.md` of
+the `performance-results` artifact as the body. A night that failed before the
+comparison has no summary, and the issue points at the run log. The `report`
+job runs on `ubuntu-latest` and is the only job of the workflow that holds
+`issues: write`. A dispatched run never reports, and a human closes the issue
+once the cause is fixed. The workflow pins
 `KIND_VERSION` like `ci.yaml`, `e2e-operator-upgrade.yaml`, `flux-path.yaml`
 and `hack/install-test-deps.sh`, and Renovate's `kind` group moves the five
 pins in one pull request

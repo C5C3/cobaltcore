@@ -6,17 +6,23 @@
 # Verify the shape of .github/workflows/performance.yaml, the nightly that
 # measures token and reconcile latency against tests/perf/baseline.json:
 #   - the triggers (a 01:30 UTC schedule and workflow_dispatch), read-only
-#     permissions, a concurrency group that never cancels a night, and a
-#     KIND_VERSION pin;
-#   - one self-hosted job, baseline, with a 75-minute wall;
+#     top-level permissions, a concurrency group that never cancels a night,
+#     and a KIND_VERSION pin;
+#   - two jobs, of which one is self-hosted: baseline, with a 75-minute wall
+#     and no permissions of its own;
 #   - the steps: the release resolved from the keystone service images, the
 #     kind cluster, the three images pulled and loaded, the operator at
 #     :latest with one replica, both measurements with their RESULT_JSON, the
 #     comparison with a 20 % tolerance after both measurements and without an
-#     if:, the artifact and the cluster deletion under always(), the
-#     diagnostics under failure();
+#     if:, under pipefail through a tee into _output/perf/summary.md, the
+#     artifact and the cluster deletion under always(), the diagnostics under
+#     failure();
+#   - job report: after baseline, only for a red scheduled run, on
+#     ubuntu-latest, the only holder of issues: write, and the seven inputs of
+#     hack/ci-report-red-run.sh with the summary of the comparison;
 #   - a copy whose comparison step runs before a measurement step fails the
-#     order check;
+#     order check, and a copy whose baseline job grants itself issues: write
+#     fails the permission check;
 #   - once committed, tests/perf/baseline.json records its release, commit,
 #     run and date.
 #
@@ -63,6 +69,26 @@ step_index() {
   step_names "$1" | grep -nxF -- "$2" | head -1 | cut -d: -f1
 }
 
+# check_writers <file> — the report job alone is granted a write, and only
+# issues: write.
+check_writers() {
+  assert_eq "issues: write is the only write, granted once" "      issues: write" \
+    "$(grep -E ': write$' "$1")"
+  assert_eq "the baseline job widens no permission" "" \
+    "$(CI_YAML="$1" job_block baseline | grep -E '^    permissions:')"
+}
+
+# fails_on <check> <file> — Run the check against <file> on counters of its
+# own, quietly, and echo how many of its assertions failed.
+fails_on() {
+  (
+    PASS=0
+    FAIL=0
+    "$1" "$2" >/dev/null
+    echo "$FAIL"
+  )
+}
+
 # compare_runs_last <file> — succeed when the comparison step comes after
 # both measurement steps.
 compare_runs_last() {
@@ -93,7 +119,7 @@ test_triggers_permissions_and_env() {
     "  contents: read
   packages: read" \
     "$(awk '/^permissions:$/ { p = 1; next } p && /^[^ ]/ { exit } p' "$WORKFLOW")"
-  assert_file_not_contains "nothing is granted write" "$WORKFLOW" ': write'
+  check_writers "$WORKFLOW"
   assert_file_contains_fixed "one night per ref" "$WORKFLOW" 'group: performance-${{ github.ref }}'
   assert_file_contains_fixed "a dispatch never cancels a night" "$WORKFLOW" 'cancel-in-progress: false'
   assert_file_contains_fixed "IMAGE_PREFIX is ghcr.io/c5c3" "$WORKFLOW" 'IMAGE_PREFIX: ghcr.io/c5c3'
@@ -107,10 +133,11 @@ test_triggers_permissions_and_env() {
 test_one_self_hosted_job() {
   echo "Test: one self-hosted job with a 75-minute wall"
 
-  assert_eq "the only job is baseline" "baseline" "$(job_names | paste -sd' ' -)"
+  assert_eq "the jobs are baseline and report" "baseline report" "$(job_names | paste -sd' ' -)"
+  assert_eq "one job runs on self-hosted" "1" "$(grep -c '^    runs-on: self-hosted$' "$WORKFLOW")"
   local job
   job="$(job_block baseline)"
-  assert_contains "it runs on self-hosted" "$job" "    runs-on: self-hosted"
+  assert_contains "baseline is the self-hosted job" "$job" "    runs-on: self-hosted"
   assert_contains "its wall is 75 minutes" "$job" "    timeout-minutes: 75"
 }
 
@@ -175,6 +202,12 @@ test_the_measurements_and_the_comparison() {
   assert_contains "with a 20 % tolerance" "$step" "--tolerance-percent 20"
   assert_contains "on both measured files" "$step" "--measured _output/perf/token.json _output/perf/reconcile.json"
   assert_not_contains "it has no if:, so a failed measurement leaves no comparison" "$step" "if:"
+  assert_contains "it runs under pipefail, so a regression still fails the step" "$step" "set -o pipefail"
+  assert_contains "its output goes into the summary through a tee" "$step" \
+    "--measured _output/perf/token.json _output/perf/reconcile.json 2>&1 |
+            tee -a _output/perf/summary.md || rc=\$?"
+  assert_contains "and the step exits with the comparison's status" "$step" 'exit "${rc}"'
+
   if compare_runs_last "$WORKFLOW"; then
     echo "  PASS: the comparison comes after both measurements"
     PASS=$((PASS + 1))
@@ -199,6 +232,45 @@ test_the_measurements_and_the_comparison() {
   assert_contains "the cluster is deleted always" "$step" "if: always()"
   assert_contains "by ci-delete-kind-cluster.sh" "$step" "run: hack/ci-delete-kind-cluster.sh"
   assert_eq "the deletion is the last step" "Delete kind cluster" "$(step_names "$WORKFLOW" | tail -1)"
+}
+
+test_the_report_job() {
+  echo "Test: the report job files a red scheduled night"
+
+  local job step
+  job="$(job_block report)"
+  assert_contains "it runs after baseline" "$job" "    needs: baseline"
+  assert_eq "only for a red scheduled run" \
+    "    if: always() && github.event_name == 'schedule' && needs.baseline.result != 'success'" \
+    "$(grep -E '^    if:' <<<"$job")"
+  assert_contains "on ubuntu-latest" "$job" "    runs-on: ubuntu-latest"
+  assert_eq "it holds contents: read and issues: write" \
+    "      contents: read
+      issues: write" "$(awk '/^    permissions:$/ { p = 1; next } p && /^      [a-z]/ { print; next } p { exit }' <<<"$job")"
+
+  step="$(job_step report "Download the results")"
+  assert_contains "of performance-results" "$step" "name: performance-results"
+  assert_contains "into _output/perf" "$step" "path: _output/perf"
+  assert_contains "a missing artifact does not stop the report" "$step" "continue-on-error: true"
+
+  step="$(job_step report "Report the red night")"
+  assert_contains "the report runs ci-report-red-run.sh" "$step" "run: hack/ci-report-red-run.sh"
+  assert_contains "with the title" "$step" "REPORT_TITLE: Scheduled performance run is red"
+  assert_contains "with the baseline job's result" "$step" 'REPORT_RESULT: ${{ needs.baseline.result }}'
+  assert_contains "with the run" "$step" \
+    'RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+  assert_contains "with the commit" "$step" 'REPORT_SHA: ${{ github.sha }}'
+  assert_contains "with the comparison as the summary" "$step" "SUMMARY_FILE: _output/perf/summary.md"
+}
+
+test_a_baseline_job_with_a_write_fails_the_check() {
+  echo "Test: a copy whose baseline job grants itself issues: write fails"
+
+  local copy="$TMP_DIR/baseline-writes.yaml"
+  awk '{ print } $0 == "    timeout-minutes: 75" { print "    permissions:"; print "      issues: write" }' \
+    "$WORKFLOW" >"$copy"
+  assert_contains "the copy grants baseline issues: write" "$(CI_YAML="$copy" job_block baseline)" "issues: write"
+  assert_eq "the permission check fails twice on it" "2" "$(fails_on check_writers "$copy")"
 }
 
 test_a_comparison_before_a_measurement_fails_the_check() {
@@ -255,7 +327,9 @@ test_triggers_permissions_and_env
 test_one_self_hosted_job
 test_the_steps
 test_the_measurements_and_the_comparison
+test_the_report_job
 test_a_comparison_before_a_measurement_fails_the_check
+test_a_baseline_job_with_a_write_fails_the_check
 test_the_committed_baseline
 
 echo ""
