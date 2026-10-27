@@ -32,22 +32,7 @@ is running (namespace `horizon-system`) alongside the projected
 `controlplane-horizon` dashboard.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy — for real
-   enforcement.** Confirm with your platform team (Calico, Cilium, and Antrea
-   enforce).
-
-   ::: warning Enforcement cannot be verified on the default devstack CNI
-   The ControlPlane Quick Start kind devstack uses the default `kindnet` CNI,
-   which **silently ignores** NetworkPolicy objects, and kind fixes the CNI at
-   cluster creation so it cannot be swapped in afterwards. The policy object
-   is still created and the operator keeps reconciling, so Step 2 below
-   confirms only the policy's **shape** and that enabling it does **not
-   break** reconciliation — it does **not** prove that packets outside the
-   allow-list are dropped. Real enforcement requires a cluster whose CNI
-   enforces NetworkPolicy — typically your production platform, not the kind
-   devstack.
-   :::
-2. A running `horizon-operator` Helm release (namespace `horizon-system`).
+A running `horizon-operator` Helm release (namespace `horizon-system`) is required.
 
 ## Step 1 — Enable the policy
 
@@ -62,8 +47,8 @@ kubectl get endpoints kubernetes -n default -o json \
 ```
 
 On the tutorial devstacks the `horizon-operator` release is owned by Flux (a
-`HelmRelease`), so set the values by patching its `spec.values` — not with a
-raw `helm upgrade`, which the Flux helm-controller reverts on its next
+`HelmRelease`), so set the values by patching its `spec.values`. The Flux
+helm-controller reverts a raw `helm upgrade` on its next
 reconcile. Substitute the CIDRs and ports from above:
 
 ```bash
@@ -88,7 +73,7 @@ operator-namespace ingress peer is appended to every rendered policy).
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), set the
-values with a rolling `helm upgrade` — remember the fail-closed guard requires
+values with a rolling `helm upgrade`. The fail-closed guard requires
 `kubeApiServer.cidrs` and `ports`:
 
 ```bash
@@ -106,9 +91,18 @@ reconcile. Use the HelmRelease patch above instead.
 
 ## Step 2 — Verify
 
-On the kind devstack this verifies the policy's **shape** and that enabling it
-does **not break** reconciliation — not traffic enforcement, which the default
-`kindnet` CNI does not apply (see the prerequisite above).
+On kind v0.32 and later this checks the policy's shape and reconciliation
+under enforcement. These commands do not attempt traffic outside the allow-list.
+Restart the operator to test new connections; existing connections can remain
+open after a policy change:
+
+```bash
+kubectl -n horizon-system rollout restart deploy/horizon-operator
+kubectl -n horizon-system rollout status deploy/horizon-operator --timeout=5m
+```
+
+If the rollout times out, inspect the operator logs and compare the API-server
+endpoint addresses and ports with the policy.
 
 ```bash
 kubectl -n horizon-system get networkpolicy
@@ -132,7 +126,7 @@ Set the replica count on the `ControlPlane` CR, not on the projected
 `controlplane-horizon` child: the c5c3-operator re-asserts the child's
 `spec.deployment.replicas` on every reconcile, so a direct edit of the child is
 reverted. If the operator loses apiserver connectivity after enabling the policy,
-your CNI maps the apiserver behind a different port — compare the policy's egress
+your CNI may map the apiserver behind a different port. Compare the policy's egress
 ports with `kubectl get endpoints kubernetes -n default`.
 
 ## Tested by
@@ -142,11 +136,21 @@ the shared operator-library, whose helm-unittest
 (`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
 pins the shared rules. The horizon chart's helm-unittest
 (`operators/horizon/helm/horizon-operator/tests/networkpolicy_test.yaml`) pins
-the egress rule the chart adds for its API health check. The horizon chart's
-policy is exercised end-to-end on the CI e2e kind cluster by this chainsaw
-suite:
+the egress rule the chart adds for its API health check. These tests check
+rendering only; they do not exercise packet enforcement.
+
+The Horizon-specific Chainsaw suite adds runtime enforcement coverage on the
+CI kind cluster. Use the same tools, disposable devstack, image-loading and
+path-resolution requirements as the
+[Keystone suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by),
+with the primary Horizon operator and its workload dependencies running.
+From the repository root, load the Horizon `:dev` image and build its chart
+dependency before running:
 
 ```bash
+make image OPERATOR=horizon IMG=ghcr.io/c5c3/horizon-operator:dev
+kind load docker-image ghcr.io/c5c3/horizon-operator:dev --name cobaltcore
+helm dependency build --skip-refresh operators/horizon/helm/horizon-operator
 chainsaw test --test-dir tests/e2e/horizon-operator/network-policy-egress
 ```
 
@@ -157,3 +161,5 @@ its connection to the MariaDB port must be dropped, and the dashboard must answe
 `GET /auth/login/` through its Service on 8080. The step waits for the drop
 first and fails when it never comes, so it passes only on a cluster that
 enforces the policy, as the CI kind cluster does.
+
+This suite covers only the Horizon chart. It does not validate other operators.

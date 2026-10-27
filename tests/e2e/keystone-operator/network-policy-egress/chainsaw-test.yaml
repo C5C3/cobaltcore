@@ -69,6 +69,7 @@ spec:
         timeout: 120s
         content: |
           set -eu
+          REPO_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
           SLICE="$(kubectl get endpointslice kubernetes -n default -o json)"
           CIDRS="$(echo "${SLICE}" | jq -r '[.endpoints[]?.addresses[]? | . + (if contains(":") then "/128" else "/32" end)] | unique | join(",")')"
           PORT="$(echo "${SLICE}" | jq -r '[.ports[]?.port | select(. != null)] | first // empty')"
@@ -77,9 +78,9 @@ spec:
             exit 1
           fi
           helm install keystone-operator-netpol \
-            ${GITHUB_WORKSPACE:-.}/operators/keystone/helm/keystone-operator/ \
+            "${REPO_ROOT}/operators/keystone/helm/keystone-operator/" \
             --namespace keystone-system --create-namespace \
-            --values ${GITHUB_WORKSPACE:-.}/tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml \
+            --values "${REPO_ROOT}/tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml" \
             --set "networkPolicy.kubeApiServer.cidrs={${CIDRS}}" \
             --set "networkPolicy.kubeApiServer.ports={${PORT}}" \
             --wait --timeout 90s
