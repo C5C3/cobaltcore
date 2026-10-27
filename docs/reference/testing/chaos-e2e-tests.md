@@ -3220,6 +3220,10 @@ whose probes never touch the bus, does not restart.
 step 2 and judged in step 6 against `failures=20 recovery=210s`, an estimate no run
 has measured yet. The suite runs in the `network` matrix entry. A create whose cast
 meets the missing broker does not reach `available` within the stream's 120 seconds.
+The scheduler drains the queued casts once it reconnects. A create it drops leaves
+its volume `creating`, which Cinder refuses to delete, and the consistency check
+fails the suite on it; the operator sizes the SQL user's
+[connection cap](../cinder/cinder-reconciler.md#connection-cap) for that drain.
 Every step from 2 to 6 dumps the workload in its catch block.
 
 **Catch blocks:** a shared YAML anchor calls `../diagnostics.sh chaos

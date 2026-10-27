@@ -32,9 +32,14 @@
 #
 # Workload, on the network leg: the noauth volume stream of ../lib/workload.sh
 # against cinder-broker-kill. A create that reaches the API while the broker is
-# gone has its cast to the scheduler lost or delayed, so the volume does not
-# reach available within the stream's 120 s and the cycle fails. The budget is
-# an estimate of that window: no run has measured it yet.
+# gone has its cast to the scheduler delayed, so the volume does not reach
+# available within the stream's 120 s and the cycle fails. The scheduler drains
+# the queued casts once it reconnects, each create on a database session of its
+# own. A create it drops leaves its volume in creating, which Cinder refuses to
+# delete, and the consistency check fails the suite on it: on run 39054868167
+# the drain ran into the SQL user's connection cap (MySQL error 1226), which
+# cinderMaxUserConnections now sizes for a full pool per process. The budget
+# is an estimate of that window: no run has measured it yet.
 # Chaos matrix: cinder broker pod-kill
 # Chaos matrix: rabbitmq self pod-kill
 # Chaos budget: failures=20 recovery=210s
