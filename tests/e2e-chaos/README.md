@@ -32,7 +32,10 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `chainsaw/<metadata.name>`, not a directory, so they are not used). A new
   suite **must** be added to the `pod`, `network`, `ovn`, `nova`,
   `controlplane` or `upgrade` leg there, or it never runs in CI.
-- **Runners:** all six legs run on the `self-hosted` runners. The
+- **Runners and gating:** all six legs run on the `self-hosted` runners,
+  every leg gates, and every leg runs against `main` each night at 22:00
+  UTC with `--fail-fast=false`; `report-nightly-chaos` files a red night
+  as one issue per failed suite. The
   NetworkChaos suites (`mariadb-network-latency`, `-partition`,
   `glance-garage-outage`, `barbican-openbao-outage`,
   `neutron-mariadb-outage`, `neutron-broker-outage`, `cinder-broker-outage`,
@@ -42,16 +45,15 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `nova-mariadb-outage`, `nova-placement-outage`,
   `korc-network-partition`) need the `sch_netem`/`ip_set` kernel modules,
   which `hack/deploy-infra.sh` loads (installing
-  `linux-modules-extra-$(uname -r)` on demand); the `network`
-  leg stays `continue-on-error`. It runs every suite that needs the neutron,
+  `linux-modules-extra-$(uname -r)` on demand). The `network`
+  leg runs every suite that needs the neutron,
   cinder or ovn operators, the placement-operator for
   `placement-mariadb-outage`, and a diagnostics step that dumps all seven
   operator namespaces; its wall is 135 minutes. The `ovn` leg runs
   `ovn-southbound-outage` with `WITH_OVN_KERNEL_MODULES=true` so
   `hack/deploy-infra.sh` loads the `openvswitch`/`geneve` modules the
   chassis DaemonSets need, and only the ovn-operator deployed, within a wall
-  of 45 minutes. It stays `continue-on-error` too: the suite builds a
-  datapath on the node itself. The `nova` leg runs the seven suites on the
+  of 45 minutes. The `nova` leg runs the seven suites on the
   Nova stack (`nova-broker-outage`, `nova-mariadb-outage`,
   `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`,
   `neutron-metadata-agent-pod-kill`, `novacompute-drain-compute-kill`, the
@@ -61,8 +63,7 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   on the shared broker, and `nova-broker-outage` brings a `RabbitmqCluster`
   of its own) and `WITH_OVN_KERNEL_MODULES=true` for the OVNChassis of
   `neutron-metadata-agent-pod-kill` and `novacompute-drain-compute-kill`,
-  within a wall of 170 minutes. That leg stays `continue-on-error` as well, because three of its
-  suites are NetworkChaos partitions on the same kernel modules. The
+  within a wall of 170 minutes. The
   `controlplane` leg runs the eight suites that bring up a ControlPlane of
   their own in a short namespace of their own (`korc-provisioning-outage`,
   `korc-network-partition`, `controlplane-keystone-degraded`,
@@ -76,15 +77,14 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `controlplane-provisioning-mariadb-kill` sits under the entry's
   `isolated_test_dirs` and runs after the others in an invocation of its
   own: it fails on the current keystone-operator, and `failFast` would skip
-  the suites behind it. The leg stays
-  `continue-on-error` too, for the NetworkChaos partition of
-  `korc-network-partition`. The `upgrade` leg runs the two suites that fault
+  the suites behind it. The leg gates like every other, so the suite keeps
+  it red until the keystone-operator recovers an interrupted first
+  `db_sync`. The `upgrade` leg runs the two suites that fault
   a Cinder release upgrade from 2026.1 to 2026.2
   (`cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill`), the only
   leg that loads a 2026.2 image, with the cinder-operator, `WITH_NFS=true` and
-  `WITH_MESSAGING=true`, within a wall of 80 minutes. It stays
-  `continue-on-error` as well: its partitions are NetworkPolicies that rest
-  on kindnet's enforcement, and its broker kill is new. The `pod` leg runs the
+  `WITH_MESSAGING=true`, within a wall of 80 minutes. Its partitions are
+  NetworkPolicies that rest on kindnet's enforcement. The `pod` leg runs the
   eight platform suites of #1390 that need only the standalone stack and
   `fernet-rotation-operator-outage` on top of its own, within 135 minutes; the six walls sum to 685 minutes, which the
   author of #1394 accepted on 2026-10-25.
@@ -106,6 +106,13 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   reads `estimate` holds an estimate no run has measured yet. `verify` refuses a header with
   none, two, or a malformed one. A suite without a workload says why in a
   `# Chaos workload: none (<reason>)` line.
+- **Matrix and scenario lines:** every suite header carries one or more
+  `# Chaos matrix: <component> <role> <kind>` lines, above the budget line
+  or last in the header, and a suite with an ID of the architecture's chaos
+  catalog a `# Chaos scenario: SC-CHAOS-<NNN>` line. Run
+  `make gen-chaos-matrix` after changing one: `hack/gen-chaos-matrix.sh`
+  generates the component x role matrix and the suite table of the chaos
+  page from them, and `make verify-chaos-matrix` fails on a stale page.
 
 ## Shared helpers
 

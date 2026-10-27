@@ -142,7 +142,7 @@ settings tuned for fault injection scenarios:
 | `timeouts.assert` | 300s | 120s | Recovery requires multiple reconciliation cycles and pod restart time |
 | `timeouts.cleanup` | 120s | 3m | Chaos Mesh CRs need time to finalize and release faults; the happy-path value is higher because finalizer-driven Keystone deletion under `parallel: 4` can take longer |
 | `execution.parallel` | 1 | 4 | Chaos tests mutate shared infrastructure pod availability; serial execution prevents cross-test interference |
-| `execution.failFast` | true | true | Stop on first failure for faster feedback |
+| `execution.failFast` | true | true | Stop on first failure for faster feedback; the [nightly run](#ci-trigger-policy) passes `--fail-fast=false` |
 | `report.name` | `chainsaw-chaos-report` | `chainsaw-report` | Distinct JUnit report artifact |
 
 Most suites restate the assert timeout of 5 minutes (`5m`) at the spec level.
@@ -360,10 +360,10 @@ always exit 0. A local run pulls the Tempest image from GHCR unless
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
-The job is path-filtered, and its six matrix entries gate differently. The
-`pod` entry is blocking; the `network`, `ovn`, `nova`, `controlplane` and `upgrade`
-entries are not (see below). See [CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos)
-for full job documentation.
+The job runs on a pull request that changes a suite or carries the `ci:chaos`
+label, and every night against `main`. All six of its matrix entries gate. See
+[CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job
+documentation.
 
 **Path filter (`tests_chaos`):** Only changes under `tests/e2e-chaos/**` trigger the job.
 
@@ -377,28 +377,57 @@ a pull request that changes something else.
 
 | Event | Runs when |
 | --- | --- |
-| Push to `main` or a `v*` tag | Never; the job runs on `pull_request` events only |
+| Schedule (22:00 UTC) or dispatch | Every night against `main`, every entry with `--fail-fast=false`; a dispatch runs the same on demand |
 | Pull request | A suite under `tests/e2e-chaos/**` changed, or the `ci:chaos` label is applied |
+
+A push to `main` or of a `v*` tag never runs the job.
 
 **Dependencies:** The job depends on `changes`, `lint`, `shellcheck`, `test`,
 `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` and
 `e2e-operator`. It only runs if `build-e2e-images` succeeded and no dependency failed or was
 cancelled.
 
-**Gating per matrix entry (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}</code>):**
-The `pod` entry is **blocking**: a failure in any PodChaos suite (operator
-restart, PDB, rotation) fails the build. The `network`, `ovn`, `nova` and
-`controlplane` entries stay **non-blocking**, because the `ip_set`/`sch_netem`
-kernel-module dependency their NetworkChaos partitions carry remains prone to
-environment flakiness; their failures are visible but do not block merges. In
-the `controlplane` entry that partition is `korc-network-partition`. The `upgrade`
-entry is non-blocking for reasons of its own: the partitions of
-`cinder-upgrade-db-partition` rest on kindnet's NetworkPolicy enforcement, and the
-broker kill of `cinder-upgrade-broker-pod-kill` is new. The expression names the
-five non-blocking entries instead of negating the blocking one, so a seventh entry
-gates merges until it is argued out of that. The `ci:chaos`
-PR label runs every entry on demand for pre-validation. `run-chaos` still works as
+**Gating:** every matrix entry gates (#1388). The job carries no
+`continue-on-error`, so a red entry fails `e2e-chaos`, and `tempest`, which
+needs the job, skips on that run. An entry added to the matrix gates from its
+first run. `main` lists no required status checks, so gating means the job
+result and the skipped Tempest jobs. `controlplane-provisioning-mariadb-kill`
+keeps the `controlplane` entry red until the keystone-operator recovers an
+interrupted first `db_sync` (see its
+[design notes](#controlplane-provisioning-mariadb-kill)). The `ci:chaos` PR
+label runs every entry on demand for pre-validation. `run-chaos` still works as
 an alias for it.
+
+**Nightly run:** a `schedule` event at 22:00 UTC runs every entry against
+`main`, and `workflow_dispatch` runs the same on demand
+(`gh workflow run ci.yaml --ref main`). The resolver switches on
+`build-e2e-images` and this job alone. A night passes `--fail-fast=false` to
+chainsaw, which overrides `failFast: true` of the config, so a red suite skips
+none of the entry's later suites; a pull request keeps `failFast`. After a
+scheduled night the GitHub-hosted job `report-nightly-chaos` lists the run's jobs
+and files what went red through `hack/ci-report-red-run.sh`. That script comments
+on the open issue of the title that `github-actions[bot]` opened, or opens one:
+
+| Title | Filed when |
+| --- | --- |
+| `Nightly chaos suite <suite> is red` | A suite of an entry that is not green failed; one issue per suite, read from the entry's JUnit report |
+| `Nightly chaos leg <leg> is red` | An entry is not green and names no failed suite: it hit its wall, a step outside the suites failed, or its report is missing or unreadable |
+| `Nightly chaos run is red` | No entry ran, because `changes` or `build-e2e-images` did not succeed |
+| `Nightly chaos run is over its runner budget` | The completed self-hosted jobs of the night took more than 600 minutes together |
+
+A suite or entry issue names the entry, the suite and the job, and quotes the
+failure message inside a fence. Every night writes a table of the entries, their
+conclusions, minutes and failed suites to the step summary of the run. A green
+night files nothing, and a human closes an issue once its cause is fixed.
+Re-running the report job comments on the same open issues and opens none, and a
+dispatched run never reports.
+
+**Runner budget:** D6 of #1386 gives the night ten runner hours, counted in
+measured self-hosted minutes. The six walls below sum to 685
+minutes and `build-e2e-images` adds a wall of 120, so the walls allow 805
+minutes. Green runs of the five entries before #1394 measured about 450, and
+#1394 estimates its six entries at about 575. A night over 600 minutes files
+the budget issue above.
 
 **Matrix entries and what they carry:** the `pod` entry runs the PodChaos suites
 of the keystone stack, the Keystone outage suites of Glance, Placement and
@@ -421,22 +450,13 @@ cinder-operator into `cinder-system` as well and sets `WITH_NFS=true` and
 `WITH_MESSAGING=true` on the infrastructure bring-up: each of the seven attaches
 an NFS backend the operator mounts as an inline CSI volume, five of them take a
 vhost on the shared broker, and the two broker suites bring a RabbitmqCluster of
-their own. Several of them run there for the Cinder stack of the entry, and their
-fault class would not put them there, so they inherit a `continue-on-error` the
-gate below justifies with a kernel-module dependency they do not have:
-`cinder-operator-pod-kill`, `cinder-volume-pod-kill` and `cinder-broker-pod-kill`
-inject a `PodChaos` kill, the class the blocking entry exists for,
-`cinder-keystone-outage` injects a `pod-failure`, and `cinder-nfs-outage` writes
-no chaos-mesh CR at all. Each is the only automated check on the invariant it
-pins, and a regression in one goes red in an entry that reports green. Moving
-them to the `pod` entry means taking the Cinder stack, the NFS export and the
-broker there with them, which the blocking entry's stack and its 120-minute wall
-have not been sized for; that move is tracked as a follow-up. The same
-holds for the PodChaos suites of the entry that need the neutron-operator or the
-ovn-operator. A `Dump diagnostic info (network leg)` step dumps the seven operator
+their own. `cinder-operator-pod-kill`, `cinder-volume-pod-kill` and
+`cinder-broker-pod-kill` inject a `PodChaos` kill and `cinder-keystone-outage` a
+`pod-failure`; they run in this entry for its Cinder stack, and they gate there
+like every other suite. A `Dump diagnostic info (network leg)` step dumps the seven operator
 namespaces of the entry with `OPERATOR_ONLY=1`, so a failed operator kill there
 keeps the operator logs in the job log. The `ovn` entry is the third one, on the `self-hosted`
-runners as well and `continue-on-error` like the network one. It sets
+runners as well. It sets
 `WITH_OVN_KERNEL_MODULES=true` so `hack/deploy-infra.sh` modprobes `openvswitch`
 and `geneve` on the host (the chassis DaemonSets cannot start without them),
 deploys the ovn-operator alone, and runs `ovn-southbound-outage`. It is separate
@@ -444,8 +464,7 @@ from the `network` entry because it builds a datapath on the node itself: its
 probe pods own `/run/openvswitch` and `/run/netns`, which no other suite may hold
 at the same time.
 
-The `nova` entry is the fourth, on the `self-hosted` runners and
-`continue-on-error` like the other two. It carries the heaviest stack in the job:
+The `nova` entry is the fourth, on the `self-hosted` runners. It carries the heaviest stack in the job:
 each of its seven suites (`nova-broker-outage`, `nova-mariadb-outage`,
 `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`,
 `neutron-metadata-agent-pod-kill`, `novacompute-drain-compute-kill`) brings up a
@@ -463,8 +482,7 @@ OVNChassis behind its pool, and the chassis DaemonSets need the `openvswitch` an
 chassis is gone. The suites run in a matrix entry of their own
 because their stack does not fit beside the suites of the `network` entry.
 
-The `controlplane` entry is the fifth, on the `self-hosted` runners and
-`continue-on-error` like the other three. Its eight suites
+The `controlplane` entry is the fifth, on the `self-hosted` runners. Its eight suites
 (`korc-provisioning-outage`, `korc-network-partition`,
 `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`,
 `rabbitmq-operator-cascading-failure`, and `controlplane-provisioning-mariadb-kill`,
@@ -485,8 +503,7 @@ and deploys the c5c3-operator into `c5c3-system` at the chart default of two
 replicas. A `Dump diagnostic info (controlplane leg)` step dumps the
 c5c3-operator and 500 lines of the K-ORC log.
 
-The `upgrade` entry is the sixth, on the `self-hosted` runners and
-`continue-on-error` like the other four. Its two suites
+The `upgrade` entry is the sixth, on the `self-hosted` runners. Its two suites
 (`cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill`) move a Cinder of
 their own from 2026.1 to 2026.2 and fault the upgrade: it is the only entry that
 loads a 2026.2 image. On top of the keystone and OVN stacks it loads
@@ -2398,7 +2415,7 @@ Keystone CR, the pod logs of the Glance CR and of the glance-operator, and every
   `NetworkChaos` partition would leave every validation waiting out its TCP connect
   retries instead: the operators set no `http_connect_timeout` in
   `[keystone_authtoken]`, and keystonemiddleware has no default for it. The same
-  refusal needs no kernel module, so the suite runs in the blocking `pod` entry.
+  refusal needs no kernel module, so the suite runs in the `pod` entry.
 - The probe uses a token the service has never seen. keystonemiddleware caches a
   validated token for `token_cache_time` (300 s by default) in the shared Memcached,
   so a token the workload presented before the outage can keep working through it.
@@ -4038,7 +4055,7 @@ traffic.
   (`korc_unlatch.go`). The `keystone-service` suite drives that latch with a
   status patch only, and this suite drives the K-ORC traffic itself.
 - The partition is a `NetworkChaos` on the `sch_netem` and `ip_set` kernel modules,
-  which keeps the `controlplane` matrix entry non-blocking.
+  which the kernel of the runner loads on demand.
 
 ---
 
@@ -5166,16 +5183,24 @@ tests/e2e-chaos/
 6. To send OpenStack traffic through the fault, call `../lib/workload.sh` as
    [Adopting the harness](#adopting-the-harness) describes, put the measured
    `# Chaos budget:` line in the header, and add `dump` to the catch blocks
-7. For a suite that needs a ControlPlane of its own, add `00-controlplane-cr.yaml`
+7. Add the `# Chaos matrix: <component> <role> <kind>` lines of the suite to the
+   header, above the `# Chaos budget:` line or last in the header, and a
+   `# Chaos scenario: SC-CHAOS-<NNN>` line when the suite has an ID, then run
+   `make gen-chaos-matrix` ([Test Suite Inventory](#test-suite-inventory) gives
+   the vocabulary). A component, role or kind the vocabulary lacks is added to
+   `hack/gen-chaos-matrix.sh` first
+8. For a suite that needs a ControlPlane of its own, add `00-controlplane-cr.yaml`
    in place of the Keystone CR. Source
    `../lib/controlplane.sh` for `cp_bring_up`, `cp_teardown` and `cp_dump`, start
    the workload with `CHAOS_WORKLOAD_ADMIN_SECRET=<cp>-keystone-admin-credentials`,
    and add the directory to the `controlplane` entry in `.github/workflows/ci.yaml`
    and to `CONTROLPLANE_SUITES` in `tests/unit/ci/controlplane_chaos_matrix_test.sh`
-8. For a suite that faults a release upgrade, add the directory to the `upgrade`
+9. For a suite that faults a release upgrade, add the directory to the `upgrade`
    entry in `.github/workflows/ci.yaml`, the entry that loads the 2026.2 image, and
    to `UPGRADE_SUITES` in `tests/unit/ci/upgrade_chaos_matrix_test.sh`
-9. All files must include the `SPDX-License-Identifier: Apache-2.0` header
+10. Add the directory to a matrix entry of `e2e-chaos`; the entry gates, so the
+   suite gates from its first run
+11. All files must include the `SPDX-License-Identifier: Apache-2.0` header
 
 ## Related Resources
 - [Keystone E2E Test Suites](./keystone-e2e-tests.md): Happy-path E2E tests
