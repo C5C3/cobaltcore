@@ -38,6 +38,16 @@
 # client retries through it without telling the application. The post-recovery
 # create is therefore given 240s where the baseline gets 120s.
 #
+# The volume service's client can also come back later than the server. Its
+# mount and the lock holder's are two kernel NFS clients on the node, each with
+# a TCP connection of its own, and one being back says nothing about the other.
+# A reconnect that leaves while the old server pod is torn down is translated
+# to that pod's address, and conntrack translates every retransmission to the
+# same address until the connect gives up. Every call on the soft mount ends
+# in EIO in that window, so a create in it fails three scheduling attempts in
+# 30 seconds.
+# Step 5 waits for the volume service's mount to answer before it creates.
+#
 # The lock holder of 02-lock-holder-pod.yaml checks the reclaim. It takes its
 # lock in step 2 and writes through it every 2 seconds, and step 5 requires
 # three new writes and no error after the server's return (LOCK-KEPT-OK). A
@@ -679,6 +689,36 @@ spec:
           fi
           echo "LOCK-KEPT-OK"
           kubectl delete pod "$POD" -n "$NAMESPACE" --wait=true --timeout=60s
+    # The lock holder's writes say nothing about the volume service's own
+    # client (see the header). On CI run 40552320959 the holder wrote again 3
+    # seconds after the server started, and the volume service's client sent
+    # its RECLAIM_COMPLETE 60 to 70 seconds after the start; the create in
+    # between ended in error. In a local reproduction a reconnect sent while
+    # the old pod was torn down held the client for 60 seconds, 16 of them
+    # after the new pod was Ready. So the create waits until the mount answers
+    # `stat -f`, the call the NFS driver makes first.
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          ERR="$(mktemp)"
+          trap 'rm -f "$ERR"' EXIT
+
+          # A failed call takes the soft mount's ~9s (timeo=30, retrans=2).
+          # 240s is the recovery budget the create below gets as well.
+          START=$SECONDS
+          while ! kubectl exec -n "$NAMESPACE" deploy/cinder-nfs-chaos-volume-nfs-chaos-nfs1 -- \
+              stat -f -c '%S %b %a' "$MNT" >/dev/null 2>"$ERR"; do
+            if [ $((SECONDS - START)) -ge 240 ]; then
+              echo "FAIL: the volume service's mount did not answer within 240s of the lock holder's recovery: $(cat "$ERR")"
+              exit 1
+            fi
+            echo "the volume service's mount does not answer yet: $(cat "$ERR")"
+            sleep 2
+          done
+          echo "MOUNT-BACK-OK after $((SECONDS - START))s"
     - script:
         timeout: 9m
         shell: bash
@@ -697,9 +737,9 @@ spec:
           ERRORED_NAME = sys.argv[3]
           # The restarted server opens in its NFSv4 grace period, up to 90s of
           # reclaims only, and the client retries through it silently. The
-          # script before this one waited for the lock holder's reclaim; a new
-          # create waits for the period to end. It is given more room than the
-          # baseline's 120s for that reason.
+          # script before this one waited for the volume service's mount to
+          # answer; a new create waits for the period to end. It is given more
+          # room than the baseline's 120s for that reason.
           SETTLE_SECONDS = 240
           HEADERS = {"X-Auth-Token": "admin:admin",
                      "Content-Type": "application/json"}

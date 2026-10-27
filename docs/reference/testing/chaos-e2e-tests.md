@@ -1609,7 +1609,7 @@ volume the suite asked for deletes.
 | 2 | Baseline | `script` (8m) + `script` (3m) | A probe pod waits until `GET /v3/scheduler-stats/get_pools` lists the `nfs-chaos-nfs1` backend, then creates a volume through to `available` within 120 s, and its file is stat'ed on the share. Then the lock holder `cinder-nfs-chaos-probe-lock` of `02-lock-holder-pod.yaml` starts and has to write its third `ok` line within 120 s (`LOCK-HELD-OK`). The step cleanup, which runs at the end of the test, deletes the holder and removes its file `/exports/volumes/chaos-lock-holder.img` from the export |
 | 3 | Take the export away | `script` (4m) | Stashes the `cinder-volume` pod UID and restart count as an annotation on its own Deployment, scales `deploy/nfs-server` to 0, and waits until the Service has no endpoint address and no pod left (`OUTAGE-OK`). The step cleanup scales the server back to 1 |
 | 4 | Under the outage | `script` (9m) + `assert` + `script` (2m) | A probe gets 200 from `/healthcheck`, then a create is accepted and has to reach `error` within 240 s (`FAILCLOSED-OK`); the registry row is printed as `HEARTBEAT-STATE`, which the step reports without gating on it. The CR still reports `VolumeServicesReady=True/AllVolumeServicesReady` and `Ready=True/AllReady`, and the recorded pod identity is compared against the live one |
-| 5 | Bring the export back and let the deployment recover | `script` (5m) + `script` (5m) + `script` (9m) + `script` (6m) | The server is scaled back to 1 and rolled out; the lock holder's log has to grow by three `ok` lines within 180 s, with no `error` line and the pod `Running`, and the holder is deleted (`LOCK-KEPT-OK`); a fresh create reaches `available` within `SETTLE_SECONDS = 240` with its file on the share (`RECOVERED-OK`); a third probe deletes the three volumes the suite is responsible for and waits for each to answer 404 (`CLEANUP-OK`) |
+| 5 | Bring the export back and let the deployment recover | `script` (5m) + `script` (5m) + `script` (5m) + `script` (9m) + `script` (6m) | The server is scaled back to 1 and rolled out; the lock holder's log has to grow by three `ok` lines within 180 s, with no `error` line and the pod `Running`, and the holder is deleted (`LOCK-KEPT-OK`); the `cinder-volume` pod's mount has to answer `stat -f` within 240 s (`MOUNT-BACK-OK`); a fresh create reaches `available` within `SETTLE_SECONDS = 240` with its file on the share (`RECOVERED-OK`); a third probe deletes the three volumes the suite is responsible for and waits for each to answer 404 (`CLEANUP-OK`) |
 | 6 | Tear the deployment down | `script` (8m) | Deletes the Cinder CR and waits out its pods, then deletes the `CinderBackend` |
 
 **Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`,
@@ -1635,6 +1635,17 @@ logs from `cinder-system`.
   NFSv4 grace period, up to 90 s in which it serves reclaims alone, and the client
   retries through it without telling the application. The post-recovery create
   therefore gets 240 s where the baseline gets 120 s.
+- The volume service's client can come back later than the server. Its mount
+  and the lock holder's are two kernel NFS clients on the node, each with a TCP
+  connection of its own. A reconnect that leaves while the old server pod is
+  torn down is translated to that pod's address, and conntrack translates every
+  retransmission to the same address until the connect gives up; every call on
+  the soft mount ends in EIO meanwhile. On CI run 40552320959 the lock holder
+  wrote again 3 s after the server started, the volume service's client sent its
+  `RECLAIM_COMPLETE` 60 to 70 s after the start, and a create in between used
+  up its three scheduling attempts in 30 s. Step 5 therefore waits for the
+  `cinder-volume` pod's mount to answer `stat -f`, the call the NFS driver makes
+  first, before it creates.
 - The lock holder checks that the restarted server lets its clients reclaim. It
   is a bare Pod that takes a POSIX lock on a file of the share, as QEMU does on
   an attached volume, and writes and fsyncs through the locked descriptor every
