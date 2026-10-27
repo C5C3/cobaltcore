@@ -21,8 +21,8 @@ A downstream patch changes the upstream source **before** it is installed
 into the service image. It is the last resort: a fix in the operator, a
 config option, or a newer upstream tag is always preferable, because every
 patch has to be carried through every Renovate tag bump until upstream ships
-it. The repository carries thirteen today (cinder 0001–0005 for 2026.1 and
-0001–0004 for 2026.2, glance 0001 and keystone 0001 per release);
+it. The repository carries seventeen today (cinder 0001–0006 for 2026.1
+and 0001–0005 for 2026.2, glance 0001 and keystone 0001–0002 per release);
 `check-image-patches.sh` lists them.
 
 ## How a patch reaches an image
@@ -133,7 +133,7 @@ needs no assertion.
 ### 5. Document it
 
 Add a **Source patch:** paragraph to the service's section of
-`docs/reference/ci-cd/container-images.md` (cinder has three): the path, its
+`docs/reference/ci-cd/container-images.md` (cinder has six): the path, its
 twins, what upstream does, why CobaltCore cannot live with it, what the patch
 changes, which upstream tests moved (or why none), the `verify_<svc>.sh`
 assertion, and the upstream status. When the patch creates a configuration
