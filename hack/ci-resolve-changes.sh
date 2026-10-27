@@ -36,7 +36,8 @@
 #   FILTER_<filter>   — One per paths-filter key; anything but "true" is false
 #   PR_LABELS         — JSON array of the pull request's label names. Unset, "",
 #                       null and any non-array all mean "no labels"
-#   EVENT_NAME        — github.event_name (default pull_request)
+#   EVENT_NAME        — github.event_name (default pull_request); schedule and
+#                       workflow_dispatch resolve to the nightly chaos run
 #   EVENT_ACTION      — github.event.action, for the labeled no-op
 #   EVENT_LABEL       — github.event.label.name, for the labeled no-op
 #
@@ -533,7 +534,35 @@ fi
 [[ "${EVENT_NAME}" == "push" && "$is_tag" != "true" ]] && build_e2e_images=false
 
 # ---------------------------------------------------------------------------
-# 5. Emit
+# 5. The night
+#
+# A scheduled or dispatched run is the nightly chaos run: every e2e-chaos leg
+# against the ref, on the images build-e2e-images builds. Paths and labels mean
+# nothing on it, so every FILTER_* and PR_LABELS value is ignored. This runs
+# last and overrides every flag above, the tag force and the push branch
+# included.
+# ---------------------------------------------------------------------------
+if [[ "${EVENT_NAME}" == "schedule" || "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+  for flag in go docs helm target_cluster_chart e2e_infra e2e_prometheus \
+    e2e_controlplane e2e_controlplane_sso e2e_external_keystone \
+    e2e_autoscaling e2e_multicluster e2e_orders_multicluster e2e_ovn_overlay \
+    e2e_nova_libvirt e2e_operator_upgrade tempest keystone_pressure measure \
+    actionlint changed_tempest changed_proxy changed_ovn changed_libvirt \
+    has_e2e_operators; do
+    printf -v "$flag" false
+  done
+  e2e_chaos=true
+  build_e2e_images=true
+  changed_operators=""
+  changed_services=""
+  tempest_services=""
+  test_targets=""
+  e2e_ops=""
+  upgrade_ops=""
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Emit
 # ---------------------------------------------------------------------------
 emit go "$go"
 emit docs "$docs"
