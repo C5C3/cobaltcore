@@ -64,7 +64,7 @@ spec:
   # ── Step 3: Scale mariadb-operator controller to 0 ─────────────────────
   # Stash the original replica count on the Deployment as an annotation
   # (source of truth on the live object; survives across steps without a
-  # temp file), then scale to 0 and wait for zero ready replicas.
+  # temp file), then scale to 0 and wait until no controller pod is left.
   - name: kill-mariadb-operator
     try:
     - script:
@@ -79,20 +79,28 @@ spec:
           echo "mariadb-operator controller original replicas: ${ORIG}"
           kubectl annotate deploy "$DEPLOY" -n "$NS" \
             chaos.cobaltcore.c5c3.io/orig-replicas="${ORIG}" --overwrite
+          # kubectl wait --for=delete passes at once when its selector matches
+          # no pod, so the selector must match the controller before the wait
+          # below can prove anything.
+          CONTROLLER_PODS="$(kubectl get pod -n "$NS" -l app.kubernetes.io/name=mariadb-operator -o name)"
+          if [ -z "$CONTROLLER_PODS" ]; then
+            echo "ERROR: no pod in $NS matches app.kubernetes.io/name=mariadb-operator; the wait below would pass without waiting"
+            exit 1
+          fi
+          echo "controller pods before the scale-down: ${CONTROLLER_PODS}"
           kubectl scale deploy "$DEPLOY" -n "$NS" --replicas=0
-          echo "Waiting for mariadb-operator controller to reach 0 ready replicas..."
-          for _ in $(seq 1 30); do
-            READY=$(kubectl get deploy "$DEPLOY" -n "$NS" \
-              -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
-            READY="${READY:-0}"
-            if [ "$READY" -eq 0 ]; then
-              echo "mariadb-operator controller is down (readyReplicas=0)"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "ERROR: mariadb-operator controller did not scale to 0"
-          exit 1
+          # readyReplicas reads 0 as soon as the ReplicaSet marks the pod for
+          # deletion, while the controller keeps reconciling until its
+          # container exits (terminationGracePeriodSeconds 10 in the chart).
+          # On run 38960946570 the Keystone delete of step 4 went out 40 ms
+          # after readyReplicas read 0, and the dying controller still
+          # finalized the User. Wait until no controller pod is left; the
+          # webhook and cert-controller pods carry other
+          # app.kubernetes.io/name values and stay up.
+          echo "Waiting for the mariadb-operator controller pods to be gone..."
+          kubectl wait --for=delete pod -n "$NS" \
+            -l app.kubernetes.io/name=mariadb-operator --timeout=75s
+          echo "mariadb-operator controller is down (no controller pod left)"
     catch:
     - script:
         shell: bash
