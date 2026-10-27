@@ -24,6 +24,8 @@
 # injected unauthenticated-context middleware, and the opened image-API policy
 # rules stand in for a live token (00-glance-cr.yaml documents why all three
 # knobs are needed).
+# Chaos matrix: glance backend partition
+# Chaos matrix: garage self partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

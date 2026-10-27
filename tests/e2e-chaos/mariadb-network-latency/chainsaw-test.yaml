@@ -7,11 +7,12 @@
 # (10s latency, 2s jitter) without crash-looping or losing Ready
 # status, confirming adequate timeout configuration.
 #
-# SC-CHAOS-007,
+# Chaos scenario: SC-CHAOS-007
 #
 # Workload: the token stream of ../lib/workload.sh issues and validates tokens
 # against keystone-chaos-net-lat through the fault. The budget is what three
 # kind runs measured.
+# Chaos matrix: keystone database delay
 # Chaos budget: failures=0 recovery=30s
 # Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

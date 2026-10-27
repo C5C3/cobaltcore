@@ -28,6 +28,8 @@
 # mode, and the secret path is only reachable with a project-scoped token. The
 # suite therefore brings its own Keystone (00-keystone-cr.yaml) and every probe
 # asks it for a token as the bootstrap admin before touching the Barbican API.
+# Chaos matrix: barbican backend partition
+# Chaos matrix: openbao self partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

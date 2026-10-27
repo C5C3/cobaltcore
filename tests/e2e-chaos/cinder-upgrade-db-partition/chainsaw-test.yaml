@@ -46,6 +46,7 @@
 # because verify reads one pair of marks, so the budget is measured: three
 # kind runs lost no cycle, which gives zero failures and the 30 s the
 # measurement rule adds to the recovery.
+# Chaos matrix: cinder database partition
 # Chaos budget: failures=0 recovery=30s
 # Chaos budget measured: 2026-10-26, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

@@ -11,11 +11,12 @@
 # The PodChaos CR is applied BEFORE creating the Job so that Chaos Mesh
 # intercepts the Job's pods on creation (pod-failure action, mode: all).
 #
-# SC-CHAOS-005,
+# Chaos scenario: SC-CHAOS-005
 #
 # Workload: the token stream of ../lib/workload.sh issues and validates tokens
 # against keystone-chaos-cron through the fault. The fault never touches the
 # token path, so the budget is zero.
+# Chaos matrix: keystone self pod-failure
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

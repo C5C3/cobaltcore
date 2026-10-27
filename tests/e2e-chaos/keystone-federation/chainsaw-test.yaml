@@ -17,6 +17,8 @@
 # This is the repository's first container-kill suite: recovery is gated on
 # the named container's restartCount (the UID/restart-count convention from
 # the pod-kill suites, adapted to an in-place container restart).
+# Chaos matrix: keystone self container-kill
+# Chaos matrix: keystone backend pod-failure
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

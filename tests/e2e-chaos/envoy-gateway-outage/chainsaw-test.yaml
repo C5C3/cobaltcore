@@ -31,6 +31,7 @@
 # hostname with --resolve to the proxy's ClusterIP and --insecure-tls for the
 # self-signed leaf. The controller is on no request path, so the budget is
 # zero.
+# Chaos matrix: envoy-gateway operator pod-failure
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-16, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

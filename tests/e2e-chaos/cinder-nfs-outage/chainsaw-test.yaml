@@ -45,6 +45,8 @@
 # the client marks the lock lost, and every later write fails with EIO. No
 # create and no CR shows that, and a Nova server's attached volume fails the
 # same way.
+# Chaos matrix: cinder backend scale-to-zero
+# Chaos matrix: nfs self scale-to-zero
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
