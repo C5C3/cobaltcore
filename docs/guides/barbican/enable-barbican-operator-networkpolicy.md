@@ -42,21 +42,8 @@ is running (namespace `barbican-system`) alongside the projected
 `controlplane-barbican` key manager.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy (required for
-   real enforcement).** Confirm with your platform team (Calico, Cilium, and
-   Antrea enforce).
-
-   ::: warning The devstack enforces this policy
-   The ControlPlane Quick Start kind devstack runs kind's default `kindnet`
-   CNI. On kind v0.32 and later, kindnet enforces NetworkPolicy and evaluates a
-   connection to a Service after the Service DNAT, so a `kubeApiServer` rule
-   that misses the API server's endpoint address cuts the operator off on the
-   devstack too. Step 2 below confirms the policy's **shape** and that the
-   operator still reconciles under it. It sends no traffic outside the
-   allow-list, so it does **not** prove that such traffic is dropped.
-   :::
-2. A running `barbican-operator` Helm release (namespace `barbican-system`).
-3. The ControlPlane declares `spec.services.barbican`. Without it no
+1. A running `barbican-operator` Helm release (namespace `barbican-system`).
+2. The ControlPlane declares `spec.services.barbican`. Without it no
    `controlplane-barbican` child exists and the Step 2 verification has nothing
    to roll. See
    [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
@@ -66,8 +53,9 @@ is running (namespace `barbican-system`) alongside the projected
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
 template refuses to render. Gather the API server CIDRs and ports from the
-`kubernetes` **Endpoints**, the real API server addresses, not the `10.96.0.1`
-Service VIP that `kubectl get service kubernetes` reports. An enforcing CNI
+`kubernetes` **Endpoints**, which carry the real API server addresses. The
+`10.96.0.1` Service VIP that `kubectl get service kubernetes` reports is the
+wrong source. An enforcing CNI
 (Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
 Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
 IPs, so a rule naming the VIP never matches:
@@ -77,7 +65,7 @@ kubectl get endpoints kubernetes -n default -o json \
   | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
 ```
 
-Record **every** endpoint IP the command prints, not just the first. A kind
+Record **every** endpoint IP the command prints. A kind
 devstack reports the one control-plane node's address on the kind bridge
 (`172.18.0.x`), but an HA control plane reports one per API server replica:
 
@@ -91,8 +79,8 @@ The rule must cover all of them, or the operator loses its leader-election lease
 whenever it happens to be talking to an excluded replica.
 
 On the tutorial devstacks the `barbican-operator` release is owned by Flux (a
-`HelmRelease`), so set the values by patching its `spec.values`, not with a raw
-`helm upgrade`, which the Flux helm-controller reverts on its next reconcile.
+`HelmRelease`), so set the values by patching its `spec.values`. The Flux
+helm-controller reverts a raw `helm upgrade` on its next reconcile.
 Substitute the CIDRs and ports from above. The single-CIDR list below stands in
 for the kind case (one control-plane node), so replace `172.18.0.2/32` with the
 address you recorded and extend the list to every IP an HA control plane prints:
@@ -131,7 +119,7 @@ kubectl delete networkpolicy barbican-operator-api-egress -n barbican-system \
   --ignore-not-found
 ```
 
-The ingress leg of that same probe needs nothing from you: when the workload
+The ingress direction of that same probe needs nothing from you: when the workload
 namespace runs a per-CR NetworkPolicy, the sub-reconciler appends an
 operator-namespace ingress peer to every policy it renders.
 
@@ -152,7 +140,7 @@ mean guessing it. Set `openBao.enabled=false` when every store in the cluster is
 reached over a different posture, a non-standard port or an egress proxy already
 covered by another policy, and add the matching rule yourself. With the policy on
 and this rule off, the store controller cannot reach any server and every store
-parks on `CredentialsReady=False` with reason `OpenBaoUnreachable`.
+stays at `CredentialsReady=False` with reason `OpenBaoUnreachable`.
 
 The per-CR policy derives its OpenBao egress differently, so do not read one as
 the model for the other. It emits a **single** destination-unrestricted egress
@@ -200,7 +188,7 @@ the HelmRelease patch above instead.
 
 On the kind devstack this verifies the policy's **shape** and that the operator
 still reconciles under the enforced policy. It sends no traffic outside the
-allow-list (see the prerequisite above).
+allow-list.
 
 Restart the operator first. NetworkPolicy enforcement is stateful: a connection
 opened before the policy existed stays open, so a wrong `kubeApiServer` rule
@@ -299,14 +287,14 @@ including stores that were Ready before the policy went on.
 
 **Diagnosis:** the store controller's egress to the OpenBao API is blocked. A
 dropped packet has no refusal to report, so the client waits out its own deadline
-and reports a timeout rather than a connection error. The usual causes are
+and reports a timeout. The usual causes are
 `networkPolicy.openBao.enabled=false` with no replacement rule, or a server that
 listens on a port other than 8200.
 
 **Fix:** re-enable the chart rule. Its port is fixed at 8200 and the chart offers
 no override, so a server on another port needs a second NetworkPolicy of your own
 selecting the operator pod; policies are additive, so its egress rule joins the
-chart's. Verify from the rendered object rather than from the values:
+chart's. Verify the ports in the rendered object:
 
 ```bash
 kubectl -n barbican-system get networkpolicy barbican-operator \
@@ -350,9 +338,18 @@ the shared operator-library, whose helm-unittest
 pins the shared rules. The barbican chart's helm-unittest
 (`operators/barbican/helm/barbican-operator/tests/networkpolicy_test.yaml`) pins
 the two egress rules the chart adds, for OpenBao and for its API health check.
-The keystone chart's policy is exercised end-to-end on the CI e2e kind cluster
-by the chainsaw suite below.
+These tests cover rendering only; they do not exercise packet enforcement.
+
+The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
+provides runtime enforcement coverage for the Keystone chart using the shared
+template. It does not install the Barbican chart or test its OpenBao or API
+egress at runtime. There is no Barbican operator `network-policy-egress` suite.
+With the linked suite's prerequisites satisfied, run its Keystone-only example
+from the repository root:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
 ```
+
+The per-CR suite `tests/e2e/barbican/network-policy` covers the Barbican workload
+policy, a different scope from this guide.

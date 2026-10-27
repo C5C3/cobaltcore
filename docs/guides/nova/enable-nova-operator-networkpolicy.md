@@ -43,21 +43,8 @@ Follow that tutorial through the `nova` block of Step 4 and the
 examples below is one that devstack produces.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy (required for
-   real enforcement).** Confirm with your platform team (Calico, Cilium, and
-   Antrea enforce).
-
-   ::: warning The devstack enforces this policy
-   The ControlPlane Quick Start kind devstack runs kind's default `kindnet`
-   CNI. On kind v0.32 and later, kindnet enforces NetworkPolicy and evaluates a
-   connection to a Service after the Service DNAT, so a `kubeApiServer` rule
-   that misses the API server's endpoint address cuts the operator off on the
-   devstack too. Step 2 below confirms the policy's **shape** and that the
-   operator still reconciles under it. It sends no traffic outside the
-   allow-list, so it does **not** prove that such traffic is dropped.
-   :::
-2. A running `nova-operator` Helm release (namespace `nova-system`).
-3. The ControlPlane declares `spec.services.nova`. Without it no
+1. A running `nova-operator` Helm release (namespace `nova-system`).
+2. The ControlPlane declares `spec.services.nova`. Without it no
    `controlplane-nova` child exists and the Step 2 verification has nothing to
    roll.
 
@@ -78,7 +65,7 @@ kubectl get endpoints kubernetes -n default -o json \
   | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
 ```
 
-Record **every** endpoint IP the command prints, not just the first. A kind
+Record **every** endpoint IP the command prints. A kind
 devstack reports the one control-plane node's address on the kind bridge
 (`172.18.0.x`), but an HA control plane reports one per API server replica. The
 rule must cover all of them, or the operator loses its leader-election lease
@@ -161,7 +148,7 @@ kubectl delete networkpolicy nova-operator-api-probe -n nova-system \
 
 On the kind devstack this verifies the policy's **shape** and that the operator
 still reconciles under the enforced policy. It sends no traffic outside the
-allow-list (see the prerequisite above).
+allow-list.
 
 Restart the operator first. NetworkPolicy enforcement is stateful: a connection
 opened before the policy existed stays open, so a wrong `kubeApiServer` rule
@@ -364,8 +351,17 @@ the shared operator-library, whose helm-unittest
 pins the shared rules. The nova chart's helm-unittest
 (`operators/nova/helm/nova-operator/tests/networkpolicy_test.yaml`) pins the
 three egress rules the chart adds, for its API health check, for the Keystone
-API and for the Placement API. The keystone chart's policy is exercised
-end-to-end on the CI e2e kind cluster by the chainsaw suite below.
+API and for the Placement API. These tests cover rendering only; they do not
+exercise packet enforcement.
+
+The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
+provides runtime enforcement coverage for the Keystone chart using the shared
+template. It does not install the Nova chart or test its Nova, Keystone or
+Placement egress rules at runtime. There is no Nova operator
+`network-policy-egress` suite.
+
+With the linked suite's prerequisites satisfied, run its Keystone-only example
+from the repository root:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress

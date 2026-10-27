@@ -57,8 +57,8 @@
 #
 # Running it locally: the chart's operator-library dependency must be vendored
 # first (`helm dependency build operators/horizon/helm/horizon-operator`,
-# which hack/ci-deploy-operator.sh does on CI), and GITHUB_WORKSPACE must
-# point at the repository root.
+# which hack/ci-deploy-operator.sh does on CI). Paths resolve from
+# GITHUB_WORKSPACE in CI and from the git repository root locally.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -76,6 +76,7 @@ spec:
         timeout: 120s
         content: |
           set -eu
+          REPO_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
           SLICE="$(kubectl get endpointslice kubernetes -n default -o json)"
           CIDRS="$(echo "${SLICE}" | jq -r '[.endpoints[]?.addresses[]? | . + (if contains(":") then "/128" else "/32" end)] | unique | join(",")')"
           PORT="$(echo "${SLICE}" | jq -r '[.ports[]?.port | select(. != null)] | first // empty')"
@@ -84,9 +85,9 @@ spec:
             exit 1
           fi
           helm install horizon-operator-netpol \
-            ${GITHUB_WORKSPACE:-.}/operators/horizon/helm/horizon-operator/ \
+            "${REPO_ROOT}/operators/horizon/helm/horizon-operator/" \
             --namespace horizon-system --create-namespace \
-            --values ${GITHUB_WORKSPACE:-.}/tests/e2e/horizon-operator/network-policy-egress/00-install-operator.yaml \
+            --values "${REPO_ROOT}/tests/e2e/horizon-operator/network-policy-egress/00-install-operator.yaml" \
             --set "networkPolicy.kubeApiServer.cidrs={${CIDRS}}" \
             --set "networkPolicy.kubeApiServer.ports={${PORT}}" \
             --wait --timeout 90s

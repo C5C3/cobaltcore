@@ -30,41 +30,19 @@ KIND_HOST_PORT=8443 make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step, so the keystone-operator
-is running and a `keystone` CR is `Ready` in `openstack`. (The devstack's default
-`kindnet` CNI does not enforce NetworkPolicy — item 1 below explains what you can
-and cannot verify on kind.)
+is running and a `keystone` CR is `Ready` in `openstack`.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy — for real
-   enforcement.** Confirm with your platform team. Common CNIs that enforce:
-
-   - [Calico](https://docs.tigera.io/calico/latest/network-policy/policy-rules/kubernetes)
-   - [Cilium](https://docs.cilium.io/en/stable/network/kubernetes/policy/)
-   - [Antrea](https://antrea.io/docs/main/docs/network-policy/)
-
-   ::: warning Enforcement cannot be verified on the default devstack CNI
-   The Quick Start kind devstack uses the default `kindnet` CNI, which
-   **silently ignores** NetworkPolicy objects. kind fixes the CNI at cluster
-   creation, so it cannot be swapped in afterwards on a running devstack. The
-   policy object is still rendered and the operator keeps reconciling
-   normally, so this guide's verification steps (§4.1–4.3) confirm only that
-   the policy has the right **shape** and that enabling it does **not break**
-   the operator — they do **not** prove that packets outside the allow-list
-   are dropped. Real enforcement requires a cluster whose CNI enforces
-   NetworkPolicy (Calico, Cilium, Antrea) — typically your production
-   platform, not the kind devstack.
-   :::
-
-2. **Permission to read the `kubernetes` default Service's endpoints** in
+1. **Permission to read the `kubernetes` default Service's endpoints** in
    order to discover the API server CIDR:
 
    ```bash
    kubectl auth can-i get endpoints/kubernetes -n default
    ```
 
-3. **Operator deployment whose chart values you can set.** This feature is
+2. **Operator deployment whose chart values you can set.** This feature is
    gated by chart values. On the tutorial devstacks the operator is a Flux
-   `HelmRelease`, so you set the values on its `spec.values` (section 3); a
+   `HelmRelease`, so you set the values on its `spec.values` (section 2); a
    directly Helm-managed install uses `helm upgrade`. If you installed the
    operator via `hack/ci-deploy-operator.sh` or a raw manifest, first migrate
    to one of those chart-value paths.
@@ -100,13 +78,13 @@ Example output on a kubeadm cluster with an HA control plane:
 > accepts CIDR notation only. Use `/32` for single IPs. DNS names are not
 > valid here.
 
-Record every endpoint IP — the rule must cover all of them, or the operator
+Record every endpoint IP. The rule must cover all of them, or the operator
 will lose quorum on leader-election renewals whenever it happens to be
 talking to an excluded replica.
 
 ---
 
-## 2. Update chart values
+## 2. Update and apply chart values
 
 Add the following block to your Helm values file (minimum viable
 configuration):
@@ -121,6 +99,25 @@ networkPolicy:
       - 6443              # replace with the ports from step 1
 ```
 
+On the tutorial devstacks the `keystone-operator` release is owned by Flux (a
+`HelmRelease`). Apply these values by patching its `spec.values`:
+
+```bash
+kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
+  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["10.96.0.1/32"],"ports":[6443]}}}}}'
+
+kubectl wait helmrelease/keystone-operator -n keystone-system \
+  --for=condition=Ready --timeout=5m
+```
+
+Replace the example CIDR and port in both representations with every endpoint
+from step 1. Flux's helm-controller reverts out-of-band `helm upgrade` changes,
+so keep devstack values on the HelmRelease.
+
+Flux reconciles the HelmRelease and creates the NetworkPolicy. Enabling the
+policy alone does not restart the operator. Restart it in step 3 to check new
+connections under the policy.
+
 With the policy on, the chart also renders the egress rule the operator needs
 for the Keystone API: TCP 5000 and 5050 to every pod labelled
 `app.kubernetes.io/name: keystone` and
@@ -130,7 +127,9 @@ reach the API over the Keystone Service on 5000, and the CNI judges each
 connection after the Service DNAT, at the API pod and its port: 5000, or 5050
 when federation puts the OIDC sidecar in front of the API.
 
-Optional overrides:
+### Optional overrides
+
+Merge any of these overrides into the same `spec.values.networkPolicy` patch.
 
 - **DNS peer.** If your cluster uses [CoreDNS in a non-default namespace or
   with a non-default label](https://github.com/coredns/coredns/blob/master/README.md),
@@ -162,7 +161,7 @@ Optional overrides:
 - **Webhook clients.** By default, webhook ingress (9443) falls back to
   `kubeApiServer.cidrs`, which is correct for the vast majority of
   clusters (the API server is the only caller of admission webhooks).
-  Override only if you operate a non-standard webhook architecture — for
+  Override only if you operate a non-standard webhook architecture, for
   example, an API server front-end that calls webhooks from a different
   CIDR than it advertises in `endpoints/kubernetes`:
 
@@ -171,32 +170,6 @@ Optional overrides:
     webhookClients:
       cidrs: ["10.1.0.0/24"]
   ```
-
----
-
-## 3. Roll out
-
-On the tutorial devstacks the `keystone-operator` release is owned by Flux (a
-`HelmRelease`), so apply the values change by patching that HelmRelease's
-`spec.values` — not with a raw `helm upgrade`, which the Flux helm-controller
-reverts on its next reconcile. Substitute the CIDRs and ports you gathered in
-step 1:
-
-```bash
-kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
-  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["10.96.0.1/32"],"ports":[6443]}}}}}'
-
-kubectl wait helmrelease/keystone-operator -n keystone-system \
-  --for=condition=Ready --timeout=5m
-```
-
-The optional overrides from section 2 (`dns`, `allowMetricsFrom`,
-`webhookClients`) go into the same `spec.values.networkPolicy` patch — merge
-them into the JSON above.
-
-Flux reconciles the HelmRelease, which creates the `NetworkPolicy` object and
-rolls the operator Deployment. Existing reconciliations queue during the
-rollout and resume once the new pod reaches `Ready`.
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), apply the
@@ -216,9 +189,21 @@ reconcile. Use the HelmRelease patch above instead.
 
 ---
 
-## 4. Verify
+## 3. Verify
 
-### 4.1 NetworkPolicy exists and matches the pod
+Restart the operator so its API-server connections open under the policy.
+Existing connections can remain open after a policy change and hide a missing
+API-server rule:
+
+```bash
+kubectl -n keystone-system rollout restart deploy/keystone-operator
+kubectl -n keystone-system rollout status deploy/keystone-operator --timeout=5m
+```
+
+If the rollout times out, inspect the operator logs and the API-server rules
+using the troubleshooting steps below.
+
+### 3.1 NetworkPolicy exists and matches the pod
 
 ```bash
 kubectl -n keystone-system describe networkpolicy \
@@ -237,11 +222,11 @@ kubectl -n keystone-system get pods \
   -l app.kubernetes.io/name=keystone-operator,app.kubernetes.io/instance=keystone-operator
 ```
 
-A zero-pod match is a symptom of mismatched labels — usually a stale
+A zero-pod match is a symptom of mismatched labels, usually a stale
 `fullnameOverride` or a custom `nameOverride`. The NetworkPolicy will exist
 but protect no pod.
 
-### 4.2 Operator still reconciles
+### 3.2 Operator still reconciles
 
 Create (or update) a `Keystone` CR and watch its `Ready` condition progress
 to `True`:
@@ -254,7 +239,7 @@ kubectl -n openstack get keystone keystone \
 If `Ready` stays `False` for more than a couple of reconcile cycles, jump to
 **Troubleshooting** below.
 
-### 4.3 Controller-runtime is talking to the API server
+### 3.3 Controller-runtime is talking to the API server
 
 Tail operator logs and confirm there are no `i/o timeout`,
 `connection refused`, or `context deadline exceeded` errors when the
@@ -276,13 +261,13 @@ or leader-election lease renewals fail with `context deadline exceeded`,
 and the operator pod restarts.
 
 **Diagnosis:** the `kubeApiServer.cidrs` list is missing one or more of the
-current API server endpoint IPs. Re-run step 1 — an HA control plane may
+current API server endpoint IPs. Re-run step 1: an HA control plane may
 have added a new replica, or a control-plane node may have been replaced
 with a different IP.
 
 **Fix:** update `networkPolicy.kubeApiServer.cidrs` to include every IP
-returned by `kubectl get endpoints kubernetes -o json`, then
-`helm upgrade` again.
+returned by `kubectl get endpoints kubernetes -n default -o json`, then
+reapply the values using step 2.
 
 ### Webhook TLS failures during admission
 
@@ -293,7 +278,7 @@ timed out.
 
 **Diagnosis:** webhook ingress is blocked. Usually the API server calls
 webhooks from an IP that is **not** present in
-`endpoints/kubernetes` — for example, because it sits behind a front-end
+`endpoints/kubernetes`, for example, because it sits behind a front-end
 proxy. `networkPolicy.webhookClients.cidrs` falls back to
 `kubeApiServer.cidrs` when empty, which is wrong in that topology.
 
@@ -318,7 +303,7 @@ If the label set does not match the defaults
 (`namespaceSelector: kubernetes.io/metadata.name=kube-system`,
 `podSelector: k8s-app=kube-dns`), update
 `networkPolicy.dns.namespaceSelector` / `networkPolicy.dns.podSelector` to
-match, then `helm upgrade`.
+match, then reapply the values using step 2.
 
 ### Helm render aborts with "must not be empty"
 
@@ -330,7 +315,7 @@ networkPolicy.kubeApiServer.cidrs must not be empty ...
 ```
 
 **Diagnosis:** you set `networkPolicy.enabled=true` but left `cidrs` or
-`ports` empty. This is the fail-closed guard — the
+`ports` empty. This is the fail-closed guard: the
 template refuses to render a policy that would break the operator.
 
 **Fix:** populate both lists from step 1 and re-run the upgrade.
@@ -345,7 +330,7 @@ the metrics port after the upgrade.
 opt-in via `networkPolicy.allowMetricsFrom`.
 
 **Fix:** add the scraper namespace/pod selectors to
-`networkPolicy.allowMetricsFrom` as shown in step 2, then `helm upgrade`.
+`networkPolicy.allowMetricsFrom` as shown in step 2, then reapply those values.
 
 ---
 
@@ -378,17 +363,47 @@ without a pod restart.
 
 ## Tested by
 
-The operator installed with `networkPolicy.enabled=true` is exercised on the CI
-e2e kind cluster by this chainsaw suite:
+Helm unit tests cover rendering only: the shared rules are tested in
+`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`,
+and Keystone-specific egress is tested in
+`operators/keystone/helm/keystone-operator/tests/networkpolicy_test.yaml`.
+
+The `keystone-operator-network-policy-egress` Chainsaw suite adds runtime
+coverage for the Keystone operator chart. CI includes it in the Keystone
+`e2e-operator` job on kind v0.33.0 with the default kindnet CNI.
+
+Run the following from the repository root against a disposable devstack with
+infrastructure and the primary Keystone operator already running. Install the
+tools pinned by `hack/install-test-deps.sh`; the script step needs Git, Helm,
+kubectl, and jq as well as Chainsaw. Image loading also needs kind and Docker.
+Building the image with `make image` requires
+[Nix with flakes](../../reference/ci-cd/nix-image-build.md).
+The fixture uses
+`ghcr.io/c5c3/keystone-operator:dev` with `image.pullPolicy=Never`, so load that
+image into the target kind cluster first:
 
 ```bash
+make image OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
+kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name cobaltcore
+helm dependency build --skip-refresh operators/keystone/helm/keystone-operator
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
 ```
+
+Replace `cobaltcore` if your cluster has another name. Skip `make image` if the
+`:dev` operator image is already built. The
+[E2E prerequisites](../../reference/testing/keystone-e2e-tests.md#prerequisites)
+list the required backing services and synced Secrets.
+The service images required by the fixtures must also be available in the
+cluster. Chainsaw runs scripts from the test directory; the install step
+resolves chart and values paths from `GITHUB_WORKSPACE` in CI and from
+`git rev-parse --show-toplevel` locally. No `GITHUB_WORKSPACE` export is needed
+in a local Git checkout. If already set, it must point to this repository root.
 
 The suite checks that the chart renders the policy and that a Keystone CR
 reaches `Ready=True` while it is present. The primary operator release competes
 for the same leader lease, so a last step runs a probe pod the policy selects:
 its connection to the MariaDB port must be dropped, and the Keystone API must
 answer it through the Keystone Service on 5000. The step waits for the drop
-first and fails when it never comes, so it passes only on a cluster that
-enforces the policy, as the CI kind cluster does.
+first and fails when it never comes, so it requires enforcement. This is
+Keystone-specific runtime coverage; it does not establish that another
+operator's chart works.
