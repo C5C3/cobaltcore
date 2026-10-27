@@ -1278,29 +1278,16 @@ its number.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
-tests run after the happy-path operator E2E suite has passed. Gating is set per
-matrix leg via `continue-on-error: ${{ matrix.suite == 'network' || matrix.suite
-== 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' ||
-matrix.suite == 'upgrade' }}`: the `pod` leg is **blocking**, so an
-operator-restart, PDB, or rotation regression fails the build. The `network`,
-`ovn`, `nova`, `controlplane` and `upgrade` legs stay **non-blocking**. The
-expression names those five rather than negating `pod`, so a leg added to the
-matrix later gates merges until it is argued out of that.
-The `network`
-leg's `ip_set`/`sch_netem` kernel-module dependency keeps it prone to
-environment flakiness, the `ovn` leg builds an OVN datapath out of the
-host's `openvswitch` and `geneve` modules, and three of the `nova` leg's six
-suites are NetworkChaos partitions on the same `sch_netem` and `ip_set` modules
-the `network` leg's suites use, while its `neutron-metadata-agent-pod-kill`
-needs the `openvswitch` and `geneve` modules for an OVNChassis. The
-`controlplane` entry's `korc-network-partition` is a NetworkChaos partition on
-the `sch_netem` and `ip_set` modules as well, which places all four under
-[Kernel-module-dependent suites](#kernel-module-dependent-suites). The `upgrade`
-entry needs no module: it is non-blocking because the partitions of
-`cinder-upgrade-db-partition` rest on kindnet's NetworkPolicy enforcement and the
-broker kill of `cinder-upgrade-broker-pod-kill` is new. On-demand
-pre-validation of any leg is available via the `ci:chaos` PR label, with
-`run-chaos` kept as an alias.
+tests run after the happy-path operator E2E suite has passed. Every matrix entry
+gates (#1388): the job carries no `continue-on-error`, so a red entry fails the
+job, and `tempest`, which needs `e2e-chaos`, skips on that run. An entry added to
+the matrix gates from its first run. `main` lists no required status checks, so
+gating means the job result and the skipped Tempest jobs. The `ip_set` and
+`sch_netem` modules of the NetworkChaos suites and the `openvswitch` and `geneve`
+modules of the OVN suites load without a warning on the `self-hosted` runners,
+and no red entry on record named a module.
+On-demand pre-validation of every entry is available via the `ci:chaos` PR
+label, with `run-chaos` kept as an alias.
 
 The job runs as a six-entry matrix, split by chaos type and by the stack each
 leg needs:
@@ -1314,8 +1301,8 @@ leg needs:
 | `controlplane` | keystone, horizon, glance, barbican, ovn, K-ORC, c5c3 | the eight suites that bring up a ControlPlane of their own: `korc-provisioning-outage`, `korc-network-partition`, `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure`, `controlplane-provisioning-mariadb-kill`, `controlplane-deletion-korc-outage`, `keystoneuser-rotation-keystone-outage` |
 | `upgrade` | keystone, horizon, glance, barbican, ovn, cinder | the two suites that fault a Cinder release upgrade from 2026.1 to 2026.2: `cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill` |
 
-All six legs run on the `self-hosted` runners. The split keeps the legs
-independently gated and lets them run in parallel. Each matrix entry lists its
+All six legs run on the `self-hosted` runners. The split lets each entry
+report on its own and lets them run in parallel. Each matrix entry lists its
 per-suite test directories explicitly.
 
 A `Resolve OVN version` step reads the pin from `images/ovn/source.json` through
@@ -1360,7 +1347,9 @@ lists `controlplane-provisioning-mariadb-kill` under `isolated_test_dirs`, and
 tests`, whatever that step's outcome, under the report name
 `chainsaw-chaos-report-isolated`. A failed setup step skips both. The suite
 fails on the current keystone-operator, and inside `test_dirs` the `failFast`
-of the shared config would skip every suite behind it.
+of the shared config would skip every suite behind it. The entry gates like
+every other, so the suite keeps it red until the keystone-operator recovers
+an interrupted first `db_sync`.
 `Dump diagnostic info (controlplane leg)` adds the c5c3-operator sections and
 500 lines of the K-ORC log. The `!= 'pod'` OVN steps and the `!= 'ovn'` keystone
 stack run on it as well, which costs about two minutes.
@@ -1390,8 +1379,8 @@ eight operator deploys before its first suite, and its seven suites each stand u
 a Keystone, an OVNCentral, a Neutron, a Placement, a Glance and a five-workload
 Nova, one after the other because `tests/e2e-chaos/chainsaw-config.yaml` sets
 `parallel: 1`. A wall that arrives mid-suite kills chainsaw outright: no
-`catch` block runs, no step `cleanup` runs, no JUnit report is written, and a
-non-blocking leg reports as a cancelled job that names no suite. The per-suite
+`catch` block runs, no step `cleanup` runs, no JUnit report is written, and the
+entry reports as a cancelled job that names no suite. The per-suite
 times of the new suites are estimates; confirm each duration against the first
 green run with them.
 
@@ -1420,7 +1409,7 @@ green run with them.
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
 | Timeout | 68 minutes, 150 for the `nova` leg | 135 minutes for `pod`, 135 for `network`, 45 for `ovn`, 170 for `nova`, 120 for `controlplane`, 80 for `upgrade` |
-| Blocking | Yes | `pod` leg blocking; `network`, `ovn`, `nova`, `controlplane` and `upgrade` legs non-blocking (`continue-on-error: ${{ matrix.suite == 'network' \|\| matrix.suite == 'ovn' \|\| matrix.suite == 'nova' \|\| matrix.suite == 'controlplane' \|\| matrix.suite == 'upgrade' }}`) |
+| Blocking | Yes | Yes, every entry (no `continue-on-error`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
 | Service images | 2026.1 + 2026.1-upgraded + 2026.2 | 2026.1, plus `cinder:2026.2` on `upgrade` and the pinned OVN daemon image |
 
@@ -1441,8 +1430,9 @@ because every OpenBao or Flux bump would otherwise pay for the chaos legs.
 A suite whose workload needs host kernel modules enters CI non-blocking: it
 runs on the `self-hosted` runners with `continue-on-error: true`. A separate,
 later change flips it to blocking, once its pass history on `main` justifies
-the flip. The `network` leg of `e2e-chaos` is the precedent, and it is still on
-the non-blocking side of that path.
+the flip. The `e2e-chaos` entries are the exception since #1388: their
+NetworkChaos and OVN suites gate from their first run (see
+[e2e-chaos](#e2e-chaos)).
 
 **Blocking baseline.** The suite that earns the flip first is the single-node
 one on `hack/kind-config.yaml`: the DaemonSet renders, its pods start, and the
@@ -1475,9 +1465,7 @@ chassis baseline (`tests/e2e/ovn/chassis-single-node`) and the Neutron
 metadata-agent suite (`tests/e2e/neutron/metadata-agent`) run blocking, inside
 the `e2e-operator` legs for `ovn` and `neutron`. Both assert what one node can
 answer. The `nova` leg loads the modules too: its `compute-node-pool` suite runs
-a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above,
-and so do the `ovn` leg of `e2e-chaos` and, for
-`neutron-metadata-agent-pod-kill`, its `nova` leg.
+a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above.
 
 ### report-nightly-chaos
 
@@ -1489,8 +1477,8 @@ entries' JUnit reports.
 **Condition:** `always() && github.event_name == 'schedule'`. It runs on a green
 night too, for the step summary, and never on a dispatch, as in `flux-path.yaml`.
 **Permissions:** `contents: read`, `issues: write`, `actions: read`. It is the only
-job of the workflow that holds `issues: write`, and it runs on `ubuntu-latest`;
-no `self-hosted` job writes to the repository.
+job of the workflow that holds `issues: write`, and it runs on `ubuntu-latest`,
+so no `self-hosted` job can write an issue.
 
 The job runs on `ubuntu-latest` with `timeout-minutes: 10`.
 
@@ -1700,9 +1688,9 @@ kustomization keeps the keystone-operator and horizon-operator HelmReleases susp
 so the runtime `kubectl patch` cannot reactively enable the ServiceMonitors, and the
 install-time flag is the single source of truth.
 
-Unlike `e2e-chaos`, `e2e-prometheus` runs with `continue-on-error: false`:
-the kube-prometheus stack is deterministic on kind, so any failure is a
-genuine regression of the kind-only Quick Start observability story.
+`e2e-prometheus` runs with `continue-on-error: false`: the kube-prometheus
+stack is deterministic on kind, so any failure is a genuine regression of the
+kind-only Quick Start observability story.
 
 | Step | Action | Details |
 | --- | --- | --- |

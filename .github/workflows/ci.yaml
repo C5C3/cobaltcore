@@ -2043,31 +2043,22 @@ jobs:
       image-map: ${{ needs.build-e2e-images.outputs.image-map }}
 
   # End-to-end chaos tests using kind cluster, Chaos Mesh,
-  # and Chainsaw.  Builds the keystone operator image, deploys it with Chaos
-  # Mesh infrastructure, and runs chaos test suites (MariaDB pod kill,
-  # Memcached pod kill, OpenBao pod kill, network partition, network latency).
-  # Only runs when Go/operator code or chaos test definitions change (or when
-  # the run-chaos PR label is applied), and only after all pre-flight checks
-  # have passed or been skipped.
+  # and Chainsaw. Pulls the operator and service images of each matrix entry,
+  # deploys them with the Chaos Mesh infrastructure, and runs the entry's chaos
+  # suites. A pull request runs the job when it changes a suite under
+  # tests/e2e-chaos/ or carries the ci:chaos label (run-chaos is its alias),
+  # and only after all pre-flight checks have passed or been skipped. The
+  # nightly chaos run (#1388) runs every entry against main on a schedule or a
+  # dispatch.
   #
   # Chaos tests run only after every e2e-operator matrix leg has finished
   # without failure: a failed e2e-operator run skips e2e-chaos, a
   # path-filter-skipped one does not block it (always() + the
-  # failure/cancelled guards below). This supersedes,
-  # which had removed the dependency to run both jobs in parallel.
+  # failure/cancelled guards below).
   #
-  # run-chaos PR label trigger added for on-demand chaos
-  # validation of operator code changes.
-  #
-  # Gating is split by matrix leg (see continue-on-error below): the pod-chaos
-  # leg is blocking — an operator-restart/PDB/rotation regression fails the
-  # build — while the network-chaos and ovn legs stay non-blocking. The
-  # network leg's ip_set/xt_set/sch_netem dependency makes it prone to
-  # environment flakiness, and the ovn leg builds an OVN datapath out of the
-  # host's openvswitch/geneve modules, which puts it under the non-blocking
-  # entry rule of `### Kernel-module-dependent suites` in
-  # docs/reference/ci-cd/ci-workflow.md. On-demand pre-validation of any leg is
-  # available via the run-chaos PR label.
+  # Every leg gates (#1388): a red leg fails the job, and tempest, which needs
+  # e2e-chaos, skips on that run. A leg added to the matrix gates from its first
+  # run.
   e2e-chaos:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -2082,8 +2073,8 @@ jobs:
       !contains(needs.*.result, 'cancelled')
     # The split into six matrix entries is kept so PodChaos, NetworkChaos, the
     # OVN datapath suite, the Nova stack, the ControlPlane suites and the
-    # Cinder release-upgrade suites stay independently gated (see
-    # continue-on-error below) and so the suites run in parallel.
+    # Cinder release-upgrade suites each report on their own and run in
+    # parallel.
     #
     # test_dirs lists the per-suite test directories explicitly, so a new test
     # directory must be added to the appropriate suite below when introduced.
@@ -2156,9 +2147,8 @@ jobs:
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
-          # below). That kernel-module dependency is what keeps the leg
-          # non-blocking. No suite here touches Keystone, so this leg deploys
-          # the ovn-operator alone and skips the keystone stack.
+          # below). No suite here touches Keystone, so this leg deploys the
+          # ovn-operator alone and skips the keystone stack.
           - suite: ovn
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
@@ -2171,10 +2161,8 @@ jobs:
           # NovaCompute pool on the node behind an OVNChassis of its own, so
           # it runs last, after the metadata agent suite's chassis is gone. They get a leg of their own instead of widening
           # the network leg, which carries the neutron, cinder and ovn suites.
-          # Like the ovn leg this one is non-blocking (see continue-on-error
-          # below): three of its faults are NetworkChaos partitions on the
-          # sch_netem/ip_set dependency the network leg carries, and the
-          # metadata-agent suite needs the openvswitch and geneve modules.
+          # The metadata-agent suite needs the openvswitch and geneve modules,
+          # as the ovn leg does.
           - suite: nova
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
@@ -2189,9 +2177,6 @@ jobs:
           # own in a namespace of their own: K-ORC, the c5c3-operator and a
           # Keystone-only plane per suite. They get an entry of their own so
           # the pod entry keeps the standalone stack its suites assume.
-          # Non-blocking (see continue-on-error below): korc-network-partition
-          # is a NetworkChaos partition on the sch_netem/ip_set dependency the
-          # network entry carries.
           - suite: controlplane
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
@@ -2206,15 +2191,16 @@ jobs:
             # test_dirs: controlplane-provisioning-mariadb-kill fails on the
             # current keystone-operator (see its header), and inside test_dirs
             # the failFast of the shared config would skip every suite behind
-            # it.
+            # it. The leg gates like every other, so the suite keeps it red
+            # until the keystone-operator recovers an interrupted first
+            # db_sync.
             isolated_test_dirs: >-
               tests/e2e-chaos/controlplane-provisioning-mariadb-kill
           # The suites of #1394 that fault a Cinder release upgrade from
           # 2026.1 to 2026.2: the only entry that loads a 2026.2 image. Each
           # brings a Cinder of its own on the NFS export, one on a vhost of
           # the shared broker and one on a RabbitmqCluster of its own.
-          # Non-blocking (see continue-on-error below): its partitions rest
-          # on kindnet's NetworkPolicy enforcement.
+          # Its partitions rest on kindnet's NetworkPolicy enforcement.
           - suite: upgrade
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
@@ -2251,30 +2237,16 @@ jobs:
     # and five 8m asserts on the sibling services) and its catch another 13.
     # Under that, the job wall arrives first: chainsaw is killed outright, no
     # catch block and no step cleanup runs, the JUnit report is never written,
-    # and the leg — non-blocking per continue-on-error below — reports as a
-    # cancelled job that says nothing about which suite stalled. The per-suite
-    # times of the new suites are the estimate in these sums; read each leg's
-    # duration off the first green run with them and re-derive if one
-    # overruns.
+    # and the leg reports as a cancelled job that says nothing about which
+    # suite stalled. The per-suite times of the new suites are the estimate in
+    # these sums; read each leg's duration off the first green run with them
+    # and re-derive if one overruns. D6 of #1386 counts the runner minutes a
+    # night measures, not these walls: report-nightly-chaos files a night
+    # whose self-hosted jobs took more than 600 minutes together.
     timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}
-    # Pod-chaos is blocking; network-chaos, ovn and nova stay non-blocking
-    # (their kernel-module dependency keeps them flakiness-prone). See the
-    # gating note above the job. The nova leg is the third of them because
-    # three of its suites are NetworkChaos partitions on the sch_netem and
-    # ip_set modules, the same dependency the network leg's suites have, and
-    # neutron-metadata-agent-pod-kill needs the OVN kernel modules the ovn leg
-    # needs. The controlplane leg is the fourth: korc-network-partition is a
-    # NetworkChaos partition on the same sch_netem and ip_set modules. The
-    # upgrade leg of #1394 is the fifth, for its own reasons rather than a
-    # kernel module: cinder-upgrade-db-partition partitions through
-    # NetworkPolicies, which rest on kindnet's enforcement, and the broker
-    # kill of cinder-upgrade-broker-pod-kill is new.
-    #
-    # The five non-blocking legs are named, rather than negating the blocking
-    # one: a seventh leg added to the matrix above then gates merges by
-    # default and has to be argued out of it here, instead of arriving
-    # silently non-blocking and passing green while it fails.
-    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}
+    # Every leg gates (#1388), so the job has no job-level error override. The
+    # NetworkChaos and OVN kernel modules load without a warning on the
+    # self-hosted runners, and no red leg on record named a module.
     permissions:
       contents: read
       packages: read
@@ -2817,11 +2789,10 @@ jobs:
   # in horizon-system, Prometheus target health for horizon-operator, an
   # ingested controller_runtime_reconcile_total series).
   #
-  # Single matrix entry on the self-hosted runner — the
-  # kube-prometheus stack is deterministic, so unlike e2e-chaos this job runs
-  # `continue-on-error: false`.  Inherits the e2e-chaos `needs:` chain so the
-  # same upstream Go gate applies and an operator code change re-runs the
-  # prometheus suite alongside e2e-chaos.
+  # Single matrix entry on the self-hosted runner. The kube-prometheus stack
+  # is deterministic, so the job runs `continue-on-error: false`. It inherits
+  # the e2e-chaos `needs:` chain so the same upstream Go gate applies and an
+  # operator code change re-runs the prometheus suite alongside e2e-chaos.
   e2e-prometheus:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -4865,10 +4836,9 @@ jobs:
   #
   # Runs only after every E2E job has finished without failure: a failed
   # E2E job skips tempest, a path-filter-skipped one does not block it
-  # (always() + the failure/cancelled guards below). The e2e-chaos network
-  # leg is continue-on-error, so its result is always 'success' and merely
-  # delays tempest. The e2e-chaos pod leg is blocking, so a pod-chaos failure
-  # surfaces as a job 'failure' and blocks tempest via the guard below.
+  # (always() + the failure/cancelled guards below). Every e2e-chaos leg
+  # gates, so a red chaos leg surfaces as a job 'failure' and skips tempest
+  # via the guard below.
   tempest:
     needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
     if: |

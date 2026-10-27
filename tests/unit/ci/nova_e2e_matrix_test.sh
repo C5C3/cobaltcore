@@ -1088,15 +1088,7 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   assert_gte "and does it before the first outage suite" \
     "$first_outage_at" "$health_at"
 
-  # All three faults are NetworkChaos partitions, so the leg carries the same
-  # sch_netem/ip_set dependency that keeps the network leg non-blocking. The
-  # whole expression is read, not the nova arm alone: the other legs stay
-  # where they were, the controlplane leg of #1390 joined them for its
-  # korc-network-partition, and the upgrade leg of #1394 for its
-  # NetworkPolicy partitions.
-  assert_contains "the nova leg is named non-blocking beside the other four" \
-    "$job" \
-    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}"
+  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
 
   # Seven refs on top of the keystone stack every non-ovn leg loads and the OVN
   # pair the `!= 'pod'` entries already cover here, the last of them the
@@ -1231,12 +1223,12 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # The walls. The nova leg loads twenty images, runs eight operator deploys
   # and then six full-stack suites one after the other (parallel: 1), so a
   # shorter wall would arrive mid-suite: chainsaw is killed outright, no catch
-  # block runs and no JUnit report is written, and a non-blocking leg then
-  # reports a cancellation that names no suite. The whole expression is read:
-  # the network and ovn walls moved with #1389, #1390 added the controlplane
-  # leg, and #1394 added the upgrade leg and moved the nova, controlplane and
-  # pod walls, so the six sum to the 685 minutes its author accepted
-  # (170 + 135 + 120 + 80 + 45 + 135).
+  # block runs and no JUnit report is written, and the leg then reports a
+  # cancellation that names no suite. The whole expression is read:
+  # the network and ovn walls moved with #1389, #1390 added the
+  # controlplane leg, and #1394 added the upgrade leg and moved the nova,
+  # controlplane and pod walls, so the six sum to the 685 minutes its
+  # author accepted (170 + 135 + 120 + 80 + 45 + 135).
   assert_contains "each leg gets its wall" "$job" \
     "timeout-minutes: \${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}"
 
