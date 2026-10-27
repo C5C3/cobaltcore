@@ -257,9 +257,12 @@ spec:
           # The number of POST /v2.0/networks lines uWSGI has logged so far
           # (the baseline's). Step 8 waits for the next one, the write below,
           # and reads its status there; the ConfigMap carries the count across
-          # the steps, and the step cleanup removes it.
-          BEFORE="$(kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-db-chaos,app.kubernetes.io/component=api \
-            -c neutron-api --tail=-1 | grep -c 'POST /v2.0/networks => generated ' || true)"
+          # the steps, and the step cleanup removes it. The log is read on its
+          # own first: inside the grep pipeline a failed read would count as an
+          # empty log, and step 8 would read the baseline's line as the write's.
+          LOG="$(kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-db-chaos,app.kubernetes.io/component=api \
+            -c neutron-api --tail=-1)"
+          BEFORE="$(printf '%s\n' "${LOG}" | grep -c 'POST /v2.0/networks => generated ' || true)"
           kubectl create configmap neutron-db-outage-marks -n "$NAMESPACE" \
             --from-literal=posts-before-failclosed="${BEFORE}" --dry-run=client -o yaml | kubectl apply -f -
           echo "request log: ${BEFORE} POST /v2.0/networks line(s) before the fail-closed write"
@@ -410,7 +413,8 @@ spec:
   # intervention and no pod restart.
   - try:
     - script:
-        timeout: 8m
+        # The parked write's 300 s, the probe's 260 s and 40 s of slack.
+        timeout: 10m
         content: |
           set -eu
           # Log-based verdict, not an attached stream — see step 3 for why.
@@ -423,11 +427,24 @@ spec:
           # connections the pool held across the partition wait on TCP's
           # retransmit, which backs off to two minutes, so the wait allows
           # five. A count below the baseline's means the API pod restarted and
-          # its log is gone.
+          # its log is gone; a failed read is retried, never counted. Both
+          # waits of this step run against the clock, not a number of polls,
+          # so the step's timeout covers their sum however many polls they
+          # take. The clock is read between calls only, and the calls carry
+          # no request timeout: one that starts before a deadline can run
+          # past it, into the step's slack.
+          WAIT=300
+          DEADLINE=$(($(date +%s) + WAIT))
           PARKED=""
-          for _ in $(seq 1 150); do
-            LINES="$(kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-db-chaos,app.kubernetes.io/component=api \
-              -c neutron-api --tail=-1 | grep 'POST /v2.0/networks => generated ' || true)"
+          COUNT=""
+          while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
+            if ! LOG="$(kubectl logs -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-db-chaos,app.kubernetes.io/component=api \
+              -c neutron-api --tail=-1)"; then
+              echo "kubectl logs failed; retrying"
+              sleep 2
+              continue
+            fi
+            LINES="$(printf '%s\n' "${LOG}" | grep 'POST /v2.0/networks => generated ' || true)"
             COUNT="$(printf '%s' "${LINES}" | grep -c . || true)"
             if [ "${COUNT}" -lt "${BEFORE}" ]; then
               echo "FAIL: the request log holds ${COUNT} POST /v2.0/networks line(s), fewer than the ${BEFORE} before the write: the API pod restarted"
@@ -446,7 +463,7 @@ spec:
             sleep 2
           done
           if [ -z "${PARKED}" ]; then
-            echo "FAIL: no request log line for the parked POST /v2.0/networks within 300 s of the lift (${COUNT} line(s), want ${WANT})"
+            echo "FAIL: no request log line for the parked POST /v2.0/networks within ${WAIT} s of the lift (${COUNT:-no} line(s), want ${WANT})"
             exit 1
           fi
           PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
@@ -552,7 +569,8 @@ spec:
           print("RECOVERY-OK")
           '
           phase=""
-          for _ in $(seq 1 130); do
+          DEADLINE=$(($(date +%s) + 260))
+          while [ "$(date +%s)" -lt "${DEADLINE}" ]; do
             phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
             case "${phase}" in Succeeded|Failed) break ;; esac
             sleep 2
