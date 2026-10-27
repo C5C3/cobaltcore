@@ -144,18 +144,27 @@ steady state does not degrade gracefully: the last processes to start fail their
 pool with MySQL error 1226 and crash-loop their pod.
 
 ```text
-(apiPods + 1) x uwsgiProcesses x uwsgiThreads x 2
-  + 2 x (schedulerReplicas + volumeDeployments + 1)
+(apiPods + 1) x uwsgiProcesses x (5 + uwsgiThreads - 1)
+  + 5 x (schedulerReplicas + 1 + volumeDeployments + 1)
   + 2
 ```
 
 `apiPods` is the autoscaling ceiling when an HPA owns the count, and the `+ 1`
-beside it is the rolling-update surge. Each API worker process holds two pooled
-connections: the request-serving session, plus the one oslo.db's pool keeps open
-behind it. The second line is the single-writer services, each with the same
-pair: every scheduler pod, every `cinder-volume` Deployment, and the one backup
-service (the `+ 1` inside the parenthesis). The trailing `+ 2` is headroom for a
-migration Job overlapping the fleet.
+beside it is the rolling-update surge. Each process pools up to five
+connections, oslo.db's `max_pool_size`, which the rendered `[database]` section
+leaves at its default, and an API process holds one more for every uWSGI thread
+beyond the first. The second line is the single-writer services, each with a
+pool of its own: every scheduler pod plus the surge pod of its rolling update,
+every `cinder-volume` Deployment, and the one backup service (the last `+ 1`).
+The `cinder-volume` and backup Deployments use the Recreate strategy, so they
+have no surge pod. The trailing `+ 2` is headroom for a migration Job
+overlapping the fleet. The default topology comes to 57.
+
+A scheduler that reconnects after a broker outage drains the casts queued while
+it was gone, and every `create_volume` opens a session of its own. Sized at two
+connections per process, the `cinder-broker-pod-kill` chaos suite's user was
+capped at 16, the scheduler's `create_volume` failed with MySQL error 1226
+before it could set the volume to `error`, and the volume stayed `creating`.
 
 ### Release upgrade
 

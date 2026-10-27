@@ -53,10 +53,17 @@ const (
 // through into the migration Jobs and the workloads.
 const dbTLSVolumeName = "db-tls"
 
-// cinderAPIProcessConnections is how many pooled connections one API worker
-// process holds at steady state: the request-serving session, plus the second
-// one oslo.db's pool keeps open behind it while a request is in flight.
-const cinderAPIProcessConnections int32 = 2
+// cinderProcessPoolConnections is how many pooled connections one cinder
+// process keeps once load has touched it: oslo.db's max_pool_size, which the
+// rendered [database] section leaves at its default. The pool keeps every
+// connection a session opened, so the cap follows the pool's size rather than
+// a census of threads, as neutronProcessPoolConnections does. A scheduler that
+// reconnects to the broker drains the casts queued while it was gone on one
+// green thread each, and every one of them opens a session: sized at two per
+// process, the cinder-broker-pod-kill chaos suite (CI run 39054868167) capped
+// the user at 16, and the scheduler's create_volume failed with MySQL error
+// 1226 before it could set the volume to error, leaving it creating.
+const cinderProcessPoolConnections int32 = 5
 
 // upgradePhaseJobBackoffLimit is how often an expand/migrate/contract Job is
 // retried before it is declared failed. It is keystone parity.
@@ -102,15 +109,17 @@ const (
 )
 
 // cinderMaxUserConnections sizes the SQL user's max_user_connections cap for the
-// CR's own topology. The API floor is pods × processes × threads ×
-// cinderAPIProcessConnections, with pods being the autoscaling ceiling when an
-// HPA owns the replica count. The +1 on pods is the rolling-update surge: the
-// strategy runs a full extra pod's workers alongside the fleet during an update.
+// CR's own topology. An API process holds cinderProcessPoolConnections plus one
+// for every uWSGI thread beyond the first. The API floor is pods × processes ×
+// that figure, with pods being the autoscaling ceiling when an HPA owns the
+// replica count. The +1 on pods is the rolling-update surge: the strategy runs a
+// full extra pod's workers alongside the fleet during an update.
 //
-// The single-writer services come next. Each scheduler pod, each cinder-volume
-// Deployment (one per attached backend, hence volumeDeployments) and the one
-// backup service — the +1 inside the parenthesis — keeps one pooled connection
-// and one more behind it, which is the 2×(…) term. Last, the trailing +2 is the
+// The single-writer services come next, each process pooling up to
+// cinderProcessPoolConnections: every scheduler pod plus the one surge pod of
+// its rolling update, every cinder-volume Deployment (one per attached backend,
+// hence volumeDeployments) and the one backup service, the last two on the
+// Recreate strategy and so without a surge pod. Last, the trailing +2 is the
 // migration Jobs' headroom: a db-sync or a phase Job may overlap the fleet.
 //
 // A cap below the fleet's steady state does not degrade gracefully: the last
@@ -130,8 +139,8 @@ func cinderMaxUserConnections(cinder *cinderv1alpha1.Cinder, volumeDeployments i
 	if schedulerReplicas == 0 {
 		schedulerReplicas = 1
 	}
-	return (pods+1)*processes*threads*cinderAPIProcessConnections +
-		2*(schedulerReplicas+volumeDeployments+1) + 2
+	return (pods+1)*processes*(cinderProcessPoolConnections+threads-1) +
+		cinderProcessPoolConnections*(schedulerReplicas+1+volumeDeployments+1) + 2
 }
 
 // reconcileDatabase provisions and migrates the Cinder database schema and
