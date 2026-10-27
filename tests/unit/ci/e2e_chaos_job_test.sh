@@ -12,14 +12,14 @@
 # chaos legs start before the gate they rely on has run, and the
 # failure/cancelled guard in the if: only sees the jobs the list names. One wall
 # for every suite either cuts the nova and network legs short or gives the
-# 45-minute ovn leg two hours to hang in, and a pod leg made non-blocking stops
-# gating merges without failing anything. An entry that does not open with the
+# 45-minute ovn leg two hours to hang in, and a job-level continue-on-error
+# lets a red leg pass green without failing anything. An entry that does not open with the
 # Chaos Mesh health check runs its suites against a controller that may not be
 # up, and every NetworkChaos or PodChaos in it times out instead of failing on
 # the cause. The report artifact is uploaded once per matrix entry, so a name
 # without the suite makes the uploads collide on one artifact name and only
-# the first report is kept. A publish job that waits for e2e-chaos holds
-# a release on a leg that is allowed to fail.
+# the first report is kept. A publish job that waits for e2e-chaos is skipped
+# on every push, which never runs the chaos legs.
 #
 # The resolver's chaos outputs, the label gate and the kind-cluster composite
 # are pinned by resolve_changes_scenarios_test.sh,
@@ -115,13 +115,13 @@ test_the_gate_blocks_on_a_failed_or_cancelled_need() {
 }
 
 test_each_suite_has_its_own_wall() {
-  echo "Test: each e2e-chaos suite has its own wall and pod alone blocks"
+  echo "Test: each e2e-chaos suite has its own wall and every suite gates"
 
   assert_eq "the wall is sized per suite" \
     "timeout-minutes: \${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}" \
     "$(job_line e2e-chaos timeout-minutes)"
-  assert_eq "every suite but pod is non-blocking, each by name" \
-    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}" \
+  # Every leg gates (#1388): a red leg fails the job and skips tempest.
+  assert_eq "no leg is exempt from gating" "" \
     "$(job_line e2e-chaos continue-on-error)"
 }
 

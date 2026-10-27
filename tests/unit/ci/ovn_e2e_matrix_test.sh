@@ -339,8 +339,7 @@ test_chaos_ovn_leg_is_wired() {
   # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
   # flags are no-ops in v0.2.14), so a suite absent from a leg is lint-checked
   # and never applied to a cluster. Every other assertion here is a silent
-  # failure too: a wrong runner label leaves the leg queued forever, a missing
-  # continue-on-error turns a kernel-module gap on the host into a red PR, an
+  # failure too: a wrong runner label leaves the leg queued forever, an
   # unloaded daemon image leaves the OVNCentral Pods pulling from GHCR, an unset
   # WITH_OVN_KERNEL_MODULES leaves the chassis Pod unable to open its Geneve
   # tunnel, and a diagnostics dump pointed at keystone-system collects nothing
@@ -356,16 +355,7 @@ test_chaos_ovn_leg_is_wired() {
     "tests/e2e-chaos/ovn-southbound-outage"
   assert_contains "it health-checks the chaos-mesh install first" "$entry" \
     "tests/e2e/infrastructure/chaos-mesh-health"
-  # The expression names the five non-blocking legs instead of negating the
-  # blocking one. The controlplane leg was argued out of gating by #1390 for
-  # the NetworkChaos partition of korc-network-partition, and the upgrade leg
-  # by #1394 for the NetworkPolicy partitions of cinder-upgrade-db-partition,
-  # so a seventh gates merges until someone argues it out of that here rather
-  # than arriving silently non-blocking.
-  assert_contains "the non-blocking legs are named, not derived" "$job" \
-    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' || matrix.suite == 'upgrade' }}"
-  assert_not_contains "the gate is an allowlist, not a denylist" "$job" \
-    "continue-on-error: \${{ matrix.suite != 'pod' }}"
+  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
 
   # images/ovn/source.json holds the pin, so the leg resolves it at runtime
   # rather than repeating the tag here (asserted globally further up).

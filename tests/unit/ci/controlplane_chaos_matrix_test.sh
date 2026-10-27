@@ -6,8 +6,7 @@
 # Verify the controlplane entry of the e2e-chaos matrix in
 # .github/workflows/ci.yaml (#1390, #1394): the entry and its suites, the
 # suite it runs in an invocation of its own, the c5c3-operator image it loads, the infrastructure it asks setup-e2e-infra for,
-# the K-ORC and c5c3-operator deploys, its diagnostics, its wall and its place
-# among the non-blocking legs.
+# the K-ORC and c5c3-operator deploys, its diagnostics and its wall.
 #
 # Every signal here fails silently when it is missing. The matrix enumerates
 # test_dirs by hand, so a suite absent from the entry is lint-checked and never
@@ -179,14 +178,13 @@ test_the_leg_dumps_its_operators() {
     "kubectl logs -n orc-system deployment/orc-controller-manager --tail=500 || true"
 }
 
-test_the_leg_has_its_wall_and_does_not_gate() {
-  echo "Test: the controlplane leg has a 120-minute wall and is named non-blocking"
+test_the_leg_has_its_wall() {
+  echo "Test: the controlplane leg has a 120-minute wall"
   local job
   job="$(job_block e2e-chaos)"
   assert_contains "its arm of the wall reads 120 minutes" \
     "$(grep -E '^ +timeout-minutes:' <<<"$job")" "matrix.suite == 'controlplane' && 120"
-  assert_contains "it is named in the non-blocking allowlist" \
-    "$(grep -E '^ +continue-on-error:' <<<"$job")" "matrix.suite == 'controlplane'"
+  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
 }
 
 test_the_entry_runs_the_controlplane_suites
@@ -195,7 +193,7 @@ test_the_leg_loads_the_c5c3_operator_image
 test_the_leg_asks_for_the_controlplane_path
 test_the_leg_deploys_korc_and_the_c5c3_operator
 test_the_leg_dumps_its_operators
-test_the_leg_has_its_wall_and_does_not_gate
+test_the_leg_has_its_wall
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

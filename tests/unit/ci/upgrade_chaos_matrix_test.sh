@@ -7,7 +7,7 @@
 # .github/workflows/ci.yaml (#1394): the entry and its two Cinder release
 # upgrade suites, the three cinder images it pulls and loads onto the node,
 # the infrastructure it asks setup-e2e-infra for, the cinder-operator deploy,
-# its diagnostics, its wall and its place among the non-blocking legs.
+# its diagnostics and its wall.
 #
 # Every signal here fails silently when it is missing. The matrix enumerates
 # test_dirs by hand, so a suite absent from the entry is lint-checked and never
@@ -131,14 +131,13 @@ test_the_leg_dumps_the_cinder_operator() {
     "OPERATOR=cinder OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh"
 }
 
-test_the_leg_has_its_wall_and_does_not_gate() {
-  echo "Test: the upgrade leg has an 80-minute wall and is named non-blocking"
+test_the_leg_has_its_wall() {
+  echo "Test: the upgrade leg has an 80-minute wall"
   local job
   job="$(job_block e2e-chaos)"
   assert_contains "its arm of the wall reads 80 minutes" \
     "$(grep -E '^ +timeout-minutes:' <<<"$job")" "matrix.suite == 'upgrade' && 80"
-  assert_contains "it is named in the non-blocking allowlist" \
-    "$(grep -E '^ +continue-on-error:' <<<"$job")" "matrix.suite == 'upgrade'"
+  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
 }
 
 test_the_entry_runs_the_upgrade_suites
@@ -146,7 +145,7 @@ test_the_leg_loads_the_cinder_images
 test_the_leg_asks_for_nfs_and_the_broker
 test_the_leg_deploys_the_cinder_operator
 test_the_leg_dumps_the_cinder_operator
-test_the_leg_has_its_wall_and_does_not_gate
+test_the_leg_has_its_wall
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
