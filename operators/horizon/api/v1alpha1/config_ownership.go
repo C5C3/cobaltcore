@@ -44,7 +44,7 @@ func buildOwnedConfigKeys() []config.OwnedKey {
 		// Reported: emitted by defaultSettings (reconcile_config.go).
 		{Key: "OPENSTACK_KEYSTONE_URL", OwnedBy: "operator-computed"},
 		{Key: "ALLOWED_HOSTS", OwnedBy: "operator-computed"},
-		{Key: "CACHES", OwnedBy: "operator-computed", Impact: "drops the image-scoped KEY_PREFIX; Horizon releases sharing one Memcached then poison each other's template cache (OfflineGenerationError, HTTP 500)"},
+		{Key: "CACHES", OwnedBy: "operator-computed", Impact: "drops the image-scoped KEY_PREFIX and the 1 s Memcached timeouts with ignore_exc; Horizon releases sharing one Memcached then poison each other's template cache (OfflineGenerationError, HTTP 500), and a Memcached that stops answering blocks the dashboard"},
 		{Key: "SESSION_ENGINE", OwnedBy: "operator-computed"},
 		{Key: "DEBUG", OwnedBy: "operator-computed"},
 		{Key: "LOGGING", OwnedBy: "operator-computed"},

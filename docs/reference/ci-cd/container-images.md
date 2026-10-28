@@ -78,8 +78,12 @@ they do upstream, bounded by the timeouts: dogpile's `MemcachedLock` loops until
 `add()` succeeds, and a miss there would hold every cache fill until Memcached
 answers again.
 `test_pymemcache_backend_bounded` in `verify_keystone.sh` and `verify_nova.sh`
-checks both timeouts, `ignore_exc` and the misses in the built image.
-Upstream status: not reported; #1562 tracks the patch.
+checks both timeouts, `ignore_exc` and the misses in the built image. Horizon
+uses pymemcache through Django instead of dogpile.cache, and the
+horizon-operator renders the same bound as cache `OPTIONS`;
+`test_django_pymemcache_bounded` in `verify_horizon.sh` checks those option
+names against the image's Django. Upstream status: not reported; #1562 tracks
+the patch.
 
 ### keystone
 

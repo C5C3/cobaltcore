@@ -43,6 +43,10 @@ const (
 	// suffix's 8 because a collision between two releases would bring back
 	// the template-cache poisoning the prefix exists to prevent.
 	cacheKeyPrefixHashLen = 12
+	// cacheSocketTimeoutSeconds bounds every pymemcache call of the Django
+	// cache. It is the default of oslo.cache's [cache] socket_timeout, the
+	// bound of Keystone's and Nova's cache client (issue #1560).
+	cacheSocketTimeoutSeconds = 1
 	// horizonTextLogFormat is oslo.log's logging_default_format_string without
 	// %(instance)s, which only oslo.log's ContextFormatter fills and the stdlib
 	// logging.Formatter cannot resolve, so a Horizon text line has the shape
@@ -128,17 +132,37 @@ func renderLocalSettings(horizon *horizonv1alpha1.Horizon) (string, error) {
 func defaultSettings(horizon *horizonv1alpha1.Horizon) (map[string]apiextensionsv1.JSON, error) {
 	logging := effectiveLogging(horizon.Spec.Logging)
 
+	backend := effectiveCacheBackend(horizon)
+	cacheDefault := map[string]any{
+		"BACKEND":    backend,
+		"KEY_PREFIX": cacheKeyPrefix(horizon),
+		"LOCATION":   cacheLocations(horizon),
+	}
+	// Django passes the OPTIONS of a PyMemcacheCache to pymemcache's
+	// HashClient. Without them a cache call against a Memcached that stops
+	// answering waits as long as TCP does, and the first call after a
+	// Memcached restart raises, which the dashboard answers with HTTP 500
+	// (issue #1560). connect_timeout and timeout bound every call at
+	// cacheSocketTimeoutSeconds; ignore_exc turns every pymemcache error into
+	// a cache miss. tests/container-images/verify_horizon.sh checks these
+	// option names against the Django and pymemcache of the image. The
+	// OPTIONS are pymemcache's; PyLibMCCache, LocMemCache and the other
+	// Django backends take different ones.
+	if backend == horizonv1alpha1.DefaultCacheBackend {
+		cacheDefault["OPTIONS"] = map[string]any{
+			"connect_timeout": cacheSocketTimeoutSeconds,
+			"timeout":         cacheSocketTimeoutSeconds,
+			"ignore_exc":      true,
+		}
+	}
+
 	values := map[string]any{
 		// Signed-cookie sessions: no session state in Memcached or a
 		// database, so cache loss degrades hit-rate without logging users out
 		// and no database sub-reconcilers exist at all (design decision D1).
 		"SESSION_ENGINE": defaultDjangoSessionEngine,
 		"CACHES": map[string]any{
-			"default": map[string]any{
-				"BACKEND":    effectiveCacheBackend(horizon),
-				"KEY_PREFIX": cacheKeyPrefix(horizon),
-				"LOCATION":   cacheLocations(horizon),
-			},
+			"default": cacheDefault,
 		},
 		"OPENSTACK_KEYSTONE_URL": horizon.Spec.KeystoneEndpoint,
 		// The dashboard's server-side clients resolve service URLs from the

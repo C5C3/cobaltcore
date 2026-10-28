@@ -51,7 +51,9 @@ func TestReconcileConfig_RendersLocalSettings(t *testing.T) {
 	// literal is sha256("ghcr.io/c5c3/horizon:2026.1")[:12], pinned rather
 	// than computed so a change of the hash input or length fails here.
 	g.Expect(rendered).To(ContainSubstring(`"KEY_PREFIX": "horizon-e3b48cc65c6f"`))
-	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"]}}`))
+	// OPTIONS bound every pymemcache call at 1 s and turn its errors into
+	// misses (issue #1560).
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
 
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_URL = "http://keystone.default.svc.cluster.local:5000/v3"`))
 	// The server-side clients must use the internal catalog interface — the
@@ -738,8 +740,9 @@ func TestReconcileConfig_SameImageRendersSameConfigMapName(t *testing.T) {
 
 // TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported covers the
 // escape hatch for a cache backend spec.cache cannot express: the user dict
-// replaces the operator's CACHES whole, KEY_PREFIX included, and the guard
-// names the lost prefix in the condition and the Warning event.
+// replaces the operator's CACHES whole, KEY_PREFIX and OPTIONS included, and
+// the guard names the lost prefix and timeouts in the condition and the
+// Warning event.
 func TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()
@@ -756,6 +759,7 @@ func TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported(t *testing.T)
 	rendered := cm.Data["local_settings.py"]
 	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}`))
 	g.Expect(rendered).NotTo(ContainSubstring("KEY_PREFIX"))
+	g.Expect(rendered).NotTo(ContainSubstring("OPTIONS"))
 
 	cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
 	g.Expect(cond).NotTo(BeNil())
@@ -763,9 +767,10 @@ func TestReconcileConfig_CachesOverrideDropsKeyPrefixAndIsReported(t *testing.T)
 	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
 	g.Expect(cond.Message).To(ContainSubstring("CACHES"))
 	g.Expect(cond.Message).To(ContainSubstring("KEY_PREFIX"))
+	g.Expect(cond.Message).To(ContainSubstring("timeouts"))
 
 	fakeRecorder := r.Recorder.(*record.FakeRecorder)
-	g.Expect(fakeRecorder.Events).To(Receive(ContainSubstring("KEY_PREFIX")))
+	g.Expect(fakeRecorder.Events).To(Receive(And(ContainSubstring("KEY_PREFIX"), ContainSubstring("timeouts"))))
 }
 
 // TestRenderLocalSettings_EmptyCacheSpecRendersLocationNoneWithKeyPrefix covers
@@ -779,5 +784,33 @@ func TestRenderLocalSettings_EmptyCacheSpecRendersLocationNoneWithKeyPrefix(t *t
 
 	rendered, err := renderLocalSettings(h)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": None}}`))
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": None, "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
+}
+
+// TestRenderLocalSettings_EmptyBackendRendersTimeoutOptions covers an empty
+// spec.cache.backend (a CR that bypassed the defaulting webhook): it resolves
+// to PyMemcacheCache, and the pymemcache timeouts and ignore_exc render with
+// it.
+func TestRenderLocalSettings_EmptyBackendRendersTimeoutOptions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Cache.Backend = ""
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
+}
+
+// TestRenderLocalSettings_OtherCacheBackendRendersNoOptions covers a Django
+// cache backend other than PyMemcacheCache: the pymemcache option names mean
+// nothing to it, so CACHES carries no OPTIONS.
+func TestRenderLocalSettings_OtherCacheBackendRendersNoOptions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Cache.Backend = "django.core.cache.backends.memcached.PyLibMCCache"
+
+	rendered, err := renderLocalSettings(h)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyLibMCCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"]}}`))
+	g.Expect(rendered).NotTo(ContainSubstring(`"OPTIONS"`))
 }
