@@ -3272,14 +3272,20 @@ the broker pod and the rabbitmq-cluster-operator logs.
 **Purpose:** A `NetworkChaos` partition severs the API pods of one Keystone from the
 shared Memcached, enforced on the Memcached (server) side for the reason
 `mariadb-network-partition` documents. `memcached-pod-kill` kills the cache, which
-closes every connection at once; under a partition every cache call waits out
-oslo.cache's `socket_timeout` of 1 second until the client marks the server dead for
-`memcache_dead_retry` (300 seconds). Keystone's `[cache]` sets `memcache_servers`
-alone, so those defaults apply. The suite pins that the cache is a performance
-dependency: Ready and every sub-condition stay `True` for 120 seconds under the
-partition, while a TCP connect from the Keystone API pod to Memcached times out. It
-also records what the token stream sees, either answers through the
-partition once the server is marked dead or failures as after a Memcached kill.
+closes every connection at once. The suite pins that the cache is a performance
+dependency: for 120 seconds under the partition, `GET` on the Keystone's `/v3`
+endpoint answers within 10 seconds and Ready and every sub-condition stay `True`,
+while a TCP connect from the Keystone API pod to Memcached times out.
+
+The suite fails on the Keystone it deploys. Its backend, `dogpile.cache.pymemcache`,
+hands neither oslo.cache's `socket_timeout` (1 second) nor its `dead_retry` (300
+seconds) to pymemcache, so a cache call under the partition blocks until the kernel
+gives up on the connection: 134 seconds for a connect, measured against the 2026.1
+image. Both uWSGI workers hang in their first cache call, every token issue runs into
+the stream's 15-second timeout, and `/v3` stops answering. Ready alone does not show
+it reliably, because the operator re-probes a Ready Keystone only on an event or the
+10-minute resync. Before the `/v3` read, the suite passed whenever no probe fell into
+its window.
 
 **Steps:**
 
@@ -3288,7 +3294,7 @@ partition once the server is marked dead or failures as after a Memcached kill.
 | 1 | Apply Keystone CR | `apply` | `keystone-chaos-mc-part` (database `keystone_chaos_mc_part`) |
 | 2 | Assert baseline Ready=True | `assert` (5m) + `script` (6m) | `Ready=True/AllReady`; `workload.sh start` with the `token` stream |
 | 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `partition-memcached` (`direction: both`, `duration: "600s"`) between the `app.kubernetes.io/name: memcached` pods and the API pods of `keystone-chaos-mc-part` (Job pods left out, see [Job pods in a selector](#job-pods-in-a-selector)), then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
-| 4 | Hold the partition for 120 s | `script` (4m) | A TCP connect from the Keystone API pod to `openstack-memcached:11211` has to time out after 3 s (`PARTITION-EFFECTIVE-OK`). Then reads the CR every 10 seconds, twelve times, and fails on the first of `SecretsReady`, `FernetKeysReady`, `DatabaseReady`, `DeploymentReady`, `BootstrapReady` and `Ready` that is not `True` |
+| 4 | Hold the partition for 120 s | `script` (5m) | A TCP connect from the Keystone API pod to `openstack-memcached:11211` has to time out after 3 s (`PARTITION-EFFECTIVE-OK`). Then reads every 10 seconds, twelve times: `GET` on `status.endpoint` from the API pod has to answer 200 within 10 s, and the read fails on the first of `SecretsReady`, `FernetKeysReady`, `DatabaseReady`, `DeploymentReady`, `BootstrapReady` and `Ready` that is not `True` |
 | 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-memcached`, then `workload.sh mark fault-end` |
 | 6 | Assert recovery | `assert` (5m) + `script` (3m) | `Ready=True/AllReady`, then the connect of step 4 succeeds within 20 tries 3 s apart (`PARTITION-LIFTED-OK`) |
 | 7 | Judge the workload | `script` (15m) | `workload.sh verify` |

@@ -7,27 +7,30 @@
 #
 # ../memcached-pod-kill/ kills a Memcached pod, which closes every connection
 # at once. This suite partitions the Memcached pods from the API pods of one
-# Keystone instead, server-side (01-networkchaos.yaml), so every cache call of
-# that Keystone waits out oslo.cache's 1 s socket_timeout until the client
-# marks the server dead for memcache_dead_retry (300 s). The suite pins that
-# the cache is a performance dependency and nothing more:
+# Keystone instead, server-side (01-networkchaos.yaml). The suite pins that the
+# cache is a performance dependency and nothing more:
 #
 #   - baseline: the Keystone is Ready and the token stream is READY
 #   - under the partition: a TCP connect from the Keystone API pod to
 #     openstack-memcached:11211 times out after 3 s (PARTITION-EFFECTIVE-OK),
 #     so the fault reached the cache path
-#   - under the partition: for 120 s after AllInjected, Ready stays True and
-#     every sub-condition (SecretsReady, FernetKeysReady, DatabaseReady,
-#     DeploymentReady, BootstrapReady) stays True, the no-regression pattern of
+#   - under the partition: for 120 s after AllInjected, GET on the Keystone's
+#     /v3 endpoint answers 200 within 10 s at every read, and Ready and every
+#     sub-condition (SecretsReady, FernetKeysReady, DatabaseReady,
+#     DeploymentReady, BootstrapReady) stay True, the no-regression pattern of
 #     ../memcached-pod-kill/
 #   - after the partition: Ready=True/AllReady, and the same connect succeeds
 #     again (PARTITION-LIFTED-OK)
 #
-# What the token stream sees under the partition is the open question this
-# suite records: Keystone may answer through it once the client has marked the
-# server dead, or fail as it does for two minutes after a Memcached kill (the
-# header of ../memcached-pod-kill/). No run has recorded it yet; the measured
-# line takes the answer.
+# The suite fails on the Keystone it deploys. Its cache backend,
+# dogpile.cache.pymemcache, hands neither oslo.cache's 1 s socket_timeout nor
+# its 300 s dead_retry to pymemcache, so a cache call under the partition
+# blocks until the kernel gives up on the connection (134 s for a connect,
+# measured against the 2026.1 image). Both uWSGI workers hang in their first
+# cache call, every token issue runs into the stream's 15 s timeout, and GET
+# /v3 stops answering. Ready alone does not show it reliably: the operator
+# re-probes a Ready Keystone only on an event or the 10-minute resync, so most
+# 120 s windows see no probe, and the suite used to pass.
 #
 # Blast radius: the API pods of keystone-chaos-mc-part alone. Every other
 # client of openstack-memcached keeps its cache.
@@ -114,13 +117,17 @@ spec:
   # first connects from the Keystone API pod to openstack-memcached:11211, the
   # address Keystone's [cache] names: the partition must leave that connect
   # unanswered. A single assert passes on the first read, so the script then
-  # reads the CR every 10 s for the whole 120 s and fails on the first
-  # condition that is not True. The five sub-conditions and Ready are the six
-  # memcached-pod-kill asserts.
+  # reads every 10 s for the whole 120 s and fails on the first miss. Each read
+  # first GETs the endpoint the operator probes (status.endpoint, /v3) from the
+  # API pod with the operator's 10 s timeout, because KeystoneAPIReady is only
+  # re-probed on an event or the resync and stays True through most windows
+  # whatever the API does. Then it reads the CR: the five sub-conditions and
+  # Ready are the six memcached-pod-kill asserts. Twelve reads at up to 10 s
+  # for the GET, 10 s of sleep and six CR reads fit the 5m timeout.
   - try:
     - script:
         shell: bash
-        timeout: 4m
+        timeout: 5m
         content: |
           set -eu
           API_POD="$(kubectl get pods -n "$NAMESPACE" \
@@ -143,8 +150,21 @@ spec:
           fi
           echo "PARTITION-EFFECTIVE-OK"
 
+          ENDPOINT="$(kubectl get keystone keystone-chaos-mc-part -n "$NAMESPACE" \
+            -o jsonpath='{.status.endpoint}')"
           FAILED=""
           for i in $(seq 1 12); do
+            ANSWER="$(kubectl exec -n "$NAMESPACE" "$API_POD" -c keystone -- python3 -c '
+          import sys, urllib.request
+          try:
+              print(urllib.request.urlopen(sys.argv[1], timeout=10).status)
+          except Exception as e:
+              print("ERROR %r" % e)
+          ' "$ENDPOINT" 2>&1 || true)"
+            if [ "$ANSWER" != "200" ]; then
+              FAILED="GET ${ENDPOINT} answered '${ANSWER}' at read ${i}"
+              break
+            fi
             for cond in SecretsReady FernetKeysReady DatabaseReady DeploymentReady BootstrapReady Ready; do
               STATUS="$(kubectl get keystone keystone-chaos-mc-part -n "$NAMESPACE" \
                 -o "jsonpath={.status.conditions[?(@.type=='${cond}')].status}" 2>/dev/null || true)"
@@ -160,7 +180,7 @@ spec:
             kubectl get keystone keystone-chaos-mc-part -n "$NAMESPACE" -o jsonpath='{.status.conditions}' 2>&1 || true
             exit 1
           fi
-          echo "OK: Ready and every sub-condition stayed True for 120s under the partition"
+          echo "OK: /v3 answered and Ready and every sub-condition stayed True for 120s under the partition"
     catch:
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-mc-part --dep-label=app.kubernetes.io/name=memcached --log-label=app.kubernetes.io/instance=keystone-chaos-mc-part

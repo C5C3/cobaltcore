@@ -21,9 +21,12 @@
 # (app.kubernetes.io/name: keystone, app.kubernetes.io/instance:
 # keystone-chaos-mc-part). Every other client of openstack-memcached keeps its cache.
 # Keystone's [cache] sets memcache_servers alone
-# (operators/keystone/internal/controller/reconcile_config.go), so the
-# oslo.cache defaults apply: a socket_timeout of 1.0 s per call and a
-# memcache_dead_retry of 300 s before a server marked dead is tried again.
+# (operators/keystone/internal/controller/reconcile_config.go), and the
+# dogpile.cache.pymemcache backend of 00-keystone-cr.yaml hands neither
+# oslo.cache's socket_timeout (1.0 s) nor its dead_retry (300 s) to
+# pymemcache. A cache call under the partition therefore has no timeout: a
+# connect waits out the kernel's SYN retries, 134 s against the 2026.1 image,
+# and then raises.
 #
 # Duration is a safety net; the suite lifts the partition explicitly. It
 # exceeds the 120 s hold of step 4 plus the asserts around it, so the
