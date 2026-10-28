@@ -57,6 +57,30 @@ differences aspect by aspect.
 
 ![The image build workflow on its two paths. On every run, nix-flake-check runs nix flake check, the Nix lint and the checks of the flake, nix-lock-check runs hack/nix-lock.sh --check to compare the locks and the image pins with their inputs, and generate-matrix works out the services, releases and platforms. build-service-images waits for all three, test-service-images for nix-lock-check and generate-matrix. On a pull request, build-service-images builds each service image with nix build for linux/amd64 only, scans its store paths with vulnix and uploads the report as an artifact, loads the image into the local Docker daemon, scans it with Grype without a report upload, runs tests/container-images/verify_{service}.sh and checks the option catalog of the services that have one. test-service-images runs the upstream unit tests as the Nix build .#{service}-{release_}-test-run and its check. The run ends there, and no service image is pushed. On a push to main or stable/**, or on a manual run, build-service-images builds for amd64 and arm64, each on its own runner, scans the store paths with vulnix, pushes by digest with skopeo and exports the digest as one artifact per platform. merge-service-images creates and pushes the manifest with the tags of the Tag Schema, generates a CycloneDX SBOM, scans the SBOM with Grype and uploads the report to the Security tab, attests the SBOM and the build provenance, and signs the image with cosign. verify-service-images pulls the image from ghcr.io and runs the verify script and the option catalog check once merge-service-images and test-service-images have passed. ghcr.io holds {service} alone, pushed on a push. No base image exists: a build reads nothing from ghcr.io, and the Cachix cache cobaltcore serves store paths when it is reachable. A manual run, workflow_dispatch, takes the push path; the workflow has no tag trigger.](../../diagrams/ci-image-publish.svg)
 
+**Library patch:** every service image, nova-compute and tempest included,
+carries `nix/lib/patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch`, which
+`nix/lib/python-env.nix` applies to the dogpile.cache 1.5.0 of every lock
+([Nix Image Build](./nix-image-build.md#python-environments-and-locks)).
+dogpile.cache's `PyMemcacheBackend` drops the `socket_timeout` that oslo.cache
+passes it, so without the patch a cache call against a Memcached that stops
+answering blocks for as long as TCP does: one Keystone read took 213 s under a
+120 s partition (#1560). With the patch, `[cache] socket_timeout` (default
+1.0 s) bounds every cache call of Keystone and of nova-api, nova-metadata and
+nova-conductor, and every pymemcache error is a cache miss. A failed `set` or
+`delete` is dropped the same way: an invalidation a worker issues while it
+cannot reach Memcached does not reach the other workers, and they serve the old
+entry until it expires. A `socket_timeout` of `0` turns the cache off, because
+every call then misses at once. `[cache] enable_retry_client` retries no network
+error: the client returns a miss before the retrying wrapper sees an exception.
+With
+`distributed_lock` in `[cache] backend_argument`, pymemcache errors raise as
+they do upstream, bounded by the timeouts: dogpile's `MemcachedLock` loops until
+`add()` succeeds, and a miss there would hold every cache fill until Memcached
+answers again.
+`test_pymemcache_backend_bounded` in `verify_keystone.sh` and `verify_nova.sh`
+checks both timeouts, `ignore_exc` and the misses in the built image.
+Upstream status: not reported; #1562 tracks the patch.
+
 ### keystone
 
 **Location:** `images/keystone/image.nix`, built from the lock
@@ -1011,7 +1035,7 @@ runs counted 16,803 tests at 33.0.0, with 63 skips and 2 expected failures, and
 environment-dependent failure.
 
 **Image contract check:** `tests/container-images/verify_nova.sh` is the hard
-gate. Its 14 tests cover `nova-manage --version` and `nova-status --help`, the
+gate. Its 15 tests cover `nova-manage --version` and `nova-status --help`, the
 importability of `nova` and of `nova.virt.fake`, `os_vif`, `os_brick`,
 `websockify`, `oslo_privsep` and `oslo_limit`, together with the
 `ModuleNotFoundError` an `import libvirt` has to raise. Then come the three
@@ -1040,18 +1064,20 @@ and owned by 42424 along with their parent, and an x509 keypair: the test
 calls `generate_winrm_x509_cert` from `nova/crypto.py`, which runs
 `openssl req` and `openssl pkcs12` the way nova-api does for
 `POST /os-keypairs` with `"type": "x509"`, and expects a PEM certificate.
+The last test checks that `[cache] socket_timeout` bounds the pymemcache client
+of the [library patch](#service-images).
 The WSGI check inspects the two modules instead of importing them: an import
 runs `wsgi_app.init_application` at module level and dies with
 `ConfigFilesNotFoundError` in a bare image. So it pairs
 `importlib.util.find_spec` for each module path with an `ast.parse` of the
 module source, and rejects a module whose only module-level binding of
 `application` is the `None` sentinel.
-Both release images pass all 62 assertions.
-Pointed at a cinder image the script exits 1 with 40 of them failing. The 22
+Both release images pass all 63 assertions.
+Pointed at a cinder image the script exits 1 with 40 of them failing. The 23
 that pass are the non-root, build-tool, uwsgi and sudo checks, the absence of
 libvirt, the non-empty output of `nova-manage` and `nova-status` (an error
-message there), and six assertions of the probe test that hold without the
-probe.
+message there), six assertions of the probe test that hold without the
+probe, and the pymemcache bound, which the cinder image carries too.
 
 **Build and verify:**
 

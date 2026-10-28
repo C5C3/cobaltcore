@@ -1,0 +1,101 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Hand socket_timeout to the pymemcache client and ignore its errors
+
+oslo.cache's `_build_cache_config` passes `[cache] socket_timeout`
+(default 1.0 s) to every memcache backend as `arguments.socket_timeout`.
+dogpile.cache 1.5.0's `PyMemcacheBackend` never reads it:
+`_create_client` builds `pymemcache.client.hash.HashClient` without
+`connect_timeout`, `timeout` and `ignore_exc`, and pymemcache defaults
+them to `None`, `None` and `False`. A cache call then waits on its
+socket for as long as TCP does. Measured in the 2026.1 keystone image
+with an iptables DROP in both directions inside Memcached's network
+namespace, one cache read on an open connection blocked for 213 s under
+a 120 s partition (the partition plus 93 s of TCP backoff), and a new
+connection blocked until 8 s after the partition lifted. Both uWSGI
+workers of a partitioned Keystone hung that way on CobaltCore CI run
+40586904996, and every token request timed out.
+
+The patch reads `socket_timeout` in `PyMemcacheBackend.__init__` and
+hands it to `HashClient` as `connect_timeout` and `timeout`. The
+timeouts alone are not enough. With them, the same read raised
+`TimeoutError` after 1.00 s, about 10 s later every call raised
+`MemcacheError('All servers seem to be down right now')`, and the calls
+kept raising for about 100 s after the partition lifted. The patch
+therefore also sets `ignore_exc=True`, which turns every pymemcache
+error into a cache miss, and the service answers from its database: a
+miss after 1.00 s, three more 1 s stalls over the next 10 s
+(`hashclient_retry_attempts` 2, `hashclient_retry_timeout` 1), then
+immediate misses while pymemcache counts the server as dead, for 60 to
+120 s (`hashclient_dead_timeout` 60). pymemcache then tries the server
+again, and the stalls repeat for as long as it stays unreachable. Each
+dogpile region has a client of its own in every thread, and each client
+goes through these stalls on its own. A refused connection misses at
+once, and with `socket_timeout = 0` every call misses at once. The
+`MemcacheUnexpectedCloseError` that a restarted Memcached caused on the
+first read of each open connection (a 500 in Keystone) becomes one miss.
+
+A failed `set` or `delete` is dropped the same way, and dogpile ignores
+the result of both. An invalidation that a worker issues while it
+cannot reach Memcached therefore does not reach the other workers, and
+they serve the old entry until it expires.
+
+oslo.cache has no option for `ignore_exc`, and
+`[cache] backend_argument` would pass the string "false", which is
+truthy, so the patch derives it: it is set when `socket_timeout` is and
+`distributed_lock` is not. oslo.cache always passes `socket_timeout`.
+With `distributed_lock`, dogpile's `MemcachedLock.acquire()` loops until
+`add()` returns True, and a missed `add()` would hold every cache fill
+until Memcached answers again, so pymemcache errors raise there as they
+do upstream, bounded by the timeouts. dogpile.cache used without
+oslo.cache passes no `socket_timeout` and keeps pymemcache's unbounded
+`None` timeouts and its errors.
+
+Where `ignore_exc` is set, `[cache] enable_retry_client` retries no
+network error: the `HashClient` returns a miss before the
+`RetryingClient` sees an exception.
+
+`assert_pymemcache_backend_bounded` in tests/lib/pymemcache.sh, which
+tests/container-images/verify_keystone.sh and verify_nova.sh call,
+checks the patched client in the built images.
+`test_django_pymemcache_bounded` in verify_horizon.sh checks the
+options the horizon-operator renders into Django's CACHES for the same
+pymemcache client.
+
+nix/lib/python-env.nix applies the patch to the installed wheel of every
+lock with `patch --fuzz=0`. A dogpile.cache release that moves these
+lines fails the build there.
+
+Applies to dogpile.cache 1.5.0 (the 2026.1 and 2026.2 constraints).
+
+Upstream status: not reported; tracked in #1562.
+
+diff --git a/dogpile/cache/backends/memcached.py b/dogpile/cache/backends/memcached.py
+index 0842cb6..79662b4 100644
+--- a/dogpile/cache/backends/memcached.py
++++ b/dogpile/cache/backends/memcached.py
+@@ -608,6 +608,13 @@ class PyMemcacheBackend(GenericMemcachedBackend):
+             "hashclient_retry_timeout", 1
+         )
+         self.dead_timeout = arguments.get("hashclient_dead_timeout", 60)
++        self.socket_timeout = arguments.get("socket_timeout", None)
++        # Errors become misses only where the timeouts bound the calls, and
++        # not for distributed_lock: MemcachedLock.acquire() loops until add()
++        # returns True, so a missed add() holds it until Memcached answers.
++        self.ignore_exc = (
++            self.socket_timeout is not None and not self.distributed_lock
++        )
+         if (
+             self.retry_delay is not None
+             or self.retry_attempts is not None
+@@ -634,6 +641,9 @@ class PyMemcacheBackend(GenericMemcachedBackend):
+             "retry_attempts": self.hashclient_retry_attempts,
+             "retry_timeout": self.hashclient_retry_timeout,
+             "dead_timeout": self.dead_timeout,
++            "connect_timeout": self.socket_timeout,
++            "timeout": self.socket_timeout,
++            "ignore_exc": self.ignore_exc,
+         }
+         if self.socket_keepalive is not None:
+             _kwargs.update({"socket_keepalive": self.socket_keepalive})
