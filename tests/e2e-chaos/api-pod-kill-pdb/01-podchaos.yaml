@@ -6,6 +6,12 @@
 # One-shot pod-kill action — the Deployment controller will create a
 # replacement pod. Selector uses both name and instance labels to target
 # only the API pods belonging to the keystone-chaos-api CR instance.
+#
+# The selector leaves out Job pods: every Job pod carries
+# batch.kubernetes.io/job-name, and no API pod does. The trust-flush CronJob of
+# keystone-chaos-api runs hourly and labels its pods with the same name and
+# instance, so mode one could pick a completed trust-flush pod and kill it
+# instead of an API pod.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
 metadata:
@@ -20,4 +26,7 @@ spec:
     labelSelectors:
       app.kubernetes.io/name: keystone
       app.kubernetes.io/instance: keystone-chaos-api
+    expressionSelectors:
+    - key: batch.kubernetes.io/job-name
+      operator: DoesNotExist
   gracePeriod: 0

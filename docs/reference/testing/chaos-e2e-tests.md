@@ -963,8 +963,10 @@ mode (`baseline`/`chaos`) and `--dep-label=app.kubernetes.io/name=mariadb`.
 - Uses `NetworkChaos` with `action: partition` instead of `PodChaos` with `action: pod-kill`,
   simulating a network failure without killing the MariaDB pod.
 - The chaos is applied on the MariaDB pods (`selector`) and drops traffic to/from the keystone
-  API pods (`target`, `direction: both`). It must be enforced on the server side: keystone
-  connects to the ClusterIP Service `openstack-db.openstack.svc:3306`, and a client-side rule
+  API pods (`target`, `direction: both`). The target leaves out Job pods, which carry the
+  keystone name label too ([Job pods in a selector](#job-pods-in-a-selector)). It must be
+  enforced on the server side: keystone connects to the ClusterIP Service
+  `openstack-db.openstack.svc:3306`, and a client-side rule
   would match MariaDB pod IPs while the packet still carries the Service ClusterIP (kube-proxy
   DNATs ClusterIP→pod IP later, in the node root namespace), so it would never match. Dropping
   at the MariaDB side works because the packet is already DNATed and carries the keystone pod
@@ -1053,7 +1055,7 @@ PDB assertion step and a script-based availability check.
 | 1 | Apply Keystone CR (replicas: 3) | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-api` with database `keystone_chaos_api`, replicas: 3 |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady. `workload.sh start` then starts the workload and waits for `READY`. |
 | 3 | Assert PDB exists | `assert` (5m) | PDB `keystone-chaos-api` with `spec.minAvailable: 1` (apiVersion: `policy/v1`) |
-| 4 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-keystone-api` targeting `app.kubernetes.io/name: keystone` AND `app.kubernetes.io/instance: keystone-chaos-api` in `openstack` (the PodChaos resource name retains its historical `kill-keystone-api` label as a chaos-test identifier; the chaos still targets the bare-name `keystone-chaos-api` Pods). `workload.sh mark fault-start` runs right before it. <!-- keystone-api-legacy: PodChaos fixture name retained. --> |
+| 4 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-keystone-api` targeting `app.kubernetes.io/name: keystone` AND `app.kubernetes.io/instance: keystone-chaos-api` in `openstack`, Job pods left out ([Job pods in a selector](#job-pods-in-a-selector)) (the PodChaos resource name retains its historical `kill-keystone-api` label as a chaos-test identifier; the chaos still targets the bare-name `keystone-chaos-api` Pods). `workload.sh mark fault-start` runs right before it. <!-- keystone-api-legacy: PodChaos fixture name retained. --> |
 | 5 | Verify PDB enforcement and assert conditions | `script` (120s) + `assert` (5m) | Script polls until `readyReplicas < 3` (kill took effect), then asserts `availableReplicas >= 1`; Chainsaw asserts `DeploymentReady=True` and `Ready=True` with reason AllReady |
 | 6 | Delete PodChaos | `delete` | Removes PodChaos `kill-keystone-api` to clean up. `workload.sh mark fault-end` runs right after it. <!-- keystone-api-legacy: PodChaos fixture name retained. --> |
 | 7 | Assert Ready=True after recovery | `assert` (5m) | Ready=True with reason AllReady — full replica count restored |
@@ -1432,7 +1434,8 @@ rabbitmq-cluster-operator logs from `rabbitmq-system`, and the NetworkChaos dump
   at the wrong host; the broker's own accounting is what rules that out.
 - `kubectl exec` into the broker keeps working under the fault. The drop rule matches the
   neutron pod IPs, and the exec arrives from the kubelet.
-- The target carries no component key, so API and worker pods are both cut off. Sparing
+- The target carries no component key, so API and worker pods are both cut off. It
+  leaves out Job pods only ([Job pods in a selector](#job-pods-in-a-selector)). Sparing
   the workers would leave the half of the deployment meant to consume RPC still
   connected.
 - Step 8 tears the bus down through the RabbitmqCluster delete itself, inside the suite.
@@ -1555,7 +1558,9 @@ and `--log-label=app.kubernetes.io/instance=cinder-broker-chaos`, dumps the
   doing that to the shared one would take the rest of the matrix entry with it.
 - `partition-broker-cinder` selects the broker pods
   (`app.kubernetes.io/name=cinder-chaos-rabbitmq`) and targets every pod of this
-  Cinder with no component key. A client-side rule would match broker pod IPs
+  Cinder with no component key, Job pods aside
+  ([Job pods in a selector](#job-pods-in-a-selector)). A client-side rule would match
+  broker pod IPs
   while the packet still carries the Service ClusterIP, because kube-proxy DNATs
   later in the node's root namespace, so it would never match Service-routed
   traffic. Sparing one of the three processes would leave that part of the claim
@@ -1699,7 +1704,7 @@ one reaches ACTIVE.
 | 6 | Apply the Nova CR and assert its conditions | `apply` + `assert` (8m) | `nova-broker-chaos` with the sixteen conditions the suite asserts True beside `Ready` (fifteen `*Ready` sub-conditions and `ExtraConfigHealthy`; `VPAReady` is not among them) and `Ready=True/AllReady`, the baseline the partition phase is read against |
 | 7 | Start the fake compute and map it into cell1 | `apply` + `assert` + `script` (3m) | `12-fake-compute.yaml` available, then `../../e2e/nova/discover-hosts.sh nova-broker-chaos` |
 | 8 | Baseline | `script` (11m) + `script` (2m) | `14-baseline-job.yaml` boots a server end to end (`BASELINE-OK`) and prints how long the create call took; the scheduler, conductor and API containers are recorded ready (`BASELINE-READY-OK`) |
-| 9 | Inject NetworkChaos to partition the broker | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-rabbitmq-nova`), waited for `AllInjected`. The step cleanup deletes it |
+| 9 | Inject NetworkChaos to partition the broker | `apply` + `script` (60s) | `13-networkchaos.yaml` (`partition-rabbitmq-nova`, every pod of this Nova but its Job pods, see [Job pods in a selector](#job-pods-in-a-selector)), waited for `AllInjected`. The step cleanup deletes it |
 | 10 | Under the partition | `script` (5m) + `assert` + `script` (2m) + `script` (4m) | Both bus consumers report `ready=false` within 180 s; the CR reads `SchedulerReady=False/WaitingForScheduler`, `ConductorReady=False/WaitingForConductor`, `Ready=False/NotAllReady`; the API container is still ready at `restartCount` 0 (`API-UP-OK`); `15-blocked-job.yaml` gets 200 from `GET /` and no answer from a create inside 45 s, then lists the build request as BUILD (`BLOCKED-OK`) |
 | 11 | Lift the partition and let the deployment recover | `delete` + `script` (3m) + `assert` + `script` (13m) | Both consumers are ready again within 120 s, the two conditions and `Ready` read True, and `16-recovered-job.yaml` finds the stalled server ACTIVE and creates a second one (`RECOVERED-OK`) |
 | 12 | Tear the broker down through its own operator | `script` (12m) | The compute and the three Jobs first, then the Nova and its pods, then the RabbitmqCluster and its broker pod |
@@ -2220,7 +2225,8 @@ the NetworkChaos as YAML. Steps 5, 6 and 8 also list the Garage storage pods in
 - `02-networkchaos.yaml` names the Garage storage pods as `selector`
   (`garage.rajsingh.info/cluster: garage` and `garage.rajsingh.info/tier: storage` in
   `shared-services`) and the Glance pods as `target` (`app.kubernetes.io/name: glance`
-  and `app.kubernetes.io/instance: glance-garage-chaos` in `openstack`), with
+  and `app.kubernetes.io/instance: glance-garage-chaos` in `openstack`, Job pods left
+  out as [Job pods in a selector](#job-pods-in-a-selector) describes), with
   `direction: both` and `duration: "600s"`.
 - The rule is enforced on the Garage (server) side because glance-api connects to the
   ClusterIP Service `garage.shared-services.svc.cluster.local:3900`, never to a Garage
@@ -3281,7 +3287,7 @@ partition once the server is marked dead or failures as after a Memcached kill.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | `keystone-chaos-mc-part` (database `keystone_chaos_mc_part`) |
 | 2 | Assert baseline Ready=True | `assert` (5m) + `script` (6m) | `Ready=True/AllReady`; `workload.sh start` with the `token` stream |
-| 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `partition-memcached` (`direction: both`, `duration: "600s"`) between the `app.kubernetes.io/name: memcached` pods and the API pods of `keystone-chaos-mc-part`, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
+| 3 | Inject NetworkChaos | `script` (1m) + `apply` + `script` (2m) | `workload.sh mark fault-start`, then `partition-memcached` (`direction: both`, `duration: "600s"`) between the `app.kubernetes.io/name: memcached` pods and the API pods of `keystone-chaos-mc-part` (Job pods left out, see [Job pods in a selector](#job-pods-in-a-selector)), then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
 | 4 | Hold the partition for 120 s | `script` (4m) | A TCP connect from the Keystone API pod to `openstack-memcached:11211` has to time out after 3 s (`PARTITION-EFFECTIVE-OK`). Then reads the CR every 10 seconds, twelve times, and fails on the first of `SecretsReady`, `FernetKeysReady`, `DatabaseReady`, `DeploymentReady`, `BootstrapReady` and `Ready` that is not `True` |
 | 5 | Lift the partition | `delete` + `script` (1m) | Removes `NetworkChaos/partition-memcached`, then `workload.sh mark fault-end` |
 | 6 | Assert recovery | `assert` (5m) + `script` (3m) | `Ready=True/AllReady`, then the connect of step 4 succeeds within 20 tries 3 s apart (`PARTITION-LIFTED-OK`) |
@@ -4712,6 +4718,34 @@ spec:
 
 Both labels must match for a pod to be selected. This ensures only the `keystone-chaos-api`
 API Deployment's pods are targeted, and neither the operator pod nor the API pods of other CR instances are.
+
+### Job pods in a selector
+
+The CronJobs of a service CR label their pods with the CR's
+`app.kubernetes.io/name` and `app.kubernetes.io/instance`, like its workloads: the
+Keystone trust flush and the Neutron OVN DB sync run hourly, the Nova database
+archive at 00:00 and the Cinder and Glance purges at 00:01. A completed CronJob pod
+stays listed, so a selector made of those two labels picks it up once the CR has
+lived across a tick. Chaos Mesh does not inject into a pod that is not running: a
+`NetworkChaos` reports `pod not running` for it and never reaches `AllInjected`, and
+a `mode: one` `PodChaos` can pick it instead of a workload pod. Every Job pod
+carries `batch.kubernetes.io/job-name` and no workload pod does, so these selectors
+leave Job pods out:
+
+```yaml
+    labelSelectors:
+      app.kubernetes.io/name: nova
+      app.kubernetes.io/instance: nova-broker-chaos
+    expressionSelectors:
+      - key: batch.kubernetes.io/job-name
+        operator: DoesNotExist
+```
+
+The `target` of `nova-broker-outage`, `cinder-broker-outage`, `neutron-broker-outage`,
+`glance-garage-outage`, `memcached-network-partition` and `mariadb-network-partition`
+carries it, as do the `selector` of `mariadb-network-latency`, `api-pod-kill-pdb` and
+`keystone-federation`. A selector that names `app.kubernetes.io/component` of a
+workload does not need it.
 
 ### mode: all pod-kill (SC-CHAOS-009)
 
