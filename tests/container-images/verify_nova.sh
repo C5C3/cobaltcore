@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/assertions.sh"
 # shellcheck source=tests/lib/build_tools.sh
 source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/pymemcache.sh
+source "$SCRIPT_DIR/../lib/pymemcache.sh"
 # shellcheck source=tests/lib/uwsgi.sh
 source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
@@ -535,6 +537,14 @@ print(crypto.generate_winrm_x509_cert("verify")[1])' 2>&1) || exit_code=$?
   assert_contains "it returns a PEM certificate" "$output" "-----BEGIN CERTIFICATE-----"
 }
 
+# --- Test 15: [cache] socket_timeout bounds the pymemcache client ---
+test_pymemcache_backend_bounded() {
+  echo "Test: [cache] socket_timeout bounds the pymemcache client and errors are misses"
+  # nova-api, nova-metadata and nova-conductor read [cache] through this
+  # client.
+  assert_pymemcache_backend_bounded
+}
+
 # --- Run all tests ---
 echo "=== nova container verification tests ==="
 echo "Image: $IMAGE"
@@ -566,6 +576,8 @@ echo ""
 test_state_directories
 echo ""
 test_x509_keypair
+echo ""
+test_pymemcache_backend_bounded
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

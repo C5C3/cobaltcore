@@ -173,7 +173,13 @@ upstream files.
 theirs from one table in that file, each row with the error that made it
 necessary. The project itself is built from its source with pbr and a
 throwaway git commit of the fetched tree, which gives pbr its version and its
-file list.
+file list. The `dogpile-cache` row of that table patches the installed wheel
+with `nix/lib/patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch`: oslo.cache's
+`[cache] socket_timeout` reaches pymemcache as its connect and read timeout,
+and every pymemcache error becomes a cache miss unless `distributed_lock` is
+set (#1560). The row runs
+`patch --fuzz=0`, so a dogpile.cache release that moves the patched lines fails
+the build with `Hunk #N FAILED`; #1562 tracks that re-check.
 
 ## Service images
 

@@ -20,6 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../lib/assertions.sh"
 # shellcheck source=tests/lib/build_tools.sh
 source "$SCRIPT_DIR/../lib/build_tools.sh"
+# shellcheck source=tests/lib/pymemcache.sh
+source "$SCRIPT_DIR/../lib/pymemcache.sh"
 # shellcheck source=tests/lib/uwsgi.sh
 source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
@@ -151,6 +153,13 @@ with mock.patch.object(core, "PROVIDERS") as providers:
   assert_eq "implied roles expand in linear time and each role is looked up once" "0" "$exit_code"
 }
 
+# --- Test 6: [cache] socket_timeout bounds the pymemcache client ---
+test_pymemcache_backend_bounded() {
+  echo "Test: [cache] socket_timeout bounds the pymemcache client and errors are misses"
+  # Keystone reads its [cache] section through this client.
+  assert_pymemcache_backend_bounded
+}
+
 # --- Run all tests ---
 echo "=== keystone container verification tests ==="
 echo "Image: $IMAGE"
@@ -164,6 +173,8 @@ echo ""
 test_runtime_libraries_present
 echo ""
 test_implied_role_patch_applied
+echo ""
+test_pymemcache_backend_bounded
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

@@ -84,6 +84,8 @@ check every service and Tempest verify script sources, which the `base` filter n
 because it rebuilds those images (the `ovn` and `libvirt` filters name it as well), and
 `tests/lib/static_image.sh`, the
 static-image check the hvo and kna verify scripts source, which the `hvo` and `kna`
+filters name. They name `tests/lib/pymemcache.sh` as well, the pymemcache bound check
+the keystone and nova verify scripts source, which the `svc_keystone` and `svc_nova`
 filters name.
 
 > **Fork PRs are not supported.** Fork PRs receive a read-only `GITHUB_TOKEN`

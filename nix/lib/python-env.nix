@@ -70,8 +70,8 @@ let
 
   # What the packages built from source need besides the sdist: the build
   # system uv.lock does not record, native libraries, and for the project its
-  # fetched source; and the one fix an installed wheel needs. A row applies
-  # only to a package the lock contains.
+  # fetched source; and the fixes installed wheels need. A row applies only
+  # to a package the lock contains.
   sourceBuilds = {
     # tempest's lock: 0.7 ships no wheel, and its setup.py fails with
     # "ModuleNotFoundError: No module named 'setuptools'" without one.
@@ -104,6 +104,18 @@ let
       substituteInPlace "$out/${python.sitePackages}/pyudev/_ctypeslib/utils.py" \
         --replace-fail "library_name = find_library(name)" \
         "library_name = '${lib.getLib pkgs.udev}/lib/libudev.so.1' if name == 'udev' else find_library(name)"
+    '';
+    # dogpile.cache 1.5.0's PyMemcacheBackend drops the socket_timeout that
+    # oslo.cache passes it, so a Keystone or Nova cache call blocked for as
+    # long as TCP did: 213 s for one read under a 120 s Memcached partition
+    # (#1560). The patch hands socket_timeout to pymemcache as its connect
+    # and read timeout and, unless distributed_lock is set, turns every
+    # pymemcache error into a cache miss.
+    # A dogpile.cache bump that moves the patched lines fails here with
+    # "Hunk #N FAILED", the re-check #1562 tracks.
+    dogpile-cache.attrs.postInstall = ''
+      patch -p1 --fuzz=0 --no-backup-if-mismatch -d "$out/${python.sitePackages}" \
+        < ${./patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch}
     '';
     # barbican's test group: 0.10.0 ships no wheel, and its setup.py fails
     # with "ModuleNotFoundError: No module named 'setuptools'".
