@@ -14,12 +14,14 @@
 #
 # Workload: the http stream of ../lib/workload.sh GETs
 # http://horizon-chaos-mc.openstack.svc:8080/auth/login/ while the fault is
-# active. The budget is what three kind runs measured. The login page answers
-# 500 while the Memcached pod is replaced, and the budget covers that.
+# active. The budget is what three kind runs measured: every GET answered,
+# none in the fault window slower than 40 ms. The horizon-operator renders 1 s
+# pymemcache timeouts and ignore_exc into the CACHES OPTIONS (#1560), so a
+# closed or unreachable Memcached is a cache miss while the pod is replaced.
 # Chaos matrix: horizon cache pod-kill
 # Chaos matrix: memcached self pod-kill
-# Chaos budget: failures=148 recovery=130s
-# Chaos budget measured: 2026-10-14, kind, failures 57/49/74, recovery 77/97/95 s
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-10-28, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
