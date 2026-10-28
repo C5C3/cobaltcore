@@ -26,8 +26,11 @@ The v1 operator resolves the onboarding decisions as follows:
   `signed_cookies` backend and Memcached only backs the Django cache
   (`CACHES`, `PyMemcacheCache`). Losing Memcached degrades cache hit-rate; it
   neither logs users out nor flips any condition. The operator therefore has
-  no database sub-reconcilers at all. DB-backed sessions are revisited only
-  if signed cookies plus Memcached prove insufficient.
+  no database sub-reconcilers at all. A Memcached that hangs or restarts only
+  lowers the hit-rate too, because the operator renders 1 s pymemcache
+  timeouts and `ignore_exc` into `CACHES["default"]["OPTIONS"]`, which turn
+  every failed cache call into a miss (#1560). DB-backed sessions are
+  revisited only if signed cookies plus Memcached prove insufficient.
 - **Cache keys: scoped per image.** The operator derives
   `CACHES["default"]["KEY_PREFIX"]` from `spec.image`: `horizon-` plus the
   first 12 hex characters of the SHA-256 of the image reference. Horizon

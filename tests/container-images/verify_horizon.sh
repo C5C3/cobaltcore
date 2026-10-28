@@ -101,6 +101,73 @@ test_uwsgi_runnable() {
   assert_uwsgi_imports openstack_dashboard
 }
 
+# --- Test 7: the rendered pymemcache OPTIONS bound Django's cache ---
+test_django_pymemcache_bounded() {
+  echo "Test: the rendered pymemcache OPTIONS bound Django's cache and errors are misses"
+  # The horizon-operator renders CACHES["default"]["OPTIONS"] for
+  # PyMemcacheCache in defaultSettings in
+  # operators/horizon/internal/controller/reconcile_config.go (#1560): 1 s
+  # connect and read timeouts and ignore_exc. The check builds Django's
+  # PyMemcacheCache with those OPTIONS against a local server that accepts
+  # and never answers, and expects the default within 3 s, which pins the
+  # option names against the Django and pymemcache of the image. Without
+  # the OPTIONS the call blocks for as long as TCP does; a 10 s alarm ends
+  # it, so the check fails without hanging the job. Stderr is echoed on
+  # failure so the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import signal
+import socket
+import sys
+import threading
+import time
+
+import django.conf
+from django.core.cache.backends.memcached import PyMemcacheCache
+
+
+def still_blocked(signum, frame):
+    sys.exit("cache.get was still blocked after 10 s: the OPTIONS do not "
+             "bound the pymemcache client")
+
+
+signal.signal(signal.SIGALRM, still_blocked)
+signal.alarm(10)
+
+# A server that accepts connections and never answers. Every accepted
+# socket stays referenced: a closed one would answer with EOF at once.
+listener = socket.socket()
+listener.bind(("127.0.0.1", 0))
+listener.listen(8)
+accepted = []
+
+
+def accept():
+    while True:
+        accepted.append(listener.accept()[0])
+
+
+threading.Thread(target=accept, daemon=True).start()
+
+django.conf.settings.configure()
+cache = PyMemcacheCache(
+    "127.0.0.1:%d" % listener.getsockname()[1],
+    {"OPTIONS": {"connect_timeout": 1, "timeout": 1, "ignore_exc": True}},
+)
+start = time.monotonic()
+value = cache.get("k", "fallback")
+took = time.monotonic() - start
+if value != "fallback":
+    sys.exit("cache.get returned %r, expected the default" % (value,))
+if took >= 3:
+    sys.exit("cache.get took %.2f s, expected under 3 s" % took)' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "the rendered pymemcache OPTIONS bound Django's cache and errors are misses" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== horizon container verification tests ==="
 echo "Image: $IMAGE"
@@ -116,6 +183,8 @@ echo ""
 test_no_build_tools_in_final_image
 echo ""
 test_uwsgi_runnable
+echo ""
+test_django_pymemcache_bounded
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
