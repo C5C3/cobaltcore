@@ -295,8 +295,10 @@ ten operator pod kills, `cronjob-rotation-failure`, `openbao-pod-kill`,
 `nova-placement-outage`, `neutron-metadata-agent-pod-kill`, and eight platform
 suites of #1390: `cert-manager-outage`, `eso-down`, `eso-pod-kill`,
 `openbao-sealed`, `openbao-tenant-policy-narrowed`, `envoy-gateway-outage`,
-`korc-provisioning-outage` and `korc-network-partition`. A failure in one of them
-is a defect to find, and raising the budget does not fix it.
+`korc-provisioning-outage` and `korc-network-partition`. `memcached-pod-kill` and
+`horizon-memcached-pod-kill` measured zero as well: their fault reaches the request
+path, and the bounded pymemcache client turns it into cache misses (#1560). A failure
+in one of them is a defect to find, and raising the budget does not fix it.
 
 ### Consistency checks
 
@@ -635,7 +637,7 @@ these lists fails the generator.
 | [glance-mariadb-outage](#glance-mariadb-outage) | — | `glance/database`, `mariadb/self` | failures=40 recovery=90s |
 | [glance-operator-pod-kill](#glance-operator-pod-kill) | — | `glance/operator` | failures=0 recovery=0s |
 | [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) | — | `horizon/self` | failures=20 recovery=60s |
-| [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) | — | `horizon/cache`, `memcached/self` | failures=148 recovery=130s |
+| [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) | — | `horizon/cache`, `memcached/self` | failures=0 recovery=0s |
 | [horizon-operator-pod-kill](#horizon-operator-pod-kill) | — | `horizon/operator` | failures=0 recovery=0s |
 | [keystone-federation](#keystone-federation) | — | `keystone/self`, `keystone/backend` | — |
 | [keystoneuser-rotation-keystone-outage](#keystoneuser-rotation-keystone-outage) | — | `controlplane/keystone`, `k-orc/keystone` | failures=410 recovery=70s |
@@ -645,8 +647,8 @@ these lists fails the generator.
 | [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone/database`, `mariadb/self` | failures=12 recovery=30s |
 | [mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) | — | `keystone/database`, `mariadb/operator`, `mariadb/self` | failures=156 recovery=70s |
 | [mariadb-pod-kill](#mariadb-pod-kill) | SC-CHAOS-001 | `keystone/database`, `mariadb/self` | failures=36 recovery=50s |
-| [memcached-network-partition](#memcached-network-partition) | — | `keystone/cache`, `memcached/self` | failures=500 recovery=180s |
-| [memcached-pod-kill](#memcached-pod-kill) | SC-CHAOS-002 | `keystone/cache`, `memcached/self` | failures=190 recovery=150s |
+| [memcached-network-partition](#memcached-network-partition) | — | `keystone/cache`, `memcached/self` | failures=2 recovery=30s |
+| [memcached-pod-kill](#memcached-pod-kill) | SC-CHAOS-002 | `keystone/cache`, `memcached/self` | failures=0 recovery=0s |
 | [neutron-broker-outage](#neutron-broker-outage) | — | `neutron/broker`, `rabbitmq/self` | — |
 | [neutron-keystone-outage](#neutron-keystone-outage) | — | `neutron/keystone` | failures=400 recovery=150s |
 | [neutron-mariadb-outage](#neutron-mariadb-outage) | — | `neutron/database`, `mariadb/self` | — |
@@ -780,7 +782,7 @@ test asserts that all 6 conditions remain `True` while Memcached is down.
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
 
-**Workload:** the `token` stream against `keystone-chaos-mc`, started in step 2 and judged in step 7 against `failures=190 recovery=150s`. Every step from 2 to 7 also dumps the workload in its catch block.
+**Workload:** the `token` stream against `keystone-chaos-mc`, started in step 2 and judged in step 7 against `failures=0 recovery=0s`, what three kind runs measured. The keystone image's patched pymemcache client turns the closed connections of the killed pod into cache misses (the [library patch](../ci-cd/container-images.md#service-images), #1560), so no token request failed, and none in the fault window took longer than 330 ms. Every step from 2 to 7 also dumps the workload in its catch block.
 
 **Catch blocks:** Steps 2, 4, and 6 include catch blocks dumping Memcached pod status,
 Chaos Mesh experiment status, Keystone CR status, pod logs (including `--previous`), and
@@ -1947,7 +1949,7 @@ restarts.
 
 **Fixtures:** `00-horizon-cr.yaml`, `01-podchaos.yaml`
 
-**Workload:** the `http` stream against `http://horizon-chaos-mc.openstack.svc:8080/auth/login/`, started in step 2 and judged in step 7 against `failures=148 recovery=130s`. Every step from 2 to 7 also dumps the workload in its catch block.
+**Workload:** the `http` stream against `http://horizon-chaos-mc.openstack.svc:8080/auth/login/`, started in step 2 and judged in step 7 against `failures=0 recovery=0s`, what three kind runs measured. The horizon-operator renders 1-second pymemcache timeouts and `ignore_exc` into the `CACHES` `OPTIONS` (#1560), so a closed or unreachable Memcached is a cache miss: every `GET` answered, none in the fault window slower than 40 ms. Every step from 2 to 7 also dumps the workload in its catch block.
 
 **Catch blocks:** Step 2 calls `../diagnostics.sh baseline horizon-chaos-mc --cr-kind=horizon`.
 Steps 4 and 6 call `../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon` with
@@ -3277,15 +3279,19 @@ dependency: for 120 seconds under the partition, `GET` on the Keystone's `/v3`
 endpoint answers within 10 seconds and Ready and every sub-condition stay `True`,
 while a TCP connect from the Keystone API pod to Memcached times out.
 
-The suite fails on the Keystone it deploys. Its backend, `dogpile.cache.pymemcache`,
-hands neither oslo.cache's `socket_timeout` (1 second) nor its `dead_retry` (300
-seconds) to pymemcache, so a cache call under the partition blocks until the kernel
-gives up on the connection: 134 seconds for a connect, measured against the 2026.1
-image. Both uWSGI workers hang in their first cache call, every token issue runs into
-the stream's 15-second timeout, and `/v3` stops answering. Ready alone does not show
-it reliably, because the operator re-probes a Ready Keystone only on an event or the
-10-minute resync. Before the `/v3` read, the suite passed whenever no probe fell into
-its window.
+The Keystone it deploys uses the `dogpile.cache.pymemcache` backend. Every service
+image patches that backend so that oslo.cache's `socket_timeout` (1 second) reaches
+pymemcache and every pymemcache error is a cache miss (the
+[library patch](../ci-cd/container-images.md#service-images), #1560). Under the
+partition a cache call misses after 1 second, so Keystone answers from its database.
+Once a client counts the server as dead, its calls miss at once for 60 to 120 seconds
+(`hashclient_dead_timeout` 60); then the client tries the server again and stalls once
+more, for as long as the partition lasts. The unpatched client blocked
+a cache call until the kernel gave up on the connection, 213 seconds for a read under
+a 120-second partition: both uWSGI workers hung, every token issue ran into the
+stream's 15-second timeout, and `/v3` stopped answering. Ready alone does not show
+such a hang, because the operator re-probes a Ready Keystone only on an event or the
+10-minute resync, so step 4 reads `/v3` itself.
 
 **Steps:**
 
@@ -3302,11 +3308,14 @@ its window.
 **Fixtures:** `00-keystone-cr.yaml`, `01-networkchaos.yaml`.
 
 **Workload:** the `token` stream against `keystone-chaos-mc-part`, started in step 2
-and judged in step 7 against `failures=500 recovery=180s`, an estimate that assumes
-a failure in every cycle of the window. No run has measured it yet, and the measured
-line will carry which of the two outcomes the stream saw. The suite runs in the
-`network` matrix entry. Every step from 2 to 7 dumps the workload in its catch
-block.
+and judged in step 7 against `failures=2 recovery=30s`, what three kind runs measured.
+Keystone keeps eight cache regions, each with a pymemcache client of its own in every
+uWSGI worker, and each client retries the server before it counts it as dead. The
+first token requests of a worker under the partition therefore wait up to about 16
+seconds, and the retries after each dead period stall requests the same way. One
+validate in the three runs ran into the stream's 15-second timeout that
+way, and the slowest token issue took 12 seconds. The suite runs in the `network`
+matrix entry. Every step from 2 to 7 dumps the workload in its catch block.
 
 **Catch blocks:** step 2 calls `../diagnostics.sh baseline keystone-chaos-mc-part`.
 Steps 3, 4 and 6 call `../diagnostics.sh chaos keystone-chaos-mc-part` with

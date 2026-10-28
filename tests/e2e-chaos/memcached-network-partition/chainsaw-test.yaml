@@ -22,27 +22,37 @@
 #   - after the partition: Ready=True/AllReady, and the same connect succeeds
 #     again (PARTITION-LIFTED-OK)
 #
-# The suite fails on the Keystone it deploys. Its cache backend,
-# dogpile.cache.pymemcache, hands neither oslo.cache's 1 s socket_timeout nor
-# its 300 s dead_retry to pymemcache, so a cache call under the partition
-# blocks until the kernel gives up on the connection (134 s for a connect,
-# measured against the 2026.1 image). Both uWSGI workers hang in their first
-# cache call, every token issue runs into the stream's 15 s timeout, and GET
-# /v3 stops answering. Ready alone does not show it reliably: the operator
-# re-probes a Ready Keystone only on an event or the 10-minute resync, so most
-# 120 s windows see no probe, and the suite used to pass.
+# The Keystone it deploys uses the dogpile.cache.pymemcache backend, which
+# nix/lib/patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch bounds in every
+# service image (#1560): oslo.cache's 1 s socket_timeout reaches pymemcache,
+# and every pymemcache error is a cache miss. Under the partition a cache call
+# misses after 1 s, so Keystone answers from its database. Once a client
+# counts the server as dead its calls miss at once for 60 to 120 s
+# (hashclient_dead_timeout 60); then the client tries the server again and
+# stalls once more, for as long as the partition lasts. The unpatched
+# client blocked a cache call until the kernel gave up on the connection
+# (213 s for a read under a 120 s partition): both uWSGI workers hung, every
+# token issue ran into the stream's 15 s timeout, and GET /v3 stopped
+# answering. Ready alone does not show such a hang: the operator re-probes a
+# Ready Keystone only on an event or the 10-minute resync, so most 120 s
+# windows see no probe, and step 4 reads /v3 itself.
 #
 # Blast radius: the API pods of keystone-chaos-mc-part alone. Every other
 # client of openstack-memcached keeps its cache.
 #
 # Workload, on the network leg: the token stream of ../lib/workload.sh issues
 # and validates tokens against keystone-chaos-mc-part through the fault. The
-# budget is an estimate that assumes the worst case, a failure in every cycle
-# of the window; no run has measured it yet.
+# budget is what three kind runs measured. Keystone keeps eight cache regions,
+# each with a pymemcache client of its own in every uWSGI worker, and each
+# client retries the server before it counts it as dead, so the first token
+# requests of a worker under the partition wait up to about 16 s, and the
+# retries after each dead period stall requests the same way. One validate in
+# the three runs ran into the stream's 15 s timeout that way, and the slowest
+# token issue took 12 s.
 # Chaos matrix: keystone cache partition
 # Chaos matrix: memcached self partition
-# Chaos budget: failures=500 recovery=180s
-# Chaos budget measured: 2026-10-15, estimate, failures 250, recovery 150 s
+# Chaos budget: failures=2 recovery=30s
+# Chaos budget measured: 2026-10-28, kind, failures 0/1/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
