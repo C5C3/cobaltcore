@@ -26,20 +26,14 @@
 #              (OWNED-ONCE-OK): the interrupted provisioning created nothing
 #              twice.
 #
-# The current keystone-operator fails the converge claim (two of two kind
-# runs on 2026-10-26). The kill lands inside Keystone's initial alembic
-# revision 27e647c0fad4. MariaDB commits DDL implicitly, so the tables that
-# revision created stay without an alembic_version row, and every db-sync
-# retry fails with error 1050 "Table ... already exists" until the Job
-# reaches its backoff limit of 4 (internal/common/database/jobs.go). The
-# operator does not re-create a failed Job whose re-run key is unchanged
-# (internal/common/job/job.go), so the Keystone stays at
-# DatabaseReady=False/DBSyncFailed, the plane at KeystoneReady=False, and
-# cp_wait_keystone fails after 720 s. Nothing but a manual drop of the
-# half-built schema recovers the install. The suite stays red until the
-# keystone-operator recovers an interrupted first db_sync, and CI runs it
-# after the other suites of its leg in an invocation of its own, so the
-# failFast of the shared config skips none of them.
+# The kill lands in the plane's first db_sync. MariaDB commits DDL
+# implicitly, so the tables of the interrupted revision stay without an
+# alembic_version row, and a plain db_sync would fail every retry with
+# error 1050 "Table ... already exists". The db-sync Job's next attempt
+# first runs its pre-step
+# (operators/keystone/internal/controller/scripts/db_sync_reset.py), which
+# waits for the restarted database and drops the schema, in which no table
+# holds a row yet. The db_sync of that attempt then rebuilds the schema.
 #
 # Blast radius: the plane's own MariaDB; every other MariaDB of the cluster
 # lives in another namespace. The PodChaos is the shared state to undo, so
@@ -53,7 +47,6 @@
 # token stream of ../lib/workload.sh runs after the plane is Ready, as a run
 # without marks, the precedent of ../nova-placement-outage/: every record is
 # judged, and a token the converged plane refuses is a defect.
-# The suite has not passed yet, so its budget is an estimate.
 # Chaos matrix: controlplane database pod-kill
 # Chaos matrix: keystone database pod-kill
 # Chaos matrix: mariadb self pod-kill

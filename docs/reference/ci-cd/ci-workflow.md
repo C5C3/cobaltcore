@@ -1341,15 +1341,7 @@ applies the Placement CRD the c5c3-operator's cache needs and runs
 `hack/ci-deploy-korc.sh` with `GITHUB_TOKEN`, and `Deploy c5c3 operator`
 installs the c5c3-operator into `c5c3-system` at the chart default of two
 replicas. Each suite of the entry brings up a Keystone-only ControlPlane in a
-namespace of its own through `tests/e2e-chaos/lib/controlplane.sh`. The entry
-lists `controlplane-provisioning-mariadb-kill` under `isolated_test_dirs`, and
-`Run isolated chaos E2E tests (controlplane leg)` runs it after `Run chaos E2E
-tests`, whatever that step's outcome, under the report name
-`chainsaw-chaos-report-isolated`. A failed setup step skips both. The suite
-fails on the current keystone-operator, and inside `test_dirs` the `failFast`
-of the shared config would skip every suite behind it. The entry gates like
-every other, so the suite keeps it red until the keystone-operator recovers
-an interrupted first `db_sync`.
+namespace of its own through `tests/e2e-chaos/lib/controlplane.sh`.
 `Dump diagnostic info (controlplane leg)` adds the c5c3-operator sections and
 500 lines of the K-ORC log. The `!= 'pod'` OVN steps and the `!= 'ovn'` keystone
 stack run on it as well, which costs about two minutes.
@@ -1369,9 +1361,7 @@ The wall is
 run, on PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where
 it hit the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of
 #1394 add about 12 minutes each to `pod`, `nova` and `controlplane`, and the
-`upgrade` entry runs two Cinder upgrades of about 20 minutes each.
-`controlplane-provisioning-mariadb-kill` takes about 30 minutes while it fails:
-its 720-second `KeystoneReady` wait and a teardown of up to 13 minutes. The
+`upgrade` entry runs two Cinder upgrades of about 20 minutes each. The
 `controlplane` entry needs about 15 minutes for its bring-up and 8 to 12 for each
 of its suites, from the 7 min 45 s the `keystone-service` suite took in run
 38788542824 plus the fault and a teardown of up to 12 minutes. The `nova` leg loads nineteen images and runs

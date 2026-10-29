@@ -74,12 +74,7 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `self-hosted` runners, with `WITH_CONTROLPLANE=true` and
   `CONTROLPLANE_OPERATORS=external`, K-ORC and the c5c3-operator deployed
   beside the keystone stack, within a wall of 120 minutes.
-  `controlplane-provisioning-mariadb-kill` sits under the entry's
-  `isolated_test_dirs` and runs after the others in an invocation of its
-  own: it fails on the current keystone-operator, and `failFast` would skip
-  the suites behind it. The leg gates like every other, so the suite keeps
-  it red until the keystone-operator recovers an interrupted first
-  `db_sync`. The `upgrade` leg runs the two suites that fault
+  The `upgrade` leg runs the two suites that fault
   a Cinder release upgrade from 2026.1 to 2026.2
   (`cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill`), the only
   leg that loads a 2026.2 image, with the cinder-operator, `WITH_NFS=true` and
