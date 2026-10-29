@@ -56,8 +56,9 @@ pushes the `changes` job forces all areas and all operators active, so every ope
 images and charts are published regardless of which files the tagged commit touched.
 
 A scheduled or dispatched run is the nightly chaos run of #1388. It runs `changes`,
-`test-shell`, `build-e2e-images`, the five [`e2e-chaos`](#e2e-chaos) matrix entries
-and `cleanup-e2e-tags`, and on a schedule [`report-nightly-chaos`](#report-nightly-chaos)
+`test-shell`, `build-e2e-images`, the six [`e2e-chaos`](#e2e-chaos) matrix entries,
+the random chaos run [`e2e-chaos-random`](#e2e-chaos-random) of #1395 and
+`cleanup-e2e-tags`, and on a schedule [`report-nightly-chaos`](#report-nightly-chaos)
 files what went red. Every other job keeps its `pull_request` or `push` guard and
 skips.
 
@@ -89,6 +90,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `tests_e2e_<op>` | `tests/e2e/<op>/**` and `tests/e2e/<op>-operator/**` (`tests/e2e/c5c3/**` and `tests/e2e/c5c3-operator/**` for c5c3); `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova); for ovn and neutron the three shared scripts their suites run, `tests/e2e/lib/assert-operator-env-clean.sh`, `assert-operator-metric-families.sh` and `assert-steady-state-events.sh`, and for neutron also `tests/e2e/lib/assert-networkpolicy-enforced.sh`, the NetworkPolicy probe its `network-policy` suite runs; and the first two of them for c5c3, whose `env-key-material` suite runs the scan and whose `sizing-profile` suite runs the metric-family check | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
 | `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
+| `tests_chaos_random` | `tests/chaos-random/**`, `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`, `deploy/lab/metal-stack/dizzy-soak/**`, `tests/e2e-chaos/lib/consistency.sh` | `e2e-chaos-random` |
 | `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
 | `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`; keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls, and `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**` with the `tests/e2e-chaos/lib/workload.sh` and `workload.py` that suite calls | that operator's `e2e-operator-upgrade` job |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
@@ -110,7 +112,7 @@ Seven labels add jobs. None of them ever removes one.
 | --- | --- |
 | `ci:full` | everything, and builds every image |
 | `ci:tempest` | the Tempest legs of the services the pull request touches, plus the legs that deploy a changed `ovn` or `placement` operator (neither has a leg of its own), or the keystone legs when it touches none |
-| `ci:chaos` | all six `e2e-chaos` legs. `run-chaos` is an alias |
+| `ci:chaos` | all six `e2e-chaos` legs, and not `e2e-chaos-random`. `run-chaos` is an alias |
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling`, `e2e-orders-multicluster` |
 | `ci:multicluster` | `e2e-multicluster`, `e2e-orders-multicluster` |
 | `ci:pressure` | `keystone-pressure`, one leg per release that ships a Keystone image |
@@ -211,7 +213,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 | Job | Additional Permissions | Reason |
 | --- | --- | --- |
 | `build-e2e-images` | `packages: write` | Push the E2E images to GHCR under run-scoped tags |
-| `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
+| `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-chaos-random`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
 | `report-nightly-chaos` | `issues: write`, `actions: read` | List the jobs of the nightly chaos run and file what went red on tracking issues |
 | `cleanup-e2e-tags` | `packages: write` | Delete the run-scoped tags from GHCR |
 | `build-and-push` | `packages: write` | Push per-platform operator image digests to GHCR |
@@ -222,10 +224,10 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 40 jobs. `changes` and `test-shell` run on every event. The
+The workflow defines 41 jobs. `changes` and `test-shell` run on every event. The
 gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard.
-`build-e2e-images` and `e2e-chaos` also run on a `schedule` or `workflow_dispatch`
-event, the nightly chaos run, and `report-nightly-chaos` runs on a `schedule` event
+`build-e2e-images`, `e2e-chaos` and `e2e-chaos-random` also run on a `schedule` or
+`workflow_dispatch` event, the nightly chaos run, and `report-nightly-chaos` runs on a `schedule` event
 alone. `cleanup-e2e-tags` follows `build-e2e-images`. The publish and release jobs
 run on push events only.
 
@@ -233,7 +235,7 @@ The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, and report-nightly-chaos follows e2e-chaos on a schedule only. tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -259,7 +261,8 @@ section that describes the job.
 | [`e2e-operator`](#e2e-operator) | E2E fan-out | `changes`, `build-e2e-images` |
 | [`e2e-operator-upgrade`](#e2e-operator-upgrade) | E2E fan-out | `changes`, `build-e2e-images` |
 | [`e2e-chaos`](#e2e-chaos) | Chaos | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images`, `e2e-operator` |
-| [`report-nightly-chaos`](#report-nightly-chaos) | Chaos | `changes`, `build-e2e-images`, `e2e-chaos` |
+| [`e2e-chaos-random`](#e2e-chaos-random) | Chaos | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`report-nightly-chaos`](#report-nightly-chaos) | Chaos | `changes`, `build-e2e-images`, `e2e-chaos`, `e2e-chaos-random` |
 | [`e2e-prometheus`](#e2e-prometheus) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-controlplane`](#e2e-controlplane) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-controlplane-sso`](#e2e-controlplane-sso) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
@@ -271,7 +274,7 @@ section that describes the job.
 | [`e2e-nova-libvirt`](#e2e-nova-libvirt) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`keystone-pressure`](#keystone-pressure) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
-| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
+| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-chaos-random`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
 | [`build-and-push`](#build-and-push) | Publish images | `changes` |
 | [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `build-and-push` |
 | [`helm-push`](#helm-push) | Publish charts | `changes` |
@@ -1457,13 +1460,55 @@ the `e2e-operator` legs for `ovn` and `neutron`. Both assert what one node can
 answer. The `nova` leg loads the modules too: its `compute-node-pool` suite runs
 a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above.
 
+### e2e-chaos-random
+
+The random chaos run of #1395: faults drawn from
+`tests/chaos-random/catalogue.yaml` and applied as one Chaos Mesh `Workflow`
+against a full ControlPlane on kind while the dizzy soak churns, then judged by
+`hack/chaos-random.sh`. The [Random runs](../testing/chaos-e2e-tests.md#random-runs)
+section of the chaos page describes the draw, the Workflow and the verdict.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs on a `pull_request`, `schedule` or `workflow_dispatch` event,
+and only when `e2e-chaos-random == 'true'`, `build-e2e-images` succeeded, and no
+dependency failed or was cancelled. The resolver sets the flag from the
+`tests_chaos_random` class on a pull request, under `ci:full` and on every
+night; `ci:chaos` and `run-chaos` leave it off. It gates like every `e2e-chaos` entry.
+**Permissions:** `contents: read`, `packages: read`.
+
+The job runs on `self-hosted` with `timeout-minutes: 120`, the wall the author
+of #1395 set in place of the 90 minutes of D6 of #1386: the plane takes about
+50 minutes to come up, as in `e2e-controlplane`, and the run takes the
+2-minute warm-up, the 30-minute window, the 10-minute tail and its checks.
+`OPERATOR_REPLICAS: "1"` deploys one replica per operator.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | Create kind cluster | `hack/kind-config.yaml` |
+| 3 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` |
+| 4 | Load E2E images, Load images into kind | The ten `:dev` operator images, the eight 2026.1 service images, `ovn:<OVN_VERSION>` and `tempest:2026.1` |
+| 5 | Setup E2E infrastructure | `WITH_CONTROLPLANE=true`, `CONTROLPLANE_OPERATORS=external`, `WITH_CONTROLPLANE_CR=false`, `WITH_NFS=true`, `WITH_MESSAGING=true`, `WITH_OVN_KERNEL_MODULES=true`, `WITH_CHAOS_MESH=true`, `WITH_DIZZY=true` and `WITH_METRICS_SERVER=true`, whose resource metrics `memory-growth` judges |
+| 6 | Deploy K-ORC | `hack/ci-deploy-korc.sh` |
+| 7 | Deploy the ten operators | `hack/ci-deploy-operator.sh` for keystone, horizon, glance, placement, barbican, ovn, neutron, cinder, nova and c5c3, each into `<op>-system`, in the order of `e2e-controlplane` |
+| 8 | Bring up the random chaos plane | `hack/chaos-random.sh up` with `CHAOS_RANDOM_ENV=ci`, within `timeout-minutes: 40` |
+| 9 | Run random chaos | `hack/chaos-random.sh run` with `CHAOS_RANDOM_ENV=ci` and `CHAOS_RANDOM_SEED: ${{ github.run_id }}`, within `timeout-minutes: 65` |
+| 10 | Dump diagnostic info | `if: always()`: `OPERATOR=c5c3`, then one `OPERATOR_ONLY=1` pass per other operator |
+| 11 | Upload JUnit report, Upload the random run | `_output/reports/` as `e2e-chaos-junit-report-random`, which `report-nightly-chaos` downloads, and `_output/chaos-random/` as `e2e-chaos-random-report`, both for 14 days |
+| 12 | Delete kind cluster | `hack/ci-delete-kind-cluster.sh`, `if: always()` |
+
+The seed is the run id, so `CHAOS_RANDOM_ENV=ci CHAOS_RANDOM_SEED=<run id> make chaos-random-draw`
+prints the plan of a red night without a cluster. `e2e-chaos-random-report`
+holds `plan.json`, `windows.tsv`, `targets.tsv`, the soak's report under
+`soak/`, `random-verdict.json` and `report.md`.
+
 ### report-nightly-chaos
 
-Files a red nightly chaos run on tracking issues. It runs after the five
-`e2e-chaos` entries of a scheduled run and reads the run's job listing and the
-entries' JUnit reports.
+Files a red nightly chaos run on tracking issues. It runs after the six
+`e2e-chaos` entries and `e2e-chaos-random` of a scheduled run and reads the run's
+job listing and the JUnit reports of the entries and the random run.
 
-**Dependencies:** `needs: [changes, build-e2e-images, e2e-chaos]`
+**Dependencies:** `needs: [changes, build-e2e-images, e2e-chaos, e2e-chaos-random]`
 **Condition:** `always() && github.event_name == 'schedule'`. It runs on a green
 night too, for the step summary, and never on a dispatch, as in `flux-path.yaml`.
 **Permissions:** `contents: read`, `issues: write`, `actions: read`. It is the only
@@ -1476,7 +1521,7 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 10`.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/download-artifact@v8` | Downloads every `e2e-chaos-junit-report-*` artifact into `_output/nightly/<artifact>/`, under `continue-on-error: true`: an entry that hit its wall uploaded no report |
-| 3 | `Report the night` | Runs `hack/ci-report-nightly-chaos.sh` with `RUN_ID`, `RUN_URL`, `REPORT_SHA`, `REPORTS_DIR: _output/nightly` and `BUDGET_MINUTES: "600"` |
+| 3 | `Report the night` | Runs `hack/ci-report-nightly-chaos.sh` with `RUN_ID`, `RUN_URL`, `REPORT_SHA`, `REPORTS_DIR: _output/nightly` and `BUDGET_MINUTES: "720"` |
 
 The script lists the run's jobs (`gh api --paginate .../jobs?filter=latest`) and
 files each finding through `hack/ci-report-red-run.sh`, which comments on the open
@@ -1484,7 +1529,7 @@ files each finding through `hack/ci-report-red-run.sh`, which comments on the op
 
 | Title | Filed when |
 | --- | --- |
-| `Nightly chaos suite <suite> is red` | Once per failed suite of an entry that is not green, read from its JUnit report by `hack/ci-junit-failed-suites.py` |
+| `Nightly chaos suite <suite> is red` | Once per failed suite of an entry that is not green, read from its JUnit report by `hack/ci-junit-failed-suites.py`. The job `e2e-chaos-random` reports as the entry `random`, and each failed check of its verdict is a suite `random-<check>`, such as `Nightly chaos suite random-quiet-tail is red` |
 | `Nightly chaos leg <leg> is red` | An entry that is not green and names no failed suite: it hit its wall, a step outside the suites failed, or its report is missing or unreadable. The result is the job's conclusion |
 | `Nightly chaos run is red` | No entry ran. The result is the conclusion of `changes`, else of `build-e2e-images`, and `missing` when the listing lacks the job |
 | `Nightly chaos run is over its runner budget` | The completed `self-hosted` jobs of the run took more than `BUDGET_MINUTES` together, with a table of each job's minutes |
@@ -1498,9 +1543,11 @@ self-hosted total against the budget, to the step summary. A green night files
 nothing, and a human closes an issue once its cause is fixed. Re-running the job
 comments on the same open issues and opens none.
 
-The budget is D6 of #1386 counted in measured minutes. The walls of the five
-entries sum to 550 minutes and `build-e2e-images` adds a wall of 120, so the walls
-allow 670 minutes; green runs measure about 450.
+The budget is 720 minutes, which the author of #1395 set for the random run in
+place of the 600 of D6 of #1386, counted in measured minutes. The walls of the six
+entries sum to 685 minutes, `e2e-chaos-random` adds 120 and `build-e2e-images` a
+wall of 120, so the walls allow 925 minutes; green runs of the entries measured
+about 450 before the random run joined them.
 
 ### e2e-ovn-overlay
 
@@ -2342,10 +2389,10 @@ per-platform manifests untagged via `push-by-digest` and needs those digests
 intact for `merge-operator-images` (GH-312).
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-operator,
-e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane,
-e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster,
-e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, keystone-pressure,
-tempest]`
+e2e-operator-upgrade, e2e-chaos, e2e-chaos-random, e2e-prometheus,
+e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone,
+e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt,
+keystone-pressure, tempest]`
 **Permissions:** `contents: read`, `packages: write`
 
 The job is `continue-on-error`: pruning is housekeeping, and a package whose only

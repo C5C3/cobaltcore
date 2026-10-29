@@ -60,9 +60,11 @@
 <text x="1031" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Chaos</text>
 <text x="1031" y="618.2" font-size="20" font-weight="400" fill="#2B3440">e2e-chaos</text>
 <text x="1031" y="646.2" font-size="20" font-weight="400" fill="#55606E">after e2e-operator</text>
-<text x="1031" y="674.2" font-size="20" font-weight="400" fill="#2B3440">report-nightly-chaos</text>
-<text x="1031" y="702.2" font-size="20" font-weight="400" fill="#55606E">after e2e-chaos,</text>
-<text x="1031" y="730.2" font-size="20" font-weight="400" fill="#55606E">on a schedule only</text>
+<text x="1031" y="674.2" font-size="20" font-weight="400" fill="#2B3440">e2e-chaos-random</text>
+<text x="1031" y="702.2" font-size="20" font-weight="400" fill="#55606E">after the image build</text>
+<text x="1031" y="730.2" font-size="20" font-weight="400" fill="#2B3440">report-nightly-chaos</text>
+<text x="1031" y="758.2" font-size="20" font-weight="400" fill="#55606E">after both chaos jobs,</text>
+<text x="1031" y="786.2" font-size="20" font-weight="400" fill="#55606E">on a schedule only</text>
 <rect x="1280" y="544" width="204" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="1299" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Tempest</text>
 <text x="1299" y="618.2" font-size="20" font-weight="400" fill="#2B3440">tempest</text>

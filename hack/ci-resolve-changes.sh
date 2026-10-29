@@ -15,7 +15,9 @@
 # ci:controlplane / ci:multicluster / ci:pressure switch on one area each;
 # ci:multicluster runs e2e-multicluster and e2e-orders-multicluster, and
 # ci:pressure the keystone-pressure job. run-chaos is kept as an alias of
-# ci:chaos. ci:measure-sizing, the seventh label, adds the VPA sizing
+# ci:chaos, which runs the e2e-chaos legs and not the random chaos run
+# e2e-chaos-random: that one runs on a change to its own files and under
+# ci:full. ci:measure-sizing, the seventh label, adds the VPA sizing
 # measurement to e2e-controlplane, e2e-controlplane-sso and every Tempest leg.
 #
 # A `labeled` event for a label outside that set resolves to nothing at all
@@ -37,7 +39,8 @@
 #   PR_LABELS         — JSON array of the pull request's label names. Unset, "",
 #                       null and any non-array all mean "no labels"
 #   EVENT_NAME        — github.event_name (default pull_request); schedule and
-#                       workflow_dispatch resolve to the nightly chaos run
+#                       workflow_dispatch resolve to the nightly chaos run,
+#                       the e2e-chaos legs and e2e-chaos-random
 #   EVENT_ACTION      — github.event.action, for the labeled no-op
 #   EVENT_LABEL       — github.event.label.name, for the labeled no-op
 #
@@ -174,7 +177,7 @@ fi
 if [[ "${noop}" == "true" ]]; then
   emit noop true
   for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
-    e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
+    e2e-chaos e2e-chaos-random e2e-prometheus e2e-controlplane e2e-controlplane-sso \
     e2e-external-keystone e2e-autoscaling e2e-multicluster \
     e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
     changed-proxy changed-ovn changed-libvirt build-e2e-images actionlint keystone-pressure; do
@@ -291,6 +294,13 @@ e2e_infra=$(or_force "$cond")
 cond=false
 if filter_on tests_chaos || has_label "ci:chaos" || has_label "run-chaos"; then cond=true; fi
 e2e_chaos=$(or_force "$cond")
+
+# The random chaos run (#1395) runs on a change to its own files and under
+# ci:full. ci:chaos and run-chaos ask for the legs, whose suites it does not
+# run, so they leave it out.
+cond=false
+if filter_on tests_chaos_random; then cond=true; fi
+e2e_chaos_random=$(or_force "$cond")
 
 cond=false
 if filter_on tests_prometheus; then cond=true; fi
@@ -519,7 +529,7 @@ fi
 has_e2e_operators=$(yesno test -n "$e2e_ops")
 
 build_e2e_images=false
-if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" ||
+if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" || "$e2e_chaos_random" == "true" ||
   "$e2e_prometheus" == "true" || "$e2e_controlplane" == "true" ||
   "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
   "$e2e_autoscaling" == "true" ||
@@ -537,7 +547,8 @@ fi
 # 5. The night
 #
 # A scheduled or dispatched run is the nightly chaos run: every e2e-chaos leg
-# against the ref, on the images build-e2e-images builds. Paths and labels mean
+# and the random chaos run against the ref, on the images build-e2e-images
+# builds. Paths and labels mean
 # nothing on it, so every FILTER_* and PR_LABELS value is ignored. This runs
 # last and overrides every flag above, the tag force and the push branch
 # included.
@@ -552,6 +563,7 @@ if [[ "${EVENT_NAME}" == "schedule" || "${EVENT_NAME}" == "workflow_dispatch" ]]
     printf -v "$flag" false
   done
   e2e_chaos=true
+  e2e_chaos_random=true
   build_e2e_images=true
   changed_operators=""
   changed_services=""
@@ -571,6 +583,7 @@ emit target-cluster-chart "$target_cluster_chart"
 
 emit e2e-infra "$e2e_infra"
 emit e2e-chaos "$e2e_chaos"
+emit e2e-chaos-random "$e2e_chaos_random"
 emit e2e-prometheus "$e2e_prometheus"
 emit e2e-controlplane "$e2e_controlplane"
 emit e2e-controlplane-sso "$e2e_controlplane_sso"

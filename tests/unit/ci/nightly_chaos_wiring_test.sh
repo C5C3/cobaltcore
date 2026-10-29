@@ -11,11 +11,18 @@
 #   - the changes job skips its paths filter on the night;
 #   - build-e2e-images and e2e-chaos accept the night, and the image build
 #     keeps its fork guard;
-#   - job report-nightly-chaos: after changes, build-e2e-images and
-#     e2e-chaos, only on a scheduled run, on ubuntu-latest with a 10-minute
-#     wall, contents: read, issues: write and actions: read, the JUnit
-#     reports downloaded without failing the job, and the seven inputs of
-#     hack/ci-report-nightly-chaos.sh;
+#   - job e2e-chaos-random (#1395): on a pull request and on the night when
+#     the resolver turns it on, after the image build and the Go gates, on
+#     self-hosted with a 120-minute wall and contents: read, packages: read;
+#     up within 40 minutes and run within 65 with the run id as the seed; the
+#     JUnit report uploaded as e2e-chaos-junit-report-random, which the report
+#     job downloads, and the kind cluster deleted always; cleanup-e2e-tags
+#     waits for it;
+#   - job report-nightly-chaos: after changes, build-e2e-images, e2e-chaos and
+#     e2e-chaos-random, only on a scheduled run, on ubuntu-latest with a
+#     10-minute wall, contents: read, issues: write and actions: read, the
+#     JUnit reports downloaded without failing the job, and the seven inputs
+#     of hack/ci-report-nightly-chaos.sh with a budget of 720 minutes;
 #   - no self-hosted job of ci.yaml holds issues: write, and the report job
 #     is the only holder;
 #   - a copy whose concurrency group drops the event, a copy whose e2e-chaos job
@@ -145,12 +152,44 @@ check_gates() {
   assert_contains "e2e-chaos runs on a pull request and on the night" "$job" "      $NIGHT_EVENTS"
 }
 
+check_random_job() {
+  local wf="$1" job step
+  job="$(CI_YAML="$wf" job_block e2e-chaos-random)"
+  assert_not_empty "job e2e-chaos-random exists" "$job"
+  assert_contains "it runs after the image build and the Go gates" "$job" \
+    "    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]"
+  assert_contains "on a pull request and on the night" "$job" "      $NIGHT_EVENTS"
+  assert_contains "when the resolver turns it on" "$job" "      needs.changes.outputs.e2e-chaos-random == 'true' &&"
+  assert_contains "after a built image map" "$job" "      needs.build-e2e-images.result == 'success' &&"
+  assert_contains "on self-hosted" "$job" "    runs-on: self-hosted"
+  assert_contains "with a 120-minute wall" "$job" "    timeout-minutes: 120"
+  assert_eq "it reads the repository and the packages alone" "      contents: read
+      packages: read" "$(permissions_of "$wf" e2e-chaos-random)"
+  step="$(CI_YAML="$wf" job_step e2e-chaos-random "Bring up the random chaos plane")"
+  assert_contains "up runs within 40 minutes" "$step" "        timeout-minutes: 40"
+  assert_contains "with hack/chaos-random.sh up" "$step" "        run: hack/chaos-random.sh up"
+  step="$(CI_YAML="$wf" job_step e2e-chaos-random "Run random chaos")"
+  assert_contains "the run runs within 65 minutes" "$step" "        timeout-minutes: 65"
+  assert_eq "on ci with the run id as the seed" '          CHAOS_RANDOM_ENV: ci
+          CHAOS_RANDOM_SEED: ${{ github.run_id }}' "$(step_env "$wf" e2e-chaos-random "Run random chaos")"
+  step="$(CI_YAML="$wf" job_step e2e-chaos-random "Setup E2E infrastructure")"
+  assert_contains "the stack carries the dizzy stack" "$step" 'WITH_DIZZY: "true"'
+  assert_contains "and metrics-server for memory-growth" "$step" 'WITH_METRICS_SERVER: "true"'
+  step="$(CI_YAML="$wf" job_step e2e-chaos-random "Upload JUnit report")"
+  assert_contains "the JUnit report goes where the report job looks" "$step" "name: e2e-chaos-junit-report-random"
+  assert_contains "always" "$step" "if: always()"
+  step="$(CI_YAML="$wf" job_step e2e-chaos-random "Delete kind cluster")"
+  assert_contains "the kind cluster goes always" "$step" "if: always()"
+  assert_contains "cleanup-e2e-tags waits for it" "$(CI_YAML="$wf" job_block cleanup-e2e-tags)" \
+    "e2e-chaos, e2e-chaos-random, e2e-prometheus"
+}
+
 check_report_job() {
   local wf="$1" job step
   job="$(CI_YAML="$wf" job_block "$REPORT_JOB")"
   assert_not_empty "the job exists" "$job"
-  assert_contains "it runs after the image build and the legs" "$job" \
-    "    needs: [changes, build-e2e-images, e2e-chaos]"
+  assert_contains "it runs after the image build, the legs and the random run" "$job" \
+    "    needs: [changes, build-e2e-images, e2e-chaos, e2e-chaos-random]"
   assert_eq "on every scheduled run, green or red, and on nothing else" \
     "    if: always() && github.event_name == 'schedule'" \
     "$(grep -E '^    if:' <<<"$job")"
@@ -178,7 +217,7 @@ check_report_job() {
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPORT_SHA: ${{ github.sha }}
           REPORTS_DIR: _output/nightly
-          BUDGET_MINUTES: "600"' "$(step_env "$wf" "$REPORT_JOB" "Report the night")"
+          BUDGET_MINUTES: "720"' "$(step_env "$wf" "$REPORT_JOB" "Report the night")"
 }
 
 check_issue_writers() {
@@ -209,6 +248,9 @@ test_the_night() {
   echo "Test: the changes job and the gates"
   check_changes_job "$WORKFLOW"
   check_gates "$WORKFLOW"
+
+  echo "Test: job e2e-chaos-random"
+  check_random_job "$WORKFLOW"
 
   echo "Test: job $REPORT_JOB"
   check_report_job "$WORKFLOW"
