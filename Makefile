@@ -1159,6 +1159,27 @@ keystone-pressure-ab:
 dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report: dizzy-soak-%:
 	hack/dizzy-soak.sh $*
 
+.PHONY: chaos-random-draw chaos-random-up chaos-random-run chaos-random-report
+# chaos-random-draw, -up, -run and -report drive the random chaos runs of
+# #1395: a seeded draw from tests/chaos-random/catalogue.yaml, applied as one
+# Chaos Mesh Workflow while the dizzy soak churns, then judged. draw prints a
+# seed's plan without a cluster; up (ci) brings up the kind plane of
+# tests/chaos-random/kind/; run writes _output/chaos-random/<run>/ and the
+# JUnit file; report prints the newest run's report.md. See
+# docs/reference/testing/chaos-e2e-tests.md#random-runs.
+#
+# Variables:
+#   CHAOS_RANDOM_ENV           ci or lab (required).
+#   CHAOS_RANDOM_SEED          the draw's seed (default: the epoch seconds).
+#   CHAOS_RANDOM_WINDOW        the span of the faults (default 30m on ci, 6h on lab).
+#   CHAOS_RANDOM_TAIL          the churn after the window (default 10m).
+#   CHAOS_RANDOM_WARMUP        the churn before the first fault (default 120s).
+#   CHAOS_RANDOM_CP_NAME       the ControlPlane (default controlplane).
+#   CHAOS_RANDOM_CP_NAMESPACE  its namespace (default openstack).
+#   DIZZY_*                    the soak's settings (make dizzy-soak-start).
+chaos-random-draw chaos-random-up chaos-random-run chaos-random-report: chaos-random-%:
+	hack/chaos-random.sh $*
+
 .PHONY: lab-failover-preflight lab-failover-up lab-failover-run lab-failover-down
 # lab-failover-preflight, -up, -run and -down drive the failover suites of
 # tests/lab-failover/ on the metal-stack lab, against a Standard-profile
