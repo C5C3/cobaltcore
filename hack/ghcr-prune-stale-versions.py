@@ -19,6 +19,14 @@ Retention is decided per package version from its *whole tag set*, not from a
           `e2e-<run_id>-*`, `dev`, and composite tags
           (`32.0.0-p0-main-a1b2c3d`) whose manifest carries no version tag
 
+A version whose tags include `e2e-<run_id>-*` of a workflow run that has not
+completed is never deleted, whatever its age. A Nix build is reproducible, so a
+run whose operator or service sources did not change pushes the same digest as
+an earlier run and adds its tag to that earlier, older version; GHCR moves
+neither `created_at` nor `updated_at` when it adds a tag. Judged by its age
+alone, the version would go while the run that just tagged it still pulls it.
+The run that is cleaning up after itself (`--own-run-id`) is not protected.
+
 A manifest that holds both a composite tag and its release tag is therefore left
 alone: the release tag keeps it. Once a later build moves `32.0.0` and `2026.1`
 onto a new manifest, the old one is left with only its composite and SHA tags and
@@ -44,14 +52,15 @@ Modes:
 Usage:
 
   # nightly sweep for one package
-  ghcr-prune-stale-versions.py --org c5c3 --package glance
+  ghcr-prune-stale-versions.py --org c5c3 --repo c5c3/cobaltcore --package glance
 
-  # prune one CI run's scoped tags, mid-flight
-  ghcr-prune-stale-versions.py --org c5c3 --package glance \\
+  # prune one CI run's scoped tags, mid-flight (--own-run-id defaults to
+  # GITHUB_RUN_ID)
+  ghcr-prune-stale-versions.py --org c5c3 --repo c5c3/cobaltcore --package glance \\
       --only-tag-pattern "^e2e-${GITHUB_RUN_ID}-" --min-age-hours 0
 
   # show what would happen, touch nothing
-  ghcr-prune-stale-versions.py --org c5c3 --package glance --dry-run
+  ghcr-prune-stale-versions.py --org c5c3 --repo c5c3/cobaltcore --package glance --dry-run
 """
 
 import argparse
@@ -111,6 +120,13 @@ SHA_TAG_PATTERNS = (
 
 # Cosign / SBOM artifacts attach themselves as a tag naming the subject digest.
 REFERRER_TAG_RE = re.compile(r"^sha256-([0-9a-f]{64})(\..+)?$")
+
+# The run-scoped tag build-e2e-images pushes, e2e-<run_id>-<tag>.
+E2E_RUN_TAG_RE = re.compile(r"^e2e-([0-9]+)-")
+
+# The statuses of a workflow run that has not completed; the runs API filters
+# by one status per request.
+ACTIVE_RUN_STATUSES = ("queued", "in_progress", "requested", "waiting", "pending")
 
 MANIFEST_ACCEPT = ", ".join(
     (
@@ -248,6 +264,43 @@ def list_versions(org, package, token):
     return versions
 
 
+def active_run_ids(repo, token):
+    """Return the ids of the repository's workflow runs that have not completed."""
+    ids = set()
+    for status in ACTIVE_RUN_STATUSES:
+        page = 1
+        while True:
+            url = f"{API_ROOT}/repos/{repo}/actions/runs?status={status}&per_page=100&page={page}"
+            code, _, body = request(url, token=token)
+            if code == 404:
+                raise SystemExit(f"repository not found: {repo}")
+            runs = json.loads(body).get("workflow_runs", [])
+            ids.update(str(run["id"]) for run in runs)
+            if len(runs) < 100:
+                break
+            page += 1
+    return ids
+
+
+def in_flight_check(active_ids, own_run_id):
+    """Return a callable run_id -> bool that is true for an unfinished run.
+
+    `active_ids` is a callable returning the set of active run ids; it is called
+    once, on the first run id other than `own_run_id`, so a run that only ever
+    looks at its own tags makes no request.
+    """
+    cache = {}
+
+    def in_flight(run_id):
+        if own_run_id and run_id == str(own_run_id):
+            return False
+        if "ids" not in cache:
+            cache["ids"] = active_ids()
+        return run_id in cache["ids"]
+
+    return in_flight
+
+
 def delete_version(org, package, version_id, token):
     quoted = urllib.parse.quote(package, safe="")
     url = f"{API_ROOT}/orgs/{org}/packages/container/{quoted}/versions/{version_id}"
@@ -333,11 +386,14 @@ def referrer_subjects(tags):
     return subjects
 
 
-def build_plan(versions, children_of, now, min_age_hours, keep_patterns, only_patterns, max_deletions):
+def build_plan(
+    versions, children_of, now, min_age_hours, keep_patterns, only_patterns, max_deletions, in_flight=None
+):
     """Split versions into what stays and what goes.
 
-    `children_of` is a callable digest -> [digest]; injected so the offline
-    --plan-from mode can drive the same logic from a fixture.
+    `children_of` is a callable digest -> [digest] and `in_flight` a callable
+    run_id -> bool; both are injected so the offline --plan-from mode can drive
+    the same logic from a fixture.
     """
     keep_res = [re.compile(p) for p in keep_patterns]
     only_res = [re.compile(p) for p in only_patterns]
@@ -376,7 +432,7 @@ def build_plan(versions, children_of, now, min_age_hours, keep_patterns, only_pa
                 keep.add(digest)
                 changed = True
 
-    delete, too_young = [], 0
+    delete, too_young, in_use = [], 0, []
     for version in versions:
         if version["name"] in keep:
             continue
@@ -389,6 +445,13 @@ def build_plan(versions, children_of, now, min_age_hours, keep_patterns, only_pa
         age_hours = (now - parse_timestamp(version["created_at"])).total_seconds() / 3600
         if age_hours < min_age_hours:
             too_young += 1
+            continue
+        # The version's age is that of its first push; a run that added its tag
+        # since may still pull it.
+        runs = sorted({m.group(1) for m in (E2E_RUN_TAG_RE.match(tag) for tag in tags) if m})
+        busy = [run for run in runs if in_flight and in_flight(run)]
+        if busy:
+            in_use.append({"digest": version["name"], "runs": busy})
             continue
         delete.append(version)
 
@@ -412,6 +475,7 @@ def build_plan(versions, children_of, now, min_age_hours, keep_patterns, only_pa
             for v in delete
         ],
         "too_young": too_young,
+        "in_use": in_use,
         "capped": capped,
     }
 
@@ -425,7 +489,19 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--org", default=os.environ.get("GITHUB_REPOSITORY_OWNER"), help="GitHub organization")
     parser.add_argument("--package", help="container package name (e.g. glance)")
-    parser.add_argument("--token", default=os.environ.get("GITHUB_TOKEN"), help="token with packages:write")
+    parser.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY"),
+        help="owner/repo whose unfinished workflow runs protect their e2e tags (default GITHUB_REPOSITORY)",
+    )
+    parser.add_argument(
+        "--own-run-id",
+        default=os.environ.get("GITHUB_RUN_ID"),
+        help="the run cleaning up after itself, whose e2e tags are not protected (default GITHUB_RUN_ID)",
+    )
+    parser.add_argument(
+        "--token", default=os.environ.get("GITHUB_TOKEN"), help="token with packages:write and actions:read"
+    )
     parser.add_argument("--min-age-hours", type=float, default=24.0, help="skip versions younger than this")
     parser.add_argument(
         "--max-deletions",
@@ -472,11 +548,14 @@ def parse_args(argv):
             parser.error("--package is required")
         if not args.token:
             parser.error("--token is required (or set GITHUB_TOKEN)")
+        if not args.repo:
+            parser.error("--repo is required (or set GITHUB_REPOSITORY): it names the runs whose e2e tags are kept")
     return args
 
 
 def load_fixture(path):
-    """Offline input: {"versions": [...], "manifests": {digest: {...}}, "now": ...}."""
+    """Offline input: {"versions": [...], "manifests": {digest: {...}}, "now": ...,
+    "active_runs": [run_id, ...]}; a run the fixture does not list has completed."""
     with open(path, encoding="utf-8") as handle:
         fixture = json.load(handle)
     manifests = fixture.get("manifests", {})
@@ -484,14 +563,19 @@ def load_fixture(path):
     def children_of(digest):
         return [m["digest"] for m in manifests.get(digest, {}).get("manifests", []) if m.get("digest")]
 
+    def active_ids():
+        return {str(run_id) for run_id in fixture.get("active_runs", [])}
+
     now = parse_timestamp(fixture["now"]) if "now" in fixture else datetime.now(timezone.utc)
-    return fixture["versions"], children_of, now
+    return fixture["versions"], children_of, now, active_ids
 
 
 def summarize(package, versions, plan, only_mode):
     log(f"[{package}] {len(versions)} versions, {len(plan['keep'])} kept, {len(plan['delete'])} to delete")
     if plan["too_young"]:
         log(f"[{package}] {plan['too_young']} candidates skipped as too young")
+    for entry in plan["in_use"]:
+        log(f"[{package}] keeping {entry['digest'][:19]}: unfinished run(s) {', '.join(entry['runs'])} tagged it")
     if plan["capped"]:
         # Never let a cap look like "everything was covered".
         warn(f"[{package}] deletion cap reached: {plan['capped']} candidates left for the next run")
@@ -504,7 +588,7 @@ def main(argv=None):
     keep_patterns = list(DEFAULT_KEEP_PATTERNS) + args.keep_tag_pattern
 
     if args.plan_from:
-        versions, children_of, now = load_fixture(args.plan_from)
+        versions, children_of, now, active_ids = load_fixture(args.plan_from)
         package = args.package or "fixture"
     else:
         package = args.package
@@ -522,6 +606,9 @@ def main(argv=None):
         children_of = Registry(args.org, package, args.token).children
         now = datetime.now(timezone.utc)
 
+        def active_ids():
+            return active_run_ids(args.repo, args.token)
+
     if not versions:
         log(f"[{package}] no versions")
         return 0
@@ -534,6 +621,7 @@ def main(argv=None):
         keep_patterns,
         args.only_tag_pattern,
         max(args.max_deletions, 0),
+        in_flight_check(active_ids, args.own_run_id),
     )
 
     # An empty keep set in full-sweep mode means either the classification is
@@ -579,5 +667,8 @@ if __name__ == "__main__":
             pass
         error(f"{exc.code} {exc.reason} for {exc.url}{': ' + detail if detail else ''}")
         if exc.code == 403:
-            error("the token needs the packages:write permission (read:packages for --dry-run)")
+            error(
+                "the token needs the packages:write permission (read:packages for --dry-run), "
+                "and actions:read to list the unfinished runs"
+            )
         sys.exit(1)

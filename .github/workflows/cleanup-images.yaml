@@ -13,7 +13,10 @@ name: Cleanup Images
 # (`10.0.0-2ubuntu8.19-r2`) of the Docker-built image before it. Everything else --
 # SHA tags, run-scoped E2E tags, composite tags whose release tag has since
 # moved to a newer manifest, and untagged leftovers -- is a build artifact
-# with a successor and goes.
+# with a successor and goes. A version that a workflow run still in progress
+# tagged `e2e-<run_id>-*` stays whatever its age: a reproducible Nix build
+# pushes an older version's digest again, and GHCR adds the new tag to that
+# version without moving its created_at.
 #
 # The three jobs share one implementation (hack/ghcr-prune-stale-versions.py)
 # and differ only in which candidates they consider. The two narrow jobs run
@@ -48,6 +51,8 @@ name: Cleanup Images
         type: string
 
 permissions:
+  # actions: read lists the unfinished runs whose e2e tags protect a version.
+  actions: read
   contents: read
   packages: write
 
