@@ -216,6 +216,9 @@ under the service `mix`, as in [Watching the run](#watching-the-run).
 | `DIZZY_SOAK_MAX_P95_SECONDS` | empty | The maximum overall p95 latency in seconds. Empty runs no `p95` check. |
 | `DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT` | `10` | The maximum heap growth of an operator pod in percent, a positive number. `operator-leak` fails above it. A run whose `DIZZY_SOAK_NAMESPACES` leaves out the operator namespaces (`<op>-system`) lists no operator pod and fails `operator-leak`. |
 | `DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH` | `10` | The maximum goroutine growth of an operator pod, a positive number of goroutines. `operator-leak` fails above it. |
+| `DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT` | `10` | The memory growth of a container over the second half of the run in percent, a positive number. `memory-growth` fails a container above it and above `DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB` at once. |
+| `DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB` | `16` | The memory growth of a container over the second half of the run in MiB, a positive number. `memory-growth` fails a container above it and above `DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT` at once. |
+| `DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES` | `flux-system` | The namespaces whose containers `memory-growth` does not judge, space-separated. Set but empty, it judges every namespace. |
 
 `start` writes the runner's settings and the resolved `DIZZY_VERSION` into the
 ConfigMap `dizzy-soak-config`, which the Job reads once at its start.
@@ -236,9 +239,9 @@ such as `20261012T081500Z`. `report` copies it to `_output/dizzy/soak/<run>/`.
 
 | File | Content |
 | --- | --- |
-| `report.md` | The verdict and its checks, the run's parameters and times, dizzy's table report, the leak-check line, the restarts and OOM kills, the pods created during the run per namespace (owner other than a Job), the 15 containers with the largest memory growth and the 15 with the highest mean CPU, the operator goroutines and heap, the conditions, and the line count of `platform/errors.log`. The runner prints it to the pod log as well. |
+| `report.md` | The verdict and its checks, the run's parameters and times, dizzy's table report, the leak-check line, the restarts and OOM kills, the pods created during the run per namespace (owner other than a Job), the 15 containers with the largest memory growth and the 15 with the highest mean CPU, the 15 judged containers with the largest growth over the second half, the operator goroutines and heap, the conditions, and the line count of `platform/errors.log`. The runner prints it to the pod log as well. |
 | `verdict.json` | `{"verdict": "PASS" or "FAIL", "checks": [{"name", "pass", "detail"}]}`. |
-| `meta.json` | The run name, start and end time, service, duration, dizzy version and arguments, platform namespaces, sample interval, the four thresholds, and dizzy's exit code. |
+| `meta.json` | The run name, start and end time, service, duration, dizzy version and arguments, platform namespaces, sample interval, the six thresholds, and dizzy's exit code. |
 | `scenario.yaml` | The scenario of the run. |
 | `dizzy.log` | dizzy's output. |
 | `run-<id>.json` | dizzy's run record, which dizzy rewrites once a minute while it runs. |
@@ -250,6 +253,7 @@ such as `20261012T081500Z`. `report` copies it to `_output/dizzy/soak/<run>/`.
 | `platform/conditions-start.json`, `conditions-end.json` | The `status.conditions` of every ControlPlane and service CR at the start and the end. A kind whose CRD is absent is skipped. |
 | `platform/restarts.tsv` | Per pod UID and container: the restarts during the run (the last `restartCount` minus the first sample's, or minus 0 for a pod created during the run) and the OOM kills (a last termination `OOMKilled` with `finishedAt` inside the run). |
 | `platform/usage-summary.tsv` | Per container: the sample count, CPU mean and maximum, the memory mean of its first and of its last tenth of samples, the maximum, and the growth between the two means in MiB and percent. |
+| `platform/memory-growth.tsv` | Per container: the sample count, the memory in MiB as the mean of its samples around the run's midpoint (index `ceil(0.45 n)` to `floor(0.55 n)`, the sample at `round(n/2)` when that range is empty) and as the mean of its last tenth, the growth between the two in MiB and percent, and `judged`: `yes`, or the reason `memory-growth` does not judge the container. |
 | `platform/operator-pods.tsv` | One line per operator pod and pod sample: timestamp, namespace, pod, creation time, pod IP and the port of its container port `metrics`. An operator pod is a Running pod with a pod IP whose label `app.kubernetes.io/name` is one of the operator chart names, such as `keystone-operator`, and which has a container port named `metrics`. |
 | `platform/operators.tsv` | One line per operator pod and scrape of its `/metrics`: timestamp, namespace, pod, `go_goroutines`, `go_memstats_heap_inuse_bytes` and `process_resident_memory_bytes` as whole numbers, and the leader: `1` when `leader_election_master_status` is above 0, `0` at 0, `-` without the gauge. A failed scrape writes no line and one line to `platform/errors.log`. |
 | `platform/operators-summary.tsv` | Per operator pod: the sample count, the leader state (`0>1` when it changed), the goroutines and the heap in MiB as the means of its first and of its last tenth of samples and the growth between them, the heap growth in percent, the RSS mean of its last tenth in MiB, and `judged`: `yes`, or the reason `operator-leak` does not judge the pod. |
@@ -262,7 +266,7 @@ The runner reads the conditions of `controlplanes.c5c3.io` and of
 
 ### Verdict checks
 
-The verdict is PASS when every check that ran passed. The first five checks
+The verdict is PASS when every check that ran passed. The first six checks
 always run, the last two only when their setting is set.
 
 | Check | Fails when |
@@ -272,6 +276,7 @@ always run, the last two only when their setting is set.
 | `controlplane-ready` | No ControlPlane was read at the end, the read failed, or one is not `Ready=True`. |
 | `no-restarts` | No pod sample succeeded, or a container of the platform restarted or was OOM-killed during the run. |
 | `operator-leak` | No pod sample succeeded, no operator pod was listed in the sampled namespaces, a listed operator pod has no metrics sample, or, listed in more than 20 pod samples, none in more than one and more than a tenth of them, or a judged operator pod's heap grew by more than `DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT` percent or its goroutines by more than `DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH`. |
+| `memory-growth` | No sample of the metrics API succeeded, no container could be judged, or a judged container's memory grew over the second half of the run by more than `DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB` and by more than `DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT` percent at once. |
 | `error-rate` | `.metrics.overall.failed / .metrics.overall.attempted` of `dizzy-report.json`, in percent, exceeds `DIZZY_SOAK_MAX_ERROR_RATE`, or no operation was attempted. |
 | `p95` | `.metrics.overall.latency.p95` of `dizzy-report.json` exceeds `DIZZY_SOAK_MAX_P95_SECONDS`. |
 
@@ -301,6 +306,38 @@ above a bound fails with its heap growth in percent, its goroutine growth,
 and the means of both. The check compares the values as `operators-summary.tsv`
 prints them, to one decimal, and a growth equal to a bound passes.
 
+`memory-growth` reads `platform/memory-growth.tsv`. A container's growth is
+the mean of its last tenth of samples minus the mean of its samples around
+the midpoint, so the warm-up of the first half, in which caches and pools
+fill, does not count. The check exists because the six-hour lab soak of
+[#1311](https://github.com/c5c3/cobaltcore/issues/1311) showed
+`nova-scheduler` growing from 128 to 191 MiB, and only a reader of the report
+table noticed. A container fails only above both bounds: 16 MiB is ordinary
+churn for a large container, and 10 % is for a small one. The check judges a
+container only when its pod is not in `EXEMPT_PODS`, its namespace is not in
+`DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES`, it has at least 20 samples, its
+pod kept one UID in every pod sample and was created before the run, and it
+did not restart. A failure names the container with both means, the growth
+in MiB and in percent; a pass names how many containers were judged and the
+largest growth. The values compare as the table prints them,
+to one decimal, and a growth equal to a bound passes. `EXEMPT_PODS`, one
+`<namespace>/<pod>` per line, is empty in a soak: the ConfigMap does not
+carry it. A random run sets it to the targets of its faults when it judges a
+soak's tables again, and `no-restarts` and `memory-growth` then skip those
+pods and name how many they skipped.
+
+`flux-system` is skipped by default, and the check's detail names how many
+of its containers it skipped. Flux refreshes its sources every hour and
+reconciles its HelmReleases every half hour, and the working set of
+`source-controller` and `helm-controller` jumps for a few minutes each time.
+On a kind cluster, `source-controller` went from 54 to 255 MiB one hour
+after `make deploy-infra` had created the sources. A soak that ends then
+reads the refresh in its last tenth as growth.
+
+A plain soak that sets neither memory setting runs `memory-growth` with the
+defaults, so a soak that passed before this check existed can end `FAIL`
+and its Job `Failed`. A report written before has no `memory-growth` row.
+
 The runner exits 0 on PASS and 1 on FAIL, so the Job ends Complete or Failed
 by verdict. A completed duration, a `stop`, a deleted Job and a pod eviction
 take the same path: the runner sends TERM to dizzy once and waits while dizzy
@@ -315,8 +352,9 @@ removes its resources and prints its leak check. Then it writes the report.
 - No resize and no cold migration in the default scenario, since the lab's
   compute image has no ssh client.
 - No default thresholds for the error rate or the latency, and no quotas for
-  the project. The operator leak bounds are the one exception with a default:
-  a heap growth of 10 % and a goroutine growth of 10. A larger scenario, such
+  the project. The operator leak bounds and the memory growth bounds are the
+  exceptions with a default: a heap growth of 10 % and a goroutine growth of
+  10, and a container growth of 10 % and 16 MiB. A larger scenario, such
   as one run with `--set resources.servers=20`, needs Nova's quotas raised by
   hand.
 - Nothing restarts a soak: `backoffLimit: 0` ends it when its pod is lost.

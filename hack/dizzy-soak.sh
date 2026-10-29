@@ -38,9 +38,12 @@ case "${EXTERNAL_OVERLAY}" in
 esac
 SOAK_DIR="${OVERLAY_ROOT}/dizzy-soak"
 
-# Settings. A DIZZY_SOAK_DURATION, DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT
-# or DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH that is set but empty is
-# refused, so its default applies only when it is unset.
+# Settings. A DIZZY_SOAK_DURATION, DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT,
+# DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH,
+# DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT or DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB
+# that is set but empty is refused, so its default applies only when it is
+# unset. A DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES that is set but empty
+# skips no namespace.
 DIZZY_SOAK_SERVICE="${DIZZY_SOAK_SERVICE:-mix}"
 DIZZY_SOAK_DURATION="${DIZZY_SOAK_DURATION-6h}"
 DIZZY_SCENARIO="${DIZZY_SCENARIO:-}"
@@ -54,6 +57,9 @@ DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE:-}"
 DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS:-}"
 DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT-10}"
 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH-10}"
+DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT-10}"
+DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB-16}"
+DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES="${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES-flux-system}"
 
 # The objects of the soak, the local report directory and the waits. Plain
 # variables, so the unit test can point them elsewhere after sourcing.
@@ -113,6 +119,15 @@ Settings (environment):
                               operator pod in percent (default 10).
   DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH  maximum goroutine growth of an
                               operator pod (default 10).
+  DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT  memory growth of a container over the
+                              second half in percent that fails it together
+                              with the MiB bound (default 10).
+  DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB  memory growth of a container over the
+                              second half in MiB that fails it together with
+                              the percent bound (default 16).
+  DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES  namespaces whose containers
+                              memory-growth does not judge, space-separated
+                              (default flux-system; empty judges every one).
 EOF
 }
 
@@ -185,11 +200,40 @@ soak_number_in() {
 }
 
 # ---------------------------------------------------------------------------
-# soak_preflight — The nine checks of start, in order, before anything is
-# changed. Sets SOAK_SCENARIO_FILE.
+# soak_preflight — The nine checks of start, before anything is changed:
+# the settings (h) first, before any call, then (a) to (g) and (i) in order.
+# Sets SOAK_SCENARIO_FILE.
 # ---------------------------------------------------------------------------
 soak_preflight() {
   local cmd out states ns="${DIZZY_CP_NAMESPACE}"
+  # (h) the settings, first: they need no cluster.
+  if ! soak_valid_duration "${DIZZY_SOAK_DURATION}"; then
+    soak_fail "DIZZY_SOAK_DURATION must be 0 or a duration such as 6h"
+  fi
+  if [[ ! "${DIZZY_SOAK_SAMPLE_INTERVAL}" =~ ^[1-9][0-9]*$ ]]; then
+    soak_fail "DIZZY_SOAK_SAMPLE_INTERVAL must be a positive number of seconds such as 60"
+  fi
+  if [[ -n "${DIZZY_SOAK_MAX_ERROR_RATE}" ]] && ! soak_number_in "${DIZZY_SOAK_MAX_ERROR_RATE}" 'v <= 100'; then
+    soak_fail "DIZZY_SOAK_MAX_ERROR_RATE must be empty or a percentage from 0 to 100"
+  fi
+  if [[ -n "${DIZZY_SOAK_MAX_P95_SECONDS}" ]] && ! soak_number_in "${DIZZY_SOAK_MAX_P95_SECONDS}" 'v > 0'; then
+    soak_fail "DIZZY_SOAK_MAX_P95_SECONDS must be empty or a positive number of seconds"
+  fi
+  if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" 'v > 0'; then
+    soak_fail "DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT must be a positive number"
+  fi
+  if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" 'v > 0'; then
+    soak_fail "DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH must be a positive number"
+  fi
+  if ! soak_number_in "${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT}" 'v > 0'; then
+    soak_fail "DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT must be a positive number"
+  fi
+  if ! soak_number_in "${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB}" 'v > 0'; then
+    soak_fail "DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB must be a positive number"
+  fi
+  if [[ ! "${DIZZY_VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+    soak_fail "DIZZY_VERSION must be an image tag of letters, digits, '.', '_' and '-'"
+  fi
   for cmd in kubectl jq; do
     if ! command -v "${cmd}" >/dev/null 2>&1; then
       soak_fail "'${cmd}' is not installed or not in PATH."
@@ -243,28 +287,6 @@ soak_preflight() {
   SOAK_SCENARIO_FILE="${DIZZY_SCENARIO:-${SOAK_DIR}/scenario.yaml}"
   if [[ ! -f "${SOAK_SCENARIO_FILE}" ]]; then
     soak_fail "scenario file not found: ${SOAK_SCENARIO_FILE}"
-  fi
-  # (h) the settings.
-  if ! soak_valid_duration "${DIZZY_SOAK_DURATION}"; then
-    soak_fail "DIZZY_SOAK_DURATION must be 0 or a duration such as 6h"
-  fi
-  if [[ ! "${DIZZY_SOAK_SAMPLE_INTERVAL}" =~ ^[1-9][0-9]*$ ]]; then
-    soak_fail "DIZZY_SOAK_SAMPLE_INTERVAL must be a positive number of seconds such as 60"
-  fi
-  if [[ -n "${DIZZY_SOAK_MAX_ERROR_RATE}" ]] && ! soak_number_in "${DIZZY_SOAK_MAX_ERROR_RATE}" 'v <= 100'; then
-    soak_fail "DIZZY_SOAK_MAX_ERROR_RATE must be empty or a percentage from 0 to 100"
-  fi
-  if [[ -n "${DIZZY_SOAK_MAX_P95_SECONDS}" ]] && ! soak_number_in "${DIZZY_SOAK_MAX_P95_SECONDS}" 'v > 0'; then
-    soak_fail "DIZZY_SOAK_MAX_P95_SECONDS must be empty or a positive number of seconds"
-  fi
-  if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" 'v > 0'; then
-    soak_fail "DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT must be a positive number"
-  fi
-  if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" 'v > 0'; then
-    soak_fail "DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH must be a positive number"
-  fi
-  if [[ ! "${DIZZY_VERSION}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
-    soak_fail "DIZZY_VERSION must be an image tag of letters, digits, '.', '_' and '-'"
   fi
   # (i) no soak runs.
   if ! out="$(soak_read soak_job_json)"; then
@@ -387,7 +409,10 @@ soak_start() {
     --from-literal=DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE}" \
     --from-literal=DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS}" \
     --from-literal=DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" \
-    --from-literal=DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}"
+    --from-literal=DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" \
+    --from-literal=DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT}" \
+    --from-literal=DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB}" \
+    --from-literal=DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES="${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES}"
 
   log "Creating the Job ${SOAK_NAMESPACE}/${SOAK_JOB} (dizzy ${DIZZY_VERSION}, ${DIZZY_SOAK_SERVICE}, ${DIZZY_SOAK_DURATION})..."
   if ! sed "s#ghcr.io/b42labs/dizzy:DIZZY_VERSION#ghcr.io/b42labs/dizzy:${DIZZY_VERSION}#" "${SOAK_DIR}/job.yaml" |

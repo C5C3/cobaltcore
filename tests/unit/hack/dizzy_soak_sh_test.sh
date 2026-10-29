@@ -16,8 +16,11 @@
 #      after an eviction. DIZZY_SOAK_DURATION accepts 6h, 90m, 1h30m and 0
 #      and refuses 6, six, -1h, 0h and the empty string.
 #      DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT and
-#      DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH accept 2.5 and 25 and refuse
-#      0, -1, abc and the empty string.
+#      DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH accept 2.5 and 25,
+#      DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT and DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB
+#      7.5 and 32, and all four refuse 0, -1, abc and the empty string before
+#      any kubectl call. An empty DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES
+#      reaches the runner empty.
 #   3. start deletes a finished Job, creates the password Secret only when
 #      it is absent, from stdin, stops with the identity's state when K-ORC
 #      does not make it Available, and otherwise applies the clouds.yaml (the
@@ -282,7 +285,8 @@ run_soak() {
     unset DIZZY_SOAK_SERVICE DIZZY_SOAK_DURATION DIZZY_SCENARIO DIZZY_ARGS DIZZY_VERSION DIZZY_AUTH_URL \
       DIZZY_CP_NAME DIZZY_CP_NAMESPACE EXTERNAL_OVERLAY DIZZY_SOAK_NAMESPACES DIZZY_SOAK_SAMPLE_INTERVAL \
       DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT \
-      DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH EXTERNAL_CLUSTER
+      DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB \
+      DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES EXTERNAL_CLUSTER
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -340,7 +344,8 @@ test_usage() {
   for setting in DIZZY_SOAK_SERVICE DIZZY_SOAK_DURATION DIZZY_SCENARIO DIZZY_ARGS DIZZY_VERSION DIZZY_AUTH_URL \
     DIZZY_CP_NAME DIZZY_CP_NAMESPACE EXTERNAL_OVERLAY DIZZY_SOAK_NAMESPACES DIZZY_SOAK_SAMPLE_INTERVAL \
     DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT \
-    DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH; do
+    DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB \
+    DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES; do
     assert_contains "the usage names $setting" "$usage" "  $setting "
   done
 
@@ -432,9 +437,11 @@ test_settings() {
       "DIZZY_SOAK_MAX_P95_SECONDS must be empty or a positive number of seconds" DIZZY_SOAK_MAX_P95_SECONDS="$value"
   done
   local setting
-  for setting in DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH; do
+  for setting in DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH \
+    DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB; do
     for value in 0 -1 abc ""; do
       preflight_fails "$tmp" "$setting='$value'" "$setting must be a positive number" "$setting=$value"
+      assert_eq "$setting='$value': refused before any kubectl call" "" "$(cat "$CALL_LOG")"
     done
   done
   preflight_fails "$tmp" "DIZZY_VERSION with a slash" \
@@ -442,11 +449,21 @@ test_settings() {
 
   new_case "$tmp"
   run_soak "$tmp" start -- DIZZY_SOAK_MAX_ERROR_RATE=0 DIZZY_SOAK_MAX_P95_SECONDS=0.5 DIZZY_SOAK_SAMPLE_INTERVAL=30 \
-    DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=2.5 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=25
+    DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=2.5 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=25 \
+    DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT=7.5 DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB=32
   rc=$?
-  assert_eq "an error rate of 0, a p95 of 0.5, an interval of 30 and leak bounds of 2.5 and 25 start the soak" "0" "$rc"
-  assert_contains "the leak bounds reach the runner" "$(cat "$tmp/capture/dizzy-soak-config.literals")" \
-    "$(printf '%s\n' DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=2.5 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=25)"
+  assert_eq "an error rate of 0, a p95 of 0.5, an interval of 30, leak bounds of 2.5 and 25 and memory bounds of 7.5 and 32 start the soak" "0" "$rc"
+  assert_contains "the leak and memory bounds reach the runner" "$(cat "$tmp/capture/dizzy-soak-config.literals")" \
+    "$(printf '%s\n' DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=2.5 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=25 \
+      DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT=7.5 DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB=32)"
+
+  new_case "$tmp"
+  run_soak "$tmp" start -- DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES=
+  rc=$?
+  assert_eq "an empty DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES starts the soak" "0" "$rc"
+  assert_eq "and reaches the runner empty, so memory-growth skips no namespace" \
+    "DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES=" \
+    "$(grep '^DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES=' "$tmp/capture/dizzy-soak-config.literals")"
 }
 
 # ---------------------------------------------------------------------------
@@ -515,7 +532,9 @@ test_start() {
   assert_eq "the settings reach the runner with their defaults and an empty DIZZY_ARGS" "$(printf '%s\n' \
     DIZZY_SOAK_SERVICE=mix DIZZY_SOAK_DURATION=6h DIZZY_ARGS= "DIZZY_VERSION=$(pinned_version)" DIZZY_SOAK_NAMESPACES= \
     DIZZY_SOAK_SAMPLE_INTERVAL=60 DIZZY_SOAK_MAX_ERROR_RATE= DIZZY_SOAK_MAX_P95_SECONDS= \
-    DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=10 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=10)" \
+    DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT=10 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH=10 \
+    DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT=10 DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB=16 \
+    DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES=flux-system)" \
     "$(cat "$tmp/capture/dizzy-soak-config.literals")"
 
   # The Job.
