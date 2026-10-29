@@ -3,48 +3,44 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the `#### Lab fault runs` subsection of
-# docs/reference/infrastructure/infrastructure-manifests.md (#1222), the
-# records its session left in the `#### Proving run` and `### Lab NFS stack`
-# subsections, and the Proving run's table (#1246):
-#   1. the heading occurs once, after `#### Proving run` and before
+# Verify the lab chaos subsections of
+# docs/reference/infrastructure/infrastructure-manifests.md: `#### Proving run`
+# and `#### Lab fault runs` (#1222, #1246), whose paste-a-section blocks
+# hack/lab-chaos.sh replaced, and `#### Lab chaos runner` (#1395):
+#   1. `#### Proving run`, `#### Lab fault runs`, `#### Lab chaos runner` and
+#      `#### Lab failover runs` occur once each, in that order, before
 #      `### Lab ControlPlane`
-#   2. every `kind: <X>Chaos` line of the subsection is `kind: PodChaos`, and
-#      there are four
-#   3. `action: pod-kill`, `mode: one` and `namespaces: [openstack]` occur
-#      four times and `nodes: [${host}]` three times, each as a whole line, so
-#      prose that quotes them does not count
-#   4. the label lines of the four selectors occur as whole lines
-#   5. each of the four PodChaos is created by one `name: <name>` line, and
-#      awaited and deleted under that name by a
-#      `kubectl wait podchaos/<name> -n openstack` and a
-#      `kubectl delete podchaos <name> -n openstack` line
-#   6. two `kubectl scale deployment/nfs-server -n openstack` lines scale to 0
-#      first and to 1 second
-#   7. the subsection names no `allowHostNetworkTesting`, and holds the record
-#      of its lab run, a line that starts with `The run of 20YY-MM-DD`
-#   8. each label and name comes from its source: the libvirt DaemonSet, the
-#      NFS server manifest with its Deployment and container name, the
-#      constants of the nova and ovn operators, and the names of the lab's
-#      NovaCompute and OVNChassis, which the instance labels carry
-#   9. the `#### Proving run` subsection holds the record of its lab run, a line
-#      that starts with `The run of 20YY-MM-DD`, and not the sentence that no
-#      run is recorded
-#  10. `recovered`, run from the page with `openstack` stubbed, holds on alive
-#      agents and fails on an empty agent list, a failed agent call and a dead
-#      agent
-#  11. the `### Lab NFS stack` subsection links the lab fault runs and does not
-#      say that no run is recorded
-#  12. `probes_ok`, run from the page with `openstack` stubbed, holds on new
-#      `ok` lines of both probes and fails on a stalled probe and on a first
-#      console read that fails or prints nothing
-#  13. the table of the `#### Proving run` judges steps 2 and 4 against the
+#   2. neither `#### Proving run` nor `#### Lab fault runs` holds a
+#      `kind: <X>Chaos` line or a bash block any more, and both point at the
+#      runner
+#   3. both keep the record of their 2026-10-04 run, a line that starts with
+#      `The run of 2026-10-04`, and their tables: the Proving run's six step
+#      rows and the fault table's rows F1 to F5
+#   4. the table of the `#### Proving run` judges steps 2 and 4 against the
 #      run's baseline: row 2 calls its times the run's baseline, row 4 names
 #      both distances to the largest time of step 2, and neither row names a
 #      fixed 0.3 s; the paragraph below the table names row 4's distances and
-#      the NetworkChaos latency, ties the distances to that delay, names the
-#      spread of step 2 as what shrinks the room under the delay, and adds
-#      the distances to the recorded 0.306 s
+#      the latency of the runner's NetworkChaos, ties the distances to that
+#      delay, names the spread of step 2 as what shrinks the room under the
+#      delay, and adds the distances to the recorded 0.306 s
+#   5. the `### Lab NFS stack` subsection links the lab fault runs and does not
+#      say that no run is recorded
+#   6. `#### Lab chaos runner` names every make target lab-chaos-<sub> of the
+#      Makefile, lists in its settings table exactly the LAB_CHAOS_* variables
+#      the script reads, names the four steps of the failed-gate procedure and
+#      the virsh console hand step, and points at the unit test
+#   7. the runner's subsection is in exactly one mode: before the session it
+#      holds the line `No lab run of the chaos runner is recorded yet.`, after
+#      it a record that starts with `The run of 20YY-MM-DD` with the proving
+#      table, the fault table with F1 to F5 and the random run's row
+#      (record.md of `make lab-chaos-record`), never both
+#   8. the selectors of F1 to F4 in hack/lab-chaos.sh carry the labels their
+#      sources set: the libvirt DaemonSet, the NFS server manifest, the
+#      constants of the nova and ovn operators, and the names of the lab's
+#      NovaCompute and OVNChassis
+#
+# The helpers recovered and probes_ok moved into the runner with the block;
+# tests/unit/hack/lab_chaos_test.sh pins them.
 #
 # Subsections run from their heading to the next heading of any level, fenced
 # code included. INFRA_MANIFESTS_DOC overrides the page.
@@ -94,107 +90,171 @@ count_lines() {
   awk -v want="$2" '{ sub(/^[[:space:]]+/, "") } $0 == want { n++ } END { print n + 0 }' <<<"$1"
 }
 
+LAB_CHAOS_SH="$PROJECT_ROOT/hack/lab-chaos.sh"
+PROVING="$(subsection '#### Proving run')"
 FAULTS="$(subsection '#### Lab fault runs')"
+RUNNER="$(subsection '#### Lab chaos runner')"
 
-# --- Test 1: the subsection's place ---
+# --- Test 1: the subsections' places ---
 test_position() {
-  echo "Test: '#### Lab fault runs' occurs once, between the Proving run and Lab ControlPlane"
-  local all count line proving controlplane
+  echo "Test: the four lab chaos subsections occur once each, in order, before Lab ControlPlane"
+  local all heading line previous=0 controlplane
   all="$(headings)"
-  count="$(grep -cxE '[0-9]+:#### Lab fault runs' <<<"$all" || true)"
-  assert_eq "'#### Lab fault runs' occurs once" "1" "$count"
-  line="$({ grep -xE '[0-9]+:#### Lab fault runs' <<<"$all" || true; } | head -n 1 | cut -d: -f1)"
-  proving="$({ grep -xE '[0-9]+:#### Proving run' <<<"$all" || true; } | head -n 1 | cut -d: -f1)"
-  controlplane="$({ grep -xE '[0-9]+:### Lab ControlPlane' <<<"$all" || true; } | head -n 1 | cut -d: -f1)"
-  if [[ -n "$line" && -n "$proving" && -n "$controlplane" ]] &&
-    ((proving < line && line < controlplane)); then
-    echo "  PASS: the subsection sits on line $line, between line $proving and line $controlplane"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: the subsection is missing or out of place (Proving run '${proving}', Lab fault runs '${line}', Lab ControlPlane '${controlplane}')"
-    FAIL=$((FAIL + 1))
-  fi
-  assert_not_empty "the subsection has a body" "$FAULTS"
-}
-
-# --- Test 2: PodChaos only ---
-test_podchaos_only() {
-  echo "Test: every Chaos kind of the subsection is PodChaos, four of them"
-  local kinds others
-  kinds="$(grep -E 'kind: [A-Za-z]*Chaos' <<<"$FAULTS" | sed -E 's/^[[:space:]]+//' || true)"
-  others="$(grep -vxF 'kind: PodChaos' <<<"$kinds" || true)"
-  assert_eq "no kind other than PodChaos" "" "$others"
-  assert_eq "four PodChaos" "4" "$(count_lines "$FAULTS" 'kind: PodChaos')"
-}
-
-# --- Test 3: the experiment lines ---
-test_experiment_lines() {
-  echo "Test: the four experiments kill one pod in openstack, three of them on lab-0's node"
-  assert_eq "'action: pod-kill' four times" "4" "$(count_lines "$FAULTS" 'action: pod-kill')"
-  assert_eq "'mode: one' four times" "4" "$(count_lines "$FAULTS" 'mode: one')"
-  assert_eq "'namespaces: [openstack]' four times" "4" "$(count_lines "$FAULTS" 'namespaces: [openstack]')"
-  # shellcheck disable=SC2016 # the YAML line names the shell variable
-  assert_eq "'nodes: [\${host}]' three times" "3" "$(count_lines "$FAULTS" 'nodes: [${host}]')"
-}
-
-# --- Test 4: the label lines ---
-test_label_lines() {
-  echo "Test: the selectors carry the pod labels of the libvirt, nova-compute, ovn-controller and NFS server pods"
-  local label
-  for label in \
-    'app.kubernetes.io/name: libvirt' \
-    'app.kubernetes.io/name: novacompute' \
-    'app.kubernetes.io/instance: lab' \
-    'app.kubernetes.io/component: nova-compute' \
-    'app.kubernetes.io/name: ovnchassis' \
-    'app.kubernetes.io/instance: lab-chassis' \
-    'app.kubernetes.io/component: ovn-controller' \
-    'app.kubernetes.io/name: nfs-server'; do
-    if [[ "$(count_lines "$FAULTS" "$label")" -ge 1 ]]; then
-      echo "  PASS: '$label' is a line of the subsection"
+  for heading in '#### Proving run' '#### Lab fault runs' '#### Lab chaos runner' '#### Lab failover runs'; do
+    assert_eq "'$heading' occurs once" "1" "$(grep -cxF -- "$heading" <<<"$(cut -d: -f2- <<<"$all")" || true)"
+    line="$(grep -nxF -- "$heading" <<<"$(cut -d: -f2- <<<"$all")" | head -n 1 | cut -d: -f1)"
+    line="$(sed -n "${line:-0}p" <<<"$all" | cut -d: -f1)"
+    if [[ -n "$line" && "$line" -gt "$previous" ]]; then
+      echo "  PASS: '$heading' on line $line follows line $previous"
       PASS=$((PASS + 1))
     else
-      echo "  FAIL: '$label' is no line of the subsection"
+      echo "  FAIL: '$heading' is missing or out of order (line '${line}', previous ${previous})"
       FAIL=$((FAIL + 1))
     fi
+    previous="${line:-$previous}"
   done
+  controlplane="$({ grep -xE '[0-9]+:### Lab ControlPlane' <<<"$all" || true; } | head -n 1 | cut -d: -f1)"
+  assert_gte "Lab ControlPlane comes after them" "${controlplane:-0}" "$((previous + 1))"
 }
 
-# --- Test 5: every experiment keeps one name from create to delete ---
-test_experiments_deleted() {
-  echo "Test: each PodChaos is created, awaited and deleted under one name"
-  local name
-  for name in lab-libvirt-kill lab-nova-compute-kill lab-ovn-controller-kill lab-nfs-server-kill; do
-    assert_eq "a PodChaos named $name is created once" "1" "$(count_lines "$FAULTS" "name: $name")"
-    assert_not_empty "'kubectl wait podchaos/$name -n openstack' is in the subsection" \
-      "$(grep -F -- "kubectl wait podchaos/$name -n openstack" <<<"$FAULTS" || true)"
-    assert_not_empty "'kubectl delete podchaos $name -n openstack' is in the subsection" \
-      "$(grep -F -- "kubectl delete podchaos $name -n openstack" <<<"$FAULTS" || true)"
+# --- Test 2: the blocks are gone ---
+test_blocks_replaced() {
+  echo "Test: the Proving run and the Lab fault runs hold no chaos object and no bash block, and point at the runner"
+  local name text
+  for name in PROVING FAULTS; do
+    text="${!name}"
+    assert_not_empty "$name has a body" "$text"
+    assert_eq "$name holds no kind: <X>Chaos line" "" "$(grep -E 'kind: [A-Za-z]*Chaos' <<<"$text" || true)"
+    assert_eq "$name holds no bash block" "" "$(grep -E '^[[:space:]]*```bash' <<<"$text" || true)"
+    assert_contains "$name points at the runner" "$text" "(#lab-chaos-runner)"
   done
-}
-
-# --- Test 6: the scale-down comes back ---
-test_scale_order() {
-  echo "Test: the NFS server is scaled to 0 and then to 1"
-  local scales
-  scales="$(grep -F 'kubectl scale deployment/nfs-server -n openstack' <<<"$FAULTS" || true)"
-  assert_eq "two scale lines" "2" "$(grep -c . <<<"$scales" || true)"
-  assert_contains "the first scales to 0" "$(sed -n 1p <<<"$scales")" '--replicas=0'
-  assert_contains "the second scales to 1" "$(sed -n 2p <<<"$scales")" '--replicas=1'
-}
-
-# --- Test 7: no network fault on a host-network pod, and the record ---
-test_no_host_network_testing() {
-  echo "Test: the subsection names no allowHostNetworkTesting and records its lab run"
+  assert_contains "the Proving run names the make target of steps 1 to 5" "$PROVING" '`make lab-chaos-proving`'
+  assert_contains "and that of step 6" "$PROVING" '`make lab-chaos-teardown-check`'
+  assert_contains "the Lab fault runs name the make target of F1 to F5" "$FAULTS" '`make lab-chaos-faults`'
   assert_not_contains "no allowHostNetworkTesting" "$FAULTS" 'allowHostNetworkTesting'
-  assert_not_empty "a line of the subsection starts with 'The run of 20YY-MM-DD'" \
-    "$(grep -E '^The run of 20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$FAULTS" || true)"
+}
+
+# --- Test 3: the 2026-10-04 records and their tables stay ---
+test_records_kept() {
+  echo "Test: both subsections keep the record of their 2026-10-04 run and their tables"
+  local step fault
+  assert_not_empty "the Proving run keeps its record" "$(grep -E '^The run of 2026-10-04 ' <<<"$PROVING" || true)"
+  assert_not_empty "the Lab fault runs keep theirs" "$(grep -E '^The run of 2026-10-04 ' <<<"$FAULTS" || true)"
+  for step in 1 2 3 4 5 6; do
+    assert_not_empty "the Proving run's table has a row for step $step" "$(grep -E "^\| ${step} \|" <<<"$PROVING" || true)"
+  done
+  for fault in F1 F2 F3 F4 F5; do
+    assert_not_empty "the fault table has a row for $fault" "$(grep -E "^\| ${fault} " <<<"$FAULTS" || true)"
+  done
+}
+
+# --- Test 4: the Proving run judges the delay against the run's baseline ---
+test_proving_run_baseline_rows() {
+  echo "Test: the Proving run's rows for steps 2 and 4 compare with the run's baseline"
+  local row2 row4
+  row2="$(grep -E '^\| 2 \|' <<<"$PROVING" || true)"
+  row4="$(grep -E '^\| 4 \|' <<<"$PROVING" || true)"
+  assert_not_empty "the Proving run's table has a row for step 2" "$row2"
+  assert_not_empty "the Proving run's table has a row for step 4" "$row4"
+  assert_contains "step 2 is the run's baseline" "$row2" "the run's baseline"
+  assert_contains "the delayed times are judged against step 2" "$row4" \
+    'each at least 0.2 s above the largest time of step 2'
+  assert_contains "the released times are judged against step 2" "$row4" \
+    'each less than 0.1 s above the largest time of step 2'
+  assert_not_contains "step 2 names no fixed 0.3 s" "$row2" '0.3 s'
+  assert_not_contains "step 4 names no fixed 0.3 s" "$row4" '0.3 s'
+  # The paragraph below the table restates row 4's distances, so it is read
+  # against the distances row 4 names.
+  local inj rel para
+  inj="$(sed -nE 's/.*each at least ([0-9.]+) s above the largest time of step 2.*/\1/p' <<<"$row4")"
+  rel="$(sed -nE 's/.*each less than ([0-9.]+) s above the largest time of step 2.*/\1/p' <<<"$row4")"
+  para="$(awk '/^Steps 2 and 4 name no absolute time/ { p = 1 } p && /^$/ { exit } p' <<<"$PROVING" | tr '\n' ' ')"
+  assert_not_empty "the Proving run explains the baseline below its table" "$para"
+  assert_contains "the paragraph names row 4's injected distance" "$para" "at least ${inj} s above it"
+  assert_contains "the paragraph names row 4's released distance" "$para" "less than ${rel} s above it"
+  # The delay is the latency of the runner's NetworkChaos, and the runner
+  # judges step 4 by the same distances.
+  local delay_ms room
+  delay_ms="$(sed -nE 's/^[[:space:]]*latency: ([0-9]+)ms$/\1/p' "$LAB_CHAOS_SH" | head -n 1)"
+  assert_not_empty "the runner's NetworkChaos sets a latency" "$delay_ms"
+  assert_contains "the runner judges the delayed times by row 4's distance" "$(cat "$LAB_CHAOS_SH")" "\$1 < l + ${inj}"
+  assert_contains "and the released times" "$(cat "$LAB_CHAOS_SH")" "\$1 >= l + ${rel}"
+  assert_contains "the paragraph names the NetworkChaos latency" "$para" "delay of ${delay_ms} ms counts as injected"
+  room="$(awk -v ms="$delay_ms" -v d="$inj" 'BEGIN { printf "%g", ms / 1000 - d }')"
+  assert_contains "the paragraph ties both distances to the delay" "$para" \
+    "${inj} s is ${room} s below the delay, and ${rel} s is ${rel} s above no delay, which is the room for jitter of a request as slow as the largest time of step 2."
+  assert_contains "the room shrinks by step 2's spread under the delay" "$para" \
+    "the room is ${room} s less the spread of step 2's times under the delay, and ${rel} s plus that spread after the release."
+  assert_contains "the worked example adds both distances to 0.306 s" "$para" \
+    "With a largest baseline time of 0.306 s the two limits are $(awk -v d="$inj" 'BEGIN { printf "%g", 0.306 + d }') s and $(awk -v d="$rel" 'BEGIN { printf "%g", 0.306 + d }') s."
+}
+
+# --- Test 5: the Lab NFS stack names its lab run ---
+test_nfs_stack_record() {
+  echo "Test: the Lab NFS stack links its lab run"
+  local nfs
+  nfs="$(subsection '### Lab NFS stack')"
+  assert_not_empty "the Lab NFS stack has a body" "$nfs"
+  assert_not_contains "the Lab NFS stack does not say that no run is recorded" "$nfs" \
+    'No lab run of this stack is recorded yet.'
+  assert_contains "the Lab NFS stack links the lab fault runs" "$nfs" '(#lab-fault-runs)'
+}
+
+# --- Test 6: the runner's subsection ---
+test_runner_section() {
+  echo "Test: the Lab chaos runner names its targets, settings, gate procedure and hand step"
+  local target targets read_vars table
+  targets="$(grep -oE '^lab-chaos-[a-z-]+( lab-chaos-[a-z-]+)*:' "$PROJECT_ROOT/Makefile" | tr -d ':' | tr ' ' '\n')"
+  assert_eq "the Makefile defines seven lab-chaos targets" "7" "$(grep -c . <<<"$targets")"
+  for target in $targets; do
+    assert_contains "the subsection runs make $target" "$RUNNER" "make ${target}"
+  done
+  read_vars="$(sed -nE 's/^(LAB_CHAOS_[A-Z_]+)="\$\{LAB_CHAOS_[A-Z_]+:-.*/\1/p' "$LAB_CHAOS_SH" | sort -u)"
+  table="$(sed -nE 's/^\| `(LAB_CHAOS_[A-Z_]+)` \|.*/\1/p' <<<"$RUNNER" | sort -u)"
+  assert_eq "the settings table lists exactly the variables the script reads" "$read_vars" "$table"
+  assert_contains "the gate is repeated once" "$RUNNER" "1. repeats the wait once, with the same bound;"
+  assert_contains "then lab-chaos-0 is hard-rebooted" "$RUNNER" '2. hard-reboots `lab-chaos-0`, whose probes restart from its user-data;'
+  assert_contains "then recovered 600" "$RUNNER" '3. runs `recovered 600`;'
+  assert_contains "then the remaining faults are skipped" "$RUNNER" '`SKIP: <f> (gate failed after the reboot)`'
+  assert_contains "the virsh console check of F1 stays a hand step" "$RUNNER" 'virsh console <instance name>'
+  assert_contains "the hand actions go to hand-actions.txt" "$RUNNER" '`hand-actions.txt`'
+  assert_contains "the subsection points at the unit test" "$RUNNER" 'tests/unit/hack/lab_chaos_test.sh'
+}
+
+# --- Test 7: before or after the session, never both ---
+test_record_mode() {
+  echo "Test: the Lab chaos runner either says no run is recorded or holds the session's record"
+  local pending recorded
+  pending="$(grep -cxF 'No lab run of the chaos runner is recorded yet.' <<<"$RUNNER" || true)"
+  recorded="$(grep -cE '^The run of 20[0-9]{2}-[0-9]{2}-[0-9]{2} ran `make lab-chaos-proving`' <<<"$RUNNER" || true)"
+  assert_eq "exactly one of the two modes" "1" "$((pending + recorded))"
+  if [[ "$recorded" == 1 ]]; then
+    echo "  record mode: the subsection holds the session's record"
+    assert_contains "the record has the proving table" "$RUNNER" '| Step | Result | Measured |'
+    local fault
+    for fault in F1 F2 F3 F4 F5; do
+      assert_not_empty "the record's fault table has a row for $fault" "$(grep -E "^\| ${fault} " <<<"$RUNNER" || true)"
+    done
+    assert_contains "the record has the random run's row" "$RUNNER" '| Random run | Seed | Window | Steps drawn | Verdict | Failed checks |'
+  else
+    echo "  pending mode: no session of the runner is recorded"
+    assert_eq "and no record of the runner" "" "$(grep -E '^\| Random run \|' <<<"$RUNNER" || true)"
+  fi
 }
 
 # --- Test 8: the labels come from their sources ---
-# A renamed constant fails here before the block selects no pod.
+# A renamed constant fails here before a fault selects no pod.
 test_label_sources() {
-  echo "Test: each label is the one its manifest or operator sets"
+  echo "Test: the selectors of F1 to F4 carry the labels their manifests and operators set"
+  local selectors
+  selectors="$(grep -E '^    "F[1-4] lab-[a-z-]+-kill ' "$LAB_CHAOS_SH" || true)"
+  assert_eq "the runner defines four pod faults" "4" "$(grep -c . <<<"$selectors")"
+  assert_contains "F1 kills the libvirt pod of the node" "$selectors" '"F1 lab-libvirt-kill app.kubernetes.io/name=libvirt node 600"'
+  assert_contains "F2 the nova-compute pod of the lab's NovaCompute" "$selectors" \
+    '"F2 lab-nova-compute-kill app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=lab,app.kubernetes.io/component=nova-compute node 600"'
+  assert_contains "F3 the ovn-controller pod of the lab's OVNChassis" "$selectors" \
+    '"F3 lab-ovn-controller-kill app.kubernetes.io/name=ovnchassis,app.kubernetes.io/instance=lab-chassis,app.kubernetes.io/component=ovn-controller node 600"'
+  assert_contains "F4 the NFS server wherever it runs" "$selectors" '"F4 lab-nfs-server-kill app.kubernetes.io/name=nfs-server any 900"'
   assert_file_contains_fixed "the libvirt DaemonSet labels its pods app.kubernetes.io/name: libvirt" \
     "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml" 'app.kubernetes.io/name: libvirt'
   assert_file_contains_fixed "the NFS server labels its pods app.kubernetes.io/name: nfs-server" \
@@ -213,157 +273,20 @@ test_label_sources() {
     "$(awk '/^kind: NovaCompute$/ { k = 1 } k && /^  name: / { print $2; exit }' "$compute")"
   assert_eq "the lab's OVNChassis is named lab-chassis, the instance label of F3" "lab-chassis" \
     "$(awk '/^kind: OVNChassis$/ { k = 1 } k && /^  name: / { print $2; exit }' "$compute")"
-  assert_eq "the NFS server is deployment/nfs-server, which F4 and F5 address" "nfs-server" \
+  assert_eq "the NFS server is deployment/nfs-server, which F5 scales" "nfs-server" \
     "$(awk '/^kind: Deployment$/ { k = 1 } k && /^  name: / { print $2; exit }' "$PROJECT_ROOT/deploy/kind/nfs/nfs-server.yaml")"
-  assert_eq "the NFS server's container is nfs-server, whose log F4 reads" "nfs-server" \
-    "$(awk '/^      containers:$/ { c = 1 } c && /^        - name: / { print $3; exit }' "$PROJECT_ROOT/deploy/kind/nfs/nfs-server.yaml")"
-}
-
-# --- Test 9: the Proving run records its lab run ---
-test_proving_run_record() {
-  echo "Test: the Proving run holds the record of its lab run"
-  local proving
-  proving="$(subsection '#### Proving run')"
-  assert_not_empty "the Proving run has a body" "$proving"
-  assert_not_contains "the Proving run does not say that no run is recorded" "$proving" \
-    'No lab run of this stack is recorded yet.'
-  assert_not_empty "a line of the Proving run starts with 'The run of 20YY-MM-DD'" \
-    "$(grep -E '^The run of 20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$proving" || true)"
-}
-
-# gate <recovered> <agents> <status> runs the function <recovered> with a
-# bound of one second against a stub `openstack` that reports lab-0 ACTIVE and
-# nova-compute up, and prints <agents> as the node's agent list and exits
-# <status>. Both probes write "ok". It prints the exit status of `recovered`.
-gate() {
-  bash -c '
-    eval "$1"
-    host=lab-node stub_agents=$2 stub_status=$3
-    openstack() {
-      case "$*" in
-        "server show"*) echo ACTIVE ;;
-        "compute service list"*) echo up ;;
-        "network agent list"*) printf "%s" "${stub_agents}"; return "${stub_status}" ;;
-      esac
-    }
-    probes_ok() { :; }
-    sleep() { :; }
-    recovered 1 >/dev/null
-    echo "$?"
-  ' _ "$@"
-}
-
-# --- Test 10: the gate needs alive agents ---
-# An empty agent list or a failed agent call says nothing about the node's
-# agents, so the gate stays shut on it as on a dead agent.
-test_gate_needs_alive_agents() {
-  echo "Test: the gate holds on alive agents of lab-0's node alone"
-  local helper
-  helper="$(awk '/^recovered\(\) \{$/ { f = 1 } f { print } f && /^}$/ { exit }' <<<"$FAULTS")"
-  assert_not_empty "the subsection defines recovered" "$helper"
-  assert_eq "two alive agents pass the gate" "0" "$(gate "$helper" $'True\nTrue\n' 0)"
-  assert_eq "an empty agent list fails the gate" "1" "$(gate "$helper" '' 0)"
-  assert_eq "a failed agent call fails the gate" "1" "$(gate "$helper" $'True\n' 1)"
-  assert_eq "a dead agent fails the gate" "1" "$(gate "$helper" $'True\nFalse\n' 0)"
-}
-
-# --- Test 11: the Lab NFS stack names its lab run ---
-test_nfs_stack_record() {
-  echo "Test: the Lab NFS stack links its lab run"
-  local nfs
-  nfs="$(subsection '### Lab NFS stack')"
-  assert_not_empty "the Lab NFS stack has a body" "$nfs"
-  assert_not_contains "the Lab NFS stack does not say that no run is recorded" "$nfs" \
-    'No lab run of this stack is recorded yet.'
-  assert_contains "the Lab NFS stack links the lab fault runs" "$nfs" '(#lab-fault-runs)'
-}
-
-# probes <helpers> <first log> <first status> <second log> <second status>
-# runs the function probes_ok of <helpers> against a stub `openstack` whose
-# console log prints <first log> and exits <first status> before the
-# 20-second sleep, and prints <second log> and exits <second status> after it.
-# It prints the exit status of probes_ok.
-probes() {
-  bash -c '
-    eval "$1"
-    stub_log=$2 stub_status=$3 second_log=$4 second_status=$5
-    openstack() { printf "%s" "${stub_log}"; return "${stub_status}"; }
-    sleep() { stub_log=${second_log} stub_status=${second_status}; }
-    probes_ok
-    echo "$?"
-  ' _ "$@"
-}
-
-# --- Test 12: the probes need a first console read ---
-# A first read that fails or prints nothing holds no probe line to compare
-# with, so the last "ok" line before a stall would count as new.
-test_probes_need_first_read() {
-  echo "Test: the probe check holds on new ok lines of both probes alone"
-  local helpers old stalled new
-  helpers="$(awk '/^(console_log|last_probe|probes_ok)\(\) \{$/ { f = 1 } f { print } f && /^}$/ { f = 0 }' <<<"$FAULTS")"
-  assert_contains "the subsection defines probes_ok" "$helpers" 'probes_ok() {'
-  old=$'lab-probe net 10:00:00 ok\nlab-probe disk 10:00:00 ok 1'
-  stalled="$old"$'\nlab-probe net 10:00:20 ok'
-  new="$stalled"$'\nlab-probe disk 10:00:20 ok 11'
-  assert_eq "new ok lines of both probes pass" "0" "$(probes "$helpers" "$old" 0 "$new" 0)"
-  assert_eq "a stalled disk probe fails" "1" "$(probes "$helpers" "$old" 0 "$stalled" 0)"
-  assert_eq "a failed first read fails" "1" "$(probes "$helpers" '' 1 "$stalled" 0)"
-  assert_eq "a failed first read that prints a log fails" "1" "$(probes "$helpers" "$old" 1 "$new" 0)"
-  assert_eq "an empty first read fails" "1" "$(probes "$helpers" '' 0 "$stalled" 0)"
-}
-
-# --- Test 13: the Proving run judges the delay against the run's baseline ---
-test_proving_run_baseline_rows() {
-  echo "Test: the Proving run's rows for steps 2 and 4 compare with the run's baseline"
-  local proving row2 row4
-  proving="$(subsection '#### Proving run')"
-  row2="$(grep -E '^\| 2 \|' <<<"$proving" || true)"
-  row4="$(grep -E '^\| 4 \|' <<<"$proving" || true)"
-  assert_not_empty "the Proving run's table has a row for step 2" "$row2"
-  assert_not_empty "the Proving run's table has a row for step 4" "$row4"
-  assert_contains "step 2 is the run's baseline" "$row2" "the run's baseline"
-  assert_contains "the delayed times are judged against step 2" "$row4" \
-    'each at least 0.2 s above the largest time of step 2'
-  assert_contains "the released times are judged against step 2" "$row4" \
-    'each less than 0.1 s above the largest time of step 2'
-  assert_not_contains "step 2 names no fixed 0.3 s" "$row2" '0.3 s'
-  assert_not_contains "step 4 names no fixed 0.3 s" "$row4" '0.3 s'
-  # The paragraph below the table restates row 4's distances, so it is read
-  # against the distances row 4 names.
-  local inj rel para
-  inj="$(sed -nE 's/.*each at least ([0-9.]+) s above the largest time of step 2.*/\1/p' <<<"$row4")"
-  rel="$(sed -nE 's/.*each less than ([0-9.]+) s above the largest time of step 2.*/\1/p' <<<"$row4")"
-  para="$(awk '/^Steps 2 and 4 name no absolute time/ { p = 1 } p && /^$/ { exit } p' <<<"$proving" | tr '\n' ' ')"
-  assert_not_empty "the Proving run explains the baseline below its table" "$para"
-  assert_contains "the paragraph names row 4's injected distance" "$para" "at least ${inj} s above it"
-  assert_contains "the paragraph names row 4's released distance" "$para" "less than ${rel} s above it"
-  # The delay is the latency of the run block's NetworkChaos.
-  local delay_ms room
-  delay_ms="$(sed -nE 's/^[[:space:]]*latency: ([0-9]+)ms$/\1/p' <<<"$proving" | head -n 1)"
-  assert_not_empty "the Proving run's NetworkChaos sets a latency" "$delay_ms"
-  assert_contains "the paragraph names the NetworkChaos latency" "$para" "delay of ${delay_ms} ms counts as injected"
-  room="$(awk -v ms="$delay_ms" -v d="$inj" 'BEGIN { printf "%g", ms / 1000 - d }')"
-  assert_contains "the paragraph ties both distances to the delay" "$para" \
-    "${inj} s is ${room} s below the delay, and ${rel} s is ${rel} s above no delay, which is the room for jitter of a request as slow as the largest time of step 2."
-  assert_contains "the room shrinks by step 2's spread under the delay" "$para" \
-    "the room is ${room} s less the spread of step 2's times under the delay, and ${rel} s plus that spread after the release."
-  assert_contains "the worked example adds both distances to 0.306 s" "$para" \
-    "With a largest baseline time of 0.306 s the two limits are $(awk -v d="$inj" 'BEGIN { printf "%g", 0.306 + d }') s and $(awk -v d="$rel" 'BEGIN { printf "%g", 0.306 + d }') s."
+  assert_contains "F5 scales deployment/nfs-server to 0 and back to 1" "$(cat "$LAB_CHAOS_SH")" \
+    'kubectl scale deployment/nfs-server -n "$NAMESPACE" --replicas=1'
 }
 
 test_position
-test_podchaos_only
-test_experiment_lines
-test_label_lines
-test_experiments_deleted
-test_scale_order
-test_no_host_network_testing
-test_label_sources
-test_proving_run_record
-test_gate_needs_alive_agents
-test_nfs_stack_record
-test_probes_need_first_read
+test_blocks_replaced
+test_records_kept
 test_proving_run_baseline_rows
+test_nfs_stack_record
+test_runner_section
+test_record_mode
+test_label_sources
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

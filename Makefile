@@ -1199,6 +1199,24 @@ chaos-random-draw chaos-random-up chaos-random-run chaos-random-report: chaos-ra
 lab-failover-preflight lab-failover-up lab-failover-run lab-failover-down: lab-failover-%:
 	hack/lab-failover.sh $*
 
+.PHONY: lab-chaos-preflight lab-chaos-proving lab-chaos-faults lab-chaos-random lab-chaos-cleanup lab-chaos-teardown-check lab-chaos-record
+# lab-chaos-preflight, -proving, -faults, -random, -cleanup, -teardown-check
+# and -record drive the chaos sessions of the metal-stack lab (#1395): the
+# proving run of Chaos Mesh, the fault runs F1 to F5 under the probe servers
+# lab-chaos-0 and lab-chaos-1, the random chaos run under the six-hour dizzy
+# soak, and record.md of the session under _output/lab-chaos/<run>/.
+# preflight only reads; every other subcommand but record needs the go-ahead
+# on the shared lab, and teardown-check ends the session. See
+# docs/reference/infrastructure/infrastructure-manifests.md#lab-chaos-runner.
+#
+# Variables:
+#   LAB_CHAOS_CONTEXT          kube context of the lab (required but by record).
+#   LAB_CHAOS_GO_AHEAD         the lab's shoot name (required but by preflight and record).
+#   LAB_CHAOS_RUN              run id (default: kept in _output/lab-chaos/current).
+#   LAB_CHAOS_RANDOM_DURATION  window of the random run (default 6h).
+lab-chaos-preflight lab-chaos-proving lab-chaos-faults lab-chaos-random lab-chaos-cleanup lab-chaos-teardown-check lab-chaos-record: lab-chaos-%:
+	hack/lab-chaos.sh $*
+
 .PHONY: refresh-operator-digests
 # refresh-operator-digests re-resolves the digest behind the self-built
 # operators' :latest images (keystone/c5c3/horizon), refreshes the
