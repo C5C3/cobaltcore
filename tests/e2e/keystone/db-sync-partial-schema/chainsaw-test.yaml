@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: the db-sync Job recovers the schema an interrupted first
+# keystone-manage db_sync left behind.
+#
+# MariaDB commits every DDL statement implicitly, so a connection lost inside
+# keystone's initial revision 27e647c0fad4 leaves its tables behind without an
+# alembic_version row. A plain db_sync then fails with MySQL error 1050 on
+# every attempt. The db-sync Job's pre-step
+# (operators/keystone/internal/controller/scripts/db_sync_reset.py) drops such
+# a rowless schema, and the db_sync of the same attempt rebuilds it.
+#
+# The suite seeds that state by hand instead of interrupting a real db_sync.
+# tests/e2e-chaos/controlplane-provisioning-mariadb-kill catches the defect
+# only when its kill lands inside the migration, and CI run 40347565280 passed
+# it on an operator without the pre-step. The seed holds three of the initial
+# revision's tables (with stand-in columns), an empty alembic_version, and the
+# <<keystone.domain.root>> project row the revision inserts. The MariaDB root
+# password reaches the mariadb client on stdin, never on a command line.
+#
+# Verifies:
+#   - the Keystone reaches Ready=True/AllReady on the seeded database
+#   - the db-sync Job succeeded on its first attempt, with no failed pod
+#   - the db-sync log carries the reset line that names the four tables
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-db-sync-partial-schema
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Seed the schema an interrupted first db_sync leaves ────────
+  # The leading DROP DATABASE makes a rerun start clean. The character set is
+  # the one the operator's Database CR asks for
+  # (internal/common/database/builders.go), so the mariadb-operator's
+  # CREATE DATABASE IF NOT EXISTS adopts the seeded schema unchanged. The root
+  # Secret comes from the live MariaDB CR, as in
+  # deploy/openbao/bootstrap/setup-database-tenant.sh. `kubectl` calls fail
+  # transiently under `parallel: 4`, so each attempt re-reads the password and
+  # runs the exec under `timeout`.
+  - name: seed-partial-schema
+    try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          SQL="DROP DATABASE IF EXISTS keystone_partial_schema; CREATE DATABASE keystone_partial_schema CHARACTER SET utf8 COLLATE utf8_general_ci; USE keystone_partial_schema; CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY); CREATE TABLE application_credential (internal_id INT NOT NULL PRIMARY KEY); CREATE TABLE access_rule (id INT NOT NULL PRIMARY KEY); CREATE TABLE project (id VARCHAR(64) NOT NULL PRIMARY KEY); INSERT INTO project (id) VALUES ('<<keystone.domain.root>>');"
+          for attempt in 1 2 3; do
+            ROOT_SECRET="$(kubectl get mariadb openstack-db -n openstack \
+              -o 'jsonpath={.spec.rootPasswordSecretKeyRef.name}')" || ROOT_SECRET=""
+            ROOT_KEY="$(kubectl get mariadb openstack-db -n openstack \
+              -o 'jsonpath={.spec.rootPasswordSecretKeyRef.key}')" || ROOT_KEY=""
+            PW=""
+            if [ -n "$ROOT_SECRET" ]; then
+              PW="$(kubectl get secret "$ROOT_SECRET" -n openstack \
+                -o "jsonpath={.data.${ROOT_KEY:-password}}" | base64 -d)" || PW=""
+            fi
+            if [ -n "$PW" ] && printf '%s' "$PW" | timeout 20 kubectl exec -i -n openstack openstack-db-0 -c mariadb -- \
+                sh -c 'export MYSQL_PWD; MYSQL_PWD="$(cat)"; exec mariadb -uroot -e "$1"' sh "$SQL"; then
+              echo "OK: seeded keystone_partial_schema"
+              exit 0
+            fi
+            [ -n "$PW" ] || echo "root password read attempt $attempt returned nothing"
+            echo "seed attempt $attempt failed"
+            sleep 4
+          done
+          echo "FAIL: could not seed keystone_partial_schema"
+          exit 1
+  # ── Step 2: Apply the Keystone CR ──────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 3: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-partial-schema
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Verify the first attempt dropped and rebuilt the schema ────
+  # A failed pod would mean the first attempt hit error 1050 and a later one
+  # recovered, so the Job must read succeeded 1 with no failure.
+  - name: verify-reset
+    try:
+    - script:
+        timeout: 1m
+        shell: bash
+        content: |
+          set -euo pipefail
+          JOB=keystone-partial-schema-db-sync
+          SUCCEEDED="$(kubectl get job "$JOB" -n openstack -o 'jsonpath={.status.succeeded}')"
+          FAILED="$(kubectl get job "$JOB" -n openstack -o 'jsonpath={.status.failed}')"
+          if [ "$SUCCEEDED" != "1" ] || { [ -n "$FAILED" ] && [ "$FAILED" != "0" ]; }; then
+            echo "FAIL: Job $JOB reads succeeded='$SUCCEEDED' failed='$FAILED'; its first attempt must recover the schema"
+            exit 1
+          fi
+          WANT='db-sync-reset: dropped 4 tables an interrupted first db_sync left (recorded revisions: none): access_rule, alembic_version, application_credential, project'
+          LOGS=""
+          for attempt in 1 2 3; do
+            LOGS="$(kubectl logs -n openstack "job/$JOB" 2>&1)" && break
+            echo "log read attempt $attempt failed"
+            sleep 4
+          done
+          if ! grep -qxF "$WANT" <<<"$LOGS"; then
+            echo "FAIL: the db-sync log lacks the line: $WANT"
+            head -20 <<<"$LOGS"
+            exit 1
+          fi
+          echo "OK: the first db-sync attempt dropped the seeded tables and rebuilt the schema"
+    catch:
+    - script:
+        content: |
+          kubectl get job keystone-partial-schema-db-sync -n $NAMESPACE -o yaml 2>&1 || true
+          kubectl logs -n $NAMESPACE job/keystone-partial-schema-db-sync --all-containers --tail=100 2>&1 || true
