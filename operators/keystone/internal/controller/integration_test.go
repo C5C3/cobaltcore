@@ -1611,9 +1611,8 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-db-sync"}, dbSyncJob)).
 		To(Succeed(), "standard db-sync Job should exist")
 	container := dbSyncJob.Spec.Template.Spec.Containers[0]
-	g.Expect(container.Command).To(Equal([]string{
-		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync",
-	}), "db-sync command should be standard db_sync without --expand/--migrate/--contract")
+	g.Expect(container.Command).To(Equal([]string{"/bin/sh", "-eu", "-c", dbSyncScript}),
+		"db-sync command should run the reset pre-step, then db_sync without --expand/--migrate/--contract")
 	g.Expect(container.Image).To(Equal(
 		fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag),
 	),

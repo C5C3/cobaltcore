@@ -23,6 +23,11 @@ mapping is:
 
 The ssl= kwarg is only passed when at least one ssl_* parameter was
 present so plaintext DSNs (TLS disabled) keep their pre-existing behavior.
+The user, password and database are percent-decoded the way SQLAlchemy
+decodes them.
+
+db_sync_reset.py repeats this URL and ssl-dict resolution in resolve_url
+and connect_kwargs; keep the two scripts in step.
 
 Environment inputs:
 
@@ -38,7 +43,7 @@ import configparser
 import glob
 import os
 import ssl
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 import pymysql
 
@@ -50,7 +55,7 @@ if not conn_url:
     conn_url = conf.get("database", "connection")
 
 url = urlparse(conn_url)
-db = url.path.lstrip("/")
+db = unquote(url.path.lstrip("/"))
 qs = parse_qs(url.query)
 charset = qs.get("charset", ["utf8"])[0]
 
@@ -70,8 +75,8 @@ if ssl_kwargs:
 connect_kwargs = dict(
     host=url.hostname,
     port=url.port or 3306,
-    user=url.username,
-    password=url.password,
+    user=None if url.username is None else unquote(url.username),
+    password=None if url.password is None else unquote(url.password),
     database=db,
     charset=charset,
 )

@@ -5,6 +5,7 @@
 package controller
 
 import (
+	_ "embed"
 	"fmt"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -15,6 +16,26 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
+
+// dbSyncResetScript is the db-sync Job's pre-step. It drops the schema an
+// interrupted first keystone-manage db_sync left behind: tables without the
+// alembic_version row of the revision that created them, none of which holds a
+// row. The db_sync that follows then rebuilds the schema instead of failing
+// with MySQL error 1050 until the Job's backoff limit. The script documents its
+// guard and its log lines.
+//
+//go:embed scripts/db_sync_reset.py
+var dbSyncResetScript string
+
+// dbSyncScript is the db-sync container's shell program, built the way
+// bootstrapScript is: it pipes dbSyncResetScript to python3 through a 'PY'
+// quoted heredoc, then execs keystone-manage db_sync. The container runs it
+// under sh -e, so a failing pre-step stops it before db_sync and the Job counts
+// a failed attempt.
+var dbSyncScript = `python3 - <<'PY'
+` + dbSyncResetScript + `PY
+exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync
+`
 
 // keystoneProvisionParams derives the shared MariaDB provisioning inputs from
 // the Keystone CR: the resource name and SQL username are the CR name, the
@@ -54,8 +75,8 @@ func keystoneJobPod(keystone *keystonev1alpha1.Keystone) job.PodSettings {
 
 // keystoneJobSetParams derives the shared migration-Job inputs from the Keystone
 // CR: the config mount, the DB-connection env override, the db-tls and per-domain
-// volumes, the Job pod settings, and the keystone-manage db_sync / schema-check
-// commands. The steady-state sync flow (database.ReconcileSyncJobs) and the
+// volumes, the Job pod settings, the db-sync script and the schema-check
+// command. The steady-state sync flow (database.ReconcileSyncJobs) and the
 // upgrade-phase builders (buildDBJob) both consume it, so every db_sync variant
 // runs the identical pod spec.
 func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) database.JobSetParams {
@@ -91,7 +112,9 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 		ExtraVolumes:      extraVolumes,
 		ExtraVolumeMounts: extraMounts,
 		Pod:               keystoneJobPod(keystone),
-		SyncCommand:       []string{"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync"},
+		// Drop the schema an interrupted first db_sync left, then run db_sync
+		// (scripts/db_sync_reset.py).
+		SyncCommand: []string{"/bin/sh", "-eu", "-c", dbSyncScript},
 		// Read-only schema verification via keystone-manage db_sync --check.
 		// Exit codes: 0 = up-to-date, 1..4 = needs expand/migrate/contract. This
 		// avoids parsing db_version output, which mixes Oslo log lines with
