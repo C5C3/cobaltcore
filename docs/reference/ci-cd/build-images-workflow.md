@@ -1116,6 +1116,14 @@ older than 24 hours: composite tags, SHA tags in all four shapes
 (`<sha>`, `<sha40>`, `sha-<sha40>`, `<release>-<sha40>`), run-scoped
 `e2e-<run_id>-*` tags, `dev`, and untagged leftovers.
 
+A version that carries the `e2e-<run_id>-*` tag of a workflow run that has not
+completed is kept, whatever its age. The Nix builds are reproducible, so a run
+whose sources did not change pushes the digest of an earlier run, and GHCR adds
+the new tag to that older version without changing its creation time. Judged by
+age alone, the version would be deleted while the run that tagged it still
+pulls it. The script reads the unfinished runs from the Actions API, which is
+why `cleanup-images.yaml` holds `actions: read`.
+
 The rule works per manifest, so the *current* main build is untouched: its
 composite and SHA tags sit on the same manifest as `29.0.0` and `2026.1`, and
 that release tag keeps the whole thing. Only once a later build moves `29.0.0`

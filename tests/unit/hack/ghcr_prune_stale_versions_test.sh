@@ -249,7 +249,7 @@ spec = importlib.util.spec_from_file_location("ghcr_prune", sys.argv[1])
 prune = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(prune)
 prune.request = lambda url, **kwargs: (404, {}, b"")
-sys.exit(prune.main(["--org", "demo-org", "--package", "demo", "--token", "t"] + sys.argv[2:]))
+sys.exit(prune.main(["--org", "demo-org", "--repo", "demo-org/demo", "--package", "demo", "--token", "t"] + sys.argv[2:]))
 PYEOF
 }
 
@@ -440,7 +440,7 @@ def request(url, token=None, method="GET", accept=None):
 prune.request = request
 prune.Registry._registry_token = lambda self, github_token: "registry-token"
 try:
-    sys.exit(prune.main(["--org", "demo-org", "--package", "demo", "--token", "t"]))
+    sys.exit(prune.main(["--org", "demo-org", "--repo", "demo-org/demo", "--package", "demo", "--token", "t"]))
 except urllib.error.HTTPError as exc:
     print(f"aborted on {exc.code}")
     sys.exit(1)
@@ -460,6 +460,121 @@ test_unreadable_kept_manifest_stops_the_sweep() {
 # --- Run all tests ---
 echo "=== ghcr-prune-stale-versions.py tests ==="
 echo ""
+# --- Test 14: a version an unfinished run tagged survives its age ---
+# The incident of PR #1566: the operator's Nix build is reproducible, so run
+# 40838695567 pushed the digest an earlier run had pushed weeks before and
+# added its e2e tag to that version. GHCR keeps the version's first created_at,
+# the nightly sweep judged it older than 24 hours, and deleted it while the run
+# still had a leg to pull it.
+write_shared_digest_fixture() {
+  cat > "$1" <<EOF
+{
+  "now": "2026-10-29T09:19:00Z",
+  "active_runs": [${2:-}],
+  "versions": [
+    {"id": 1, "name": "$(digest a)", "created_at": "2026-10-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["latest", "0.9.0"]}}},
+    {"id": 2, "name": "$(digest 7)", "created_at": "2026-10-02T00:00:00Z",
+     "metadata": {"container": {"tags": ["e2e-40838695567-cover", "e2e-40825783847-cover", "e2e-40602437947-cover"]}}}
+  ]
+}
+EOF
+}
+
+test_unfinished_run_keeps_its_version() {
+  echo "Test: a version whose e2e tag names an unfinished run is kept, whatever its age"
+  local fixture="$TMPDIR_BASE/shared.json" output
+  write_shared_digest_fixture "$fixture" '"40838695567"'
+
+  output=$(plan "$fixture" --only-tag-pattern '^e2e-' --own-run-id 1)
+  assert_eq "the version the unfinished run tagged is not deleted" "[]" "$(echo "$output" | jq -c '[.delete[].digest]')"
+  assert_eq "it is kept for that run alone" "[\"40838695567\"]" "$(echo "$output" | jq -c '[.in_use[] | select(.digest == "'"$(digest 7)"'") | .runs[]]')"
+  assert_contains "and the log says why" "$(plan_messages "$fixture" --only-tag-pattern '^e2e-' --own-run-id 1)" \
+    "keeping sha256:777777777777: unfinished run(s) 40838695567 tagged it"
+
+  output=$(plan "$fixture" --own-run-id 1)
+  assert_eq "a full sweep keeps it too" "[]" "$(echo "$output" | jq -c '[.delete[] | select(.digest == "'"$(digest 7)"'")]')"
+
+  write_shared_digest_fixture "$fixture" ""
+  output=$(plan "$fixture" --only-tag-pattern '^e2e-' --own-run-id 1)
+  assert_contains "once every run that tagged it has completed, it goes" \
+    "$(echo "$output" | jq -c '[.delete[].digest]')" "$(digest 7)"
+
+  write_shared_digest_fixture "$fixture" '"40838695567"'
+  output=$(plan "$fixture" --only-tag-pattern '^e2e-' --own-run-id 40838695567)
+  assert_contains "the run cleaning up after itself is not protected by its own tag" \
+    "$(echo "$output" | jq -c '[.delete[].digest]')" "$(digest 7)"
+}
+
+# The API path: request() lists two versions older than a day, one that runs
+# 555 and 666 tagged and one that only run 555 tagged, and answers the runs
+# listing with the comma-separated run ids of the first argument in progress.
+# It prints every DELETE and every runs request.
+run_against_runs_api() {
+  python3 - "$SCRIPT_UNDER_TEST" "$1" "${@:2}" <<'PYEOF'
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("ghcr_prune", sys.argv[1])
+prune = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(prune)
+in_progress = [{"id": int(i)} for i in sys.argv[2].split(",") if i]
+
+versions = [
+    {"id": 1, "name": "sha256:" + "a" * 64, "created_at": "2026-01-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["latest"]}}},
+    {"id": 2, "name": "sha256:" + "b" * 64, "created_at": "2026-01-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["e2e-555-cover", "e2e-666-cover"]}}},
+    {"id": 3, "name": "sha256:" + "c" * 64, "created_at": "2026-01-01T00:00:00Z",
+     "metadata": {"container": {"tags": ["e2e-555-dev"]}}},
+]
+
+
+def request(url, token=None, method="GET", accept=None):
+    if method == "DELETE":
+        print(f"DELETE {url}")
+        return 204, {}, b""
+    if "/actions/runs?" in url:
+        print(f"RUNS {url}")
+        runs = in_progress if "status=in_progress" in url else []
+        return 200, {}, json.dumps({"total_count": len(runs), "workflow_runs": runs}).encode()
+    if "/manifests/" in url:
+        return 200, {}, b"{}"
+    return 200, {}, json.dumps(versions).encode()
+
+
+prune.request = request
+prune.Registry._registry_token = lambda self, github_token: "registry-token"
+sys.exit(prune.main(["--org", "demo-org", "--repo", "demo-org/demo", "--package", "demo", "--token", "t"]
+                    + sys.argv[3:]))
+PYEOF
+}
+
+test_live_mode_asks_for_unfinished_runs() {
+  echo "Test: the API path lists the unfinished runs of the repository and keeps what they tagged"
+  local output
+  output=$(run_against_runs_api 555 --only-tag-pattern '^e2e-' --own-run-id 1 2>&1)
+  assert_contains "it lists the runs of the repository by status" "$output" \
+    "RUNS https://api.github.com/repos/demo-org/demo/actions/runs?status=in_progress&per_page=100&page=1"
+  assert_not_contains "and deletes nothing while run 555 is in progress" "$output" "DELETE"
+
+  output=$(run_against_runs_api "" --only-tag-pattern '^e2e-' --own-run-id 1 2>&1)
+  assert_contains "with no unfinished run the version is deleted" "$output" \
+    "DELETE https://api.github.com/orgs/demo-org/packages/container/demo/versions/2"
+
+  output=$(run_against_runs_api 555 --only-tag-pattern '^e2e-555-' --own-run-id 555 --min-age-hours 0 2>&1)
+  assert_contains "a run's own cleanup deletes the version only it tagged" "$output" \
+    "DELETE https://api.github.com/orgs/demo-org/packages/container/demo/versions/3"
+  assert_not_contains "and asks no runs listing for it" "$output" "RUNS "
+  assert_not_contains "and leaves the version another run tagged too alone" "$output" "versions/2"
+
+  local rc=0
+  output=$(env -u GITHUB_REPOSITORY python3 "$SCRIPT_UNDER_TEST" --org demo-org --package demo --token t 2>&1) || rc=$?
+  assert_eq "without --repo the API path refuses to start" "2" "$rc"
+  assert_contains "naming the option" "$output" "--repo is required (or set GITHUB_REPOSITORY)"
+}
+
 test_keeper_tag_protects_manifest_and_children
 echo ""
 test_superseded_build_is_deleted
@@ -485,6 +600,8 @@ echo ""
 test_libvirt_keeper_tag_keeps_the_pinned_build
 echo ""
 test_unreadable_kept_manifest_stops_the_sweep
+test_unfinished_run_keeps_its_version
+test_live_mode_asks_for_unfinished_runs
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

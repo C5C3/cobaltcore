@@ -2408,7 +2408,10 @@ keystone-pressure, tempest]`
 The job is `continue-on-error`: pruning is housekeeping, and a package whose only
 tagged version is the run-scoped one cannot be pruned at all (GHCR refuses to
 delete a package's last version). The nightly `cleanup-e2e-stale-tags` job in
-`cleanup-images.yaml` is the safety net for anything a cancelled run leaks.
+`cleanup-images.yaml` is the safety net for anything a cancelled run leaks. It
+keeps a version that a run still in progress tagged, since a reproducible build
+can add a new run's tag to a version older than 24 hours
+([Retention](build-images-workflow.md#retention)).
 
 Timeout: 15 minutes.
 
