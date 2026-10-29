@@ -25,6 +25,7 @@
 # the dying endpoint for a few requests before it removes it. The budget is an
 # estimate of that window: no run has measured it yet.
 # Chaos matrix: horizon self pod-kill
+# Chaos random: horizon-dashboard-pod-kill
 # Chaos budget: failures=20 recovery=60s
 # Chaos budget measured: 2026-10-15, estimate, failures 10, recovery 30 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

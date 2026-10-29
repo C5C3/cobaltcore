@@ -57,6 +57,7 @@
 # same way.
 # Chaos matrix: cinder backend scale-to-zero
 # Chaos matrix: nfs self scale-to-zero
+# Chaos random: none (scripted fault, no Chaos Mesh kind)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

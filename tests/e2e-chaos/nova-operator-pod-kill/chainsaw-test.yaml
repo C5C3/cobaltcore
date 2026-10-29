@@ -30,6 +30,7 @@
 # The operator is on none of their request paths, so the budget is zero and a
 # failed record is a defect to find.
 # Chaos matrix: nova operator pod-kill
+# Chaos random: nova-operator-pod-kill
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-15, estimate, failures 0, recovery 0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

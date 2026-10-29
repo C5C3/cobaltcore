@@ -14,6 +14,7 @@
 # runs measured.
 # Chaos matrix: keystone database pod-kill
 # Chaos matrix: mariadb self pod-kill
+# Chaos random: mariadb-pod-kill
 # Chaos budget: failures=36 recovery=50s
 # Chaos budget measured: 2026-10-14, kind, failures 13/18/13, recovery 19/20/19 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

@@ -595,73 +595,73 @@ these lists fails the generator.
 | hypervisor-operator | — | — | — | — | — | — | — |
 | kvm-node-agent | — | — | — | — | — | — | — |
 
-| Suite | Scenario ID | Matrix | Budget |
-| --- | --- | --- | --- |
-| [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone/self` | failures=0 recovery=30s |
-| [barbican-keystone-outage](#barbican-keystone-outage) | — | `barbican/keystone` | failures=400 recovery=150s |
-| [barbican-mariadb-outage](#barbican-mariadb-outage) | — | `barbican/database`, `mariadb/self` | failures=40 recovery=90s |
-| [barbican-openbao-outage](#barbican-openbao-outage) | — | `barbican/backend`, `openbao/self` | — |
-| [barbican-operator-pod-kill](#barbican-operator-pod-kill) | — | `barbican/operator` | failures=0 recovery=0s |
-| [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) | — | `controlplane/operator` | — |
-| [cert-manager-outage](#cert-manager-outage) | — | `cert-manager/self` | failures=0 recovery=0s |
-| [cinder-broker-outage](#cinder-broker-outage) | — | `cinder/broker`, `rabbitmq/self` | — |
-| [cinder-broker-pod-kill](#cinder-broker-pod-kill) | — | `cinder/broker`, `rabbitmq/self` | failures=20 recovery=210s |
-| [cinder-keystone-outage](#cinder-keystone-outage) | — | `cinder/keystone` | failures=400 recovery=150s |
-| [cinder-mariadb-outage](#cinder-mariadb-outage) | — | `cinder/database`, `mariadb/self` | failures=40 recovery=90s |
-| [cinder-nfs-outage](#cinder-nfs-outage) | — | `cinder/backend`, `nfs/self` | — |
-| [cinder-operator-pod-kill](#cinder-operator-pod-kill) | — | `cinder/operator` | failures=0 recovery=0s |
-| [cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) | — | `cinder/broker`, `rabbitmq/self` | failures=10 recovery=40s |
-| [cinder-upgrade-db-partition](#cinder-upgrade-db-partition) | — | `cinder/database` | failures=0 recovery=30s |
-| [cinder-volume-pod-kill](#cinder-volume-pod-kill) | — | `cinder/self` | failures=40 recovery=210s |
-| [controlplane-deletion-korc-outage](#controlplane-deletion-korc-outage) | — | `controlplane/backend`, `k-orc/self` | — |
-| [controlplane-keystone-degraded](#controlplane-keystone-degraded) | — | `controlplane/keystone` | failures=214 recovery=70s |
-| [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) | — | `controlplane/database`, `keystone/database`, `mariadb/self` | failures=0 recovery=0s |
-| [cronjob-rotation-failure](#cronjob-rotation-failure) | SC-CHAOS-005 | `keystone/self` | failures=0 recovery=0s |
-| [deletion-stuck-finalizer](#deletion-stuck-finalizer) | SC-CHAOS-010 | `keystone/database`, `mariadb/operator` | — |
-| [envoy-gateway-outage](#envoy-gateway-outage) | — | `envoy-gateway/operator` | failures=0 recovery=0s |
-| [envoy-proxy-pod-kill](#envoy-proxy-pod-kill) | — | `envoy-gateway/self` | failures=20 recovery=30s |
-| [eso-down](#eso-down) | — | `external-secrets/self` | failures=0 recovery=0s |
-| [eso-pod-kill](#eso-pod-kill) | — | `external-secrets/self` | failures=0 recovery=0s |
-| [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) | — | `keystone/operator` | failures=0 recovery=0s |
-| [glance-garage-outage](#glance-garage-outage) | — | `glance/backend`, `garage/self` | — |
-| [glance-keystone-outage](#glance-keystone-outage) | — | `glance/keystone` | failures=400 recovery=150s |
-| [glance-mariadb-outage](#glance-mariadb-outage) | — | `glance/database`, `mariadb/self` | failures=40 recovery=90s |
-| [glance-operator-pod-kill](#glance-operator-pod-kill) | — | `glance/operator` | failures=0 recovery=0s |
-| [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) | — | `horizon/self` | failures=20 recovery=60s |
-| [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) | — | `horizon/cache`, `memcached/self` | failures=0 recovery=0s |
-| [horizon-operator-pod-kill](#horizon-operator-pod-kill) | — | `horizon/operator` | failures=0 recovery=0s |
-| [keystone-federation](#keystone-federation) | — | `keystone/self`, `keystone/backend` | — |
-| [keystoneuser-rotation-keystone-outage](#keystoneuser-rotation-keystone-outage) | — | `controlplane/keystone`, `k-orc/keystone` | failures=410 recovery=70s |
-| [korc-network-partition](#korc-network-partition) | — | `k-orc/keystone` | failures=0 recovery=0s |
-| [korc-provisioning-outage](#korc-provisioning-outage) | — | `controlplane/backend`, `k-orc/self` | failures=0 recovery=0s |
-| [mariadb-network-latency](#mariadb-network-latency) | SC-CHAOS-007 | `keystone/database` | failures=0 recovery=30s |
-| [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone/database`, `mariadb/self` | failures=12 recovery=30s |
-| [mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) | — | `keystone/database`, `mariadb/operator`, `mariadb/self` | failures=156 recovery=70s |
-| [mariadb-pod-kill](#mariadb-pod-kill) | SC-CHAOS-001 | `keystone/database`, `mariadb/self` | failures=36 recovery=50s |
-| [memcached-network-partition](#memcached-network-partition) | — | `keystone/cache`, `memcached/self` | failures=2 recovery=30s |
-| [memcached-pod-kill](#memcached-pod-kill) | SC-CHAOS-002 | `keystone/cache`, `memcached/self` | failures=0 recovery=0s |
-| [neutron-broker-outage](#neutron-broker-outage) | — | `neutron/broker`, `rabbitmq/self` | — |
-| [neutron-keystone-outage](#neutron-keystone-outage) | — | `neutron/keystone` | failures=400 recovery=150s |
-| [neutron-mariadb-outage](#neutron-mariadb-outage) | — | `neutron/database`, `mariadb/self` | — |
-| [neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) | — | `neutron/self` | failures=0 recovery=0s |
-| [neutron-operator-pod-kill](#neutron-operator-pod-kill) | — | `neutron/operator` | failures=0 recovery=0s |
-| [nova-broker-outage](#nova-broker-outage) | — | `nova/broker`, `rabbitmq/self` | — |
-| [nova-keystone-outage](#nova-keystone-outage) | — | `nova/keystone` | failures=500 recovery=180s |
-| [nova-mariadb-outage](#nova-mariadb-outage) | — | `nova/database`, `mariadb/self` | — |
-| [nova-operator-pod-kill](#nova-operator-pod-kill) | — | `nova/operator` | failures=0 recovery=0s |
-| [nova-placement-outage](#nova-placement-outage) | — | `nova/backend` | failures=0 recovery=0s |
-| [novacompute-drain-compute-kill](#novacompute-drain-compute-kill) | — | `nova/self` | failures=0 recovery=0s |
-| [openbao-pod-kill](#openbao-pod-kill) | SC-CHAOS-003 | `keystone/backend`, `openbao/self` | failures=0 recovery=0s |
-| [openbao-sealed](#openbao-sealed) | — | `keystone/backend`, `openbao/self` | failures=0 recovery=0s |
-| [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `external-secrets/backend`, `openbao/self` | failures=0 recovery=0s |
-| [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone/operator` | failures=0 recovery=0s |
-| [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone/operator` | failures=0 recovery=0s |
-| [ovn-operator-pod-kill](#ovn-operator-pod-kill) | — | `ovn/operator` | failures=0 recovery=0s |
-| [ovn-southbound-outage](#ovn-southbound-outage) | — | `ovn/self` | — |
-| [placement-keystone-outage](#placement-keystone-outage) | — | `placement/keystone` | failures=400 recovery=150s |
-| [placement-mariadb-outage](#placement-mariadb-outage) | — | `placement/database`, `mariadb/self` | failures=40 recovery=90s |
-| [placement-operator-pod-kill](#placement-operator-pod-kill) | — | `placement/operator` | failures=0 recovery=0s |
-| [rabbitmq-operator-cascading-failure](#rabbitmq-operator-cascading-failure) | — | `controlplane/broker`, `rabbitmq/operator`, `rabbitmq/self` | failures=0 recovery=30s |
+| Suite | Scenario ID | Matrix | Budget | Random |
+| --- | --- | --- | --- | --- |
+| [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone/self` | failures=0 recovery=30s | `keystone-api-pod-kill` |
+| [barbican-keystone-outage](#barbican-keystone-outage) | — | `barbican/keystone` | failures=400 recovery=150s | `keystone-api-pod-failure` |
+| [barbican-mariadb-outage](#barbican-mariadb-outage) | — | `barbican/database`, `mariadb/self` | failures=40 recovery=90s | `barbican-mariadb-partition` |
+| [barbican-openbao-outage](#barbican-openbao-outage) | — | `barbican/backend`, `openbao/self` | — | `barbican-openbao-partition` |
+| [barbican-operator-pod-kill](#barbican-operator-pod-kill) | — | `barbican/operator` | failures=0 recovery=0s | `barbican-operator-pod-kill` |
+| [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) | — | `controlplane/operator` | — | `c5c3-operator-pod-kill` |
+| [cert-manager-outage](#cert-manager-outage) | — | `cert-manager/self` | failures=0 recovery=0s | `cert-manager-pod-failure` |
+| [cinder-broker-outage](#cinder-broker-outage) | — | `cinder/broker`, `rabbitmq/self` | — | `cinder-rabbitmq-partition` |
+| [cinder-broker-pod-kill](#cinder-broker-pod-kill) | — | `cinder/broker`, `rabbitmq/self` | failures=20 recovery=210s | `rabbitmq-pod-kill` |
+| [cinder-keystone-outage](#cinder-keystone-outage) | — | `cinder/keystone` | failures=400 recovery=150s | `keystone-api-pod-failure` |
+| [cinder-mariadb-outage](#cinder-mariadb-outage) | — | `cinder/database`, `mariadb/self` | failures=40 recovery=90s | `cinder-mariadb-partition` |
+| [cinder-nfs-outage](#cinder-nfs-outage) | — | `cinder/backend`, `nfs/self` | — | none |
+| [cinder-operator-pod-kill](#cinder-operator-pod-kill) | — | `cinder/operator` | failures=0 recovery=0s | `cinder-operator-pod-kill` |
+| [cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) | — | `cinder/broker`, `rabbitmq/self` | failures=10 recovery=40s | `rabbitmq-pod-kill` |
+| [cinder-upgrade-db-partition](#cinder-upgrade-db-partition) | — | `cinder/database` | failures=0 recovery=30s | none |
+| [cinder-volume-pod-kill](#cinder-volume-pod-kill) | — | `cinder/self` | failures=40 recovery=210s | `cinder-volume-pod-kill` |
+| [controlplane-deletion-korc-outage](#controlplane-deletion-korc-outage) | — | `controlplane/backend`, `k-orc/self` | — | `korc-pod-failure` |
+| [controlplane-keystone-degraded](#controlplane-keystone-degraded) | — | `controlplane/keystone` | failures=214 recovery=70s | `keystone-api-pod-failure` |
+| [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) | — | `controlplane/database`, `keystone/database`, `mariadb/self` | failures=0 recovery=0s | `mariadb-pod-kill` |
+| [cronjob-rotation-failure](#cronjob-rotation-failure) | SC-CHAOS-005 | `keystone/self` | failures=0 recovery=0s | none |
+| [deletion-stuck-finalizer](#deletion-stuck-finalizer) | SC-CHAOS-010 | `keystone/database`, `mariadb/operator` | — | none |
+| [envoy-gateway-outage](#envoy-gateway-outage) | — | `envoy-gateway/operator` | failures=0 recovery=0s | `envoy-gateway-pod-failure` |
+| [envoy-proxy-pod-kill](#envoy-proxy-pod-kill) | — | `envoy-gateway/self` | failures=20 recovery=30s | `envoy-proxy-pod-kill` |
+| [eso-down](#eso-down) | — | `external-secrets/self` | failures=0 recovery=0s | none |
+| [eso-pod-kill](#eso-pod-kill) | — | `external-secrets/self` | failures=0 recovery=0s | `eso-pod-kill` |
+| [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) | — | `keystone/operator` | failures=0 recovery=0s | `keystone-operator-pod-failure` |
+| [glance-garage-outage](#glance-garage-outage) | — | `glance/backend`, `garage/self` | — | `glance-garage-partition` |
+| [glance-keystone-outage](#glance-keystone-outage) | — | `glance/keystone` | failures=400 recovery=150s | `keystone-api-pod-failure` |
+| [glance-mariadb-outage](#glance-mariadb-outage) | — | `glance/database`, `mariadb/self` | failures=40 recovery=90s | `glance-mariadb-partition` |
+| [glance-operator-pod-kill](#glance-operator-pod-kill) | — | `glance/operator` | failures=0 recovery=0s | `glance-operator-pod-kill` |
+| [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) | — | `horizon/self` | failures=20 recovery=60s | `horizon-dashboard-pod-kill` |
+| [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) | — | `horizon/cache`, `memcached/self` | failures=0 recovery=0s | `memcached-pod-kill` |
+| [horizon-operator-pod-kill](#horizon-operator-pod-kill) | — | `horizon/operator` | failures=0 recovery=0s | `horizon-operator-pod-kill` |
+| [keystone-federation](#keystone-federation) | — | `keystone/self`, `keystone/backend` | — | none |
+| [keystoneuser-rotation-keystone-outage](#keystoneuser-rotation-keystone-outage) | — | `controlplane/keystone`, `k-orc/keystone` | failures=410 recovery=70s | `keystone-api-pod-failure` |
+| [korc-network-partition](#korc-network-partition) | — | `k-orc/keystone` | failures=0 recovery=0s | `korc-keystone-partition` |
+| [korc-provisioning-outage](#korc-provisioning-outage) | — | `controlplane/backend`, `k-orc/self` | failures=0 recovery=0s | `korc-pod-failure` |
+| [mariadb-network-latency](#mariadb-network-latency) | SC-CHAOS-007 | `keystone/database` | failures=0 recovery=30s | `keystone-mariadb-delay` |
+| [mariadb-network-partition](#mariadb-network-partition) | SC-CHAOS-006 | `keystone/database`, `mariadb/self` | failures=12 recovery=30s | `keystone-mariadb-partition` |
+| [mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) | — | `keystone/database`, `mariadb/operator`, `mariadb/self` | failures=156 recovery=70s | `mariadb-pod-failure`, `mariadb-operator-pod-kill` |
+| [mariadb-pod-kill](#mariadb-pod-kill) | SC-CHAOS-001 | `keystone/database`, `mariadb/self` | failures=36 recovery=50s | `mariadb-pod-kill` |
+| [memcached-network-partition](#memcached-network-partition) | — | `keystone/cache`, `memcached/self` | failures=2 recovery=30s | `keystone-memcached-partition` |
+| [memcached-pod-kill](#memcached-pod-kill) | SC-CHAOS-002 | `keystone/cache`, `memcached/self` | failures=0 recovery=0s | `memcached-pod-kill` |
+| [neutron-broker-outage](#neutron-broker-outage) | — | `neutron/broker`, `rabbitmq/self` | — | `neutron-rabbitmq-partition` |
+| [neutron-keystone-outage](#neutron-keystone-outage) | — | `neutron/keystone` | failures=400 recovery=150s | `keystone-api-pod-failure` |
+| [neutron-mariadb-outage](#neutron-mariadb-outage) | — | `neutron/database`, `mariadb/self` | — | `neutron-mariadb-partition` |
+| [neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) | — | `neutron/self` | failures=0 recovery=0s | `neutron-metadata-agent-pod-kill` |
+| [neutron-operator-pod-kill](#neutron-operator-pod-kill) | — | `neutron/operator` | failures=0 recovery=0s | `neutron-operator-pod-kill` |
+| [nova-broker-outage](#nova-broker-outage) | — | `nova/broker`, `rabbitmq/self` | — | `nova-rabbitmq-partition` |
+| [nova-keystone-outage](#nova-keystone-outage) | — | `nova/keystone` | failures=500 recovery=180s | `keystone-api-pod-failure` |
+| [nova-mariadb-outage](#nova-mariadb-outage) | — | `nova/database`, `mariadb/self` | — | `nova-mariadb-partition` |
+| [nova-operator-pod-kill](#nova-operator-pod-kill) | — | `nova/operator` | failures=0 recovery=0s | `nova-operator-pod-kill` |
+| [nova-placement-outage](#nova-placement-outage) | — | `nova/backend` | failures=0 recovery=0s | `nova-placement-partition` |
+| [novacompute-drain-compute-kill](#novacompute-drain-compute-kill) | — | `nova/self` | failures=0 recovery=0s | `nova-fake-compute-pod-kill`, `nova-compute-pod-kill` |
+| [openbao-pod-kill](#openbao-pod-kill) | SC-CHAOS-003 | `keystone/backend`, `openbao/self` | failures=0 recovery=0s | none |
+| [openbao-sealed](#openbao-sealed) | — | `keystone/backend`, `openbao/self` | failures=0 recovery=0s | none |
+| [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `external-secrets/backend`, `openbao/self` | failures=0 recovery=0s | none |
+| [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone/operator` | failures=0 recovery=0s | `keystone-operator-pod-kill` |
+| [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone/operator` | failures=0 recovery=0s | `keystone-operator-pod-kill` |
+| [ovn-operator-pod-kill](#ovn-operator-pod-kill) | — | `ovn/operator` | failures=0 recovery=0s | `ovn-operator-pod-kill` |
+| [ovn-southbound-outage](#ovn-southbound-outage) | — | `ovn/self` | — | `ovn-southbound-pod-failure` |
+| [placement-keystone-outage](#placement-keystone-outage) | — | `placement/keystone` | failures=400 recovery=150s | `keystone-api-pod-failure` |
+| [placement-mariadb-outage](#placement-mariadb-outage) | — | `placement/database`, `mariadb/self` | failures=40 recovery=90s | `placement-mariadb-partition` |
+| [placement-operator-pod-kill](#placement-operator-pod-kill) | — | `placement/operator` | failures=0 recovery=0s | `placement-operator-pod-kill` |
+| [rabbitmq-operator-cascading-failure](#rabbitmq-operator-cascading-failure) | — | `controlplane/broker`, `rabbitmq/operator`, `rabbitmq/self` | failures=0 recovery=30s | `rabbitmq-pod-failure`, `rabbitmq-operator-pod-kill` |
 
 <!-- END chaos-matrix -->
 

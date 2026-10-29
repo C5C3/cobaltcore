@@ -39,6 +39,7 @@
 # fails once Barbican needs a token it has not cached. The budget is an
 # estimate of that window: no run has measured it yet.
 # Chaos matrix: barbican keystone pod-failure
+# Chaos random: keystone-api-pod-failure
 # Chaos budget: failures=400 recovery=150s
 # Chaos budget measured: 2026-10-15, estimate, failures 200, recovery 120 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

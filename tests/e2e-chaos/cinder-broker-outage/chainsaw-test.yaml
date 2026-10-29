@@ -31,6 +31,7 @@
 # and doing that to the shared one would take the rest of the leg with it.
 # Chaos matrix: cinder broker partition
 # Chaos matrix: rabbitmq self partition
+# Chaos random: cinder-rabbitmq-partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

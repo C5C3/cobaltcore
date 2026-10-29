@@ -29,6 +29,7 @@
 # Chaos scenario: SC-CHAOS-010
 # Chaos matrix: keystone database scale-to-zero
 # Chaos matrix: mariadb operator scale-to-zero
+# Chaos random: none (scripted fault, no Chaos Mesh kind)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

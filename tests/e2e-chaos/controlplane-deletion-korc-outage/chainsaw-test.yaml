@@ -39,6 +39,7 @@
 # Chaos workload: none (the ControlPlane under test is being deleted)
 # Chaos matrix: controlplane backend pod-failure
 # Chaos matrix: k-orc self pod-failure
+# Chaos random: korc-pod-failure
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

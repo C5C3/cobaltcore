@@ -57,6 +57,7 @@
 # seconds. The recovered Job deletes s-fail-warm and s-fail-cold before the
 # workload starts, so the server check finds no ERROR build of the suite's own.
 # Chaos matrix: nova backend partition
+# Chaos random: nova-placement-partition
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-14, kind, failures 0/0, recovery 0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

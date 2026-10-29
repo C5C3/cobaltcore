@@ -15,16 +15,23 @@
 #      suite included, and one column per role. A cell holds the entries
 #      "[<suite>](#<suite>) (<kind>)", in suite order and joined by <br>,
 #      or "—";
-#   2. the suite table "| Suite | Scenario ID | Matrix | Budget |", one row per
-#      suite in name order: the suite, its scenario or "—", its
-#      <component>/<role> pairs in header order, and its budget
-#      "failures=<N> recovery=<S>s" or "—".
+#   2. the suite table "| Suite | Scenario ID | Matrix | Budget | Random |",
+#      one row per suite in name order: the suite, its scenario or "—", its
+#      <component>/<role> pairs in header order, its budget
+#      "failures=<N> recovery=<S>s" or "—", and the entries of the random
+#      chaos catalogue it names, joined by ", ", "none", or "—" without a
+#      random line.
 #
 # Header lines read:
 #   # Chaos matrix: <component> <role> <kind>    one or more per suite
 #   # Chaos scenario: SC-CHAOS-<NNN>              at most one, unique
 #   # Chaos budget: failures=<N> recovery=<S>s    tests/e2e-chaos/lib/workload.sh
 #                                                 validates it
+#   # Chaos random: <entry>                       one per entry of
+#   # Chaos random: none (<reason>)               tests/chaos-random/catalogue.yaml,
+#                                                 or exactly one none line;
+#                                                 tests/unit/ci/chaos_random_catalogue_test.sh
+#                                                 checks the entries
 #
 # The vocabulary is closed:
 #   components  keystone horizon glance placement barbican neutron ovn cinder
@@ -38,8 +45,9 @@
 # Before it writes anything it fails, naming <file>:<line> and the line where
 # one exists, when no suite exists, a marker is missing, doubled or out of
 # order, a suite has no matrix line, a matrix line has other than three fields
-# or a value outside the vocabulary, or a suite has two scenario lines, a
-# scenario other than SC-CHAOS-NNN, or the scenario of another suite.
+# or a value outside the vocabulary, a suite has two scenario lines, a
+# scenario other than SC-CHAOS-NNN, or the scenario of another suite, or a
+# random none line stands beside another random line.
 #
 # Usage:
 #   hack/gen-chaos-matrix.sh [--check]
@@ -203,6 +211,18 @@ index($0, "# Chaos scenario:") == 1 {
 /^# Chaos budget: failures=[0-9]+ recovery=[0-9]+s$/ {
   budget[suite] = substr($0, length("# Chaos budget: ") + 1)
 }
+index($0, "# Chaos random:") == 1 {
+  entry = substr($0, length("# Chaos random:") + 1)
+  gsub(/^[ \t]+|[ \t]+$/, "", entry)
+  is_none = (entry ~ /^none( |$)/)
+  if (is_none && (suite in random_none)) { problem(at(FNR, $0) ": a second \"# Chaos random: none\" line"); next }
+  if (is_none && random_entries[suite] > 0) { problem(at(FNR, $0) ": a \"none\" line beside an entry line"); next }
+  if (!is_none && (suite in random_none)) { problem(at(FNR, $0) ": an entry line beside a \"none\" line"); next }
+  if (is_none) { random_none[suite] = 1; next }
+  random_entries[suite]++
+  random[suite] = random[suite] (random[suite] == "" ? "" : ", ") "`" entry "`"
+  next
+}
 END {
   close_suite()
   if (failed) exit 1
@@ -221,14 +241,15 @@ END {
     print line
   }
   print ""
-  print "| Suite | Scenario ID | Matrix | Budget |"
-  print "| --- | --- | --- | --- |"
+  print "| Suite | Scenario ID | Matrix | Budget | Random |"
+  print "| --- | --- | --- | --- | --- |"
   for (i = 1; i <= nsuites; i++) {
     s = suites[i]
     n = split(pairs[s], pr, " ")
     m = ""
     for (j = 1; j <= n; j++) m = m (m == "" ? "" : ", ") "`" pr[j] "`"
-    print "| [" s "](#" s ") | " (s in scenario ? scenario[s] : "—") " | " m " | " (s in budget ? budget[s] : "—") " |"
+    r = (s in random_none) ? "none" : (s in random ? random[s] : "—")
+    print "| [" s "](#" s ") | " (s in scenario ? scenario[s] : "—") " | " m " | " (s in budget ? budget[s] : "—") " | " r " |"
   }
   print ""
 }

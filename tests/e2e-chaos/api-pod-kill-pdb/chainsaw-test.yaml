@@ -20,6 +20,7 @@
 # against keystone-chaos-api through the fault. The budget is what three kind
 # runs measured.
 # Chaos matrix: keystone self pod-kill
+# Chaos random: keystone-api-pod-kill
 # Chaos budget: failures=0 recovery=30s
 # Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

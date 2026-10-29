@@ -42,6 +42,7 @@
 # against cp-korc-part-keystone through the fault. Its own traffic is not
 # partitioned, so the budget is zero.
 # Chaos matrix: k-orc keystone partition
+# Chaos random: korc-keystone-partition
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-17, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

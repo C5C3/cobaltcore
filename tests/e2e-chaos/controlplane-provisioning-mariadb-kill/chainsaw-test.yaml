@@ -50,6 +50,7 @@
 # Chaos matrix: controlplane database pod-kill
 # Chaos matrix: keystone database pod-kill
 # Chaos matrix: mariadb self pod-kill
+# Chaos random: mariadb-pod-kill
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-25, estimate, failures 0, recovery 0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

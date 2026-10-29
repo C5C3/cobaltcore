@@ -28,6 +28,7 @@
 # fails.
 # Chaos matrix: nova database partition
 # Chaos matrix: mariadb self partition
+# Chaos random: nova-mariadb-partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

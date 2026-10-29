@@ -30,6 +30,7 @@
 # asks it for a token as the bootstrap admin before touching the Barbican API.
 # Chaos matrix: barbican backend partition
 # Chaos matrix: openbao self partition
+# Chaos random: barbican-openbao-partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

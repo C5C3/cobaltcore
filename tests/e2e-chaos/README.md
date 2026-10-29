@@ -108,6 +108,15 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `make gen-chaos-matrix` after changing one: `hack/gen-chaos-matrix.sh`
   generates the component x role matrix and the suite table of the chaos
   page from them, and `make verify-chaos-matrix` fails on a stale page.
+- **Random lines:** every suite header names the entries of
+  `tests/chaos-random/catalogue.yaml` its faults are, one
+  `# Chaos random: <entry>` line each beside the matrix lines, or carries
+  exactly one `# Chaos random: none (<reason>)` line. A new suite lands its
+  entry, adding one to the catalogue for a fault no entry has, or its `none`
+  line in the same change; `tests/unit/ci/chaos_random_catalogue_test.sh`
+  fails on a suite without one and on an entry no suite names. The random
+  runs of `hack/chaos-random.sh` draw from the catalogue (the chaos page's
+  Random runs section).
 
 ## Shared helpers
 

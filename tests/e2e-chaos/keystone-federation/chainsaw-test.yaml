@@ -19,6 +19,7 @@
 # the pod-kill suites, adapted to an in-place container restart).
 # Chaos matrix: keystone self container-kill
 # Chaos matrix: keystone backend pod-failure
+# Chaos random: none (needs the federation IdP the random plane does not configure)
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

@@ -51,6 +51,7 @@
 # token issue took 12 s.
 # Chaos matrix: keystone cache partition
 # Chaos matrix: memcached self partition
+# Chaos random: keystone-memcached-partition
 # Chaos budget: failures=2 recovery=30s
 # Chaos budget measured: 2026-10-28, kind, failures 0/1/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

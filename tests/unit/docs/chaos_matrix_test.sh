@@ -9,15 +9,18 @@
 # On a fixture tree (CHAOS_SUITES_DIR, CHAOS_PAGE):
 #   - the matrix has one row per component in vocabulary order, empty rows
 #     included, a cell joins its suites with <br> in suite order, and the
-#     suite table carries the scenario, the component/role pairs and the
-#     budget; a second run changes nothing and --check passes;
+#     suite table carries the scenario, the component/role pairs, the
+#     budget and the random entries (joined by ", ", "none", or "—" without
+#     a random line); a second run changes nothing and --check passes;
 #   - --check on a changed header prints the diff -u and fails naming the
 #     stale page, which it leaves untouched;
 #   - a suite without a matrix line, a matrix line with two fields, an
 #     unknown component, role or kind, two scenario lines, SC-CHAOS-9, two
-#     suites sharing an ID, a missing BEGIN or END marker, END before BEGIN and
-#     an empty suites directory each fail with their FAIL line, naming
-#     <file>:<line> where there is one, and leave the page byte-identical.
+#     suites sharing an ID, a random none line beside an entry line, an entry
+#     line beside a none line, a second none line, a missing BEGIN or END
+#     marker, END before BEGIN and an empty suites directory each fail with
+#     their FAIL line, naming <file>:<line> where there is one, and leave the
+#     page byte-identical.
 #
 # check_scenarios compares the `# Chaos scenario:` line of every suite header
 # with the first `**Scenario:**` line of the suite's `### <suite>` section: a
@@ -25,8 +28,9 @@
 # IDs, are reported.
 #
 # On the repository: --check passes, the scenarios agree, no bare SC-CHAOS
-# line is left, every suite carries a matrix line, and the matrix has its 23
-# rows with flux, hypervisor-operator and kvm-node-agent empty.
+# line is left, every suite carries a matrix line, the suite table fills the
+# Random column of every suite, and the matrix has its 23 rows with flux,
+# hypervisor-operator and kvm-node-agent empty.
 #
 # Usage: bash tests/unit/docs/chaos_matrix_test.sh
 
@@ -123,6 +127,8 @@ fixture() {
   suite "$root/suites" b-two \
     "# Chaos matrix: mariadb self partition" \
     "# Chaos matrix: keystone self partition" \
+    "# Chaos random: keystone-mariadb-partition" \
+    "# Chaos random: mariadb-pod-kill" \
     "# Chaos budget: failures=40 recovery=90s" \
     "# Chaos budget measured: 2026-10-15, estimate, failures 20, recovery 60 s"
   suite "$root/suites" a-one \
@@ -131,7 +137,8 @@ fixture() {
     "# Chaos matrix: keystone self pod-kill" \
     "# Chaos budget: failures=0 recovery=0s"
   suite "$root/suites" c-three \
-    "# Chaos matrix: cinder backend scale-to-zero"
+    "# Chaos matrix: cinder backend scale-to-zero" \
+    "# Chaos random: none (scripted fault, no Chaos Mesh kind)"
   {
     echo "# Chaos page"
     echo ""
@@ -197,13 +204,13 @@ test_the_generated_tables() {
   assert_contains "a backend cell" "$rows" \
     "| cinder | — | — | — | — | — | — | [c-three](#c-three) (scale-to-zero) |"
   assert_file_contains_fixed "the suite table has its header" "$root/page.md" \
-    "| Suite | Scenario ID | Matrix | Budget |"
-  assert_file_contains_fixed "a suite with a scenario and a budget" "$root/page.md" \
-    '| [a-one](#a-one) | SC-CHAOS-001 | `keystone/self` | failures=0 recovery=0s |'
-  assert_file_contains_fixed "the pairs follow the header order" "$root/page.md" \
-    '| [b-two](#b-two) | — | `mariadb/self`, `keystone/self` | failures=40 recovery=90s |'
-  assert_file_contains_fixed "a suite without a scenario or a budget" "$root/page.md" \
-    '| [c-three](#c-three) | — | `cinder/backend` | — |'
+    $'\n| Suite | Scenario ID | Matrix | Budget | Random |\n| --- | --- | --- | --- | --- |\n'
+  assert_file_contains_fixed "a suite with a scenario and a budget and no random line" "$root/page.md" \
+    $'\n| [a-one](#a-one) | SC-CHAOS-001 | `keystone/self` | failures=0 recovery=0s | — |\n'
+  assert_file_contains_fixed "the pairs and the random entries follow the header order" "$root/page.md" \
+    $'\n| [b-two](#b-two) | — | `mariadb/self`, `keystone/self` | failures=40 recovery=90s | `keystone-mariadb-partition`, `mariadb-pod-kill` |\n'
+  assert_file_contains_fixed "a suite without a scenario or a budget, with a none line" "$root/page.md" \
+    $'\n| [c-three](#c-three) | — | `cinder/backend` | — | none |\n'
   assert_file_not_contains "the stale content is gone" "$root/page.md" "^stale$"
   assert_file_not_contains "a matrix line below the header is not read" "$root/page.md" "flux.*pod-kill"
   assert_file_contains_fixed "the text after the markers is kept" "$root/page.md" "## Test Suite Details"
@@ -251,7 +258,7 @@ test_an_invalid_header_fails() {
   f="$root/suites/c-three/chainsaw-test.yaml"
   sed -i.bak '/^# Chaos matrix: cinder/d' "$f"
   expect_fail "a suite without a matrix line" "$root" \
-    "FAIL: $f:6: the header ends here without a \"# Chaos matrix:\" line"
+    "FAIL: $f:7: the header ends here without a \"# Chaos matrix:\" line"
 
   fixture "$root"
   sed -i.bak 's/^# Chaos matrix: cinder backend scale-to-zero$/# Chaos matrix: cinder backend/' "$f"
@@ -290,6 +297,23 @@ test_an_invalid_header_fails() {
     "$f" >"$f.tmp" && mv "$f.tmp" "$f"
   expect_fail "two suites sharing an ID" "$root" \
     "FAIL: $f:6: \"# Chaos scenario: SC-CHAOS-001\": SC-CHAOS-001 is also the scenario of a-one"
+
+  fixture "$root"
+  f="$root/suites/b-two/chainsaw-test.yaml"
+  sed -i.bak 's/^# Chaos random: mariadb-pod-kill$/# Chaos random: none (no fault)/' "$f"
+  expect_fail "a random none line beside an entry line" "$root" \
+    "FAIL: $f:9: \"# Chaos random: none (no fault)\": a \"none\" line beside an entry line"
+
+  fixture "$root"
+  f="$root/suites/c-three/chainsaw-test.yaml"
+  awk '{ print } /^# Chaos random: none/ { print "# Chaos random: mariadb-pod-kill" }' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+  expect_fail "an entry line beside a random none line" "$root" \
+    "FAIL: $f:8: \"# Chaos random: mariadb-pod-kill\": an entry line beside a \"none\" line"
+
+  fixture "$root"
+  awk '{ print } /^# Chaos random: none/ { print "# Chaos random: none (twice)" }' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
+  expect_fail "a second random none line" "$root" \
+    "FAIL: $f:8: \"# Chaos random: none (twice)\": a second \"# Chaos random: none\" line"
 }
 
 test_a_broken_page_or_tree_fails() {
@@ -359,6 +383,13 @@ test_the_repository() {
   assert_eq "every suite carries a matrix line" "0" "$zero"
   total="$(cat "$PROJECT_ROOT"/tests/e2e-chaos/*/chainsaw-test.yaml | grep -c '^# Chaos matrix:')"
   assert_gte "the suites carry matrix lines" "$total" 1
+
+  local suites table_rows unfilled
+  suites="$(find "$PROJECT_ROOT/tests/e2e-chaos" -mindepth 2 -maxdepth 2 -name chainsaw-test.yaml | grep -c .)"
+  table_rows="$(awk -v b="$BEGIN_MARKER" -v e="$END_MARKER" '$0 == b { on = 1 } $0 == e { on = 0 } on && /^\| \[/' "$REPO_PAGE")"
+  assert_eq "the suite table has a row per suite" "$suites" "$(grep -c . <<<"$table_rows")"
+  unfilled="$(awk -F ' [|] ' '$NF !~ /^(none|`[a-z0-9-]+`(, `[a-z0-9-]+`)*) [|]$/ { print $1 }' <<<"$table_rows")"
+  assert_eq "every row fills its Random column with entries or none" "" "$unfilled"
 
   rows="$(matrix_rows "$REPO_PAGE")"
   assert_eq "the matrix has 23 rows" "23" "$(grep -c . <<<"$rows")"
