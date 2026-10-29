@@ -23,7 +23,7 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **57 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **58 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
@@ -104,6 +104,7 @@ Deployment rollout, bootstrap Job).
 | [policy-overrides](#policy-overrides) | `keystone-policy` | oslo.policy integration via ConfigMap reference |
 | [middleware-config](#middleware-config) | `keystone-middleware` | WSGI middleware pipeline customization in api-paste.ini |
 | [brownfield-database](#brownfield-database) | `keystone-brownfield` | Explicit database host (no MariaDB CRs created) |
+| [db-sync-partial-schema](#db-sync-partial-schema) | `keystone-partial-schema` | The db-sync pre-step drops the rowless schema an interrupted first `db_sync` leaves, and the first Job attempt rebuilds it |
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status |
 | [image-pull-policy](#image-pull-policy) | `keystone-ipp` | Without `spec.image.pullPolicy` every container of the Deployment and the db-sync Job carries the operator default `IfNotPresent`; `pullPolicy: Never` reaches every container of the Deployment and the CronJobs, re-runs db-sync and keeps the bootstrap Job |
 | [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2026.1 to 2026.2 via expand-migrate-contract, API accessibility and admin authentication before/after, token continuity, fernet keys unchanged |
@@ -406,6 +407,33 @@ reconciliation completes to Ready=True.
 | 2 | Assert no MariaDB CRs created | `error` | 3 error assertions verifying NotFound for: Database `keystone-brownfield`, User `keystone-brownfield`, Grant `keystone-brownfield` |
 | 3 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
 | 4 | Verify keystone.conf connection | `script` | Gets ConfigMap matching `keystone-brownfield-config-*`, verifies `keystone.conf` `[database]` section contains `openstack-db.openstack.svc.cluster.local` |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+---
+
+### db-sync-partial-schema
+
+**File:** `tests/e2e/keystone/db-sync-partial-schema/chainsaw-test.yaml`
+
+**Purpose:** Validates that the db-sync Job recovers a schema an interrupted first
+`db_sync` left behind. The suite seeds the database `keystone_partial_schema` by hand
+with three tables of the initial revision `27e647c0fad4` and no rows in them, an empty
+`alembic_version`, and the `<<keystone.domain.root>>` project row. A plain
+`keystone-manage db_sync` fails on that schema with MySQL error 1050. The pre-step
+`scripts/db_sync_reset.py` drops the four tables, and the `db_sync` of the same attempt
+rebuilds the schema. The seed replaces a real interruption because
+`controlplane-provisioning-mariadb-kill` catches the defect only when its kill lands
+inside the migration.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | seed-partial-schema | `script` | Reads the root Secret from `.spec.rootPasswordSecretKeyRef` of `mariadb/openstack-db` and pipes the password on stdin into `kubectl exec openstack-db-0 -c mariadb`, which drops and re-creates `keystone_partial_schema` and seeds it (up to three attempts under `timeout 20`) |
+| 2 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-partial-schema` in managed mode with `database.database: keystone_partial_schema` |
+| 3 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
+| 4 | verify-reset | `script` | Job `keystone-partial-schema-db-sync` reads `succeeded` 1 and no failed pod, and its log carries `db-sync-reset: dropped 4 tables an interrupted first db_sync left (recorded revisions: none): access_rule, alembic_version, application_credential, project` |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
@@ -1288,6 +1316,9 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              Expand phase fails with ExpandFailed
 │   ├── 00-keystone-cr.yaml             Keystone CR at release 2026.1
 │   └── 01-patch-expand-failure.yaml    Tag 2026.2 with a 16Mi Job memory limit
+├── db-sync-partial-schema/
+│   ├── chainsaw-test.yaml              db-sync pre-step drops a half-built schema
+│   └── 00-keystone-cr.yaml             Keystone CR on the seeded database
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Garbage collection
 │   └── 00-keystone-cr.yaml             Keystone CR for cleanup test
