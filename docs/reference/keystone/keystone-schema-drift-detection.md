@@ -70,7 +70,7 @@ mount as the `db_sync` Job. The differences are:
 | --- | --- | --- |
 | BackoffLimit | 4 | 2 |
 | TTLSecondsAfterFinished | not set | not set |
-| Command | `keystone-manage db_sync` | `/bin/sh -eu -c` with embedded Python script |
+| Command | `/bin/sh -eu -c`: `scripts/db_sync_reset.py`, then `keystone-manage db_sync` | `/bin/sh -eu -c` with embedded Python script |
 
 ### Stale Job Detection
 

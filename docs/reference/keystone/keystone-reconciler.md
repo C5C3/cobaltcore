@@ -1517,9 +1517,41 @@ validation answers HTTP 500.
 | --- | --- |
 | Name | `{name}-db-sync` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
-| Command | `keystone-manage db_sync` |
+| Command | `/bin/sh -eu -c`: `scripts/db_sync_reset.py`, then `keystone-manage db_sync` |
 | BackoffLimit | 4 |
-| RestartPolicy | OnFailure |
+| RestartPolicy | Never |
+
+**Interrupted first sync:** MariaDB commits every DDL statement implicitly, so a
+connection lost inside a migration leaves the revision's tables behind without
+their `alembic_version` row. A plain `keystone-manage db_sync` would start that
+revision again and fail with MySQL error 1050 on every attempt. Each db-sync
+attempt therefore first runs the `scripts/db_sync_reset.py` pre-step. It waits
+while the database refuses connections, then drops every base table of the
+schema when four things hold: no `migrate_version` table exists, the image's
+`EXPAND_HEAD` and `CONTRACT_HEAD` are readable, the recorded revisions differ
+from them, and no table holds a row other than the `<<keystone.domain.root>>`
+project. With the heads unreadable, only a schema that records no revision
+qualifies; one that records a revision is left untouched with the log line
+`db-sync-reset: image heads unreadable and the schema records <revs>, left untouched`.
+The Job log then carries
+`db-sync-reset: dropped <N> tables an interrupted first db_sync left (recorded revisions: <revs or none>): <tables>`,
+and the `db_sync` of the same attempt rebuilds the schema. A schema that holds
+rows stays untouched and `db_sync` runs on it as before. An interrupted schema
+with rows, or with revisions next to unreadable heads, therefore keeps the Job
+at `DatabaseReady=False/DBSyncFailed` until a human repairs it.
+
+The pre-step's statements wait at most 30 seconds for a metadata lock, such as
+the one an open transaction of another session holds on a table it read. A
+statement that times out logs
+`db-sync-reset: a statement waited 30 s for a metadata lock another session holds, checking the schema again in 5 s`,
+and the pre-step decides again from a fresh read, without bound, until the
+other session lets go.
+
+The command is part of the Job's pod template, which `job.RunJob` hashes. An
+operator version that renders a different command re-runs each completed
+db-sync Job once. On a complete schema that run logs
+`schema is at the image heads`, `db_sync` changes nothing, and `DatabaseReady`
+reads `False/DBSyncInProgress` until the Job completes.
 
 **Condition Contract:**
 
