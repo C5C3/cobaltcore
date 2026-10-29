@@ -32,17 +32,22 @@ operators/keystone/internal/controller/
 │   ├── fernet_rotate.sh          # Fernet key rotation
 │   ├── credential_rotate.sh      # Credential key rotation
 │   ├── admin_password_rotate.sh  # Scheduled admin-password rotation (Model B)
-│   └── bootstrap_db_seed.py      # Database seeding helper
+│   ├── bootstrap_db_seed.py      # Database seeding helper
+│   └── db_sync_reset.py          # db-sync pre-step
 ├── reconcile_fernet.go           # go:embed + ConfigMap creation
 └── reconcile_credential.go       # go:embed + ConfigMap creation
 ```
 
-The embedded `scripts/` directory also carries `admin_password_rotate.sh` and
-`bootstrap_db_seed.py`, which belong to the scheduled admin-password rotation
-and bootstrap sub-reconcilers; they follow the same go:embed/ConfigMap delivery
-pattern but sit outside the Fernet/credential scope of this page. See the
-`reconcilePasswordRotation` section of the reconciler reference and the
+The embedded `scripts/` directory also carries `admin_password_rotate.sh`,
+`bootstrap_db_seed.py` and `db_sync_reset.py`, which sit outside the
+Fernet/credential scope of this page. `admin_password_rotate.sh` belongs to the
+scheduled admin-password rotation and follows the same go:embed/ConfigMap
+delivery pattern. See the `reconcilePasswordRotation` section of the reconciler
+reference and the
 [scheduled rotation guide](../../guides/keystone/keystone-admin-password-scheduled-rotation.md).
+The two Python scripts are the pre-steps of the bootstrap and db-sync Jobs:
+the operator inlines each into its Job's command through a `python3 - <<'PY'`
+heredoc, ahead of `keystone-manage bootstrap` and `keystone-manage db_sync`.
 
 ## Script Contract
 

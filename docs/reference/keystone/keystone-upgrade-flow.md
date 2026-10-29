@@ -269,7 +269,8 @@ All upgrade Jobs share these properties:
 When `status.installedRelease` is empty (first deployment), the operator uses the
 existing simple `db_sync` path:
 
-1. A single `{name}-db-sync` Job runs `keystone-manage db_sync` (no phase flags).
+1. A single `{name}-db-sync` Job runs the `scripts/db_sync_reset.py` pre-step,
+   then `keystone-manage db_sync` (no phase flags).
 2. On successful completion, `status.installedRelease` is set to `spec.image.tag`.
 3. No expand, migrate, or contract Jobs are created.
 
