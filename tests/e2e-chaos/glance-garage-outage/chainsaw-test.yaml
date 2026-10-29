@@ -26,6 +26,7 @@
 # knobs are needed).
 # Chaos matrix: glance backend partition
 # Chaos matrix: garage self partition
+# Chaos random: glance-garage-partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

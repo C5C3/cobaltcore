@@ -43,6 +43,8 @@
 # Chaos matrix: controlplane broker pod-failure
 # Chaos matrix: rabbitmq operator pod-kill
 # Chaos matrix: rabbitmq self pod-failure
+# Chaos random: rabbitmq-pod-failure
+# Chaos random: rabbitmq-operator-pod-kill
 # Chaos budget: failures=0 recovery=30s
 # Chaos budget measured: 2026-10-17, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

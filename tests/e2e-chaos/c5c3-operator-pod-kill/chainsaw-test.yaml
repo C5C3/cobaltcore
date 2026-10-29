@@ -36,6 +36,7 @@
 #
 # Chaos workload: none (the kill lands while the ControlPlane is still provisioning, before its Keystone serves a token)
 # Chaos matrix: controlplane operator pod-kill
+# Chaos random: c5c3-operator-pod-kill
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

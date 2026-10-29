@@ -41,6 +41,7 @@
 # come back and rejoin after the fault is lifted; no suite-level override is
 # needed on top of it.
 # Chaos matrix: ovn self pod-failure
+# Chaos random: ovn-southbound-pod-failure
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

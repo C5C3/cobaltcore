@@ -27,6 +27,7 @@
 # project-scoped admin token before touching the Neutron API.
 # Chaos matrix: neutron broker partition
 # Chaos matrix: rabbitmq self partition
+# Chaos random: neutron-rabbitmq-partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:

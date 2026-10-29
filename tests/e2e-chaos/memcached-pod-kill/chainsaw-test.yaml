@@ -18,6 +18,7 @@
 # replaced.
 # Chaos matrix: keystone cache pod-kill
 # Chaos matrix: memcached self pod-kill
+# Chaos random: memcached-pod-kill
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-28, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

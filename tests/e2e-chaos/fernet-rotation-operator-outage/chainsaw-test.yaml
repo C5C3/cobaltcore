@@ -51,6 +51,7 @@
 # token signed with it validates on a pod that still projects the old set, and
 # the operator is on no request path of a token: the budget is zero.
 # Chaos matrix: keystone operator pod-failure
+# Chaos random: keystone-operator-pod-failure
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-26, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

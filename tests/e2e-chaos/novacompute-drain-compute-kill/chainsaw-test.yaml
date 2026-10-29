@@ -54,6 +54,8 @@
 # verify. nova-compute is on no request path of either stream, so the budget
 # is zero.
 # Chaos matrix: nova self pod-kill
+# Chaos random: nova-fake-compute-pod-kill
+# Chaos random: nova-compute-pod-kill
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-26, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

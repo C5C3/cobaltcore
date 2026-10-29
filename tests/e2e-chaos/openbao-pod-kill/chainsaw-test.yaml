@@ -29,6 +29,7 @@
 # token path, so the budget is zero.
 # Chaos matrix: keystone backend pod-kill
 # Chaos matrix: openbao self pod-kill
+# Chaos random: none (a killed OpenBao starts sealed on kind and needs unseal-openbao.sh)
 # Chaos budget: failures=0 recovery=0s
 # Chaos budget measured: 2026-10-14, kind, failures 0/0/0, recovery 0/0/0 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

@@ -52,6 +52,7 @@
 # one broker has no second tenant to keep apart.
 # Chaos matrix: nova broker partition
 # Chaos matrix: rabbitmq self partition
+# Chaos random: nova-rabbitmq-partition
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
