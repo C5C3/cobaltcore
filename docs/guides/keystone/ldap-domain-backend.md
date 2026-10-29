@@ -30,20 +30,20 @@ Follow that tutorial through to its final **Verify** step, so a Keystone CR name
 examples below is one that devstack produces.
 :::
 
-- A Keystone CR that reaches `Ready=True`; backends can be applied before the
-  Keystone exists, but nothing is provisioned until its API is up.
-- An LDAP server reachable from the cluster, plus a bind DN allowed to
-  search the user/group trees. On the kind devstack, Step 1 stands up the
-  seeded fixture directory; on other clusters, substitute your own directory.
-- **Service users stay SQL-backed.** The backend is read-only by default,
-  so OpenStack service accounts (and the bootstrap admin) must remain in the
-  SQL-backed `Default` domain — the CRD hard-rejects attaching a backend to
-  `Default` for this reason. Plan for humans in the LDAP domain and
-  services in `Default`.
+The LDAP server must be reachable from the cluster, with a bind DN allowed to
+search the user/group trees. Step 1 deploys a seeded fixture directory on the
+kind devstack; for an existing LDAP server, use your own directory settings.
 
-## Step 1 — Deploy the seeded OpenLDAP fixture (kind devstack)
+## Step 1 — Set up the LDAP directory and bind credentials
 
-On the kind devstack, stand up the same OpenLDAP directory the e2e suite uses.
+::: info Service users stay SQL-backed
+OpenStack service accounts and the bootstrap admin must remain in the SQL-backed
+`Default` domain. The CRD rejects attaching a backend to `Default` for this
+reason. Use the LDAP domain for human users and `Default` for services.
+The LDAP backend is read-only by default.
+:::
+
+On the kind devstack, deploy the same OpenLDAP directory the e2e suite uses.
 It is a plain namespace-pinned manifest, so `kubectl apply` runs it verbatim:
 
 ```bash
@@ -61,13 +61,13 @@ This ships, all in the `openstack` namespace:
 - a bind-credentials Secret `openldap-bind` holding
   `cn=admin,dc=planetexpress,dc=com` / `GoodNewsEveryone`.
 
-On a non-kind cluster, skip this step and point the CR (Step 3) at your own
-directory instead — every value below is one this fixture produces.
+The fixture creates `openldap-bind`, which the backend CR in Step 2 references.
+No separate Secret creation is needed for the kind devstack.
 
-## Step 2 — Create the bind credentials Secret
-
-The projection reads two fixed data keys: `username` (the bind DN) and
-`password`:
+To connect to an existing LDAP server instead, skip the fixture deployment and
+create `corp-ldap-bind` in the same namespace as the backend CR. Replace the
+example credentials below with your server's bind DN and password. The operator
+reads the fixed data keys `username` and `password`:
 
 ```bash
 kubectl create secret generic corp-ldap-bind -n openstack \
@@ -75,17 +75,13 @@ kubectl create secret generic corp-ldap-bind -n openstack \
   --from-literal=password='GoodNewsEveryone'
 ```
 
-Rotating this Secret later re-renders the per-domain config automatically —
-the operator watches it.
+In Step 2, change `bindCredentialsSecretRef.name` to `corp-ldap-bind` and replace
+the LDAP URL, suffix, and user mappings with your directory's settings.
 
-::: tip On the kind devstack
-Step 1's fixture already ships an `openldap-bind` Secret with these exact
-credentials (it is the one the e2e suite's own backend CR binds through), so
-you can skip this `kubectl create` and set
-`bindCredentialsSecretRef.name: openldap-bind` in Step 3 instead.
-:::
+The operator watches the referenced bind Secret. Rotating its credentials
+re-renders the per-domain config automatically.
 
-## Step 3 — Apply the backend CR
+## Step 2 — Apply the backend CR
 
 ```yaml
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
@@ -104,7 +100,7 @@ spec:
   ldap:
     url: ldap://openldap.openstack.svc.cluster.local:10389
     bindCredentialsSecretRef:
-      name: corp-ldap-bind
+      name: openldap-bind
     suffix: dc=planetexpress,dc=com
     readOnly: true         # the default, spelled out: keystone never writes to LDAP
     users:
@@ -115,9 +111,11 @@ spec:
       mailAttribute: mail
 ```
 
-Pick `mode: Adopt` instead when the domain already exists in Keystone — Adopt
-resolves it by name and never mutates it (adopted domains are also always
-retained on deletion).
+::: warning Existing Keystone domains
+Pick `mode: Adopt` when the domain already exists in Keystone. Adopt resolves
+the domain by name and never mutates it. Adopted domains are always retained
+when the backend CR is deleted.
+:::
 
 For `ldaps://` endpoints, add certificate verification:
 
@@ -127,7 +125,7 @@ For `ldaps://` endpoints, add certificate verification:
         name: corp-ldap-ca   # data key must be "ca.crt"
 ```
 
-## Step 4 — Watch the conditions converge
+## Step 3 — Watch the conditions converge
 
 ```bash
 kubectl get keystoneidentitybackends -n openstack
@@ -154,26 +152,39 @@ The domains Secret is content-hashed, so the attach rolls the Keystone
 Deployment once; subsequent reconciles are no-ops until the spec or the bind
 credentials change.
 
-## Step 5 — Verify an LDAP user can authenticate
+## Step 4 — Verify an LDAP user can authenticate
+
+Use the admin credentials from the Quick Start to list users and grant
+`professor` the `member` role on the LDAP domain. The role assignment is stored
+in SQL and does not modify LDAP. A domain-scoped token requires a role
+assignment on that domain.
 
 ```bash
 # List the LDAP-backed users through the Keystone API (admin credentials):
 openstack user list --domain planetexpress
 
+openstack role add --user professor --user-domain planetexpress \
+  --domain planetexpress member
+
 # Issue a token as an LDAP user (docker-test-openldap seeds password == uid):
-openstack --os-username professor --os-password professor \
-  --os-user-domain-name planetexpress \
-  --os-domain-name planetexpress token issue
+(
+  # Clear inherited project/system scope without changing the admin shell:
+  unset OS_PROJECT_ID OS_PROJECT_NAME OS_PROJECT_DOMAIN_ID OS_PROJECT_DOMAIN_NAME
+  unset OS_SYSTEM_SCOPE
+  openstack --os-username professor --os-password professor \
+    --os-user-domain-name planetexpress \
+    --os-domain-name planetexpress token issue
+)
 ```
 
-Without the openstack CLI, the same flow works with two `curl`/`urllib`
-calls against `POST /v3/auth/tokens` — see step 4 of
-`tests/e2e/keystone/ldap-domain-backend/chainsaw-test.yaml` for a
-copy-pasteable in-cluster variant.
+Without the openstack CLI, use the `urllib`/`curl` requests in
+[Step 4 in the e2e test](https://github.com/C5C3/cobaltcore/blob/main/tests/e2e/keystone/ldap-domain-backend/chainsaw-test.yaml#L161)
+for an in-cluster variant. The test obtains an admin token, lists LDAP users,
+grants the domain role, and requests an LDAP user's token.
 
 ## Deleting a backend
 
-`kubectl delete keystoneidentitybackend corp-ldap` de-projects the config
+`kubectl delete keystoneidentitybackend corp-ldap -n openstack` de-projects the config
 first (keystone never runs with config pointing at a dead domain) and then
 applies `spec.domain.deletionPolicy`:
 
