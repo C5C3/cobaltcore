@@ -384,6 +384,15 @@ a pull request that changes something else.
 
 A push to `main` or of a `v*` tag never runs the job.
 
+**The random run (`e2e-chaos-random`):** a job of its own runs the
+[random chaos run](#random-runs) every night, on a pull request that changes
+its own files, the `tests_chaos_random` filter (`tests/chaos-random/**`,
+`hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`,
+`deploy/lab/metal-stack/dizzy-soak/**` and
+`tests/e2e-chaos/lib/consistency.sh`), and under `ci:full`. It gates on a pull
+request like every entry. `ci:chaos` and `run-chaos` leave it off, and a change
+under `tests/e2e-chaos/` alone does not run it.
+
 **Dependencies:** The job depends on `changes`, `lint`, `shellcheck`, `test`,
 `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` and
 `e2e-operator`. It only runs if `build-e2e-images` succeeded and no dependency failed or was
@@ -521,6 +530,162 @@ PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where it hit
 the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of #1394
 add about 12 minutes each to `pod`, `nova` and `controlplane`, and the `upgrade`
 entry runs two Cinder upgrades of about 20 minutes each after the bring-up.
+
+## Random runs
+
+Every suite injects one fault into an otherwise quiet stack. A random run
+injects faults drawn at random, one or two at a time, into a running
+ControlPlane while the in-cluster [dizzy soak](./dizzy-chaos-testing.md#in-cluster-soak)
+churns through servers, volumes and networks (#1395). `hack/chaos-random.sh`
+runs it in two places: every night in CI on a kind ControlPlane
+(`e2e-chaos-random`), and on the lab through `hack/lab-chaos.sh random`, over
+the six-hour soak (see
+[Lab chaos runner](../infrastructure/infrastructure-manifests.md#lab-chaos-runner)).
+
+### The catalogue
+
+`tests/chaos-random/catalogue.yaml` lists the 50 distinct faults of the
+suites, one entry per fault:
+
+```yaml
+- name: keystone-api-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s          # the template deadline: how long the fault holds
+  recovery: 180s          # the bound after the lift within which the plane recovers
+  spec:                   # the Chaos Mesh spec, without duration
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: keystone
+        app.kubernetes.io/instance: "@CP@-keystone"
+        app.kubernetes.io/component: api
+```
+
+`@CP@` and `@NS@` stand for the ControlPlane's name and namespace, so an entry
+selects the projected child `<cp>-<service>`. A pod-kill holds for 30 seconds,
+every other fault for 120. `recovery` is the `# Chaos budget:` recovery of the
+suites that name the entry, the largest of them and 60 seconds at least; an
+entry of a lab fault takes that fault's gate. A NetworkChaos `partition` cuts
+both directions to a `target`, and the `delay` entry adds 300 ms. Four entries
+stand for the lab faults F1 to F4 and carry `source:` in place of a suite:
+`libvirt-pod-kill`, `nova-compute-pod-kill`, `ovn-controller-pod-kill` and
+`nfs-server-pod-kill`, which only the lab draws. `nova-fake-compute-pod-kill`
+is the kind plane's compute and only CI draws it.
+
+Every suite header names its entries in `# Chaos random: <entry>` lines beside
+its matrix lines, or carries exactly one `# Chaos random: none (<reason>)`
+line; the Random column of the [suite table](#test-suite-inventory) shows them.
+Nine suites carry `none`: the scripted faults of `cinder-nfs-outage`,
+`deletion-stuck-finalizer`, `eso-down`, `openbao-sealed`,
+`openbao-tenant-policy-narrowed` and `cinder-upgrade-db-partition`, the
+lifecycle fault of `cronjob-rotation-failure`, `keystone-federation`, whose
+IdP the random plane does not configure, and `openbao-pod-kill`, whose OpenBao
+starts sealed on kind. `tests/unit/ci/chaos_random_catalogue_test.sh` fails,
+naming file and line, on a suite without a random line, a `none` line beside
+another, an entry no catalogue holds, an entry no suite names and no `source:`
+covers, a name that is not unique, a kind other than PodChaos or NetworkChaos,
+an empty or unknown environment, a duration or recovery that is not `<n>s`, a
+`spec.duration`, and a NetworkChaos that selects a `hostNetwork` workload.
+
+### The draw
+
+`tests/chaos-random/draw.py` draws the run from the catalogue with
+`random.Random(seed)`, so a seed replays a run on every platform. From
+`t = 0`, each step takes one entry of the environment that was not in the
+previous step, or with probability 0.33 two whose first label selectors
+differ, and holds for the longer duration of the two. When a step would end
+past the window, the draw stops. The pause after a step is its largest
+recovery plus a whole number of seconds drawn from 30 to 120 on CI and from 60
+to 600 on the lab. The plan of `CHAOS_RANDOM_ENV=ci CHAOS_RANDOM_SEED=7 make
+chaos-random-draw` begins:
+
+| Step | Offset (s) | Entries | Length (s) | Pause (s) |
+| --- | --- | --- | --- | --- |
+| 1 | 0 | `barbican-mariadb-partition` | 120 | 170 |
+| 2 | 290 | `envoy-proxy-pod-kill`, `cinder-volume-pod-kill` | 30 | 252 |
+| 3 | 572 | `nova-mariadb-partition` | 120 | 154 |
+
+and holds eight steps within its 30-minute window. A red night replays its
+draw without a cluster: the seed is the run id, so
+`CHAOS_RANDOM_ENV=ci CHAOS_RANDOM_SEED=<run id> make chaos-random-draw` prints
+the plan that night ran.
+
+### The Workflow
+
+The draw renders the plan as one Chaos Mesh `Workflow`,
+`chaos-random-<run id>` in the ControlPlane's namespace. Its entry is a
+`Serial` template whose children alternate the steps and `Suspend` templates
+of the pauses, with no pause after the last step. A step is the chaos template
+`s<NN>-<entry>` with the entry's duration as its `deadline`, or the `Parallel`
+template `s<NN>` of two. Chaos Mesh labels every chaos object a node creates
+with `chaos-mesh.org/workflow` and `chaos-mesh.org/controlled-by`, the
+WorkflowNode whose `spec.templateName` names the template.
+
+### The run
+
+`hack/chaos-random.sh run` checks the cluster first: the tools, the namespaces
+`chaos-mesh` and `dizzy`, a `Ready` ControlPlane, no random run's Workflow and
+no soak in flight, and that every catalogue entry of the environment selects a
+pod (on the lab only in a namespace Chaos Mesh may select from). A failure
+reads `catalogue entry <name> selects no pod in <env>`. Then it draws, sets
+`spec.ovnDBSync` in log mode on `<cp>-neutron` when it is absent, starts the
+soak for the warm-up (`CHAOS_RANDOM_WARMUP`, 120 s), the window
+(`CHAOS_RANDOM_WINDOW`, 30m on CI and 6h on the lab) and the tail
+(`CHAOS_RANDOM_TAIL`, 10m), with dizzy's seed set to the run's, and applies the
+Workflow after the warm-up. Every 5 seconds until the Workflow reads
+`Accomplished=True`, at most the window plus 600 seconds, it lists the run's
+chaos objects: the first `AllInjected=True` of a template goes to
+`windows.tsv`, each container record to `targets.tsv`, and a template no
+longer listed gets its lift. It then deletes the Workflow, waits for the churn
+end and up to 600 seconds more for the soak's Job, fetches the soak's report
+into `soak/`, judges, removes `spec.ovnDBSync` again when it set it, and writes
+`random-verdict.json`, `report.md` and `_output/reports/chaos-random-junit.xml`.
+It exits 0 on PASS and 1 on FAIL. A `TERM` or `INT` deletes the Workflow first,
+so the faults lift, then stops the soak.
+
+The verdict is PASS when every check passes:
+
+| Check | Fails when |
+| --- | --- |
+| `workflow` | The apply was refused (kubectl's error), a chaos template never read `AllInjected=True` (named), or the Workflow was not accomplished within the window plus 600 seconds |
+| `dizzy-exit`, `leak-check`, `controlplane-ready`, `operator-leak`, `error-rate`, `p95` | As the soak's `verdict.json` reports them; the last two only when set. `dizzy-exit` also fails when the soak's Job did not finish within 600 seconds of the churn end |
+| `no-restarts` | Judged again from the soak's tables with the targets of `targets.tsv` exempt; the detail names each other restarted container with the fault windows open at its first sample after the restart |
+| `memory-growth` | Judged again the same way, with the targets exempt |
+| `quiet-tail` | dizzy counted a failed operation between the last lift plus its recovery and the churn end, read as two instant queries of `sum(dizzy_operation_errors_total)` from the dizzy VictoriaMetrics through the API server's service proxy. An empty result is 0; a query that fails or answers `"status":"error"` fails the check |
+| `placement-audit`, `ovn-db-sync` | The [consistency checks](#consistency-checks) of `tests/e2e-chaos/lib/consistency.sh` on `deploy/<cp>-nova` and `<cp>-neutron` do not print `CONSISTENCY-OK` |
+| `stuck-resources` | Job `chaos-random-stuck` lists a server not `ACTIVE`, `SHUTOFF`, `PAUSED`, `SUSPENDED` or `SHELVED_OFFLOADED`, a volume not `available` or `in-use`, or an image not `active` or `deactivated`, or its listing fails. The Job runs on the Tempest image with the K-ORC Secret `k-orc-clouds-yaml`, no service-account token and a 300-second deadline, and prints names, ids and states alone |
+| `stuck-objects` | A PodChaos, NetworkChaos or WorkflowNode is left in the namespace, a pod of a sampled namespace has terminated for more than 300 seconds, or a ControlPlane or service object carries a `deletionTimestamp` |
+
+`report.md` lists the plan, the windows with their targets and dizzy's failed
+operations per window, between the injection and the lift plus the recovery.
+Those are reported and not judged, because an overlap of two random faults has
+no budget of its own; `quiet-tail` judges the churn after the last recovery.
+The soak's own `verdict.json` stays in `soak/` as the soak wrote it, and fails
+its `no-restarts` whenever a target restarted. The JUnit file holds one
+`tests/chaos-random/random-<check>` testsuite per check, so
+`report-nightly-chaos` files a red night's check as
+`Nightly chaos suite random-<check> is red`.
+
+### On CI
+
+The job `e2e-chaos-random` runs on the `self-hosted` runners within 120
+minutes. `make chaos-random-up` (`hack/chaos-random.sh up`) brings up the kind
+plane of `tests/chaos-random/kind/` stage by stage, each within its bound: the
+OVN central, the bus Secret against a vhost of its own, the ControlPlane
+`openstack/controlplane` (copies of the full-chain suite's files under the
+default identity) with its OpenBao database-engine tenant, the OVN chassis and
+the metadata agent, the fake compute and its host mapping, and the seed Job of
+the soak's flavor and image `chaos-random`. The job's stack runs with
+`WITH_CONTROLPLANE_CR=false` and onboards no tenant, so `up` runs
+`setup-database-tenant.sh` once the ControlPlane's MariaDB is Ready; without
+it the ControlPlane gets no DB credentials. A stage that does not get ready
+ends `up` with `up: <stage> not ready within <n> s` and a dump of its objects.
+The soak then runs `tests/chaos-random/kind/scenario.yaml`, the lab's scenario
+with that image and flavor. [CI Workflow: e2e-chaos-random](../ci-cd/ci-workflow.md#e2e-chaos-random)
+lists the job's steps and artifacts.
 
 ## Test Suite Inventory
 
