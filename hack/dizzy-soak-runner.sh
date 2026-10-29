@@ -22,8 +22,11 @@
 # Its settings come from the ConfigMap dizzy-soak-config: DIZZY_SOAK_SERVICE,
 # DIZZY_SOAK_DURATION, DIZZY_ARGS, DIZZY_VERSION, DIZZY_SOAK_NAMESPACES,
 # DIZZY_SOAK_SAMPLE_INTERVAL, DIZZY_SOAK_MAX_ERROR_RATE,
-# DIZZY_SOAK_MAX_P95_SECONDS, DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT and
-# DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH. It parses under bash 3.2 and
+# DIZZY_SOAK_MAX_P95_SECONDS, DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT,
+# DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH,
+# DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT, DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB and
+# DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES.
+# It parses under bash 3.2 and
 # aggregates in jq and POSIX awk, because
 # tests/unit/hack/dizzy_soak_runner_test.sh sources it under the stock macOS
 # bash too.
@@ -79,6 +82,13 @@ MIN_OPERATOR_SAMPLES=20
 OPERATOR_SCRAPE_TIMEOUT=10
 # The seconds of it the connection may take, curl's --connect-timeout.
 OPERATOR_CONNECT_TIMEOUT=3
+# The memory samples a container needs before memory-growth judges it.
+MIN_MEMORY_SAMPLES=20
+# The pods no-restarts and memory-growth leave out, one <namespace>/<pod> per
+# line. A soak judges every pod; hack/chaos-random.sh sets it after sourcing
+# the runner, to the targets of its faults, when it judges a soak's tables
+# again.
+EXEMPT_PODS=""
 
 # ---------------------------------------------------------------------------
 # Settings, from the ConfigMap dizzy-soak-config.
@@ -93,6 +103,15 @@ DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE:-}"
 DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS:-}"
 DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT:-10}"
 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH:-10}"
+DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT:-10}"
+DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB:-16}"
+# The namespaces memory-growth does not judge, space-separated; empty judges
+# every namespace. flux-system by default: its source-controller refreshes
+# every source each hour and its helm-controller reconciles every HelmRelease
+# each half hour, and the working set of both jumps for a few minutes each
+# time (source-controller from 54 to 255 MiB on a kind cluster). A refresh in
+# the last tenth reads as growth.
+DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES="${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES-flux-system}"
 
 # ---------------------------------------------------------------------------
 # The state of the run.
@@ -525,6 +544,88 @@ derive_operators_summary() {
 }
 
 # ---------------------------------------------------------------------------
+# derive_memory_growth — platform/memory-growth.tsv from platform/usage.tsv:
+# per container its sample count, its memory in MiB as the mean of the
+# samples around the run's midpoint (index ceil(0.45 n) to floor(0.55 n),
+# the sample at round(n/2) when that range is empty) and the mean of its
+# last tenth (at least one sample), the growth between the two in MiB and in
+# percent (- at a midpoint mean of 0), and whether memory-growth judges it.
+# The second half leaves out the warm-up a long run's caches fill in. A
+# container is judged only when its pod is not in EXEMPT_PODS, its namespace
+# is not in DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES, it has
+# MIN_MEMORY_SAMPLES samples, its pod has one UID in every pod sample of
+# platform/containers.tsv, was created before the run and its restart count
+# in platform/restarts.tsv is 0; otherwise the column names the first reason
+# that holds. awk reads the samples twice, counting first.
+# ---------------------------------------------------------------------------
+derive_memory_growth() {
+  {
+    printf 'namespace\tpod\tcontainer\tsamples\tmid_mib\tlast_mib\tgrowth_mib\tgrowth_percent\tjudged\n'
+    if [[ -s platform/usage.tsv ]]; then
+      EXEMPT="${EXEMPT_PODS}" awk -F '\t' -v start="${RUN_START}" -v min="${MIN_MEMORY_SAMPLES}" \
+        -v skip="${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES}" \
+        -v containers=platform/containers.tsv -v restarts=platform/restarts.tsv -v samples=platform/pod-samples.log '
+        function mean(sum, count) { return count > 0 ? sum / count / 1048576 : 0 }
+        BEGIN {
+          split(ENVIRON["EXEMPT"], e, "\n")
+          for (i in e) if (e[i] != "") exempt[e[i]] = 1
+          split(skip, s, " ")
+          for (i in s) if (s[i] != "") skipped[s[i]] = 1
+          # Distinct times: two samples within one second share a timestamp.
+          while ((getline line <samples) > 0) if (line != "" && !(line in sample_time)) { sample_time[line] = 1; pod_samples++ }
+          close(samples)
+          while ((getline line <containers) > 0) {
+            split(line, f, "\t")
+            id = f[2] "/" f[3]
+            if (!((id SUBSEP f[4]) in uid_seen)) { uid_seen[id SUBSEP f[4]] = 1; uids[id]++ }
+            if (!((id SUBSEP f[1]) in sample_seen)) { sample_seen[id SUBSEP f[1]] = 1; appearances[id]++ }
+            if (!(id in created) || f[5] < created[id]) created[id] = f[5]
+          }
+          close(containers)
+          while ((getline line <restarts) > 0) {
+            split(line, f, "\t")
+            if (f[1] != "namespace") restarted[f[1] "/" f[2] "/" f[3]] += f[6]
+          }
+          close(restarts)
+        }
+        NR == FNR { n[$2 "/" $3 "/" $4]++; next }
+        {
+          k = $2 "/" $3 "/" $4
+          i = ++seen[k]
+          # Integer bounds: 0.45 * n in floating point can land above a whole
+          # number it equals.
+          lo = int((45 * n[k] + 99) / 100)
+          hi = int(55 * n[k] / 100)
+          if (lo > hi) { lo = int(n[k] / 2 + 0.5); hi = lo }
+          if (i >= lo && i <= hi) { mid_sum[k] += $6; mid_count[k]++ }
+          t = int(n[k] / 10)
+          if (t < 1) t = 1
+          if (i > n[k] - t) { last_sum[k] += $6; last_count[k]++ }
+        }
+        END {
+          for (k in n) {
+            split(k, p, "/")
+            pod = p[1] "/" p[2]
+            if (pod in exempt) judged = "exempt"
+            else if (p[1] in skipped) judged = "namespace skipped"
+            else if (n[k] < min) judged = "fewer than " min " samples"
+            else if (!(pod in uids)) judged = "no pod sample"
+            else if (uids[pod] > 1 || appearances[pod] < pod_samples) judged = "pod replaced during the run"
+            else if (created[pod] >= start) judged = "created during the run"
+            else if (restarted[k] > 0) judged = "restarted"
+            else judged = "yes"
+            mid = mean(mid_sum[k], mid_count[k])
+            last = mean(last_sum[k], last_count[k])
+            percent = mid > 0 ? sprintf("%.1f", (last - mid) / mid * 100) : "-"
+            printf "%s\t%s\t%s\t%d\t%.1f\t%.1f\t%.1f\t%s\t%s\n", p[1], p[2], p[3], n[k], mid, last, last - mid, percent, judged
+          }
+        }
+      ' platform/usage.tsv platform/usage.tsv | sort
+    fi
+  } >platform/memory-growth.tsv
+}
+
+# ---------------------------------------------------------------------------
 # derive_conditions — platform/conditions.tsv from the two condition reads:
 # per object its kind, namespace and name, its Ready status at the start and
 # at the end (- without a Ready condition, absent when the object was not
@@ -653,22 +754,86 @@ check_controlplane_ready() {
 }
 
 # check_no_restarts — At least one pod sample succeeded, and no container
-# restarted or was OOM-killed during the run.
+# of a pod outside EXEMPT_PODS restarted or was OOM-killed during the run.
 check_no_restarts() {
-  local containers restarts ooms
+  local containers restarts ooms skipped suffix=""
   if [[ ! -s platform/pod-samples.log ]]; then
     check no-restarts false "pod state could not be read: $(grep ' pods: ' platform/errors.log 2>/dev/null | tail -n 1)"
     return
   fi
-  read -r containers restarts ooms <<<"$(awk -F '\t' 'NR > 1 { n++; r += $6; o += $7 }
-    END { print n + 0, r + 0, o + 0 }' platform/restarts.tsv)"
-  if [[ "${containers}" == "0" ]]; then
-    check no-restarts true "0 containers observed"
-  elif [[ "${restarts}" == "0" && "${ooms}" == "0" ]]; then
-    check no-restarts true "${containers} containers observed, 0 restarts, 0 OOM kills"
-  else
-    check no-restarts false "${restarts} restart(s) and ${ooms} OOM kill(s) in ${containers} containers observed"
+  read -r containers restarts ooms skipped <<<"$(EXEMPT="${EXEMPT_PODS}" awk -F '\t' '
+    BEGIN { split(ENVIRON["EXEMPT"], e, "\n"); for (i in e) if (e[i] != "") exempt[e[i]] = 1 }
+    NR > 1 && ($1 "/" $2) in exempt { if (!(($1 "/" $2) in seen)) { seen[$1 "/" $2] = 1; s++ } next }
+    NR > 1 { n++; r += $6; o += $7 }
+    END { print n + 0, r + 0, o + 0, s + 0 }' platform/restarts.tsv)"
+  if [[ "${skipped}" != "0" ]]; then
+    suffix="; ${skipped} exempt pod(s) skipped"
   fi
+  if [[ "${containers}" == "0" ]]; then
+    check no-restarts true "0 containers observed${suffix}"
+  elif [[ "${restarts}" == "0" && "${ooms}" == "0" ]]; then
+    check no-restarts true "${containers} containers observed, 0 restarts, 0 OOM kills${suffix}"
+  else
+    check no-restarts false "${restarts} restart(s) and ${ooms} OOM kill(s) in ${containers} containers observed${suffix}"
+  fi
+}
+
+# check_memory_growth — At least one sample of the metrics API succeeded, at
+# least one container of platform/memory-growth.tsv is judged, and no judged
+# container grew by more than DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB and by more
+# than DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT at once. It compares the values
+# as the table prints them, so a growth at a bound passes. Either bound
+# alone is no defect: a small container's percent and a large one's MiB grow
+# with ordinary churn. The detail names how many containers of exempt pods
+# and of DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES it skipped.
+check_memory_growth() {
+  if [[ ! -s platform/usage.tsv ]]; then
+    check memory-growth false "memory samples could not be read: $(grep ' usage: ' platform/errors.log 2>/dev/null | tail -n 1)"
+    return
+  fi
+  awk -F '\t' -v mib_bound="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB}" -v percent_bound="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT}" \
+    -v skip="${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES}" '
+    NR == 1 { next }
+    {
+      m++
+      id = $1 "/" $2 "/" $3
+      if ($9 == "exempt") { skipped++; next }
+      if ($9 == "namespace skipped") { ns_skipped++; next }
+      if ($9 != "yes") {
+        if (!($9 in reasons)) order[++nreasons] = $9
+        reasons[$9]++
+        next
+      }
+      judged++
+      if (judged == 1 || $7 + 0 > largest + 0) { largest = $7; largest_percent = $8; largest_id = id }
+      if ($7 + 0 > mib_bound + 0 && $8 != "-" && $8 + 0 > percent_bound + 0) {
+        failures = failures (failures == "" ? "" : "; ") id ": " $5 " to " $6 " MiB (+" $7 " MiB, " $8 " %)"
+      }
+    }
+    END {
+      suffix = skipped > 0 ? "; " skipped " container(s) of exempt pods skipped" : ""
+      if (ns_skipped > 0) {
+        n = split(skip, s, " ")
+        for (i = 1; i <= n; i++) if (s[i] != "") names = names (names == "" ? "" : ", ") s[i]
+        suffix = suffix "; " ns_skipped " container(s) of " names " skipped"
+      }
+      if (failures != "") {
+        printf "false\t%s%s\n", failures, suffix
+        exit
+      }
+      if (judged == 0) {
+        for (i = 1; i <= nreasons; i++) list = list (i == 1 ? "" : ", ") order[i] " (" reasons[order[i]] ")"
+        if (skipped > 0) list = list (list == "" ? "" : ", ") "exempt (" skipped ")"
+        if (ns_skipped > 0) list = list (list == "" ? "" : ", ") "namespace skipped (" ns_skipped ")"
+        printf "false\tno container could be judged; the reasons: %s\n", list
+        exit
+      }
+      printf "true\t%d of %d containers judged; largest growth %s MiB (%s %%, %s)%s\n", judged, m, largest, largest_percent, largest_id, suffix
+    }
+  ' platform/memory-growth.tsv | {
+    IFS=$'\t' read -r pass detail
+    check memory-growth "${pass}" "${detail}"
+  }
 }
 
 # check_operator_leak — At least one operator pod was listed, no pod of
@@ -794,6 +959,7 @@ write_verdict() {
     check_controlplane_ready
     check_no_restarts
     check_operator_leak
+    check_memory_growth
     check_error_rate
     check_p95
   } | jq -s '{verdict: (if all(.[]; .pass) then "PASS" else "FAIL" end), checks: .}' >verdict.json
@@ -812,11 +978,11 @@ tsv_table() {
 # write_report_md — report.md: the verdict and its checks, the run's
 # parameters and times, dizzy's report, the leak check, the restarts and OOM
 # kills, the pods created during the run, the memory growth and CPU tables,
-# the operator goroutines and heap, the conditions, and the count of lines
-# in platform/errors.log.
+# the memory growth over the second half, the operator goroutines and heap,
+# the conditions, and the count of lines in platform/errors.log.
 # ---------------------------------------------------------------------------
 write_report_md() {
-  local header shown created
+  local header shown created judged
   {
     printf '# dizzy soak %s\n\n' "${RUN_NAME}"
     printf 'Verdict: **%s**\n\n' "$(jq -r '.verdict' verdict.json)"
@@ -866,6 +1032,18 @@ write_report_md() {
         tsv_table 15
       printf '\nThe 15 containers with the highest mean CPU:\n\n'
       { printf '%s\n' "${header}"; awk 'NR > 1' platform/usage-summary.tsv | sort -t "$(printf '\t')" -k5,5nr; } |
+        tsv_table 15
+    fi
+
+    printf '\n## Memory growth (second half)\n\n'
+    judged="$(awk -F '\t' 'NR > 1 && $9 == "yes"' platform/memory-growth.tsv 2>/dev/null)"
+    if [[ ! -s platform/usage.tsv ]]; then
+      printf 'Memory growth: unavailable. No sample of the metrics API succeeded; see platform/errors.log.\n'
+    elif [[ -z "${judged}" ]]; then
+      printf 'No container was judged; platform/memory-growth.tsv names the reason for each.\n'
+    else
+      printf 'The 15 judged containers with the largest growth from the mean around the midpoint to the mean of the last tenth:\n\n'
+      { head -n 1 platform/memory-growth.tsv; printf '%s\n' "${judged}" | sort -t "$(printf '\t')" -k7,7nr; } |
         tsv_table 15
     fi
 
@@ -992,12 +1170,16 @@ write_meta() {
     --arg duration "${DIZZY_SOAK_DURATION}" --arg version "${DIZZY_VERSION}" --arg args "${DIZZY_ARGS}" \
     --argjson namespaces "${namespaces}" --arg interval "${DIZZY_SOAK_SAMPLE_INTERVAL}" \
     --arg rate "${DIZZY_SOAK_MAX_ERROR_RATE}" --arg p95 "${DIZZY_SOAK_MAX_P95_SECONDS}" \
-    --arg heap "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" --arg goroutines "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" '
+    --arg heap "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" --arg goroutines "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" \
+    --arg memory_percent "${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT}" --arg memory_mib "${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB}" \
+    --argjson memory_skip "$(words_json "${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES}")" '
     def number: if . == "" then null else tonumber end;
     {run: $run, startTime: $start, service: $service, duration: $duration, dizzyVersion: $version,
      dizzyArgs: $args, namespaces: $namespaces, sampleIntervalSeconds: ($interval | tonumber),
      maxErrorRatePercent: ($rate | number), maxP95Seconds: ($p95 | number),
-     maxOperatorHeapGrowthPercent: ($heap | tonumber), maxOperatorGoroutineGrowth: ($goroutines | tonumber)}' >meta.json
+     maxOperatorHeapGrowthPercent: ($heap | tonumber), maxOperatorGoroutineGrowth: ($goroutines | tonumber),
+     maxMemoryGrowthPercent: ($memory_percent | tonumber), maxMemoryGrowthMiB: ($memory_mib | tonumber),
+     memoryGrowthSkipNamespaces: $memory_skip}' >meta.json
 }
 
 # check_free_space — Refuse to start with less than MIN_FREE_KIB free on
@@ -1073,6 +1255,7 @@ main() {
   derive_restarts
   derive_usage_summary
   derive_operators_summary
+  derive_memory_growth
   derive_conditions
   write_verdict
   write_report_md

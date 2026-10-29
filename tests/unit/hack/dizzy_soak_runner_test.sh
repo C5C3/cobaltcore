@@ -18,7 +18,7 @@
 #      object without a Ready condition.
 #   3. A run whose dizzy exits 0 with one run record and the clean leak line,
 #      with a Ready ControlPlane and no restart, writes the full report
-#      directory and verdict.json PASS with five passing checks, and exits 0.
+#      directory and verdict.json PASS with six passing checks, and exits 0.
 #      dizzy gets the arguments and environment of the soak, and an empty
 #      DIZZY_ARGS adds no argument.
 #   4. A TERM sent twice while dizzy runs reaches dizzy once; the runner
@@ -27,9 +27,9 @@
 #   5. Every way a check fails: dizzy exits 3, dizzy writes no record or
 #      two, the leak check finds resources or prints nothing, the
 #      ControlPlane is not Ready, gone at the end, absent or forbidden, a
-#      container restarts, every pod read fails, no operator pod is listed;
-#      and the ways it passes: the clean leak line of glance and keystone,
-#      no container observed, no metrics API.
+#      container restarts, every pod read fails, no operator pod is listed,
+#      no metrics API (memory-growth); and the ways it passes: the clean leak
+#      line of glance and keystone, no container observed.
 #   6. The error-rate and p95 checks run only when their setting is set, and
 #      decide against it. A json report that fails to render leaves no
 #      dizzy-report.json, and error-rate fails for want of it.
@@ -58,6 +58,19 @@
 #      without a sample in more than one and more than a tenth of them with
 #      its last scrape error, and fails when no operator pod is listed or the
 #      pod read failed. A run whose scrapes are refused fails.
+#  12. derive_memory_growth compares the mean around the midpoint with the
+#      mean of the last tenth, and memory-growth fails a judged container
+#      only above both bounds: a linear growth of 63 MiB from 128 MiB over 40
+#      samples fails with the container's detail, a growth in the first 40 %
+#      alone passes, 20 MiB at 8 % and 12 MiB at 30 % pass, a value at a
+#      bound passes. It fails without a metrics sample and when no container
+#      is judged (fewer than 20 samples, every pod exempt), and does not
+#      judge a pod whose UID changed or a restarted container. EXEMPT_PODS
+#      takes a pod out of no-restarts and memory-growth, and both name the
+#      count they skipped. memory-growth skips the containers of flux-system
+#      by default and names their count, judges them with
+#      DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES empty, and fails when it
+#      skips every container.
 #
 # The runner is sourced in a subshell (its BASH_SOURCE guard keeps main()
 # from running) with stub kubectl, df and curl and a fake dizzy first on PATH;
@@ -306,6 +319,9 @@ in_runner() {
   DIZZY_BIN="$tmp/bin/dizzy"
   SCENARIO_FILE="$tmp/scenario.yaml"
   CLOUDS_FILE="$tmp/clouds.yaml"
+  # A stub run takes two or three samples, so memory-growth judges a
+  # container from one on; test_memory_growth checks the runner's bound.
+  MIN_MEMORY_SAMPLES="${TEST_MIN_MEMORY_SAMPLES:-1}"
 }
 
 # run_runner <tmp> [env_var=value...] — Run main() in a subshell; its output
@@ -582,8 +598,8 @@ test_clean_run() {
   rc=$?
   assert_eq "the runner exits 0" "0" "$rc"
   assert_eq "the verdict is PASS" "PASS" "$(jq -r .verdict "$RUN_DIR/verdict.json" 2>/dev/null)"
-  assert_eq "five checks ran and passed" \
-    "dizzy-exit=true leak-check=true controlplane-ready=true no-restarts=true operator-leak=true" \
+  assert_eq "six checks ran and passed" \
+    "dizzy-exit=true leak-check=true controlplane-ready=true no-restarts=true operator-leak=true memory-growth=true" \
     "$(jq -r '[.checks[] | .name + "=" + (.pass | tostring)] | join(" ")' "$RUN_DIR/verdict.json" 2>/dev/null)"
   assert_eq "operator-leak does not judge the operator pod of a few samples" \
     "true 0 of 1 operator pods judged; not judged: keystone-system/keystone-operator-0 (fewer than 20 samples)" \
@@ -611,6 +627,10 @@ test_clean_run() {
   assert_eq "and no threshold" "null null" "$(jq -r '"\(.maxErrorRatePercent) \(.maxP95Seconds)"' "$RUN_DIR/meta.json")"
   assert_eq "but the operator leak bounds, as numbers" "10 10" \
     "$(jq -r '"\(.maxOperatorHeapGrowthPercent | tojson) \(.maxOperatorGoroutineGrowth | tojson)"' "$RUN_DIR/meta.json")"
+  assert_eq "and the memory growth bounds, as numbers" "10 16" \
+    "$(jq -r '"\(.maxMemoryGrowthPercent | tojson) \(.maxMemoryGrowthMiB | tojson)"' "$RUN_DIR/meta.json")"
+  assert_eq "and the namespaces memory-growth skips, as a list" '["flux-system"]' \
+    "$(jq -c '.memoryGrowthSkipNamespaces' "$RUN_DIR/meta.json")"
   assert_eq "the scenario is copied into the run" "name: lab-soak" "$(cat "$RUN_DIR/scenario.yaml")"
   assert_contains "dizzy.log holds dizzy's output" "$(cat "$RUN_DIR/dizzy.log")" "$CLEAN_LEAK_LINE"
   assert_contains "and so does the pod log" "$(cat "$tmp/runner.log")" "churn finished"
@@ -843,7 +863,9 @@ test_restart_checks() {
   assert_eq "zero containers pass" "true 0 containers observed" "$(check_of no-restarts)"
   assert_eq "no operator pod fails operator-leak" "false no operator pod found in the sampled namespaces" \
     "$(check_of operator-leak)"
-  assert_eq "the only failing check" "operator-leak" \
+  assert_eq "memory-growth judges no container without a pod sample" \
+    "false no container could be judged; the reasons: no pod sample (1)" "$(check_of memory-growth)"
+  assert_eq "the only failing checks" "operator-leak memory-growth" \
     "$(jq -r '[.checks[] | select(.pass | not) | .name] | join(" ")' "$RUN_DIR/verdict.json")"
   assert_eq "the verdict is FAIL" "FAIL" "$(jq -r .verdict "$RUN_DIR/verdict.json")"
   assert_contains "report.md says no operator pod was listed" "$(cat "$RUN_DIR/report.md")" \
@@ -861,7 +883,7 @@ test_restart_checks() {
 }
 
 test_metrics_unavailable() {
-  echo "Test: without the metrics API usage.tsv stays empty and the verdict holds"
+  echo "Test: without the metrics API usage.tsv stays empty and memory-growth fails"
 
   local tmp rc
   tmp="$(mktemp -d)"
@@ -873,7 +895,14 @@ test_metrics_unavailable() {
   assert_contains "report.md says Resource usage: unavailable" "$(cat "$RUN_DIR/report.md")" "Resource usage: unavailable"
   assert_contains "the failed reads are logged" "$(cat "$RUN_DIR/platform/errors.log")" \
     "usage: Error from server (NotFound): the server could not find the requested resource"
-  assert_eq "the verdict does not change" "0 PASS" "$rc $(jq -r .verdict "$RUN_DIR/verdict.json")"
+  assert_eq "memory-growth fails with the last failed read" \
+    "false memory samples could not be read: $(grep ' usage: ' "$RUN_DIR/platform/errors.log" | tail -n 1)" \
+    "$(check_of memory-growth)"
+  assert_eq "it is the only failing check" "memory-growth" \
+    "$(jq -r '[.checks[] | select(.pass | not) | .name] | join(" ")' "$RUN_DIR/verdict.json")"
+  assert_eq "and the runner exits by the verdict" "1 FAIL" "$rc $(jq -r .verdict "$RUN_DIR/verdict.json")"
+  assert_contains "report.md says the memory growth is unavailable" "$(cat "$RUN_DIR/report.md")" \
+    $'## Memory growth (second half)\n\nMemory growth: unavailable.'
 }
 
 # ---------------------------------------------------------------------------
@@ -1505,6 +1534,218 @@ test_operator_leak_check() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 12: memory growth over the second half
+# ---------------------------------------------------------------------------
+MG_START="2026-01-02T00:00:00Z"
+
+# mg_case <tmp> — A fresh platform/ directory under <tmp>/run.
+mg_case() {
+  rm -rf "$1/run"
+  mkdir -p "$1/run/platform"
+  : >"$1/run/platform/usage.tsv"
+  : >"$1/run/platform/containers.tsv"
+  : >"$1/run/platform/pod-samples.log"
+  : >"$1/run/platform/errors.log"
+}
+
+# mg_samples <tmp> <namespace> <pod> <container> <uid|uid@sample:uid2> <restarts|r@sample:r2> <MiB...>
+# One sample per minute from MG_START: a usage.tsv line with the memory in
+# bytes and a containers.tsv line of a pod created a day before the run,
+# with the UID and the restartCount switching at the given sample. Every
+# sample time goes to pod-samples.log once.
+mg_samples() {
+  local tmp="$1" ns="$2" pod="$3" container="$4" uid_spec="$5" restart_spec="$6" i=0 mib ts uid restarts
+  shift 6
+  for mib in "$@"; do
+    i=$((i + 1))
+    ts="$(printf '2026-01-02T%02d:%02d:00Z' $((i / 60)) $((i % 60)))"
+    uid="${uid_spec%%@*}"
+    if [[ "$uid_spec" == *@* ]] && [[ "$i" -ge "$(sed 's/.*@\([0-9]*\):.*/\1/' <<<"$uid_spec")" ]]; then uid="${uid_spec##*:}"; fi
+    restarts="${restart_spec%%@*}"
+    if [[ "$restart_spec" == *@* ]] && [[ "$i" -ge "$(sed 's/.*@\([0-9]*\):.*/\1/' <<<"$restart_spec")" ]]; then restarts="${restart_spec##*:}"; fi
+    printf '%s\t%s\t%s\t%s\t1\t%s\n' "$ts" "$ns" "$pod" "$container" "$(awk -v m="$mib" 'BEGIN { printf "%.0f", m * 1048576 }')" \
+      >>"$tmp/run/platform/usage.tsv"
+    printf '%s\t%s\t%s\t%s\t2026-01-01T00:00:00Z\tStatefulSet\t%s\t%s\t-\t-\n' "$ts" "$ns" "$pod" "$uid" "$container" "$restarts" \
+      >>"$tmp/run/platform/containers.tsv"
+    grep -qxF "$ts" "$tmp/run/platform/pod-samples.log" || echo "$ts" >>"$tmp/run/platform/pod-samples.log"
+  done
+}
+
+# linear <from> <to> <n> [flat-after] — n values from <from> to <to> MiB in
+# equal steps; with flat-after, the values reach <to> at sample flat-after
+# and stay there.
+linear() {
+  awk -v a="$1" -v b="$2" -v n="$3" -v f="${4:-$3}" 'BEGIN {
+    for (i = 1; i <= n; i++) { j = i < f ? i : f; printf "%.4f%s", a + (b - a) * (j - 1) / (f - 1), (i < n ? " " : "\n") } }'
+}
+
+# mg_check <tmp> [exempt pods] [env_var=value...] — derive_restarts,
+# derive_memory_growth and check_memory_growth in <tmp>/run with the runner's
+# own bounds and EXEMPT_PODS set after sourcing, as hack/chaos-random.sh sets
+# it; prints "pass detail".
+mg_check() {
+  local tmp="$1" exempt="${2:-}"
+  shift
+  [[ $# -gt 0 ]] && shift
+  (
+    unset DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES
+    for assignment in "$@"; do
+      export "${assignment?}"
+    done
+    # shellcheck source=/dev/null
+    source "$RUNNER_SH"
+    EXEMPT_PODS="$exempt"
+    cd "$tmp/run" || exit 1
+    # shellcheck disable=SC2034 # read by the sourced runner
+    RUN_START="$MG_START"
+    derive_restarts
+    derive_memory_growth
+    check_memory_growth | jq -r '"\(.pass) \(.detail)"'
+  )
+}
+
+# mg_no_restarts <tmp> [exempt pods] — derive_restarts and check_no_restarts
+# in <tmp>/run with EXEMPT_PODS set after sourcing; prints "pass detail".
+# shellcheck disable=SC2034 # the sourced runner reads RUN_START and EXEMPT_PODS
+mg_no_restarts() {
+  (
+    # shellcheck source=/dev/null
+    source "$RUNNER_SH"
+    EXEMPT_PODS="${2:-}"
+    RUN_START="$MG_START"
+    cd "$1/run" || exit 1
+    derive_restarts
+    check_no_restarts | jq -r '"\(.pass) \(.detail)"'
+  )
+}
+
+# mg_row <tmp> <pod> — The memory-growth.tsv row of <pod>.
+mg_row() {
+  awk -F '\t' -v pod="$2" '$2 == pod' "$1/run/platform/memory-growth.tsv"
+}
+
+test_memory_growth() {
+  echo "Test: memory-growth judges the growth over the second half of each container that ran the whole run"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # shellcheck source=/dev/null
+  assert_eq "the runner judges a container from 20 samples on" "20" \
+    "$(unset MIN_MEMORY_SAMPLES; source "$RUNNER_SH"; echo "$MIN_MEMORY_SAMPLES")"
+
+  # shellcheck disable=SC2046 # one value per word
+  mg_case "$tmp"
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack lin-0 app uid-lin 0 $(linear 128 191 40)
+  assert_eq "a container growing linearly by 63 MiB from 128 MiB over 40 samples fails" \
+    "false openstack/lin-0/app: 158.7 to 188.6 MiB (+29.9 MiB, 18.8 %)" "$(mg_check "$tmp")"
+  assert_eq "its row holds the means, the growth and the verdict" \
+    $'openstack\tlin-0\tapp\t40\t158.7\t188.6\t29.9\t18.8\tyes' "$(mg_row "$tmp" lin-0)"
+  assert_eq "a bound of 30 MiB lets it pass" \
+    "true 1 of 1 containers judged; largest growth 29.9 MiB (18.8 %, openstack/lin-0/app)" \
+    "$(mg_check "$tmp" "" DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB=30)"
+  assert_eq "and so does a bound of 18.8 %, the value as the table prints it" \
+    "true 1 of 1 containers judged; largest growth 29.9 MiB (18.8 %, openstack/lin-0/app)" \
+    "$(mg_check "$tmp" "" DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT=18.8)"
+
+  mg_case "$tmp"
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack warm-0 app uid-warm 0 $(linear 128 191 40 16)
+  assert_eq "a container growing only in its first 40 % and flat after passes" \
+    "true 1 of 1 containers judged; largest growth 0.0 MiB (0.0 %, openstack/warm-0/app)" "$(mg_check "$tmp")"
+
+  local i values
+  mg_case "$tmp"
+  values=""
+  # The step after sample 22, past the midpoint's samples 18 to 22.
+  for i in $(seq 1 22); do values="$values 250"; done
+  for i in $(seq 1 18); do values="$values 270"; done
+  # shellcheck disable=SC2086
+  mg_samples "$tmp" openstack big-0 app uid-big 0 $values
+  values=""
+  for i in $(seq 1 22); do values="$values 40"; done
+  for i in $(seq 1 18); do values="$values 52"; done
+  # shellcheck disable=SC2086
+  mg_samples "$tmp" openstack small-0 app uid-small 0 $values
+  assert_eq "a growth of 20 MiB and 8 % passes, and so does one of 12 MiB and 30 %" \
+    "true 2 of 2 containers judged; largest growth 20.0 MiB (8.0 %, openstack/big-0/app)" "$(mg_check "$tmp")"
+  assert_eq "the second one's row" $'openstack\tsmall-0\tapp\t40\t40.0\t52.0\t12.0\t30.0\tyes' "$(mg_row "$tmp" small-0)"
+
+  mg_case "$tmp"
+  echo "2026-01-02T00:01:00Z usage: Error from server (NotFound): the server could not find the requested resource" \
+    >>"$tmp/run/platform/errors.log"
+  assert_eq "with usage.tsv empty the check fails with the last failed read" \
+    "false memory samples could not be read: 2026-01-02T00:01:00Z usage: Error from server (NotFound): the server could not find the requested resource" \
+    "$(mg_check "$tmp")"
+
+  mg_case "$tmp"
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack few-0 app uid-few 0 $(linear 100 100 19)
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack few-1 app uid-few1 0 $(linear 100 100 19)
+  assert_eq "a run where every container has fewer than 20 samples fails" \
+    "false no container could be judged; the reasons: fewer than 20 samples (2)" "$(mg_check "$tmp")"
+
+  mg_case "$tmp"
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack sts-0 app uid-a@21:uid-b 0 $(linear 100 300 40)
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack restarted-0 app uid-r 0@30:1 $(linear 100 300 40)
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack steady-0 app uid-s 0 $(linear 100 100 40)
+  assert_eq "a StatefulSet pod whose UID changes is not judged" "pod replaced during the run" \
+    "$(mg_check "$tmp" >/dev/null; mg_row "$tmp" sts-0 | cut -f 9)"
+  assert_eq "nor is a restarted container" "restarted" "$(mg_row "$tmp" restarted-0 | cut -f 9)"
+  assert_eq "so their growth fails nothing" \
+    "true 1 of 3 containers judged; largest growth 0.0 MiB (0.0 %, openstack/steady-0/app)" "$(mg_check "$tmp")"
+
+  mg_case "$tmp"
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack x app uid-x 0@30:2 $(linear 100 300 40)
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack y app uid-y 0 $(linear 100 100 40)
+  assert_eq "with EXEMPT_PODS empty nothing is exempt" "restarted" \
+    "$(mg_check "$tmp" >/dev/null; mg_row "$tmp" x | cut -f 9)"
+  assert_eq "and no-restarts fails on the restart" "false 2 restart(s) and 0 OOM kill(s) in 2 containers observed" \
+    "$(mg_no_restarts "$tmp")"
+  assert_eq "with openstack/x exempt memory-growth skips it and names the count" \
+    "true 1 of 2 containers judged; largest growth 0.0 MiB (0.0 %, openstack/y/app); 1 container(s) of exempt pods skipped" \
+    "$(mg_check "$tmp" openstack/x)"
+  assert_eq "its row says exempt" "exempt" "$(mg_row "$tmp" x | cut -f 9)"
+  assert_eq "and no-restarts skips it too and names the count" \
+    "true 1 containers observed, 0 restarts, 0 OOM kills; 1 exempt pod(s) skipped" \
+    "$(mg_no_restarts "$tmp" $'openstack/other\nopenstack/x')"
+  assert_eq "with every pod exempt nothing can be judged" \
+    "false no container could be judged; the reasons: exempt (2)" \
+    "$(mg_check "$tmp" $'openstack/x\nopenstack/y')"
+
+  mg_case "$tmp"
+  # source-controller refreshes its sources in the last tenth.
+  values=""
+  for i in $(seq 1 36); do values="$values 54"; done
+  for i in $(seq 1 4); do values="$values 255"; done
+  # shellcheck disable=SC2086
+  mg_samples "$tmp" flux-system source-controller-0 manager uid-src 0 $values
+  # shellcheck disable=SC2046
+  mg_samples "$tmp" openstack steady-0 app uid-s 0 $(linear 100 100 40)
+  assert_eq "memory-growth skips the containers of flux-system by default and names their count" \
+    "true 1 of 2 containers judged; largest growth 0.0 MiB (0.0 %, openstack/steady-0/app); 1 container(s) of flux-system skipped" \
+    "$(mg_check "$tmp")"
+  assert_eq "its row says namespace skipped" "namespace skipped" "$(mg_row "$tmp" source-controller-0 | cut -f 9)"
+  assert_eq "with DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES empty it judges them" \
+    "false flux-system/source-controller-0/manager: 54.0 to 255.0 MiB (+201.0 MiB, 372.2 %)" \
+    "$(mg_check "$tmp" "" DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES=)"
+  assert_eq "a skip list names every namespace it lists" \
+    "true 1 of 2 containers judged; largest growth 0.0 MiB (0.0 %, openstack/steady-0/app); 1 container(s) of monitoring, flux-system skipped" \
+    "$(mg_check "$tmp" "" "DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES=monitoring flux-system")"
+  assert_eq "with every container skipped nothing can be judged" \
+    "false no container could be judged; the reasons: namespace skipped (2)" \
+    "$(mg_check "$tmp" "" "DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES=flux-system openstack")"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if ! command -v jq >/dev/null 2>&1; then
@@ -1520,6 +1761,7 @@ test_derive_usage_summary
 test_operator_sampling
 test_operator_names
 test_operator_leak_check
+test_memory_growth
 test_conditions
 test_conditions_beyond_one_argument
 test_clean_run
