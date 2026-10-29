@@ -393,10 +393,7 @@ cancelled.
 `continue-on-error`, so a red entry fails `e2e-chaos`, and `tempest`, which
 needs the job, skips on that run. An entry added to the matrix gates from its
 first run. `main` lists no required status checks, so gating means the job
-result and the skipped Tempest jobs. `controlplane-provisioning-mariadb-kill`
-keeps the `controlplane` entry red until the keystone-operator recovers an
-interrupted first `db_sync` (see its
-[design notes](#controlplane-provisioning-mariadb-kill)). The `ci:chaos` PR
+result and the skipped Tempest jobs. The `ci:chaos` PR
 label runs every entry on demand for pre-validation. `run-chaos` still works as
 an alias for it.
 
@@ -490,11 +487,7 @@ The `controlplane` entry is the fifth, on the `self-hosted` runners. Its eight s
 `rabbitmq-operator-cascading-failure`, and `controlplane-provisioning-mariadb-kill`,
 `controlplane-deletion-korc-outage` and `keystoneuser-rotation-keystone-outage` of
 #1394) each bring up a Keystone-only ControlPlane in a namespace of its own through
-`tests/e2e-chaos/lib/controlplane.sh`. `controlplane-provisioning-mariadb-kill`
-runs last, in a chainsaw invocation of its own: it fails on the current
-keystone-operator (see its [design notes](#controlplane-provisioning-mariadb-kill)),
-and inside one invocation the `failFast` of the shared config would skip every
-suite behind it.
+`tests/e2e-chaos/lib/controlplane.sh`.
 The entry sets `WITH_CONTROLPLANE=true` and `CONTROLPLANE_OPERATORS=external` on
 the infrastructure bring-up, the environment of the `e2e-controlplane` job: the
 infrastructure overlay comes without the standalone MariaDB, Memcached and shim
@@ -528,8 +521,6 @@ PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where it hit
 the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of #1394
 add about 12 minutes each to `pod`, `nova` and `controlplane`, and the `upgrade`
 entry runs two Cinder upgrades of about 20 minutes each after the bring-up.
-`controlplane-provisioning-mariadb-kill` takes about 30 minutes while it fails:
-its 720-second `KeystoneReady` wait and a teardown of up to 13 minutes.
 
 ## Test Suite Inventory
 
@@ -4363,18 +4354,18 @@ pods; step 5 dumps the workload.
 
 - The keystone-operator runs Job `<ks>-db-sync`, then `<ks>-bootstrap`, both with a
   backoff limit of 4 (`internal/common/database/jobs.go`,
-  `operators/keystone/internal/controller/reconcile_bootstrap.go`). The retries do
-  not carry the migration past the kill, and the suite fails on the current
-  keystone-operator (two of two kind runs on 2026-10-26). The kill lands inside
-  Keystone's initial alembic revision `27e647c0fad4`. MariaDB commits DDL
-  implicitly, so the tables that revision created stay without an
-  `alembic_version` row, and every retry fails with error 1050 "Table ... already
-  exists". Once the Job reaches its backoff limit, `internal/common/job/job.go`
-  keeps a failed Job whose re-run key is unchanged and returns `ErrJobFailed`. The
-  Keystone stays at `DatabaseReady=False/DBSyncFailed` and the plane at
-  `KeystoneReady=False` until the half-built schema is dropped by hand. The suite
-  stays red until the keystone-operator recovers an interrupted first `db_sync`,
-  and its budget stays an estimate until it passes.
+  `operators/keystone/internal/controller/reconcile_bootstrap.go`). The kill lands
+  inside the plane's first `db_sync`. MariaDB commits DDL implicitly, so the tables
+  of the interrupted revision stay without an `alembic_version` row, and a plain
+  `db_sync` would fail every retry with error 1050 "Table ... already exists". The
+  db-sync Job's next attempt first runs its pre-step,
+  `operators/keystone/internal/controller/scripts/db_sync_reset.py`. The pre-step
+  waits for the restarted database and drops the schema, in which no table holds a
+  row yet, and the `db_sync` of the same attempt rebuilds it.
+- The kill can also land before the first connect or after the migration, where the
+  pre-step drops nothing, so the suite asserts no reset line.
+  `tests/e2e/keystone/db-sync-partial-schema` seeds the half-built schema by hand
+  and pins the reset on every keystone run.
 - The admin lookup reads the password through `secretKeyRef`, so it never enters an
   argument.
 - The `OWNED-ONCE-OK` loop is the one of `c5c3-operator-pod-kill`, without its UID
