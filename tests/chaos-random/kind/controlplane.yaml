@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The ControlPlane of the random chaos plane on kind (#1395), a copy of
+# tests/e2e/c5c3/full-controlplane-keystone/00-controlplane-cr.yaml with every
+# controlplane-keystone name turned into controlplane, the default identity.
+# Its departures from the source:
+#   - services.horizon names no secretKeyRef: the default identity inherits
+#     the kind shim Secret horizon-secret-key, so the source's
+#     02-horizon-secret-key-externalsecret.yaml has no copy here;
+#   - infrastructure.messaging.secretRef is controlplane-messaging, which
+#     hack/chaos-random.sh up writes with tests/e2e/cinder/broker-vhost.sh.
+# The source's comments explain each block; they are not copied.
+# hack/chaos-random.sh up applies it after ovncentral.yaml.
+---
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: controlplane
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  region: RegionOne
+  regionDescription: CobaltCore e2e region
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+    messaging:
+      secretRef:
+        name: controlplane-messaging
+  services:
+    keystone: {}
+    horizon: {}
+    glance:
+      backends:
+        - name: default
+          type: S3
+          isDefault: true
+          s3:
+            endpoint: "http://garage.shared-services.svc.cluster.local:3900"
+            bucket: glance-images
+            region: garage
+            credentialsSecretRef:
+              name: garage-s3-credentials
+    placement: {}
+    barbican:
+      secretStore:
+        dedicated: {}
+    neutron:
+      ovn:
+        centralRef:
+          name: controlplane-ovn
+    cinder:
+      backends:
+        - name: nfs1
+          type: NFS
+          nfs:
+            server: nfs-server.openstack.svc.cluster.local
+            path: /volumes
+          imageVolumeCache:
+            enabled: true
+      backupBackend:
+        name: nfsbk
+        type: NFS
+        nfs:
+          server: nfs-server.openstack.svc.cluster.local
+          path: /backups
+    nova:
+      hypervisorOperator: {}
+  sizing:
+    profile: Minimal
+  globalPolicyOverrides:
+    rules:
+      "identity:list_users": "role:admin"
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Seeds the flavor and the image the dizzy soak of the random chaos plane on
+# kind boots its servers from (#1395): flavor chaos-random (1 vCPU, 128 MiB,
+# 1 GiB disk) and the public raw image chaos-random, which scenario.yaml names.
+# Each is created only when it is absent, so a second `hack/chaos-random.sh up`
+# converges. An image that is present but not active fails the Job: a failed
+# upload leaves its record queued, and dizzy would boot from it and fail every
+# server. The payload is 1 MiB of zeros; the fake driver of fake-compute.yaml
+# never reads it.
+#
+# The Job authenticates with the K-ORC admin credential of the plane, the
+# Secret k-orc-clouds-yaml (cloud admin) mounted at /etc/openstack, and gets no
+# service-account token. `hack/chaos-random.sh up` applies it last and waits
+# up to 300 seconds for it to complete.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: chaos-random-seed
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      containers:
+        - name: seed
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 42424
+            runAsGroup: 42424
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: OS_CLOUD
+              value: admin
+            - name: HOME
+              value: /tmp
+          volumeMounts:
+            - name: clouds
+              mountPath: /etc/openstack
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              if openstack flavor show chaos-random >/dev/null 2>&1; then
+                echo "OK: flavor chaos-random already present"
+              else
+                openstack flavor create --vcpus 1 --ram 128 --disk 1 --public chaos-random >/dev/null
+                echo "OK: flavor chaos-random created"
+              fi
+              if STATUS="$(openstack image show chaos-random -f value -c status 2>/dev/null)"; then
+                if [ "${STATUS}" = active ]; then
+                  echo "OK: image chaos-random already present"
+                  exit 0
+                fi
+                echo "ERROR: image chaos-random is ${STATUS}, not active; delete it and run hack/chaos-random.sh up again" >&2
+                exit 1
+              fi
+              dd if=/dev/zero of=/tmp/chaos-random.img bs=1M count=1 2>/dev/null
+              openstack image create --disk-format raw --container-format bare \
+                --public --file /tmp/chaos-random.img chaos-random >/dev/null
+              STATUS="$(openstack image show chaos-random -f value -c status)"
+              if [ "${STATUS}" != active ]; then
+                echo "ERROR: image chaos-random is ${STATUS} after its upload, not active" >&2
+                exit 1
+              fi
+              echo "OK: image chaos-random registered and active"
+      volumes:
+        - name: clouds
+          secret:
+            secretName: k-orc-clouds-yaml
+            items:
+              - key: clouds.yaml
+                path: clouds.yaml
+        - name: tmp
+          emptyDir: {}
