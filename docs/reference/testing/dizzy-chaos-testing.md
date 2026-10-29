@@ -120,6 +120,16 @@ The overlay is `deploy/lab/metal-stack/dizzy-soak/`; see
 [Lab dizzy soak](../infrastructure/infrastructure-manifests.md#lab-dizzy-soak)
 for its objects and posture.
 
+The soak injects no fault. The random chaos run of `hack/chaos-random.sh` is
+the soak with faults ([#1395](https://github.com/c5c3/cobaltcore/issues/1395)):
+it starts this soak for the warm-up, the window and the tail, applies faults
+drawn from the chaos suites as one Chaos Mesh Workflow during the window, and
+judges the soak's report together with the faults' windows and targets (see
+[Random runs](./chaos-e2e-tests.md#random-runs)). CI runs it every night on a
+kind ControlPlane, with `DIZZY_SCENARIO` set to
+`tests/chaos-random/kind/scenario.yaml`; the lab runs it over six hours with
+`make lab-chaos-random`. `make dizzy-soak-start` stays the fault-free soak.
+
 ### Soak prerequisites
 
 - The dizzy stack on the lab, deployed with `WITH_DIZZY=true` beside
@@ -364,7 +374,9 @@ removes its resources and prints its leak check. Then it writes the report.
   directly. It holds no events and no node conditions, and the platform's
   samples go to no VictoriaMetrics series.
 - Nothing in the soak is specific to the lab but the overlay's location and
-  the scenario's names; only the lab run is proven.
+  the scenario's names. CI runs the soak under the random run of
+  `e2e-chaos-random`, on a kind ControlPlane, with the scenario of
+  `tests/chaos-random/kind/`.
 - K-ORC applies the user's password only when the name of its Secret changes.
   To reset it, delete the K-ORC User `dizzy-soak` and the Secret
   `dizzy-soak-user-password` in `openstack` together; the next `start`
