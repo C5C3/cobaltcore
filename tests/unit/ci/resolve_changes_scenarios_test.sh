@@ -36,6 +36,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Harness
@@ -69,7 +71,7 @@ expect_all() {
 }
 
 # The jobs a cheap change must never schedule.
-EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-orders-multicluster keystone-pressure tempest"
+EXPENSIVE="e2e-chaos e2e-chaos-random e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-orders-multicluster keystone-pressure tempest"
 
 SENTINEL_TARGETS='{"target":["__none__"]}'
 SENTINEL_OPERATORS='{"operator":["__none__"]}'
@@ -411,6 +413,42 @@ test_ci_tempest_follows_the_touched_service() {
   expect build-e2e-images true
 }
 
+test_random_chaos_runs_on_its_own_files() {
+  # The tests_chaos_random filter is the random run's own files; a change to
+  # one schedules the run and the image build it loads, and nothing else.
+  local block
+  block="$(filter_block tests_chaos_random)"
+  assert_contains "tests_chaos_random lists tests/chaos-random/**, so the catalogue counts" "$block" "- 'tests/chaos-random/**'"
+  assert_contains "and the runner" "$block" "- 'hack/chaos-random.sh'"
+  assert_contains "and the soak it runs under" "$block" "- 'hack/dizzy-soak-runner.sh'"
+  assert_contains "and the consistency checks" "$block" "- 'tests/e2e-chaos/lib/consistency.sh'"
+  assert_not_contains "but not the chaos suites" "$block" "tests/e2e-chaos/**"
+  assert_file_contains_fixed "the resolver step gets the filter" "$CI_YAML" \
+    'FILTER_tests_chaos_random: ${{ steps.filter.outputs.tests_chaos_random }}'
+
+  scenario "a change to tests/chaos-random/catalogue.yaml" refs/heads/main FILTER_tests_chaos_random=true
+  expect_all true e2e-chaos-random build-e2e-images
+  expect_all false e2e-chaos e2e-controlplane tempest go has-e2e-operators noop
+
+  scenario "a change under tests/e2e-chaos/ alone" refs/heads/main FILTER_tests_chaos=true
+  expect e2e-chaos true
+  expect e2e-chaos-random false
+
+  scenario "ci:full" refs/heads/main FILTER_docs=true PR_LABELS='["ci:full"]'
+  expect e2e-chaos-random true
+
+  scenario "ci:chaos" refs/heads/main FILTER_docs=true PR_LABELS='["ci:chaos"]'
+  expect e2e-chaos true
+  expect e2e-chaos-random false
+  scenario "run-chaos" refs/heads/main FILTER_docs=true PR_LABELS='["run-chaos"]'
+  expect e2e-chaos-random false
+
+  scenario "a labeled no-op with the random run's files changed" refs/heads/main \
+    FILTER_tests_chaos_random=true EVENT_ACTION=labeled EVENT_LABEL=bug
+  expect noop true
+  expect e2e-chaos-random false
+}
+
 test_ci_chaos_and_its_alias() {
   scenario "ci:chaos on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:chaos"]'
@@ -586,10 +624,10 @@ test_push_keeps_the_publish_matrix() {
 # The nightly chaos run
 # ---------------------------------------------------------------------------
 
-# expect_night — the outputs of a scheduled or dispatched run: the chaos legs
-# and the image build they load, nothing else.
+# expect_night — the outputs of a scheduled or dispatched run: the chaos legs,
+# the random chaos run and the image build they load, nothing else.
 expect_night() {
-  expect_all true e2e-chaos build-e2e-images
+  expect_all true e2e-chaos e2e-chaos-random build-e2e-images
   expect noop false
   expect_all false go docs helm target-cluster-chart e2e-infra e2e-prometheus \
     e2e-controlplane e2e-controlplane-sso e2e-external-keystone \
@@ -678,7 +716,7 @@ test_outputs_are_complete() {
   # job silently resolves it to the empty string and skips forever.
   scenario "the emitted output set" refs/heads/main FILTER_glance=true
   local expected key
-  expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos
+  expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos e2e-chaos-random
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
     e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-operator-upgrade tempest measure-sizing
     keystone-pressure
@@ -736,6 +774,7 @@ test_tempest_legs_follow_the_operators_they_deploy
 test_shared_tempest_change_covers_every_service
 test_ci_full_runs_everything
 test_ci_tempest_follows_the_touched_service
+test_random_chaos_runs_on_its_own_files
 test_ci_chaos_and_its_alias
 test_ci_controlplane_and_multicluster
 test_ci_pressure_runs_the_pressure_job

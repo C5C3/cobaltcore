@@ -11,11 +11,12 @@ name: CI
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled]
-  # The nightly chaos run (#1388): every e2e-chaos leg against main, after
-  # build-e2e-images, and nothing else (hack/ci-resolve-changes.sh). A green
-  # night takes about 18 minutes of image build and the 137-minute nova leg,
-  # so it ends around 00:40, before Performance (01:30) and the Flux path
-  # (02:45). report-nightly-chaos files a red scheduled night; a dispatch
+  # The nightly chaos run (#1388): every e2e-chaos leg and the random chaos
+  # run e2e-chaos-random (#1395) against main, after build-e2e-images, and
+  # nothing else (hack/ci-resolve-changes.sh). A green night takes about 18
+  # minutes of image build and the 137-minute nova leg, so it ends around
+  # 00:40, before Performance (01:30) and the Flux path (02:45).
+  # report-nightly-chaos files a red scheduled night; a dispatch
   # (gh workflow run ci.yaml --ref main) runs the same jobs and files nothing.
   schedule:
     - cron: "0 22 * * *"
@@ -105,6 +106,7 @@ jobs:
       target-cluster-chart: ${{ steps.result.outputs.target-cluster-chart }}
       e2e-infra: ${{ steps.result.outputs.e2e-infra }}
       e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}
+      e2e-chaos-random: ${{ steps.result.outputs.e2e-chaos-random }}
       e2e-prometheus: ${{ steps.result.outputs.e2e-prometheus }}
       e2e-controlplane: ${{ steps.result.outputs.e2e-controlplane }}
       e2e-controlplane-sso: ${{ steps.result.outputs.e2e-controlplane-sso }}
@@ -403,6 +405,17 @@ jobs:
               - 'internal/common/deployment/vpa_flow.go'
             tests_chaos:
               - 'tests/e2e-chaos/**'
+            # The random chaos run's own files: the catalogue, the draw and
+            # the kind plane, its runner, the soak it runs under and the
+            # consistency checks it judges with. A suite header under
+            # tests/e2e-chaos/ reaches it through the unit tests alone.
+            tests_chaos_random:
+              - 'tests/chaos-random/**'
+              - 'hack/chaos-random.sh'
+              - 'hack/dizzy-soak.sh'
+              - 'hack/dizzy-soak-runner.sh'
+              - 'deploy/lab/metal-stack/dizzy-soak/**'
+              - 'tests/e2e-chaos/lib/consistency.sh'
             tests_multicluster:
               - 'tests/e2e-multicluster/**'
               - 'deploy/target-cluster/**'
@@ -624,6 +637,7 @@ jobs:
           FILTER_tests_external_keystone: ${{ steps.filter.outputs.tests_external_keystone }}
           FILTER_tests_autoscaling: ${{ steps.filter.outputs.tests_autoscaling }}
           FILTER_tests_chaos: ${{ steps.filter.outputs.tests_chaos }}
+          FILTER_tests_chaos_random: ${{ steps.filter.outputs.tests_chaos_random }}
           FILTER_tests_multicluster: ${{ steps.filter.outputs.tests_multicluster }}
           FILTER_tests_orders_multicluster: ${{ steps.filter.outputs.tests_orders_multicluster }}
           FILTER_tests_ovn_overlay: ${{ steps.filter.outputs.tests_ovn_overlay }}
@@ -2739,16 +2753,239 @@ jobs:
         if: always()
         run: hack/ci-delete-kind-cluster.sh
 
+  # The random chaos run (#1395): faults drawn from
+  # tests/chaos-random/catalogue.yaml, applied as one Chaos Mesh Workflow
+  # against a full ControlPlane on kind while the dizzy soak churns, and
+  # judged by hack/chaos-random.sh (docs/reference/testing/chaos-e2e-tests.md,
+  # Random runs). It runs every night, on a pull request that changes its own
+  # files (the tests_chaos_random filter) and under ci:full, and gates like
+  # every chaos leg; ci:chaos does not run it. The seed is the run id, so
+  # `CHAOS_RANDOM_ENV=ci CHAOS_RANDOM_SEED=<run id> make chaos-random-draw`
+  # replays the draw of a red night.
+  #
+  # The wall of 120 minutes is the author's (#1395, superseding the 90 of D6
+  # of #1386): about 50 minutes bring the plane up (image loads, the stack,
+  # the ControlPlane, as in e2e-controlplane), and the run takes the 2-minute
+  # warm-up, the 30-minute window, the 10-minute tail and its checks.
+  e2e-chaos-random:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      (github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.changes.outputs.e2e-chaos-random == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: self-hosted
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    # One replica per operator, as in e2e-controlplane, so the plane fits the
+    # kind node beside the soak.
+    env:
+      OPERATOR_REPLICAS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
+      # The ten operators, the eight service images the projected children
+      # run at 2026.1, the OVN daemon image, and the OpenStack-client image of
+      # the seed, stuck-resources and consistency Jobs.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev
+            ${{ env.IMAGE_PREFIX }}/placement-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
+            ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
+            ${{ env.IMAGE_PREFIX }}/cinder-operator:dev
+            ${{ env.IMAGE_PREFIX }}/nova-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/horizon:2026.1
+            ${{ env.IMAGE_PREFIX }}/glance:2026.1
+            ${{ env.IMAGE_PREFIX }}/placement:2026.1
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.1
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.1
+            ${{ env.IMAGE_PREFIX }}/cinder:2026.1
+            ${{ env.IMAGE_PREFIX }}/nova:2026.1
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
+      # The ControlPlane stack without its CR, the bus and the NFS export of
+      # Cinder, the kernel modules of the OVN chassis, Chaos Mesh, the dizzy
+      # stack the soak exports to, and metrics-server, whose resource metrics
+      # memory-growth judges.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          WITH_CONTROLPLANE_CR: "false"
+          WITH_NFS: "true"
+          WITH_MESSAGING: "true"
+          WITH_OVN_KERNEL_MODULES: "true"
+          WITH_CHAOS_MESH: "true"
+          WITH_DIZZY: "true"
+          WITH_METRICS_SERVER: "true"
+      - name: Deploy K-ORC
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: hack/ci-deploy-korc.sh
+      # The ten operators in the order of e2e-controlplane: each CRD the
+      # c5c3-operator projects exists before it starts.
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+      - name: Deploy glance-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
+      - name: Deploy placement-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
+      - name: Deploy barbican-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
+      - name: Deploy ovn-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      - name: Deploy neutron-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
+      - name: Deploy cinder-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
+      - name: Deploy nova-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: nova
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
+          NAMESPACE: nova-system
+      - name: Deploy c5c3-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
+      - name: Bring up the random chaos plane
+        timeout-minutes: 40
+        run: hack/chaos-random.sh up
+        env:
+          CHAOS_RANDOM_ENV: ci
+      - name: Run random chaos
+        timeout-minutes: 65
+        run: hack/chaos-random.sh run
+        env:
+          CHAOS_RANDOM_ENV: ci
+          CHAOS_RANDOM_SEED: ${{ github.run_id }}
+      # One pass for the c5c3-operator and the plane, then the three sections
+      # that differ for each other operator, as on the nova and network legs.
+      - name: Dump diagnostic info
+        if: always()
+        run: |
+          OPERATOR=c5c3 hack/ci-dump-diagnostics.sh
+          for op in keystone horizon glance placement barbican ovn neutron cinder nova; do
+            OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
+      # The JUnit file goes under the name report-nightly-chaos downloads, as
+      # the legs' do; the run directory holds the plan, the windows, the
+      # soak's report and the verdict.
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-chaos-junit-report-random
+          path: _output/reports/
+          retention-days: 14
+      - name: Upload the random run
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-chaos-random-report
+          path: _output/chaos-random/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs. Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
+
   # Files a red nightly chaos run (#1388): one issue per failed suite, per
   # red leg that names no suite, for a night where no leg ran, and for a
-  # night whose self-hosted jobs took longer than 600 minutes together (D6
-  # of #1386), each through hack/ci-report-red-run.sh
+  # night whose self-hosted jobs took longer than 720 minutes together (the
+  # budget the author of #1395 set for the random run, superseding the 600 of
+  # D6 of #1386), each through hack/ci-report-red-run.sh
   # (hack/ci-report-nightly-chaos.sh). This GitHub-hosted job is the only one
   # in this workflow that holds issues: write; actions: read lists the jobs
   # of the run. A dispatch never reports, as in flux-path.yaml. A re-run
   # comments on the same open issues and opens none.
   report-nightly-chaos:
-    needs: [changes, build-e2e-images, e2e-chaos]
+    needs: [changes, build-e2e-images, e2e-chaos, e2e-chaos-random]
     if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -2775,7 +3012,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPORT_SHA: ${{ github.sha }}
           REPORTS_DIR: _output/nightly
-          BUDGET_MINUTES: "600"
+          BUDGET_MINUTES: "720"
 
   # End-to-end Prometheus stack tests using kind cluster,
   # kube-prometheus-stack, and Chainsaw.  Loads the keystone-operator and
@@ -5638,7 +5875,7 @@ jobs:
   # nightly cleanup-images workflow has a safety-net job that catches
   # tags that survive a cancelled run before this one fires.
   cleanup-e2e-tags:
-    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, keystone-pressure, tempest]
+    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-chaos-random, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, keystone-pressure, tempest]
     if: |
       always() &&
       needs.build-e2e-images.result == 'success'

@@ -26,7 +26,10 @@
 #                                        the completed self-hosted jobs ran
 #                                        longer than BUDGET_MINUTES together
 #
-# A leg is a job named "e2e-chaos (<leg>, ...)"; a skipped one did not run. A
+# A leg is a job named "e2e-chaos (<leg>, ...)", or the random chaos run, the
+# job named e2e-chaos-random, which is the leg random: its JUnit report holds
+# one suite random-<check> per check of its verdict. A skipped one did not
+# run. A
 # green night files nothing. Every night, green or red, writes a table of the
 # legs and the self-hosted total to $GITHUB_STEP_SUMMARY and to stdout. A failure
 # message goes into the issue inside a fence longer than any backtick run in it,
@@ -39,7 +42,8 @@
 #   REPORTS_DIR     — the directory the JUnit artifacts were downloaded into,
 #                     one e2e-chaos-junit-report-<leg>/ directory per leg
 # Optional env vars:
-#   BUDGET_MINUTES  — the self-hosted minutes a night may take (default 600)
+#   BUDGET_MINUTES  — the self-hosted minutes a night may take (default 720,
+#                     the budget the author of #1395 set for the random run)
 #   REPORT_SHA      — the commit the run tested; ci-report-red-run.sh names it
 #   GITHUB_STEP_SUMMARY — the step summary file; GitHub Actions sets it
 # gh reads GH_TOKEN and GH_REPO itself; the token needs actions: read and
@@ -64,7 +68,7 @@ for name in RUN_ID RUN_URL REPORTS_DIR; do
     exit 1
   fi
 done
-BUDGET_MINUTES="${BUDGET_MINUTES:-600}"
+BUDGET_MINUTES="${BUDGET_MINUTES:-720}"
 case "${BUDGET_MINUTES}" in
   '' | *[!0-9]*)
     echo "ERROR: BUDGET_MINUTES is no whole number" >&2
@@ -107,6 +111,7 @@ records="$(printf '%s' "${listing}" | jq -rs '
   else error("no listing") end' 2>/dev/null)" || listing_failed
 
 LEG_RE='^e2e-chaos \(([a-z0-9-]+),'
+RANDOM_LEG_RE='^e2e-chaos-random$'
 
 legs=()
 leg_results=()
@@ -137,6 +142,11 @@ while IFS=$'\t' read -r name result url host seconds; do
   esac
   if [[ "${name}" =~ ${LEG_RE} ]] && [ "${result}" != "skipped" ]; then
     legs+=("${BASH_REMATCH[1]}")
+    leg_results+=("${result}")
+    leg_urls+=("${url}")
+    leg_seconds+=("${seconds}")
+  elif [[ "${name}" =~ ${RANDOM_LEG_RE} ]] && [ "${result}" != "skipped" ]; then
+    legs+=("random")
     leg_results+=("${result}")
     leg_urls+=("${url}")
     leg_seconds+=("${seconds}")

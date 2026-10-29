@@ -18,8 +18,11 @@
 #   - a night where no leg ran files the run, with the conclusion of
 #     build-e2e-images, as "skipped" when that build passed, or as "missing"
 #     when the listing holds no job;
-#   - self-hosted jobs summing 601 minutes file the budget, 600 do not; an
-#     ubuntu-latest job and a job without completed_at add nothing;
+#   - a red e2e-chaos-random job is the leg random: a JUnit failure of
+#     tests/chaos-random/random-quiet-tail files that suite, one without a
+#     report files the leg, and a skipped one files nothing;
+#   - self-hosted jobs summing 730 minutes file the budget of 720, 700 do not;
+#     an ubuntu-latest job and a job without completed_at add nothing;
 #   - a failing listing, a listing that is no JSON and a page without a jobs
 #     array exit 1 before any filing;
 #   - an empty RUN_ID, RUN_URL or REPORTS_DIR, and a BUDGET_MINUTES that is
@@ -194,7 +197,7 @@ test_a_green_night_files_nothing() {
     assert_file_contains "the step summary names the $leg leg" "$STEP_SUMMARY" "^| $leg | success | "
   done
   assert_file_contains "the step summary counts build and legs as self-hosted" "$STEP_SUMMARY" \
-    "^Self-hosted runner time: 402 of 600 minutes\.$"
+    "^Self-hosted runner time: 402 of 720 minutes\.$"
   assert_contains "the step summary goes to stdout too" "$OUT" "### Nightly chaos run"
 }
 
@@ -303,30 +306,75 @@ test_a_night_without_legs_files_the_run() {
 }
 
 test_the_runner_budget() {
-  echo "Test: 601 self-hosted minutes file the budget, 600 do not"
+  echo "Test: 730 self-hosted minutes file the budget of 720, 700 do not"
   reset
   STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 282)" \
+    "$(job e2e-chaos-random success self-hosted 100)" \
     "$(job report-nightly-chaos success ubuntu-latest 300)" \
     "$(job e2e-prometheus success self-hosted -)")"
 
   run_report
-  assert_eq "600 minutes, an ubuntu-latest job and an unfinished job file nothing" "" "$(calls)"
-  assert_file_contains "the step summary shows 600" "$STEP_SUMMARY" "^Self-hosted runner time: 600 of 600 minutes\.$"
+  assert_eq "700 minutes, an ubuntu-latest job and an unfinished job file nothing" "" "$(calls)"
+  assert_file_contains "the step summary shows 700 of 720" "$STEP_SUMMARY" "^Self-hosted runner time: 700 of 720 minutes\.$"
 
   reset
-  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 283)")"
+  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 283)" \
+    "$(job e2e-chaos-random success self-hosted 129)")"
 
   run_report
   assert_eq "it exits 0" "0" "$RC"
-  assert_eq "601 minutes file the budget" "Nightly chaos run is over its runner budget|failure" "$(calls)"
+  assert_eq "730 minutes file the budget" "Nightly chaos run is over its runner budget|failure" "$(calls)"
   assert_file_contains "the table lists the build" "$TMP_DIR/summary-1.md" '^| `build-e2e-images` | success | 18 |$'
   assert_file_contains "the table lists a leg" "$TMP_DIR/summary-1.md" '^| `e2e-chaos (nova, .*` | success | 283 |$'
-  assert_file_contains "the table carries the total" "$TMP_DIR/summary-1.md" '^| Total | | 601 |$'
+  assert_file_contains "the table lists the random run" "$TMP_DIR/summary-1.md" '^| `e2e-chaos-random` | success | 129 |$'
+  assert_file_contains "the table carries the total" "$TMP_DIR/summary-1.md" '^| Total | | 730 |$'
 
   reset
   STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 282)")"
   run_report BUDGET_MINUTES=500
   assert_eq "BUDGET_MINUTES moves the line" "Nightly chaos run is over its runner budget|failure" "$(calls)"
+}
+
+test_the_random_leg() {
+  echo "Test: a red e2e-chaos-random job files its failed checks as the leg random"
+  reset
+  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(job e2e-chaos-random failure self-hosted 110)")"
+  mkdir -p "$REPORTS/e2e-chaos-junit-report-random"
+  cat >"$REPORTS/e2e-chaos-junit-report-random/chaos-random-junit.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="chaos-random">
+  <testsuite name="tests/chaos-random/random-workflow" tests="1" failures="0">
+    <testcase name="random-workflow" classname="chaos-random"/>
+  </testsuite>
+  <testsuite name="tests/chaos-random/random-quiet-tail" tests="1" failures="1">
+    <testcase name="random-quiet-tail" classname="chaos-random">
+      <failure message="dizzy counted 2 failed operation(s) after the last recovery (seed 123)"/>
+    </testcase>
+  </testsuite>
+</testsuites>
+XML
+
+  run_report
+  assert_eq "it exits 0" "0" "$RC"
+  assert_eq "the failed check is filed as a suite" "Nightly chaos suite random-quiet-tail is red|failure" "$(calls)"
+  assert_file_contains "the summary names the leg random" "$TMP_DIR/summary-1.md" '^Leg: `random`$'
+  assert_file_contains_fixed "and the message with the seed" "$TMP_DIR/summary-1.md" "(seed 123)"
+  assert_file_contains "the step summary lists the leg" "$STEP_SUMMARY" "^| random | failure | 110 | random-quiet-tail |$"
+
+  echo "Test: a red e2e-chaos-random job without a report files the leg random"
+  reset
+  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(job e2e-chaos-random cancelled self-hosted 120)")"
+
+  run_report
+  assert_eq "the leg is filed" "Nightly chaos leg random is red|cancelled" "$(calls)"
+
+  echo "Test: a skipped e2e-chaos-random job files nothing"
+  reset
+  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(job e2e-chaos-random skipped self-hosted 0)")"
+
+  run_report
+  assert_eq "nothing is filed" "" "$(calls)"
+  assert_file_not_contains "and the step summary has no random row" "$STEP_SUMMARY" "^| random |"
 }
 
 test_a_broken_listing_files_nothing() {
@@ -410,6 +458,7 @@ test_a_message_cannot_break_out_of_its_fence
 test_a_leg_without_a_suite_files_the_leg
 test_a_night_without_legs_files_the_run
 test_the_runner_budget
+test_the_random_leg
 test_a_broken_listing_files_nothing
 test_a_second_page_is_read
 test_an_empty_input_stops_before_gh
