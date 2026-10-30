@@ -56,15 +56,17 @@ const (
 	// flapping API), which dominates hot-path latency once a CR is Ready.
 	// Caching for 30s suppresses re-probes during event/resync bursts.
 	//
-	// Trade-off: a wedged-but-Ready API — one whose pods still pass their
-	// readiness probe (so DeploymentReady stays True) while requests hang — is
-	// masked for up to HealthCheckCacheTTL after the last good probe. Within
-	// that window reconciles serve the API-ready condition True from cache
-	// without probing, so failure-detection latency for this case is increased
-	// by up to HealthCheckCacheTTL. The probe-error/non-2xx eviction does NOT
-	// bound this: eviction fires only once a probe runs, and inside the TTL the
-	// cache is exactly what suppresses that probe. Keep this TTL at or below the
-	// API-ready outage-detection SLO.
+	// The TTL is also the re-probe interval. A converged pass requeues for the
+	// moment the CR's cache entry expires (ScheduleReprobe), and that pass
+	// misses the cache and probes again. A wedged-but-Ready API, one whose pods
+	// still pass their readiness probe (so DeploymentReady stays True) while
+	// requests hang, therefore turns the API-ready condition False within
+	// HealthCheckCacheTTL + HealthCheckTimeout plus one pass after the last good
+	// probe, whether or not an event arrives. The probe-error/non-2xx eviction
+	// does not shorten that window: eviction fires only once a probe runs, and
+	// inside the TTL the cache suppresses that probe. The cost is one full
+	// reconcile per Ready CR per TTL. Keep this TTL at or below the API-ready
+	// outage-detection SLO.
 	HealthCheckCacheTTL = 30 * time.Second
 )
 
@@ -90,11 +92,13 @@ func ClassifyError(err error) (reason, message string) {
 // probeEntry records the last successful API probe for one CR. uid guards
 // against a CR recreated under the same name/namespace serving a stale probe;
 // endpoint invalidates the entry when the target Service URL changes;
-// probedAt drives the TTL comparison.
+// probedAt drives the TTL comparison; ttl is the TTL the probe was stored
+// under, which ExpiresIn measures the expiry against.
 type probeEntry struct {
 	uid      types.UID
 	endpoint string
 	probedAt time.Time
+	ttl      time.Duration
 }
 
 // ProbeCache memoizes the last successful health probe per CR so a
@@ -110,6 +114,12 @@ type ProbeCache struct {
 	// time.Now; tests inject a controllable clock so the TTL boundary is
 	// deterministic.
 	Now func() time.Time
+
+	// NoReprobe makes ScheduleReprobe leave every result alone, so a Ready CR
+	// is reconciled again only on an event or the resync. Tests that prove a
+	// watch on a Ready CR set it: the re-probe pass would otherwise repair
+	// their drift with no watch involved.
+	NoReprobe bool
 }
 
 func (c *ProbeCache) now() time.Time {
@@ -135,15 +145,16 @@ func (c *ProbeCache) Hit(key types.NamespacedName, uid types.UID, endpoint strin
 		c.now().Sub(entry.probedAt) < ttl
 }
 
-// Store records a successful probe so reconciles within the TTL can skip the
-// synchronous HTTP GET.
-func (c *ProbeCache) Store(key types.NamespacedName, uid types.UID, endpoint string) {
+// Store records a successful probe so reconciles within ttl can skip the
+// synchronous HTTP GET. The entry keeps ttl, so ExpiresIn reports the expiry
+// the probe was cached for.
+func (c *ProbeCache) Store(key types.NamespacedName, uid types.UID, endpoint string, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
 		c.entries = make(map[types.NamespacedName]probeEntry)
 	}
-	c.entries[key] = probeEntry{uid: uid, endpoint: endpoint, probedAt: c.now()}
+	c.entries[key] = probeEntry{uid: uid, endpoint: endpoint, probedAt: c.now(), ttl: ttl}
 }
 
 // Evict drops the cached probe for a CR so the next reconcile re-probes.
@@ -152,6 +163,20 @@ func (c *ProbeCache) Evict(key types.NamespacedName) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.entries, key)
+}
+
+// ExpiresIn reports how long the cached probe for the CR at key stays
+// reusable under the TTL it was stored with, and whether an entry exists. The
+// entry counts whatever its UID and endpoint. The duration is zero or negative
+// once the entry has expired.
+func (c *ProbeCache) ExpiresIn(key types.NamespacedName) (time.Duration, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return 0, false
+	}
+	return entry.ttl - c.now().Sub(entry.probedAt), true
 }
 
 // Has reports whether an entry is cached for key, regardless of TTL. Intended
