@@ -51,7 +51,7 @@ func TestProbeCache_TTLBoundary(t *testing.T) {
 	// Miss on an empty cache.
 	g.Expect(cache.Hit(key, "uid-1", "http://ks/v3", ttl)).To(gomega.BeFalse())
 
-	cache.Store(key, "uid-1", "http://ks/v3")
+	cache.Store(key, "uid-1", "http://ks/v3", ttl)
 	g.Expect(cache.Hit(key, "uid-1", "http://ks/v3", ttl)).To(gomega.BeTrue())
 
 	// Exactly at the TTL boundary the entry is stale (strict <).
@@ -70,7 +70,7 @@ func TestProbeCache_UIDAndEndpointGuards(t *testing.T) {
 
 	cache := &ProbeCache{}
 	key := types.NamespacedName{Namespace: "ns", Name: "ks"}
-	cache.Store(key, "uid-1", "http://ks/v3")
+	cache.Store(key, "uid-1", "http://ks/v3", time.Minute)
 
 	g.Expect(cache.Hit(key, "uid-2", "http://ks/v3", time.Minute)).To(gomega.BeFalse(),
 		"a recreated CR (different UID) must not reuse the old probe")
@@ -83,7 +83,7 @@ func TestProbeCache_Evict(t *testing.T) {
 
 	cache := &ProbeCache{}
 	key := types.NamespacedName{Namespace: "ns", Name: "ks"}
-	cache.Store(key, "uid-1", "http://ks/v3")
+	cache.Store(key, "uid-1", "http://ks/v3", time.Minute)
 	g.Expect(cache.Has(key)).To(gomega.BeTrue())
 
 	cache.Evict(key)
@@ -91,4 +91,70 @@ func TestProbeCache_Evict(t *testing.T) {
 
 	// Evicting an absent key is a no-op, not a panic.
 	cache.Evict(types.NamespacedName{Namespace: "ns", Name: "absent"})
+}
+
+func TestProbeCache_ExpiresIn(t *testing.T) {
+	key := types.NamespacedName{Namespace: "ns", Name: "ks"}
+	const ttl = 30 * time.Second
+	base := time.Unix(1_700_000_000, 0)
+
+	t.Run("a zero-value cache has no entry", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		var cache ProbeCache
+		remaining, ok := cache.ExpiresIn(key)
+		g.Expect(ok).To(gomega.BeFalse())
+		g.Expect(remaining).To(gomega.BeZero())
+	})
+
+	t.Run("an entry under another key does not count", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		cache := &ProbeCache{}
+		cache.Store(types.NamespacedName{Namespace: "ns", Name: "other"}, "uid-1", "http://other/v3", ttl)
+		remaining, ok := cache.ExpiresIn(key)
+		g.Expect(ok).To(gomega.BeFalse())
+		g.Expect(remaining).To(gomega.BeZero())
+	})
+
+	t.Run("an entry stored 10s ago has 20s left", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		clk := base
+		cache := &ProbeCache{Now: func() time.Time { return clk }}
+		cache.Store(key, "uid-1", "http://ks/v3", ttl)
+		clk = base.Add(10 * time.Second)
+		remaining, ok := cache.ExpiresIn(key)
+		g.Expect(ok).To(gomega.BeTrue())
+		g.Expect(remaining).To(gomega.Equal(20 * time.Second))
+	})
+
+	t.Run("an entry stored under a 60s TTL has 50s left after 10s", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		clk := base
+		cache := &ProbeCache{Now: func() time.Time { return clk }}
+		cache.Store(key, "uid-1", "http://ks/v3", time.Minute)
+		clk = base.Add(10 * time.Second)
+		remaining, ok := cache.ExpiresIn(key)
+		g.Expect(ok).To(gomega.BeTrue())
+		g.Expect(remaining).To(gomega.Equal(50 * time.Second))
+	})
+
+	t.Run("an expired entry reports a negative remainder", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		clk := base
+		cache := &ProbeCache{Now: func() time.Time { return clk }}
+		cache.Store(key, "uid-1", "http://ks/v3", ttl)
+		clk = base.Add(45 * time.Second)
+		remaining, ok := cache.ExpiresIn(key)
+		g.Expect(ok).To(gomega.BeTrue())
+		g.Expect(remaining).To(gomega.Equal(-15 * time.Second))
+	})
+
+	t.Run("the entry counts whatever its UID and endpoint", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		clk := base
+		cache := &ProbeCache{Now: func() time.Time { return clk }}
+		cache.Store(key, "uid-2", "http://elsewhere/v3", ttl)
+		remaining, ok := cache.ExpiresIn(key)
+		g.Expect(ok).To(gomega.BeTrue())
+		g.Expect(remaining).To(gomega.Equal(ttl))
+	})
 }

@@ -6,6 +6,7 @@ package healthcheck
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,8 +15,11 @@ import (
 	"time"
 
 	"github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 )
@@ -95,7 +99,7 @@ func TestReconcileProbe_NonSuccessEvicts(t *testing.T) {
 	g := gomega.NewWithT(t)
 	var conds []metav1.Condition
 	cache := &ProbeCache{}
-	cache.Store(types.NamespacedName{Namespace: "ns", Name: "cr"}, "uid-1", "http://cr.ns.svc:5000/v3")
+	cache.Store(types.NamespacedName{Namespace: "ns", Name: "cr"}, "uid-1", "http://cr.ns.svc:5000/v3", 30*time.Second)
 	p := baseParams(&conds, &mockDoer{status: 503}, cache)
 
 	res, err := ReconcileProbe(context.Background(), p)
@@ -175,7 +179,7 @@ func TestReconcileProbe_ErrorClassifiedAndEvicts(t *testing.T) {
 	g := gomega.NewWithT(t)
 	var conds []metav1.Condition
 	cache := &ProbeCache{}
-	cache.Store(types.NamespacedName{Namespace: "ns", Name: "cr"}, "uid-1", "http://cr.ns.svc:5000/v3")
+	cache.Store(types.NamespacedName{Namespace: "ns", Name: "cr"}, "uid-1", "http://cr.ns.svc:5000/v3", 30*time.Second)
 	p := baseParams(&conds, &mockDoer{err: fmt.Errorf("dial tcp 10.0.0.1:5000: connection refused")}, cache)
 
 	res, err := ReconcileProbe(context.Background(), p)
@@ -196,7 +200,7 @@ func TestReconcileProbe_ParentCancelPropagatesWithoutFlip(t *testing.T) {
 	clk := time.Unix(1_700_000_000, 0)
 	cache := &ProbeCache{Now: func() time.Time { return clk }}
 	key := types.NamespacedName{Namespace: "ns", Name: "cr"}
-	cache.Store(key, "uid-1", "http://cr.ns.svc:5000/v3")
+	cache.Store(key, "uid-1", "http://cr.ns.svc:5000/v3", 30*time.Second)
 	clk = clk.Add(31 * time.Second)
 
 	conds := []metav1.Condition{{
@@ -220,7 +224,7 @@ func TestReconcileProbe_CacheHitSkipsProbe(t *testing.T) {
 	clk := time.Unix(1_700_000_000, 0)
 	cache := &ProbeCache{Now: func() time.Time { return clk }}
 	key := types.NamespacedName{Namespace: "ns", Name: "cr"}
-	cache.Store(key, "uid-1", "http://cr.ns.svc:5000/v3")
+	cache.Store(key, "uid-1", "http://cr.ns.svc:5000/v3", 30*time.Second)
 
 	conds := []metav1.Condition{{Type: "TestAPIReady", Status: metav1.ConditionTrue}}
 	doer := &mockDoer{status: 200}
@@ -237,7 +241,7 @@ func TestReconcileProbe_CacheHitSkipsProbe(t *testing.T) {
 func TestReconcileProbe_CacheMissWhenConditionNotTrue(t *testing.T) {
 	g := gomega.NewWithT(t)
 	cache := &ProbeCache{}
-	cache.Store(types.NamespacedName{Namespace: "ns", Name: "cr"}, "uid-1", "http://cr.ns.svc:5000/v3")
+	cache.Store(types.NamespacedName{Namespace: "ns", Name: "cr"}, "uid-1", "http://cr.ns.svc:5000/v3", 30*time.Second)
 	// Condition is unset, so the "already True" gate fails and a probe fires.
 	var conds []metav1.Condition
 	doer := &mockDoer{status: 200}
@@ -246,4 +250,110 @@ func TestReconcileProbe_CacheMissWhenConditionNotTrue(t *testing.T) {
 	_, err := ReconcileProbe(context.Background(), p)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(doer.calls).To(gomega.Equal(1), "a non-True condition must force a probe even with a fresh cache entry")
+}
+
+func TestScheduleReprobe(t *testing.T) {
+	key := types.NamespacedName{Namespace: "ns", Name: "cr"}
+	const ttl = 30 * time.Second
+	now := time.Unix(1_700_000_000, 0)
+	conflict := fmt.Errorf("applying Deployment: %w", apierrors.NewConflict(
+		schema.GroupResource{Group: "apps", Resource: "deployments"}, "keystone",
+		errors.New("the object has been modified")))
+
+	// cacheAged returns a cache whose clock reads now and whose entry for key
+	// was stored under storedTTL age before it.
+	cacheAged := func(age, storedTTL time.Duration) *ProbeCache {
+		clk := now.Add(-age)
+		cache := &ProbeCache{Now: func() time.Time { return clk }}
+		cache.Store(key, "uid-1", "http://cr.ns.svc:5000/v3", storedTTL)
+		clk = now
+		return cache
+	}
+	noReprobe := cacheAged(0, ttl)
+	noReprobe.NoReprobe = true
+
+	tests := []struct {
+		name   string
+		result ctrl.Result
+		err    error
+		cache  *ProbeCache
+		want   ctrl.Result
+	}{
+		{
+			name:  "a fresh entry requeues for the full ttl",
+			cache: cacheAged(0, ttl),
+			want:  ctrl.Result{RequeueAfter: ttl},
+		},
+		{
+			name:  "an entry aged 25s requeues for its remaining 5s",
+			cache: cacheAged(25*time.Second, ttl),
+			want:  ctrl.Result{RequeueAfter: 5 * time.Second},
+		},
+		{
+			name:  "an entry stored under a 60s ttl and aged 25s requeues for its remaining 35s",
+			cache: cacheAged(25*time.Second, time.Minute),
+			want:  ctrl.Result{RequeueAfter: 35 * time.Second},
+		},
+		{
+			name:  "an entry expiring now requeues after the 1s floor",
+			cache: cacheAged(30*time.Second, ttl),
+			want:  ctrl.Result{RequeueAfter: time.Second},
+		},
+		{
+			name:  "an entry expired 15s ago requeues after the 1s floor",
+			cache: cacheAged(45*time.Second, ttl),
+			want:  ctrl.Result{RequeueAfter: time.Second},
+		},
+		{
+			name:  "an empty cache leaves the result alone",
+			cache: &ProbeCache{},
+			want:  ctrl.Result{},
+		},
+		{
+			name:  "a cache with NoReprobe set leaves the result alone",
+			cache: noReprobe,
+			want:  ctrl.Result{},
+		},
+		{
+			name:  "a cancelled pass leaves the result to the error backoff",
+			err:   context.Canceled,
+			cache: cacheAged(0, ttl),
+			want:  ctrl.Result{},
+		},
+		{
+			name:  "a failed apply leaves the result to the error backoff",
+			err:   conflict,
+			cache: cacheAged(0, ttl),
+			want:  ctrl.Result{},
+		},
+		{
+			name:   "a waiting step's requeue passes through",
+			result: ctrl.Result{RequeueAfter: RequeueHealthCheck},
+			cache:  cacheAged(0, ttl),
+			want:   ctrl.Result{RequeueAfter: RequeueHealthCheck},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			got := ScheduleReprobe(tc.result, tc.err, tc.cache, key)
+			g.Expect(got).To(gomega.Equal(tc.want))
+		})
+	}
+}
+
+// A successful probe stores its CacheTTL with the entry, so the re-probe
+// follows the TTL the cache-hit check uses and needs no second copy of it.
+func TestReconcileProbe_ReprobeFollowsCacheTTL(t *testing.T) {
+	g := gomega.NewWithT(t)
+	clk := time.Unix(1_700_000_000, 0)
+	cache := &ProbeCache{Now: func() time.Time { return clk }}
+	var conds []metav1.Condition
+	p := baseParams(&conds, &mockDoer{status: 200}, cache)
+	p.CacheTTL = time.Minute
+
+	res, err := ReconcileProbe(context.Background(), p)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(ScheduleReprobe(res, err, cache, p.Key)).To(gomega.Equal(ctrl.Result{RequeueAfter: time.Minute}))
 }
