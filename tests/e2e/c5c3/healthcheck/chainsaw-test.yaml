@@ -23,8 +23,8 @@
 #     child KeystoneAPIReady <= child Ready <= plane KeystoneReady <= plane Ready.
 #
 # The drop direction (a Ready plane whose API stops answering) is out of scope:
-# the keystone-operator caches a healthy probe for 30 s and does not requeue
-# after one, so a timed outage check would race that cache. The checks on the
+# the keystone-operator caches a healthy probe for 30 s and re-probes when it
+# expires, so a timed outage check would race that cache. The checks on the
 # child's KeystoneAPIReady therefore stop at the first sample in which it reads
 # True. After that, the plane follows a child drop only on its next reconcile,
 # so a sample can pair the plane's KeystoneReady=True with a child that has
