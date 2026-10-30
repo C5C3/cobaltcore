@@ -201,7 +201,7 @@ sequence and hold up to two connections. Placement renders no CronJob.
 | 10s | Deployment readiness polling, HTTPRoute acceptance, health-check retry |
 | 15s | ESO secret-gate polling (Secrets, DBConnectionSecret) |
 | 30s | MariaDB and db-sync database wait, and the finalizer hold while the MariaDB CRs tear down |
-| 30s TTL | Health-probe cache (a passing `/` probe is reused within the TTL) |
+| 30s TTL | Health-probe cache (a passing `/` probe is reused within the TTL); a converged pass requeues when the entry expires, so the API is probed again |
 
 ## Rotation and deletion
 

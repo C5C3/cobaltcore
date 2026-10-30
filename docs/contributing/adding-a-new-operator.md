@@ -42,7 +42,7 @@ The keystone operator is the reference consumer for most packages listed (for
 | `internal/common/rotation` | Split-compute-write credential rotation: `EnsureStagingSecret`, `CommitStaged`/`CommitSpec`, `EnsureRBAC`, `CompletedAt`/`ObserveAge`, `BuildCronJob`/`CronJobParams` |
 | `internal/common/tls` | `EnsureCertificate` for cert-manager Certificate objects |
 | `internal/common/release` | OpenStack release parsing and upgrade/downgrade classification |
-| `internal/common/healthcheck` | `HTTPDoer` seam, probe-error classifier, TTL probe cache, the shared timing constants, and the `ReconcileProbe` flow |
+| `internal/common/healthcheck` | `HTTPDoer` seam, probe-error classifier, TTL probe cache, the shared timing constants, the `ReconcileProbe` flow, and `ScheduleReprobe`, which a new operator's `Reconcile` calls between `RunPipeline` and `updateStatus` so a Ready CR re-probes its API when the probe-cache entry expires |
 | `internal/common/job` | `RunJob`/`RunJobWithRerunKey`/`EnsureCronJob`/`DeleteCronJob`, the `BuildMigrationJob` skeleton, and the at-most-once `RecordJobTerminalState` recorder |
 | `internal/common/config` | oslo INI rendering + immutable-ConfigMap lifecycle, the extraConfig overlay (`MergeDefaults`) with owned-key health tracking, the option-catalog machinery (`ParseOptionCatalog`, `MustParseEmbeddedCatalogs`), and `CheckNoControlChars`/`IsControlCharError` (the typed `ControlCharError` guard renderers run on assembled sections); see the design decisions below for non-INI services |
 | `internal/common/keystoneauth` | `[keystone_authtoken]` section rendering without the password (`Section`) plus the `OS_KEYSTONE_AUTHTOKEN__PASSWORD` env-var injection (`PasswordEnvVar`) |
