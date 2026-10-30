@@ -13,6 +13,8 @@
 #     condition_type="UNKNOWN" (echoed), and a sample that is missing, a
 #     counter at 0, or present only under a longer label value, a longer
 #     label name, or split at its own comma across two values
+#   - a non-zero wait re-reads at least once, even when its deadline passes
+#     during the first check
 #   - a missing sample names each pod whose containers restarted, also
 #     during the wait, from a pod list read again at the failure, or from
 #     the first one when that second read fails
@@ -304,6 +306,33 @@ test_a_read_failing_at_the_deadline_fails() {
   run_check
   assert_eq "the script exits 1" "1" "$RUN_RC"
   assert_contains "it names the pod" "$RUN_OUT" "FAIL: metrics endpoint of pod op-1 unreachable"
+}
+
+test_a_deadline_passed_in_the_first_check_still_rereads() {
+  echo "Test: a deadline that passes during the first check still gets one re-read"
+
+  # SECONDS counts whole seconds, so a 1s deadline can pass while the first
+  # check runs. An awk that sleeps 1.1s on the first check's first call
+  # forces that: the failing re-read must still be made and judged.
+  reset_stub
+  set_metrics op-1 "$DURATION_LINE"
+  echo 1 >"$STUBS/raw-later/op-1.rc"
+  : >"$STUBS/raw-later/op-1"
+  cat >"$STUBS/awk" <<STUB
+#!/bin/bash
+if [ "\$1" = "-v" ] && [ ! -e "$STUBS/awk.slept" ]; then
+  : >"$STUBS/awk.slept"
+  /bin/sleep 1.1
+fi
+exec "$(command -v awk)" "\$@"
+STUB
+  chmod +x "$STUBS/awk"
+  METRICS_WAIT=1
+  run_check
+  rm -f "$STUBS/awk" "$STUBS/awk.slept"
+  assert_eq "the script exits 1" "1" "$RUN_RC"
+  assert_contains "it names the pod" "$RUN_OUT" "FAIL: metrics endpoint of pod op-1 unreachable"
+  assert_eq "op-1 is read twice" "2" "$(cat "$STUBS/raw/op-1.reads")"
 }
 
 test_a_transient_read_failure_recovers() {
@@ -658,6 +687,7 @@ test_an_unlistable_release_fails
 test_an_unreachable_pod_fails
 test_an_empty_body_fails
 test_a_read_failing_at_the_deadline_fails
+test_a_deadline_passed_in_the_first_check_still_rereads
 test_a_transient_read_failure_recovers
 test_an_absent_duration_count_fails
 test_a_zero_duration_count_fails

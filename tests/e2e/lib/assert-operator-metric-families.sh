@@ -27,7 +27,7 @@
 #      a restart after the record loses its sample.
 # A Job's terminal state is recorded on the operator's next pass, so checks 3
 # and 5 re-read the bodies every 5 s until METRICS_WAIT_SECONDS (default 60)
-# run out. The unit test sets 0.
+# run out, at least once when it is not 0. The unit test sets 0.
 #
 # Usage:
 #   assert-operator-metric-families.sh <operator-namespace> <release> <prefix> [<sample>...]
@@ -204,17 +204,19 @@ fi
 echo "OK: the metrics endpoints of all $pod_count pods answer"
 
 # Checks 3 and 5 share one deadline, so the wait stays inside the step's
-# timeout however many samples a suite passes. A failed re-read counts as an
-# empty union for its round; one that is still failing at the deadline fails
-# check 2.
+# timeout however many samples a suite passes. SECONDS counts whole seconds,
+# so a short deadline can pass during the first check; a non-zero wait
+# therefore re-reads before it looks at the deadline. A failed re-read counts
+# as an empty union for its round; one that is still failing at the deadline
+# fails check 2.
 metrics_wait="${METRICS_WAIT_SECONDS:-60}"
 deadline=$((SECONDS + metrics_wait))
-until all_present "$@"; do
+while [ "$metrics_wait" -gt 0 ] && ! all_present "$@"; do
+  sleep 5
+  scrape || union=""
   if [ "$SECONDS" -ge "$deadline" ]; then
     break
   fi
-  sleep 5
-  scrape || union=""
 done
 if [ -n "$scrape_error" ]; then
   echo "$scrape_error"
