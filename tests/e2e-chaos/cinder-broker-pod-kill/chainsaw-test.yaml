@@ -19,8 +19,9 @@
 #     action. The scheduler and volume readiness probes watch the broker socket
 #     (operators/cinder/internal/controller/reconcile_scheduler.go), so the two
 #     conditions follow the reconnect
-#   - the API container stays at restartCount 0: its readiness and liveness
-#     probes GET /healthcheck, which never touches the bus
+#   - the API container stays at restartCount 0: its readiness probe GETs
+#     /healthcheck, which never touches the bus, and its liveness probe only
+#     connects
 #
 # The difference from ../cinder-broker-outage/ is the way the broker goes. A
 # killed broker closes its connections, so oslo.messaging sees the loss at once

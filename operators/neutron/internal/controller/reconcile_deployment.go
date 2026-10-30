@@ -302,11 +302,11 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 				Name:          "neutron-api",
 				ContainerPort: neutronAPIPort,
 			}},
-			// All three probes GET the API root, which serves the version document
-			// without a token and without touching the database. The startup probe
-			// carries the cold-start window: every uWSGI worker imports the whole
-			// plugin stack, which under a CPU limit set on the container or on a
-			// contended node stretches past the liveness budget once
+			// The startup and readiness probes GET the API root, which serves the
+			// version document without a token and without touching the database.
+			// The startup probe carries the cold-start window: every uWSGI worker
+			// imports the whole plugin stack, which under a CPU limit set on the
+			// container or on a contended node stretches once
 			// spec.apiServer.uwsgi.processes rises above the default. The timings are
 			// the sibling operators': 30x10s of startup budget, and an 8s timeout
 			// because a cold-starting WSGI app can hold even a plain HTTP GET past the
@@ -317,14 +317,18 @@ func buildNeutronDeployment(neutron *neutronv1alpha1.Neutron,
 				PeriodSeconds:    10,
 				TimeoutSeconds:   8,
 			},
+			// The liveness probe only connects. uWSGI's HTTP router accepts while
+			// every worker waits on a dependency, a database behind a partition or
+			// a broker that restarts, and a GET behind those workers restarts a
+			// healthy API. The readiness probe keeps the GET and takes a saturated
+			// pod out of the Service instead. 10s stays below the 20s period.
 			LivenessProbe: &corev1.Probe{
-				ProbeHandler:        neutronAPIProbeHandler(),
+				ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(neutronAPIPort)},
+				},
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
-				// A single-worker API holds the probe's GET for the whole request in
-				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
-				// is the readiness probe's timeout, below the 20s period.
-				TimeoutSeconds: 10,
+				TimeoutSeconds:      10,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        neutronAPIProbeHandler(),
@@ -407,7 +411,7 @@ func neutronReleaseKeepsWSGIMarkersInFiles(openStackRelease string) bool {
 	return rel.AtLeast(2026, 2)
 }
 
-// neutronAPIProbeHandler returns the shared startup/readiness/liveness probe
+// neutronAPIProbeHandler returns the shared startup/readiness probe
 // handler: an HTTP GET of the API root on the API port.
 func neutronAPIProbeHandler() corev1.ProbeHandler {
 	return corev1.ProbeHandler{

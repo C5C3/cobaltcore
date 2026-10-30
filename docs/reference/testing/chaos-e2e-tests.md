@@ -1844,7 +1844,8 @@ logs from `cinder-system`.
 **Purpose:** The message bus disappears under a running Nova. The scheduler and
 the conductor take their readiness off the broker socket, so both go NotReady
 and the CR reports `Ready=False/NotAllReady`, while the API keeps its ready
-container and never restarts: both of its probes GET the version document. A
+container and never restarts: its readiness probe GETs the version document,
+and its liveness probe only connects. A
 server create written during the outage does not answer at all, and its build
 request is listed BUILD out of the API database. Once the partition is lifted
 both processes reconnect on their own, the stalled create finishes, and a fresh
@@ -3015,8 +3016,8 @@ NetworkChaos and the operator logs, and dumps the workload.
   `OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10`.
   The CR sets no `extraConfig`, so this suite proves that default under a partition.
   Placement reads the database while it loads (it syncs the traits and resource
-  classes), so a worker `harakiri` killed hangs the same way a Barbican worker does,
-  and the liveness probe restarts the container until the partition ends.
+  classes), so a worker `harakiri` killed hangs the same way a Barbican worker does
+  until the partition ends.
 
 ---
 
@@ -3080,8 +3081,7 @@ and the operator logs, and dumps the workload.
   that default under a partition. uWSGI respawns a worker `harakiri` killed, the
   worker loads the application again (`--lazy-apps`), and barbican connects to the
   database while it loads, with the operator's `max_retries = -1`. Under the
-  partition that worker never comes back, the liveness probe restarts the container,
-  and the new one hangs the same way until the partition ends. With the socket
+  partition that worker does not come back until the partition ends. With the socket
   timeouts a request on a dead connection ends in a 500 within about 20 seconds and
   the worker lives on.
 
@@ -3145,8 +3145,7 @@ and the operator logs, and dumps the workload.
   this suite proves the same default for Cinder under a partition. Cinder reads the
   database while it loads (the RPC clients of its volume API read the minimum
   service versions), so a worker `harakiri` killed hangs the same way a Barbican
-  worker does, and the liveness probe restarts the container until the partition
-  ends.
+  worker does until the partition ends.
 
 ---
 

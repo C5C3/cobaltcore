@@ -18,8 +18,9 @@
 # again (--lazy-apps), and barbican 22.0.0 connects to the database while it
 # loads (barbican/api/app.py, setup_database_engine_and_factory) with the
 # operator's max_retries = -1. Under the partition the respawned worker never
-# comes back, the liveness probe restarts the container, and the new one hangs
-# the same way until the partition ends (CI run 38770151068). The bound is on
+# comes back; the HTTP liveness probe of that time then restarted the
+# container, and the new one hung the same way until the partition ended (CI
+# run 38770151068). The bound is on
 # the connection instead: pymysql's read_timeout and write_timeout. The
 # operator sets both on the API container by default
 # (OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10, which

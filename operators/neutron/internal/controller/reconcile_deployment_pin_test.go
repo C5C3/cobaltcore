@@ -105,11 +105,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9696
           timeoutSeconds: 10
         name: neutron-api
         ports:
@@ -273,11 +272,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9696
           timeoutSeconds: 10
         name: neutron-api
         ports:
@@ -446,11 +444,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9696
           timeoutSeconds: 10
         name: neutron-api
         ports:
@@ -615,11 +612,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9696
           timeoutSeconds: 10
         name: neutron-api
         ports:
@@ -802,11 +798,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 9696
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9696
           timeoutSeconds: 10
         name: neutron-api
         ports:

@@ -276,9 +276,9 @@ func TestBuildPlacementDeployment_CustomServiceUserKey(t *testing.T) {
 	g.Expect(pw.ValueFrom.SecretKeyRef.Key).To(Equal("service-password"))
 }
 
-// TestBuildPlacementDeployment_ProbesAndSecurityContext pins the readiness and
-// liveness probes on the version document and the restricted security context
-// the API container runs under.
+// TestBuildPlacementDeployment_ProbesAndSecurityContext pins the readiness probe
+// on the version document, the liveness probe's TCP connect and the restricted
+// security context the API container runs under.
 func TestBuildPlacementDeployment_ProbesAndSecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -295,10 +295,13 @@ func TestBuildPlacementDeployment_ProbesAndSecurityContext(t *testing.T) {
 	g.Expect(c.ReadinessProbe.HTTPGet.Path).To(Equal("/"))
 	g.Expect(c.ReadinessProbe.HTTPGet.Port.IntVal).To(Equal(placementAPIPort))
 
+	// The liveness probe only connects: under the random chaos run a GET behind
+	// two uWSGI workers that waited on a dependency restarted a healthy nova-api
+	// twice, and uWSGI's HTTP router accepts while every worker waits.
 	g.Expect(c.LivenessProbe).NotTo(BeNil())
-	g.Expect(c.LivenessProbe.HTTPGet).NotTo(BeNil())
-	g.Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/"))
-	g.Expect(c.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(placementAPIPort))
+	g.Expect(c.LivenessProbe.HTTPGet).To(BeNil(), "a GET waits behind busy workers")
+	g.Expect(c.LivenessProbe.TCPSocket).NotTo(BeNil())
+	g.Expect(c.LivenessProbe.TCPSocket.Port.IntVal).To(Equal(placementAPIPort))
 	g.Expect(c.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
 
 	g.Expect(c.SecurityContext).To(Equal(deployment.RestrictedSecurityContext()))
@@ -309,8 +312,8 @@ func TestBuildPlacementDeployment_ProbesAndSecurityContext(t *testing.T) {
 // TestBuildPlacementDeployment_StartupProbeCoversColdStart covers the cold start
 // of the API. Before it answers, every uWSGI worker imports placement and syncs
 // the traits and resource classes against the database, which took 41 to 45
-// seconds in a kind pod at 120m CPU. The liveness probe alone restarts the
-// container 55 seconds after it started, so the startup probe holds it back.
+// seconds in a kind pod at 120m CPU, and the startup probe carries a budget
+// that outlasts it.
 func TestBuildPlacementDeployment_StartupProbeCoversColdStart(t *testing.T) {
 	g := NewGomegaWithT(t)
 

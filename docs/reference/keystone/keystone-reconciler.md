@@ -2277,10 +2277,10 @@ The exec-form probes fork a shell plus a Python interpreter, which alone can
 consume the kubelet's 1-second default timeout — every exec probe therefore
 carries an explicit `timeoutSeconds` sitting above its inner connect/fetch
 timeout and below its own period. The liveness probe carries 10 seconds in
-both variants, the liveness timeout of every API front end: a single-worker
-uWSGI holds an HTTP check for the whole request in flight, and the kubelet's
-1-second default would restart a busy API. A TCP connect does not wait on the
-worker, so keystone takes the value to stay in line with the other front ends.
+both variants, the liveness timeout of every API front end. Every other uWSGI
+front end connects in its liveness probe too, because an HTTP check waits
+behind busy workers and restarted a healthy nova-api that waited on its
+dependencies.
 The liveness and readiness probes are intentionally separated. The liveness
 probe only verifies uWSGI is accepting connections, without exercising the
 database code path, so the kubelet does not kill pods during transient

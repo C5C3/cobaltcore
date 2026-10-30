@@ -191,9 +191,10 @@ connect timeout of the fresh connection the pool tries. The worker stays up, and
 the API recovers on its own when the database returns.
 
 Without the bound such a request waits as long as TCP retransmits, about 15
-minutes. Once every worker of a pod waits, the liveness probe restarts the
-container, and Barbican, Placement, Cinder and the Nova API then hang in their
-startup database read until the outage ends. The
+minutes. Once every worker of a pod waits, the pod leaves the Service until the
+outage ends. A worker that uWSGI respawns, after `harakiri` for example, hangs
+in its startup database read in Barbican, Placement, Cinder and the Nova API.
+The
 [`barbican-mariadb-outage`](../reference/testing/chaos-e2e-tests.md#barbican-mariadb-outage),
 [`placement-mariadb-outage`](../reference/testing/chaos-e2e-tests.md#placement-mariadb-outage)
 and

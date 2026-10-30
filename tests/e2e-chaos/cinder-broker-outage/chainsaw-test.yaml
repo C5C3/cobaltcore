@@ -377,9 +377,8 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "False"
     # The API is the contrast. Its readiness is an HTTP GET of /healthcheck,
-    # which never touches the bus, so the same partition leaves it ready. It
-    # carries a liveness probe on that endpoint too, so a restart here would
-    # mean the outage reached the request path after all.
+    # which never touches the bus, so the same partition leaves it ready, and
+    # a restart here would mean the outage reached the API process after all.
     - script:
         timeout: 2m
         shell: bash

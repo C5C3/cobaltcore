@@ -650,9 +650,8 @@ func TestPodTemplateAnnotationsPerRole(t *testing.T) {
 }
 
 // TestUWSGIFrontEndsCarryAStartupProbe covers the cold start of the two HTTP
-// front ends. Importing nova took 77 seconds on a CI node, and the liveness probe
-// alone restarts the container 55 seconds after it started, so without a startup
-// probe holding it back the API never finishes loading.
+// front ends. Importing nova took 77 seconds on a CI node, and the startup probe
+// carries a budget that outlasts it.
 func TestUWSGIFrontEndsCarryAStartupProbe(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := validNova()
@@ -678,11 +677,14 @@ func TestUWSGIFrontEndsCarryAStartupProbe(t *testing.T) {
 	}
 }
 
-// TestUWSGIFrontEndsCarryALivenessTimeout covers a busy running API. One
-// request in flight on a single-worker API holds the probe's GET, and three
-// such probes 20 seconds apart restarted nova-api twice in 20 minutes under
-// the #1274 soak. The timeout stays below the period so probes never overlap.
-func TestUWSGIFrontEndsCarryALivenessTimeout(t *testing.T) {
+// TestUWSGIFrontEndsLivenessDoesNotWaitOnAWorker covers a busy running API.
+// Under the random chaos run both uWSGI workers of nova-api waited on Glance
+// behind a database partition, and later on a restarting broker; three GETs
+// behind them 20 seconds apart restarted the container twice. The liveness
+// probe only connects, which uWSGI's HTTP router accepts while every worker
+// waits, and the readiness probe keeps the GET. The timeout stays below the
+// period so probes never overlap.
+func TestUWSGIFrontEndsLivenessDoesNotWaitOnAWorker(t *testing.T) {
 	g := NewGomegaWithT(t)
 	nova := validNova()
 	art := workloadArtifacts()
@@ -698,11 +700,14 @@ func TestUWSGIFrontEndsCarryALivenessTimeout(t *testing.T) {
 		container := tc.deploy.Spec.Template.Spec.Containers[0]
 		probe := container.LivenessProbe
 		g.Expect(probe).NotTo(BeNil(), name+" liveness probe")
-		g.Expect(probe.HTTPGet.Port.IntValue()).To(Equal(tc.port), name+" liveness probe port")
-		g.Expect(probe.TimeoutSeconds).To(Equal(int32(10)),
-			name+": one slow request on a single-worker API must not restart it")
+		g.Expect(probe.HTTPGet).To(BeNil(), name+": a GET waits behind busy workers")
+		g.Expect(probe.TCPSocket).NotTo(BeNil(), name+" liveness probe connects")
+		g.Expect(probe.TCPSocket.Port.IntValue()).To(Equal(tc.port), name+" liveness probe port")
+		g.Expect(probe.TimeoutSeconds).To(Equal(int32(10)), name+" liveness timeout")
 		g.Expect(probe.TimeoutSeconds).To(BeNumerically("<", probe.PeriodSeconds),
 			name+" liveness timeout below its period")
+		g.Expect(container.ReadinessProbe.HTTPGet).NotTo(BeNil(),
+			name+": readiness keeps the GET and sheds a saturated pod")
 	}
 }
 
