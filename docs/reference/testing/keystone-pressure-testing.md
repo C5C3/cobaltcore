@@ -16,9 +16,9 @@ existing token, the revocation lookup inside it, and the listing of a user's
 effective role assignments. A fixed number of workers each send the next
 request as soon as the previous answer arrives, so the throughput at that
 worker count and the latency per operation are the measurement. dizzy's
-[Pressure mode](https://github.com/B42Labs/dizzy/blob/v0.7.0/docs/explanation/pressure-mode.md)
+[Pressure mode](https://github.com/B42Labs/dizzy/blob/v0.8.0/docs/explanation/pressure-mode.md)
 explains the load and the
-[CLI reference](https://github.com/B42Labs/dizzy/blob/v0.7.0/docs/reference/cli.md#pressure)
+[CLI reference](https://github.com/B42Labs/dizzy/blob/v0.8.0/docs/reference/cli.md#pressure)
 every flag.
 
 The load exists for the downstream Keystone and keystonemiddleware patches of
