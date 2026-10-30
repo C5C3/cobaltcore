@@ -47,6 +47,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
@@ -145,9 +146,10 @@ func registerCinderWebhooks(mgr ctrl.Manager) error {
 // setup is the single registration site for the field indexes all three use.
 //
 // The health-check stub is what keeps the probe from firing slow HTTP GETs at a
-// Service DNS name nothing answers; envtest runs no kubelet.
+// Service DNS name nothing answers; envtest runs no kubelet. Each of
+// reconcilerOpts is applied to the CinderReconciler right after it is built.
 func registerCinderControllers(mgr ctrl.Manager, mcMgr mcmanager.Manager,
-	resolver commonmulticluster.ClusterResolver,
+	resolver commonmulticluster.ClusterResolver, reconcilerOpts ...func(*CinderReconciler),
 ) error {
 	opts := bootstrap.TypedControllerOptions[mcreconcile.Request](1)
 	opts.SkipNameValidation = ptr.To(true)
@@ -158,6 +160,9 @@ func registerCinderControllers(mgr ctrl.Manager, mcMgr mcmanager.Manager,
 		Recorder:   mgr.GetEventRecorderFor("cinder-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 		HTTPClient: &stubDoer{status: http.StatusOK},
 		Resolver:   resolver,
+	}
+	for _, opt := range reconcilerOpts {
+		opt(cinder)
 	}
 	if err := cinder.setupWithOptions(mcMgr, opts); err != nil {
 		return err
@@ -193,8 +198,9 @@ func registerCinderControllers(mgr ctrl.Manager, mcMgr mcmanager.Manager,
 // gatewayAPIAvailable is not set by hand: the fake HTTPRoute CRD the helper
 // installs is what the setup-time RESTMapper probe answers from, so the
 // HTTPRoute watch and the gateway step run exactly as they do against a cluster
-// that has Gateway API.
-func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+// that has Gateway API. Each opt is applied to the CinderReconciler right after it
+// is built.
+func setupEnvTestWithController(t testing.TB, opts ...func(*CinderReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupCinderEnvTestWithController(t,
 		cinderv1alpha1.AddToScheme,
@@ -204,7 +210,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 			if err != nil {
 				return err
 			}
-			return registerCinderControllers(mgr, mcMgr, nil)
+			return registerCinderControllers(mgr, mcMgr, nil, opts...)
 		},
 	)
 }
@@ -725,7 +731,8 @@ func hasEvent(ctx context.Context, c client.Client, ns, reason string) bool {
 func TestIntegrationCinder_BackendLifecycle(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, func(r *CinderReconciler) { r.HTTPClient = doer })
 	ns := createTestNamespace(t, ctx, c)
 	createCinderPrerequisites(t, ctx, c, ns)
 
@@ -888,6 +895,14 @@ func TestIntegrationCinder_BackendLifecycle(t *testing.T) {
 			metav1.ConditionTrue, eventuallyLongTimeout)
 		waitForBackupBackendCondition(t, ctx, c, backupBackendKey, "Ready",
 			metav1.ConditionTrue, eventuallyLongTimeout)
+	})
+
+	t.Run("a Ready Cinder re-probes its API without an event", func(t *testing.T) {
+		commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+			var got cinderv1alpha1.Cinder
+			g.Expect(c.Get(ctx, cinderKey, &got)).To(Succeed())
+			return got.Status.Conditions
+		}, conditionTypeCinderAPIReady, pollInterval)
 	})
 
 	t.Run("deleting the backend detaches it through the service-remove Job", func(t *testing.T) {
