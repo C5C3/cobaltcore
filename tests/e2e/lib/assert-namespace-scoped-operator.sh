@@ -22,9 +22,10 @@
 #      the reflector writes on every retry of a cluster-scoped list the Role
 #      does not grant;
 #   7. the metrics endpoint answers through the API server's pod proxy;
-#   8. the controller records a successful reconcile within
-#      RECONCILE_WAIT_SECONDS (default 60), which a manager stuck in its cache
-#      sync never does, and the manager still has not restarted at its end.
+#   8. the controller records a pass of its own within RECONCILE_WAIT_SECONDS
+#      (default 60): a successful reconcile, or a run of its HealthCheck step,
+#      which a manager stuck in its cache sync never records, and the manager
+#      still has not restarted at its end.
 #
 # Usage:
 #   assert-namespace-scoped-operator.sh <namespace> <release> <controller> <resource>
@@ -156,30 +157,49 @@ if [ -z "$metrics" ]; then
 fi
 echo "OK: metrics endpoint of pod $pod answers"
 
-# ── Check 8: the controller reconciled successfully ───────────────────────
-# Ready does not mean this operator has finished a successful pass: the
+# ── Check 8: the controller finished a pass of its own ────────────────────
+# Ready does not mean this operator has finished a pass of its own: the
 # cluster-wide operator may have written it, and the CR's own watch drops
-# status-only updates, so that write does not wake this operator. A pass that
-# ends in a requeue counts under requeue_after, and the next one can be tens of
-# seconds away, so the check re-reads the metrics every 5 s until
-# RECONCILE_WAIT_SECONDS run out. The unit test sets 0.
+# status-only updates, so that write does not wake this operator. Either of
+# two counters proves such a pass:
+#   - controller_runtime_reconcile_total with result="success", which a pass
+#     that converged with a zero result increments. The cinderbackend and
+#     glancebackend controllers converge that way.
+#   - <controller>_operator_reconcile_duration_seconds_count with
+#     sub_reconciler="HealthCheck", the runs of the step that probes the
+#     service API. A service controller's converged pass never counts as a
+#     success: healthcheck.ScheduleReprobe requeues it for the expiry of its
+#     probe-cache entry, and controller-runtime counts every pass that ends in
+#     a requeue under requeue_after, a pass still waiting on a dependency too.
+#     The pipeline reaches HealthCheck only after every step before it
+#     returned a zero result, so a run of it shows that this pod got past
+#     every wait and every write ahead of the probe. The instrumenter of each
+#     operator names its metrics <controller>_operator, so a backend
+#     controller has no such series.
+# The last pass may have ended in a requeue for a dependency, and the next one
+# can be tens of seconds away, so the check re-reads the metrics every 5 s
+# until RECONCILE_WAIT_SECONDS run out. The unit test sets 0.
 # client_golang sorts the labels, so controller precedes result. The closing
-# quote of the prefix keeps "keystone" from matching
+# quote of the success prefix keeps "keystone" from matching
 # "keystoneidentitybackend". A counter prints as 12 or as 1.2e+06, so awk
 # compares the value as a number, under LC_ALL=C so that no locale reads the
 # exponent form with a decimal comma.
 reconcile_wait="${RECONCILE_WAIT_SECONDS:-60}"
 success_prefix="controller_runtime_reconcile_total{controller=\"$controller\",result=\"success\"} "
-has_success() {
-  LC_ALL=C awk -v p="$success_prefix" '
+probe_prefix="${controller}_operator_reconcile_duration_seconds_count{sub_reconciler=\"HealthCheck\"} "
+# has_count <prefix>: whether the metrics carry the series at a value of 1 or
+# more.
+has_count() {
+  LC_ALL=C awk -v p="$1" '
     index($0, p) == 1 && $2 + 0 >= 1 { ok = 1 }
     END { exit !ok }' <<<"$metrics"
 }
 deadline=$((SECONDS + reconcile_wait))
-until has_success; do
+until has_count "$success_prefix" || has_count "$probe_prefix"; do
   if [ "$SECONDS" -ge "$deadline" ]; then
-    echo "FAIL: pod $pod reports no successful reconcile of controller $controller after ${reconcile_wait}s"
-    grep -F "controller_runtime_reconcile_total{controller=\"$controller\"," <<<"$metrics" || true
+    echo "FAIL: pod $pod reports neither a successful reconcile nor a HealthCheck run of controller $controller after ${reconcile_wait}s"
+    grep -F -e "controller_runtime_reconcile_total{controller=\"$controller\"," \
+      -e "$probe_prefix" <<<"$metrics" || true
     exit 1
   fi
   sleep 5
@@ -198,4 +218,8 @@ if [ "$restarts" != "0" ]; then
   kubectl logs -n "$ns" "$pod" -c manager --previous --tail=40 || true
   exit 1
 fi
-echo "OK: pod $pod reports a successful reconcile of controller $controller"
+if has_count "$success_prefix"; then
+  echo "OK: pod $pod reports a successful reconcile of controller $controller"
+else
+  echo "OK: pod $pod reports a HealthCheck run of controller $controller"
+fi

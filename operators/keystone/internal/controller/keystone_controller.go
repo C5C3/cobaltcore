@@ -798,8 +798,12 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// commonreconcile.RunPipeline short-circuits on the first non-zero result
 	// or error; both the short-circuit and the fully-successful chain funnel
-	// through updateStatus, which recomputes the aggregate Ready condition.
+	// through updateStatus, which recomputes the aggregate Ready condition. A
+	// fully-successful chain is requeued for the probe-cache expiry, so the
+	// next pass probes the API again.
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
+	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+		client.ObjectKeyFromObject(&keystone))
 	return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 }
 

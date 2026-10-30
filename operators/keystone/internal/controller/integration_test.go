@@ -51,6 +51,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
@@ -1543,6 +1544,19 @@ func TestIntegration_VPA_StatusPatchDoesNotWakeTheStep(t *testing.T) {
 		baseline = samples()
 		return before == baseline
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "the Keystone should settle after Ready=True")
+
+	// A Ready Keystone re-reconciles every HealthCheckCacheTTL to re-probe its
+	// API, and that pass runs the VPA step too. Wait for the periodic pass, so
+	// the status patch and the hold below sit at the start of the next gap.
+	probes := func() uint64 {
+		return histogramSampleCount(t, "keystone_operator_reconcile_duration_seconds",
+			map[string]string{"sub_reconciler": "HealthCheck"})
+	}
+	probesBefore := probes()
+	g.Eventually(func() bool { return probes() > probesBefore && samples() > baseline },
+		healthcheck.HealthCheckCacheTTL+10*time.Second, pollInterval).Should(BeTrue(),
+		"a Ready Keystone should re-reconcile within the probe-cache TTL")
+	baseline = samples()
 
 	vpa := &vpav1.VerticalPodAutoscaler{}
 	g.Expect(c.Get(ctx, vpaKey, vpa)).To(Succeed())
