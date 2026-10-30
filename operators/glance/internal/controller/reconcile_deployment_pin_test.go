@@ -96,11 +96,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -258,11 +257,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -488,11 +486,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -671,11 +668,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -833,11 +829,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:

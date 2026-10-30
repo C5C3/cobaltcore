@@ -244,15 +244,21 @@ func TestBuildNeutronDeployment_EnvAndProbes(t *testing.T) {
 	g.Expect(container.Ports[0].ContainerPort).To(Equal(int32(9696)))
 	for name, probe := range map[string]*corev1.Probe{
 		"startup":   container.StartupProbe,
-		"liveness":  container.LivenessProbe,
 		"readiness": container.ReadinessProbe,
 	} {
 		g.Expect(probe).NotTo(BeNil(), name+" probe")
 		g.Expect(probe.HTTPGet.Path).To(Equal("/"), name+" probe path")
 		g.Expect(probe.HTTPGet.Port.IntValue()).To(Equal(9696), name+" probe port")
 	}
-	g.Expect(container.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)),
-		"liveness timeout: one slow request on a single-worker API must not restart it")
+	// The liveness probe only connects: under the random chaos run a GET behind
+	// two uWSGI workers that waited on a dependency restarted a healthy nova-api
+	// twice, and uWSGI's HTTP router accepts while every worker waits.
+	liveness := container.LivenessProbe
+	g.Expect(liveness).NotTo(BeNil(), "liveness probe")
+	g.Expect(liveness.HTTPGet).To(BeNil(), "a liveness GET waits behind busy workers")
+	g.Expect(liveness.TCPSocket).NotTo(BeNil(), "the liveness probe connects")
+	g.Expect(liveness.TCPSocket.Port.IntValue()).To(Equal(9696), "liveness probe port")
+	g.Expect(liveness.TimeoutSeconds).To(Equal(int32(10)), "liveness timeout")
 }
 
 // A request on a connection a MariaDB outage killed pins its worker for the TCP

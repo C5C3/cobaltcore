@@ -88,18 +88,17 @@ The v1 operator resolves the onboarding decisions as follows:
   never rendered into config: it is delivered as the
   `OS_KEYSTONE_AUTHTOKEN__PASSWORD` environment variable, digested into a
   pod-template annotation so a rotation rolls the pods.
-- **`/healthcheck` probes.** Startup, readiness and liveness all GET
-  `/healthcheck`, served by the oslo healthcheck middleware without touching
-  the database or Keystone. The startup probe
+- **`/healthcheck` probes.** Startup and readiness GET `/healthcheck`, served
+  by the oslo healthcheck middleware without touching the database or
+  Keystone. The startup probe
   allows 300 seconds (30 probes 10 seconds apart, each with an 8-second
   timeout) before the liveness probe takes over, so a cold start slowed by a CPU
   limit set on the container or a contended node does not restart the
-  container. The liveness probe then allows 10 seconds per check, the
-  readiness probe's timeout, so a check that waits behind a request in flight
-  no longer fails at the kubelet's 1-second default. Under uWSGI the check
-  still needs a free worker: image transfers that hold every worker (two by
-  default) for 50 seconds or more can fail three checks in a row, and the
-  kubelet then restarts the container in the middle of them.
+  container. The liveness probe only connects to the API port, with 10 seconds
+  per check. uWSGI accepts the connection while every worker (two by default)
+  is busy, so image transfers or requests that wait on a dependency do not
+  restart the container. While they hold every worker, the readiness GET fails
+  and the pod leaves the Service until a worker is free again.
 - **Expand-migrate-contract upgrades.** When `spec.openStackRelease` advances
   to a new OpenStack release (with the image in lockstep), the operator drives
   phased database migrations while the API keeps serving. Sequential-only

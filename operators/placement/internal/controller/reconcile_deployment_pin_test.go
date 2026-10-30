@@ -92,11 +92,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8778
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8778
           timeoutSeconds: 10
         name: placement-api
         ports:
@@ -233,11 +232,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8778
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8778
           timeoutSeconds: 10
         name: placement-api
         ports:
@@ -375,11 +373,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8778
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8778
           timeoutSeconds: 10
         name: placement-api
         ports:
@@ -539,11 +536,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8778
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8778
           timeoutSeconds: 10
         name: placement-api
         ports:

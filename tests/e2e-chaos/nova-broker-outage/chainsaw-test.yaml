@@ -577,10 +577,10 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "False"
               reason: NotAllReady
-    # The API is the contrast. Both of its probes GET /, the version document,
-    # which never touches the bus, so the same partition leaves it ready. The
-    # liveness probe reads that endpoint too, so a restart here would mean the
-    # outage reached the request path after all.
+    # The API is the contrast. Its readiness probe GETs /, the version
+    # document, which never touches the bus, so the same partition leaves it
+    # ready, and a restart here would mean the outage reached the API process
+    # after all.
     - script:
         shell: bash
         timeout: 2m

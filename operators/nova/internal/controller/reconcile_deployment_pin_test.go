@@ -127,11 +127,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8774
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8774
           timeoutSeconds: 10
         name: nova-api
         ports:
@@ -325,11 +324,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8774
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8774
           timeoutSeconds: 10
         name: nova-api
         ports:
@@ -519,11 +517,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8774
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8774
           timeoutSeconds: 10
         name: nova-api
         ports:

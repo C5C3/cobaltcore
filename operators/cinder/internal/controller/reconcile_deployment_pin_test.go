@@ -107,11 +107,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8776
           timeoutSeconds: 10
         name: cinder-api
         ports:
@@ -283,11 +282,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8776
           timeoutSeconds: 10
         name: cinder-api
         ports:
@@ -456,11 +454,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8776
           timeoutSeconds: 10
         name: cinder-api
         ports:

@@ -19,9 +19,10 @@
 # (--lazy-apps), and placement 15.0.0 reads the database while it loads
 # (placement/deploy.py, loadapp calls update_database, which syncs the traits
 # and resource classes) with the operator's max_retries = -1. Under the
-# partition the respawned workers never come back, the liveness probe
-# restarts the container, and the new one hangs the same way until the
-# partition ends (network leg of CI run 38800821802). The bound is on the
+# partition the respawned workers never come back; the HTTP liveness probe
+# of that time then restarted the container, and the new one hung the same
+# way until the partition ended (network leg of CI run 38800821802). The
+# bound is on the
 # connection instead: pymysql's read_timeout and write_timeout. The operator
 # sets both on the API container by default, named after the
 # [placement_database] section (OS_PLACEMENT_DATABASE__CONNECTION_PARAMETERS,

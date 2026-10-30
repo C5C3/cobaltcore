@@ -95,11 +95,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9311
           timeoutSeconds: 10
         name: barbican-api
         ports:
@@ -240,11 +239,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9311
           timeoutSeconds: 10
         name: barbican-api
         ports:
@@ -395,11 +393,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9311
           timeoutSeconds: 10
         name: barbican-api
         ports:
@@ -558,11 +555,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9311
           timeoutSeconds: 10
         name: barbican-api
         ports:
@@ -707,11 +703,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9311
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9311
           timeoutSeconds: 10
         name: barbican-api
         ports:

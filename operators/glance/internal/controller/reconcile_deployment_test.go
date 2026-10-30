@@ -715,10 +715,14 @@ func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
 			g.Expect(c.ReadinessProbe.HTTPGet.Path).To(Equal("/healthcheck"))
 			g.Expect(c.ReadinessProbe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort))
 
+			// The liveness probe only connects: under the random chaos run a GET
+			// behind two uWSGI workers that waited on a dependency restarted a
+			// healthy nova-api twice, and uWSGI's HTTP router accepts while every
+			// worker waits.
 			g.Expect(c.LivenessProbe).NotTo(BeNil())
-			g.Expect(c.LivenessProbe.HTTPGet).NotTo(BeNil())
-			g.Expect(c.LivenessProbe.HTTPGet.Path).To(Equal("/healthcheck"))
-			g.Expect(c.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(glanceAPIPort))
+			g.Expect(c.LivenessProbe.HTTPGet).To(BeNil(), "a GET waits behind busy workers")
+			g.Expect(c.LivenessProbe.TCPSocket).NotTo(BeNil())
+			g.Expect(c.LivenessProbe.TCPSocket.Port.IntVal).To(Equal(glanceAPIPort))
 			g.Expect(c.LivenessProbe.TimeoutSeconds).To(Equal(int32(10)))
 		})
 	}
@@ -727,8 +731,8 @@ func TestBuildGlanceDeployment_ProbesOnHealthcheck(t *testing.T) {
 // TestBuildGlanceDeployment_StartupProbeCoversColdStart covers the cold start of
 // the API on every release. Every worker imports glance, which under a CPU
 // limit set on the container or on a contended node took 66 to 90 seconds under
-// uWSGI (measured in a kind pod at 120m CPU). The liveness probe alone restarts
-// the container 55 seconds after it started, so the startup probe holds it back.
+// uWSGI (measured in a kind pod at 120m CPU), and the startup probe carries a
+// budget that outlasts it.
 func TestBuildGlanceDeployment_StartupProbeCoversColdStart(t *testing.T) {
 	for _, release := range []string{"2026.1", "2026.2"} {
 		t.Run(release, func(t *testing.T) {

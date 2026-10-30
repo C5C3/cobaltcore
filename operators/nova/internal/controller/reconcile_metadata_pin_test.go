@@ -135,11 +135,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8775
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8775
           timeoutSeconds: 10
         name: nova-metadata
         ports:
@@ -344,11 +343,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8775
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8775
           timeoutSeconds: 10
         name: nova-metadata
         ports:

@@ -32,8 +32,9 @@
 # RPC clients read the minimum service versions in cinder/rpc.py) with
 # oslo.db's default max_retries = 10, which the operator leaves in place.
 # Under the partition the respawned workers spend minutes in connect
-# attempts, the liveness probe restarts the container, and the new one hangs
-# the same way until the partition ends (network leg of CI run 38864239649).
+# attempts; the HTTP liveness probe of that time then restarted the
+# container, and the new one hung the same way until the partition ended
+# (network leg of CI run 38864239649).
 # The bound is on the connection instead: pymysql's read_timeout and
 # write_timeout. The operator sets both on the API container by default
 # (OS_DATABASE__CONNECTION_PARAMETERS=read_timeout=10&write_timeout=10, which

@@ -431,8 +431,7 @@ func TestCinderRPCPodAnnotations(t *testing.T) {
 
 // TestAPIContainerCarriesAStartupProbe covers the cold start of the API. Its
 // uWSGI workers took about 60 seconds to import cinder on a CI node, and the
-// liveness probe alone restarts the container 55 seconds after it started, so
-// without a startup probe holding it back the API is killed while it loads.
+// startup probe carries a budget that outlasts it.
 func TestAPIContainerCarriesAStartupProbe(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := buildCinderDeployment(workloadCinder(), workloadArtifacts(), workloadDigests{})
@@ -447,20 +446,27 @@ func TestAPIContainerCarriesAStartupProbe(t *testing.T) {
 		"a loading WSGI app holds a GET past the kubelet's 1s default")
 }
 
-// TestAPIContainerCarriesALivenessTimeout covers a busy running API. One
-// request in flight on a single-worker API holds the probe's GET, and three
-// such probes 20 seconds apart restarted nova-api twice in 20 minutes under
-// the #1274 soak. The timeout stays below the period so probes never overlap.
-func TestAPIContainerCarriesALivenessTimeout(t *testing.T) {
+// TestAPIContainerLivenessDoesNotWaitOnAWorker covers a busy running API. Under
+// the random chaos run both uWSGI workers of nova-api waited on a dependency,
+// and three GETs 20 seconds apart restarted a healthy API twice. The liveness
+// probe only connects, which uWSGI's HTTP router accepts while every worker
+// waits, and the readiness probe keeps the GET. The timeout stays below the
+// period so probes never overlap.
+func TestAPIContainerLivenessDoesNotWaitOnAWorker(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := buildCinderDeployment(workloadCinder(), workloadArtifacts(), workloadDigests{})
 
-	probe := deploy.Spec.Template.Spec.Containers[0].LivenessProbe
+	container := deploy.Spec.Template.Spec.Containers[0]
+	probe := container.LivenessProbe
 	g.Expect(probe).NotTo(BeNil())
-	g.Expect(probe.TimeoutSeconds).To(Equal(int32(10)),
-		"one slow request on a single-worker API must not restart it")
+	g.Expect(probe.HTTPGet).To(BeNil(), "a GET waits behind busy workers")
+	g.Expect(probe.TCPSocket).NotTo(BeNil())
+	g.Expect(probe.TCPSocket.Port.IntValue()).To(Equal(int(cinderAPIPort)))
+	g.Expect(probe.TimeoutSeconds).To(Equal(int32(10)))
 	g.Expect(probe.TimeoutSeconds).To(BeNumerically("<", probe.PeriodSeconds),
 		"liveness timeout below its period")
+	g.Expect(container.ReadinessProbe.HTTPGet).NotTo(BeNil(),
+		"readiness keeps the GET and sheds a saturated pod")
 }
 
 // A request on a connection a MariaDB outage killed pins its worker for the TCP
