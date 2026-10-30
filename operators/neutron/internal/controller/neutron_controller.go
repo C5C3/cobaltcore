@@ -457,6 +457,8 @@ func (r *NeutronReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	statusBefore := neutron.Status.DeepCopy()
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, r.pipelineSteps(children, &neutron))
+	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+		client.ObjectKeyFromObject(&neutron))
 	return r.updateStatus(ctx, &neutron, statusBefore, result, err)
 }
 

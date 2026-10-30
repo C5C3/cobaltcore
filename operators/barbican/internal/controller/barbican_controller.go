@@ -476,6 +476,8 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	statusBefore := barbican.Status.DeepCopy()
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, r.pipelineSteps(children, &barbican))
+	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+		client.ObjectKeyFromObject(&barbican))
 	return r.updateStatus(ctx, &barbican, statusBefore, result, err)
 }
 

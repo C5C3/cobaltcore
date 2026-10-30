@@ -10,11 +10,13 @@
 #     CR list or a pod kubectl cannot read, a manager that restarted before
 #     check 2 or during the wait of check 8 (with its previous log), a second
 #     CR, an empty or unreadable log, a missing or foreign startup line, a
-#     forbidden watch (echoed), unreachable or empty metrics, and a success
-#     counter that stays absent or zero
-#   - a watch failure that is not forbidden passes, and so does a success
-#     counter that appears on a later read of the metrics
-#   - a counter printed in exponent form still counts
+#     forbidden watch (echoed), unreachable or empty metrics, and metrics
+#     that count neither a success nor a HealthCheck run, even beside
+#     requeues, another step's runs, or the service controller's runs when
+#     its backend controller is read
+#   - a watch failure that is not forbidden passes, and so does a HealthCheck
+#     run that appears on a later read of the metrics
+#   - a success counter passes on its own, also in exponent form
 #   - anything but four non-empty arguments exits 2 with the usage line
 #   - an edit to the script runs the e2e-operator jobs of the seven operators
 #     whose namespace-scoped-rbac suites call it, and no other
@@ -22,7 +24,8 @@
 #     resource, the glance and cinder suites for their backend controller too,
 #     and no other namespace-scoped-rbac suite exists
 #   - the startup line and the metrics port it reads match the shared
-#     bootstrap and the seven charts
+#     bootstrap and the seven charts, and each of the seven operators names
+#     its instrumenter <op>_operator and its API probe step HealthCheck
 # Usage: bash tests/unit/ci/assert_namespace_scoped_operator_test.sh
 
 set -uo pipefail
@@ -130,13 +133,18 @@ MODE_LINE='{"level":"info","ts":"2026-10-08T10:00:00Z","logger":"setup","msg":"n
 WATCH_FAILURE='{"level":"error","logger":"controller-runtime.cache.UnhandledError","msg":"Failed to watch","type":"*v1.ClusterSecretStore","error":"failed to list *v1.ClusterSecretStore: clustersecretstores.external-secrets.io is forbidden: User \"system:serviceaccount:openstack:keystone-operator-ns-scoped\" cannot list resource \"clustersecretstores\" in API group \"external-secrets.io\" at the cluster scope"}'
 TRANSIENT_WATCH_FAILURE='{"level":"error","logger":"controller-runtime.cache.UnhandledError","msg":"Failed to watch","type":"*v1.Secret","error":"failed to list *v1.Secret: the server is currently unable to handle the request"}'
 SUCCESS_LINE='controller_runtime_reconcile_total{controller="keystone",result="success"} 12'
+ZERO_SUCCESS_LINE='controller_runtime_reconcile_total{controller="keystone",result="success"} 0'
 ERROR_LINE='controller_runtime_reconcile_total{controller="keystone",result="error"} 3'
+REQUEUE_AFTER_LINE='controller_runtime_reconcile_total{controller="keystone",result="requeue_after"} 15'
+PROBE_LINE='keystone_operator_reconcile_duration_seconds_count{sub_reconciler="HealthCheck"} 7'
 
 # reset_stub
 # A healthy namespace-scoped keystone-operator: one pod that never restarted,
-# one Keystone, a log with the startup line for openstack, and metrics with
-# twelve successful reconciles beside three failed ones. Check 8 reads the
-# metrics once and does not wait (RECONCILE_WAIT=0).
+# one Keystone, a log with the startup line for openstack, and the metrics a
+# Ready Keystone leaves: no success, since every converged pass requeues for
+# the next API probe, fifteen requeues beside three failed passes, and seven
+# runs of the HealthCheck step. Check 8 reads the metrics once and does not
+# wait (RECONCILE_WAIT=0).
 reset_stub() {
   STUB_PODS="op-0 0"
   STUB_PODS_RC=0
@@ -147,7 +155,7 @@ reset_stub() {
   STUB_LOGS="$MODE_LINE"$'\n''{"level":"info","logger":"setup","msg":"starting manager"}'
   STUB_LOGS_RC=0
   STUB_PREVIOUS_LOGS='{"level":"error","msg":"timed out waiting for cache to be synced"}'
-  STUB_METRICS="# TYPE controller_runtime_reconcile_total counter"$'\n'"$ERROR_LINE"$'\n'"$SUCCESS_LINE"
+  STUB_METRICS="# TYPE controller_runtime_reconcile_total counter"$'\n'"$ERROR_LINE"$'\n'"$REQUEUE_AFTER_LINE"$'\n'"$ZERO_SUCCESS_LINE"$'\n'"$PROBE_LINE"
   STUB_METRICS_LATER=""
   STUB_RAW_RC=0
   RECONCILE_WAIT=0
@@ -187,6 +195,8 @@ test_a_healthy_operator_passes_all_eight_checks() {
   assert_eq "the script exits 0" "0" "$RUN_RC"
   assert_eq "it prints eight OK: lines" "8" "$(grep -c '^OK:' <<<"$RUN_OUT" || true)"
   assert_not_contains "it prints no FAIL: line" "$RUN_OUT" "FAIL:"
+  assert_contains "check 8 passes on the HealthCheck runs" "$RUN_OUT" \
+    "OK: pod op-0 reports a HealthCheck run of controller keystone"
 }
 
 # --- Test 2: check 1, the pod list ---
@@ -360,69 +370,103 @@ test_empty_metrics_fail() {
     "FAIL: metrics endpoint of pod op-0 returned nothing"
 }
 
-# --- Test 9: check 8, the success counter ---
-test_metrics_without_the_success_line_fail() {
-  echo "Test: metrics without the controller's success counter fail"
+# --- Test 9: check 8, the success counter and the HealthCheck runs ---
+test_requeues_alone_fail() {
+  echo "Test: metrics with requeues but neither a success nor a HealthCheck run fail"
 
-  # The success line of a controller whose name starts with the one asked for
-  # must not count for it.
+  # A pass that waits on a dependency ends in a requeue too, so requeues alone
+  # do not show that this pod got anywhere. Neither do the runs of another
+  # step, nor the success line of a controller whose name starts with the one
+  # asked for.
   reset_stub
-  STUB_METRICS="$ERROR_LINE"$'\n''controller_runtime_reconcile_total{controller="keystoneidentitybackend",result="success"} 5'
+  STUB_METRICS="$ERROR_LINE"$'\n'"$REQUEUE_AFTER_LINE"$'\n'"$ZERO_SUCCESS_LINE"$'\n''keystone_operator_reconcile_duration_seconds_count{sub_reconciler="Deployment"} 9'$'\n''controller_runtime_reconcile_total{controller="keystoneidentitybackend",result="success"} 5'
   run_check
   assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it says no reconcile succeeded" "$RUN_OUT" \
-    "FAIL: pod op-0 reports no successful reconcile of controller keystone"
-  assert_contains "it prints the controller's counters" "$RUN_OUT" "$ERROR_LINE"
+  assert_contains "it says the controller finished no pass" "$RUN_OUT" \
+    "FAIL: pod op-0 reports neither a successful reconcile nor a HealthCheck run of controller keystone"
+  assert_contains "it prints the controller's counters" "$RUN_OUT" "$REQUEUE_AFTER_LINE"
+  assert_not_contains "it leaves the other step's runs out" "$RUN_OUT" \
+    'sub_reconciler="Deployment"'
   assert_not_contains "it leaves the other controller's counters out" "$RUN_OUT" \
     "keystoneidentitybackend"
 }
 
-test_a_zero_success_count_fails() {
-  echo "Test: a success counter at 0 fails"
+test_zero_counts_fail() {
+  echo "Test: a success counter and a HealthCheck count at 0 fail"
 
   reset_stub
-  STUB_METRICS="$ERROR_LINE"$'\n''controller_runtime_reconcile_total{controller="keystone",result="success"} 0'
+  STUB_METRICS="$ERROR_LINE"$'\n'"$ZERO_SUCCESS_LINE"$'\n''keystone_operator_reconcile_duration_seconds_count{sub_reconciler="HealthCheck"} 0'
   run_check
   assert_eq "the script exits 1" "1" "$RUN_RC"
-  assert_contains "it says no reconcile succeeded" "$RUN_OUT" \
-    "FAIL: pod op-0 reports no successful reconcile of controller keystone"
+  assert_contains "it says the controller finished no pass" "$RUN_OUT" \
+    "FAIL: pod op-0 reports neither a successful reconcile nor a HealthCheck run of controller keystone"
+  assert_contains "it prints the HealthCheck count" "$RUN_OUT" \
+    'keystone_operator_reconcile_duration_seconds_count{sub_reconciler="HealthCheck"} 0'
 }
 
-test_a_later_success_passes() {
-  echo "Test: a success counter that appears on a later read passes"
+test_a_success_passes_without_a_probe() {
+  echo "Test: a success counter passes without a HealthCheck run"
+
+  # A backend controller has no probe step and converges with a zero result.
+  reset_stub
+  STUB_METRICS="$ERROR_LINE"$'\n'"$SUCCESS_LINE"
+  run_check
+  assert_eq "the script exits 0" "0" "$RUN_RC"
+  assert_contains "check 8 passes on the success counter" "$RUN_OUT" \
+    "OK: pod op-0 reports a successful reconcile of controller keystone"
+}
+
+test_a_backend_ignores_the_service_probe() {
+  echo "Test: the service controller's HealthCheck runs do not count for its backend controller"
+
+  # The cinder suite reads one pod for both controllers, so the cinder
+  # controller's probe runs are on the same endpoint as the backend's counters.
+  reset_stub
+  STUB_CRS="cinderbackend.cinder.openstack.c5c3.io/ns-scoped-nfs1"
+  STUB_METRICS='controller_runtime_reconcile_total{controller="cinderbackend",result="success"} 0'$'\n''cinder_operator_reconcile_duration_seconds_count{sub_reconciler="HealthCheck"} 4'
+  run_check openstack cinder-operator-ns-scoped cinderbackend cinderbackends.cinder.openstack.c5c3.io
+  assert_eq "the script exits 1" "1" "$RUN_RC"
+  assert_contains "it says the backend controller finished no pass" "$RUN_OUT" \
+    "FAIL: pod op-0 reports neither a successful reconcile nor a HealthCheck run of controller cinderbackend"
+  assert_not_contains "it leaves the cinder controller's runs out" "$RUN_OUT" \
+    "cinder_operator_"
+}
+
+test_a_later_probe_passes() {
+  echo "Test: a HealthCheck run that appears on a later read passes"
 
   # Another operator may have written Ready while this one's last pass ended in
-  # a requeue, so the first read can still lack the success line.
+  # a requeue for a dependency, so the first read can still lack the run.
   reset_stub
-  STUB_METRICS="$ERROR_LINE"
-  STUB_METRICS_LATER="$ERROR_LINE"$'\n'"$SUCCESS_LINE"
+  STUB_METRICS="$ERROR_LINE"$'\n'"$REQUEUE_AFTER_LINE"
+  STUB_METRICS_LATER="$ERROR_LINE"$'\n'"$REQUEUE_AFTER_LINE"$'\n'"$PROBE_LINE"
   RECONCILE_WAIT=10
   run_check
   assert_eq "the script exits 0" "0" "$RUN_RC"
   assert_contains "check 8 passes" "$RUN_OUT" \
-    "OK: pod op-0 reports a successful reconcile of controller keystone"
+    "OK: pod op-0 reports a HealthCheck run of controller keystone"
 }
 
-test_a_success_after_the_wait_fails() {
-  echo "Test: a success counter that appears only after the wait fails"
+test_a_probe_after_the_wait_fails() {
+  echo "Test: a HealthCheck run that appears only after the wait fails"
 
   reset_stub
-  STUB_METRICS="$ERROR_LINE"
-  STUB_METRICS_LATER="$ERROR_LINE"$'\n'"$SUCCESS_LINE"
+  STUB_METRICS="$ERROR_LINE"$'\n'"$REQUEUE_AFTER_LINE"
+  STUB_METRICS_LATER="$ERROR_LINE"$'\n'"$REQUEUE_AFTER_LINE"$'\n'"$PROBE_LINE"
   run_check
   assert_eq "the script exits 1" "1" "$RUN_RC"
   assert_contains "it names the wait" "$RUN_OUT" \
-    "FAIL: pod op-0 reports no successful reconcile of controller keystone after 0s"
+    "FAIL: pod op-0 reports neither a successful reconcile nor a HealthCheck run of controller keystone after 0s"
 }
 
 test_a_restart_during_the_wait_fails() {
   echo "Test: a manager that restarts while check 8 waits fails"
 
   # The restarted container keeps the pod name, so its fresh counters answer
-  # the later reads and record a success.
+  # the later reads and record a HealthCheck run.
   reset_stub
   STUB_METRICS="$ERROR_LINE"
-  STUB_METRICS_LATER="$ERROR_LINE"$'\n'"$SUCCESS_LINE"
+  STUB_METRICS_LATER="$ERROR_LINE"$'\n'"$PROBE_LINE"
   STUB_POD_RESTARTS=1
   RECONCILE_WAIT=10
   run_check
@@ -432,7 +476,7 @@ test_a_restart_during_the_wait_fails() {
   assert_contains "it prints the previous log" "$RUN_OUT" \
     "timed out waiting for cache to be synced"
   assert_not_contains "check 8 does not pass" "$RUN_OUT" \
-    "OK: pod op-0 reports a successful reconcile"
+    "OK: pod op-0 reports a HealthCheck run"
 
   # A pod the Deployment replaced during the wait is gone by name.
   reset_stub
@@ -541,6 +585,28 @@ test_the_proof_matches_the_operator() {
     assert_eq "the $op chart serves metrics on the script's port" "$port" \
       "$(yq '.metrics.port' "$PROJECT_ROOT/operators/$op/helm/$op-operator/values.yaml")"
   done
+
+  # Check 8 counts the runs of the HealthCheck step through the histogram the
+  # shared instrumenter names <prefix>_reconcile_duration_seconds, labelled by
+  # sub_reconciler. Each operator passes <op>_operator as the prefix, and its
+  # service controller, whose converged pass requeues for the next probe, runs
+  # the probe step under that name.
+  local instrumentation="$PROJECT_ROOT/internal/common/instrumentation/instrumentation.go"
+  assert_file_contains_fixed "the instrumenter names its histogram <prefix>_reconcile_duration_seconds" \
+    "$instrumentation" 'Name:    prefix + "_reconcile_duration_seconds",'
+  assert_file_contains_fixed "the histogram is labelled by sub_reconciler" \
+    "$instrumentation" '}, []string{"sub_reconciler"}),'
+  for op in $NS_SCOPED_OPS; do
+    assert_file_contains_fixed "the $op operator names its instrumenter ${op}_operator" \
+      "$PROJECT_ROOT/operators/$op/internal/controller/instrumentation.go" \
+      "instrumentation.NewSubReconcilerInstrumenter(\"${op}_operator\","
+    assert_file_contains "the $op controller runs a step named HealthCheck" \
+      "$PROJECT_ROOT/operators/$op/internal/controller/${op}_controller.go" \
+      'Name: *"HealthCheck",'
+    assert_file_contains_fixed "the $op controller requeues a converged pass for the next probe" \
+      "$PROJECT_ROOT/operators/$op/internal/controller/${op}_controller.go" \
+      "healthcheck.ScheduleReprobe("
+  done
 }
 
 # --- Run ---
@@ -559,10 +625,12 @@ test_a_watch_failure_fails_and_is_echoed
 test_a_transient_watch_failure_passes
 test_unreachable_metrics_fail
 test_empty_metrics_fail
-test_metrics_without_the_success_line_fail
-test_a_zero_success_count_fails
-test_a_later_success_passes
-test_a_success_after_the_wait_fails
+test_requeues_alone_fail
+test_zero_counts_fail
+test_a_success_passes_without_a_probe
+test_a_backend_ignores_the_service_probe
+test_a_later_probe_passes
+test_a_probe_after_the_wait_fails
 test_a_restart_during_the_wait_fails
 test_an_exponent_success_count_passes
 test_wrong_arguments_exit_2
