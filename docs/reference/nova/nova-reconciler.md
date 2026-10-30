@@ -305,7 +305,7 @@ defaults they resolve to.
 | 15s | `RequeueSecretPolling` | The secret-store and credential gates, both derived DB-connection steps, the transport-URL step, and an unresolvable target cluster |
 | 30s | `RequeueDatabaseWait` | The MariaDB gate of both blocks, the db-sync wait, the config wait, and the finalizer's cleanup wait |
 | 30s | `RequeueUpgradeWait` | The expand, migrate and contract phase Jobs |
-| 10s / 30s TTL | health-check retry, probe cache | A failed probe of the API root retries; a passing one is reused within the TTL |
+| 10s / 30s TTL | health-check retry, probe cache | A failed probe of the API root retries; a passing one is reused within the TTL, and a converged pass requeues when that entry expires |
 
 ## Watches and indexes
 

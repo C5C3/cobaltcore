@@ -240,7 +240,7 @@ the rollout that follows.
 | 10s | Deployment readiness polling, HTTPRoute acceptance, health-check retry |
 | 15s | ESO secret-gate polling (Secrets, DBConnectionSecret), the store controller's `WaitingForParent` and `TargetClusterUnavailable` states, and its remote-children finalizer hold while a deleted store's target cluster does not resolve or nothing names it |
 | 30s | MariaDB and db-sync database wait, the finalizer hold while the MariaDB CRs tear down, and every other waiting or failure state of the store controller |
-| 30s TTL | Health-probe cache (a passing `/healthcheck` probe is reused within the TTL) |
+| 30s TTL | Health-probe cache (a passing `/healthcheck` probe is reused within the TTL); a converged pass requeues when the entry expires, so the API is probed again |
 | 15m | Store credential revalidation: every pass for a brownfield store, and for a managed store whose secret ID carries no TTL and has no re-mint timer to ride on |
 
 A managed store with a TTL requeues at its own proactive re-mint threshold, two

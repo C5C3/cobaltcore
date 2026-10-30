@@ -62,7 +62,7 @@ longer resolves. The message carries the resolver's error, the CR requeues after
 | --- | --- |
 | 10s | Deployment readiness polling, HTTPRoute acceptance, health-check retry |
 | 15s | ESO secret gate polling |
-| 30s TTL | Health-probe cache (a passing login-page probe is reused within the TTL) |
+| 30s TTL | Health-probe cache (a passing login-page probe is reused within the TTL); a converged pass requeues when the entry expires, so the dashboard is probed again |
 
 ## Rotation and deletion
 
