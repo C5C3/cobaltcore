@@ -33,9 +33,9 @@
 # client blocked a cache call until the kernel gave up on the connection
 # (213 s for a read under a 120 s partition): both uWSGI workers hung, every
 # token issue ran into the stream's 15 s timeout, and GET /v3 stopped
-# answering. Ready alone does not show such a hang: the operator re-probes a
-# Ready Keystone only on an event or the 10-minute resync, so most 120 s
-# windows see no probe, and step 4 reads /v3 itself.
+# answering. Ready alone shows such a hang late: the operator re-probes a
+# Ready Keystone at most 30 s after its last good probe, which is coarser
+# than step 4's 10 s reads, so step 4 reads /v3 itself.
 #
 # Blast radius: the API pods of keystone-chaos-mc-part alone. Every other
 # client of openstack-memcached keeps its cache.
@@ -130,11 +130,11 @@ spec:
   # unanswered. A single assert passes on the first read, so the script then
   # reads every 10 s for the whole 120 s and fails on the first miss. Each read
   # first GETs the endpoint the operator probes (status.endpoint, /v3) from the
-  # API pod with the operator's 10 s timeout, because KeystoneAPIReady is only
-  # re-probed on an event or the resync and stays True through most windows
-  # whatever the API does. Then it reads the CR: the five sub-conditions and
-  # Ready are the six memcached-pod-kill asserts. Twelve reads at up to 10 s
-  # for the GET, 10 s of sleep and six CR reads fit the 5m timeout.
+  # API pod with the operator's 10 s timeout, because the operator re-probes
+  # KeystoneAPIReady only every 30 s, coarser than these 10 s reads. Then it
+  # reads the CR: the five sub-conditions and Ready are the six
+  # memcached-pod-kill asserts. Twelve reads at up to 10 s for the GET, 10 s of
+  # sleep and six CR reads fit the 5m timeout.
   - try:
     - script:
         shell: bash

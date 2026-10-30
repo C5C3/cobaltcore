@@ -1358,8 +1358,8 @@ namespace with the presence guard, seeding and waits of
   the clock of the same kind node, and equal values pass.
 
 The drop direction, a `Ready` plane whose API stops answering, is out of
-scope: the keystone-operator caches a healthy probe for 30 s and does not
-requeue after one, so a timed outage check would race that cache. The checks on
+scope: the keystone-operator caches a healthy probe for 30 s and re-probes
+when it expires, so a timed outage check would race that cache. The checks on
 the child's `KeystoneAPIReady` stop at its first `True` sample for the same
 scope: after that, the plane follows a child drop only on its next reconcile.
 Any failed check prints the watcher's whole transcript. The OpenBao root token
