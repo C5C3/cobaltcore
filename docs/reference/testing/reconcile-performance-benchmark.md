@@ -58,9 +58,12 @@ make perf-benchmark CR_COUNTS="1 3" RESULT_JSON=_output/perf/reconcile.json
 ```
 
 The script is idempotent: each count generates uniquely named CRs
-(`keystone-perf-<i>`) with unique database names (`keystone_perf_<i>`), waits for
-Ready, samples, then deletes the CRs and waits for finalizer cleanup before the
-next count.
+(`keystone-perf-<count>-<i>`) with unique database names
+(`keystone_perf_<count>_<i>`), waits for Ready, samples, then deletes the CRs and
+waits for finalizer cleanup before the next count. The count is part of both
+names because a deleted CR's MariaDB `Database`, `User` and `Grant` outlive its
+finalizer: a CR re-created under the same name runs into their teardown and may
+never turn Ready.
 
 A 25-CR run spawns 25 Deployments plus their db-sync, schema-check, and
 bootstrap Jobs and MariaDB Database/User/Grant objects, which does not fit a CI
