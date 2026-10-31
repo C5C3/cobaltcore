@@ -653,13 +653,12 @@ ControlPlane deletion still **completes** within a window larger than the
 bounded stall deadline (`orcTeardownDeadline`, 7m): the finalizer waits,
 then force-removes the stuck `openstack.k-orc.cloud/*` finalizers. Also
 asserts the projected Keystone, MariaDB, Memcached, and all six K-ORC CRs are
-garbage-collected and an ORC-teardown event (`ORCTeardownComplete`, or the
-Warning `ORCTeardownStalled` on the stalled path) was emitted. Before the
-teardown it checks that the projected `deletion-orch-barbican` `KeystoneService`
-and at least one K-ORC CR carrying its `c5c3.io/keystoneservice-name` label are
-standing. Once the ControlPlane is gone it asserts that the `KeystoneService`
-and every K-ORC CR carrying that label are gone, which is what the force-release
-on the Keystone-gone path produces.
+garbage-collected, the Warning `ORCTeardownStalled` was emitted, and
+`ORCTeardownComplete` was not. Before the teardown it checks that the projected
+`deletion-orch-barbican` `KeystoneService` and at least one K-ORC CR carrying its
+`c5c3.io/keystoneservice-name` label are standing. Once the ControlPlane is gone
+it asserts that the `KeystoneService` and every K-ORC CR carrying that label are
+gone, which is what the force-release on the Keystone-gone path produces.
 
 The plane runs alone in chainsaw's ephemeral namespace. The suite seeds its
 admin-password path with `write-bootstrap-secrets.sh` before the apply. Once

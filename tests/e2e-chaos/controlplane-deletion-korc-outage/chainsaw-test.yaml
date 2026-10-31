@@ -27,7 +27,7 @@
 # orcTeardownDeadline of 7 minutes (2 m plus 5 m, requeue_intervals.go), the
 # point past which the finalizer force-strips the K-ORC finalizers. The suite
 # proves the clean path; the stall path is the one
-# tests/e2e/c5c3/deletion-orchestration admits.
+# tests/e2e/c5c3/deletion-orchestration asserts.
 #
 # Blast radius: K-ORC reconciles no CR of the cluster while it is held. The
 # PodChaos is the shared state to undo, so the catches of steps 2 and 3 delete
