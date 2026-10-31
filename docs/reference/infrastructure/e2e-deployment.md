@@ -456,8 +456,12 @@ and `WITH_NFS`.
      `EXTERNAL_OVERLAY`: the Namespace `rook-ceph` and the Rook operator's
      HelmRepository and HelmRelease.
    - `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=flux` resumes the
-     nine service-operator HelmReleases. Every other run suspends the
-     `c5c3-operator` HelmRelease and the `k-orc` Kustomization with their
+     nine service-operator HelmReleases and the `k-orc` Kustomization. The
+     `c5c3-operator` pod restarts until the K-ORC CRDs exist, and the kubelet
+     lengthens the pause between restarts up to 300 s. Resuming `k-orc` in
+     this step lands the CRDs before that pause can outlast the
+     `WEBHOOK_TIMEOUT` of the ControlPlane admission. Every other run suspends
+     the `c5c3-operator` HelmRelease and the `k-orc` Kustomization with their
      sources. `INFRA_ONLY=true` suspends all ten operator HelmReleases and
      scales their Deployments to zero.
 4. **Wait for the releases**, in four phases:

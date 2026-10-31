@@ -333,7 +333,8 @@ patches:
   # <name>@<digest>).
   # Suspended at apply time, nothing reconciles K-ORC until a path lifts the
   # suspension; the CONTROLPLANE_OPERATORS=flux branch of hack/deploy-infra.sh
-  # does so right before it waits for the Kustomization.
+  # does so in Step 3 with the operator HelmReleases, because the c5c3-operator
+  # crash-loops until the K-ORC CRDs exist.
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1
