@@ -3881,8 +3881,13 @@ projected. On deletion it:
    controller tears them down through the very admin credential step 2 revokes.
    While one is still Terminating the reconciler reports `KORCReady=False` with
    reason `FinalizingServiceRegistrations` and requeues; past
-   `registrationTeardownStallTimeout` (2 minutes) it continues anyway and a
-   **Warning** `ServiceRegistrationTeardownStalled` names what was left behind.
+   `registrationTeardownStallTimeout` (2 minutes) it continues anyway, moves the
+   reason to `FinalizingORC`, and a **Warning**
+   `ServiceRegistrationTeardownStalled` names what was left behind. That Warning
+   fires once per deletion, on the pass that gives up. Repeated on every pass of
+   the K-ORC window, it would spend the burst of 25 events the client-go event
+   correlator allows per object and event type, and the correlator would then
+   drop the Warnings of the stall escape in step 8.
    That window is a budget of its own rather than a share of the K-ORC one: this
    wait blocks the sweep below entirely, so a shared deadline would let an
    unreachable Keystone spend it all here and leave the admin credential's
