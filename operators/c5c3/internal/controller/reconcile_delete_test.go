@@ -466,6 +466,298 @@ func TestReconcile_TerminatingControlPlaneIsReadLive(t *testing.T) {
 	})
 }
 
+// failingControlPlaneUpdates makes fail decide every Update of a ControlPlane: a
+// non-nil error replaces the write, and nil lets it through.
+func failingControlPlaneUpdates(fail func() error) interceptor.Funcs {
+	return interceptor.Funcs{
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*c5c3v1alpha1.ControlPlane); ok {
+				if err := fail(); err != nil {
+					return err
+				}
+			}
+			return cl.Update(ctx, obj, opts...)
+		},
+	}
+}
+
+// controlPlanesResource names the kind in the API errors the tests inject.
+var controlPlanesResource = schema.GroupResource{Group: c5c3v1alpha1.GroupVersion.Group, Resource: "controlplanes"}
+
+// TestReconcileDelete_CompletionEventFollowsTheFinalizerUpdate pins ORCTeardownComplete
+// to a release that happened: the event follows the finalizer update, so only a
+// successful update emits it, and a retried update emits it once.
+func TestReconcileDelete_CompletionEventFollowsTheFinalizerUpdate(t *testing.T) {
+	ctx := context.Background()
+	setup := func(t *testing.T, funcs interceptor.Funcs) (
+		*ControlPlaneReconciler, client.Client, *c5c3v1alpha1.ControlPlane, *record.FakeRecorder,
+	) {
+		t.Helper()
+		g := NewGomegaWithT(t)
+		s := namespaceTeardownScheme(t)
+		cp := deletingControlPlane(0)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).WithInterceptorFuncs(funcs).Build()
+		rec := record.NewFakeRecorder(10)
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+		return &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}, c, cp, rec
+	}
+
+	t.Run("success", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		r, c, cp, rec := setup(t, interceptor.Funcs{})
+
+		res, err := r.reconcileDelete(ctx, cp)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		err = c.Get(ctx, client.ObjectKeyFromObject(cp), &c5c3v1alpha1.ControlPlane{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		g.Expect(eventsWithReason(rec, "ORCTeardownComplete")).To(HaveLen(1))
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		r, _, cp, rec := setup(t, failingControlPlaneUpdates(func() error {
+			return apierrors.NewNotFound(controlPlanesResource, "cp")
+		}))
+
+		res, err := r.reconcileDelete(ctx, cp)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		g.Expect(eventsWithReason(rec, "ORCTeardownComplete")).To(BeEmpty())
+	})
+
+	t.Run("conflict", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		conflicts := 1
+		r, c, cp, rec := setup(t, failingControlPlaneUpdates(func() error {
+			if conflicts == 0 {
+				return nil
+			}
+			conflicts--
+			return apierrors.NewConflict(controlPlanesResource, "cp", errors.New("the object was modified"))
+		}))
+
+		_, err := r.reconcileDelete(ctx, cp)
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(HavePrefix("removing finalizer:"))
+		g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+		g.Expect(eventsWithReason(rec, "ORCTeardownComplete")).To(BeEmpty())
+
+		// The retry starts from a fresh read, as the next pass does.
+		fresh := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fresh)).To(Succeed())
+		_, err = r.reconcileDelete(ctx, fresh)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(eventsWithReason(rec, "ORCTeardownComplete")).To(HaveLen(1))
+	})
+}
+
+// failingORCReleases makes fail decide every Update that leaves a ControlPlane
+// without the ORC finalizer: a non-nil error replaces the write, and nil lets it
+// through. Every other Update goes through, the latch of the stall escape among them.
+func failingORCReleases(fail func() error) interceptor.Funcs {
+	return interceptor.Funcs{
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if cp, ok := obj.(*c5c3v1alpha1.ControlPlane); ok && !controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer) {
+				if err := fail(); err != nil {
+					return err
+				}
+			}
+			return cl.Update(ctx, obj, opts...)
+		},
+	}
+}
+
+// wedgedAdminAppCredential is the managed K-ORC CR of a stalled teardown: Terminating
+// behind a finalizer K-ORC can no longer run.
+func wedgedAdminAppCredential(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.ApplicationCredential {
+	return &orcv1alpha1.ApplicationCredential{ObjectMeta: terminatingImportMeta(
+		adminAppCredentialName(cp), childNamespace(cp), "openstack.k-orc.cloud/applicationcredential")}
+}
+
+// TestReconcileDelete_UnfinishedStallEscapeReportsNoCompletion pins the latch the
+// stall escape leaves on the CR. The steps behind its strip can fail or hold. The next
+// pass then finds no K-ORC CR left and takes the normal release, and that release must
+// not report a clean finish for a teardown that announced ORCResourcesOrphaned.
+func TestReconcileDelete_UnfinishedStallEscapeReportsNoCompletion(t *testing.T) {
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+	expectSilentRelease := func(
+		t *testing.T, r *ControlPlaneReconciler, c client.Client, cp *c5c3v1alpha1.ControlPlane, rec *record.FakeRecorder,
+	) {
+		t.Helper()
+		g := NewGomegaWithT(t)
+		key := client.ObjectKeyFromObject(cp)
+		fresh := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, key, fresh)).To(Succeed())
+
+		res, err := r.reconcileDelete(ctx, fresh)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		g.Expect(apierrors.IsNotFound(c.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
+		events := drainEvents(rec)
+		g.Expect(events).To(ContainElement(ContainSubstring("ORCResourcesOrphaned")))
+		g.Expect(events).NotTo(ContainElement(ContainSubstring("ORCTeardownComplete")))
+	}
+
+	t.Run("the finalizer update fails", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+		conflicts := 1
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedgedAdminAppCredential(cp)).
+			WithInterceptorFuncs(failingORCReleases(func() error {
+				if conflicts == 0 {
+					return nil
+				}
+				conflicts--
+				return apierrors.NewConflict(controlPlanesResource, "cp", errors.New("the object was modified"))
+			})).Build()
+		rec := record.NewFakeRecorder(20)
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+
+		_, err := r.reconcileDelete(ctx, cp)
+
+		g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+		expectSilentRelease(t, r, c, cp, rec)
+	})
+
+	t.Run("the namespace sweep holds", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := deletingPlacedControlPlane(orcTeardownDeadline+time.Minute,
+			c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+		cp.Finalizers = []string{controlPlaneORCFinalizer}
+		// Past the deadline only this process's own first failed resolve keeps the
+		// cluster unresolved instead of abandoned, so no other test may share the name.
+		cp.Spec.Services.Keystone.TargetClusterRef.Name = "unresolved-behind-the-escape"
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedgedAdminAppCredential(cp)).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build()
+		rec := record.NewFakeRecorder(20)
+		r := &ControlPlaneReconciler{
+			Client: c, Scheme: s, Recorder: rec,
+			Resolver: &childrenResolver{err: mcruntime.ErrClusterNotFound},
+		}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+		// A hold persists the conditions the pass set in memory ahead of the latch.
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type: conditionTypeKORCReady, Status: metav1.ConditionFalse, Reason: "FinalizingORC",
+		})
+
+		res, err := r.reconcileDelete(ctx, cp)
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: namespaceRequeueAfter}))
+		g.Expect(conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)).NotTo(BeNil())
+
+		r.Resolver = &childrenResolver{children: fake.NewClientBuilder().WithScheme(s).Build()}
+		expectSilentRelease(t, r, c, cp, rec)
+	})
+}
+
+// TestReconcileDelete_FailedStallLatchStripsNothing asserts that the latch lands ahead
+// of the first strip, so no K-ORC CR is released without it.
+func TestReconcileDelete_FailedStallLatchStripsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+	wedged := wedgedAdminAppCredential(cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedged).
+		WithInterceptorFuncs(failingControlPlaneUpdates(func() error {
+			return apierrors.NewConflict(controlPlanesResource, "cp", errors.New("the object was modified"))
+		})).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+
+	_, err := r.reconcileDelete(ctx, cp)
+
+	g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+	g.Expect(err.Error()).To(HavePrefix("latching the ORC stall:"))
+	held := &orcv1alpha1.ApplicationCredential{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(wedged), held)).To(Succeed())
+	g.Expect(held.Finalizers).To(ConsistOf("openstack.k-orc.cloud/applicationcredential"))
+	g.Expect(eventsWithReason(rec, "ORCTeardownStalled")).To(BeEmpty())
+}
+
+// TestReconcileDelete_PartlyFailedStripStillNamesTheOrphan pins the Warnings of the
+// stall escape ahead of its strip. orcChildObjects lists the managed application
+// credential ahead of the CR-only Region and imports, so a strip that fails between
+// them leaves a CR-only remainder. The passes behind it release that remainder as
+// ORCImportsReleased and never return to the escape, and the latch silences the
+// completion event, so the credential has to be named before the strip runs.
+func TestReconcileDelete_PartlyFailedStripStillNamesTheOrphan(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+	ns := childNamespace(cp)
+	credential := wedgedAdminAppCredential(cp)
+	region := &orcv1alpha1.Region{
+		ObjectMeta: terminatingImportMeta(keystoneRegionName(cp), ns, korcFinalizerPrefix+"region"),
+		Spec: orcv1alpha1.RegionSpec{
+			ManagementPolicy: orcv1alpha1.ManagementPolicyManaged,
+			ManagedOptions:   &orcv1alpha1.ManagedOptions{OnDelete: orcv1alpha1.OnDeleteDetach},
+		},
+	}
+	user := &orcv1alpha1.User{
+		ObjectMeta: terminatingImportMeta(adminUserRef(cp), ns, korcFinalizerPrefix+"user"),
+		Spec:       orcv1alpha1.UserSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	domain := &orcv1alpha1.Domain{
+		ObjectMeta: terminatingImportMeta(adminDomainRef(cp), ns, korcFinalizerPrefix+"domain"),
+		Spec:       orcv1alpha1.DomainSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	conflicts := 1
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, credential, region, user, domain).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*orcv1alpha1.Region); ok && conflicts > 0 {
+					conflicts--
+					return apierrors.NewConflict(schema.GroupResource{Group: orcv1alpha1.GroupName, Resource: "regions"},
+						obj.GetName(), errors.New("the object was modified"))
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		}).Build()
+	rec := record.NewFakeRecorder(20)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+	key := client.ObjectKeyFromObject(cp)
+	freshControlPlane := func() *c5c3v1alpha1.ControlPlane {
+		fresh := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, key, fresh)).To(Succeed())
+		return fresh
+	}
+
+	_, err := r.reconcileDelete(ctx, freshControlPlane())
+	g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(credential),
+		&orcv1alpha1.ApplicationCredential{}))).To(BeTrue(), "the credential goes first, so it leaves the failed strip behind")
+
+	res, err := r.reconcileDelete(ctx, freshControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: korcRequeueAfter}))
+
+	res, err = r.reconcileDelete(ctx, freshControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
+
+	events := drainEvents(rec)
+	g.Expect(events).To(ContainElement(SatisfyAll(HavePrefix("Warning"), ContainSubstring("ORCTeardownStalled"))))
+	g.Expect(events).To(ContainElement(SatisfyAll(
+		HavePrefix("Warning"), ContainSubstring("ORCResourcesOrphaned"), ContainSubstring(credential.Name),
+	)))
+	g.Expect(events).NotTo(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
 // TestReconcileDelete_WaitsWhileORCTerminating asserts that while an owned K-ORC
 // CR is still present, reconcileDelete holds the ControlPlane finalizer, reports
 // KORCReady=False/FinalizingORC, and requeues. Deleting the live CR marks it
@@ -1070,6 +1362,96 @@ func TestReconcileDelete_RegistrationStallLeavesTheEscapeItsWarnings(t *testing.
 		"ORCResourcesOrphaned",
 		"ServiceRegistrationResourcesOrphaned",
 	), "every stall Warning must get past the event spam filter")
+}
+
+// TestReconcileDelete_FailingStripSparesTheWarningsBehindIt walks a stall escape whose
+// strip fails for three minutes on the controller's failure backoff, then recovers.
+// ORCTeardownStalled and ORCResourcesOrphaned go out ahead of the strip. Repeated on
+// each retry, they empty the correlator's Warning bucket within about 20 seconds, and
+// it drops OpenBaoCleanupStalled and ServiceRegistrationResourcesOrphaned behind the
+// strip. Those two are the only record of the OpenBao paths and Keystone rows an
+// operator has to repair by hand.
+func TestReconcileDelete_FailingStripSparesTheWarningsBehindIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+	// What updateStatus persisted when the registration gate gave up, minutes ago.
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type: conditionTypeKORCReady, Status: metav1.ConditionFalse, Reason: "FinalizingORC",
+	})
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       glanceName(cp),
+			Namespace:  cp.Namespace,
+			Labels:     controlPlaneChildLabels(cp),
+			Finalizers: []string{keystoneServiceFinalizerName},
+		},
+	}
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServiceUserRef(ks),
+			Namespace:  childNamespace(cp),
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"openstack.k-orc.cloud/user"},
+		},
+	}
+	push := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            adminAppCredentialPushSecretName(cp),
+			Namespace:       childNamespace(cp),
+			OwnerReferences: ownedByCP(cp),
+			Finalizers:      []string{"pushsecret.externalsecrets.io/finalizer"},
+		},
+	}
+	stripFails := true
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, user, push, wedgedAdminAppCredential(cp)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				if _, ok := obj.(*orcv1alpha1.ApplicationCredential); ok && stripFails {
+					return apierrors.NewInternalError(errors.New("failed calling webhook"))
+				}
+				return cl.Update(ctx, obj, opts...)
+			},
+		}).Build()
+
+	passClock := clocktesting.NewFakeClock(time.Now())
+	rec := &correlatedRecorder{
+		t:          t,
+		correlator: record.NewEventCorrelatorWithOptions(record.CorrelatorOptions{Clock: passClock}),
+		clock:      passClock,
+	}
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+	key := client.ObjectKeyFromObject(cp)
+	pass := func() (ctrl.Result, error) {
+		fresh := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, key, fresh)).To(Succeed())
+		return r.reconcileDelete(ctx, fresh)
+	}
+
+	// The failure backoff of bootstrap.TypedControllerOptions: 5 ms, doubling up to 30 s.
+	start, backoff := passClock.Now(), 5*time.Millisecond
+	for passClock.Since(start) < 3*time.Minute {
+		_, err := pass()
+		g.Expect(apierrors.IsInternalError(err)).To(BeTrue())
+		passClock.Step(backoff)
+		backoff = min(2*backoff, 30*time.Second)
+	}
+
+	stripFails = false
+	res, err := pass()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
+
+	g.Expect(rec.landed).To(ConsistOf(
+		"ORCTeardownStalled",
+		"ORCResourcesOrphaned",
+		"OpenBaoCleanupStalled",
+		"ServiceRegistrationResourcesOrphaned",
+	), "one failing strip must announce each stall Warning once and leave the budget for the ones behind it")
 }
 
 // TestDeleteProjectedRegistrations_ReachesAnExternalNamespaceAndSkipsForeignCRs
