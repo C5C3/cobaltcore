@@ -4558,7 +4558,7 @@ which the finalizer would force-strip the K-ORC finalizers.
 | 1 | Bring the plane up | `script` (40m) | `cp_bring_up cp-del-korc`. The step cleanup lifts the fault and runs `cp_teardown`, a no-op once the plane is gone |
 | 2 | Hold K-ORC | `script` (5m) | Records the UID of Keystone `cp-del-korc-keystone` in ConfigMap `cp-del-state` (and requires at least one K-ORC CR), applies `01-podchaos.yaml`, waits for `AllInjected` and the K-ORC pod at `Ready=false` |
 | 3 | Delete under the outage | `script` (5m) | `kubectl delete controlplane cp-del-korc --wait=false`, records the time, waits up to 30 s for `KORCReady=False/FinalizingORC`, then for 120 s requires the `deletionTimestamp` and the finalizer, `KORCReady=False/FinalizingORC`, the Keystone with the recorded UID, no `deletionTimestamp` and `Ready=True`, and the `cp-del-korc-admin-app-credential` CR (`HELD-OK`), and deletes the `PodChaos` |
-| 4 | The teardown completes | `script` (10m) | Within 360 s of the delete the ControlPlane is gone; its events carry `ORCTeardownComplete` and neither `ORCTeardownStalled` nor `ORCResourcesOrphaned` (`CLEAN-TEARDOWN-OK`); within 180 s more no CR of `CP_KORC_KINDS`, no Keystone, no MariaDB and no Memcached is left |
+| 4 | The teardown completes | `script` (10m) | Within 360 s of the delete the ControlPlane is gone; a re-read of up to 30 s finds `ORCTeardownComplete` in its events, and neither `ORCTeardownStalled` nor `ORCResourcesOrphaned` (`CLEAN-TEARDOWN-OK`); within 180 s more no CR of `CP_KORC_KINDS`, no Keystone, no MariaDB and no Memcached is left |
 
 **Fixtures:** `00-controlplane-cr.yaml` (`cp-del-korc`), `01-podchaos.yaml`
 (`hold-korc-deletion`, `pod-failure`, `mode: all`, `duration: "600s"`).
