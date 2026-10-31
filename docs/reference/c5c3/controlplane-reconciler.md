@@ -4048,7 +4048,9 @@ projected. On deletion it:
    proceeds on the cascade, so a wedged cluster-operator cannot make the
    ControlPlane undeletable. The escape paths below release without either wait.
    The remote-children finalizer goes in the same update, because by then every
-   placed namespace has been swept or its cluster abandoned.
+   placed namespace has been swept or its cluster abandoned. A **Normal**
+   `ORCTeardownComplete` event follows a successful update, unless the escape in
+   step 8 latched the CR. A failed update emits nothing and the next pass retries.
 7. **Releases a CR-only remainder immediately.** K-ORC re-fetches the
    resource through an *authenticated* actuator before releasing any finalizer,
    and those CRs authenticate with the admin application credential whose
@@ -4063,13 +4065,26 @@ projected. On deletion it:
 8. **Bounds the wait.** If managed ORC CRs stay Terminating past
    `orcTeardownDeadline` (the 2-minute registration window plus
    `orcTeardownStallTimeout`, 5 minutes) — typically because Keystone is already
-   gone and K-ORC cannot revoke — the reconciler force-removes the stuck
+   gone and K-ORC cannot revoke — the reconciler emits a **Warning**
+   `ORCTeardownStalled` event, force-removes the stuck
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
-   emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
-   finalizer so deletion completes rather than wedging forever. A projected
+   and releases the ControlPlane finalizer so deletion completes rather than
+   wedging forever. A projected
    registration still present here has its children force-released before that
    finalizer goes, under the same **Warning**
-   `ServiceRegistrationResourcesOrphaned` as on the normal release.
+   `ServiceRegistrationResourcesOrphaned` as on the normal release. Ahead of its
+   first force-removal the escape stamps the annotation
+   `c5c3.io/orc-teardown-stalled` on the ControlPlane and emits its Warnings. A
+   force-removal that fails part way can leave a remainder step 7 releases, so no
+   later pass returns to the escape. The force-removal or a step behind it can
+   fail or hold, and a later pass then finds no K-ORC CR left and takes the normal
+   release, which emits no `ORCTeardownComplete` for a stamped CR. The annotation
+   records that the escape ran, and the force-removal may not have happened: if
+   K-ORC finishes a CR whose force-removal failed, the Warnings over-report and no
+   completion event follows. A retry of a failed force-removal finds the annotation
+   and emits neither Warning again: the first pass named the longest list, and each
+   repeat would spend the event budget the Warnings behind the force-removal still
+   need. The annotation goes with the CR.
 9. **Names what the escape orphaned.** The escape strips the very finalizer that
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no
