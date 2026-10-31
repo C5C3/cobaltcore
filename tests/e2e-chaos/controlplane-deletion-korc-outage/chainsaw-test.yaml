@@ -17,10 +17,11 @@
 #             for K-ORC to revoke against a Keystone that still serves, and
 #             deletes the Keystone only once no K-ORC CR is left
 #             (reconcile_delete.go).
-#   teardown  Within 360 s of the delete the ControlPlane is gone, its events
-#             carry ORCTeardownComplete and neither ORCTeardownStalled nor
-#             ORCResourcesOrphaned (CLEAN-TEARDOWN-OK), and no K-ORC CR, no
-#             Keystone, no MariaDB and no Memcached is left in the namespace.
+#   teardown  Within 360 s of the delete the ControlPlane is gone, within 30 s
+#             more its events carry ORCTeardownComplete, and they carry neither
+#             ORCTeardownStalled nor ORCResourcesOrphaned (CLEAN-TEARDOWN-OK).
+#             No K-ORC CR, no Keystone, no MariaDB and no Memcached is left in
+#             the namespace.
 #
 # The hold of 120 s and the 360 s for the teardown both stay inside the
 # orcTeardownDeadline of 7 minutes (2 m plus 5 m, requeue_intervals.go), the
@@ -199,14 +200,23 @@ spec:
           done
           echo "OK: the ControlPlane is gone $(( $(date +%s) - deleted ))s after its delete"
 
-          reasons="$(kubectl get events -n "$NAMESPACE" \
-            --field-selector involvedObject.kind=ControlPlane,involvedObject.name=cp-del-korc \
-            -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}')"
-          if ! grep -qx ORCTeardownComplete <<<"$reasons"; then
-            echo "FAIL: no ORCTeardownComplete event on the ControlPlane"
-            echo "$reasons"
-            exit 1
-          fi
+          # The completion event follows the finalizer update, so it can land just
+          # after the CR is gone.
+          deadline=$(( $(date +%s) + 30 ))
+          while true; do
+            reasons="$(kubectl get events -n "$NAMESPACE" \
+              --field-selector involvedObject.kind=ControlPlane,involvedObject.name=cp-del-korc \
+              -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}')"
+            if grep -qx ORCTeardownComplete <<<"$reasons"; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no ORCTeardownComplete event on the ControlPlane within 30s of its removal"
+              echo "$reasons"
+              exit 1
+            fi
+            sleep 2
+          done
           if grep -qxE 'ORCTeardownStalled|ORCResourcesOrphaned' <<<"$reasons"; then
             echo "FAIL: the ControlPlane went through the stall path"
             echo "$reasons"

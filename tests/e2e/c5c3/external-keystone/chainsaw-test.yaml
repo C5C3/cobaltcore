@@ -286,6 +286,17 @@ spec:
             done
           }
 
+          # Scan the ControlPlane's events: a teardown Warning ends the suite, and
+          # the completion event sets teardown_ok.
+          scan_teardown_events() {
+            local ev
+            ev="$(kubectl get events -n "${CP_NS}" --field-selector "involvedObject.name=${CP}" \
+              -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}' 2>/dev/null || true)"
+            case "$ev" in *ORCResourcesOrphaned*|*ORCTeardownStalled*)
+              echo "ERROR: teardown emitted a Warning event: ${ev}"; exit 1;; esac
+            case "$ev" in *ORCTeardownComplete*) teardown_ok=1;; esac
+          }
+
           # osc_admin runs `openstack $@` against the fixture as its bootstrap admin
           # (cloud-admin under legacy policy). Prints the client's stdout.
           osc_admin() {
@@ -849,20 +860,24 @@ spec:
 
           # ── Block 9: deletion = zero blast radius ───────────────────────────
           kubectl delete controlplane "${CP}" -n "${CP_NS}" --wait=false
-          # Watch for the teardown-complete event while the finalizer runs, so it is
-          # observed before the deleted object's events are garbage-collected.
+          # Watch the events while the finalizer runs, so a Warning fails the suite
+          # as soon as it appears. The re-read below catches a completion event that
+          # lands after the CR is gone.
           deadline=$(( $(date +%s) + 600 )); teardown_ok=0; gone=0
           while true; do
-            ev="$(kubectl get events -n "${CP_NS}" --field-selector "involvedObject.name=${CP}" \
-              -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}' 2>/dev/null || true)"
-            case "$ev" in *ORCResourcesOrphaned*|*ORCTeardownStalled*)
-              echo "ERROR: teardown emitted a Warning event: ${ev}"; exit 1;; esac
-            case "$ev" in *ORCTeardownComplete*) teardown_ok=1;; esac
+            scan_teardown_events
             if ! kubectl get controlplane "${CP}" -n "${CP_NS}" >/dev/null 2>&1; then gone=1; break; fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "ERROR: ControlPlane ${CP} not deleted within 600s"; exit 1
             fi
             sleep 5
+          done
+          # The completion event follows the finalizer update, so it can land just
+          # after the CR is gone.
+          deadline=$(( $(date +%s) + 30 ))
+          while [ "${teardown_ok}" != "1" ] && [ "$(date +%s)" -lt "${deadline}" ]; do
+            scan_teardown_events
+            [ "${teardown_ok}" = "1" ] || sleep 2
           done
           assert_eq "ControlPlane deletion completed" "1" "${gone}"
           assert_eq "ORCTeardownComplete event was emitted" "1" "${teardown_ok}"
