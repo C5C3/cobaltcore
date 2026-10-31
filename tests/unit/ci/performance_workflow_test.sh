@@ -23,8 +23,10 @@
 #   - a copy whose comparison step runs before a measurement step fails the
 #     order check, and a copy whose baseline job grants itself issues: write
 #     fails the permission check;
-#   - once committed, tests/perf/baseline.json records its release, commit,
-#     run and date.
+#   - tests/perf/baseline.json is committed, records its release, commit, run
+#     and date, names the release the nightly resolves and holds the twenty
+#     metrics the nightly writes as numbers, because compare exits 2 otherwise;
+#     a copy of another release and a copy without a metric fail that check.
 #
 # Usage: bash tests/unit/ci/performance_workflow_test.sh
 
@@ -300,27 +302,70 @@ test_a_comparison_before_a_measurement_fails_the_check() {
   fi
 }
 
-test_the_committed_baseline() {
-  echo "Test: tests/perf/baseline.json records its origin"
+# check_baseline <file> — the baseline is one compare can judge a night against:
+# its origin, the release the nightly resolves, and the eight token and twelve
+# reconcile metrics as numbers.
+check_baseline() {
+  assert_eq "it has recorded release, commit, run and date" "ok" \
+    "$(python3 -c '
+import json, sys
+r = json.load(open(sys.argv[1])).get("recorded", {})
+ok = all(isinstance(r.get(k), str) and r[k] for k in ("release", "commit", "run", "date"))
+print("ok" if ok else "incomplete")
+' "$1" 2>&1)"
+  assert_contains "the run is a workflow run of this repository" \
+    "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["recorded"]["run"])' "$1" 2>&1)" \
+    "https://github.com/C5C3/cobaltcore/actions/runs/"
+  assert_eq "it names the release the nightly resolves" \
+    "$(OPERATOR=keystone "$PROJECT_ROOT/hack/ci-service-image-releases.sh" | head -n1)" \
+    "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["recorded"]["release"])' "$1" 2>&1)"
+  assert_eq "it holds the twenty metrics of the nightly as numbers" "ok" \
+    "$(python3 -c '
+import json, sys
+metrics = json.load(open(sys.argv[1])).get("metrics", {})
+want = {f"token.{op}.{key}" for op in ("issue", "validate")
+        for key in ("p50_ms", "p99_ms", "samples", "failed")}
+want |= {f"reconcile.{count}.{hist}_p{q}_s" for count in (1, 3)
+         for hist in ("e2e", "sub") for q in (50, 95, 99)}
+numbers = all(type(v) in (int, float) for v in metrics.values())
+print("ok" if set(metrics) == want and numbers else sorted(want ^ set(metrics)))
+' "$1" 2>&1)"
+}
 
-  # The baseline is written from the artifact of the first Performance run;
-  # until it is committed, the nightly's comparison exits 2.
+test_the_committed_baseline() {
+  echo "Test: tests/perf/baseline.json can judge a night"
+
   if [ ! -f "$BASELINE" ]; then
-    echo "  SKIP: $BASELINE is not committed yet"
+    echo "  FAIL: $BASELINE is not committed, so every nightly comparison exits 2"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  check_baseline "$BASELINE"
+}
+
+test_an_unusable_baseline_fails_the_check() {
+  echo "Test: a baseline compare could not use fails the check"
+
+  if [ ! -f "$BASELINE" ]; then
+    echo "  SKIP: $BASELINE is missing, which test_the_committed_baseline reports"
     SKIP=$((SKIP + 1))
     return
   fi
-  assert_eq "it has recorded release, commit, run and date and a metrics object" "ok" \
-    "$(python3 -c '
+  local copy="$TMP_DIR/baseline-copy.json"
+  python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
-r = d.get("recorded", {})
-ok = all(isinstance(r.get(k), str) and r[k] for k in ("release", "commit", "run", "date"))
-print("ok" if ok and isinstance(d.get("metrics"), dict) and d["metrics"] else "incomplete")
-' "$BASELINE" 2>&1)"
-  assert_contains "the run is a workflow run of this repository" \
-    "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["recorded"]["run"])' "$BASELINE" 2>&1)" \
-    "https://github.com/C5C3/cobaltcore/actions/runs/"
+d["recorded"]["release"] = "1999.1"
+json.dump(d, open(sys.argv[2], "w"))
+' "$BASELINE" "$copy"
+  assert_eq "a copy of another release fails the release check" "1" "$(fails_on check_baseline "$copy")"
+  python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+del d["metrics"]["reconcile.3.e2e_p95_s"]
+json.dump(d, open(sys.argv[2], "w"))
+' "$BASELINE" "$copy"
+  assert_eq "a copy without a metric fails the metrics check" "1" "$(fails_on check_baseline "$copy")"
 }
 
 test_triggers_permissions_and_env
@@ -331,6 +376,7 @@ test_the_report_job
 test_a_comparison_before_a_measurement_fails_the_check
 test_a_baseline_job_with_a_write_fails_the_check
 test_the_committed_baseline
+test_an_unusable_baseline_fails_the_check
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

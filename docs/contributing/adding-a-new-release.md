@@ -443,7 +443,8 @@ are the record of the last retirement.
    branch, write the baseline from its artifact with `hack/perf-baseline.py
    write-baseline --release <new-oldest>` (see
    [Re-baselining](../reference/testing/reconcile-performance-benchmark.md#re-baselining)),
-   and commit it in this pull request. The code import of
+   and commit it in this pull request; `tests/unit/ci/performance_workflow_test.sh`
+   fails until then. The code import of
    `tests/tempest/glance-2026-1/02-glance-cr.yaml` in
    [Filter web-download Image Imports](../guides/glance/filter-web-download-imports.md)
    moves when `2026.1` is the release being removed; the surviving twin needs
