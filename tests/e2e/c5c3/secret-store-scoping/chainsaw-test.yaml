@@ -132,7 +132,15 @@ spec:
           # The eso-tenant auth role only exists once setup-auth.sh has run WITH
           # this feature. On a cluster bootstrapped before #605 it is absent — SKIP
           # rather than fail, so this suite lands green on such clusters.
-          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+          # bao read exits 2 on every failure and prints "No value found at" for
+          # a missing role alone. A failed read says nothing about the role, so
+          # it stops the suite in its own words.
+          if ! role_read="$(bao_exec bao read auth/kubernetes/management/role/eso-tenant 2>&1)"; then
+            if ! grep -q 'No value found at' <<<"${role_read}"; then
+              echo "ERROR: could not read the eso-tenant OpenBao auth role:"
+              echo "${role_read}"
+              exit 1
+            fi
             echo "SKIP: the eso-tenant auth role is not configured on this OpenBao"
             echo "      (bootstrap predates #605). Re-run setup-auth.sh /"
             echo "      setup-policies.sh to enable per-tenant identities."

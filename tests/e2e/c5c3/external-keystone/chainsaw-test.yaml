@@ -172,7 +172,15 @@ spec:
           # The per-tenant identity used by External-mode PushSecrets/ExternalSecrets
           # only exists once setup-auth.sh configured the eso-tenant role. A cluster
           # bootstrapped before per-tenant stores skips cleanly rather than failing.
-          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+          # bao read exits 2 on every failure and prints "No value found at" for
+          # a missing role alone. A failed read says nothing about the role, so
+          # it stops the suite in its own words.
+          if ! role_read="$(bao_exec bao read auth/kubernetes/management/role/eso-tenant 2>&1)"; then
+            if ! grep -q 'No value found at' <<<"${role_read}"; then
+              echo "ERROR: could not read the eso-tenant OpenBao auth role:"
+              echo "${role_read}"
+              exit 1
+            fi
             gate_absent "the eso-tenant OpenBao auth role is not configured."
           fi
           echo "OK: prerequisites present — running the External-mode ControlPlane chain."
