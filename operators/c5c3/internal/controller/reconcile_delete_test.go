@@ -2738,6 +2738,34 @@ func TestReconcileDelete_StallEscapeNamesOrphanedManagedResources(t *testing.T) 
 	}
 }
 
+// TestReconcileDelete_StallEscapeToleratesAReleasedControlPlane asserts that the
+// escape treats NotFound on its finalizer update as the end state it was after.
+// The Warning still goes out: the escape force-removes the K-ORC CRs all the same.
+func TestReconcileDelete_StallEscapeToleratesAReleasedControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+	wedged := &orcv1alpha1.ApplicationCredential{ObjectMeta: terminatingImportMeta(
+		adminAppCredentialName(cp), childNamespace(cp), "openstack.k-orc.cloud/applicationcredential")}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedged).
+		WithInterceptorFuncs(failingControlPlaneUpdates(func() error {
+			return apierrors.NewNotFound(controlPlanesResource, "cp")
+		})).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(ctx, cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	events := drainEvents(rec)
+	g.Expect(events).To(ContainElement(ContainSubstring("ORCTeardownStalled")))
+	g.Expect(events).NotTo(ContainElement(ContainSubstring("ORCTeardownComplete")))
+}
+
 // TestIsManagedORCChild_UnsetPolicyCountsAsManaged pins the fail-loud default: K-ORC
 // defaults managementPolicy to `managed`, so a CR whose policy the reconciler never
 // stamped must be reported as orphaned rather than silently omitted from the warning.
@@ -5022,6 +5050,82 @@ func TestReconcileDelete_StallEscapeKeepsTheRemoteChildrenFinalizer(t *testing.T
 	g.Expect(res).To(Equal(ctrl.Result{}))
 	expectSwept(t, target, placedChild)
 	g.Expect(apierrors.IsNotFound(local.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
+}
+
+// TestReconcileDeleteRemoteChildren_ToleratesAReleasedControlPlane asserts that the
+// last finalizer update of a placed plane treats NotFound as the end state it was
+// after, once the sweep has run.
+func TestReconcileDeleteRemoteChildren_ToleratesAReleasedControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(orcTeardownDeadline+time.Minute,
+		c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	cp.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+	placedChild := onTarget(cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: adminPasswordSecretName(cp), Namespace: placedTeardownNamespace,
+	}})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(placedChild).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+		WithInterceptorFuncs(failingControlPlaneUpdates(func() error {
+			return apierrors.NewNotFound(controlPlanesResource, "cp")
+		})).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{children: target},
+	}
+	g.Expect(local.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(ctx, cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	expectSwept(t, target, placedChild)
+}
+
+// TestReconcileDelete_FinalizerUpdateConflictFailsThePass is the other half of the two
+// tolerant finalizer updates: they forgive NotFound alone. A swallowed Conflict would
+// end the pass with a zero result and nothing to requeue it, and the CR would stay
+// Terminating until a later watch event.
+func TestReconcileDelete_FinalizerUpdateConflictFailsThePass(t *testing.T) {
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+	conflict := failingORCReleases(func() error {
+		return apierrors.NewConflict(controlPlanesResource, "cp", errors.New("the object was modified"))
+	})
+
+	t.Run("the stall escape", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedgedAdminAppCredential(cp)).
+			WithInterceptorFuncs(conflict).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+
+		_, err := r.reconcileDelete(ctx, cp)
+
+		g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+		g.Expect(err.Error()).To(HavePrefix("removing finalizer after force-remove:"))
+	})
+
+	t.Run("the remote-children release", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := deletingPlacedControlPlane(orcTeardownDeadline+time.Minute,
+			c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+		cp.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).WithInterceptorFuncs(conflict).Build()
+		r := &ControlPlaneReconciler{
+			Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10),
+			Resolver: &childrenResolver{children: fake.NewClientBuilder().WithScheme(s).Build()},
+		}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+
+		_, err := r.reconcileDelete(ctx, cp)
+
+		g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+		g.Expect(err.Error()).To(HavePrefix("removing the remote-children finalizer:"))
+	})
 }
 
 // TestSweepRegistrationTenantStores_CollectsTheForeignTrio a tenant-store trio the
