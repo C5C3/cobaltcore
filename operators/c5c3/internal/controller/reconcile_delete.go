@@ -148,6 +148,30 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 	return objs
 }
 
+// liveTerminatingControlPlane re-reads a ControlPlane the cache shows as
+// terminating. It returns nil when the cached copy no longer names a live CR:
+// the CR is gone, or the name now belongs to a re-created CR, which has no
+// deletion timestamp and whose create event queues its own pass.
+//
+// It reads into a new object because decoding into the populated cached copy
+// keeps fields the response omits, such as an emptied metadata.finalizers.
+func (r *ControlPlaneReconciler) liveTerminatingControlPlane(
+	ctx context.Context, cached *c5c3v1alpha1.ControlPlane,
+) (*c5c3v1alpha1.ControlPlane, error) {
+	key := client.ObjectKeyFromObject(cached)
+	live := &c5c3v1alpha1.ControlPlane{}
+	if err := r.apiReader().Get(ctx, key, live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("re-reading terminating ControlPlane %s: %w", key, err)
+	}
+	if live.UID != cached.UID {
+		return nil, nil
+	}
+	return live, nil
+}
+
 // reconcileDelete drives the ORC-teardown finalizer when the ControlPlane CR is
 // being deleted. It is a no-op if the finalizer is absent.
 //

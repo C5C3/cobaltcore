@@ -371,8 +371,12 @@ another.
 One pass, in order:
 
 1. Fetches the ControlPlane. `NotFound` ends the pass with an empty result.
-2. Hands a ControlPlane that carries a deletion timestamp to `reconcileDelete`
-   (see [Owner-ref / GC model](#owner-ref-gc-model)).
+2. Re-reads a ControlPlane that carries a deletion timestamp through the
+   uncached API reader, because a pass queued behind the release still finds the
+   CR in the informer cache. `NotFound`, or another UID under the name, ends the
+   pass with an empty result. A failed read ends the pass with an error.
+   Otherwise the live copy goes to `reconcileDelete` (see
+   [Owner-ref / GC model](#owner-ref-gc-model)).
 3. Runs the duplicate guard: every ControlPlane but the oldest in a namespace is
    parked with `Ready=False/DuplicateControlPlane` and requeued after 30s, and
    none of its sub-reconcilers run (see [Multi-instance](#multi-instance)).
