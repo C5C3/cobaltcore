@@ -300,7 +300,7 @@ they resolve to: 30 days of retention, daily at `1 0 * * *`, not suspended.
 | 15s | `RequeueSecretPolling` | The secret-store and credential gates, the derived-Secret steps, an unresolvable target cluster, and the satellite controllers' projection backstop |
 | 30s | `RequeueDatabaseWait` | The MariaDB gate, the db-sync wait, and the config wait |
 | 30s | `RequeueUpgradeWait` | The expand, migrate and contract phase Jobs |
-| 10s / 30s TTL | health-check retry, probe cache | A failed `/healthcheck` probe retries; a passing one is reused within the TTL |
+| 10s / 30s TTL | health-check retry, probe cache | A failed `/healthcheck` probe retries; a passing one is reused within the TTL, and a converged pass requeues when that entry expires |
 
 ## Watches and indexes
 

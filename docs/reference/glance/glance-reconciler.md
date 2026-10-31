@@ -231,7 +231,7 @@ across a planned upgrade to avoid the noise.
 | 10s | Deployment readiness polling, HTTPRoute acceptance, health-check retry |
 | 15s | ESO secret-gate polling (Secrets, DBConnectionSecret; the GlanceBackend controller's credential/projection backstop) |
 | 30s | MariaDB / db-sync / ready-default-backend database wait |
-| 30s TTL | Health-probe cache (a passing `/healthcheck` probe is reused within the TTL) |
+| 30s TTL | Health-probe cache (a passing `/healthcheck` probe is reused within the TTL); a converged pass requeues when the entry expires, so the API is probed again |
 
 ## Rotation and deletion
 

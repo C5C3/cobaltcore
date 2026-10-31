@@ -3444,9 +3444,10 @@ Once a client counts the server as dead, its calls miss at once for 60 to 120 se
 more, for as long as the partition lasts. The unpatched client blocked
 a cache call until the kernel gave up on the connection, 213 seconds for a read under
 a 120-second partition: both uWSGI workers hung, every token issue ran into the
-stream's 15-second timeout, and `/v3` stopped answering. Ready alone does not show
-such a hang, because the operator re-probes a Ready Keystone only on an event or the
-10-minute resync, so step 4 reads `/v3` itself.
+stream's 15-second timeout, and `/v3` stopped answering. Ready alone shows such a
+hang late, because the operator re-probes a Ready Keystone at most 30 seconds after
+its last good probe. That is coarser than step 4's 10-second reads, so step 4 reads
+`/v3` itself.
 
 **Steps:**
 

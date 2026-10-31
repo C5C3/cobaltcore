@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
@@ -69,7 +70,8 @@ const (
 // trip controller-runtime's process-global controller-name validation across the
 // sequential managers each test spins up, so the controllers opt out via
 // SkipNameValidation, exactly as keystone's and horizon's integration setups do.
-func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+// Each opt is applied to the GlanceReconciler right after it is built.
+func setupEnvTestWithController(t testing.TB, opts ...func(*GlanceReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupGlanceEnvTestWithController(
 		t,
@@ -103,6 +105,9 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				// The fake VerticalPodAutoscaler CRD loads into every envtest too,
 				// so the VPA latch is true as it would be at startup.
 				vpaAvailable: true,
+			}
+			for _, opt := range opts {
+				opt(r)
 			}
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&glancev1alpha1.Glance{}, builder.WithPredicates(watch.CRUpdatePredicate())).
@@ -474,13 +479,17 @@ func TestIntegrationGlance_DeleteReleasesFinalizer(t *testing.T) {
 //     pod-spec-hash drift, so its db load_metadefs step loads the new release's
 //     definitions.
 //
+// Before the upgrade starts, the installed Glance's API stops answering without
+// any object write, and GlanceAPIReady and Ready turn False, then True again.
+//
 // envtest runs no Job or Deployment controllers, so every Job completion and
 // Deployment readiness is simulated; the phase machine cannot advance on its own.
 func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, func(r *GlanceReconciler) { r.HTTPClient = doer })
 	ns := createTestNamespace(t, ctx, c)
 	createGlancePrerequisites(t, ctx, c, ns)
 
@@ -528,6 +537,12 @@ func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
 	initialCmd := deploy.Spec.Template.Spec.Containers[0].Command
 	g.Expect(initialCmd).To(ContainElement("uwsgi"),
 		"2026.1 Deployment should run the uWSGI launch")
+
+	commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+		var got glancev1alpha1.Glance
+		g.Expect(c.Get(ctx, glanceKey, &got)).To(Succeed())
+		return got.Status.Conditions
+	}, conditionTypeGlanceAPIReady, pollInterval)
 
 	// --- Trigger the upgrade: bump spec.openStackRelease and spec.image.tag in
 	// lockstep. The Get→Update loop retries on the conflict a concurrent status

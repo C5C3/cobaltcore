@@ -428,6 +428,8 @@ func (r *CinderReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument,
 		r.pipelineSteps(children, &cinder, &pipelineState{}))
+	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+		client.ObjectKeyFromObject(&cinder))
 	return r.updateStatus(ctx, &cinder, statusBefore, result, err)
 }
 

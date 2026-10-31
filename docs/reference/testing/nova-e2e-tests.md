@@ -267,7 +267,7 @@ a labelled namespace of its own.
 | [basic-deployment-2026-2](#basic-deployment-2026-2) | `nova-basic-2026-2` | The same assertions against the 2026.2 image, with the API container image pinned, so a difference between 2026.1 and 2026.2 fails here |
 | [scale](#scale) | `nova-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, the other four Deployments left at the counts their own spec fields give them |
 | [healthcheck](#healthcheck) | `nova-health` | `NovaAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
-| [namespace-scoped-rbac](#namespace-scoped-rbac) | `nova-ns-scoped` | A nova-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile |
+| [namespace-scoped-rbac](#namespace-scoped-rbac) | `nova-ns-scoped` | A nova-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a run of its `HealthCheck` step |
 | [httproute](#httproute) | `nova-route` | The three gateway blocks: routes for the API on 8774, the metadata API on 8775 and the console proxy on 6080, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec blocks |
 | [network-policy](#network-policy) | `nova-netpol` | Two rendered NetworkPolicies: one covering every pod of the CR with the auto-derived egress order, one carrying the console proxy's display range, updated and deleted; probe pods then find TCP 5900 and 9999 dropped from the target and open from a console proxy stand-in, the target's egress ports and the three API ports open, and a foreign namespace dropped until the update admits it |
 | [deletion-cleanup](#deletion-cleanup) | `nova-cleanup` | Finalizer cleanup of every owned child and of the eight MariaDB CRs, the two cell0 objects included |
@@ -425,8 +425,8 @@ sibling services.
 `rbac.namespaceScoped=true` and `webhook.enabled=false`, reconciles a Nova in
 its own namespace. Once the CR is Ready, the suite reads that release's pod: it
 never restarted, it logged the namespace-scoped startup line for `openstack` and
-no forbidden `Failed to watch` line, and its metrics endpoint counts a
-successful reconcile of the `nova` controller.
+no forbidden `Failed to watch` line, and its metrics endpoint counts a run of
+the `nova` controller's `HealthCheck` step.
 
 **Steps:**
 
@@ -436,7 +436,7 @@ successful reconcile of the `nova` controller.
 | 2 | Assert Role and RoleBinding exist (not ClusterRole) | `assert` + `script` | Role and RoleBinding `nova-operator-ns-scoped` in `openstack`, and no ClusterRole of that name |
 | 3 | Give the suite its vhost, then apply the CR | `script` (2m) + `apply` | `broker-vhost.sh create nova-ns-scoped nova-ns-scoped-messaging openstack`, then the metadata Secret and `nova-ns-scoped` on the `openbao-tenant-store` SecretStore at one API replica |
 | 4 | Assert successful reconciliation | `assert` (10m) | `Ready=True/AllReady` |
-| 5 | Prove the namespace-scoped operator reconciled the Nova | `script` (2m) | `tests/e2e/lib/assert-namespace-scoped-operator.sh`: one pod, no restart, the only Nova in `openstack`, the startup line, no forbidden `Failed to watch` line, a `controller_runtime_reconcile_total` success count of at least 1 within 60 s |
+| 5 | Prove the namespace-scoped operator reconciled the Nova | `script` (2m) | `tests/e2e/lib/assert-namespace-scoped-operator.sh`: one pod, no restart, the only Nova in `openstack`, the startup line, no forbidden `Failed to watch` line, a `controller_runtime_reconcile_total` success count or a `HealthCheck` count of `nova_operator_reconcile_duration_seconds` of at least 1 within 60 s |
 | 6 | Cleanup Helm release | `script` | `helm uninstall nova-operator-ns-scoped` |
 
 **Fixtures:** `00-metadata-secret.yaml`, `01-nova-cr.yaml`

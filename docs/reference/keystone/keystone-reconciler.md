@@ -329,7 +329,9 @@ One pass, in order:
    `openstack.c5c3.io/remote-children` while `spec.targetClusterRef` is set. A
    pass that installs one ends with a requeue after 1s.
 5. Runs the pipeline through `RunPipeline`, the rows below. The first entry
-   that returns a requeue or an error ends the pass.
+   that returns a requeue or an error ends the pass. A pass that every entry
+   completes is requeued for the moment the probe-cache entry expires
+   (`healthcheck.ScheduleReprobe`, see [`reconcileHealthCheck`](#reconcilehealthcheck)).
 6. Calls `updateStatus()` on every exit path of steps 3 and 5: it recomputes
    the aggregate `Ready`, stamps `status.observedGeneration`, and skips the
    write when nothing changed.
@@ -385,6 +387,8 @@ funnels every exit path through `updateStatus` by construction:
 
 ```go
 result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
+result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+    client.ObjectKeyFromObject(&keystone))
 return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 ```
 
@@ -2762,7 +2766,17 @@ at a fixed interval (`RequeueHealthCheck = 10s`).
 | `False` | `ConnectionFailed` | `"connection failed: {error}"` | 10s |
 | `False` | `HealthCheckFailed` | `"health check failed: {error}"` | 10s |
 | `False` | `APIUnhealthy` | `"Keystone API returned HTTP {status}"`, with `": {body}"` appended when the response carries a body | 10s |
-| `True` | `APIHealthy` | `"Keystone API is responding at {endpoint}"` | — |
+| `True` | `APIHealthy` | `"Keystone API is responding at {endpoint}"` | until the probe-cache entry expires (at most 30s) |
+
+**Re-probe:** A success and a cache hit return no requeue of their own. After the
+pipeline, `Reconcile` passes the result through `healthcheck.ScheduleReprobe`,
+which requeues a converged pass for the moment the Keystone's probe-cache entry
+expires, never sooner than 1s. That pass misses the cache and probes again. An
+API that stops answering therefore turns `KeystoneAPIReady` and `Ready` False
+within 40s (`HealthCheckCacheTTL` plus `HealthCheckTimeout`) plus one pass after
+the last good probe, whether or not an event arrives. The cost is one full
+reconcile per Ready Keystone every 30s. An error and a waiting step's requeue pass
+through unchanged.
 
 **Non-2xx body:** A failed probe appends a single-line excerpt of the response
 body, capped at 256 bytes, when the body is non-empty. A probe that ran through
@@ -2776,6 +2790,7 @@ status code alone does not say which of the two clusters is unhealthy.
 | --- | --- | --- |
 | `RequeueHealthCheck` | `10s` | Interval for requeuing on health check failure |
 | `HealthCheckTimeout` | `10s` | Bounded timeout for the HTTP health check request |
+| `HealthCheckCacheTTL` | `30s` | How long a successful probe is reused, and when a converged pass requeues to probe again |
 
 **Response body handling:** The HTTP response body is always closed via `defer
 resp.Body.Close()`, even on non-2xx responses. Go's `net/http` returns a non-nil

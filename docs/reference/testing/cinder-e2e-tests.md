@@ -161,7 +161,7 @@ deletions.
 | [backup-rbd](#backup-rbd) | `cinder-bkrbd` | RBD backup target without a Ceph: the credentials gate, the projected driver block, `ceph.conf` and keyring, the volume backend's keyring in the backup pod, the Ceph egress union, the roll on a replaced backup key and on a replaced volume key |
 | [scale](#scale) | `cinder-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, scheduler and volume service left at one replica |
 | [healthcheck](#healthcheck) | `cinder-health` | `CinderAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
-| [namespace-scoped-rbac](#namespace-scoped-rbac) | `cinder-ns-scoped` | A cinder-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile of the Cinder and of its backend |
+| [namespace-scoped-rbac](#namespace-scoped-rbac) | `cinder-ns-scoped` | A cinder-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a `HealthCheck` run of the Cinder and a successful reconcile of its backend |
 | [httproute](#httproute) | `cinder-route` | `spec.gateway` lifecycle: HTTPRoute created, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec block |
 | [network-policy](#network-policy) | `cinder-netpol` | Rendered NetworkPolicy: ingress on 8776, auto-derived DNS, database, cache, messaging and export egress, update and delete; probe pods then find TCP 5000 and 9999 dropped from the target, its egress ports and the API port open, and a foreign namespace dropped until the update admits it |
 | [deletion-cleanup](#deletion-cleanup) | `cinder-cleanup` | Finalizer cleanup of every owned child and the MariaDB CRs; both satellites survive the parent; the `CinderBackend` releases its finalizer on `ServiceRemoveSkipped`, the `CinderBackupBackend` holds none |
@@ -479,8 +479,9 @@ advertised endpoint coincide.
 `rbac.namespaceScoped=true` and `webhook.enabled=false`, reconciles a Cinder in
 its own namespace. Once the CR is Ready, the suite reads that release's pod: it
 never restarted, it logged the namespace-scoped startup line for `openstack` and
-no forbidden `Failed to watch` line, and its metrics endpoint counts a
-successful reconcile of the `cinder` and the `cinderbackend` controller.
+no forbidden `Failed to watch` line, and its metrics endpoint counts a run of
+the `cinder` controller's `HealthCheck` step and a successful reconcile of the
+`cinderbackend` controller.
 
 **Steps:**
 
@@ -490,7 +491,7 @@ successful reconcile of the `cinder` and the `cinderbackend` controller.
 | 2 | Assert Role and RoleBinding exist (not ClusterRole) | `assert` + `script` | Role and RoleBinding `cinder-operator-ns-scoped` in `openstack`, and no ClusterRole of that name |
 | 3 | Give the suite its vhost, then apply the CRs | `script` (2m) + `apply` | `broker-vhost.sh create cinder-ns-scoped …`, then `00-cinder-cr.yaml` (`cinder-ns-scoped` on the `openbao-tenant-store` SecretStore) and `01-cinderbackend-cr.yaml` (`ns-scoped-nfs1`) |
 | 4 | Assert successful reconciliation | `assert` (5m) | `Ready=True/AllReady` |
-| 5 | Prove the namespace-scoped operator reconciled the Cinder | `script` (2m) + `script` (2m) | `tests/e2e/lib/assert-namespace-scoped-operator.sh` for the `cinder` controller, then for the `cinderbackend` controller: one pod, no restart, the only Cinder or CinderBackend in `openstack`, the startup line, no forbidden `Failed to watch` line, a `controller_runtime_reconcile_total` success count of at least 1 within 60 s |
+| 5 | Prove the namespace-scoped operator reconciled the Cinder | `script` (2m) + `script` (2m) | `tests/e2e/lib/assert-namespace-scoped-operator.sh` for the `cinder` controller, then for the `cinderbackend` controller: one pod, no restart, the only Cinder or CinderBackend in `openstack`, the startup line, no forbidden `Failed to watch` line, a `controller_runtime_reconcile_total` success count or a `HealthCheck` count of `cinder_operator_reconcile_duration_seconds` of at least 1 within 60 s |
 | 6 | Cleanup Helm release | `script` | `helm uninstall cinder-operator-ns-scoped` |
 
 **Fixtures:** `00-cinder-cr.yaml`, `01-cinderbackend-cr.yaml`

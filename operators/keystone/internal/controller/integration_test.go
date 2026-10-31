@@ -51,6 +51,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
@@ -80,10 +81,11 @@ const (
 // --- Shared Helpers ---
 
 // setupEnvTestWithController wraps testutil.SetupKeystoneEnvTestWithController with
-// the v1alpha1 scheme, webhook, and controller registration callbacks.
-func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+// the v1alpha1 scheme, webhook, and controller registration callbacks. Each opt
+// is applied to the KeystoneReconciler right after it is built.
+func setupEnvTestWithController(t testing.TB, opts ...func(*KeystoneReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
-	c, ctx, cancel, _ := setupEnvTestWithControllerAndIdentity(t)
+	c, ctx, cancel, _ := setupEnvTestWithControllerAndIdentity(t, opts...)
 	return c, ctx, cancel
 }
 
@@ -92,7 +94,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 // field indexes, and the cross-wake watches. It additionally returns the fake
 // identity server the KeystoneIdentityBackendReconciler is bound to so tests
 // can seed/inspect domains.
-func setupEnvTestWithControllerAndIdentity(t testing.TB) (client.Client, context.Context, context.CancelFunc, *identityfake.Server) {
+func setupEnvTestWithControllerAndIdentity(t testing.TB, opts ...func(*KeystoneReconciler)) (client.Client, context.Context, context.CancelFunc, *identityfake.Server) {
 	t.Helper()
 
 	identityServer := identityfake.NewServer(integrationAdminPassword)
@@ -123,6 +125,9 @@ func setupEnvTestWithControllerAndIdentity(t testing.TB) (client.Client, context
 				// The fake VerticalPodAutoscaler CRD loads into every envtest
 				// too, so the VPA latch is true as it would be at startup.
 				vpaAvailable: true,
+			}
+			for _, opt := range opts {
+				opt(r)
 			}
 			// Register the Keystone field indexer so secretToKeystoneMapper's
 			// MatchingFields lookup works in integration tests, mirroring what
@@ -1515,7 +1520,9 @@ func TestIntegration_VPA_StatusPatchDoesNotWakeTheStep(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	// With the re-probe off, nothing requeues the Ready CR, so the VPA samples
+	// below count only the passes a VPA event starts.
+	c, ctx, _ := setupEnvTestWithController(t, func(r *KeystoneReconciler) { r.healthProbeCache.NoReprobe = true })
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-vpa-status-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
@@ -1568,6 +1575,31 @@ func TestIntegration_VPA_StatusPatchDoesNotWakeTheStep(t *testing.T) {
 		}
 		return ptr.Deref(got.Spec.UpdatePolicy.UpdateMode, "")
 	}, eventuallyTimeout, pollInterval).Should(Equal(vpav1.UpdateModeOff), "the next pass reverts the drift")
+}
+
+// A Ready Keystone whose API stops answering turns KeystoneAPIReady and Ready
+// False although no object changes, and True again once the API answers.
+func TestIntegration_WedgedAPIDetectedWithoutEvent(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, func(r *KeystoneReconciler) { r.HTTPClient = doer })
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-wedged-api-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+	key := client.ObjectKeyFromObject(ks)
+
+	commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+		var got keystonev1alpha1.Keystone
+		g.Expect(c.Get(ctx, key, &got)).To(Succeed())
+		return got.Status.Conditions
+	}, conditionTypeKeystoneAPIReady, pollInterval)
 }
 
 // --- Task/4.1: Fresh deployment — InstalledRelease tracking ---
@@ -3337,7 +3369,9 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	// With the re-probe off, nothing requeues the Ready CR, so only the Secret
+	// watch can recreate the deleted Secret.
+	c, ctx, _ := setupEnvTestWithController(t, func(r *KeystoneReconciler) { r.healthProbeCache.NoReprobe = true })
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0080-recreate-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
