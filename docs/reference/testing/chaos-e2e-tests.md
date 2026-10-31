@@ -4579,7 +4579,7 @@ header records in its `# Chaos workload: none` line. The suite runs in the
 - The hold of 120 seconds and the 360 seconds for the teardown stay inside that
   deadline, so the suite proves the path without a stall. The stall path, with
   `ORCTeardownStalled` and `ORCResourcesOrphaned`, takes more than 7 minutes of
-  K-ORC downtime; `tests/e2e/c5c3/deletion-orchestration` admits it.
+  K-ORC downtime; `tests/e2e/c5c3/deletion-orchestration` asserts it.
 
 ---
 

@@ -24,7 +24,8 @@
 #      force-removes the stuck openstack.k-orc.cloud/* finalizers and releases
 #      the ControlPlane.
 #   5. Assert the projected Keystone, MariaDB, Memcached, and all six K-ORC CRs
-#      are garbage-collected, and that an ORC-teardown event was emitted.
+#      are garbage-collected, that the Warning ORCTeardownStalled was emitted,
+#      and that ORCTeardownComplete was not.
 #   6. Assert the Barbican ensemble is reclaimed with it: the child, its
 #      BarbicanSecretStore, the dedicated OpenBaoCluster, the raft PVC that
 #      instance leaves behind (data-<instance>-0, reaped because the projection
@@ -39,12 +40,14 @@
 #      those children here, and the registration's own controller then releases
 #      the CR.
 #
-# Whether step 3 wins the race against an in-flight revoke or not, the regression
-# guard is identical: deletion must COMPLETE (the happy path emits
-# ORCTeardownComplete; the stalled path emits a Warning ORCTeardownStalled and
-# force-removes). The deterministic stall/force-remove escalation itself is also
-# covered by the fast fake-client unit test
-# (TestReconcileDelete_ForceRemovesORCFinalizersAfterStall).
+# The stall is deterministic in this suite. deleteRegistrationsBeforeTeardown
+# holds the revoke of the admin credential until the Barbican registration is
+# gone, and Keystone goes in step 3, far too early for K-ORC to finish the
+# registration's dependent deletes and then revoke. So the teardown takes the
+# stall escape every time: it emits a Warning ORCTeardownStalled and
+# force-removes, and an ORCTeardownComplete here is a false report. The
+# stall/force-remove escalation itself is also covered by the fast fake-client
+# unit test (TestReconcileDelete_ForceRemovesORCFinalizersAfterStall).
 #
 # The ControlPlane runs alone in chainsaw's ephemeral namespace. The suite
 # seeds its admin-password path with write-bootstrap-secrets.sh and onboards its
@@ -425,20 +428,25 @@ spec:
           wait_gone keystoneservices.c5c3.io "${BARBICAN_REG}" 300
           wait_label_gone "${REG_KORC_KINDS}" "${REG_LABEL}" 300
 
-          # ── The ORC-teardown finalizer must have run ───────────────────────
-          # Either ORCTeardownComplete (revoke won the race) or ORCTeardownStalled
-          # (Keystone gone first → force-remove) proves the finalizer drove the
-          # sequenced teardown rather than GC tearing everything down at once.
+          # ── The stall escape must have announced itself ────────────────────
+          # Keystone goes before K-ORC can revoke, so ORCTeardownStalled proves the
+          # finalizer drove the teardown through the escape. ORCTeardownComplete
+          # would report a clean finish for a teardown that orphaned Keystone
+          # resources. Here-strings, because `echo | grep -q` fails with SIGPIPE
+          # under pipefail on a large string.
           echo "== ORC-teardown events =="
           reasons="$(kubectl get events -n "${CP_NS}" \
             -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}' 2>/dev/null || true)"
           echo "${reasons}" | grep -E 'FinalizingORC|ORCTeardown' || true
-          if echo "${reasons}" | grep -qE 'ORCTeardownStalled|ORCTeardownComplete'; then
-            echo "OK: ORC-teardown finalizer ran to completion."
-          else
-            echo "ERROR: no ORCTeardownStalled/ORCTeardownComplete event observed"
+          if ! grep -qx ORCTeardownStalled <<<"${reasons}"; then
+            echo "ERROR: no ORCTeardownStalled event observed"
             exit 1
           fi
+          if grep -qx ORCTeardownComplete <<<"${reasons}"; then
+            echo "ERROR: ORCTeardownComplete reported for a teardown that took the stall escape"
+            exit 1
+          fi
+          echo "OK: the stall escape announced itself and no clean completion was reported."
           echo "OK: ControlPlane deletion orchestration verified."
     catch:
     - script:
