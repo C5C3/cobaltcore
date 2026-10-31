@@ -317,6 +317,155 @@ func TestReconcileDelete_NoORCResources_ReleasesFinalizer(t *testing.T) {
 	g.Expect(drainEvents(rec)).To(ContainElement(ContainSubstring("ORCTeardownComplete")))
 }
 
+// eventsWithReason drains the recorder and returns the events carrying reason.
+func eventsWithReason(rec *record.FakeRecorder, reason string) []string {
+	return slices.DeleteFunc(drainEvents(rec), func(e string) bool {
+		return !strings.Contains(e, reason)
+	})
+}
+
+// staleControlPlaneReconciler builds a reconciler whose cached client answers every
+// ControlPlane read with stale, the copy an informer still holds for a pass queued
+// behind the release. truth is seeded with objs, holds the real state, and is the
+// uncached reader.
+func staleControlPlaneReconciler(
+	t *testing.T, stale *c5c3v1alpha1.ControlPlane, objs ...client.Object,
+) (*ControlPlaneReconciler, client.WithWatch, *record.FakeRecorder) {
+	t.Helper()
+	s := namespaceTeardownScheme(t)
+	truth := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build()
+	cached := interceptor.NewClient(truth, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object,
+			opts ...client.GetOption,
+		) error {
+			if cp, ok := obj.(*c5c3v1alpha1.ControlPlane); ok {
+				stale.DeepCopyInto(cp)
+				return nil
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	})
+	rec := record.NewFakeRecorder(20)
+	return &ControlPlaneReconciler{Client: cached, APIReader: truth, Scheme: s, Recorder: rec}, truth, rec
+}
+
+// TestReconcile_TerminatingControlPlaneIsReadLive pins the uncached read at the top
+// of the delete branch. A pass queued behind the release still finds the ControlPlane
+// in the informer cache, and what that pass may do depends on what the API server
+// holds: nothing at all, a new CR under the same name, or a CR that moved on.
+func TestReconcile_TerminatingControlPlaneIsReadLive(t *testing.T) {
+	ctx := context.Background()
+	request := func(cp *c5c3v1alpha1.ControlPlane) ctrl.Request {
+		return ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}
+	}
+	expectNotTerminating := func(t *testing.T, c client.Client, keystone *keystonev1alpha1.Keystone) {
+		t.Helper()
+		g := NewGomegaWithT(t)
+		got := &keystonev1alpha1.Keystone{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(keystone), got)).To(Succeed())
+		g.Expect(got.DeletionTimestamp.IsZero()).To(BeTrue(), "the teardown must not have started")
+	}
+
+	// With a Keystone child left, the stale pass would stop in the wait for it and
+	// fail on the status write of a CR that is gone.
+	t.Run("a released CR ends the pass", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		stale := deletingControlPlane(time.Minute)
+		keystone := ownedKeystoneFor(stale)
+		r, truth, rec := staleControlPlaneReconciler(t, stale, keystone)
+
+		res, err := r.Reconcile(ctx, request(stale))
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		g.Expect(drainEvents(rec)).To(BeEmpty())
+		expectNotTerminating(t, truth, keystone)
+	})
+
+	// The new CR has no deletion timestamp, so reconcileDelete would dereference nil.
+	t.Run("a re-created CR ends the pass", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		stale := deletingControlPlane(time.Minute)
+		recreated := korcControlPlane()
+		recreated.UID = types.UID("recreated-uid")
+		recreated.Finalizers = []string{controlPlaneORCFinalizer}
+		r, truth, rec := staleControlPlaneReconciler(t, stale, recreated)
+
+		res, err := r.Reconcile(ctx, request(stale))
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		g.Expect(drainEvents(rec)).To(BeEmpty())
+		got := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(truth.Get(ctx, client.ObjectKeyFromObject(stale), got)).To(Succeed())
+		g.Expect(got.Finalizers).To(ConsistOf(controlPlaneORCFinalizer))
+	})
+
+	t.Run("a failed live read stops the teardown", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		stale := deletingControlPlane(time.Minute)
+		keystone := ownedKeystoneFor(stale)
+		r, truth, rec := staleControlPlaneReconciler(t, stale, stale.DeepCopy(), keystone)
+		r.APIReader = interceptor.NewClient(truth, interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object,
+				opts ...client.GetOption,
+			) error {
+				if _, ok := obj.(*c5c3v1alpha1.ControlPlane); ok {
+					return context.DeadlineExceeded
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		})
+
+		_, err := r.Reconcile(ctx, request(stale))
+
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err.Error()).To(HavePrefix("re-reading terminating ControlPlane "))
+		g.Expect(drainEvents(rec)).To(BeEmpty())
+		expectNotTerminating(t, truth, keystone)
+	})
+
+	// The stall escape took the ORC finalizer off a placed plane. A stale copy would
+	// run the normal release again; the live copy goes on to the remote sweep.
+	t.Run("a placed plane continues on the live copy", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		stale := deletingPlacedControlPlane(orcTeardownDeadline+time.Minute,
+			c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+		live := stale.DeepCopy()
+		live.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+		placedChild := onTarget(stale, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+			Name: adminPasswordSecretName(stale), Namespace: placedTeardownNamespace,
+		}})
+		r, truth, rec := staleControlPlaneReconciler(t, stale, live)
+		target := fake.NewClientBuilder().WithScheme(r.Scheme).WithObjects(placedChild).Build()
+		r.Resolver = &childrenResolver{children: target}
+
+		res, err := r.Reconcile(ctx, request(stale))
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		expectSwept(t, target, placedChild)
+		err = truth.Get(ctx, client.ObjectKeyFromObject(stale), &c5c3v1alpha1.ControlPlane{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		g.Expect(eventsWithReason(rec, "ORCTeardownComplete")).To(BeEmpty())
+	})
+
+	t.Run("a live CR keeps its teardown", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		stale := deletingControlPlane(0)
+		r, truth, rec := staleControlPlaneReconciler(t, stale, stale.DeepCopy())
+
+		res, err := r.Reconcile(ctx, request(stale))
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		err = truth.Get(ctx, client.ObjectKeyFromObject(stale), &c5c3v1alpha1.ControlPlane{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		g.Expect(eventsWithReason(rec, "ORCTeardownComplete")).To(HaveLen(1))
+	})
+}
+
 // TestReconcileDelete_WaitsWhileORCTerminating asserts that while an owned K-ORC
 // CR is still present, reconcileDelete holds the ControlPlane finalizer, reports
 // KORCReady=False/FinalizingORC, and requeues. Deleting the live CR marks it
