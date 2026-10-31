@@ -572,7 +572,7 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		}
 	}
 	controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
-	if err := r.Update(ctx, cp); err != nil {
+	if err := client.IgnoreNotFound(r.Update(ctx, cp)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer after force-remove: %w", err)
 	}
 	return ctrl.Result{}, nil
@@ -619,7 +619,7 @@ func (r *ControlPlaneReconciler) reconcileDeleteRemoteChildren(
 	}
 
 	controllerutil.RemoveFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer)
-	if err := r.Update(ctx, cp); err != nil {
+	if err := client.IgnoreNotFound(r.Update(ctx, cp)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing the remote-children finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
