@@ -229,7 +229,15 @@ spec:
               VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
               sh -c 'BAO_TOKEN="$(cat /tmp/.bao-token)"; export BAO_TOKEN; exec "$@"' _ "$@"
           }
-          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+          # bao read exits 2 on every failure and prints "No value found at" for
+          # a missing role alone. A failed read says nothing about the role, so
+          # it stops the suite in its own words.
+          if ! role_read="$(bao_exec bao read auth/kubernetes/management/role/eso-tenant 2>&1)"; then
+            if ! grep -q 'No value found at' <<<"${role_read}"; then
+              echo "ERROR: could not read the eso-tenant OpenBao auth role:"
+              echo "${role_read}"
+              exit 1
+            fi
             skip_or_fail "the eso-tenant OpenBao auth role is not configured."
           fi
           echo "OK: prerequisites present — running the Keystone order chain."
