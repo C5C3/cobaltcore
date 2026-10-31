@@ -1638,11 +1638,29 @@ func (r *ControlPlaneReconciler) deleteRegistrationsBeforeTeardown(
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true, nil
 	}
 
-	r.Recorder.Event(cp, "Warning", "ServiceRegistrationTeardownStalled", fmt.Sprintf(
-		"KeystoneService registration(s) %v stayed present longer than %s; continuing the ControlPlane teardown "+
-			"anyway. Their K-ORC CRs still hold the catalog rows and service users they registered, and once this "+
-			"ControlPlane is gone nothing can remove them — delete them from Keystone by hand",
-		remaining, registrationTeardownStallTimeout))
+	// Announce the give-up once per deletion. Every pass of the K-ORC window behind
+	// this gate lands here, and the event correlator allows one source a burst of 25
+	// events of one type per object and then one every five minutes. Repeated on each
+	// pass, this Warning spends that budget on itself, and the correlator drops the
+	// stall escape's own Warnings, the only record of what the teardown abandoned.
+	// FinalizingORC is the latch: nothing sets it before this gate has passed, and
+	// updateStatus persists it for the next pass.
+	if cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady); cond == nil || cond.Reason != "FinalizingORC" {
+		r.Recorder.Event(cp, "Warning", "ServiceRegistrationTeardownStalled", fmt.Sprintf(
+			"KeystoneService registration(s) %v stayed present longer than %s; continuing the ControlPlane teardown "+
+				"anyway. Their K-ORC CRs still hold the catalog rows and service users they registered, and once this "+
+				"ControlPlane is gone nothing can remove them — delete them from Keystone by hand",
+			remaining, registrationTeardownStallTimeout))
+	}
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeKORCReady,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: cp.Generation,
+		Reason:             "FinalizingORC",
+		Message: fmt.Sprintf(
+			"gave up on the projected KeystoneService registration(s) %v after %s; tearing down the K-ORC CRs",
+			remaining, registrationTeardownStallTimeout),
+	})
 	log.FromContext(ctx).Info("KeystoneService registration teardown stalled; continuing the ControlPlane teardown",
 		"registrations", remaining, "stallTimeout", registrationTeardownStallTimeout)
 	return ctrl.Result{}, false, nil

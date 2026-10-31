@@ -40,6 +40,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/clock"
+	clocktesting "k8s.io/utils/clock/testing"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -725,7 +727,8 @@ func TestReconcileDelete_RegistrationStallLeavesTheKORCSweepItsOwnWindow(t *test
 				Finalizers: []string{"openstack.k-orc.cloud/applicationcredential"},
 			},
 		}
-		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedged, ac).Build()
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedged, ac).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build()
 		rec := record.NewFakeRecorder(10)
 		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
 		if err := c.Get(context.Background(), types.NamespacedName{
@@ -784,6 +787,140 @@ func TestReconcileDelete_RegistrationStallLeavesTheKORCSweepItsOwnWindow(t *test
 			"the admin credential must be given its own window to revoke before it is orphaned")
 		g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue())
 	})
+
+	// Through Reconcile, because the persisted status is what ends the repeat: every
+	// pass of the K-ORC window runs past the registration gate.
+	t.Run("the give-up is announced once, whatever passes follow it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		r, cp, rec, _ := setup(t, registrationTeardownStallTimeout+time.Minute)
+
+		for range 3 {
+			res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+		}
+
+		stalled := slices.DeleteFunc(drainEvents(rec), func(e string) bool {
+			return !strings.Contains(e, "ServiceRegistrationTeardownStalled")
+		})
+		g.Expect(stalled).To(HaveLen(1))
+	})
+}
+
+// correlatedRecorder hands every event to client-go's EventCorrelator at its default
+// limits, as the manager's event broadcaster does, and keeps the reasons that reach
+// the API server. A FakeRecorder keeps every event, so a test built on one cannot
+// see a Warning the correlator's spam filter drops.
+type correlatedRecorder struct {
+	record.EventRecorder
+	t          *testing.T
+	correlator *record.EventCorrelator
+	clock      clock.PassiveClock
+	landed     []string
+}
+
+func (r *correlatedRecorder) Event(object runtime.Object, eventType, reason, message string) {
+	r.t.Helper()
+	cp, ok := object.(*c5c3v1alpha1.ControlPlane)
+	if !ok {
+		r.t.Fatalf("event %s on a %T, want a ControlPlane", reason, object)
+	}
+	now := metav1.NewTime(r.clock.Now())
+	result, err := r.correlator.EventCorrelate(&corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{Name: cp.Name + "." + reason, Namespace: cp.Namespace},
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "ControlPlane", Namespace: cp.Namespace, Name: cp.Name, UID: cp.UID,
+		},
+		Source:         corev1.EventSource{Component: "controlplane-controller"},
+		Type:           eventType,
+		Reason:         reason,
+		Message:        message,
+		Count:          1,
+		FirstTimestamp: now,
+		LastTimestamp:  now,
+	})
+	if err != nil {
+		r.t.Fatalf("correlating event %s: %v", reason, err)
+	}
+	if !result.Skip {
+		r.landed = append(r.landed, reason)
+	}
+}
+
+// TestReconcileDelete_RegistrationStallLeavesTheEscapeItsWarnings walks a whole K-ORC
+// window behind a registration that cannot finish, the teardown of a ControlPlane
+// whose Keystone left first. The correlator allows one source a burst of 25 events
+// of one type per object and then one every five minutes. A Warning repeated on each
+// pass of that five-minute window empties the bucket, and the one token that returns
+// at its end goes to the same Warning, moments before the stall escape needs it. The
+// escape's Warnings are the only record of what an operator has to repair by hand.
+func TestReconcileDelete_RegistrationStallLeavesTheEscapeItsWarnings(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	// Stored past the deadline for the pass that escapes. The passes before it run
+	// on copies with a younger deletion timestamp, the only clock reconcileDelete reads.
+	s := namespaceTeardownScheme(t)
+	cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       glanceName(cp),
+			Namespace:  cp.Namespace,
+			Labels:     controlPlaneChildLabels(cp),
+			Finalizers: []string{keystoneServiceFinalizerName},
+		},
+	}
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServiceUserRef(ks),
+			Namespace:  childNamespace(cp),
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"openstack.k-orc.cloud/user"},
+		},
+	}
+	ac := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       adminAppCredentialName(cp),
+			Namespace:  childNamespace(cp),
+			Finalizers: []string{"openstack.k-orc.cloud/applicationcredential"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, user, ac).Build()
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), cp)).To(Succeed())
+
+	passClock := clocktesting.NewFakeClock(time.Now())
+	rec := &correlatedRecorder{
+		t:          t,
+		correlator: record.NewEventCorrelatorWithOptions(record.CorrelatorOptions{Clock: passClock}),
+		clock:      passClock,
+	}
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	for age := registrationTeardownStallTimeout + time.Second; age < orcTeardownDeadline; age += korcRequeueAfter {
+		pass := cp.DeepCopy()
+		pass.DeletionTimestamp = ptr.To(metav1.NewTime(time.Now().Add(-age)))
+
+		res, err := r.reconcileDelete(ctx, pass)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+		cp.Status = pass.Status // what updateStatus persists between two passes
+		passClock.Step(korcRequeueAfter)
+	}
+
+	_, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeFalse(),
+		"the pass past the deadline must be the one that escapes")
+
+	g.Expect(rec.landed).To(ContainElements(
+		"ServiceRegistrationTeardownStalled",
+		"ORCTeardownStalled",
+		"ORCResourcesOrphaned",
+		"ServiceRegistrationResourcesOrphaned",
+	), "every stall Warning must get past the event spam filter")
 }
 
 // TestDeleteProjectedRegistrations_ReachesAnExternalNamespaceAndSkipsForeignCRs
