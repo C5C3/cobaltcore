@@ -957,9 +957,11 @@ The suite seeds both identities' admin-password paths with one
 `write-bootstrap-secrets.sh` call before the applies, and it waits for each
 plane's `InfrastructureReady` and then its MariaDB before it onboards the
 tenant. Its own `bao` calls read the root token from a file staged inside
-`openbao-0` under a name that carries the run's namespace, and the
-ServiceAccount token, the client token and both tenants' database passwords
-reach `openbao-0` or the probe pod on stdin. `write-bootstrap-secrets.sh` and
+`openbao-0` under a name that carries the run's namespace. A file whose size
+differs from the token's length fails the staging with
+`could not stage the OpenBao root token in openbao-0`. The ServiceAccount
+token, the client token and both tenants' database passwords reach `openbao-0`
+or the probe pod on stdin. `write-bootstrap-secrets.sh` and
 `setup-database-tenant.sh` still pass the root token to `kubectl exec` as an
 argument, so the suite unsets `BAO_TOKEN` after its last call to them.
 Chainsaw does not delete `tenant-a` and `tenant-b`, because the fixtures
@@ -1363,7 +1365,8 @@ the child's `KeystoneAPIReady` stop at its first `True` sample for the same
 scope: after that, the plane follows a child drop only on its next reconcile.
 Any failed check prints the watcher's whole transcript. The OpenBao root token
 is staged in `openbao-0` under `/tmp/.bao-token-<namespace>` and removed in
-`finally`.
+`finally`. The staging fails when the file's size differs from the token's
+length.
 The suite pins `catch` at 5m and `finally` at 15m, for a ceiling of
 30+5+15+15 = 65 minutes.
 

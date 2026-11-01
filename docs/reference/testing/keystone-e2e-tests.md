@@ -1079,7 +1079,8 @@ removes the staged OpenBao root token.
   `openstack/keystone-db`.
 - The OpenBao root token is staged in `openbao-0` over stdin at
   `/tmp/.bao-token-keystone-multi-namespace`, a name no other suite uses, so a
-  parallel suite's cleanup cannot remove it. Each field is copied by a pipe inside
+  parallel suite's cleanup cannot remove it. The staging fails the step when the
+  file's size differs from the token's length. Each field is copied by a pipe inside
   the pod, so no value leaves `openbao-0` or appears in a command argument, which
   the API server's audit log records. Tokens and passwords reach the API pods over
   stdin.

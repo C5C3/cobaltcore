@@ -144,7 +144,9 @@ Work top-down in the excerpt:
 DaemonSets, **Node capacity and allocated resources**, **Containers with
 restarts** (last termination reason, exit code, QoS class), **Memory working
 set per pod**, **Kernel OOM events on the kind node(s)** (dmesg), chaos-daemon
-detail, **K-ORC controller logs** (200 lines from
+detail, **OpenBao server log** (200 lines from `openbao-0` in
+`shared-services`, or a `SKIP:` line with kubectl's reason when the pod is not
+readable), **K-ORC controller logs** (200 lines from
 `deployment/orc-controller-manager`, or a `SKIP:` line with kubectl's reason
 when the Deployment is not readable), Events (last 50), Flux logs and
 FluxInstance; then, with `OPERATOR` set, operator pods and logs
