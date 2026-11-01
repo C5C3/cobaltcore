@@ -580,7 +580,9 @@ with mock.patch("nova.objects.BlockDeviceMappingList.get_by_instance_uuid"), \
     except exception.AllocationDeleteFailed:
         print(instance.task_state)' 2>&1) || exit_code=$?
   assert_eq "the driven delete exits 0" "0" "$exit_code"
-  assert_eq "a failed local delete clears the task state" "None" "$output"
+  # The last line alone: an image may warn on stderr at import, as 2026.2 does
+  # about eventlet.
+  assert_eq "a failed local delete clears the task state" "None" "${output##*$'\n'}"
 }
 
 # --- Run all tests ---
