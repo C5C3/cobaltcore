@@ -139,19 +139,39 @@ spec:
 
           # The root token stays out of argv, as in keystone-service: it is
           # staged once on stdin under a per-namespace path, and only that path
-          # travels on the command line. The export stays, because the two
-          # deploy/openbao/bootstrap scripts below read the token from their
-          # environment.
+          # and the token's length travel on the command line. The export
+          # stays, because the two deploy/openbao/bootstrap scripts below read
+          # the token from their environment.
           export BAO_TOKEN
           BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
             -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
           if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
             skip_or_fail "could not extract the OpenBao root token."
           fi
-          if ! printf '%s' "${BAO_TOKEN}" | kubectl exec -i -n shared-services openbao-0 -- \
-            sh -c 'umask 077; cat > "$1"' _ "${TOKEN_FILE}"; then
-            skip_or_fail "could not stage the OpenBao root token in openbao-0."
-          fi
+          # The shell stays alive until cat ends: containerd closes an exec's stdin on
+          # the first EOF of its stdout or stderr, so a last command that redirects
+          # stdout can lose the token (#1580). Exit 1 can mean a refused exec, a stream
+          # lost mid-exec or an API error, so it SKIPs only when a read of the pod
+          # succeeds and shows no running container. Every other failure stops the
+          # suite: exit 3 is a short file, and any other code is the remote exit of a
+          # pod that took the exec, such as 137 for a container killed with the token
+          # in flight.
+          stage_rc=0
+          printf '%s' "${BAO_TOKEN}" | kubectl exec -i -n shared-services openbao-0 -- \
+            sh -c 'umask 077; cat > "$1"; [ "$(wc -c < "$1")" -eq "$2" ] || exit 3' _ "${TOKEN_FILE}" "${#BAO_TOKEN}" || stage_rc=$?
+          case "${stage_rc}" in
+            0) ;;
+            1)
+              if ! bao_running="$(kubectl get pod openbao-0 -n shared-services -o jsonpath='{.status.containerStatuses[*].state.running}')" \
+                || [ -n "${bao_running}" ]; then
+                echo "ERROR: could not stage the OpenBao root token in openbao-0: the exec exited 1 and the pod is not known to be down."
+                exit 1
+              fi
+              skip_or_fail "could not stage the OpenBao root token in openbao-0."
+              ;;
+            3) echo "ERROR: could not stage the OpenBao root token in openbao-0: the staged file has the wrong size."; exit 1 ;;
+            *) echo "ERROR: could not stage the OpenBao root token in openbao-0: the exec exited ${stage_rc}."; exit 1 ;;
+          esac
           bao_exec() {
             kubectl exec -n shared-services openbao-0 -- \
               env BAO_ADDR=https://127.0.0.1:8200 \

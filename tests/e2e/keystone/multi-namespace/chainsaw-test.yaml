@@ -86,8 +86,14 @@ spec:
             echo "ERROR: Secret shared-services/openbao-init-keys holds no root_token"
             exit 1
           fi
-          printf '%s' "$ROOT_TOKEN" | kubectl exec -i -n shared-services openbao-0 -- \
-            sh -c "umask 077; cat > $TOKEN_FILE"
+          # The shell stays alive until cat ends: containerd closes an exec's stdin on
+          # the first EOF of its stdout or stderr, so a last command that redirects
+          # stdout can lose the token (#1580). The length test fails a short file.
+          if ! printf '%s' "$ROOT_TOKEN" | kubectl exec -i -n shared-services openbao-0 -- \
+            sh -c 'umask 077; cat > "$1"; [ "$(wc -c < "$1")" -eq "$2" ] || exit 3' _ "$TOKEN_FILE" "${#ROOT_TOKEN}"; then
+            echo "ERROR: could not stage the OpenBao root token in openbao-0."
+            exit 1
+          fi
           unset ROOT_TOKEN
           # bao_exec: a bao call inside openbao-0 that reads the staged token,
           # as in tests/e2e/c5c3/keystone-user.
