@@ -785,9 +785,10 @@ cr_errors_at() {
 # dizzy goes on from, and those are no failed operation:
 #   - http_404 on a delete or a detach: the resource is gone or detached
 #     already, which dizzy folds into success.
-#   - http_400 on a volume attach: Cinder reads the volume as available before
-#     Nova has dropped the attachment of the detach before it; dizzy reads the
-#     attachment and goes on. The churn does this without any fault.
+#   - http_400 on a volume attach: the volume is attached already, on a repeat
+#     of an attach whose answer or in-use wait failed; dizzy reads the
+#     attachment and goes on. An attach right after a detach no longer does
+#     this: since v0.9.0 dizzy waits for Nova to drop the attachment first.
 # A failed query prints its message and returns 1.
 cr_tail_errors() {
   local query='sum%20by%20%28kind%2Coperation%2Cerror_kind%29%20%28dizzy_operation_errors_total%29' before after
