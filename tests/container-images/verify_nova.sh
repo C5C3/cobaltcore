@@ -545,6 +545,44 @@ test_pymemcache_backend_bounded() {
   assert_pymemcache_backend_bounded
 }
 
+# --- Test 16: a failed local delete leaves no DELETING behind ---
+test_failed_local_delete_clears_task_state() {
+  echo "Test: a local delete that fails leaves the server deletable"
+  # patches/nova/<release>/0001-do-not-leave-deleting-behind-when-a-server-delete-fails.patch.
+  # API._delete runs with the compute service down and _local_delete failing
+  # as it does when Placement is down. Without the patch the server keeps
+  # DELETING, and the API ignores every later delete once the service is up.
+  local output="" exit_code=0
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'from unittest import mock
+
+from nova.compute import api
+from nova import exception
+from nova import objects
+
+objects.register_all()
+compute_api = api.API.__new__(api.API)
+compute_api.servicegroup_api = mock.Mock()
+compute_api.servicegroup_api.service_is_up.return_value = False
+compute_api._local_delete = mock.Mock(side_effect=exception.AllocationDeleteFailed(
+    consumer_uuid="u", error="placement is down"))
+instance = mock.MagicMock(host="h", vm_state="error", task_state=None, uuid="u",
+                          disable_terminate=False)
+instance.update.side_effect = lambda attrs: setattr(instance, "task_state", attrs["task_state"])
+with mock.patch("nova.objects.BlockDeviceMappingList.get_by_instance_uuid"), \
+        mock.patch("nova.objects.Service.get_by_compute_host"), \
+        mock.patch("nova.objects.InstanceMapping.get_by_instance_uuid"), \
+        mock.patch("nova.context.target_cell"), \
+        mock.patch("nova.compute.utils.may_have_ports_or_volumes", return_value=True):
+    try:
+        api.API._delete(compute_api, mock.MagicMock(), instance, "delete", mock.Mock(),
+                        task_state="deleting")
+    except exception.AllocationDeleteFailed:
+        print(instance.task_state)' 2>&1) || exit_code=$?
+  assert_eq "the driven delete exits 0" "0" "$exit_code"
+  assert_eq "a failed local delete clears the task state" "None" "$output"
+}
+
 # --- Run all tests ---
 echo "=== nova container verification tests ==="
 echo "Image: $IMAGE"
@@ -578,6 +616,8 @@ echo ""
 test_x509_keypair
 echo ""
 test_pymemcache_backend_bounded
+echo ""
+test_failed_local_delete_clears_task_state
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
