@@ -1318,7 +1318,8 @@ growth_case() {
 
 # leak_check <tmp> [env_var=value...] — derive_operators_summary and
 # check_operator_leak in <tmp>/run with the run started at
-# 2026-01-02T00:00:00Z; prints the check as "pass detail".
+# 2026-01-02T00:00:00Z and EXEMPT_PODS set to $EXEMPT_LIST after sourcing;
+# prints the check as "pass detail".
 leak_check() {
   local tmp="$1"
   shift
@@ -1327,6 +1328,8 @@ leak_check() {
     cd "$tmp/run" || exit 1
     # shellcheck disable=SC2034 # read by the sourced derive_operators_summary
     RUN_START="2026-01-02T00:00:00Z"
+    # shellcheck disable=SC2034 # read by the sourced derive_operators_summary
+    EXEMPT_PODS="${EXEMPT_LIST:-}"
     derive_operators_summary
     check_operator_leak
   ) | jq -r '"\(.pass) \(.detail)"'
@@ -1427,6 +1430,20 @@ test_operator_leak_check() {
     "$(summary_row "$tmp" | cut -f 4,13)"
   assert_eq "and passes although its goroutines rise by 160" \
     "true 0 of 1 operator pods judged; not judged: $OPERATOR_POD (leadership changed)" "$result"
+
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD"
+  operator_samples "$tmp" "$OPERATOR_POD" 1 20 50 100 1
+  operator_samples "$tmp" "$OPERATOR_POD" 21 40 80 200 1
+  result="$(EXEMPT_LIST="$OPERATOR_POD" leak_check "$tmp")"
+  assert_eq "a pod of EXEMPT_PODS is not judged" "fault target" "$(summary_row "$tmp" | cut -f 13)"
+  assert_eq "and passes although it grows" \
+    "true 0 of 1 operator pods judged; not judged: $OPERATOR_POD (fault target)" "$result"
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD"
+  assert_eq "a pod of EXEMPT_PODS without a sample does not fail either" \
+    "true 0 of 1 operator pods judged; not judged: $OPERATOR_POD (fault target)" \
+    "$(EXEMPT_LIST="$OPERATOR_POD" leak_check "$tmp")"
 
   # No operator pod listed, and no pod read at all.
   leak_case "$tmp"

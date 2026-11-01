@@ -709,7 +709,7 @@ STUB
 # Test 8: the soak's tables judged again, and the JUnit file
 # ---------------------------------------------------------------------------
 test_rejudge_and_junit() {
-  echo "Test: the targets are exempt from no-restarts and memory-growth, and the JUnit file names each check"
+  echo "Test: the targets are exempt from no-restarts, operator-leak and memory-growth, and the JUnit file names each check"
 
   local tmp="$TMP_DIR/rejudge" i ts p
   new_case "$tmp"
@@ -719,6 +719,8 @@ test_rejudge_and_junit() {
   : >"$p/containers.tsv"
   : >"$p/pod-samples.log"
   : >"$p/errors.log"
+  : >"$p/operator-pods.tsv"
+  : >"$p/operators.tsv"
   for i in $(seq 1 25); do
     ts="$(printf '2026-01-02T00:%02d:00Z' "$i")"
     echo "$ts" >>"$p/pod-samples.log"
@@ -730,12 +732,18 @@ test_rejudge_and_junit() {
     # source-controller grows by 8 MiB a sample.
     printf '%s\tflux-system\tsource-0\tuid-f\t2026-01-01T00:00:00Z\tReplicaSet\tmanager\t0\t-\t-\n' "$ts" >>"$p/containers.tsv"
     printf '%s\tflux-system\tsource-0\tmanager\t1\t%s\n' "$ts" "$(((50 + 8 * i) * 1048576))" >>"$p/usage.tsv"
+    # keystone-operator-0 is a target whose heap climbs by 3 MiB a sample;
+    # nova-operator-0 stays flat.
+    printf '%s\tkeystone-system\tkeystone-operator-0\t2026-01-01T00:00:00Z\t10.0.0.1\t8080\n' "$ts" >>"$p/operator-pods.tsv"
+    printf '%s\tnova-system\tnova-operator-0\t2026-01-01T00:00:00Z\t10.0.0.2\t8080\n' "$ts" >>"$p/operator-pods.tsv"
+    printf '%s\tkeystone-system\tkeystone-operator-0\t300\t%s\t104857600\t1\n' "$ts" "$(((25 + 3 * i) * 1048576))" >>"$p/operators.tsv"
+    printf '%s\tnova-system\tnova-operator-0\t280\t52428800\t104857600\t1\n' "$ts" >>"$p/operators.tsv"
   done
   echo '{"startTime": "2026-01-02T00:00:00Z", "maxMemoryGrowthPercent": 10, "maxMemoryGrowthMiB": 16, "namespaces": ["openstack"]}' \
     >"$tmp/run/soak/meta.json"
   # shellcheck disable=SC2034 # read by the sourced runner
   ( source "$PROJECT_ROOT/hack/dizzy-soak-runner.sh"; cd "$tmp/run/soak" && RUN_START=2026-01-02T00:00:00Z && derive_restarts )
-  printf 's01-keystone-api-pod-failure\topenstack/keystone-0\n' >"$tmp/run/targets.tsv"
+  printf 's01-keystone-api-pod-failure\topenstack/keystone-0\ns01-keystone-operator-pod-kill\tkeystone-system/keystone-operator-0\n' >"$tmp/run/targets.tsv"
   printf '2026-01-02T00:18:30Z\ts02-nova-rabbitmq-partition\tnova-rabbitmq-partition\t2026-01-02T00:20:30Z\n' >"$tmp/run/windows.tsv"
   printf '2026-01-02T00:05:00Z\ts01-keystone-api-pod-failure\tkeystone-api-pod-failure\t2026-01-02T00:07:00Z\n' >>"$tmp/run/windows.tsv"
   : >"$tmp/run/checks.jsonl"
@@ -746,6 +754,9 @@ test_rejudge_and_junit() {
   assert_eq "memory-growth skips the target and flux-system and judges no restarted container" \
     "false no container could be judged; the reasons: restarted (1), exempt (1), namespace skipped (1)" \
     "$(check_in "$tmp/run" memory-growth)"
+  assert_eq "operator-leak does not judge the target whose heap climbs" \
+    "true 1 of 2 operator pods judged; largest heap growth 0.0 % (nova-system/nova-operator-0); largest goroutine growth 0.0 (nova-system/nova-operator-0); not judged: keystone-system/keystone-operator-0 (fault target)" \
+    "$(check_in "$tmp/run" operator-leak)"
   assert_eq "the soak's own tables stay as the soak wrote them" "no" \
     "$([[ -e "$tmp/run/soak/platform/memory-growth.tsv" ]] && echo yes || echo no)"
   assert_eq "the judged table is the run's memory-growth.tsv" "exempt|namespace skipped|restarted" \
@@ -757,6 +768,24 @@ test_rejudge_and_junit() {
   assert_eq "a soak that skipped no namespace has flux-system judged again too" \
     "false flux-system/source-0/manager: 150.0 to 246.0 MiB (+96.0 MiB, 64.0 %); 1 container(s) of exempt pods skipped" \
     "$(check_in "$tmp/run" memory-growth)"
+  printf 's01-keystone-api-pod-failure\topenstack/keystone-0\n' >"$tmp/run/targets.tsv"
+  : >"$tmp/run/checks.jsonl"
+  (in_cr "$tmp" CHAOS_RANDOM_ENV=ci; CR_DIR="$tmp/run"; cr_rejudge) >/dev/null 2>&1
+  assert_eq "an operator pod that no fault targeted is judged, against the bound of the soak's meta.json" \
+    "false keystone-system/keystone-operator-0: heap growth 233.9 % (29.5 to 98.5 MiB), goroutine growth 0.0 (300.0 to 300.0)" \
+    "$(check_in "$tmp/run" operator-leak)"
+  jq '.maxOperatorHeapGrowthPercent = 300' "$tmp/run/soak/meta.json" >"$tmp/meta.json"
+  mv "$tmp/meta.json" "$tmp/run/soak/meta.json"
+  : >"$tmp/run/checks.jsonl"
+  (in_cr "$tmp" CHAOS_RANDOM_ENV=ci; CR_DIR="$tmp/run"; cr_rejudge) >/dev/null 2>&1
+  assert_eq "a heap bound the soak raised holds again" "true" \
+    "$(check_in "$tmp/run" operator-leak | cut -d ' ' -f 1)"
+  mv "$tmp/run/soak/meta.json" "$tmp/meta.json"
+  : >"$tmp/run/checks.jsonl"
+  (in_cr "$tmp" CHAOS_RANDOM_ENV=ci; CR_DIR="$tmp/run"; cr_rejudge) >/dev/null 2>&1
+  assert_eq "a soak without a report fails all three" "no-restarts operator-leak memory-growth" \
+    "$(jq -r 'select(.pass == false) | .name' "$tmp/run/checks.jsonl" | paste -sd ' ' -)"
+  mv "$tmp/meta.json" "$tmp/run/soak/meta.json"
 
   # The outputs.
   echo '{"seed": 1234, "steps": [{"index": 1, "offset": 0, "entries": ["mariadb-pod-kill"], "length": 30, "pause": 100}]}' >"$tmp/run/plan.json"

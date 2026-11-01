@@ -84,10 +84,10 @@ OPERATOR_SCRAPE_TIMEOUT=10
 OPERATOR_CONNECT_TIMEOUT=3
 # The memory samples a container needs before memory-growth judges it.
 MIN_MEMORY_SAMPLES=20
-# The pods no-restarts and memory-growth leave out, one <namespace>/<pod> per
-# line. A soak judges every pod; hack/chaos-random.sh sets it after sourcing
-# the runner, to the targets of its faults, when it judges a soak's tables
-# again.
+# The pods no-restarts, operator-leak and memory-growth leave out, one
+# <namespace>/<pod> per line. A soak judges every pod; hack/chaos-random.sh
+# sets it after sourcing the runner, to the targets of its faults, when it
+# judges a soak's tables again.
 EXEMPT_PODS=""
 
 # ---------------------------------------------------------------------------
@@ -481,21 +481,26 @@ derive_usage_summary() {
 # it changed), the goroutines and the heap in MiB as the means of its first
 # and of its last tenth of samples and the growth between them, the heap
 # growth in percent, the RSS mean of its last tenth in MiB, and whether
-# operator-leak judges it. A pod is not judged when it has no sample, when
-# its scrapes failed (listed in more than MIN_OPERATOR_SAMPLES pod samples,
-# no sample in more than one of them and in more than a tenth; the one allows
-# for the sampler's last scrape, which a stop may cut short, and a pod listed
-# fewer times has too few samples to judge after one miss), when it was
-# created during the run, has fewer than MIN_OPERATOR_SAMPLES samples, or
-# changed its leadership. operator-leak fails a pod of the first two reasons.
+# operator-leak judges it. A pod is not judged when it is in EXEMPT_PODS, when
+# it has no sample, when its scrapes failed (listed in more than
+# MIN_OPERATOR_SAMPLES pod samples, no sample in more than one of them and in
+# more than a tenth; the one allows for the sampler's last scrape, which a
+# stop may cut short, and a pod listed fewer times has too few samples to judge
+# after one miss), when it was created during the run, has fewer than
+# MIN_OPERATOR_SAMPLES samples, or changed its leadership. operator-leak fails
+# a pod with no sample or failed scrapes; a fault's target is neither, since a
+# killed pod's series ends at the fault and its last tenth is a few samples
+# that say nothing about growth.
 # ---------------------------------------------------------------------------
 derive_operators_summary() {
   {
     printf 'namespace\tpod\tsamples\tleader\tgoroutines_first\tgoroutines_last\tgoroutines_growth\theap_first_mib\theap_last_mib\theap_growth_mib\theap_growth_percent\trss_last_mib\tjudged\n'
     if [[ -s platform/operator-pods.tsv ]]; then
-      awk -F '\t' -v start="${RUN_START}" -v min="${MIN_OPERATOR_SAMPLES}" -v pods=platform/operator-pods.tsv '
+      EXEMPT="${EXEMPT_PODS}" awk -F '\t' -v start="${RUN_START}" -v min="${MIN_OPERATOR_SAMPLES}" -v pods=platform/operator-pods.tsv '
         function tenth(k, t) { t = int(n[k] / 10); return t < 1 ? 1 : t }
         BEGIN {
+          split(ENVIRON["EXEMPT"], e, "\n")
+          for (i in e) if (e[i] != "") exempt[e[i]] = 1
           while ((getline line <pods) > 0) {
             split(line, f, "\t")
             k = f[2] SUBSEP f[3]
@@ -517,7 +522,8 @@ derive_operators_summary() {
           for (k in created) {
             split(k, p, SUBSEP)
             misses = (k in n) ? listed[k] - n[k] : listed[k]
-            if (!(k in n)) judged = "no samples"
+            if ((p[1] "/" p[2]) in exempt) judged = "fault target"
+            else if (!(k in n)) judged = "no samples"
             else if (listed[k] > min && misses > 1 && misses * 10 > listed[k]) judged = "scrapes failed"
             else if (created[k] >= start) judged = "created during the run"
             else if (n[k] < min) judged = "fewer than " min " samples"

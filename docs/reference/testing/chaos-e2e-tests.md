@@ -651,8 +651,9 @@ The verdict is PASS when every check passes:
 | Check | Fails when |
 | --- | --- |
 | `workflow` | The apply was refused (kubectl's error), a chaos template never read `AllInjected=True` (named), or the Workflow was not accomplished within the window plus 600 seconds |
-| `dizzy-exit`, `leak-check`, `controlplane-ready`, `operator-leak`, `error-rate`, `p95` | As the soak's `verdict.json` reports them; the last two only when set. `dizzy-exit` also fails when the soak's Job did not finish within 600 seconds of the churn end |
+| `dizzy-exit`, `leak-check`, `controlplane-ready`, `error-rate`, `p95` | As the soak's `verdict.json` reports them; the last two only when set. `dizzy-exit` also fails when the soak's Job did not finish within 600 seconds of the churn end |
 | `no-restarts` | Judged again from the soak's tables with the targets of `targets.tsv` exempt; the detail names each other restarted container with the fault windows open at its first sample after the restart |
+| `operator-leak` | Judged again the same way, with the targets exempt: a killed operator's series ends at the fault, and the mean of its last few samples says nothing about growth. Its replacement is created during the run and is not judged either |
 | `memory-growth` | Judged again the same way, with the targets exempt |
 | `quiet-tail` | dizzy counted a failed operation between the last lift plus its recovery and the churn end, read as two instant queries of `sum(dizzy_operation_errors_total)` from the dizzy VictoriaMetrics through the API server's service proxy. An empty result is 0; a query that fails or answers `"status":"error"` fails the check |
 | `placement-audit`, `ovn-db-sync` | The [consistency checks](#consistency-checks) of `tests/e2e-chaos/lib/consistency.sh` on `deploy/<cp>-nova` and `<cp>-neutron` do not print `CONSISTENCY-OK` |
@@ -664,7 +665,8 @@ operations per window, between the injection and the lift plus the recovery.
 Those are reported and not judged, because an overlap of two random faults has
 no budget of its own; `quiet-tail` judges the churn after the last recovery.
 The soak's own `verdict.json` stays in `soak/` as the soak wrote it, and fails
-its `no-restarts` whenever a target restarted. The JUnit file holds one
+its `no-restarts` whenever a target restarted and its `operator-leak` on a
+target's cut series. The JUnit file holds one
 `tests/chaos-random/random-<check>` testsuite per check, so
 `report-nightly-chaos` files a red night's check as
 `Nightly chaos suite random-<check> is red`.
