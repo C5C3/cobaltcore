@@ -9,6 +9,7 @@
     "patches/cinder/2026.1/0003-tests-collect-garbage-before-the-backup-tpool-size-tests.patch",
     "patches/cinder/2026.1/0004-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch",
     "patches/cinder/2026.1/0005-tests-collect-garbage-before-tpool-killall.patch",
-    "patches/cinder/2026.1/0006-service-stop-the-coordinator-after-the-rpc-servers-drained.patch"
+    "patches/cinder/2026.1/0006-service-stop-the-coordinator-after-the-rpc-servers-drained.patch",
+    "patches/cinder/2026.1/0007-set-a-volume-to-error-when-its-create-loses-the-database.patch"
   ]
 }

@@ -616,6 +616,46 @@ if order != ["rpcserver", "coordinator"]:
   assert_eq "Service stops the coordinator after the RPC server drained" "0" "$exit_code"
 }
 
+test_lost_database_create_patch_applied() {
+  echo "Test: a volume create that loses the database ends in error"
+  # Proves both build paths applied
+  # patches/cinder/<release>/000N-set-a-volume-to-error-when-its-create-loses-the-database.patch.
+  # The first task of the manager's create flow fails on the lost database,
+  # and its revert runs with the database still gone. An unpatched image
+  # returns from that revert and leaves the volume in creating, where no user
+  # can delete it. The patched image sets it to error, waiting out the first
+  # failed save. The waits are mocked, and stderr is echoed on failure so the
+  # reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+
+from oslo_db import exception as db_exc
+from taskflow.types import failure as ft
+
+from cinder import objects
+objects.register_all()
+# cinder.volume.manager first: the flow module alone hits an import cycle.
+from cinder.volume import manager  # noqa: F401
+from cinder.volume.flows.manager import create_volume
+
+volume = mock.MagicMock(status="creating")
+lost = db_exc.DBConnectionError(Exception("gone"))
+volume.save.side_effect = [lost, None]
+task = create_volume.ExtractVolumeRefTask(mock.sentinel.db, "host", set_error=False)
+with mock.patch("tenacity.nap.sleep"):
+    task.revert(mock.sentinel.context, volume, ft.Failure.from_exception(lost))
+if volume.status != "error" or volume.save.call_count != 2:
+    sys.exit("the volume ended in %s after %d saves, want error after 2"
+             % (volume.status, volume.save.call_count))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "a lost database sets the volume to error" "0" "$exit_code"
+}
+
 # --- Test 12: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
@@ -777,6 +817,8 @@ echo ""
 test_backup_placement_patch_applied
 echo ""
 test_coordinator_shutdown_patch_applied
+echo ""
+test_lost_database_create_patch_applied
 echo ""
 test_runs_as_openstack_user
 echo ""

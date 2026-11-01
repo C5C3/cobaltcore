@@ -8,6 +8,7 @@
     "patches/cinder/2026.2/0002-create-from-image-run-qemu-img-as-the-service-user.patch",
     "patches/cinder/2026.2/0003-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch",
     "patches/cinder/2026.2/0004-tests-collect-garbage-before-tpool-killall.patch",
-    "patches/cinder/2026.2/0005-service-stop-the-coordinator-after-the-rpc-servers-drained.patch"
+    "patches/cinder/2026.2/0005-service-stop-the-coordinator-after-the-rpc-servers-drained.patch",
+    "patches/cinder/2026.2/0006-set-a-volume-to-error-when-its-create-loses-the-database.patch"
   ]
 }
