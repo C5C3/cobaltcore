@@ -772,6 +772,25 @@ pins where the coordinator stops, so the patch adds
 the built image with a mocked RPC server and coordinator and asserts the
 order. Upstream status: not yet proposed.
 
+`patches/cinder/2026.1/0007-set-a-volume-to-error-when-its-create-loses-the-database.patch`
+and its 2026.2 twin
+`patches/cinder/2026.2/0006-set-a-volume-to-error-when-its-create-loses-the-database.patch`
+keep a volume out of `creating` when the database goes away during its create.
+The manager's flow starts with `ExtractVolumeRefTask`, which refreshes the
+volume. When that fails on the lost database, its revert returns at once, no
+later task ran, and the volume stays in `creating`, where no user can delete
+it, until cinder-volume restarts. A later task gets no further:
+`common.error_out` saves the status once and logs the failure. The patch sets
+the volume to `error` when the task's failure is a `DBConnectionError`, and
+`error_out` saves with retries whose waits add up to 254 seconds. A
+`VolumeNotFound` still reverts to nothing. Random chaos found this: a
+`mariadb-pod-kill` hit a volume between the API's commit and cinder-volume's
+refresh, and dizzy's teardown failed on it. No upstream test pins either path,
+so the patch adds `VolumeCreateLostDatabaseTestCase` to
+`cinder/tests/unit/volume/flows/test_create_volume_flow.py`.
+`tests/container-images/verify_cinder.sh` drives the revert against the built
+image. Upstream status: not yet proposed.
+
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
 (decision D2 of issue #979). None of the three serves an HTTP port, so
