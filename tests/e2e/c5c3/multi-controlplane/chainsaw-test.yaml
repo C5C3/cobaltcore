@@ -212,11 +212,30 @@ spec:
             skip_or_fail "could not extract the OpenBao root token."
           fi
           BAO_TOKEN_FILE="/tmp/.bao-token-${NAMESPACE}"
-          if ! printf '%s' "${BAO_TOKEN}" | kubectl exec -i -n "${BAO_NS}" openbao-0 -- \
-            env BAO_TOKEN_FILE="${BAO_TOKEN_FILE}" \
-            sh -c 'umask 077; cat > "${BAO_TOKEN_FILE}"'; then
-            skip_or_fail "could not stage the OpenBao root token in openbao-0."
-          fi
+          # The shell stays alive until cat ends: containerd closes an exec's stdin on
+          # the first EOF of its stdout or stderr, so a last command that redirects
+          # stdout can lose the token (#1580). Exit 1 can mean a refused exec, a stream
+          # lost mid-exec or an API error, so it SKIPs only when a read of the pod
+          # succeeds and shows no running container. Every other failure stops the
+          # suite: exit 3 is a short file, and any other code is the remote exit of a
+          # pod that took the exec, such as 137 for a container killed with the token
+          # in flight.
+          stage_rc=0
+          printf '%s' "${BAO_TOKEN}" | kubectl exec -i -n "${BAO_NS}" openbao-0 -- \
+            sh -c 'umask 077; cat > "$1"; [ "$(wc -c < "$1")" -eq "$2" ] || exit 3' _ "${BAO_TOKEN_FILE}" "${#BAO_TOKEN}" || stage_rc=$?
+          case "${stage_rc}" in
+            0) ;;
+            1)
+              if ! bao_running="$(kubectl get pod openbao-0 -n "${BAO_NS}" -o jsonpath='{.status.containerStatuses[*].state.running}')" \
+                || [ -n "${bao_running}" ]; then
+                echo "ERROR: could not stage the OpenBao root token in openbao-0: the exec exited 1 and the pod is not known to be down."
+                exit 1
+              fi
+              skip_or_fail "could not stage the OpenBao root token in openbao-0."
+              ;;
+            3) echo "ERROR: could not stage the OpenBao root token in openbao-0: the staged file has the wrong size."; exit 1 ;;
+            *) echo "ERROR: could not stage the OpenBao root token in openbao-0: the exec exited ${stage_rc}."; exit 1 ;;
+          esac
           echo "OK: c5c3 + K-ORC + keystone CRDs, OpenBao, and running keystone- and c5c3-operators"
           echo "    present — running the per-ControlPlane admin-credential isolation test."
 
