@@ -595,8 +595,17 @@ YAML
 # ---------------------------------------------------------------------------
 # Test 6: quiet-tail
 # ---------------------------------------------------------------------------
-vm_value() {
-  printf '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[%s,"%s"]}]}}\n' "$1" "$2"
+# vm_series <time> <kind> <operation> <error kind> <value> ... — The answer of
+# the query by kind, operation and error kind, one series per four arguments.
+vm_series() {
+  local time="$1" result="" sep=""
+  shift
+  while [[ $# -ge 4 ]]; do
+    result="${result}${sep}{\"metric\":{\"kind\":\"$1\",\"operation\":\"$2\",\"error_kind\":\"$3\"},\"value\":[${time},\"$4\"]}"
+    sep=","
+    shift 4
+  done
+  printf '{"status":"success","data":{"resultType":"vector","result":[%s]}}\n' "$result"
 }
 
 test_quiet_tail() {
@@ -617,15 +626,25 @@ test_quiet_tail() {
   }
   assert_eq "an empty result counts 0 and passes" \
     "true no failed operation between 2026-01-01T00:03:00Z and the churn end 2026-01-01T00:13:00Z" "$(run_quiet)"
-  assert_contains "the queries are instant queries of the sum at both times" "$(cat "$CALL_LOG")" \
-    "get --raw /api/v1/namespaces/dizzy/services/dizzy-victoria-metrics-server:8428/proxy/api/v1/query?query=sum%28dizzy_operation_errors_total%29&time=${from}"
-  vm_value "$from" 3 >"$tmp/vm.$from"
-  vm_value "$to" 5 >"$tmp/vm.$to"
-  assert_eq "a result rising from 3 to 5 fails with 2 errors" \
-    "false dizzy counted 2 failed operation(s) between 2026-01-01T00:03:00Z (the last lift 2026-01-01T00:00:00Z plus its recovery) and the churn end 2026-01-01T00:13:00Z" \
+  assert_contains "the queries are instant queries by kind, operation and error kind at both times" "$(cat "$CALL_LOG")" \
+    "get --raw /api/v1/namespaces/dizzy/services/dizzy-victoria-metrics-server:8428/proxy/api/v1/query?query=sum%20by%20%28kind%2Coperation%2Cerror_kind%29%20%28dizzy_operation_errors_total%29&time=${from}"
+  vm_series "$from" server create http_500 3 >"$tmp/vm.$from"
+  vm_series "$to" server create http_500 5 volume detach http_409 1 >"$tmp/vm.$to"
+  assert_eq "a series rising by 2 and a new one by 1 fail with 3 errors, named" \
+    "false dizzy counted 3 failed operation(s) between 2026-01-01T00:03:00Z (the last lift 2026-01-01T00:00:00Z plus its recovery) and the churn end 2026-01-01T00:13:00Z: 2 server create http_500, 1 volume detach http_409" \
     "$(run_quiet)"
-  vm_value "$to" 3 >"$tmp/vm.$to"
+  vm_series "$to" server create http_500 3 >"$tmp/vm.$to"
   assert_eq "an unchanged count passes" "true" "$(run_quiet | cut -d' ' -f1)"
+  vm_series "$to" server create http_500 3 server delete http_404 2 volume detach http_404 1 volume attach http_400 2 >"$tmp/vm.$to"
+  assert_eq "the 404 of a delete or a detach and the 400 of a volume attach are absorbed by dizzy" \
+    "true no failed operation between 2026-01-01T00:03:00Z and the churn end 2026-01-01T00:13:00Z; left out as absorbed by dizzy: 2 server delete http_404, 2 volume attach http_400, 1 volume detach http_404" \
+    "$(run_quiet)"
+  vm_series "$to" server create http_404 1 volume attach http_400 1 >"$tmp/vm.$to"
+  assert_eq "a 404 elsewhere counts, and an absorbed answer does not hide it" \
+    "false dizzy counted 1 failed operation(s) between 2026-01-01T00:03:00Z (the last lift 2026-01-01T00:00:00Z plus its recovery) and the churn end 2026-01-01T00:13:00Z: 1 server create http_404" \
+    "$(run_quiet)"
+  vm_series "$to" port attach http_400 1 >"$tmp/vm.$to"
+  assert_eq "a 400 of another attach counts" "false" "$(run_quiet | cut -d' ' -f1)"
   echo '{"status":"error","errorType":"bad_data","error":"cannot parse query"}' >"$tmp/vm.$to"
   assert_eq '"status":"error" fails with the message' \
     "false the query at 2026-01-01T00:13:00Z answered status error: cannot parse query" "$(run_quiet)"
