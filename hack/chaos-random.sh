@@ -697,7 +697,7 @@ cr_restarted_with_windows() {
 # the soak's platform tables with EXEMPT_PODS set to the targets and the bounds
 # of the soak's meta.json.
 cr_rejudge() {
-  local work exempt start percent mib skip heap goroutines result named
+  local work exempt start percent mib skip heap heap_mib goroutines result named
   if [[ ! -f "${CR_DIR}/soak/meta.json" ]]; then
     cr_check no-restarts false "the soak wrote no report to judge"
     cr_check operator-leak false "the soak wrote no report to judge"
@@ -712,8 +712,9 @@ cr_rejudge() {
   mib="$(jq -r '.maxMemoryGrowthMiB // 16' "${CR_DIR}/soak/meta.json")"
   skip="$(jq -r '(.memoryGrowthSkipNamespaces // ["flux-system"]) | join(" ")' "${CR_DIR}/soak/meta.json")"
   heap="$(jq -r '.maxOperatorHeapGrowthPercent // 10' "${CR_DIR}/soak/meta.json")"
+  heap_mib="$(jq -r '.maxOperatorHeapGrowthMiB // 16' "${CR_DIR}/soak/meta.json")"
   goroutines="$(jq -r '.maxOperatorGoroutineGrowth // 10' "${CR_DIR}/soak/meta.json")"
-  # shellcheck disable=SC1090,SC2034 # the runner reads the seven after sourcing
+  # shellcheck disable=SC1090,SC2034 # the runner reads the eight after sourcing
   result="$(cd "$work" && (
     source "$CR_SOAK_RUNNER"
     RUN_START="$start"
@@ -722,6 +723,7 @@ cr_rejudge() {
     DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="$mib"
     DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES="$skip"
     DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="$heap"
+    DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB="$heap_mib"
     DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="$goroutines"
     check_no_restarts
     derive_operators_summary

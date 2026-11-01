@@ -39,6 +39,7 @@ esac
 SOAK_DIR="${OVERLAY_ROOT}/dizzy-soak"
 
 # Settings. A DIZZY_SOAK_DURATION, DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT,
+# DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB,
 # DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH,
 # DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT or DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB
 # that is set but empty is refused, so its default applies only when it is
@@ -56,6 +57,7 @@ DIZZY_SOAK_SAMPLE_INTERVAL="${DIZZY_SOAK_SAMPLE_INTERVAL:-60}"
 DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE:-}"
 DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS:-}"
 DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT-10}"
+DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB-16}"
 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH-10}"
 DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT-10}"
 DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB-16}"
@@ -115,8 +117,12 @@ Settings (environment):
                               (default empty: no check).
   DIZZY_SOAK_MAX_P95_SECONDS  maximum overall p95 latency in seconds
                               (default empty: no check).
-  DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT  maximum heap growth of an
-                              operator pod in percent (default 10).
+  DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT  heap growth of an operator pod
+                              in percent that fails it together with the MiB
+                              bound (default 10).
+  DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB  heap growth of an operator pod in
+                              MiB that fails it together with the percent
+                              bound (default 16).
   DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH  maximum goroutine growth of an
                               operator pod (default 10).
   DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT  memory growth of a container over the
@@ -221,6 +227,9 @@ soak_preflight() {
   fi
   if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" 'v > 0'; then
     soak_fail "DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT must be a positive number"
+  fi
+  if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB}" 'v > 0'; then
+    soak_fail "DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB must be a positive number"
   fi
   if ! soak_number_in "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" 'v > 0'; then
     soak_fail "DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH must be a positive number"
@@ -409,6 +418,7 @@ soak_start() {
     --from-literal=DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE}" \
     --from-literal=DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS}" \
     --from-literal=DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" \
+    --from-literal=DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB}" \
     --from-literal=DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" \
     --from-literal=DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT}" \
     --from-literal=DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB}" \
