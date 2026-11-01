@@ -680,7 +680,11 @@ OVN central, the bus Secret against a vhost of its own, the ControlPlane
 `openstack/controlplane` (copies of the full-chain suite's files under the
 default identity) with its OpenBao database-engine tenant, the OVN chassis and
 the metadata agent, the fake compute and its host mapping, and the seed Job of
-the soak's flavor and image `chaos-random`. The job's stack runs with
+the soak's flavor and image `chaos-random`. The fake compute starts through a
+small wrapper that adopts the guests of its host: the fake virt driver keeps
+them in the memory of nova-compute, and a hypervisor keeps them when the service
+dies, so `nova-fake-compute-pod-kill` would otherwise leave every server without
+a guest. The job's stack runs with
 `WITH_CONTROLPLANE_CR=false` and onboards no tenant, so `up` runs
 `setup-database-tenant.sh` once the ControlPlane's MariaDB is Ready; without
 it the ControlPlane gets no DB credentials. A stage that does not get ready
