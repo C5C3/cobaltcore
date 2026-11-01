@@ -153,6 +153,15 @@ if [[ -z "${OPERATOR_ONLY}" ]]; then
     echo "SKIP: chaos-mesh namespace not present (install with WITH_CHAOS_MESH=true)"
   fi
 
+  # The shared OpenBao runs in shared-services, which the namespace dump below
+  # never reads. The guard keeps the reason, as in the K-ORC block.
+  echo "=== OpenBao server log (last 200 lines) ==="
+  if err="$(kubectl get pod openbao-0 -n shared-services 2>&1 >/dev/null)"; then
+    kubectl logs -n shared-services openbao-0 --tail=200 --all-containers 2>&1 || true
+  else
+    echo "SKIP: pod/openbao-0 not readable in shared-services (${err})"
+  fi
+
   # K-ORC runs only on the legs that call hack/ci-deploy-korc.sh (the c5c3
   # operator leg, e2e-controlplane, -sso, e2e-autoscaling, e2e-external-keystone)
   # or on a Flux-deployed stack. The Deployment name comes from the upstream
