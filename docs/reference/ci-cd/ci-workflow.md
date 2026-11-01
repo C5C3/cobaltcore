@@ -2611,10 +2611,11 @@ Dumps diagnostic information after E2E failures. Shared across every `e2e-*` job
 | `OPERATOR_ONLY` | No | (empty) | When set, emits only the three sections that differ per operator (operator pods, operator logs, CR status). For callers that loop over several operators in one job, where the infrastructure block and the `NAMESPACE` Job and pod logs are the same dump every pass |
 | `NAMESPACE` | No | `openstack` | Kubernetes namespace for operator-specific queries |
 
-**Infrastructure diagnostics (always emitted):** HelmReleases, pods, DaemonSets, the K-ORC
-controller log (`deploy/orc-controller-manager` in `orc-system`, a `SKIP:` line with
-kubectl's reason on a cluster without it), events (last 50), and Flux logs across all
-namespaces.
+**Infrastructure diagnostics (always emitted):** HelmReleases, pods, DaemonSets, the OpenBao
+server log (`openbao-0` in `shared-services`, last 200 lines, a `SKIP:` line with kubectl's
+reason on a cluster without it), the K-ORC controller log (`deploy/orc-controller-manager`
+in `orc-system`, a `SKIP:` line with kubectl's reason on a cluster without it), events
+(last 50), and Flux logs across all namespaces.
 
 **Operator diagnostics (when `OPERATOR` is set):** Operator pods and logs, job descriptions
 and logs in the target namespace, all pod logs (current and previous) in the namespace,
