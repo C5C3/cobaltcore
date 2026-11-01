@@ -1153,6 +1153,7 @@ keystone-pressure-ab:
 #   DIZZY_SOAK_MAX_ERROR_RATE   error-rate threshold in percent (default none).
 #   DIZZY_SOAK_MAX_P95_SECONDS  p95 latency threshold (default none).
 #   DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT  operator heap growth bound in percent (default 10).
+#   DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB      operator heap growth bound in MiB (default 16).
 #   DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH     operator goroutine growth bound (default 10).
 #   DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT         container memory growth bound in percent (default 10).
 #   DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB             container memory growth bound in MiB (default 16).

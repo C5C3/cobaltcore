@@ -23,6 +23,7 @@
 # DIZZY_SOAK_DURATION, DIZZY_ARGS, DIZZY_VERSION, DIZZY_SOAK_NAMESPACES,
 # DIZZY_SOAK_SAMPLE_INTERVAL, DIZZY_SOAK_MAX_ERROR_RATE,
 # DIZZY_SOAK_MAX_P95_SECONDS, DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT,
+# DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB,
 # DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH,
 # DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT, DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB and
 # DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES.
@@ -102,6 +103,7 @@ DIZZY_SOAK_SAMPLE_INTERVAL="${DIZZY_SOAK_SAMPLE_INTERVAL:-60}"
 DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE:-}"
 DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS:-}"
 DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT:-10}"
+DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB:-16}"
 DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH:-10}"
 DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT:-10}"
 DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB:-16}"
@@ -844,11 +846,14 @@ check_memory_growth() {
 
 # check_operator_leak — At least one operator pod was listed, no pod of
 # platform/operators-summary.tsv has no samples or failed scrapes, and each
-# one the summary judges kept its heap growth within
-# DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT and its goroutine growth
-# within DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH. It compares the values as
-# the summary prints them. A pod without samples or with failed scrapes
-# names the last scrape error errors.log holds for it.
+# one the summary judges kept its goroutine growth within
+# DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH and did not grow its heap by more
+# than DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB and by more than
+# DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT at once. Either heap bound alone
+# is no defect: the in-use heap of a reconciling operator swings by a few MiB
+# between garbage collections, and on a short run a tenth is four samples. It
+# compares the values as the summary prints them. A pod without samples or
+# with failed scrapes names the last scrape error errors.log holds for it.
 check_operator_leak() {
   if [[ ! -s platform/pod-samples.log ]]; then
     check operator-leak false "operator pods could not be listed: $(grep ' pods: ' platform/errors.log 2>/dev/null | tail -n 1)"
@@ -859,7 +864,7 @@ check_operator_leak() {
     return
   fi
   awk -F '\t' -v heap_bound="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" \
-    -v goroutine_bound="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" -v errors=platform/errors.log '
+    -v heap_mib_bound="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB}" -v goroutine_bound="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" -v errors=platform/errors.log '
     # last_error(id) — The text after "operators: <id>: " in the last line
     # of errors.log that holds it, or none.
     function last_error(id, needle, i) {
@@ -892,7 +897,7 @@ check_operator_leak() {
       judged++
       if (judged == 1 || ($11 != "-" && (largest_heap == "-" || $11 + 0 > largest_heap + 0))) { largest_heap = $11; largest_heap_id = id }
       if (judged == 1 || $7 + 0 > largest_goroutines + 0) { largest_goroutines = $7; largest_goroutines_id = id }
-      if (($11 != "-" && $11 + 0 > heap_bound + 0) || $7 + 0 > goroutine_bound + 0) {
+      if (($11 != "-" && $11 + 0 > heap_bound + 0 && $10 + 0 > heap_mib_bound + 0) || $7 + 0 > goroutine_bound + 0) {
         failures = failures (failures == "" ? "" : "; ") id ": heap growth " $11 " % (" $8 " to " $9 " MiB), goroutine growth " $7 " (" $5 " to " $6 ")"
       }
     }
@@ -1176,14 +1181,16 @@ write_meta() {
     --arg duration "${DIZZY_SOAK_DURATION}" --arg version "${DIZZY_VERSION}" --arg args "${DIZZY_ARGS}" \
     --argjson namespaces "${namespaces}" --arg interval "${DIZZY_SOAK_SAMPLE_INTERVAL}" \
     --arg rate "${DIZZY_SOAK_MAX_ERROR_RATE}" --arg p95 "${DIZZY_SOAK_MAX_P95_SECONDS}" \
-    --arg heap "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" --arg goroutines "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" \
+    --arg heap "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" --arg heap_mib "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB}" \
+    --arg goroutines "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" \
     --arg memory_percent "${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT}" --arg memory_mib "${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB}" \
     --argjson memory_skip "$(words_json "${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES}")" '
     def number: if . == "" then null else tonumber end;
     {run: $run, startTime: $start, service: $service, duration: $duration, dizzyVersion: $version,
      dizzyArgs: $args, namespaces: $namespaces, sampleIntervalSeconds: ($interval | tonumber),
      maxErrorRatePercent: ($rate | number), maxP95Seconds: ($p95 | number),
-     maxOperatorHeapGrowthPercent: ($heap | tonumber), maxOperatorGoroutineGrowth: ($goroutines | tonumber),
+     maxOperatorHeapGrowthPercent: ($heap | tonumber), maxOperatorHeapGrowthMiB: ($heap_mib | tonumber),
+     maxOperatorGoroutineGrowth: ($goroutines | tonumber),
      maxMemoryGrowthPercent: ($memory_percent | tonumber), maxMemoryGrowthMiB: ($memory_mib | tonumber),
      memoryGrowthSkipNamespaces: $memory_skip}' >meta.json
 }

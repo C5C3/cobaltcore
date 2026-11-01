@@ -304,7 +304,7 @@ in_runner() {
   local tmp="$1"
   shift
   unset DIZZY_SOAK_SERVICE DIZZY_SOAK_DURATION DIZZY_ARGS DIZZY_VERSION DIZZY_SOAK_NAMESPACES \
-    DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT \
+    DIZZY_SOAK_MAX_ERROR_RATE DIZZY_SOAK_MAX_P95_SECONDS DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB \
     DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH
   export DIZZY_SOAK_SAMPLE_INTERVAL=1 DIZZY_VERSION=v0.3.0
   local assignment
@@ -625,8 +625,8 @@ test_clean_run() {
     "$(jq -r '[.dizzyVersion, .service, .duration, .sampleIntervalSeconds, (.namespaces | join(",")),
       (.endTime != null), .dizzyExitCode] | map(tostring) | join(" ")' "$RUN_DIR/meta.json")"
   assert_eq "and no threshold" "null null" "$(jq -r '"\(.maxErrorRatePercent) \(.maxP95Seconds)"' "$RUN_DIR/meta.json")"
-  assert_eq "but the operator leak bounds, as numbers" "10 10" \
-    "$(jq -r '"\(.maxOperatorHeapGrowthPercent | tojson) \(.maxOperatorGoroutineGrowth | tojson)"' "$RUN_DIR/meta.json")"
+  assert_eq "but the operator leak bounds, as numbers" "10 16 10" \
+    "$(jq -r '"\(.maxOperatorHeapGrowthPercent | tojson) \(.maxOperatorHeapGrowthMiB | tojson) \(.maxOperatorGoroutineGrowth | tojson)"' "$RUN_DIR/meta.json")"
   assert_eq "and the memory growth bounds, as numbers" "10 16" \
     "$(jq -r '"\(.maxMemoryGrowthPercent | tojson) \(.maxMemoryGrowthMiB | tojson)"' "$RUN_DIR/meta.json")"
   assert_eq "and the namespaces memory-growth skips, as a list" '["flux-system"]' \
@@ -1366,6 +1366,17 @@ test_operator_leak_check() {
     "$(leak_check "$tmp")"
   growth_case "$tmp" 50 110
   assert_eq "a heap growth of exactly 10 % passes" "true" "$(leak_check "$tmp" | cut -d' ' -f1)"
+
+  # Each heap bound alone is no defect: the two fail a pod together.
+  growth_case "$tmp" 50 115
+  assert_eq "15 % that are 15 MiB pass the MiB bound of 16" "true" "$(leak_check "$tmp" | cut -d' ' -f1)"
+  assert_eq "and fail DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB=12" "false" \
+    "$(leak_check "$tmp" DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB=12 | cut -d' ' -f1)"
+  leak_case "$tmp"
+  operator_pod "$tmp" "$OPERATOR_POD"
+  operator_samples "$tmp" "$OPERATOR_POD" 1 20 50 300 1
+  operator_samples "$tmp" "$OPERATOR_POD" 21 40 50 324 1
+  assert_eq "24 MiB that are 8 % pass the percent bound of 10" "true" "$(leak_check "$tmp" | cut -d' ' -f1)"
 
   growth_case "$tmp" 61 100
   assert_contains "a goroutine growth of 11 fails" "$(leak_check "$tmp")" \
