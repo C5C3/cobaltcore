@@ -1,0 +1,137 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Do not leave DELETING behind when a server delete fails
+
+`API._delete` (nova/compute/api.py) saves task_state DELETING before it
+decides how to delete. With the compute service reported down it runs
+`_local_delete`, which calls Neutron, Cinder and Placement. When one of them
+fails, the user gets a 409 or a 500 and the instance keeps DELETING. Once the
+service reports again, `_delete` finds DELETING, logs "Instance is already in
+deleting state, ignoring this request" and returns: every later DELETE
+answers 204 and does nothing until nova-compute restarts, because no compute
+service owns the delete. `_init_instance` (nova/compute/manager.py) has the
+same gap: when the deletion it restarts at service start fails before
+`_delete_instance` cleared the task state, it sets ERROR and keeps DELETING.
+
+Nightly chaos found this on the random leg (issues #1575, #1581, #1582 and
+#1583). A MariaDB outage is enough: nova-compute misses its service reports
+while the database is down, so the API deletes locally on a healthy compute,
+and the Neutron call fails in the same outage. A kill of nova-compute during
+a delete that overlaps a partition between Placement and its database gets
+there too. dizzy's teardown then timed out on the server and exited 1.
+
+The failed local delete now clears the task state before the error goes out,
+and `_init_instance` clears it when it sets ERROR. The next DELETE then
+reaches the compute service, which finishes the job: `_delete_instance`
+tolerates the ports and volumes the failed attempt already removed. The
+compute side no longer retries such a server at its next start, which is
+fine: a failed deletion surfaces as ERROR, and the user's DELETE works again.
+
+Tests: test_init_instance_stuck_in_deleting_raises_exception pins the
+`_set_instance_obj_error_state` call and moves with the patch. The new
+test_delete_failed_local_delete_clears_task_state fails without it.
+
+Proof: tests/container-images/verify_nova.sh asserts in the built image that
+a local delete that fails with AllocationDeleteFailed leaves no task state.
+
+Applies to nova 34.0.0 (2026.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/nova/compute/api.py b/nova/compute/api.py
+index b94acb2..81d35b7 100644
+--- a/nova/compute/api.py
++++ b/nova/compute/api.py
+@@ -2640,7 +2640,18 @@ class API:
+                 LOG.debug('Doing local delete in cell %s', cell.identity,
+                           instance=instance)
+                 with nova_context.target_cell(context, cell) as cctxt:
+-                    self._local_delete(cctxt, instance, bdms, delete_type, cb)
++                    try:
++                        self._local_delete(cctxt, instance, bdms, delete_type,
++                                           cb)
++                    except exception.InstanceNotFound:
++                        raise
++                    except Exception:
++                        # No compute service owns this delete, so a task
++                        # state of DELETING would make every later delete
++                        # request a no-op once the service is back up.
++                        with excutils.save_and_reraise_exception():
++                            instance.task_state = None
++                            instance.save()
+                     self._record_action_start(context, instance,
+                                               instance_actions.DELETE)
+ 
+diff --git a/nova/compute/manager.py b/nova/compute/manager.py
+index 898b614..2df6dbc 100644
+--- a/nova/compute/manager.py
++++ b/nova/compute/manager.py
+@@ -1106,7 +1106,11 @@ class ComputeManager(manager.Manager):
+                 # we don't want that an exception blocks the init_host
+                 LOG.exception('Failed to complete a deletion',
+                               instance=instance)
+-                self._set_instance_obj_error_state(instance)
++                # NOTE: Nothing retries the deletion until the next restart,
++                # and the API ignores a delete request while the task state
++                # is DELETING, so clear it.
++                self._set_instance_obj_error_state(instance,
++                                                   clean_task_state=True)
+             return
+ 
+         current_power_state = self._get_power_state(instance)
+diff --git a/nova/tests/unit/compute/test_api.py b/nova/tests/unit/compute/test_api.py
+index aa50010..1e04610 100644
+--- a/nova/tests/unit/compute/test_api.py
++++ b/nova/tests/unit/compute/test_api.py
+@@ -1244,6 +1244,36 @@ class _ComputeAPIUnitTestMixIn(object):
+                     self.context, inst, mock_bdm_get.return_value)
+             mock_local_delete.assert_not_called()
+ 
++    @mock.patch('nova.objects.InstanceMapping.get_by_instance_uuid')
++    @mock.patch('nova.compute.api.API._delete_while_booting',
++                return_value=False)
++    @mock.patch('nova.compute.api.API._lookup_instance')
++    @mock.patch('nova.objects.BlockDeviceMappingList.get_by_instance_uuid')
++    @mock.patch('nova.objects.Instance.save')
++    @mock.patch('nova.compute.utils.notify_about_instance_usage')
++    @mock.patch('nova.objects.Service.get_by_compute_host')
++    @mock.patch('nova.context.RequestContext.elevated')
++    @mock.patch('nova.servicegroup.api.API.service_is_up', return_value=False)
++    @mock.patch('nova.compute.api.API._record_action_start')
++    @mock.patch('nova.compute.api.API._local_delete')
++    def test_delete_failed_local_delete_clears_task_state(
++            self, mock_local_delete, mock_record, _mock_service_up,
++            _mock_elevated, _mock_service_get, _mock_notify, mock_save,
++            _mock_bdm_get, mock_lookup, _mock_del_booting, _mock_im):
++        # A local delete that fails must not leave DELETING behind: no
++        # compute service owns the delete, and a later delete request would
++        # be ignored as already in progress.
++        inst = self._create_instance_obj(params=dict(vm_state=vm_states.ERROR,
++                                                     host='fake-host'))
++        mock_lookup.return_value = None, inst
++        mock_local_delete.side_effect = exception.AllocationDeleteFailed(
++            consumer_uuid=inst.uuid, error='placement is down')
++        self.assertRaises(exception.AllocationDeleteFailed,
++                          self.compute_api.delete, self.context, inst)
++        self.assertIsNone(inst.task_state)
++        self.assertEqual(2, mock_save.call_count)
++        mock_record.assert_not_called()
++
+     def test_delete_forced_when_task_state_is_not_none(self):
+         for vm_state in self._get_vm_states():
+             self._test_delete('force_delete', vm_state=vm_state,
+diff --git a/nova/tests/unit/compute/test_compute_mgr.py b/nova/tests/unit/compute/test_compute_mgr.py
+index 0e1778a..8799da4 100644
+--- a/nova/tests/unit/compute/test_compute_mgr.py
++++ b/nova/tests/unit/compute/test_compute_mgr.py
+@@ -2200,7 +2200,8 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase,
+             return_value=objects.ShareMappingList(),
+         ):
+             self.compute._init_instance(self.context, instance)
+-        mock_set_instance_error_state.assert_called_once_with(instance)
++        mock_set_instance_error_state.assert_called_once_with(
++            instance, clean_task_state=True)
+ 
+     def _test_init_instance_reverts_crashed_migrations(self,
+                                                        old_vm_state=None):

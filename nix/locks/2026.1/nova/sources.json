@@ -3,5 +3,7 @@
   "rev": "d5c64e7aba09052601b59bf1297187d85da6b90b",
   "hash": "sha256-Dpw/4T5BJmpmAC7eMERotwr+MkjU05OSCPdL6htrUMQ=",
   "project": "nova",
-  "patches": []
+  "patches": [
+    "patches/nova/2026.1/0001-do-not-leave-deleting-behind-when-a-server-delete-fails.patch"
+  ]
 }

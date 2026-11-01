@@ -1012,6 +1012,24 @@ default `$state_path/instances` a compute expects to exist. The nova-operator
 mounts an `emptyDir` over `/var/lib/nova`, so the two directories in the image
 are what a plain `docker run` gets.
 
+**Source patch:**
+`patches/nova/2026.1/0001-do-not-leave-deleting-behind-when-a-server-delete-fails.patch`
+and its 2026.2 twin keep a server deletable after a delete failed. Upstream's
+`API._delete` saves the task state `deleting` first. With the compute service
+reported down it deletes locally, and when a call to Neutron, Cinder or
+Placement fails, the user gets the error and the server keeps that task state.
+Once the service reports again, every later delete answers 204 and does
+nothing until nova-compute restarts. `_init_instance` has the same gap for the
+deletion it restarts at service start. The patch clears the task state in both
+places, so the next delete reaches the compute service. Nightly random chaos
+found the defect (issues #1575, #1581, #1582 and #1583): a MariaDB outage is
+enough, because nova-compute misses its service reports while the database is
+down and the Neutron call fails in the same outage.
+`test_init_instance_stuck_in_deleting_raises_exception` moved with the patch,
+`test_delete_failed_local_delete_clears_task_state` is new, and
+`verify_nova.sh` drives a failing local delete in the built image. Upstream
+status: not yet proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -1039,7 +1057,7 @@ runs counted 16,803 tests at 33.0.0, with 63 skips and 2 expected failures, and
 environment-dependent failure.
 
 **Image contract check:** `tests/container-images/verify_nova.sh` is the hard
-gate. Its 15 tests cover `nova-manage --version` and `nova-status --help`, the
+gate. Its 16 tests cover `nova-manage --version` and `nova-status --help`, the
 importability of `nova` and of `nova.virt.fake`, `os_vif`, `os_brick`,
 `websockify`, `oslo_privsep` and `oslo_limit`, together with the
 `ModuleNotFoundError` an `import libvirt` has to raise. Then come the three
