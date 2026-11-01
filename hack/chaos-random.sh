@@ -642,10 +642,10 @@ cr_check_workflow() {
 }
 
 # cr_soak_checks <soak finished> — dizzy-exit, leak-check, controlplane-ready,
-# operator-leak, error-rate and p95 as the soak's verdict.json has them.
+# error-rate and p95 as the soak's verdict.json has them.
 cr_soak_checks() {
   local finished="$1" verdict="${CR_DIR}/soak/verdict.json" name row
-  for name in dizzy-exit leak-check controlplane-ready operator-leak error-rate p95; do
+  for name in dizzy-exit leak-check controlplane-ready error-rate p95; do
     if [[ "$name" == dizzy-exit && "$finished" != true ]]; then
       cr_check dizzy-exit false "the soak Job did not finish within ${CR_SOAK_FINISH} s of the churn end"
       continue
@@ -693,13 +693,14 @@ cr_restarted_with_windows() {
     }' "$1/containers.tsv" | paste -sd ';' - | sed 's/;/; /g'
 }
 
-# cr_rejudge — no-restarts and memory-growth again, on a copy of the soak's
-# platform tables with EXEMPT_PODS set to the targets and the memory settings
+# cr_rejudge — no-restarts, operator-leak and memory-growth again, on a copy of
+# the soak's platform tables with EXEMPT_PODS set to the targets and the bounds
 # of the soak's meta.json.
 cr_rejudge() {
-  local work exempt start percent mib skip result named
+  local work exempt start percent mib skip heap goroutines result named
   if [[ ! -f "${CR_DIR}/soak/meta.json" ]]; then
     cr_check no-restarts false "the soak wrote no report to judge"
+    cr_check operator-leak false "the soak wrote no report to judge"
     cr_check memory-growth false "the soak wrote no report to judge"
     return
   fi
@@ -710,7 +711,9 @@ cr_rejudge() {
   percent="$(jq -r '.maxMemoryGrowthPercent // 10' "${CR_DIR}/soak/meta.json")"
   mib="$(jq -r '.maxMemoryGrowthMiB // 16' "${CR_DIR}/soak/meta.json")"
   skip="$(jq -r '(.memoryGrowthSkipNamespaces // ["flux-system"]) | join(" ")' "${CR_DIR}/soak/meta.json")"
-  # shellcheck disable=SC1090,SC2034 # the runner reads the five after sourcing
+  heap="$(jq -r '.maxOperatorHeapGrowthPercent // 10' "${CR_DIR}/soak/meta.json")"
+  goroutines="$(jq -r '.maxOperatorGoroutineGrowth // 10' "${CR_DIR}/soak/meta.json")"
+  # shellcheck disable=SC1090,SC2034 # the runner reads the seven after sourcing
   result="$(cd "$work" && (
     source "$CR_SOAK_RUNNER"
     RUN_START="$start"
@@ -718,7 +721,11 @@ cr_rejudge() {
     DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT="$percent"
     DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="$mib"
     DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES="$skip"
+    DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="$heap"
+    DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="$goroutines"
     check_no_restarts
+    derive_operators_summary
+    check_operator_leak
     derive_memory_growth
     check_memory_growth
   ))"
