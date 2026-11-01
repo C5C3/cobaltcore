@@ -745,24 +745,70 @@ cr_rejudge() {
   rm -rf "$work"
 }
 
-# cr_errors_at <epoch> — sum(dizzy_operation_errors_total) at the time, from
-# the dizzy VictoriaMetrics through the API server's service proxy. An empty
-# result is 0; a failed query prints its message and returns 1.
-cr_errors_at() {
+# cr_vm_query <url-encoded query> <epoch> — The JSON answer of an instant query
+# of the dizzy VictoriaMetrics through the API server's service proxy; a failed
+# query prints its message and returns 1.
+cr_vm_query() {
   local out
-  if ! out="$(kubectl get --raw "${CR_VM_QUERY}?query=sum%28dizzy_operation_errors_total%29&time=$1" 2>&1)"; then
-    echo "the query at $(cr_time "$1") failed: $(cr_last_line "$out")"
+  if ! out="$(kubectl get --raw "${CR_VM_QUERY}?query=$1&time=$2" 2>&1)"; then
+    echo "the query at $(cr_time "$2") failed: $(cr_last_line "$out")"
     return 1
   fi
   if ! jq -e . >/dev/null 2>&1 <<<"$out"; then
-    echo "the query at $(cr_time "$1") answered no JSON: $(cr_first_line "$out")"
+    echo "the query at $(cr_time "$2") answered no JSON: $(cr_first_line "$out")"
     return 1
   fi
   if [[ "$(jq -r '.status' <<<"$out")" != success ]]; then
-    echo "the query at $(cr_time "$1") answered status $(jq -r '.status' <<<"$out"): $(jq -r '.error // .errorType // "no message"' <<<"$out")"
+    echo "the query at $(cr_time "$2") answered status $(jq -r '.status' <<<"$out"): $(jq -r '.error // .errorType // "no message"' <<<"$out")"
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+# cr_errors_at <epoch> — sum(dizzy_operation_errors_total) at the time. An
+# empty result is 0; a failed query prints its message and returns 1.
+cr_errors_at() {
+  local out
+  if ! out="$(cr_vm_query 'sum%28dizzy_operation_errors_total%29' "$1")"; then
+    printf '%s\n' "$out"
     return 1
   fi
   jq -r '(.data.result[0].value[1] // "0") | tonumber | floor' <<<"$out"
+}
+
+# cr_tail_errors <from epoch> <to epoch> — What dizzy_operation_errors_total
+# rose by between the two times, one "<count> <kind> <operation> <error kind>"
+# line per series that rose, the failed ones first, then a line "absorbed" and
+# the ones dizzy absorbs. The counter records every API answer, also those
+# dizzy goes on from, and those are no failed operation:
+#   - http_404 on a delete or a detach: the resource is gone or detached
+#     already, which dizzy folds into success.
+#   - http_400 on a volume attach: Cinder reads the volume as available before
+#     Nova has dropped the attachment of the detach before it; dizzy reads the
+#     attachment and goes on. The churn does this without any fault.
+# A failed query prints its message and returns 1.
+cr_tail_errors() {
+  local query='sum%20by%20%28kind%2Coperation%2Cerror_kind%29%20%28dizzy_operation_errors_total%29' before after
+  if ! before="$(cr_vm_query "$query" "$1")"; then
+    printf '%s\n' "$before"
+    return 1
+  fi
+  if ! after="$(cr_vm_query "$query" "$2")"; then
+    printf '%s\n' "$after"
+    return 1
+  fi
+  jq -rn --argjson before "$before" --argjson after "$after" '
+    def key: "\(.metric.kind // "unknown") \(.metric.operation // "unknown") \(.metric.error_kind // "unknown")";
+    def counts: [.data.result[] | {key: key, value: (.value[1] | tonumber | floor)}] | from_entries;
+    def absorbed: split(" ") as [$kind, $operation, $error]
+      | (($operation == "delete" or $operation == "detach") and $error == "http_404")
+        or ($kind == "volume" and $operation == "attach" and $error == "http_400");
+    ($before | counts) as $from
+    | [$after | counts | to_entries[] | {key, value: (.value - ($from[.key] // 0))} | select(.value > 0)]
+    | sort_by(.key)
+    | (map(select(.key | absorbed | not)) | .[] | "\(.value) \(.key)"),
+      "absorbed",
+      (map(select(.key | absorbed)) | .[] | "\(.value) \(.key)")'
 }
 
 # cr_recovery_of <entry> — The recovery of a catalogue entry in seconds.
@@ -771,9 +817,10 @@ cr_recovery_of() {
 }
 
 # cr_check_quiet_tail <churn end epoch> — No failed operation between the
-# last lift plus its recovery and the churn end.
+# last lift plus its recovery and the churn end. The detail names what dizzy
+# counted, by kind, operation and error, so a red night tells what failed.
 cr_check_quiet_tail() {
-  local churn_end="$1" last_lift=0 from=0 template entry lifted at recovery v1 v2
+  local churn_end="$1" last_lift=0 from=0 template entry lifted at recovery rows failed absorbed total=0 named
   while IFS=$'\t' read -r _ template entry lifted; do
     [[ -n "$template" ]] || continue
     [[ "$lifted" == "-" ]] && continue
@@ -792,16 +839,19 @@ cr_check_quiet_tail() {
     cr_check quiet-tail false "the last recovery ends at $(cr_time "$from"), not before the churn end $(cr_time "$churn_end")"
     return
   fi
-  if ! v1="$(cr_errors_at "$from")"; then
-    cr_check quiet-tail false "$v1"
+  if ! rows="$(cr_tail_errors "$from" "$churn_end")"; then
+    cr_check quiet-tail false "$rows"
     return
   fi
-  if ! v2="$(cr_errors_at "$churn_end")"; then
-    cr_check quiet-tail false "$v2"
-    return
-  fi
-  if [[ $((v2 - v1)) -gt 0 ]]; then
-    cr_check quiet-tail false "dizzy counted $((v2 - v1)) failed operation(s) between $(cr_time "$from") (the last lift $(cr_time "$last_lift") plus its recovery) and the churn end $(cr_time "$churn_end")"
+  failed="$(awk '/^absorbed$/ { exit } { print }' <<<"$rows")"
+  absorbed="$(awk 'seen { print } /^absorbed$/ { seen = 1 }' <<<"$rows")"
+  if [[ -n "$failed" ]]; then
+    total="$(awk '{ n += $1 } END { print n + 0 }' <<<"$failed")"
+    named="$(paste -sd ',' - <<<"$failed" | sed 's/,/, /g')"
+    cr_check quiet-tail false "dizzy counted ${total} failed operation(s) between $(cr_time "$from") (the last lift $(cr_time "$last_lift") plus its recovery) and the churn end $(cr_time "$churn_end"): ${named}"
+  elif [[ -n "$absorbed" ]]; then
+    named="$(paste -sd ',' - <<<"$absorbed" | sed 's/,/, /g')"
+    cr_check quiet-tail true "no failed operation between $(cr_time "$from") and the churn end $(cr_time "$churn_end"); left out as absorbed by dizzy: ${named}"
   else
     cr_check quiet-tail true "no failed operation between $(cr_time "$from") and the churn end $(cr_time "$churn_end")"
   fi
