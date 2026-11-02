@@ -52,8 +52,11 @@ func DefaultCPURequest() resource.Quantity { return defaultCPURequest.DeepCopy()
 
 // NodePlacementSpec groups the fields that pick the nodes a pod may run on.
 // Each field is a nil-able map, slice or pointer with omitempty, so a CR that
-// sets none of them renders none and a server-side apply that omits them
-// neither writes nor owns them.
+// sets none of them renders none of its own and a server-side apply that omits
+// them neither writes nor owns them. The one rendered addition is the default
+// hostname anti-affinity term (deployment.ApplyDefaultHostnameSpread): every
+// Deployment rendered from a DeploymentSpec whose topologySpreadConstraints is
+// unset carries it after these rules, and so does every OVN Raft member.
 type NodePlacementSpec struct {
 	// NodeSelector restricts the pods to nodes that carry every listed label.
 	// +optional
@@ -181,11 +184,16 @@ type DeploymentSpec struct {
 
 	// TopologySpreadConstraints describes how pods should be spread across
 	// topology domains (zones, nodes) to achieve high availability.
-	// When nil (unset), the operator injects two default constraints:
-	// zone-spread (topology.kubernetes.io/zone) and hostname-spread
-	// (kubernetes.io/hostname), both MaxSkew=1 with ScheduleAnyway.
+	// When nil (unset), the operator renders the default spread: one
+	// topology.kubernetes.io/zone constraint (MaxSkew=1, ScheduleAnyway), and a
+	// preferred pod anti-affinity term on kubernetes.io/hostname (weight 100)
+	// appended to the pod's affinity. The node spread is a term rather than a
+	// constraint because the scheduler scores a pod's constraints only on the
+	// nodes that carry every topology key they name, and a cluster without
+	// zone labels would leave a hostname constraint without effect.
 	// When set to a non-nil value (including an empty slice), the user-provided
-	// constraints are used verbatim — an empty slice disables defaults.
+	// constraints are used verbatim and switch off both parts of the default,
+	// so an empty slice renders neither.
 	// +optional
 	TopologySpreadConstraints []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
 

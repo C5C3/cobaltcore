@@ -1784,11 +1784,16 @@ spec:
                     description: |-
                       TopologySpreadConstraints describes how pods should be spread across
                       topology domains (zones, nodes) to achieve high availability.
-                      When nil (unset), the operator injects two default constraints:
-                      zone-spread (topology.kubernetes.io/zone) and hostname-spread
-                      (kubernetes.io/hostname), both MaxSkew=1 with ScheduleAnyway.
+                      When nil (unset), the operator renders the default spread: one
+                      topology.kubernetes.io/zone constraint (MaxSkew=1, ScheduleAnyway), and a
+                      preferred pod anti-affinity term on kubernetes.io/hostname (weight 100)
+                      appended to the pod's affinity. The node spread is a term rather than a
+                      constraint because the scheduler scores a pod's constraints only on the
+                      nodes that carry every topology key they name, and a cluster without
+                      zone labels would leave a hostname constraint without effect.
                       When set to a non-nil value (including an empty slice), the user-provided
-                      constraints are used verbatim — an empty slice disables defaults.
+                      constraints are used verbatim and switch off both parts of the default,
+                      so an empty slice renders neither.
                     items:
                       description: TopologySpreadConstraint specifies how to spread
                         matching pods among the given topology.
