@@ -347,9 +347,12 @@ cond="$cp_common"
 if filter_on tests_orders_multicluster || has_label "ci:multicluster"; then cond=true; fi
 e2e_orders_multicluster=$(or_force "$cond")
 
-# The multi-node OVN overlay job. Its inputs are the suite, the ovn-operator
-# and the OVN daemon image: the datapath it proves is built by the chassis
-# DaemonSets those two ship, and nothing else reaches it.
+# The multi-node OVN overlay job. Its inputs are the two suites, the
+# ovn-operator and the OVN daemon image: the datapath geneve-datapath proves is
+# built by the chassis DaemonSets those two ship, and nothing else reaches it.
+# default-spread also reads the default spread internal/common/deployment
+# renders, and that path does not schedule the job either: the byte-identity
+# pin goldens of every operator fail on any change to the rendered default.
 #
 # Deliberately FILTER_ovn rather than membership of op_changed, for the reason
 # the ControlPlane trio gives above: the job brings up a second kind cluster
