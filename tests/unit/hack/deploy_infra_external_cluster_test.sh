@@ -68,10 +68,12 @@
 #      the by-hand CR hint key on PUBLIC_PORT, the external by-hand hint names
 #      the overlay's controlplane/ kustomization behind an EXTERNAL_CLUSTER and
 #      file gate and its CR by CONTROLPLANE_NAME while the kind hint keeps the
-#      bundled CR, the external banners name the port-forward on PUBLIC_PORT
-#      and the teardown, the dizzy Grafana URL keys on PUBLIC_PORT, and,
-#      behind a WITH_DIZZY gate between the Access: lines and the teardown
-#      line, the external banner names the VictoriaMetrics port-forward.
+#      bundled CR, the external banners name the Gateway's hostnames on
+#      PUBLIC_SUFFIX, the port-forward on PUBLIC_PORT for
+#      EXTERNAL_LOADBALANCER other than true, the lab CA and the teardown, the
+#      dizzy Grafana URL keys on PUBLIC_SUFFIX and PUBLIC_PORT, and, behind a
+#      WITH_DIZZY gate between the Access: lines and the teardown line, the
+#      external banner names the VictoriaMetrics port-forward.
 #
 # The script is sourced (its BASH_SOURCE guard keeps main() from running) and
 # driven against a kubectl stub scripted through environment variables.
@@ -363,8 +365,11 @@ test_knobs_and_derived_variables() {
   assert_eq "PUBLIC_PORT is 443 by default" "443" "$(resolve '${PUBLIC_PORT}')"
   assert_eq "PUBLIC_PORT follows KIND_HOST_PORT in kind mode" "8443" \
     "$(resolve '${PUBLIC_PORT}' KIND_HOST_PORT=8443)"
-  assert_eq "PUBLIC_PORT is 8443 in external mode whatever KIND_HOST_PORT says" "8443" \
+  assert_eq "PUBLIC_PORT is 443 in external mode whatever KIND_HOST_PORT says" "443" \
     "$(resolve '${PUBLIC_PORT}' EXTERNAL_CLUSTER=true KIND_HOST_PORT=9443)"
+  assert_eq "PUBLIC_SUFFIX starts as 127-0-0-1.nip.io in either mode" \
+    "127-0-0-1.nip.io 127-0-0-1.nip.io" \
+    "$(resolve '${PUBLIC_SUFFIX}') $(resolve '${PUBLIC_SUFFIX}' EXTERNAL_CLUSTER=true)"
 }
 
 # ---------------------------------------------------------------------------
@@ -410,6 +415,7 @@ test_external_preflight() {
     mkdir -p "$tmp/lab/base" "$tmp/lab/infrastructure" "$tmp/lab/controlplane"
     : >"$tmp/lab/base/kustomization.yaml"
     : >"$tmp/lab/infrastructure/kustomization.yaml"
+    : >"$tmp/lab/infrastructure/gateway-certificate.yaml"
     : >"$tmp/lab/controlplane/kustomization.yaml"
     cat >"$tmp/lab-render.yaml" <<'YAML'
 apiVersion: ovn.openstack.c5c3.io/v1alpha1
@@ -473,6 +479,7 @@ YAML
     mkdir -p "$tmp/no-controlplane/base" "$tmp/no-controlplane/infrastructure"
     : >"$tmp/no-controlplane/base/kustomization.yaml"
     : >"$tmp/no-controlplane/infrastructure/kustomization.yaml"
+    : >"$tmp/no-controlplane/infrastructure/gateway-certificate.yaml"
     output="$(run_preflight "$tmp/kubectl-jq-yq" EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true \
       CONTROLPLANE_NAME=cp1 EXTERNAL_OVERLAY="$tmp/no-controlplane")"
     rc=$?
@@ -684,6 +691,7 @@ test_nfs_overlay_preflight() {
   mkdir -p "$tmp/no-nfs/base" "$tmp/no-nfs/infrastructure"
   : >"$tmp/no-nfs/base/kustomization.yaml"
   : >"$tmp/no-nfs/infrastructure/kustomization.yaml"
+  : >"$tmp/no-nfs/infrastructure/gateway-certificate.yaml"
   local refusal="EXTERNAL_CLUSTER=true WITH_NFS=true needs $tmp/no-nfs/nfs/kustomization.yaml, which does not exist"
 
   : >"$KUBECTL_LOG"
@@ -746,6 +754,7 @@ test_chaos_mesh_overlay_preflight() {
   mkdir -p "$tmp/no-chaos/base" "$tmp/no-chaos/infrastructure"
   : >"$tmp/no-chaos/base/kustomization.yaml"
   : >"$tmp/no-chaos/infrastructure/kustomization.yaml"
+  : >"$tmp/no-chaos/infrastructure/gateway-certificate.yaml"
   local refusal="EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true needs $tmp/no-chaos/chaos-mesh/kustomization.yaml, which does not exist"
 
   : >"$KUBECTL_LOG"
@@ -810,6 +819,7 @@ test_dizzy_overlay_preflight() {
   mkdir -p "$tmp/no-dizzy/base" "$tmp/no-dizzy/infrastructure"
   : >"$tmp/no-dizzy/base/kustomization.yaml"
   : >"$tmp/no-dizzy/infrastructure/kustomization.yaml"
+  : >"$tmp/no-dizzy/infrastructure/gateway-certificate.yaml"
   local refusal="EXTERNAL_CLUSTER=true WITH_DIZZY=true needs $tmp/no-dizzy/dizzy/kustomization.yaml, which does not exist"
 
   : >"$KUBECTL_LOG"
@@ -875,6 +885,7 @@ test_prometheus_overlay_preflight() {
   mkdir -p "$tmp/no-prometheus/base" "$tmp/no-prometheus/infrastructure"
   : >"$tmp/no-prometheus/base/kustomization.yaml"
   : >"$tmp/no-prometheus/infrastructure/kustomization.yaml"
+  : >"$tmp/no-prometheus/infrastructure/gateway-certificate.yaml"
   local refusal="EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true needs $tmp/no-prometheus/prometheus/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='$tmp/no-prometheus')"
 
   : >"$KUBECTL_LOG"
@@ -1442,12 +1453,13 @@ test_main_gates() {
     'https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3'
   assert_not_contains "the by-hand CR hint no longer keys on KIND_HOST_PORT" "$hint" "KIND_HOST_PORT"
 
-  assert_file_contains_fixed "the external by-hand hint applies the overlay's controlplane kustomization" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -k ${OVERLAY_ROOT}/controlplane'
+  local overlay_hint='kubectl kustomize ${OVERLAY_ROOT}/controlplane | sed '"'s/127-0-0-1\\\\.nip\\\\.io/\${PUBLIC_SUFFIX}/g'"' | kubectl apply -f -'
+  assert_file_contains_fixed "the external by-hand hint applies the overlay's controlplane kustomization on PUBLIC_SUFFIX" \
+    "$DEPLOY_INFRA_SH" "$overlay_hint"
   local overlay_gate
   # The gate is the ending's own if/elif, at four spaces; the admission probe
   # nested under it, at six, is not the gate.
-  overlay_gate="$(grep -B30 -F 'kubectl apply -k ${OVERLAY_ROOT}/controlplane' "$DEPLOY_INFRA_SH" |
+  overlay_gate="$(grep -B30 -F "$overlay_hint" "$DEPLOY_INFRA_SH" |
     grep -E '^    (if|elif) \[\[' | tail -n1)"
   assert_contains "the overlay hint is gated on EXTERNAL_CLUSTER" "$overlay_gate" \
     '"${EXTERNAL_CLUSTER}" == "true"'
@@ -1460,8 +1472,13 @@ test_main_gates() {
 
   local banner
   banner="$(awk '/Infrastructure deployment complete!/,/^}/' "$DEPLOY_INFRA_SH")"
+  assert_contains "the completion banner names Keystone on PUBLIC_SUFFIX" "$banner" \
+    'https://keystone.${PUBLIC_SUFFIX}/v3'
+  assert_contains "and Horizon" "$banner" 'https://horizon.${PUBLIC_SUFFIX}'
+  assert_contains "the completion banner warns of an open Gateway" "$banner" "WARNING: from every source"
   assert_contains "the completion banner names the port-forward" "$banner" "port-forward"
   assert_contains "the completion banner forwards PUBLIC_PORT to 443" "$banner" '${PUBLIC_PORT}:443'
+  assert_contains "the completion banner names the lab CA" "$banner" "trust the lab CA"
   assert_not_contains "the completion banner repeats no literal 8443" "$banner" "8443"
   assert_contains "the completion banner resolves the Envoy Service by its Gateway label" \
     "$banner" "gateway.envoyproxy.io/owning-gateway-name=openstack-gw"
@@ -1470,7 +1487,7 @@ test_main_gates() {
   # WITH_DIZZY=true: the Grafana URL on the public port, and the second
   # port-forward in the external banner, before the teardown line.
   local url_block
-  url_block="$(grep -A5 -F 'local dizzy_grafana_url="https://dizzy.127-0-0-1.nip.io"' "$DEPLOY_INFRA_SH")"
+  url_block="$(grep -A5 -F 'local dizzy_grafana_url="https://dizzy.${PUBLIC_SUFFIX}"' "$DEPLOY_INFRA_SH")"
   assert_contains "the Grafana URL block tests PUBLIC_PORT" "$url_block" \
     'if [[ "${PUBLIC_PORT}" != "443" ]]; then'
   assert_contains "and appends it" "$url_block" \
@@ -1481,18 +1498,20 @@ test_main_gates() {
   external_banner="$(awk '/Infrastructure deployment complete!/,/To tear down: EXTERNAL_CLUSTER=true make teardown-infra/' \
     "$DEPLOY_INFRA_SH" | sed 's/^[[:space:]]*//')"
   dizzy_forward='log "dizzy:  kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428"'
-  dizzy_next='log "        then EXTERNAL_CLUSTER=true make dizzy-keystone, and Grafana at https://dizzy.127-0-0-1.nip.io:${PUBLIC_PORT} through the port-forward above"'
+  dizzy_next='log "        then EXTERNAL_CLUSTER=true make dizzy-keystone, and Grafana at https://dizzy.${PUBLIC_SUFFIX}"'
   assert_eq "the external banner names the VictoriaMetrics port-forward and then the soak and Grafana, behind a WITH_DIZZY gate" \
     "$(printf '%s\n' 'if [[ "${WITH_DIZZY}" == "true" ]]; then' "$dizzy_forward" "$dizzy_next" 'fi')" \
     "$(grep -B1 -A2 -xF "$dizzy_forward" <<<"$external_banner")"
-  access_line="$(grep -n '^log "        then https://keystone.127-0-0-1.nip.io:' <<<"$external_banner" | cut -d: -f1)"
+  access_line="$(grep -n '^log "        trust the lab CA:' <<<"$external_banner" | cut -d: -f1)"
   dizzy_line="$(grep -nxF "$dizzy_forward" <<<"$external_banner" | cut -d: -f1)"
   teardown_line="$(grep -nxF 'log "To tear down: EXTERNAL_CLUSTER=true make teardown-infra"' <<<"$external_banner" | cut -d: -f1)"
   assert_before "the dizzy: lines follow the Access: lines" "$access_line" "$dizzy_line"
   assert_before "and come before the teardown line" "$dizzy_line" "$teardown_line"
 
-  assert_file_contains_fixed "the run banner reports the cluster mode" \
-    "$DEPLOY_INFRA_SH" 'Cluster mode        : external (EXTERNAL_CLUSTER=true; overlay ${OVERLAY_ROOT}; port-forward on ${PUBLIC_PORT})'
+  assert_file_contains_fixed "the run banner reports the cluster mode with a load balancer" \
+    "$DEPLOY_INFRA_SH" 'Cluster mode        : external (EXTERNAL_CLUSTER=true; overlay ${OVERLAY_ROOT}; Gateway on a load-balancer address, port ${PUBLIC_PORT}'
+  assert_file_contains_fixed "and with a port-forward" \
+    "$DEPLOY_INFRA_SH" 'Gateway through a port-forward on local port ${PUBLIC_PORT}'
 }
 
 # ---------------------------------------------------------------------------

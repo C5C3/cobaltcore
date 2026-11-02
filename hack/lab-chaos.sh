@@ -39,8 +39,8 @@
 # config view --raw --minify --flatten --context "$LAB_CHAOS_CONTEXT"` to a
 # temporary file of mode 0600 and exports KUBECONFIG to it. OpenStack calls
 # use _output/dizzy/clouds.yaml (cloud devstack-c5c3), which generate_clouds_yaml
-# of hack/dizzy.sh writes under EXTERNAL_CLUSTER=true with the Gateway CA,
-# through the port-forward of Part 1, Step 6 of the metal-stack quick start.
+# of hack/dizzy.sh writes under EXTERNAL_CLUSTER=true with the lab CA, on the
+# Gateway's public hostname keystone.<suffix> of the metal-stack quick start.
 #
 # Exit codes: 0 on success, 1 on a failed check, step or fault, 2 on a usage
 # error.
@@ -62,7 +62,8 @@ NAMESPACE="openstack"
 LC_OUTPUT_DIR="${LC_REPO_ROOT}/_output/lab-chaos"
 LC_CLOUDS="${LC_REPO_ROOT}/_output/dizzy/clouds.yaml"
 LC_CLOUD="devstack-c5c3"
-LC_KEYSTONE_URL="https://keystone.127-0-0-1.nip.io:8443/v3"
+# Keystone's URL on the Gateway, the auth_url of LC_CLOUDS; lc_clouds sets it.
+LC_KEYSTONE_URL=""
 LC_MODULES_DAEMONSET="${LC_REPO_ROOT}/deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
 LC_CHAOS_RANDOM="${LC_REPO_ROOT}/hack/chaos-random.sh"
 LC_CHAOS_RANDOM_OUTPUT="${LC_REPO_ROOT}/_output/chaos-random"
@@ -236,7 +237,8 @@ lc_clouds() {
     # shellcheck source=hack/dizzy.sh
     source "${LC_REPO_ROOT}/hack/dizzy.sh"
     generate_clouds_yaml
-  ) >/dev/null
+  ) >/dev/null || return 1
+  LC_KEYSTONE_URL="$(yq -r ".clouds[\"${LC_CLOUD}\"].auth.auth_url" "$LC_CLOUDS")"
 }
 
 # lc_run_dir — Set LC_DIR to the run's directory: LAB_CHAOS_RUN, the one
@@ -281,9 +283,9 @@ lc_preflight() {
     lc_check_fail "cannot write ${LC_CLOUDS}: the ControlPlane's admin Secret or the Gateway CA is missing (hack/dizzy.sh's error is above)"
   fi
   if ! out="$(os token issue -f value -c id 2>&1)"; then
-    lc_check_fail "openstack token issue failed through the port-forward ($(lc_first_line "$out")); start the port-forward of Part 1, Step 6"
+    lc_check_fail "openstack token issue failed on ${LC_KEYSTONE_URL:-the Gateway} ($(lc_first_line "$out"))"
   fi
-  echo "OK: openstack token issue through the port-forward"
+  echo "OK: openstack token issue on ${LC_KEYSTONE_URL}"
   if ! out="$(kubectl get helmrelease chaos-mesh -n chaos-mesh -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>&1)" ||
     [[ "$out" != True ]]; then
     lc_check_fail "HelmRelease chaos-mesh/chaos-mesh is not Ready (read '$(lc_first_line "$out")')"
@@ -344,7 +346,7 @@ lc_preflight() {
 # proving: steps 1 to 5 of the proving run
 # ---------------------------------------------------------------------------
 
-# lc_times <file> — Five request times through the port-forward, one per line.
+# lc_times <file> — Five request times to Keystone on the Gateway, one per line.
 lc_times() {
   local _
   for _ in 1 2 3 4 5; do

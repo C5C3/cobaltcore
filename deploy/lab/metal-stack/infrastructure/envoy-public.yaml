@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The lab's EnvoyProxy, which ../base/kustomization.yaml names in the
+# GatewayClass envoy in place of the kind overlay's envoy-nodeport (the
+# patch of kustomization.yaml removes that one from the render). It makes the
+# proxy Service of openstack-gw a Service of type LoadBalancer. On a Gardener
+# shoot on metal-stack, the cloud controller takes an address of the
+# project's internet network for it and MetalLB announces it over BGP from
+# every node, so the Gateway answers on <address>:443 from outside the
+# cluster. A probe on newforge on 2026-11-02 got its address within seconds.
+#
+# Two values come from hack/deploy-infra.sh, which patches them into the
+# render of Step 5:
+#   - loadBalancerSourceRanges, under PUBLIC_SOURCE_RANGES. Without it the
+#     metal-stack firewall admits every source. kube-proxy applies the
+#     ranges to pods that dial the address as well, so the script adds the
+#     shoot's pod and node networks (ConfigMap kube-system/shoot-info).
+#   - type ClusterIP, under EXTERNAL_LOADBALANCER=false, for a cluster that
+#     hands out no address: the Gateway is then reached through a
+#     port-forward.
+#
+# externalTrafficPolicy Cluster: every node forwards to the proxy pod,
+# wherever it runs, so every node can announce the address. Clients reach the
+# proxy with a node's address as their source. The probe on newforge ran with
+# this value and with loadBalancerSourceRanges, which kube-proxy checks
+# before it rewrites the source.
+#
+# No nodePort is pinned: nothing outside the cluster dials a node port of the
+# lab.
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: envoy-public
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyService:
+        type: LoadBalancer
+        externalTrafficPolicy: Cluster

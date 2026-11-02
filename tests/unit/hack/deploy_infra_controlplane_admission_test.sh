@@ -541,7 +541,7 @@ test_main_probes_before_each_by_hand_hint() {
 
   local gate hint_overlay hint_kind
   gate="$(line_of 'elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then')"
-  hint_overlay="$(line_of 'kubectl apply -k ${OVERLAY_ROOT}/controlplane')"
+  hint_overlay="$(line_of 'kubectl kustomize ${OVERLAY_ROOT}/controlplane | sed')"
   hint_kind="$(line_of 'kubectl apply -f deploy/kind/controlplane/controlplane.yaml')"
   assert_not_empty "the overlay ending's gate found" "$gate"
   assert_not_empty "the overlay hint found" "$hint_overlay"
@@ -600,7 +600,7 @@ test_main_gates_the_waits_on_infra_only() {
 
   local gate hint_overlay hint_kind probe awaited_gate
   gate="$(line_of 'elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then')"
-  hint_overlay="$(line_of 'kubectl apply -k ${OVERLAY_ROOT}/controlplane')"
+  hint_overlay="$(line_of 'kubectl kustomize ${OVERLAY_ROOT}/controlplane | sed')"
   hint_kind="$(line_of 'kubectl apply -f deploy/kind/controlplane/controlplane.yaml')"
   probe="$(line_between 'wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}"' "${gate:-0}" "${hint_overlay:-0}")"
   awaited_gate="$(last_line_between 'if [[ "${operators_awaited}" == "true" ]]; then' "${gate:-0}" "${probe:-0}")"

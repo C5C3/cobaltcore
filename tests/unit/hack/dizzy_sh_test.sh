@@ -4,17 +4,20 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the two cluster modes of hack/dizzy.sh:
-#   1. generate_clouds_yaml under EXTERNAL_CLUSTER=true writes the auth URL of
-#      the Gateway port-forward, https://keystone.127-0-0-1.nip.io:8443/v3, and
-#      logs it, without calling docker; a non-empty DIZZY_AUTH_URL still wins,
-#      an empty one does not. It collects the certificates of the Secrets
-#      openstack/*-nip-io-tls into gateway-ca.pem beside clouds.yaml and points
-#      cacert at that file instead of writing verify: false; without one it
-#      exits 1 and writes no clouds.yaml.
+#   1. generate_clouds_yaml under EXTERNAL_CLUSTER=true writes the auth URL on
+#      the Gateway's hostname, https://keystone.<suffix>/v3 for the suffix the
+#      first DNS name of the Certificate openstack/openstack-gw-tls carries
+#      after its `*.`, and logs it, without calling docker; a non-empty
+#      DIZZY_AUTH_URL still wins, an empty one does not. It writes the ca.crt
+#      of that Certificate's Secret, the lab CA, into lab-ca.pem beside
+#      clouds.yaml and points cacert at that file instead of writing
+#      verify: false; without the Certificate, with a DNS name that is no
+#      wildcard, or without a CA in the Secret it exits 1 and writes no
+#      clouds.yaml.
 #   2. Without EXTERNAL_CLUSTER, and with EXTERNAL_CLUSTER=yes, it reads the
 #      Keystone host port with `docker port <cluster>-control-plane 31443/tcp`
 #      and falls back to :443, logging the fallback, when that fails. The
-#      file keeps verify: false, and no TLS Secret is read.
+#      file keeps verify: false, and no Certificate is read.
 #   3. A Secret that cannot be read, or one with an empty password, exits 1
 #      with its error and writes no file; a single quote in the password is
 #      doubled in the YAML scalar.
@@ -22,14 +25,15 @@
 #      localhost:8428 does not answer it returns 0 and prints the
 #      VictoriaMetrics warning and the port-forward to open. In kind mode it
 #      warns about a missing 30428 mapping and names no port-forward.
-#   5. EXTERNAL_PUBLIC_PORT equals PUBLIC_PORT of hack/deploy-infra.sh in
-#      external mode.
+#   5. EXTERNAL_GATEWAY_CERTIFICATE names the namespace and name of
+#      deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml, the
+#      Certificate hack/deploy-infra.sh issues.
 #   6. Run without a subcommand, the script prints a usage that names
 #      EXTERNAL_CLUSTER and exits 1.
 #   7. stage_dashboards exits 1 with the download error when the release
 #      tarball cannot be fetched.
 #   8. run_chaos under EXTERNAL_CLUSTER=true has dizzy verify Keystone against
-#      gateway-ca.pem even when the caller exports an OS_CACERT, which
+#      lab-ca.pem even when the caller exports an OS_CACERT, which
 #      gophercloud would prefer to the cacert of clouds.yaml.
 #   9. run_pressure runs `dizzy keystone pressure` with the profile's file from
 #      _output/dizzy/pressure/<label>/<profile>/, where dizzy writes its run
@@ -54,7 +58,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DIZZY_SH="$PROJECT_ROOT/hack/dizzy.sh"
-DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 PASS=0
 FAIL=0
@@ -63,19 +66,20 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-LAB_AUTH_URL="https://keystone.127-0-0-1.nip.io:8443/v3"
+LAB_AUTH_URL="https://keystone.154-41-192-90.nip.io/v3"
 PORT_FORWARD_HINT="Open the port-forward first: kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428"
 
-# What `kubectl get secret -n openstack --field-selector type=kubernetes.io/tls
-# -o json` prints by default: one Gateway certificate, and a TLS Secret of
-# another name whose certificate stays out of the CA file.
-GATEWAY_PEM="$(printf '%s\n' '-----BEGIN CERTIFICATE-----' 'a2V5c3RvbmU=' '-----END CERTIFICATE-----')"
-OTHER_PEM="$(printf '%s\n' '-----BEGIN CERTIFICATE-----' 'b3BlbmJhbw==' '-----END CERTIFICATE-----')"
-TLS_SECRETS_JSON="$(jq -cn --arg gw "$(printf '%s\n' "$GATEWAY_PEM" | base64 | tr -d '\n')" \
-  --arg other "$(printf '%s\n' "$OTHER_PEM" | base64 | tr -d '\n')" \
-  '{items: [{metadata: {name: "keystone-nip-io-tls"}, data: {"ca.crt": $gw}},
-            {metadata: {name: "openbao-tls"}, data: {"ca.crt": $other}}]}')"
-export TLS_SECRETS_JSON
+# What the reads of the Gateway's Certificate print by default: its first DNS
+# name and its Secret (`get certificate openstack-gw-tls -n openstack -o
+# jsonpath=...`), and that Secret, whose ca.crt is the lab CA and whose
+# tls.crt, the Gateway's own certificate, stays out of the CA file.
+LAB_CA_PEM="$(printf '%s\n' '-----BEGIN CERTIFICATE-----' 'bGFiLWNh' '-----END CERTIFICATE-----')"
+LEAF_PEM="$(printf '%s\n' '-----BEGIN CERTIFICATE-----' 'Z2F0ZXdheQ==' '-----END CERTIFICATE-----')"
+GATEWAY_CERT_FIELDS='*.154-41-192-90.nip.io openstack-gw-tls'
+GATEWAY_SECRET_JSON="$(jq -cn --arg ca "$(printf '%s\n' "$LAB_CA_PEM" | base64 | tr -d '\n')" \
+  --arg crt "$(printf '%s\n' "$LEAF_PEM" | base64 | tr -d '\n')" \
+  '{metadata: {name: "openstack-gw-tls"}, data: {"ca.crt": $ca, "tls.crt": $crt}}')"
+export GATEWAY_CERT_FIELDS GATEWAY_SECRET_JSON
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -87,7 +91,8 @@ export TLS_SECRETS_JSON
 #   KUBECTL_SECRET_RC  non-empty: `get secret` fails with NotFound
 #   KUBECTL_PASSWORD   the password the Secret holds, which `get secret` prints
 #                      base64-encoded (default s3cr3t; empty: prints nothing)
-#   TLS_SECRETS_JSON   what `get secret --field-selector ...` prints
+#   GATEWAY_CERT_FIELDS what `get certificate openstack-gw-tls ...` prints
+#   GATEWAY_SECRET_JSON what `get secret openstack-gw-tls ...` prints
 #   KUBECTL_NO_DIZZY_NS non-empty: `get namespace dizzy` fails with NotFound
 #   DOCKER_PORT_OUT    what `docker port` prints (default nothing)
 #   DOCKER_PORT_RC     exit code of `docker port` (default 0)
@@ -112,7 +117,8 @@ if [ -n "${KUBECTL_SECRET_RC:-}" ]; then
   exit 1
 fi
 case " $* " in
-  *" --field-selector "*) printf '%s' "${TLS_SECRETS_JSON:-}"; exit 0 ;;
+  *" get certificate openstack-gw-tls -n openstack "*) printf '%s' "${GATEWAY_CERT_FIELDS:-}"; exit 0 ;;
+  *" get secret openstack-gw-tls -n openstack "*) printf '%s' "${GATEWAY_SECRET_JSON:-}"; exit 0 ;;
 esac
 printf '%s' "${KUBECTL_PASSWORD-s3cr3t}" | base64 | tr -d '\n'
 STUB
@@ -166,14 +172,14 @@ auth_url() {
 # CA file.
 new_case() {
   : >"$CALL_LOG"
-  rm -f "$1/clouds.yaml" "$1/gateway-ca.pem"
+  rm -f "$1/clouds.yaml" "$1/lab-ca.pem"
 }
 
 # ---------------------------------------------------------------------------
 # Test 1: the external auth URL
 # ---------------------------------------------------------------------------
 test_external_auth_url() {
-  echo "Test: generate_clouds_yaml under EXTERNAL_CLUSTER=true writes the Gateway port-forward's URL without docker"
+  echo "Test: generate_clouds_yaml under EXTERNAL_CLUSTER=true writes the URL on the Gateway's hostname without docker"
 
   local tmp output rc
   tmp="$(mktemp -d)"
@@ -185,19 +191,21 @@ test_external_auth_url() {
   output="$(run_fn "$tmp" generate_clouds_yaml EXTERNAL_CLUSTER=true "KUBECTL_PASSWORD=s3cr'et")"
   rc=$?
   assert_eq "it exits 0" "0" "$rc"
-  assert_eq "auth_url is the Gateway port-forward's" "$LAB_AUTH_URL" "$(auth_url "$tmp/clouds.yaml")"
+  assert_eq "auth_url is on the Gateway's hostname" "$LAB_AUTH_URL" "$(auth_url "$tmp/clouds.yaml")"
   assert_contains "it logs the auth URL and where it comes from" "$output" \
-    "Keystone auth URL: $LAB_AUTH_URL (EXTERNAL_CLUSTER=true, the Gateway port-forward on 8443)."
+    "Keystone auth URL: $LAB_AUTH_URL (EXTERNAL_CLUSTER=true, the Gateway's hostname)."
   assert_not_contains "docker is not called" "$(cat "$CALL_LOG")" "docker"
   assert_eq "the file is mode 600" "600" "$(stat -c '%a' "$tmp/clouds.yaml")"
   assert_file_contains_fixed "a single quote in the password is doubled" \
     "$tmp/clouds.yaml" "password: 's3cr''et'"
-  assert_contains "kubectl reads the TLS Secrets of openstack" "$(cat "$CALL_LOG")" \
-    "kubectl get secret -n openstack --field-selector type=kubernetes.io/tls -o json"
-  assert_eq "gateway-ca.pem holds the certificate of keystone-nip-io-tls alone" \
-    "$GATEWAY_PEM" "$(cat "$tmp/gateway-ca.pem")"
-  assert_file_contains_fixed "cacert points at gateway-ca.pem" \
-    "$tmp/clouds.yaml" "    cacert: '$tmp/gateway-ca.pem'"
+  assert_contains "kubectl reads the Gateway's Certificate" "$(cat "$CALL_LOG")" \
+    "kubectl get certificate openstack-gw-tls -n openstack -o jsonpath={.spec.dnsNames[0]} {.spec.secretName}"
+  assert_contains "and the Secret it names" "$(cat "$CALL_LOG")" \
+    "kubectl get secret openstack-gw-tls -n openstack -o json"
+  assert_eq "lab-ca.pem holds the lab CA alone" \
+    "$LAB_CA_PEM" "$(cat "$tmp/lab-ca.pem")"
+  assert_file_contains_fixed "cacert points at lab-ca.pem" \
+    "$tmp/clouds.yaml" "    cacert: '$tmp/lab-ca.pem'"
   assert_file_not_contains "the file has no verify: false" "$tmp/clouds.yaml" "verify: false"
 
   new_case "$tmp"
@@ -206,26 +214,35 @@ test_external_auth_url() {
   assert_eq "with DIZZY_AUTH_URL it exits 0" "0" "$rc"
   assert_eq "a non-empty DIZZY_AUTH_URL wins" "https://example.test:9/v3" "$(auth_url "$tmp/clouds.yaml")"
   assert_not_contains "and docker is not called" "$(cat "$CALL_LOG")" "docker"
-  assert_file_contains_fixed "and cacert still points at gateway-ca.pem" \
-    "$tmp/clouds.yaml" "    cacert: '$tmp/gateway-ca.pem'"
+  assert_file_contains_fixed "and cacert still points at lab-ca.pem" \
+    "$tmp/clouds.yaml" "    cacert: '$tmp/lab-ca.pem'"
 
   new_case "$tmp"
   output="$(run_fn "$tmp" generate_clouds_yaml EXTERNAL_CLUSTER=true DIZZY_AUTH_URL=)"
   rc=$?
   assert_eq "with an empty DIZZY_AUTH_URL it exits 0" "0" "$rc"
-  assert_eq "an empty DIZZY_AUTH_URL gives the Gateway port-forward's URL" "$LAB_AUTH_URL" \
+  assert_eq "an empty DIZZY_AUTH_URL gives the URL on the Gateway's hostname" "$LAB_AUTH_URL" \
     "$(auth_url "$tmp/clouds.yaml")"
 
-  for secrets in '{"items":[]}' \
-    '{"items":[{"metadata":{"name":"openbao-tls"},"data":{"ca.crt":"b3BlbmJhbw=="}}]}'; do
+  local fields
+  for fields in '' 'keystone.154-41-192-90.nip.io openstack-gw-tls' '*.154-41-192-90.nip.io'; do
     new_case "$tmp"
-    output="$(run_fn "$tmp" generate_clouds_yaml EXTERNAL_CLUSTER=true "TLS_SECRETS_JSON=$secrets")"
+    output="$(run_fn "$tmp" generate_clouds_yaml EXTERNAL_CLUSTER=true "GATEWAY_CERT_FIELDS=$fields")"
     rc=$?
-    assert_eq "without a Gateway certificate it exits 1 ($secrets)" "1" "$rc"
-    assert_contains "and says it sends no password unverified" "$output" \
-      "ERROR: found no Gateway certificate in the Secrets openstack/*-nip-io-tls;"
+    assert_eq "without a wildcard and a Secret on the Certificate it exits 1 ('$fields')" "1" "$rc"
+    assert_contains "and names the Certificate" "$output" \
+      "ERROR: found no Gateway certificate openstack/openstack-gw-tls with a DNS name"
     assert_eq "and writes no clouds.yaml" "false" "$([[ -e "$tmp/clouds.yaml" ]] && echo true || echo false)"
   done
+
+  new_case "$tmp"
+  output="$(run_fn "$tmp" generate_clouds_yaml EXTERNAL_CLUSTER=true \
+    'GATEWAY_SECRET_JSON={"metadata":{"name":"openstack-gw-tls"},"data":{"tls.crt":"Z2F0ZXdheQ=="}}')"
+  rc=$?
+  assert_eq "a Secret without ca.crt exits 1" "1" "$rc"
+  assert_contains "and says it sends no password unverified" "$output" \
+    "dizzy sends the admin password only to a Keystone it can verify."
+  assert_eq "and writes no clouds.yaml" "false" "$([[ -e "$tmp/clouds.yaml" ]] && echo true || echo false)"
   unset CALL_LOG
 }
 
@@ -254,7 +271,7 @@ test_kind_auth_url() {
     assert_not_contains "${mode:-no EXTERNAL_CLUSTER}: no external auth URL line" "$output" "EXTERNAL_CLUSTER=true, the Gateway"
     assert_file_contains_fixed "${mode:-no EXTERNAL_CLUSTER}: the file keeps verify: false" \
       "$tmp/clouds.yaml" "    verify: false"
-    assert_not_contains "${mode:-no EXTERNAL_CLUSTER}: no TLS Secret is read" "$(cat "$CALL_LOG")" "--field-selector"
+    assert_not_contains "${mode:-no EXTERNAL_CLUSTER}: no Certificate is read" "$(cat "$CALL_LOG")" "get certificate"
 
     new_case "$tmp"
     output="$(run_fn "$tmp" generate_clouds_yaml ${mode:+"$mode"} DOCKER_PORT_RC=1)"
@@ -341,18 +358,18 @@ test_probe_ingest() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: the port the two scripts share
+# Test 5: the Certificate the two scripts share
 # ---------------------------------------------------------------------------
-test_public_port_matches_deploy_infra() {
-  echo "Test: EXTERNAL_PUBLIC_PORT equals the external PUBLIC_PORT of hack/deploy-infra.sh"
+test_gateway_certificate_matches_the_template() {
+  echo "Test: EXTERNAL_GATEWAY_CERTIFICATE names the Certificate hack/deploy-infra.sh issues"
 
-  local dizzy_port deploy_port
+  local dizzy_cert template_cert
   # shellcheck source=/dev/null
-  dizzy_port="$(unset EXTERNAL_CLUSTER; source "$DIZZY_SH"; printf '%s' "$EXTERNAL_PUBLIC_PORT")"
-  # shellcheck source=/dev/null
-  deploy_port="$(unset EXTERNAL_OVERLAY KIND_HOST_PORT; export EXTERNAL_CLUSTER=true; source "$DEPLOY_INFRA_SH"; printf '%s' "$PUBLIC_PORT")"
-  assert_not_empty "hack/deploy-infra.sh sets PUBLIC_PORT in external mode" "$deploy_port"
-  assert_eq "the two ports are equal" "$deploy_port" "$dizzy_port"
+  dizzy_cert="$(unset EXTERNAL_CLUSTER; source "$DIZZY_SH"; printf '%s' "$EXTERNAL_GATEWAY_CERTIFICATE")"
+  template_cert="$(yq -N -r '.metadata.namespace + "/" + .metadata.name' \
+    "$PROJECT_ROOT/deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml")"
+  assert_not_empty "the template names its Certificate" "$template_cert"
+  assert_eq "the two are equal" "$template_cert" "$dizzy_cert"
 }
 
 # ---------------------------------------------------------------------------
@@ -405,7 +422,7 @@ chaos_keystone() {
 }
 
 test_chaos_ignores_os_cacert() {
-  echo "Test: run_chaos under EXTERNAL_CLUSTER=true has dizzy verify against gateway-ca.pem despite an exported OS_CACERT"
+  echo "Test: run_chaos under EXTERNAL_CLUSTER=true has dizzy verify against lab-ca.pem despite an exported OS_CACERT"
 
   local tmp output rc
   tmp="$(mktemp -d)"
@@ -434,13 +451,13 @@ STUB
   # file the teardown deleted.
   new_case "$tmp"
   output="$(run_fn "$tmp" chaos_keystone EXTERNAL_CLUSTER=true DIZZY_VERSION=v0.0.0 \
-    OS_CACERT=/gone/gateway-ca.pem)"
+    OS_CACERT=/gone/lab-ca.pem)"
   rc=$?
   assert_eq "it exits 0" "0" "$rc"
   assert_contains "dizzy runs the keystone soak" "$(cat "$CALL_LOG")" \
     "dizzy keystone chaos --os-cloud devstack-c5c3"
-  assert_contains "and verifies against gateway-ca.pem, not OS_CACERT" "$(cat "$CALL_LOG")" \
-    "(CA file: $tmp/gateway-ca.pem)"
+  assert_contains "and verifies against lab-ca.pem, not OS_CACERT" "$(cat "$CALL_LOG")" \
+    "(CA file: $tmp/lab-ca.pem)"
   unset CALL_LOG
 }
 
@@ -598,7 +615,7 @@ test_external_auth_url
 test_kind_auth_url
 test_secret_errors
 test_probe_ingest
-test_public_port_matches_deploy_infra
+test_gateway_certificate_matches_the_template
 test_usage
 test_stage_dashboards_download_fails
 test_chaos_ignores_os_cacert

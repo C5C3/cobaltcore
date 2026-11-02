@@ -24,7 +24,7 @@
 <text x="1330" y="421.2" font-size="20" font-weight="400" fill="#55606E">Gateway openstack-gw</text>
 <polyline points="1330,377 970.5,377" fill="none" stroke="#2457C5" stroke-width="3"/>
 <polygon points="960,377 975,369.8 975,384.2" fill="#2457C5"/>
-<text x="1145" y="366.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">one HTTPS listener per hostname</text>
+<text x="1145" y="366.2" font-size="20" font-weight="400" fill="#2B3440" text-anchor="middle">one HTTPS listener for *.nip.io</text>
 <rect x="88" y="483" width="356" height="48" rx="20" fill="#6F5600"/>
 <text x="266" y="515.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">OVNCentral controlplane-ovn</text>
 <text x="88" y="558.2" font-size="20" font-weight="400" fill="#55606E">one member per database, one northd</text>
@@ -39,10 +39,8 @@
 <text x="1320" y="551.2" font-size="20" font-weight="400" fill="#55606E">HelmRelease openstack-hypervisor-operator</text>
 <polyline points="420,78 1400,78 1400,349.5" fill="none" stroke="#2457C5" stroke-width="3"/>
 <polygon points="1400,360 1392.8,345 1407.2,345" fill="#2457C5"/>
-<rect x="444" y="90" width="104" height="30" rx="15" fill="#FDFCF9" stroke="#17202B" stroke-width="2"/>
-<text x="496" y="111.48" font-size="18" font-weight="700" fill="#17202B" text-anchor="middle">by hand</text>
-<text x="560" y="107.2" font-size="20" font-weight="400" fill="#2B3440">kubectl port-forward 8443:443</text>
-<text x="560" y="133.2" font-size="20" font-weight="400" fill="#2B3440">the only way in</text>
+<text x="444" y="107.2" font-size="20" font-weight="400" fill="#2B3440">HTTPS on port 443 of the load balancer&#8217;s address</text>
+<text x="444" y="133.2" font-size="20" font-weight="400" fill="#2B3440">{service}.{a-b-c-d}.nip.io, signed by the lab CA</text>
 <rect x="100" y="654" width="580" height="270" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="119" y="693.36" font-size="26" font-weight="700" fill="#2B3440">Node layer</text>
 <text x="119" y="725.2" font-size="20" font-weight="400" fill="#55606E">built by Part 2; the labelled workers are selected</text>

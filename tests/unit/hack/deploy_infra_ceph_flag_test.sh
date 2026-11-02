@@ -398,6 +398,7 @@ test_preflight() {
   mkdir -p "$tmp/no-cluster/base" "$tmp/no-cluster/infrastructure" "$tmp/no-cluster/ceph/cluster"
   : >"$tmp/no-cluster/base/kustomization.yaml"
   : >"$tmp/no-cluster/infrastructure/kustomization.yaml"
+  : >"$tmp/no-cluster/infrastructure/gateway-certificate.yaml"
   : >"$tmp/no-cluster/ceph/kustomization.yaml"
   local refusal="ERROR: EXTERNAL_CLUSTER=true WITH_CEPH=true needs $tmp/no-cluster/ceph/kustomization.yaml and $tmp/no-cluster/ceph/cluster/kustomization.yaml, which do not both exist (EXTERNAL_OVERLAY='$tmp/no-cluster')."
 

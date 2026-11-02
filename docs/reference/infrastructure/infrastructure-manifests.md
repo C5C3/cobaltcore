@@ -2822,7 +2822,7 @@ The figure shows what those manifests add up to: the cluster-wide parts of
 `base/`, `infrastructure/`, `ceph/` and `controlplane/`, and the parts
 `hypervisor/` and `migration-ports/` put on every worker.
 
-![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, the lab Ceph for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the Ceph inside the cluster. The only way in from the workstation is a port-forward of local port 8443 to the Envoy proxy.](../../diagrams/compute-metal-stack-lab.svg)
+![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, the lab Ceph for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the Ceph inside the cluster. The way in from outside is the public address the shoot's load balancer hands the Envoy proxy: every API, Horizon and the console proxy answer there on port 443, under the hostnames {service}.{a-b-c-d}.nip.io, with a certificate of the lab CA.](../../diagrams/compute-metal-stack-lab.svg)
 
 ### Node probe
 
@@ -2976,20 +2976,21 @@ it deploys onto the lab. They take `deploy/kind/base` and
 `deploy/kind/infrastructure` as their base, so the lab inherits what the kind
 overlay patches:
 
-- the NodePort EnvoyProxy on `31443`, which keeps the Envoy Service from
-  pending as a `LoadBalancer` on a MetalLB without an address pool, and the
-  twelve-listener `openstack-gw` Gateway;
+- Envoy Gateway and its GatewayClass `envoy`;
 - headlamp and flux-web, the optional addons of the kind base;
 - the standalone OpenBao, the suspended service-operator releases at one
   replica, and the single-replica MariaDB, Memcached and Garage;
 - the Flux controller requests.
+
+The Gateway is the lab's own: its proxy Service, its listener and its
+certificate differ from kind's, see [Public Gateway](#public-gateway).
 
 The figure shows that chain from the production manifests over the kind
 overlay to the lab, and who applies each directory.
 [Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure)
 lists every directory with its base.
 
-![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class and label the Namespaces. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak, hypervisor, controlplane-nfs, ceph and ceph/cluster under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies, and ceph and ceph/cluster, which make deploy-infra applies in Steps 3 and 5 under WITH_CEPH=true. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
+![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class, label the Namespaces, give the Gateway one listener on *.nip.io, and replace the kind EnvoyProxy and certificates with a LoadBalancer EnvoyProxy and the lab CA. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak, hypervisor, controlplane-nfs, ceph and ceph/cluster under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies, and ceph and ceph/cluster, which make deploy-infra applies in Steps 3 and 5 under WITH_CEPH=true. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape.](../../diagrams/deploy-overlay-inheritance.svg)
 
 The patches remove the kind pin `standard` from the OpenBao, MariaDB and
 Garage volumes. The lab has a `standard` class too, so the pin would bind to it
@@ -3024,11 +3025,14 @@ nothing.
 
 ```bash
 EXTERNAL_CLUSTER=true make deploy-infra
-kubectl -n envoy-gateway-system port-forward \
-  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
-curl -sk https://keystone.127-0-0-1.nip.io:8443/v3
+suffix=$(kubectl get certificate openstack-gw-tls -n openstack -o jsonpath='{.spec.dnsNames[0]}' | cut -c3-)
+kubectl get secret openstack-gw-tls -n openstack -o jsonpath='{.data.ca\.crt}' | base64 -d > lab-ca.pem
+curl -s -o /dev/null -w '%{http_code}\n' --cacert lab-ca.pem "https://keystone.${suffix}/v3"
 EXTERNAL_CLUSTER=true make teardown-infra
 ```
+
+The `curl` prints `404` until a ControlPlane routes `keystone.<suffix>`; the
+answer proves the address, the name and the certificate.
 
 The deploy runs against the current kubeconfig context and never switches it.
 It refuses four opt-ins that are bound to kind, `WITH_VPA`,
@@ -3039,8 +3043,8 @@ It refuses four opt-ins that are bound to kind, `WITH_VPA`,
 checks the cluster for a default StorageClass, for the absence of a
 `node-local-dns` DaemonSet (the instance's NetworkPolicy would need
 `spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
-node, and prints the port-forward command when it
-completes. Under `WITH_PROMETHEUS=true` it applies `prometheus/` in place of
+node, and prints the Gateway's hostnames and the command that saves the lab CA
+when it completes. Under `WITH_PROMETHEUS=true` it applies `prometheus/` in place of
 `deploy/kind/prometheus`, and it refuses that flag for an overlay without one.
 `WITH_CEPH=true` has no kind overlay: the kind mode refuses it, and this mode
 accepts it only for an overlay with both `ceph/` and `ceph/cluster/`.
@@ -3051,11 +3055,100 @@ platform's namespaces and CRDs alone. Both are described in
 | Property | Value |
 | --- | --- |
 | Storage class | the cluster's default class; no manifest names one |
-| Access | `kubectl port-forward` to the Envoy Service on local port 8443; the `*.127-0-0-1.nip.io` hostnames are unchanged |
-| Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry; the opt-in `autoscaling` and `verticalAutoscaling` blocks use the platform's metrics-server and VPA (see [Lab autoscaling](#lab-autoscaling)) |
+| Access | the Gateway's load-balancer address on port 443, under the hostnames `<service>.<a-b-c-d>.nip.io` (see [Public Gateway](#public-gateway)) |
+| Platform overlap | none: no metrics-server, VPA, MetalLB pool or DNS entry of its own; the Gateway takes its address from the platform's load balancer, and the opt-in `autoscaling` and `verticalAutoscaling` blocks use the platform's metrics-server and VPA (see [Lab autoscaling](#lab-autoscaling)) |
 | Gardener | `apiserver-proxy.networking.gardener.cloud/inject: disable` on every namespace of the base render |
 | Chaos Mesh scope | `chaos-mesh.org/inject: enabled` on every namespace of the base render |
 | Dependencies | a default StorageClass and no `node-local-dns` on the cluster |
+
+### Public Gateway
+
+**Files:** `deploy/lab/metal-stack/base/kustomization.yaml` (its last two
+patches), `deploy/lab/metal-stack/infrastructure/envoy-public.yaml`,
+`deploy/lab/metal-stack/infrastructure/lab-ca.yaml`,
+`deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml`
+
+The lab publishes the Gateway `openstack-gw` on a public address, so every
+API, Horizon and the console proxy are used from anywhere over HTTPS. The kind
+overlay reaches its Gateway through a NodePort that kind maps to the host, on
+twelve fixed `*.127-0-0-1.nip.io` hostnames with a self-signed certificate
+each. The lab replaces those three pieces:
+
+| Piece | Kind | On the lab |
+| --- | --- | --- |
+| Proxy Service | `NodePort` on 31443, EnvoyProxy `envoy-nodeport` | `LoadBalancer`, EnvoyProxy `envoy-public`, `externalTrafficPolicy: Cluster` |
+| Listener | twelve, one per hostname | one HTTPS listener on 443 for `*.nip.io`, admitting the routes of `openstack` and `dizzy` |
+| Certificate | twelve self-signed, `<service>-nip-io-tls` | one, `openstack/openstack-gw-tls` for `*.<a-b-c-d>.nip.io`, signed by the lab CA |
+
+The address is the one the shoot's load balancer hands the proxy Service:
+metal-stack's cloud controller takes it from the project's internet network,
+and MetalLB announces it over BGP from every node. It is known only once the
+Service exists, so no manifest can name it. A wildcard listener hostname is a
+suffix match, so `*.nip.io` admits a route on `keystone.<a-b-c-d>.nip.io`
+whatever the address is; nip.io resolves that name to `a.b.c.d` from anywhere.
+The certificate covers one label in front of the suffix, which is every
+`<service>.<a-b-c-d>.nip.io`.
+
+In Step 5, after the infrastructure overlay, `hack/deploy-infra.sh` issues the
+certificate from the template `gateway-certificate.yaml`
+(`configure_public_gateway`). It applies the template first for the address
+the Service already has, on a rerun, or for `127-0-0-1.nip.io`, so the listener
+can start and Envoy Gateway creates the Service. It then waits up to
+`POD_TIMEOUT` seconds for the address, applies the template again for
+`<a-b-c-d>.nip.io` when the suffix changed, and waits until the certificate is
+`Ready` at its new generation; a `Ready` of the previous generation does not
+count. When the HTTPRoute `dizzy/dizzy-grafana` exists, it moves the route's
+hostname onto the suffix. The first DNS name of the certificate is where
+Part 1, Step 4 of the quick start, `hack/dizzy.sh` and the completion banner
+read the suffix from.
+
+The lab CA is a self-signed root in the Secret `cert-manager/lab-ca` and the
+ClusterIssuer `lab-ca-issuer` that signs with it. A workstation that trusts
+the root once trusts every hostname of the lab, in the OpenStack CLI through
+`OS_CACERT` and in a browser, where Horizon and the console host would
+otherwise each need an exception of their own; the console's WebSocket fails
+without a word on a host the browser does not trust. Let's Encrypt is no
+option on nip.io: the domain is not on the Public Suffix List, so every user
+of nip.io shares one limit of 50 certificates a week. The root carries a
+critical name constraint that permits names under `nip.io` alone, which
+browsers, OpenSSL and the macOS trust store enforce, so a workstation that
+trusts it trusts no other site to it. Its key stays in the cluster. The
+Gateway's certificate lives 90 days and carries the usage `server auth`, which
+macOS requires of a TLS server certificate.
+
+The ControlPlane of [Lab ControlPlane](#lab-controlplane) names its hostnames
+on `127-0-0-1.nip.io`. Part 1, Step 4 of the quick start applies its render
+with that suffix replaced, and no service sets `publicEndpoint`: the operator
+derives the public URL from the hostname on port 443, so the catalog
+advertises URLs any client resolves, and the console proxy's
+`novncproxy_base_url`, which carries no port, works in a browser.
+
+The metal-stack firewall admits every source to an address of a
+`LoadBalancer` Service. `PUBLIC_SOURCE_RANGES` of `make deploy-infra` narrows
+that: Step 5 writes the ranges into the EnvoyProxy's
+`loadBalancerSourceRanges`, which the firewall and kube-proxy enforce.
+kube-proxy checks the ranges for the cluster's own pods as well, so Step 1
+adds the pod and node networks of the ConfigMap `kube-system/shoot-info`.
+`EXTERNAL_LOADBALANCER=false` keeps the Gateway inside the cluster for a
+shoot without load-balancer addresses: the proxy Service becomes a `ClusterIP`
+Service, the suffix stays `127-0-0-1.nip.io`, and the Gateway is reached
+through a port-forward on local port 443, which takes root on the
+workstation.
+
+The lab names no DNS entry of the shoot's own domain. The shoot runs
+Gardener's `shoot-dns-service` and `shoot-cert-service`, which could publish
+the Gateway under a name of the shoot's domain with a certificate a browser
+trusts without a CA of its own; the lab uses nip.io, whose names need nothing
+but the address.
+
+| Property | Value |
+| --- | --- |
+| Hostnames | `<service>.<a-b-c-d>.nip.io` for the address `a.b.c.d`; `127-0-0-1.nip.io` under `EXTERNAL_LOADBALANCER=false` |
+| Port | 443, on the address or on the workstation's port-forward |
+| Trust | the lab CA, `ca.crt` of the Secret `openstack/openstack-gw-tls`; constrained to `nip.io` |
+| Sources | every source; `PUBLIC_SOURCE_RANGES` plus the shoot's pod and node networks when set |
+| Lifetime | the address and the CA go with the teardown; the next deploy may get another address and creates another CA |
+| Proven by | a probe on `newforge` on 2026-11-02: a `LoadBalancer` Service in front of an echo pod got its address within seconds and answered on `<address>:443` through its nip.io name from a workstation and from the cluster's pods; with `loadBalancerSourceRanges` set, a source outside the ranges timed out, and so did the cluster's pods until the shoot's pod and node networks were in the list |
 
 ### Lab NFS stack
 
@@ -3540,12 +3633,12 @@ The proving run checks the lab's Chaos Mesh end to end in six steps.
 steps 1 to 5 and writes `proving.tsv`, and `make lab-chaos-teardown-check` runs
 step 6 at the end of a session. The run starts from a bare `forge`, deploys
 with the command above, and runs Part 1 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md) through Step 6,
-with the port-forward open. The steps:
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md) through Step 6.
+The steps:
 
 1. State: the chart version, `chaos-daemon` on every worker, one loader line
    per node.
-2. Baseline: five requests through the port-forward.
+2. Baseline: five requests to Keystone on the Gateway.
 3. PodChaos `lab-keystone-kill`: a Keystone API pod is killed and replaced.
 4. NetworkChaos `lab-keystone-delay`: 300 ms on every Keystone API pod, then
    released.
@@ -3710,16 +3803,16 @@ or `FAIL:` line per check, and every subcommand but `preflight` and `record`
 needs the go-ahead on the shared lab (D4 of
 [#1386](https://github.com/c5c3/cobaltcore/issues/1386)). OpenStack calls use
 `_output/dizzy/clouds.yaml` (cloud `devstack-c5c3`), which
-`generate_clouds_yaml` of `hack/dizzy.sh` writes with the Gateway CA, through
-the port-forward of Part 1, Step 6.
+`generate_clouds_yaml` of `hack/dizzy.sh` writes with the lab CA, on the
+Gateway's hostname `keystone.<suffix>` (see [Public Gateway](#public-gateway)).
 
 A session starts on a lab where
 [Part 1](../../quick-start-metal-stack.md#cp-deploy) ran with
 `WITH_CHAOS_MESH=true`, `WITH_NFS=true` and `WITH_DIZZY=true` added to the
 deploy command of its Step 3, Part 2 ran through
 [Step 11](../../quick-start-metal-stack.md#hv-rotate), and Part 3, Steps 1 and
-2 added the NFS backend `nfs1` and the volume type `nfs`. The port-forward of
-Part 1, Step 6 runs in a second terminal. The fault runs need `nfs1`, so every
+2 added the NFS backend `nfs1` and the volume type `nfs`. The fault runs need
+`nfs1`, so every
 session runs F4 and F5 against the NFS-Ganesha server of
 [#1245](https://github.com/c5c3/cobaltcore/issues/1245).
 
@@ -3744,7 +3837,7 @@ make lab-chaos-teardown-check
 
 | Subcommand | What it does |
 | --- | --- |
-| `preflight` | Reads the lab, one line per check: the tools (kubectl, jq, yq, python3, openstack), the context and the shoot, `openstack token issue` through the port-forward, the HelmRelease `chaos-mesh` Ready, `chaos-daemon` rolled out and one `are loaded` line per node, the namespace `dizzy`, ControlPlane `openstack/controlplane` `Ready=True`, the K-ORC image `hvo-cirros-kvm` and flavor `hvo-smoke-test-flavor` Available, the Cinder backend `nfs1` Ready and the volume type `nfs`, at least two `nova-compute` services `up`, and no server named `lab-chaos-*` |
+| `preflight` | Reads the lab, one line per check: the tools (kubectl, jq, yq, python3, openstack), the context and the shoot, `openstack token issue` on the Gateway, the HelmRelease `chaos-mesh` Ready, `chaos-daemon` rolled out and one `are loaded` line per node, the namespace `dizzy`, ControlPlane `openstack/controlplane` `Ready=True`, the K-ORC image `hvo-cirros-kvm` and flavor `hvo-smoke-test-flavor` Available, the Cinder backend `nfs1` Ready and the volume type `nfs`, at least two `nova-compute` services `up`, and no server named `lab-chaos-*` |
 | `proving` | Steps 1 to 5 of the Proving run, each judged by its row of the Proving run's table; `proving/step<k>.log` and `proving.tsv` (step, result, detail). It exits 1 on a step that does not match its row |
 | `faults` | Creates the network `lab-chaos-net` with the subnet `10.239.0.0/24`, the server group `lab-chaos` (`anti-affinity`), `lab-chaos-1` and then `lab-chaos-0` from `cirros-kvm` and `hvo-smoke-test`, and the volume `lab-chaos-nfs` (type `nfs`, 1 GiB) attached to `lab-chaos-0`. Its user-data waits for `/dev/vdb` and starts the two guest probes: a ping of `lab-chaos-1` and a counter written at byte 4096 of the volume, each a `lab-probe` line on the serial console every two seconds. It waits up to 300 seconds for both kinds of line with `ok`, then runs F1 to F5 and a new volume `lab-chaos-vol-after` on `nfs1`, stops `lab-chaos-0`, reads the counter from the volume file through the `nfs1` volume pod, and writes `faults.tsv` |
 | `random` | `CHAOS_RANDOM_ENV=lab CHAOS_RANDOM_WINDOW=$LAB_CHAOS_RANDOM_DURATION hack/chaos-random.sh run` on the pinned context; the run directory of `_output/chaos-random/` is linked as `random/` |
@@ -4053,26 +4146,27 @@ the lab overlay reads as well, and applies `<overlay>/dizzy`. It calls no
 VictoriaMetrics release is Ready once its claim is bound. The completion
 banner prints two `dizzy:` lines below its `Access:` lines.
 
-**Access.** Nothing outside the cluster reaches the stack. A soak runs
-through two port-forwards from the workstation, each in a terminal of its
-own: the Gateway's on local port 8443, which serves Grafana at
-`https://dizzy.127-0-0-1.nip.io:8443` beside Keystone, and one to
-VictoriaMetrics on local port 8428, which takes dizzy's OTLP export.
+**Access.** Grafana answers on the Gateway at `https://dizzy.<suffix>`, beside
+Keystone: the deploy moves the HTTPRoute `dizzy-grafana` onto the Gateway's
+suffix in Step 5 (see [Public Gateway](#public-gateway)), and the overlay
+drops the route's `sectionName`, since the lab's Gateway has the one listener
+`https`. VictoriaMetrics, which takes dizzy's OTLP export, is reached through
+a port-forward from the workstation on local port 8428, in a terminal of its
+own.
 
 ```bash
-kubectl -n envoy-gateway-system port-forward \
-  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
 kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
 EXTERNAL_CLUSTER=true make dizzy-keystone
 ```
 
-With `EXTERNAL_CLUSTER=true`, `hack/dizzy.sh` takes the Keystone URL of the
-first port-forward, `https://keystone.127-0-0-1.nip.io:8443/v3`, and calls no
-`docker`. dizzy verifies Keystone against the Gateway's certificates, which
-the script collects from the Secrets `openstack/*-nip-io-tls` into
-`_output/dizzy/gateway-ca.pem`. When nothing answers on `localhost:8428` it warns and names the
-second port-forward. Neither script opens a port-forward, so one that has
-ended is restarted by hand. [dizzy Chaos Testing](../testing/dizzy-chaos-testing.md)
+With `EXTERNAL_CLUSTER=true`, `hack/dizzy.sh` takes the Keystone URL on the
+Gateway, `https://keystone.<suffix>/v3`, with the suffix from the first DNS
+name of the Certificate `openstack/openstack-gw-tls`, and calls no `docker`.
+dizzy verifies Keystone against the lab CA, the `ca.crt` of that
+Certificate's Secret, which the script writes into `_output/dizzy/lab-ca.pem`.
+When nothing answers on `localhost:8428` it warns and names the port-forward.
+The script opens no port-forward, so one that has ended is restarted by
+hand. [dizzy Chaos Testing](../testing/dizzy-chaos-testing.md)
 describes the soak and its dashboards.
 
 **Storage.** The claim names no storage class and binds to the default class,
@@ -4179,9 +4273,9 @@ with the command above, then runs
 [Step 4](../../quick-start-metal-stack.md#cp-apply),
 [Step 5](../../quick-start-metal-stack.md#cp-tenant) and
 [Step 6](../../quick-start-metal-stack.md#cp-access) of Part 1 of the
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md). The Gateway
-port-forward of Step 6 stays open, and step 3 below opens the
-VictoriaMetrics port-forward in another terminal. Steps 6 and 7 run within an
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md), whose Step 4
+exported `PUBLIC_SUFFIX`, and step 3 below opens the VictoriaMetrics
+port-forward in another terminal. Steps 6 and 7 run within an
 hour of the soak's end, because their queries read the last hour. From the
 root of the clone:
 
@@ -4210,12 +4304,12 @@ EXTERNAL_CLUSTER=true make dizzy-keystone; echo "exit $?"
 # 5. The dizzy_ metric names in VictoriaMetrics
 curl -fsS http://localhost:8428/api/v1/label/__name__/values | jq -r '.data[]' | grep '^dizzy_'
 
-# 6. Through Grafana on the Gateway port-forward: the dashboards, then the
-#    expression each dashboard's panels read
-curl -sk 'https://dizzy.127-0-0-1.nip.io:8443/api/search?type=dash-db' | jq -r '.[].uid' | sort
+# 6. Through Grafana on the Gateway: the dashboards, then the expression each
+#    dashboard's panels read
+curl -s --cacert _output/dizzy/lab-ca.pem "https://dizzy.${PUBLIC_SUFFIX}/api/search?type=dash-db" | jq -r '.[].uid' | sort
 queries() {
   for metric in dizzy_iterations_total dizzy_operation_duration_seconds_count dizzy_resource_time_to_ready_seconds_count; do
-    curl -sk -H 'Content-Type: application/json' https://dizzy.127-0-0-1.nip.io:8443/api/ds/query \
+    curl -s --cacert _output/dizzy/lab-ca.pem -H 'Content-Type: application/json' "https://dizzy.${PUBLIC_SUFFIX}/api/ds/query" \
       -d "{\"queries\":[{\"refId\":\"A\",\"datasource\":{\"type\":\"prometheus\",\"uid\":\"victoriametrics\"},\"expr\":\"sum(last_over_time(${metric}[1h]))\",\"instant\":true}],\"from\":\"now-1h\",\"to\":\"now\"}" |
       jq -c --arg m "$metric" '{metric: $m, values: .results.A.frames[0].data.values}'
   done
@@ -4227,7 +4321,7 @@ kubectl delete pod dizzy-victoria-metrics-server-0 -n dizzy
 kubectl rollout status statefulset/dizzy-victoria-metrics-server -n dizzy --timeout=300s
 queries
 
-# 8. Stop both port-forwards, tear down, and wait up to 600 seconds for the
+# 8. Stop the port-forward, tear down, and wait up to 600 seconds for the
 #    volume of the claim to go
 EXTERNAL_CLUSTER=true make teardown-infra
 kubectl get namespace dizzy
@@ -4237,7 +4331,7 @@ dizzy_pvs() {
 SECONDS=0
 until [ "$(dizzy_pvs)" = 0 ] || [ "$SECONDS" -ge 600 ]; do sleep 5; done
 echo "PersistentVolumes of dizzy: $(dizzy_pvs) after ${SECONDS}s"
-rm _output/dizzy/clouds.yaml
+rm _output/dizzy/clouds.yaml _output/dizzy/lab-ca.pem
 ```
 
 What a run shows:
@@ -4247,7 +4341,7 @@ What a run shows:
 | 1 | three `NotFound` lines; the deploy exits 0, prints the two `dizzy:` lines and no `predates the dizzy metrics port mapping` warning |
 | 2 | both HelmReleases `Ready` with their chart versions; the label `apiserver-proxy.networking.gardener.cloud/inject: disable`; `ClusterIP` and no node port; the claim `server-volume-dizzy-victoria-metrics-server-0` `Bound` with 10Gi on the class `kubectl get storageclass` marks `(default)` |
 | 3 | `OK` |
-| 4 | `exit 0`; the log holds `Keystone auth URL: https://keystone.127-0-0-1.nip.io:8443/v3`, and neither a `docker port` line nor a `WARNING` |
+| 4 | `exit 0`; the log holds `Keystone auth URL: https://keystone.<suffix>/v3 (EXTERNAL_CLUSTER=true, the Gateway's hostname).`, and neither a `docker port` line nor a `WARNING` |
 | 5 | names of the five families of [dizzy Chaos Testing](../testing/dizzy-chaos-testing.md#metric-families): `dizzy_operation_duration_seconds`, `dizzy_resource_time_to_ready_seconds`, `dizzy_iteration_duration_seconds`, `dizzy_iteration_operations_total` and `dizzy_iterations_total` |
 | 6 | `dizzy-api-operations`, `dizzy-overview` and `dizzy-time-to-ready`; three lines whose `values` is `[[<ms>],[<number>]]`, none `[]` |
 | 7 | the rollout completes; the three lines hold the numbers of step 6 |
@@ -4508,8 +4602,12 @@ Step 4 of the
 carries the `cinder` block of that page's optional `# block-storage.yaml`
 fragment with the [Lab Ceph](#lab-ceph) in place of its NFS shares: the RBD
 volume backend `ceph1` and the RBD backup target `cephbk`. Apart from those
-two entries the data is unchanged except for two keys the lab adds to the
-ControlPlane.
+two entries the data is unchanged except for three keys the lab adds to the
+ControlPlane and the `publicEndpoint` fields it drops. Every hostname ends in
+`127-0-0-1.nip.io`, a template suffix: Part 1, Step 4 of the quick start
+applies the render with the suffix of the [Public Gateway](#public-gateway) in
+its place, and the operator derives each public URL from the hostname on port
+443. The kind quick start sets `publicEndpoint` for its host port 8443.
 `hack/deploy-infra.sh` names the directory in its `WITH_CONTROLPLANE=true`
 completion hint and never applies it. Its preflight renders the directory and
 refuses it unless it holds exactly one ControlPlane,
@@ -4520,9 +4618,10 @@ directory as well, because the CR's `ceph1` and `cephbk` name the monitor of
 the Lab Ceph, which only `WITH_CEPH=true` deploys; without the flag both would
 wait for their key Secrets, and the ControlPlane would never become `Ready`.
 `tests/unit/deploy/metal_stack_controlplane_test.sh` compares both files with
-three blocks of the page, the first `# controlplane.yaml` block, the
-`# block-storage.yaml` fragment without its backends and the
-`# controlplane-ovn.yaml` block, and fails when they drift apart. The CR file
+three blocks of the page, the first `# controlplane.yaml` block and the
+`# block-storage.yaml` fragment, each without its `publicEndpoint` fields and
+the fragment without its backends, and the `# controlplane-ovn.yaml` block,
+and fails when they drift apart. The CR file
 is not named `controlplane.yaml`, because `.gitignore` ignores that basename
 in every directory.
 
@@ -4530,6 +4629,7 @@ in every directory.
 | --- | --- | --- |
 | `spec.sizing.profile` | `Minimal` | The quick start's profile: one replica per component and a 512Mi database volume (`operators/c5c3/api/v1alpha1/sizing_profiles.go`), which fits a worker of `forge` with 16 CPUs and 128 GiB and a worker of `newforge` with 15.9 CPUs and 29.9 GiB allocatable. The Lightbits CSI driver rounds a request up to its 1 GiB granularity (`getReqCapacity` in `pkg/driver/controller.go` of [LightBitsLabs/los-csi](https://github.com/LightBitsLabs/los-csi)), so the 512Mi claim binds as a 1 GiB volume. A lab that needs a value between `Minimal` and `Standard` declares a cluster-scoped `SizingProfile` with `spec.base: Minimal` and selects it with `spec.sizing.profileRef.name`, which excludes `spec.sizing.profile` |
 | `spec.services.neutron.extraConfig.DEFAULT.global_physnet_mtu` | `"1460"` | Tenant networks are Geneve. Neutron 27.0.3 computes their MTU as `global_physnet_mtu` minus 20 (the IPv4 header, `get_mtu` in `neutron/plugins/ml2/drivers/type_tunnel.py`) minus `[ml2_type_geneve] max_header_size`, which the Neutron operator owns at 38 (`operators/neutron/internal/controller/reconcile_config.go`): 1460 - 20 - 38 = 1402 for every tenant network. 1460 is the pod network's MTU (the `cali*` lines of the [node probe](#node-probe)). The chassis tunnels over the node network, whose uplinks `lan0` and `lan1` carry 9000, so 1460 is a bound, not a match: it holds without a path-MTU measurement between the two racks, and none exists yet. The value is a string, because `extraConfig` is `map[string]map[string]string` |
+| `spec.services.nova.consoleProxy.gateway` | `openstack-gw`, `nova-console.127-0-0-1.nip.io` | Publishes the noVNC console proxy, which Horizon's console tab and `openstack console url show` send a browser to. The operator renders `[vnc] novncproxy_base_url` as `https://nova-console.<suffix>/vnc_lite.html`, without a port, so the console needs the Gateway on 443. The compute contract carries the URL, and the `NovaCompute` pods of Part 2 read it at start, after the CR is applied. The proxy dials each hypervisor's VNC server on the node's address, `[vnc] server_listen` being `$my_ip` on a `NovaCompute` |
 | `spec.services.nova.hypervisorOperator` | `{}` | Provisions the Keystone user `hypervisor-operator` (project `service-hypervisor-operator`, role `admin`) and writes the Secret `controlplane-nova-hypervisor-operator-auth` into `openstack` (see [`ServiceNovaHypervisorOperatorSpec`](../c5c3/controlplane-crd.md#servicenovahypervisoroperatorspec)), which [Lab hypervisors](#lab-hypervisors) feeds into the hypervisor operator's chart |
 
 Part 1 of the [Quick Start (metal-stack)](../../quick-start-metal-stack.md#cp-deploy)
@@ -4592,10 +4692,12 @@ publishes the OVN central `controlplane-ovn` and three Secrets in `openstack`:
 the compute contract `controlplane-nova-compute-config`, the metadata proxy
 secret `controlplane-nova-metadata-secret`, and the hypervisor operator's
 credentials `controlplane-nova-hypervisor-operator-auth`. The auth Secret's
-`auth_url` is `https://keystone.127-0-0-1.nip.io:8443/v3`, the loopback URL the
-public catalog carries, and from inside a pod it resolves to the pod itself. The
-hypervisor operator of [Lab hypervisors](#lab-hypervisors) therefore takes the
-in-cluster URL `http://controlplane-keystone.openstack.svc:5000/v3` for Keystone.
+`auth_url` is `https://keystone.<suffix>/v3`, the URL the public catalog
+carries, whose certificate the lab CA signs, which the operator's pod does not
+trust; under `EXTERNAL_LOADBALANCER=false` the name resolves to the pod itself.
+The hypervisor operator of [Lab hypervisors](#lab-hypervisors) therefore takes
+the in-cluster URL `http://controlplane-keystone.openstack.svc:5000/v3` for
+Keystone.
 With `OS_INTERFACE=internal` it takes the internal compute, placement, image and
 network endpoints of the catalog, which are the in-cluster Service URLs.
 
@@ -4657,8 +4759,8 @@ patches the live ControlPlane, records what the platform did, and removes the
 patch again. It starts on a lab where Part 1 of the
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md#control-plane)
 ran through [Step 7](../../quick-start-metal-stack.md#cp-verify), and runs in
-bash, in the shell of that step in the root of the clone, with the
-port-forward of Part 1, Step 6 open in a second terminal. Part 2 is not needed.
+bash, in the shell of that step in the root of the clone. Part 2 is not
+needed.
 
 The VPA cases run on the Placement API, `deployment/controlplane-placement`
 with its one container `placement-api`. The Minimal profile gives it one
@@ -4922,8 +5024,7 @@ hpa_state | tee -a "$auto/hpa.log"
 The last line prints `ready=1` and no HPA. Then run the last line of the
 quick start's [Teardown](../../quick-start-metal-stack.md#teardown),
 `EXTERNAL_CLUSTER=true make teardown-infra`; its other lines delete objects of
-Part 2, which this run does not create. Stop the port-forward, delete
-`gateway-ca.pem`, and check that `kubectl get namespaces -o name` lists the
+Part 2, which this run does not create. Delete `lab-ca.pem`, and check that `kubectl get namespaces -o name` lists the
 platform's namespaces alone (`default`, `firewall`, `kube-node-lease`,
 `kube-public`, `kube-system` and `metallb-system`) and that
 `kubectl get vpa -A` lists no VPA outside `kube-system`.
@@ -5300,13 +5401,13 @@ root on its node's libvirtd (see
 | hvo | `fullnameOverride` | `hypervisor-operator` | The chart names its metrics Service `<fullname>-controller-manager-metrics-service`, 64 characters with the release name as fullname, and the install fails |
 | hvo | `controllerManager.manager.image.repository` | `ghcr.io/c5c3/openstack-hypervisor-operator` | The image built from that commit with its four patches: the Eviction patch, which leaves block migration to Nova, the two below that let onboarding finish, and patch 0004, which reads the catalog interface from `OS_INTERFACE` (see [openstack-hypervisor-operator](../ci-cd/container-images.md#openstack-hypervisor-operator)) |
 | hvo | `valuesFrom` | six keys of `controlplane-nova-hypervisor-operator-auth` | The account the ControlPlane provisions: `password` into `secret.servicePassword`; `username`, `user_domain_name`, `project_name`, `project_domain_name` and `region_name` into the matching `controllerManager.manager.env.os*` values |
-| hvo | `env.osAuthUrl` | `http://controlplane-keystone.openstack.svc:5000/v3` | The in-cluster Keystone URL, the `spec.keystoneEndpoint` of `controlplane-nova`. The auth Secret's `auth_url` is the public loopback URL |
+| hvo | `env.osAuthUrl` | `http://controlplane-keystone.openstack.svc:5000/v3` | The in-cluster Keystone URL, the `spec.keystoneEndpoint` of `controlplane-nova`. The auth Secret's `auth_url` is the public URL on the Gateway, whose certificate the lab CA signs |
 | hvo | `env.certificateNamespace` | `hypervisor-system` | The Issuer's namespace |
 | hvo | `env.agentNamespaces` | `openstack` | The namespace of the pool, chassis and metadata agent pods, which an offboarding waits for |
 | hvo | `serviceMonitor.enabled`, `prometheusRules.create` | `true` | On every lab, with or without Prometheus: chart `1.2.3_sha-a2baf3f` renders the ServiceMonitor `hypervisor-operator` and the PrometheusRules `openstack-hypervisor-operator-operator-alerts` (7 alerts) and `openstack-hypervisor-operator-eviction-alerts` (3 alerts) in `openstack`. Without a Prometheus Operator they are inert objects, and the [Lab Prometheus stack](#lab-prometheus-stack) picks them up without a second apply. The API server accepts the two rules only with the version-label patch below. Two alerts have data, `HypervisorOperatorReconcileErrors` and `HypervisorOperatorDown`. The other 8 read `kube_customresource_*` series, which the lab never has: `HypervisorOnboardingStuck`, `HypervisorEvictionStuck`, `HypervisorEvictedTooLong`, `HypervisorTraitSyncFailed`, `HypervisorAggregateSyncFailed`, `EvictionFailed`, `EvictionMigrationFailing` and `EvictionOutstandingRamHigh` |
 | hvo | `customResourceMetrics.create` | `false` | Its ConfigMaps configure a kube-state-metrics to export the `kube_customresource_*` series of the `Hypervisor` and `Eviction` CRs, and the lab runs no kube-state-metrics |
 | hvo | `dashboards.create` | `false` | The chart's dashboard is a Perses dashboard, which Grafana cannot load. The Lab Prometheus stack loads a Grafana dashboard with its four controller-runtime panels instead |
-| hvo | post-renderer | `OS_INTERFACE=internal` on the manager | hvo takes the endpoints of `compute`, `placement`, `image` and `network` from the catalog interface `OS_INTERFACE` names (patch 0004), and the chart has no value for the variable. The internal endpoints are the in-cluster Service URLs over plain HTTP, so the pod needs neither a host alias nor the gateway certificates. Without the variable hvo reads the `public` endpoints, the `*.127-0-0-1.nip.io:8443` URLs, which resolve to the pod itself |
+| hvo | post-renderer | `OS_INTERFACE=internal` on the manager | hvo takes the endpoints of `compute`, `placement`, `image` and `network` from the catalog interface `OS_INTERFACE` names (patch 0004), and the chart has no value for the variable. The internal endpoints are the in-cluster Service URLs over plain HTTP, so the pod needs neither a host alias nor the lab CA. Without the variable hvo reads the `public` endpoints, the `https://<service>.<suffix>` URLs of the Gateway, whose certificate the lab CA signs, which the pod does not trust |
 | hvo | post-renderer | `imagePullPolicy: Always` on the manager | The chart sets no pull policy, so a node would keep the image it cached under `sha-<commit>`. `build-images.yaml` moves that tag to every `main` build, so its content changes whenever a patch does. An image built before patch 0002 refuses the flag below, and one built before patch 0004 ignores `OS_INTERFACE` |
 | hvo | post-renderer | `--default-high-availability=false` appended to the manager's `args` | The flag of the image's patch 0002: hvo creates each `Hypervisor` with `spec.highAvailability: false`. While the field is `true`, onboarding waits for `HaEnabled=True`, which only SAP's kvm-ha-service sets. The chart has no value for the flag, so a JSON patch appends it to the argument list the chart renders, and `controllerManager.manager.args` stays unset |
 | hvo | post-renderer | `bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token` on the ServiceMonitor's one endpoint | hvo defaults `--metrics-secure` to `true` and serves its metrics behind controller-runtime's authentication and authorization filter, and the chart's ServiceMonitor sends no token, so every scrape would answer 401. With the JSON patch Prometheus presents its own ServiceAccount token, and the chart's ClusterRole `kube-prometheus-stack-prometheus` grants `get` on `/metrics`, which the filter asks the API server about. The ServiceMonitor CRD marks the field deprecated in favour of `authorization`, which would need a token Secret in `openstack`. The endpoint keeps the chart's `insecureSkipVerify` |
