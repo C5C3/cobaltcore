@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNCentral fixture for the default-spread E2E test.
+#
+# The CR names no spread and no placement, so every pod it renders carries the
+# operator's default spread. Two of its workloads are what the suite counts:
+#   - northd runs four replicas, so an even spread over the two workers reads
+#     2/2, while the resource scorers alone, with the ballast on one worker,
+#     put all four on the other one.
+#   - the Northbound database runs three Raft members, so an even spread puts
+#     at least one on each worker; three on one worker would lose quorum with
+#     that node.
+# The Southbound database runs one member: northd starts only once both
+# databases are Ready, and one member is all the suite needs from it. The
+# backup is suspended, because a snapshot proves nothing this suite is about
+# and the CronJob would only compete for disk.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-spread-central
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 3
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 4
+  backup:
+    suspend: true

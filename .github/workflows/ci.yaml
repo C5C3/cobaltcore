@@ -4638,16 +4638,21 @@ jobs:
 
   # Multi-node OVN overlay E2E on kind. Brings up the one-control-plane,
   # two-worker cluster of hack/kind-config-multinode.yaml, deploys the
-  # ovn-operator, and runs tests/e2e-ovn-overlay/ across both workers: one
-  # logical switch port per node, a ping across the Geneve tunnel between them,
-  # and the Southbound rows that say which chassis carried it.
+  # ovn-operator, and runs the two suites of tests/e2e-ovn-overlay/ across both
+  # workers. default-spread checks where the replicas of an OVNCentral that
+  # names no spread land on workers without a zone label: northd two on each,
+  # the Northbound members on both. geneve-datapath puts one logical switch port
+  # on each node, pings across the Geneve tunnel between them, and reads the
+  # Southbound rows that say which chassis carried it.
   #
-  # continue-on-error: true because the suite needs the openvswitch and geneve
-  # kernel modules on the runner host, which puts it under the non-blocking entry
-  # rule of `### Kernel-module-dependent suites` in
-  # docs/reference/ci-cd/ci-workflow.md. A later change flips it to blocking
-  # once its pass history on main justifies the flip. The single-node chassis
-  # baseline under tests/e2e/ovn/ stays blocking inside the e2e-operator legs.
+  # continue-on-error: true because geneve-datapath needs the openvswitch and
+  # geneve kernel modules on the runner host, which puts the job under the
+  # non-blocking entry rule of `### Kernel-module-dependent suites` in
+  # docs/reference/ci-cd/ci-workflow.md. default-spread needs no kernel module,
+  # but it needs the two workers, so it runs in this job and is non-blocking
+  # with it. A later change flips the job to blocking once its pass history on
+  # main justifies the flip. The single-node chassis baseline under
+  # tests/e2e/ovn/ stays blocking inside the e2e-operator legs.
   #
   # The job runs alone on its runner: hack/kind-config-multinode.yaml and
   # hack/kind-config.yaml bind the same host ports (443 and 8428 on 127.0.0.1),

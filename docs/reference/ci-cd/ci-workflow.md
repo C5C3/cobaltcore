@@ -1551,14 +1551,28 @@ about 450 before the random run joined them.
 
 ### e2e-ovn-overlay
 
-Runs the `tests/e2e-ovn-overlay/geneve-datapath/` Chainsaw suite on a two-worker
-kind cluster: an `OVNCentral`, an `OVNChassis` selecting both workers, one
-logical switch port per worker, and a ping between two network namespaces that
-can only reach each other across the Geneve tunnel. The suite asserts
-`numberReady: 2` on the chassis, two `status.nodes` entries carrying two
-different system-ids, a `Port_Binding` for `lsp-a` bound to a chassis, and two
-Geneve `Encap` rows on two addresses. A single node answers none of those
-questions, so the suite lives outside `tests/e2e/` and gets a job of its own.
+Runs the two Chainsaw suites under `tests/e2e-ovn-overlay/` on a two-worker
+kind cluster, `default-spread` first. A single node answers none of their
+questions, so they live outside `tests/e2e/` and get a job of their own.
+
+- `default-spread` checks the nodes the pods run on. Its first step fails
+  unless the cluster has two schedulable workers and neither carries a
+  `topology.kubernetes.io/zone` label. A ballast Pod then requests 40 % of the
+  first worker's allocatable CPU and memory, and the suite applies an
+  `OVNCentral` that names no spread. It requires the four northd replicas two
+  on each worker and the three Northbound members on both, and asserts the
+  default spread on both pod templates: one zone constraint and one preferred
+  anti-affinity entry on `kubernetes.io/hostname` with weight 100. Without the
+  ballast both workers score alike, and the resource scorers alone already
+  spread the replicas. With it, the resource scorers put all four northd
+  replicas on the second worker, so the suite passes only with a node spread
+  the scheduler scores on nodes without a zone label.
+- `geneve-datapath` brings up an `OVNCentral`, an `OVNChassis` selecting both
+  workers, one logical switch port per worker, and a ping between two network
+  namespaces that can only reach each other across the Geneve tunnel. The
+  suite asserts `numberReady: 2` on the chassis, two `status.nodes` entries
+  carrying two different system-ids, a `Port_Binding` for `lsp-a` bound to a
+  chassis, and two Geneve `Encap` rows on two addresses.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-ovn-overlay == 'true'`, the upstream
@@ -1566,20 +1580,28 @@ questions, so the suite lives outside `tests/e2e/` and gets a job of its own.
 
 The job runs on `self-hosted` with `continue-on-error: true` under the
 kernel-module rule above, and creates its cluster from
-`config: hack/kind-config-multinode.yaml`. `setup-e2e-infra` receives
+`config: hack/kind-config-multinode.yaml`. `default-spread` needs no kernel
+module, but it needs the two workers, so it runs in this job and is
+non-blocking with it. `setup-e2e-infra` receives
 `WITH_OVN_KERNEL_MODULES: "true"`, `hack/ci-deploy-operator.sh` installs the
 ovn-operator into `ovn-system`, and the suite runs through
 `make e2e-ovn-overlay`, the same target a developer calls locally. The OVN
 daemon image is loaded at the tag `hack/ci-resolve-ovn-version.sh` reads from
 `images/ovn/source.json`, so the workflow spells no version of its own.
 Diagnostics run with `OPERATOR: ovn`, and `_output/reports/` is uploaded as the
-`e2e-ovn-overlay-junit-report` artifact (14-day retention). `cleanup-e2e-tags`
+`e2e-ovn-overlay-junit-report` artifact (14-day retention), which carries the
+result of both suites. The job is non-blocking, so its result is in that
+report. The config sets `failFast: true`: a failed
+`default-spread` skips `geneve-datapath` in the same run. `cleanup-e2e-tags`
 lists the job in its `needs`, so the run-scoped image tags survive until it
 finishes.
 
 **Path filter:** `tests/e2e-ovn-overlay/**` (the `tests_ovn_overlay` class),
 `operators/ovn/**` (`ovn`), and `images/ovn/**` and `images/backup-shifter/**`
 (`image_ovn`). A shared Go change does not schedule the job, and `ci:full` forces it on.
+That includes `internal/common/deployment`, which renders the default spread
+`default-spread` checks: the byte-identity pin goldens of every operator fail
+on any change to the rendered default, so the path needs no job of this size.
 
 ### e2e-nova-libvirt
 
