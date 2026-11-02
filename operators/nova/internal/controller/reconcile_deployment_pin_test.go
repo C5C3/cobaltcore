@@ -49,6 +49,17 @@ spec:
         app.kubernetes.io/managed-by: nova-operator
         app.kubernetes.io/name: nova
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+                  app.kubernetes.io/instance: nova
+                  app.kubernetes.io/name: nova
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -187,14 +198,6 @@ spec:
             app.kubernetes.io/name: nova
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: api
-            app.kubernetes.io/instance: nova
-            app.kubernetes.io/name: nova
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
@@ -246,6 +249,17 @@ spec:
         app.kubernetes.io/managed-by: nova-operator
         app.kubernetes.io/name: nova
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+                  app.kubernetes.io/instance: nova
+                  app.kubernetes.io/name: nova
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -385,14 +399,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: api
-            app.kubernetes.io/instance: nova
-            app.kubernetes.io/name: nova
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
           items:
@@ -439,6 +445,17 @@ spec:
         app.kubernetes.io/managed-by: nova-operator
         app.kubernetes.io/name: nova
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+                  app.kubernetes.io/instance: nova
+                  app.kubernetes.io/name: nova
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -586,14 +603,6 @@ spec:
             app.kubernetes.io/name: nova
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: api
-            app.kubernetes.io/instance: nova
-            app.kubernetes.io/name: nova
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:

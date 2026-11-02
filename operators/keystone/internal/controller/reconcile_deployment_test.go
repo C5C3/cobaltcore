@@ -1440,8 +1440,9 @@ func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 }
 
 // TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints verifies that when
-// spec.TopologySpreadConstraints is nil, the deployment builder injects two default
-// constraints: zone-spread and hostname-spread, both with ScheduleAnyway.
+// spec.TopologySpreadConstraints is nil, the deployment builder renders the
+// default spread: one zone constraint with ScheduleAnyway, and the preferred
+// hostname anti-affinity term at weight 100.
 func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1449,26 +1450,25 @@ func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints(t *testing.T) 
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil)
 
 	tscs := deploy.Spec.Template.Spec.TopologySpreadConstraints
-	g.Expect(tscs).To(HaveLen(2))
-
-	// First default: zone-spread.
+	g.Expect(tscs).To(HaveLen(1))
 	g.Expect(tscs[0].MaxSkew).To(Equal(int32(1)))
 	g.Expect(tscs[0].TopologyKey).To(Equal("topology.kubernetes.io/zone"))
 	g.Expect(tscs[0].WhenUnsatisfiable).To(Equal(corev1.ScheduleAnyway))
 	g.Expect(tscs[0].LabelSelector).NotTo(BeNil())
 	g.Expect(tscs[0].LabelSelector.MatchLabels).To(Equal(selectorLabels(ks)))
 
-	// Second default: hostname-spread.
-	g.Expect(tscs[1].MaxSkew).To(Equal(int32(1)))
-	g.Expect(tscs[1].TopologyKey).To(Equal("kubernetes.io/hostname"))
-	g.Expect(tscs[1].WhenUnsatisfiable).To(Equal(corev1.ScheduleAnyway))
-	g.Expect(tscs[1].LabelSelector).NotTo(BeNil())
-	g.Expect(tscs[1].LabelSelector.MatchLabels).To(Equal(selectorLabels(ks)))
+	affinity := deploy.Spec.Template.Spec.Affinity
+	g.Expect(affinity).NotTo(BeNil())
+	g.Expect(affinity.PodAntiAffinity).NotTo(BeNil())
+	terms := affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+	g.Expect(terms).To(Equal([]corev1.WeightedPodAffinityTerm{deployment.DefaultHostnameSpreadTerm(selectorLabels(ks))}))
+	g.Expect(terms[0].Weight).To(Equal(int32(100)))
+	g.Expect(terms[0].PodAffinityTerm.TopologyKey).To(Equal("kubernetes.io/hostname"))
 }
 
 // TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults verifies
 // that setting spec.TopologySpreadConstraints to an empty non-nil slice disables
-// default TSC injection, resulting in no constraints on the pod spec.
+// both parts of the default spread: no constraints and no affinity on the pod spec.
 func TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1477,11 +1477,13 @@ func TestBuildKeystoneDeployment_EmptyTopologySpreadConstraintsDisablesDefaults(
 	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil)
 
 	g.Expect(deploy.Spec.Template.Spec.TopologySpreadConstraints).To(BeEmpty())
+	g.Expect(deploy.Spec.Template.Spec.Affinity).To(BeNil())
 }
 
 // TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorMatchesSelectorLabels
-// explicitly verifies that the default TSC LabelSelector equals selectorLabels(ks),
-// ensuring the TSC targets the correct pods.
+// explicitly verifies that the label selectors of the default TSC and of the
+// default hostname term equal selectorLabels(ks), ensuring both target the
+// correct pods.
 func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorMatchesSelectorLabels(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
@@ -1493,6 +1495,11 @@ func TestBuildKeystoneDeployment_DefaultTopologySpreadConstraints_LabelSelectorM
 		g.Expect(tsc.LabelSelector).NotTo(BeNil(), "TSC[%d] must have a LabelSelector", i)
 		g.Expect(tsc.LabelSelector.MatchLabels).To(Equal(expected),
 			"TSC[%d] LabelSelector.MatchLabels must equal selectorLabels()", i)
+	}
+	for i, term := range deploy.Spec.Template.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution {
+		g.Expect(term.PodAffinityTerm.LabelSelector).NotTo(BeNil(), "term[%d] must have a LabelSelector", i)
+		g.Expect(term.PodAffinityTerm.LabelSelector.MatchLabels).To(Equal(expected),
+			"term[%d] LabelSelector.MatchLabels must equal selectorLabels()", i)
 	}
 }
 

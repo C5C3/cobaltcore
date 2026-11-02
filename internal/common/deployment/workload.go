@@ -30,7 +30,7 @@ type WorkloadParams struct {
 
 	// SelectorLabels are the immutable pod selector: they become
 	// .spec.selector.matchLabels and the label selector of the default topology
-	// spread constraints.
+	// spread constraint and of the default hostname anti-affinity term.
 	SelectorLabels map[string]string
 
 	// PodAnnotations are stamped on the pod template verbatim. Nil leaves the
@@ -90,7 +90,9 @@ type ContainerParams struct {
 //   - the pod-level knobs TerminationGracePeriodSeconds,
 //     TopologySpreadConstraints, PriorityClassName, NodeSelector,
 //     Tolerations, and Affinity (ApplyNodePlacement), plus the FSGroup pod
-//     security context;
+//     security context; while the block leaves topologySpreadConstraints
+//     unset, the default hostname anti-affinity term
+//     (ApplyDefaultHostnameSpread) is appended to that affinity;
 //   - on the single container, the resources from
 //     commonv1.WithResourceDefaults with p.DefaultMemory,
 //     RestrictedSecurityContext, and the preStop sleep hook from
@@ -157,6 +159,9 @@ func BuildWorkload(p WorkloadParams) *appsv1.Deployment {
 		},
 	}
 	ApplyNodePlacement(&d.Spec.Template.Spec, &p.Deployment.NodePlacementSpec)
+	if p.Deployment.TopologySpreadConstraints == nil {
+		ApplyDefaultHostnameSpread(&d.Spec.Template.Spec, p.SelectorLabels)
+	}
 	return d
 }
 

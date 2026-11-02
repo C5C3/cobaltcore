@@ -219,22 +219,20 @@ func TestBuildHPA_CopiesBehavior(t *testing.T) {
 	g.Expect(in.Behavior.ScaleDown.StabilizationWindowSeconds).To(gomega.HaveValue(gomega.Equal(int32(15))))
 }
 
-// The two default constraints spread across zones first and nodes second,
-// both soft and both selecting the given label set. TopologySpreadConstraints
-// injects them for a nil list and keeps an empty list empty.
+// The default constraint spreads across zones only, soft and selecting the
+// given label set; the node spread is DefaultHostnameSpreadTerm.
+// TopologySpreadConstraints injects it for a nil list and keeps an empty list
+// empty.
 func TestDefaultTopologySpreadConstraints(t *testing.T) {
 	g := gomega.NewWithT(t)
 	sel := map[string]string{"app.kubernetes.io/instance": "ks"}
 
 	tscs := DefaultTopologySpreadConstraints(sel)
-	g.Expect(tscs).To(gomega.HaveLen(2))
+	g.Expect(tscs).To(gomega.HaveLen(1))
 	g.Expect(tscs[0].TopologyKey).To(gomega.Equal("topology.kubernetes.io/zone"))
-	g.Expect(tscs[1].TopologyKey).To(gomega.Equal("kubernetes.io/hostname"))
-	for _, tsc := range tscs {
-		g.Expect(tsc.MaxSkew).To(gomega.Equal(int32(1)))
-		g.Expect(tsc.WhenUnsatisfiable).To(gomega.Equal(corev1.ScheduleAnyway))
-		g.Expect(tsc.LabelSelector.MatchLabels).To(gomega.Equal(sel))
-	}
+	g.Expect(tscs[0].MaxSkew).To(gomega.Equal(int32(1)))
+	g.Expect(tscs[0].WhenUnsatisfiable).To(gomega.Equal(corev1.ScheduleAnyway))
+	g.Expect(tscs[0].LabelSelector.MatchLabels).To(gomega.Equal(sel))
 
 	g.Expect(TopologySpreadConstraints(&commonv1.DeploymentSpec{}, sel)).To(gomega.Equal(tscs))
 	empty := TopologySpreadConstraints(&commonv1.DeploymentSpec{TopologySpreadConstraints: []corev1.TopologySpreadConstraint{}}, sel)
@@ -258,9 +256,8 @@ func TestPodKnobDefaults(t *testing.T) {
 	g.Expect(strategy.RollingUpdate.MaxSurge).To(gomega.HaveValue(gomega.Equal(intstr.FromInt32(1))))
 
 	tscs := TopologySpreadConstraints(spec, map[string]string{"a": "b"})
-	g.Expect(tscs).To(gomega.HaveLen(2))
+	g.Expect(tscs).To(gomega.HaveLen(1))
 	g.Expect(tscs[0].TopologyKey).To(gomega.Equal("topology.kubernetes.io/zone"))
-	g.Expect(tscs[1].TopologyKey).To(gomega.Equal("kubernetes.io/hostname"))
 }
 
 // An explicit empty TSC slice disables the defaults; a custom strategy is

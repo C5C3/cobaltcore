@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -152,15 +153,18 @@ func TestBuildWorkload_OwnsInvariants(t *testing.T) {
 	g.Expect(container.Lifecycle.PreStop.Exec.Command).To(gomega.Equal(PreStopSleepCommand(p.Deployment)))
 }
 
-// The Deployment block's placement lands on the pod template; an unset
-// placement renders all three fields nil, so no existing Deployment rolls.
+// The Deployment block's placement lands on the pod template. An unset
+// placement renders no node selector and no tolerations, and an affinity that
+// holds only the default hostname term; a set affinity keeps its own terms
+// ahead of the default one.
 func TestBuildWorkload_RendersNodePlacement(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	unset := BuildWorkload(workloadParams()).Spec.Template.Spec
+	unsetParams := workloadParams()
+	unset := BuildWorkload(unsetParams).Spec.Template.Spec
 	g.Expect(unset.NodeSelector).To(gomega.BeNil())
 	g.Expect(unset.Tolerations).To(gomega.BeNil())
-	g.Expect(unset.Affinity).To(gomega.BeNil())
+	g.Expect(unset.Affinity).To(gomega.Equal(hostnameSpreadOnly(unsetParams.SelectorLabels)))
 
 	placement := commonv1.NodePlacementSpec{
 		NodeSelector: map[string]string{"kubernetes.io/os": "linux"},
@@ -177,7 +181,106 @@ func TestBuildWorkload_RendersNodePlacement(t *testing.T) {
 	set := BuildWorkload(p).Spec.Template.Spec
 	g.Expect(set.NodeSelector).To(gomega.Equal(placement.NodeSelector))
 	g.Expect(set.Tolerations).To(gomega.Equal(placement.Tolerations))
-	g.Expect(set.Affinity).To(gomega.Equal(placement.Affinity))
+	g.Expect(set.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution).To(gomega.Equal(
+		[]corev1.WeightedPodAffinityTerm{
+			placement.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution[0],
+			DefaultHostnameSpreadTerm(p.SelectorLabels),
+		}))
+}
+
+// hostnameSpreadOnly is the affinity a pod template carries when the block
+// sets no affinity and leaves topologySpreadConstraints unset.
+func hostnameSpreadOnly(selector map[string]string) *corev1.Affinity {
+	return &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+		PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{DefaultHostnameSpreadTerm(selector)},
+	}}
+}
+
+// The default spread has two parts, the zone constraint and the hostname
+// anti-affinity term, and the block's topologySpreadConstraints switches both:
+// nil renders both, an empty list or a custom list renders neither and keeps
+// the block's affinity verbatim. BuildWorkload never writes to the block's
+// affinity, so a second reconcile renders the same template.
+func TestBuildWorkload_DefaultSpread(t *testing.T) {
+	ownTerm := corev1.WeightedPodAffinityTerm{
+		Weight: 50,
+		PodAffinityTerm: corev1.PodAffinityTerm{
+			TopologyKey:   corev1.LabelHostname,
+			LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/name": "svc"}},
+		},
+	}
+	customTSCs := []corev1.TopologySpreadConstraint{{
+		MaxSkew:           2,
+		TopologyKey:       "example.com/rack",
+		WhenUnsatisfiable: corev1.DoNotSchedule,
+	}}
+	blockAffinity := &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+		PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{ownTerm},
+	}}
+
+	for _, tc := range []struct {
+		name         string
+		tscs         []corev1.TopologySpreadConstraint
+		affinity     *corev1.Affinity
+		wantTSCs     func(selector map[string]string) []corev1.TopologySpreadConstraint
+		wantAffinity func(selector map[string]string) *corev1.Affinity
+	}{
+		{
+			name:         "nil list renders the zone constraint and only the term",
+			wantTSCs:     DefaultTopologySpreadConstraints,
+			wantAffinity: hostnameSpreadOnly,
+		},
+		{
+			name:     "nil list keeps the block's own term ahead of the default",
+			affinity: blockAffinity,
+			wantTSCs: DefaultTopologySpreadConstraints,
+			wantAffinity: func(selector map[string]string) *corev1.Affinity {
+				return &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+					PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+						ownTerm, DefaultHostnameSpreadTerm(selector),
+					},
+				}}
+			},
+		},
+		{
+			name:         "empty list renders neither part",
+			tscs:         []corev1.TopologySpreadConstraint{},
+			wantTSCs:     func(map[string]string) []corev1.TopologySpreadConstraint { return []corev1.TopologySpreadConstraint{} },
+			wantAffinity: func(map[string]string) *corev1.Affinity { return nil },
+		},
+		{
+			name:         "custom list renders verbatim without the term",
+			tscs:         customTSCs,
+			wantTSCs:     func(map[string]string) []corev1.TopologySpreadConstraint { return customTSCs },
+			wantAffinity: func(map[string]string) *corev1.Affinity { return nil },
+		},
+		{
+			name:         "custom list and block affinity render verbatim",
+			tscs:         customTSCs,
+			affinity:     blockAffinity,
+			wantTSCs:     func(map[string]string) []corev1.TopologySpreadConstraint { return customTSCs },
+			wantAffinity: func(map[string]string) *corev1.Affinity { return blockAffinity },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			p := workloadParams()
+			p.Deployment = &commonv1.DeploymentSpec{
+				Replicas:                  3,
+				TopologySpreadConstraints: tc.tscs,
+				NodePlacementSpec:         commonv1.NodePlacementSpec{Affinity: tc.affinity.DeepCopy()},
+			}
+			before := p.Deployment.Affinity.DeepCopy()
+
+			spec := BuildWorkload(p).Spec.Template.Spec
+
+			g.Expect(spec.TopologySpreadConstraints).To(gomega.Equal(tc.wantTSCs(p.SelectorLabels)))
+			g.Expect(spec.Affinity).To(gomega.Equal(tc.wantAffinity(p.SelectorLabels)))
+			g.Expect(p.Deployment.Affinity).To(gomega.Equal(before), "BuildWorkload must not write to the block's affinity")
+			g.Expect(BuildWorkload(p).Spec.Template.Spec.Affinity).To(gomega.Equal(spec.Affinity),
+				"a second render must not accumulate terms")
+		})
+	}
 }
 
 // A block that names no CPU and no memory renders the per-resource defaults:

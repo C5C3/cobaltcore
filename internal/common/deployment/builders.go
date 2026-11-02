@@ -160,9 +160,10 @@ func BuildHPA(namespace, name string, labels map[string]string, spec *commonv1.D
 
 // TopologySpreadConstraints returns the topology spread constraints for the
 // API pods. If spec.TopologySpreadConstraints is non-nil, those are used
-// verbatim (an empty slice disables defaults). Otherwise, the two
-// DefaultTopologySpreadConstraints are injected. selector is the pod selector
-// label set the defaults target.
+// verbatim (an empty slice disables defaults). Otherwise, the zone constraint
+// of DefaultTopologySpreadConstraints is injected, and BuildWorkload adds the
+// node spread, DefaultHostnameSpreadTerm, under the same nil condition.
+// selector is the pod selector label set the defaults target.
 func TopologySpreadConstraints(spec *commonv1.DeploymentSpec, selector map[string]string) []corev1.TopologySpreadConstraint {
 	if spec.TopologySpreadConstraints != nil {
 		return spec.TopologySpreadConstraints
@@ -170,26 +171,23 @@ func TopologySpreadConstraints(spec *commonv1.DeploymentSpec, selector map[strin
 	return DefaultTopologySpreadConstraints(selector)
 }
 
-// DefaultTopologySpreadConstraints returns the two constraints injected when a
-// block sets none: topology.kubernetes.io/zone and kubernetes.io/hostname, both
-// MaxSkew 1 and ScheduleAnyway, both selecting selector. ScheduleAnyway keeps
-// them soft, so pods still schedule where the cluster has one zone or node.
+// DefaultTopologySpreadConstraints returns the constraint injected when a block
+// sets none: topology.kubernetes.io/zone, MaxSkew 1 and ScheduleAnyway,
+// selecting selector. ScheduleAnyway keeps it soft, so pods still schedule
+// where the cluster has one zone.
+//
+// The node spread is not a second constraint. For a pod that names topology
+// spread constraints, the scheduler scores only the nodes that carry every
+// topology key those constraints name, so a hostname constraint beside the
+// zone constraint scores nothing on a cluster without zone labels. The node
+// spread is DefaultHostnameSpreadTerm instead, which scores on every node.
 func DefaultTopologySpreadConstraints(selector map[string]string) []corev1.TopologySpreadConstraint {
-	ls := &metav1.LabelSelector{MatchLabels: selector}
-	return []corev1.TopologySpreadConstraint{
-		{
-			MaxSkew:           1,
-			TopologyKey:       "topology.kubernetes.io/zone",
-			WhenUnsatisfiable: corev1.ScheduleAnyway,
-			LabelSelector:     ls,
-		},
-		{
-			MaxSkew:           1,
-			TopologyKey:       "kubernetes.io/hostname",
-			WhenUnsatisfiable: corev1.ScheduleAnyway,
-			LabelSelector:     ls,
-		},
-	}
+	return []corev1.TopologySpreadConstraint{{
+		MaxSkew:           1,
+		TopologyKey:       corev1.LabelTopologyZone,
+		WhenUnsatisfiable: corev1.ScheduleAnyway,
+		LabelSelector:     &metav1.LabelSelector{MatchLabels: selector},
+	}}
 }
 
 // PriorityClassName returns the priority class name for the API pods. If
