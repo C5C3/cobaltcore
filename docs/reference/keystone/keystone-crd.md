@@ -181,14 +181,14 @@ Groups the pod-level knobs for the Keystone API Deployment under `spec.deploymen
 | --- | --- | --- | --- | --- |
 | `replicas` | `int32` | No | `3` | Number of Keystone API replicas. Minimum: 1. The webhook provides a secondary default of 3 when zero. |
 | `resources` | [`*corev1.ResourceRequirements`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/pod-v1/#resources) | No | See [Resource defaults](#resource-defaults) | CPU and memory requests and limits for the Keystone API container. The operator never writes defaults into this field. It resolves them per resource when it renders the pod: `70m` CPU request, no CPU limit, and `720Mi` memory request and limit at the default uWSGI counts. The effective values show on the Deployment and its Pods, not on the CR. |
-| `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` injects two defaults (zone + hostname, MaxSkew=1, `ScheduleAnyway`); a non-nil value (including `[]`) is used verbatim. |
+| `topologySpreadConstraints` | [`[]corev1.TopologySpreadConstraint`](https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/) | No | See [below](#topologyspreadconstraints) | Scheduler hints for spreading pods across zones and nodes. `nil` renders the zone constraint (`topology.kubernetes.io/zone`, MaxSkew=1, `ScheduleAnyway`) and appends a preferred pod anti-affinity term on `kubernetes.io/hostname` (weight 100) to the pod's `affinity`; a non-nil value (including `[]`) is used verbatim and switches off both. See [What the spread needs from the cluster](#what-the-spread-needs-from-the-cluster). |
 | `priorityClassName` | `*string` | No | `nil` | PriorityClass attached to the Keystone API pod spec. When set, the webhook verifies the class exists; when unset, no priority class is configured. |
 | `terminationGracePeriodSeconds` | `*int64` | No | `nil` | Grace period (seconds) granted to Keystone API pods between SIGTERM and SIGKILL during rolling updates. When `nil`, the reconciler applies `30` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `10`. Must be strictly greater than `preStopSleepSeconds`. Drives the PodSpec `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
 | `preStopSleepSeconds` | `*int64` | No | `nil` | Sleep duration (seconds) of the preStop lifecycle hook, covering the window between EndpointSlice removal and kube-proxy/ingress propagation. When `nil`, the reconciler applies `5` (the CRD schema emits no `default:` so pre-existing CRs are not mutated on operator upgrade). Minimum: `0`. Must be strictly less than `terminationGracePeriodSeconds`. See [Graceful-termination fields](#graceful-termination-fields). |
 | `strategy` | [`*appsv1.DeploymentStrategy`](https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/deployment-v1/#DeploymentSpec) | No | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | Overrides the Deployment rollout strategy. When `nil`, the reconciler injects `RollingUpdate` with `maxUnavailable=0` and `maxSurge=1` so available capacity never drops below `spec.deployment.replicas` during an image-tag patch. Set to customize surge/unavailable counts or switch to `Recreate`. |
 | `nodeSelector` | `map[string]string` | No | `nil` | Restricts the Keystone API pods to nodes that carry every listed label. Rendered onto the pod template verbatim. The webhook checks the label grammar. See [NodePlacementSpec](#nodeplacementspec). |
 | `tolerations` | [`[]corev1.Toleration`](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/) | No | `nil` | Lets the pods onto nodes with matching taints. Rendered verbatim. The webhook applies the API server's toleration rules. |
-| `affinity` | [`*corev1.Affinity`](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity) | No | `nil` | Node affinity and pod (anti-)affinity rules, applied beside the topology spread constraints. Rendered verbatim; the API server validates it when the operator applies the Deployment. |
+| `affinity` | [`*corev1.Affinity`](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity) | No | `nil` | Node affinity and pod (anti-)affinity rules, applied beside the topology spread constraints. Rendered verbatim; while `topologySpreadConstraints` is unset, the operator appends the default hostname anti-affinity term after these rules. The API server validates it when the operator applies the Deployment. |
 | `verticalAutoscaling` | [`*VerticalAutoscalingSpec`](#verticalautoscalingspec) | No | `nil` | Opts the Keystone API Deployment into a VerticalPodAutoscaler that controls the requests of its containers. Rejected beside `spec.autoscaling`. On a cluster that does not serve the VPA, `VPAReady` turns False with reason `VPANotInstalled`. |
 
 ### Resource defaults
@@ -1214,11 +1214,19 @@ Keystone API Deployment's pod template. Uses the upstream
 restricts `labelSelector` to exact `matchLabels` matching the Deployment
 selector (see below).
 
-| `spec.deployment.topologySpreadConstraints` | Effect |
-| --- | --- |
-| `nil` (unset) | Operator injects two defaults: `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, both `MaxSkew=1` with `ScheduleAnyway`, selecting pods via `app.kubernetes.io/name=keystone` + `app.kubernetes.io/instance={name}`. |
-| `[]` (empty slice) | Defaults disabled; no spread constraints configured. Explicit opt-out. |
-| Non-empty slice | User value is applied verbatim; no defaults merged. |
+The default spread has two parts, both soft and both selecting pods via
+`app.kubernetes.io/name=keystone` + `app.kubernetes.io/instance={name}`: a
+topology spread constraint across zones and a preferred pod anti-affinity term
+across nodes. The field switches both:
+
+| `spec.deployment.topologySpreadConstraints` | Pod template constraints | Pod template `affinity` |
+| --- | --- | --- |
+| `nil` (unset) | One: `topology.kubernetes.io/zone`, `MaxSkew=1`, `ScheduleAnyway` | `spec.deployment.affinity` (or a new one), plus one preferred pod anti-affinity term on `kubernetes.io/hostname` with weight 100, appended last |
+| `[]` (empty slice) | None. Explicit opt-out. | `spec.deployment.affinity` verbatim, none when unset |
+| Non-empty slice | The list verbatim; no defaults merged | `spec.deployment.affinity` verbatim, none when unset |
+
+The term's weight of 100 is the maximum the API admits, so preferred terms of
+your own in `spec.deployment.affinity` do not outweigh it.
 
 ### Webhook Constraint
 
@@ -1243,6 +1251,59 @@ spec:
             app.kubernetes.io/name: keystone
             app.kubernetes.io/instance: keystone
 ```
+
+### What the spread needs from the cluster
+
+For a pod that names topology spread constraints, the scheduler computes the
+spread score only on the nodes that carry every topology key those constraints
+name. Every other node gets the lowest spread score. On a cluster where no node
+carries a zone label, the zone constraint therefore scores no node, and a
+hostname constraint beside it would score none either. The node spread is the
+anti-affinity term instead. It names only `kubernetes.io/hostname`, which the
+kubelet sets on every node, so the scheduler scores it on every cluster.
+
+Measured on kind with six replicas of a pod that requests 70m CPU and 368Mi
+memory (pods per schedulable node, largest first):
+
+| Nodes | Zone and hostname constraints | Zone constraint and hostname term (the default) |
+| --- | --- | --- |
+| 3, no zone label, one node 37 % loaded | 5/1/0 | 2/2/2 |
+| 3, two of them carry a zone label | 3/3/0 | 2/2/2 |
+| 6, one of them carries a zone label | 6/0/0/0/0/0 | 3/1/1/1/0/0 |
+
+A partly labelled cluster stays skewed, because the labelled nodes win the
+zone score. Label every node that may run the pods with
+`topology.kubernetes.io/zone`, or none of them. kubeadm and kind set no zone
+label. Check what your nodes carry:
+
+```shell
+kubectl get nodes -L topology.kubernetes.io/zone
+```
+
+A custom list must name only keys that every candidate node carries. A
+`DoNotSchedule` constraint on a key a node lacks filters that node out, so the
+zone constraint under [Example](#example) leaves the pods `Pending` on a
+cluster without zone labels. `[]` switches off both parts of the default.
+
+### Operator upgrade
+
+The operator resolves the default spread when it renders the pod and never
+writes it into the CR. Upgrading from an operator that rendered a zone and a
+hostname constraint therefore changes the pod template of every Deployment
+whose block leaves `topologySpreadConstraints` unset: the hostname constraint
+leaves `topologySpreadConstraints`, and the hostname term joins `affinity`.
+That takes in the API Deployment of every service and the other Deployments an
+operator renders from a `DeploymentSpec`, such as the Nova scheduler or OVN
+northd. Each of them rolls once under its `strategy`, by default
+`RollingUpdate` with `maxSurge=1` and `maxUnavailable=0`. The Cinder volume
+and backup Deployments are the exception: their strategy must be `Recreate`
+(see [CinderVolumeSpec](../cinder/cinder-crd.md#cindervolumespec)), so each
+stops its single pod before the new one starts, and that volume backend or the
+backup service is unavailable until the new pod is Ready. A block that sets
+`topologySpreadConstraints`, `[]` included, renders the same pod template as
+before and does not roll. Jobs and CronJobs carry neither part and keep their
+templates. The OVN Raft members roll too, one at a time; see
+[Disruption budget and spread](../ovn/ovn-central-crd.md#disruption-budget-and-spread).
 
 ---
 
@@ -1589,14 +1650,17 @@ Groups the fields that pick the nodes a pod may run on. `DeploymentSpec`
 embeds it inline, so the fields sit directly under `spec.deployment` (and
 under every other block that embeds `DeploymentSpec`, such as Cinder's
 `spec.api.deployment`). `JobSpec` embeds it too. The operator renders each field
-onto the pod template verbatim; an unset field renders nothing, so a
-Deployment whose CR sets none of them does not roll.
+onto the pod template verbatim, and an unset field renders nothing of its own.
+The one addition is the default hostname anti-affinity term, which Job and
+CronJob pods never carry: a Deployment whose block leaves
+`topologySpreadConstraints` unset carries it in its `affinity`, after the
+block's own terms (see [TopologySpreadConstraints](#topologyspreadconstraints)).
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `nodeSelector` | `map[string]string` | No | `nil` | Restricts the pods to nodes that carry every listed label. The webhook requires a qualified label name as each key and a valid label value as each value. |
 | `tolerations` | `[]corev1.Toleration` | No | `nil` | Lets the pods onto nodes with matching taints. The webhook applies the API server's toleration rules (see [Validation Rules](#validation-rules)). |
-| `affinity` | `*corev1.Affinity` | No | `nil` | Node affinity and pod (anti-)affinity rules, applied beside the topology spread constraints. The webhook does not check it; the API server validates the rendered pod template, and a refused Job surfaces as `DatabaseReady=False` with reason `DBSyncFailed`. |
+| `affinity` | `*corev1.Affinity` | No | `nil` | Node affinity and pod (anti-)affinity rules, applied beside the topology spread constraints. On a Deployment whose block leaves `topologySpreadConstraints` unset, the operator appends the default hostname anti-affinity term after these rules. The webhook does not check it; the API server validates the rendered pod template, and a refused Job surfaces as `DatabaseReady=False` with reason `DBSyncFailed`. |
 
 ### JobSpec
 
