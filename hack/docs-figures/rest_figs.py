@@ -6,7 +6,7 @@
 """The remaining figures: chains, lanes and the hand-laid ones."""
 import pathlib
 import sys
-from figlib import Fig, INK, INK_DARK, MUTED, GREY, LINE, PAPER, GL_FILL, FRAME_FILL, text_width
+from figlib import Fig, INK, INK_DARK, MUTED, GREY, LINE, PAPER, GL_FILL, FRAME_FILL, BLUE, text_width
 from flow_fig import chain_figure, lanes_figure
 
 OUT = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(__file__).resolve().parents[2] / "docs" / "diagrams"
@@ -336,6 +336,54 @@ def build_images_jobs():
     return fig
 
 figs["ci-build-images-jobs"] = build_images_jobs()
+
+
+def saml_login():
+    fig = Fig("service-saml-login", "SAML login through Horizon", 1580, 1200)
+    fig.text(40, 30, "SAML WebSSO through Horizon", fs=30, bold=True, color=INK_DARK)
+    participants = [
+        (180, "Browser", "public URLs"),
+        (480, "Horizon", "dashboard"),
+        (780, "Federation proxy", "mod_auth_mellon"),
+        (1080, "Keystone", "127.0.0.1:5000"),
+        (1380, "Identity provider", "SAML 2.0"),
+    ]
+    for x, name, detail in participants:
+        fig.box(x - 135, 95, 270, 54, name)
+        fig.text(x, 155, detail, align="center")
+        fig.arrow([(x, 195), (x, 1020)], color=GREY, sw=1, dashed="4 4", head=False)
+
+    requests = [
+        (1, 180, 480, 235, "Choose SAML provider", True),
+        (2, 180, 780, 375, "Open per-IdP WebSSO path with origin", True),
+        (3, 180, 1380, 515, "Visit IdP and log in", True),
+        (4, 180, 780, 655, "POST SAMLResponse to .../mellon/postResponse", True),
+        (5, 780, 1080, 755, "MELLON headers", False),
+        (6, 180, 480, 895, "POST token to /auth/websso/", True),
+        (7, 480, 1080, 995, "Validate token (cluster-local Keystone URL)", False),
+    ]
+    for number, start, end, y, label, browser in requests:
+        fig.arrow([(start, y), (end, y)], color=BLUE, open_head=browser)
+        fig.badge(start + 22, y - 25, str(number), r=18)
+        fig.text(start + 50, y - 42, label, color=INK, fs=20)
+
+    responses = [
+        (480, 180, 295, "Redirect to Keystone"),
+        (780, 180, 435, "IdP redirect with SAML authentication request"),
+        (1380, 180, 575, "Form with SAML response containing a signed assertion"),
+        (1080, 180, 815, "Token form via proxy (trusted dashboard origin)"),
+    ]
+    for start, end, y, label in responses:
+        fig.arrow([(start, y), (end, y)], color=GREY, sw=2, dashed="4 4")
+        fig.text(end + 20, y - 38, label, color=MUTED, fs=20)
+
+    fig.text(40, 1050, "Open blue arrow: browser request. Filled blue arrow: call between servers. Dashed grey: response.", fs=20)
+    fig.text(40, 1090, "Mellon validates the SAML response before step 5. Horizon starts a session after step 7.", fs=20)
+    fig.text(40, 1130, "No proxy-to-IdP token exchange. Gateway and Service routing are omitted.", fs=20)
+    return fig
+
+
+figs["service-saml-login"] = saml_login()
 
 for fid, fig in figs.items():
     if fig is None:
