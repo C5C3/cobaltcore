@@ -8,8 +8,9 @@
 #   1. the heading occurs once, after `#### Lab fault runs` and before
 #      `### Lab ControlPlane`; `#### Lab dizzy run` occurs once, after it, and
 #      the next heading is `### Lab Prometheus stack`
-#   2. the subsection names the overlay file, the deploy command, both
-#      port-forward commands, `EXTERNAL_CLUSTER=true make dizzy-keystone`, the
+#   2. the subsection names the overlay file, the deploy command, the
+#      VictoriaMetrics port-forward and Grafana on the Gateway's suffix, the
+#      lab CA file, `EXTERNAL_CLUSTER=true make dizzy-keystone`, the
 #      claim server-volume-dizzy-victoria-metrics-server-0, the posture and the
 #      teardown command
 #   3. the run subsection holds the commands of the run's eight steps, each a
@@ -123,13 +124,13 @@ test_section_content() {
   for text in \
     '**File:** `deploy/lab/metal-stack/dizzy/kustomization.yaml`' \
     'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_DIZZY=true make deploy-infra' \
-    'kubectl -n envoy-gateway-system port-forward \' \
     'kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428' \
     'EXTERNAL_CLUSTER=true make dizzy-keystone' \
     'server-volume-dizzy-victoria-metrics-server-0' \
     '**Posture.**' \
     '`EXTERNAL_CLUSTER=true make teardown-infra`' \
-    'https://dizzy.127-0-0-1.nip.io:8443' \
+    '`https://dizzy.<suffix>`' \
+    '`_output/dizzy/lab-ca.pem`' \
     '`tests/unit/deploy/metal_stack_dizzy_test.sh`'; do
     assert_contains "the section holds '$text'" "$STACK" "$text"
   done
@@ -150,14 +151,14 @@ test_run_commands() {
     'curl -fsS http://localhost:8428/health; echo' \
     'EXTERNAL_CLUSTER=true make dizzy-keystone; echo "exit $?"' \
     "curl -fsS http://localhost:8428/api/v1/label/__name__/values | jq -r '.data[]' | grep '^dizzy_'" \
-    "curl -sk 'https://dizzy.127-0-0-1.nip.io:8443/api/search?type=dash-db' | jq -r '.[].uid' | sort" \
+    'curl -s --cacert _output/dizzy/lab-ca.pem "https://dizzy.${PUBLIC_SUFFIX}/api/search?type=dash-db" | jq -r '"'"'.[].uid'"'"' | sort' \
     'for metric in dizzy_iterations_total dizzy_operation_duration_seconds_count dizzy_resource_time_to_ready_seconds_count; do' \
-    'curl -sk -H '"'"'Content-Type: application/json'"'"' https://dizzy.127-0-0-1.nip.io:8443/api/ds/query \' \
+    'curl -s --cacert _output/dizzy/lab-ca.pem -H '"'"'Content-Type: application/json'"'"' "https://dizzy.${PUBLIC_SUFFIX}/api/ds/query" \' \
     'kubectl delete pod dizzy-victoria-metrics-server-0 -n dizzy' \
     'kubectl rollout status statefulset/dizzy-victoria-metrics-server -n dizzy --timeout=300s' \
     'EXTERNAL_CLUSTER=true make teardown-infra' \
     'kubectl get namespace dizzy' \
-    'rm _output/dizzy/clouds.yaml'; do
+    'rm _output/dizzy/clouds.yaml _output/dizzy/lab-ca.pem'; do
     assert_eq "the block holds '$line' once" "1" "$(count_lines "$BLOCK" "$line")"
   done
   assert_eq "the queries run twice, before and after the pod restart" "2" "$(count_lines "$BLOCK" 'queries')"

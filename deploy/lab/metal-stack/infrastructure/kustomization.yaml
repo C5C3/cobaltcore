@@ -8,20 +8,32 @@
 #
 # It takes the kind infrastructure overlay as its own base and inherits its
 # single-replica MariaDB and Memcached, the single-node GarageCluster, the
-# NodePort EnvoyProxy (nodePort 31443), the nip.io Certificates, the
 # ExternalSecret shims and the proving OpenBaoCluster with its tenant. The
-# patches remove the kind overlay's `standard` class from the MariaDB and
-# Garage volumes (a null value deletes the key; see ../base/kustomization.yaml
-# for why, and for why a lab deployed with the earlier `premium` pin is torn
-# down instead of updated in place). Those volumes and the proving
-# OpenBaoCluster, which names no class, bind to the cluster's default, which
-# hack/deploy-infra.sh checks exists before Step 2.
+# first two patches remove the kind overlay's `standard` class from the
+# MariaDB and Garage volumes (a null value deletes the key; see
+# ../base/kustomization.yaml for why, and for why a lab deployed with the
+# earlier `premium` pin is torn down instead of updated in place). Those
+# volumes and the proving OpenBaoCluster, which names no class, bind to the
+# cluster's default, which hack/deploy-infra.sh checks exists before Step 2.
+#
+# The Gateway's pieces are the lab's own (the fourth point of
+# ../base/kustomization.yaml). The last two patches remove the kind overlay's
+# NodePort EnvoyProxy envoy-nodeport and its twelve self-signed
+# *-nip-io-tls Certificates, which no listener of the lab references. In
+# their place the overlay adds:
+#   - envoy-public.yaml, the EnvoyProxy of type LoadBalancer;
+#   - lab-ca.yaml, the lab CA and its ClusterIssuer lab-ca-issuer.
+# gateway-certificate.yaml, the Gateway's certificate, is a template and no
+# resource here: hack/deploy-infra.sh applies it in Step 5 with the address
+# of the Gateway's Service in it.
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - ../../../kind/infrastructure
+  - envoy-public.yaml
+  - lab-ca.yaml
 
 patches:
   - target:
@@ -58,3 +70,34 @@ patches:
             storageClassName: null
           data:
             storageClassName: null
+
+  # The kind overlay's NodePort EnvoyProxy; the GatewayClass of the lab names
+  # envoy-public instead.
+  - target:
+      group: gateway.envoyproxy.io
+      version: v1alpha1
+      kind: EnvoyProxy
+      name: envoy-nodeport
+    patch: |
+      $patch: delete
+      apiVersion: gateway.envoyproxy.io/v1alpha1
+      kind: EnvoyProxy
+      metadata:
+        name: envoy-nodeport
+        namespace: envoy-gateway-system
+
+  # The kind overlay's twelve per-hostname Certificates. kustomize matches the
+  # name as a regular expression and puts each target's own name into the
+  # patch.
+  - target:
+      group: cert-manager.io
+      version: v1
+      kind: Certificate
+      name: .*-nip-io-tls
+    patch: |
+      $patch: delete
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: every-nip-io-certificate
+        namespace: openstack

@@ -44,9 +44,9 @@ it with `DIZZY_ARGS="--duration 30m"`.
   on the metal-stack lab `EXTERNAL_CLUSTER=true WITH_DIZZY=true` beside the
   lab's other flags). The runners refuse to start when the `dizzy` namespace
   is absent.
-- On the metal-stack lab, two port-forwards from the workstation: the
-  Gateway's on local port 8443 and one to VictoriaMetrics on local port 8428
-  (see [Running a soak](#running-a-soak)).
+- On the metal-stack lab, the Gateway's public address reachable from the
+  workstation and a port-forward to VictoriaMetrics on local port 8428 (see
+  [Running a soak](#running-a-soak)).
 - A Ready quick-start ControlPlane. The runners read the admin password from the
   `controlplane-keystone-admin-credentials` Secret in the `openstack` namespace
   and generate `_output/dizzy/clouds.yaml` (mode 600, cloud key `devstack-c5c3`)
@@ -77,30 +77,29 @@ Each target runs three separate preflights before handing off to
 the ControlPlane admin Secret. Each failure prints its own message so the three
 causes stay distinguishable.
 
-On the metal-stack lab nothing outside the cluster reaches the stack. Open the
-two port-forwards, each in a terminal of its own, then run the soak with
+On the metal-stack lab Keystone answers on the Gateway's public address, and
+VictoriaMetrics only inside the cluster. Open the port-forward to
+VictoriaMetrics in a terminal of its own, then run the soak with
 `EXTERNAL_CLUSTER=true`:
 
 ```bash
-kubectl -n envoy-gateway-system port-forward \
-  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
 kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
 EXTERNAL_CLUSTER=true make dizzy-keystone
 ```
 
-`hack/dizzy.sh` then takes the Keystone URL
-`https://keystone.127-0-0-1.nip.io:8443/v3` of the first port-forward, exports
-to `localhost:8428` through the second, and calls no `docker`. Neither
-script opens a port-forward; restart one that has ended.
+`hack/dizzy.sh` then takes the Keystone URL `https://keystone.<suffix>/v3` on
+the Gateway, with the suffix from the first DNS name of the Certificate
+`openstack/openstack-gw-tls`, exports to `localhost:8428` through the
+port-forward, and calls no `docker`. The script opens no port-forward; restart
+one that has ended.
 
-The admin password goes only to a Keystone that holds one of the Gateway's
-keys. `hack/dizzy.sh` collects the Gateway's certificates from the Secrets
-`openstack/*-nip-io-tls` with `jq`, as
-[Step 7](../../quick-start-metal-stack.md#cp-verify) of the Quick Start
-(metal-stack) does, into `_output/dizzy/gateway-ca.pem`, and names that file as
-`cacert` in `clouds.yaml`. dizzy then verifies Keystone and the endpoints of
-its catalog against them. Without such a certificate the script exits 1 and
-writes no `clouds.yaml`. The kind mode writes `verify: false`.
+The admin password goes only to a Keystone that holds a certificate of the lab
+CA. `hack/dizzy.sh` writes the lab CA, the `ca.crt` of the Certificate's
+Secret, as [Step 7](../../quick-start-metal-stack.md#cp-verify) of the Quick
+Start (metal-stack) does, into `_output/dizzy/lab-ca.pem`, and names that file
+as `cacert` in `clouds.yaml`. dizzy then verifies Keystone and the endpoints of
+its catalog against it. Without the Certificate or the CA the script exits 1
+and writes no `clouds.yaml`. The kind mode writes `verify: false`.
 
 ## In-cluster soak
 
@@ -499,14 +498,14 @@ own. The dizzy version pin lives only in `hack/dizzy.sh`.
 | `DIZZY_SECRET` | Name of the ControlPlane admin Secret (default `controlplane-keystone-admin-credentials`). |
 | `DIZZY_CP_NAMESPACE` | Namespace of the admin Secret (default `openstack`). |
 | `KIND_CLUSTER` | Cluster name for the `docker port` probes (default `cobaltcore`). Note that `make deploy-infra` itself keys off `CLUSTER_NAME`. Not read under `EXTERNAL_CLUSTER=true`. |
-| `EXTERNAL_CLUSTER` | `true` runs against the metal-stack lab: the Keystone URL of the Gateway port-forward on local port 8443, verified against the Gateway's certificates, no `docker port` probe, and a hint to open the VictoriaMetrics port-forward when `localhost:8428` does not answer. Any other value keeps the kind mode. `make deploy-infra` and `make teardown-infra` read the same variable. |
+| `EXTERNAL_CLUSTER` | `true` runs against the metal-stack lab: the Keystone URL on the Gateway's public hostname, verified against the lab CA, no `docker port` probe, and a hint to open the VictoriaMetrics port-forward when `localhost:8428` does not answer. Any other value keeps the kind mode. `make deploy-infra` and `make teardown-infra` read the same variable. |
 
 ## Watching the run
 
 Grafana serves the dizzy dashboards at `https://dizzy.127-0-0-1.nip.io`; append
 `:<KIND_HOST_PORT>` when that override is set to something other than 443. On
-the metal-stack lab it answers at `https://dizzy.127-0-0-1.nip.io:8443` through
-the Gateway port-forward. Access is anonymous Viewer, so no login is needed.
+the metal-stack lab it answers at `https://dizzy.<suffix>` on the Gateway's
+public address. Access is anonymous Viewer, so no login is needed.
 Three dashboards ship with the overlay:
 
 | Dashboard | UID |

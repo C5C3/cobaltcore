@@ -5,7 +5,7 @@
 
 # hack/dizzy.sh — Fetch the pinned dizzy load/chaos tester and drive it against
 # the kind ControlPlane or, under EXTERNAL_CLUSTER=true, an external cluster
-# through its two port-forwards.
+# through its public Gateway and a port-forward to VictoriaMetrics.
 #
 # Subcommands:
 #   stage-dashboards   Copy dizzy's three Grafana dashboards into
@@ -48,15 +48,18 @@ PRESSURE_OUTPUT_DIR="${REPO_ROOT}/_output/dizzy/pressure"
 
 # Selects the external-cluster mode, as in hack/deploy-infra.sh and
 # hack/teardown-infra.sh; only the value true does. The helper then calls no
-# docker: Keystone is reached through the Gateway port-forward on
-# EXTERNAL_PUBLIC_PORT and VictoriaMetrics through a second one on 8428, the two
-# the deploy's completion banner prints.
+# docker: Keystone is reached on the Gateway's hostname
+# keystone.<suffix>, on port 443, and VictoriaMetrics through a port-forward on
+# 8428, the one the deploy's completion banner prints.
 EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 
-# The local port of the Gateway port-forward, PUBLIC_PORT of
-# hack/deploy-infra.sh in external mode. tests/unit/hack/dizzy_sh_test.sh holds
-# the two equal.
-EXTERNAL_PUBLIC_PORT="8443"
+# The Gateway's Certificate in external mode, <namespace>/<name>: the one
+# hack/deploy-infra.sh issues in Step 5 from
+# deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml. Its first DNS
+# name, *.<suffix>, names the Gateway's hostnames, and the ca.crt of its Secret
+# is the lab CA that signed it. tests/unit/hack/dizzy_sh_test.sh holds the
+# name equal to the template's.
+EXTERNAL_GATEWAY_CERTIFICATE="openstack/openstack-gw-tls"
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
@@ -101,9 +104,9 @@ Environment overrides:
   DIZZY_AUTH_URL         Keystone auth URL override.
   DIZZY_ARGS             Extra args appended to the dizzy invocation.
   KIND_CLUSTER           kind cluster name (default cobaltcore).
-  EXTERNAL_CLUSTER       true: reach Keystone through the Gateway port-forward
-                         on ${EXTERNAL_PUBLIC_PORT} and VictoriaMetrics through one on 8428,
-                         without docker (default false).
+  EXTERNAL_CLUSTER       true: reach Keystone on the Gateway's public
+                         hostname and VictoriaMetrics through a port-forward
+                         on 8428, without docker (default false).
 EOF
 }
 
@@ -187,10 +190,10 @@ stage_dashboards() {
 
 # ---------------------------------------------------------------------------
 # generate_clouds_yaml — Write ${CLOUDS_FILE} (mode 600) from the ControlPlane
-# admin Secret and the Keystone auth URL: DIZZY_AUTH_URL when set, the Gateway
-# port-forward under EXTERNAL_CLUSTER=true, the kind node's probed host port
-# otherwise. Under EXTERNAL_CLUSTER=true the file names gateway-ca.pem beside it
-# as cacert; outside it, it says verify: false.
+# admin Secret and the Keystone auth URL: DIZZY_AUTH_URL when set, the
+# Gateway's hostname keystone.<suffix> under EXTERNAL_CLUSTER=true, the kind
+# node's probed host port otherwise. Under EXTERNAL_CLUSTER=true the file names
+# lab-ca.pem beside it as cacert; outside it, it says verify: false.
 # ---------------------------------------------------------------------------
 generate_clouds_yaml() {
   local secret="${DIZZY_SECRET:-controlplane-keystone-admin-credentials}"
@@ -216,12 +219,29 @@ generate_clouds_yaml() {
   local escaped
   escaped="$(printf '%s' "${password}" | sed "s/'/''/g")"
 
+  # Under EXTERNAL_CLUSTER=true the Gateway's Certificate names the suffix of
+  # its hostnames and the Secret that carries the lab CA.
+  local gateway_suffix="" gateway_secret=""
+  if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    local cert_namespace="${EXTERNAL_GATEWAY_CERTIFICATE%%/*}" cert_name="${EXTERNAL_GATEWAY_CERTIFICATE#*/}"
+    local cert_fields="" dns_name=""
+    cert_fields="$(kubectl get certificate "${cert_name}" -n "${cert_namespace}" \
+      -o jsonpath='{.spec.dnsNames[0]} {.spec.secretName}' 2>/dev/null)" || true
+    read -r dns_name gateway_secret <<<"${cert_fields}" || true
+    gateway_suffix="${dns_name#\*.}"
+    if [[ "${dns_name}" != "*."?* || -z "${gateway_secret}" ]]; then
+      log "ERROR: found no Gateway certificate ${EXTERNAL_GATEWAY_CERTIFICATE} with a DNS name"
+      log "       and a Secret; EXTERNAL_CLUSTER=true make deploy-infra issues it."
+      exit 1
+    fi
+  fi
+
   local auth_url
   if [[ -n "${DIZZY_AUTH_URL:-}" ]]; then
     auth_url="${DIZZY_AUTH_URL}"
   elif [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
-    auth_url="https://keystone.127-0-0-1.nip.io:${EXTERNAL_PUBLIC_PORT}/v3"
-    log "Keystone auth URL: ${auth_url} (EXTERNAL_CLUSTER=true, the Gateway port-forward on ${EXTERNAL_PUBLIC_PORT})."
+    auth_url="https://keystone.${gateway_suffix}/v3"
+    log "Keystone auth URL: ${auth_url} (EXTERNAL_CLUSTER=true, the Gateway's hostname)."
   else
     local hostport="443"
     local port_out
@@ -241,19 +261,18 @@ generate_clouds_yaml() {
 
   mkdir -p "$(dirname "${CLOUDS_FILE}")"
 
-  # Under EXTERNAL_CLUSTER=true the admin password goes to a name that public
-  # DNS resolves and to a local port any user of the workstation can bind, so
-  # dizzy verifies the Gateway against its certificates, as OS_CACERT does in
-  # Step 7 of docs/quick-start-metal-stack.md. The kind mode keeps verify: false.
+  # Under EXTERNAL_CLUSTER=true the admin password goes over the network to a
+  # name that public DNS resolves, so dizzy verifies the Gateway against the
+  # lab CA, as OS_CACERT does in Part 1, Step 7 of
+  # docs/quick-start-metal-stack.md. The kind mode keeps verify: false.
   local tls_line="verify: false"
   if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
     local ca_file
-    ca_file="$(dirname "${CLOUDS_FILE}")/gateway-ca.pem"
-    if ! kubectl get secret -n openstack --field-selector type=kubernetes.io/tls -o json |
-        jq -r '.items[] | select(.metadata.name | endswith("-nip-io-tls")) | .data["ca.crt"] | @base64d' \
-          >"${ca_file}" ||
+    ca_file="$(dirname "${CLOUDS_FILE}")/lab-ca.pem"
+    if ! kubectl get secret "${gateway_secret}" -n "${EXTERNAL_GATEWAY_CERTIFICATE%%/*}" -o json |
+        jq -r '.data["ca.crt"] // empty | @base64d' >"${ca_file}" ||
         ! grep -q 'BEGIN CERTIFICATE' "${ca_file}"; then
-      log "ERROR: found no Gateway certificate in the Secrets openstack/*-nip-io-tls;"
+      log "ERROR: found no CA in the Secret ${EXTERNAL_GATEWAY_CERTIFICATE%%/*}/${gateway_secret};"
       log "       dizzy sends the admin password only to a Keystone it can verify."
       exit 1
     fi

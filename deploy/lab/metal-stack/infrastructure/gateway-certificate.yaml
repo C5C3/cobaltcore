@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The certificate the one listener of openstack-gw terminates TLS with
+# (../base/kustomization.yaml): *.<suffix>, issued by the lab CA of
+# lab-ca.yaml. The suffix is <a-b-c-d>.nip.io, the address of the Gateway's
+# LoadBalancer Service with its dots turned into dashes, so
+# keystone.<a-b-c-d>.nip.io resolves to that address through the public nip.io
+# DNS. Under EXTERNAL_LOADBALANCER=false the suffix is 127-0-0-1.nip.io, the
+# end of the workstation's port-forward.
+#
+# This file is a template and no resource of kustomization.yaml, because the
+# address differs per cluster and is known only once the Service exists.
+# hack/deploy-infra.sh applies it in Step 5 with the placeholder PUBLIC_SUFFIX
+# replaced: first with the address the Service already has, or with
+# 127-0-0-1.nip.io before it has one, so the listener can start; then, once
+# the address is there, with that address, and waits until the certificate is
+# Ready at its new generation. The certificate's first DNS name is where the
+# quick start and hack/dizzy.sh read the suffix from.
+#
+# The wildcard covers one label, so every service gets a hostname of the form
+# <service>.<suffix>; nip.io answers for any label in front of the address.
+# The usages add server auth to cert-manager's default two: macOS refuses a
+# TLS server certificate without that extended key usage. 90 days stay under
+# the 825 days macOS accepts for a certificate of a CA it was told to trust.
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openstack-gw-tls
+  namespace: openstack
+spec:
+  secretName: openstack-gw-tls
+  duration: 2160h
+  renewBefore: 360h
+  issuerRef:
+    name: lab-ca-issuer
+    kind: ClusterIssuer
+  commonName: "*.PUBLIC_SUFFIX"
+  dnsNames:
+    - "*.PUBLIC_SUFFIX"
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment

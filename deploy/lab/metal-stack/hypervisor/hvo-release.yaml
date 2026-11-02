@@ -20,8 +20,10 @@
 #     release name as fullname that is 64 characters, one over the limit,
 #     so the install fails.
 #   - osAuthUrl is the in-cluster Keystone URL. The auth Secret carries the
-#     public https://keystone.127-0-0-1.nip.io:8443/v3, which resolves to the
-#     pod itself inside the cluster. The URL is
+#     public https://keystone.<suffix>/v3 of the Gateway, whose certificate
+#     the lab CA signs, which the pod does not trust; under
+#     EXTERNAL_LOADBALANCER=false the name resolves to the pod itself. The
+#     URL is
 #     `kubectl get nova controlplane-nova -n openstack -o jsonpath='{.spec.keystoneEndpoint}'`.
 #   - certificateNamespace is hypervisor-system, where libvirt-ca.yaml puts
 #     the Issuer of the default name nova-hypervisor-agents-ca-issuer.
@@ -50,7 +52,7 @@
 # catalog interface OS_INTERFACE names (patch 0004 of the image), and the
 # chart has no value for the variable, so the post-renderer sets internal.
 # The internal endpoints are the in-cluster Service URLs over plain HTTP, so
-# the pod needs neither a host alias nor the gateway certificates. The
+# the pod needs neither a host alias nor the lab CA. The
 # post-renderer also sets imagePullPolicy Always, which the chart has no
 # value for either: build-images.yaml moves the tag sha-<commit> to every
 # main build, so the tag changes content whenever patches/ changes. A node

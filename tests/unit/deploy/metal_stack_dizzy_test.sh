@@ -18,8 +18,10 @@
 #   5. dizzy-victoria-metrics keeps its metrics on a 10Gi volume without a
 #      storageClassName, behind a ClusterIP Service without a nodePort, and
 #      keeps the kind render's retentionPeriod, extraArgs and chart range.
-#   6. The HelmRelease dizzy-grafana, the HTTPRoute, the ConfigMap and both
-#      HelmRepositories are identical to the kind render's.
+#   6. The HelmRelease dizzy-grafana, the ConfigMap and both HelmRepositories
+#      are identical to the kind render's, and so is the HTTPRoute but for the
+#      sectionName of its one parent: the lab's Gateway has no listener
+#      https-dizzy (deploy/lab/metal-stack/base/kustomization.yaml).
 #   7. deploy/kind/dizzy still renders the NodePort 30428, no volume and a
 #      Namespace without labels.
 #
@@ -177,7 +179,7 @@ test_victoria_metrics_volume_and_service() {
 test_other_objects_match_kind() {
   echo "Test: the Grafana release, the HTTPRoute, the ConfigMap and both HelmRepositories are the kind overlay's"
 
-  render_both 5 || return
+  render_both 7 || return
 
   local object kind name lab kind_doc
   for object in HelmRelease/dizzy-grafana HTTPRoute/dizzy-grafana ConfigMap/grafana-dashboards \
@@ -186,6 +188,9 @@ test_other_objects_match_kind() {
     name="${object#*/}"
     lab="$(doc "$RENDERED" "$kind" "$name")"
     kind_doc="$(doc "$KIND_RENDERED" "$kind" "$name")"
+    if [[ "$kind" == HTTPRoute ]]; then
+      kind_doc="$(printf '%s\n' "$kind_doc" | yq -N 'del(.spec.parentRefs[0].sectionName)' -)"
+    fi
     if [[ -n "$lab" && "$lab" == "$kind_doc" ]]; then
       echo "  PASS: $object is identical to the kind render's"
       PASS=$((PASS + 1))
@@ -195,6 +200,11 @@ test_other_objects_match_kind() {
       FAIL=$((FAIL + 1))
     fi
   done
+
+  assert_eq "the kind route names the listener https-dizzy" "https-dizzy" \
+    "$(doc "$KIND_RENDERED" HTTPRoute dizzy-grafana | yq -N -r '.spec.parentRefs[0].sectionName' -)"
+  assert_eq "the lab route names no listener" "false" \
+    "$(doc "$RENDERED" HTTPRoute dizzy-grafana | yq -N -r '.spec.parentRefs[0] | has("sectionName")' -)"
 }
 
 # --- Test 7: the kind overlay is unchanged ---

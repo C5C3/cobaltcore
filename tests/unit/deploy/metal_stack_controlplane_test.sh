@@ -16,12 +16,17 @@
 #      controlplane, both in openstack.
 #   3. The rendered ControlPlane carries the lab settings: global_physnet_mtu
 #      as the string "1460", an empty hypervisorOperator map, the Minimal
-#      profile, and no profileRef, metadataGateway or storageClassName.
+#      profile, the console proxy on openstack-gw for
+#      nova-console.127-0-0-1.nip.io, and no profileRef, metadataGateway or
+#      storageClassName. No service sets publicEndpoint, and every gateway
+#      hostname ends in .127-0-0-1.nip.io, the suffix Part 1, Step 4 of
+#      docs/quick-start-metal-stack.md replaces.
 #   4. The two files do not drift from docs/quick-start-controlplane.md:
-#      controlplane-lab.yaml without the cinder block and the two lab keys
-#      equals the first `# controlplane.yaml` block, its cinder block without
-#      the backends and the backup target equals the `# block-storage.yaml`
-#      fragment without its own, and ovncentral.yaml equals the
+#      controlplane-lab.yaml without the cinder block and the three lab keys
+#      equals the first `# controlplane.yaml` block without its publicEndpoint
+#      fields, its cinder block without the backends and the backup target
+#      equals the `# block-storage.yaml` fragment without its own and without
+#      its publicEndpoint, and ovncentral.yaml equals the
 #      `# controlplane-ovn.yaml` block, compared without comments and with
 #      sorted keys.
 #   5. controlplane-lab.yaml states the tenant MTU 1402 the setting yields.
@@ -223,6 +228,24 @@ test_lab_settings() {
     "$(val ControlPlane controlplane '.spec.sizing | has("profileRef")')"
   assert_eq "no metadata gateway is published" "false" \
     "$(val ControlPlane controlplane '.spec.services.nova | has("metadataGateway")')"
+  assert_eq "the console proxy is published on openstack-gw" "openstack-gw" \
+    "$(val ControlPlane controlplane '.spec.services.nova.consoleProxy.gateway.parentRef.name')"
+  assert_eq "the console proxy has the hostname nova-console.127-0-0-1.nip.io" \
+    "nova-console.127-0-0-1.nip.io" \
+    "$(val ControlPlane controlplane '.spec.services.nova.consoleProxy.gateway.hostname')"
+  # The Gateway answers on 443, where the operator derives the public URL from
+  # the hostname; a :8443 left from the kind quick start would go to the
+  # catalog.
+  assert_eq "no service sets publicEndpoint" "0" \
+    "$(val ControlPlane controlplane '[.spec.services[] | select(has("publicEndpoint"))] | length')"
+  # val keeps the first line of a result; the hostnames are nine lines.
+  local hostnames
+  hostnames="$(printf '%s\n' "$RENDERED" |
+    yq -N -r 'select(.kind == "ControlPlane") | .. | select(tag == "!!map" and has("hostname")) | .hostname' -)"
+  assert_eq "nine gateway hostnames are set, one per service and the console's" "9" \
+    "$(grep -c . <<<"$hostnames")"
+  assert_eq "every gateway hostname ends in .127-0-0-1.nip.io, the template suffix" "" \
+    "$(grep -v '\.127-0-0-1\.nip\.io$' <<<"$hostnames" || true)"
   assert_not_contains "no storage class is named, so the default class applies" \
     "$RENDERED" "storageClassName"
 }
@@ -247,10 +270,11 @@ test_no_drift_from_the_quick_start() {
   trap 'rm -rf "$tmp"' RETURN
 
   compare_block "$tmp" '# controlplane.yaml' "$CONTROLPLANE_DIR/controlplane-lab.yaml" \
-    'del(.spec.services.neutron.extraConfig) | del(.spec.services.nova.hypervisorOperator) | del(.spec.services.cinder)'
+    'del(.spec.services.neutron.extraConfig) | del(.spec.services.nova.hypervisorOperator) | del(.spec.services.nova.consoleProxy) | del(.spec.services.cinder)' \
+    'del(.spec.services[].publicEndpoint)'
   compare_block "$tmp" '# block-storage.yaml' "$CONTROLPLANE_DIR/controlplane-lab.yaml" \
     '{"cinder": .spec.services.cinder} | del(.cinder.backends) | del(.cinder.backupBackend)' \
-    'del(.cinder.backends) | del(.cinder.backupBackend)'
+    'del(.cinder.backends) | del(.cinder.backupBackend) | del(.cinder.publicEndpoint)'
   compare_block "$tmp" '# controlplane-ovn.yaml' "$CONTROLPLANE_DIR/ovncentral.yaml"
 }
 

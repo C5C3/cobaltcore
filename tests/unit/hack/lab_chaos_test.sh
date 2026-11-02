@@ -35,7 +35,8 @@
 #
 # The runner is sourced in a subshell (its BASH_SOURCE guard keeps lc_main
 # from running) with the stubs first on PATH, the waits shortened, and
-# lc_clouds, which writes the clouds.yaml with hack/dizzy.sh, replaced.
+# lc_clouds, which writes the clouds.yaml with hack/dizzy.sh, replaced by one
+# that sets LC_KEYSTONE_URL alone.
 #
 # Usage: bash tests/unit/hack/lab_chaos_test.sh
 
@@ -167,7 +168,7 @@ in_lc() {
   LC_POLL=0
   LC_PROBE_WINDOW=0
   LC_HOST=worker-a
-  lc_clouds() { :; }
+  lc_clouds() { LC_KEYSTONE_URL="https://keystone.154-41-192-90.nip.io/v3"; }
   lc_sleep() { :; }
 }
 
@@ -250,7 +251,7 @@ test_preflight() {
   assert_eq "a complete lab passes" "0" "$RC"
   local line
   for line in "OK: kubectl jq yq python3 openstack on PATH" "OK: context garden-lab" "OK: Gardener shoot newforge" \
-    "OK: openstack token issue through the port-forward" "OK: HelmRelease chaos-mesh/chaos-mesh is Ready" \
+    "OK: openstack token issue on https://keystone.154-41-192-90.nip.io/v3" "OK: HelmRelease chaos-mesh/chaos-mesh is Ready" \
     "OK: one 'are loaded' line per node (2)" "OK: namespace dizzy" "OK: ControlPlane openstack/controlplane is Ready=True" \
     "OK: image hvo-cirros-kvm and flavor hvo-smoke-test-flavor are Available" "OK: the Cinder backend nfs1 is Ready" \
     "OK: volume type nfs" "OK: 2 nova-compute services are up" "OK: no server named lab-chaos-*"; do
