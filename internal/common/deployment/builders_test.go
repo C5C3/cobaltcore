@@ -11,6 +11,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
@@ -338,4 +339,123 @@ func TestApplyNodePlacement_RendersCopies(t *testing.T) {
 	ps.Tolerations[0].Key = "changed"
 	ps.Affinity.NodeAffinity = nil
 	g.Expect(spec).To(gomega.Equal(want))
+}
+
+// The default node spread is one preferred anti-affinity term on the hostname
+// key at the maximum weight, selecting the given label set through a copy of
+// it.
+func TestDefaultHostnameSpreadTerm(t *testing.T) {
+	g := gomega.NewWithT(t)
+	sel := map[string]string{"app.kubernetes.io/instance": "ks"}
+
+	term := DefaultHostnameSpreadTerm(sel)
+	g.Expect(term.Weight).To(gomega.Equal(DefaultHostnameSpreadWeight))
+	g.Expect(term.Weight).To(gomega.Equal(int32(100)))
+	g.Expect(term.PodAffinityTerm.TopologyKey).To(gomega.Equal("kubernetes.io/hostname"))
+	g.Expect(term.PodAffinityTerm.LabelSelector.MatchLabels).To(gomega.Equal(sel))
+	g.Expect(term.PodAffinityTerm.LabelSelector.MatchExpressions).To(gomega.BeNil())
+
+	term.PodAffinityTerm.LabelSelector.MatchLabels["injected"] = "yes"
+	g.Expect(sel).To(gomega.Equal(map[string]string{"app.kubernetes.io/instance": "ks"}),
+		"writing to the term's matchLabels must not reach the caller's map")
+}
+
+// The default term goes after every term the pod spec already carries, which
+// stay unchanged. A nil or empty selector adds nothing, because an empty
+// matchLabels would select every pod in the namespace, and a nil pod spec is
+// left alone.
+func TestApplyDefaultHostnameSpread(t *testing.T) {
+	sel := map[string]string{"app.kubernetes.io/instance": "ks"}
+	nodeAffinity := &corev1.NodeAffinity{RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+		NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{{
+			Key: "node-role.kubernetes.io/control-plane", Operator: corev1.NodeSelectorOpDoesNotExist,
+		}}}},
+	}}
+	fullAffinity := func() *corev1.Affinity {
+		return &corev1.Affinity{
+			NodeAffinity: nodeAffinity.DeepCopy(),
+			PodAffinity: &corev1.PodAffinity{RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+				TopologyKey:   corev1.LabelTopologyZone,
+				LabelSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "db"}},
+			}}},
+			PodAntiAffinity: &corev1.PodAntiAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{{
+					TopologyKey:   corev1.LabelHostname,
+					LabelSelector: &metav1.LabelSelector{MatchLabels: sel},
+				}},
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+					{Weight: 10, PodAffinityTerm: corev1.PodAffinityTerm{TopologyKey: corev1.LabelTopologyZone}},
+					{Weight: 20, PodAffinityTerm: corev1.PodAffinityTerm{TopologyKey: "example.com/rack"}},
+				},
+			},
+		}
+	}
+
+	t.Run("nil affinity gains only the default term", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		ps := &corev1.PodSpec{}
+
+		ApplyDefaultHostnameSpread(ps, sel)
+
+		g.Expect(ps).To(gomega.Equal(&corev1.PodSpec{Affinity: &corev1.Affinity{
+			PodAntiAffinity: &corev1.PodAntiAffinity{
+				PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{DefaultHostnameSpreadTerm(sel)},
+			},
+		}}))
+	})
+
+	t.Run("node affinity alone gains a pod anti-affinity", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		ps := &corev1.PodSpec{Affinity: &corev1.Affinity{NodeAffinity: nodeAffinity.DeepCopy()}}
+
+		ApplyDefaultHostnameSpread(ps, sel)
+
+		g.Expect(ps.Affinity.NodeAffinity).To(gomega.Equal(nodeAffinity))
+		g.Expect(ps.Affinity.PodAffinity).To(gomega.BeNil())
+		g.Expect(ps.Affinity.PodAntiAffinity).To(gomega.Equal(&corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{DefaultHostnameSpreadTerm(sel)},
+		}))
+	})
+
+	t.Run("existing terms stay and the default goes last", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		ps := &corev1.PodSpec{Affinity: fullAffinity()}
+		before := ps.DeepCopy()
+
+		ApplyDefaultHostnameSpread(ps, sel)
+
+		preferred := ps.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution
+		g.Expect(preferred).To(gomega.HaveLen(3))
+		g.Expect(preferred[:2]).To(gomega.Equal(before.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution))
+		g.Expect(preferred[2]).To(gomega.Equal(DefaultHostnameSpreadTerm(sel)))
+
+		ps.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution = preferred[:2]
+		g.Expect(ps).To(gomega.Equal(before), "every other term must stay unchanged")
+	})
+
+	t.Run("empty selector leaves the pod spec unchanged", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		ps := &corev1.PodSpec{}
+
+		ApplyDefaultHostnameSpread(ps, map[string]string{})
+
+		g.Expect(ps.Affinity).To(gomega.BeNil())
+		g.Expect(ps).To(gomega.Equal(&corev1.PodSpec{}))
+	})
+
+	t.Run("nil selector leaves the pod spec unchanged", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		ps := &corev1.PodSpec{Affinity: fullAffinity()}
+		before := ps.DeepCopy()
+
+		ApplyDefaultHostnameSpread(ps, nil)
+
+		g.Expect(ps).To(gomega.Equal(before))
+	})
+
+	t.Run("nil pod spec does not panic", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		g.Expect(func() { ApplyDefaultHostnameSpread(nil, sel) }).NotTo(gomega.Panic())
+	})
 }

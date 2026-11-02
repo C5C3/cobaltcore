@@ -6,6 +6,7 @@ package deployment
 
 import (
 	"fmt"
+	"maps"
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -212,6 +213,53 @@ func ApplyNodePlacement(ps *corev1.PodSpec, p *commonv1.NodePlacementSpec) {
 	ps.NodeSelector = c.NodeSelector
 	ps.Tolerations = c.Tolerations
 	ps.Affinity = c.Affinity
+}
+
+// DefaultHostnameSpreadWeight is the weight of DefaultHostnameSpreadTerm, the
+// maximum the API admits. On its own the term scores the same at any weight;
+// beside a block's own preferred terms the maximum keeps the default node
+// spread from being outweighed.
+const DefaultHostnameSpreadWeight int32 = 100
+
+// DefaultHostnameSpreadTerm returns the preferred pod anti-affinity term that
+// spreads the pods selected by selector across nodes. It names only
+// kubernetes.io/hostname, which the kubelet sets on every node, so the
+// scheduler scores it on every cluster. The term holds a copy of selector, so a
+// write to the returned matchLabels never reaches the caller's map.
+func DefaultHostnameSpreadTerm(selector map[string]string) corev1.WeightedPodAffinityTerm {
+	return corev1.WeightedPodAffinityTerm{
+		Weight: DefaultHostnameSpreadWeight,
+		PodAffinityTerm: corev1.PodAffinityTerm{
+			TopologyKey:   corev1.LabelHostname,
+			LabelSelector: &metav1.LabelSelector{MatchLabels: maps.Clone(selector)},
+		},
+	}
+}
+
+// ApplyDefaultHostnameSpread appends DefaultHostnameSpreadTerm(selector) to the
+// preferred pod anti-affinity terms of ps, allocating ps.Affinity and its
+// PodAntiAffinity when they are nil. Every term already on ps (node affinity,
+// pod affinity, required and preferred pod anti-affinity) stays as it is and in
+// order; the default term goes last. A nil ps, or a nil or empty selector,
+// leaves ps unchanged: an empty matchLabels would select every pod in the
+// namespace.
+//
+// The function writes only to ps. Callers pass a pod spec that
+// ApplyNodePlacement filled from a deep copy, so the CR's affinity is never
+// written. It performs no I/O and has no error paths.
+func ApplyDefaultHostnameSpread(ps *corev1.PodSpec, selector map[string]string) {
+	if ps == nil || len(selector) == 0 {
+		return
+	}
+	if ps.Affinity == nil {
+		ps.Affinity = &corev1.Affinity{}
+	}
+	if ps.Affinity.PodAntiAffinity == nil {
+		ps.Affinity.PodAntiAffinity = &corev1.PodAntiAffinity{}
+	}
+	paa := ps.Affinity.PodAntiAffinity
+	paa.PreferredDuringSchedulingIgnoredDuringExecution = append(
+		paa.PreferredDuringSchedulingIgnoredDuringExecution, DefaultHostnameSpreadTerm(selector))
 }
 
 // TerminationGracePeriodSeconds returns the PodSpec
