@@ -118,7 +118,7 @@ Deployment rollout, bootstrap Job).
 | [node-placement](#node-placement) | `keystone-np` | `spec.deployment` `nodeSelector`, `tolerations` and `affinity` on the Deployment; the db-sync Job and the fernet-rotate CronJob inherit the selector, the toleration and the node affinity, not the pod anti-affinity |
 | [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes |
 | [semantic-invariants](#semantic-invariants) | `keystone-invariants` | `status.endpoint` URL format, `ownerReferences` fan-out, `observedGeneration` tracking, `lastTransitionTime` monotonicity, ConfigMap immutability |
-| [topology-spread](#topology-spread) | `keystone-tsc` | `spec.deployment.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
+| [topology-spread](#topology-spread) | `keystone-tsc` | `spec.deployment.topologySpreadConstraints`: `nil` renders the zone constraint and the preferred hostname anti-affinity term; a non-empty slice passes through verbatim with no affinity; `[]` leaves neither constraints nor affinity |
 | [pod-security-restricted](#pod-security-restricted) | `keystone-pss-restricted` | Reconciliation reaches Ready=True/AllReady inside a `pod-security.kubernetes.io/enforce=restricted` namespace; every Pod the reconciler creates (API Deployment, bootstrap Job, db-sync Job, policy-validation Job, manually-triggered fernet-rotation Job) admits under PSS Restricted; zero `FailedCreate` events carry the literal violation `violates PodSecurity "restricted:latest"` |
 | admin-password-rotation | `keystone-adminpw` | Re-bootstrap on admin-password Secret change: stale bootstrap Job replaced, new password authenticates against `/v3` |
 | admin-password-scheduled-rotation | `keystone-adminpw-sched` | Model B scheduled rotation: rotation CronJob rendered from `spec.passwordRotation`, full OpenBao/ESO evidence chain |
@@ -755,7 +755,7 @@ so every kind node qualifies and the pods schedule.
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR with node placement | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-np` with a node selector, a `c5c3.io/e2e-dedicated` toleration, a required node affinity and a preferred pod anti-affinity |
-| 2 | Assert Ready and the rendered placement | `assert` (5m) | Ready `AllReady`; Deployment `keystone-np` carries all three fields; Job `keystone-np-db-sync` carries the selector and the toleration, `(affinity.nodeAffinity != null): true` and `(affinity.podAntiAffinity == null): true`; CronJob `keystone-np-fernet-rotate` carries the selector |
+| 2 | Assert Ready and the rendered placement | `assert` (5m) | Ready `AllReady`; Deployment `keystone-np` carries all three fields, with two preferred pod anti-affinity entries: the CR's own (selector `app.kubernetes.io/instance: keystone-np` alone) first, then the default hostname term; Job `keystone-np-db-sync` carries the selector and the toleration, `(affinity.nodeAffinity != null): true` and `(affinity.podAntiAffinity == null): true`; CronJob `keystone-np-fernet-rotate` carries the selector |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
@@ -820,20 +820,22 @@ so every kind node qualifies and the pods schedule.
 **File:** `tests/e2e/keystone/topology-spread/chainsaw-test.yaml`
 
 **Purpose:** Validates `spec.deployment.topologySpreadConstraints` behavior:
-`nil` (unset) injects the two default constraints (zone + hostname,
-`MaxSkew=1`, `ScheduleAnyway`); a non-empty slice passes through verbatim;
-an empty slice explicitly disables all constraints.
+`nil` (unset) renders the default spread, one zone constraint (`MaxSkew=1`,
+`ScheduleAnyway`) and one preferred pod anti-affinity term on
+`kubernetes.io/hostname` (weight 100); a non-empty slice passes through
+verbatim and switches off the term; an empty slice leaves neither constraints
+nor affinity.
 
 **Steps:**
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR without TSC | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-tsc` |
-| 2 | Assert Ready + 2 default constraints | `assert` (5m) | Deployment `keystone-tsc-api` carries zone-spread and hostname-spread |
+| 2 | Assert Ready + default spread | `assert` (5m) | Deployment `keystone-tsc` carries a single constraint (`topology.kubernetes.io/zone`) and a single preferred anti-affinity entry (`weight: 100`, `topologyKey: kubernetes.io/hostname`, selector `app.kubernetes.io/name: keystone`, `app.kubernetes.io/instance: keystone-tsc`) |
 | 3 | Patch: custom TSC | `patch` | `01-patch-custom-tsc.yaml` |
-| 4 | Assert custom TSC applied verbatim | `assert` | Deployment has the patched constraints exactly |
+| 4 | Assert custom TSC applied verbatim | `assert` | Deployment has the patched constraints exactly and `affinity == null` |
 | 5 | Patch: empty TSC | `patch` | `02-patch-empty-tsc.yaml` |
-| 6 | Assert TSC disabled | `assert` | Deployment has no constraints |
+| 6 | Assert TSC and affinity gone | `script` (120 s poll) | Deployment reads empty for both `{.spec.template.spec.topologySpreadConstraints}` and `{.spec.template.spec.affinity}` |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-patch-custom-tsc.yaml`, `02-patch-empty-tsc.yaml`
 

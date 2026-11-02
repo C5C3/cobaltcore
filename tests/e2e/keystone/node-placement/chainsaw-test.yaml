@@ -6,7 +6,8 @@
 # Validates that:
 #   - A Keystone CR with spec.deployment.nodeSelector, tolerations and affinity
 #     that every kind node satisfies reaches Ready
-#   - The Deployment pod template carries all three fields
+#   - The Deployment pod template carries all three fields, the block's pod
+#     anti-affinity term first and the default hostname term after it
 #   - With spec.jobs unset, the db-sync Job carries the selector, the
 #     toleration and the node affinity, but not the pod anti-affinity, which
 #     targets the API pods
@@ -55,7 +56,28 @@ spec:
                   operator: Exists
                   effect: NoSchedule
                 (affinity.nodeAffinity != null): true
-                (affinity.podAntiAffinity != null): true
+                # The block leaves topologySpreadConstraints unset, so the
+                # default hostname term follows the block's own term. The
+                # block's term comes first, unchanged: its selector has one
+                # label, the default term's has two.
+                (length(affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution) == `2`): true
+                (length(affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[0].podAffinityTerm.labelSelector.matchLabels) == `1`): true
+                affinity:
+                  podAntiAffinity:
+                    preferredDuringSchedulingIgnoredDuringExecution:
+                    - weight: 100
+                      podAffinityTerm:
+                        topologyKey: kubernetes.io/hostname
+                        labelSelector:
+                          matchLabels:
+                            app.kubernetes.io/instance: keystone-np
+                    - weight: 100
+                      podAffinityTerm:
+                        topologyKey: kubernetes.io/hostname
+                        labelSelector:
+                          matchLabels:
+                            app.kubernetes.io/name: keystone
+                            app.kubernetes.io/instance: keystone-np
     - assert:
         resource:
           apiVersion: batch/v1
