@@ -68,6 +68,22 @@ needs `kubectl` and [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer,
 checks both before the first delete, and deletes in an order that lets every
 finalizer run while its controller still exists.
 
+Before the first delete the teardown unseals the shared OpenBao, the pod
+`openbao-0` in `shared-services`, when it is sealed. OpenBao seals itself on
+every restart of that pod, an OOM kill included, and only `make deploy-infra`
+unseals it. ESO finalizes the ControlPlane's backup PushSecrets and the tenant
+SecretStore through OpenBao, and step 1 deletes the ServiceAccount
+`eso-tenant-auth` that store logs in with together with the ControlPlane, so a
+sealed OpenBao would keep them, and the wait of step 2 would run out on them.
+The teardown sends the first threshold unseal keys of the Secret
+`openbao-init-keys`, which `make deploy-infra` writes at init, on stdin, so no
+key is an argument of `kubectl` or `bao`. Without the pod, and with an OpenBao
+that is unsealed or was never initialized, it does nothing. A pod or seal
+status it cannot read, a Secret it cannot read or that holds fewer keys than
+the threshold, a key OpenBao rejects, and an OpenBao still sealed afterwards
+each exit 1 before any delete, for instance with
+`ERROR: cannot read the unseal keys in Secret shared-services/openbao-init-keys (the error is above).`
+
 When the overlay has a `chaos-mesh/` kustomization (see
 [Lab Chaos Mesh](infrastructure-manifests.md#lab-chaos-mesh)), Chaos Mesh goes
 first, while `chaos-controller-manager`, `chaos-daemon` and the
