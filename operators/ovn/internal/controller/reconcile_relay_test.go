@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
@@ -332,7 +333,8 @@ func TestBuildRelayDeployment_RendersResourceDefaults(t *testing.T) {
 	g.Expect(deploy.Spec.Template.Spec.Containers[0].Resources).To(Equal(testutil.RenderedResourceDefaults("368Mi")))
 }
 
-// spec.relay's node placement reaches the relay pod template verbatim.
+// spec.relay's node placement reaches the relay pod template, with the default
+// hostname term after the block's own preferred term.
 func TestBuildRelayDeployment_RendersNodePlacement(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cr := relayOVNCentral()
@@ -352,13 +354,21 @@ func TestBuildRelayDeployment_RendersNodePlacement(t *testing.T) {
 
 	g.Expect(spec.NodeSelector).To(Equal(placement.NodeSelector))
 	g.Expect(spec.Tolerations).To(Equal(placement.Tolerations))
-	g.Expect(spec.Affinity).To(Equal(placement.Affinity))
+	defaultTerm := deployment.DefaultHostnameSpreadTerm(componentSelectorLabels(cr, componentRelay))
+	g.Expect(spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution).To(Equal(
+		[]corev1.WeightedPodAffinityTerm{
+			placement.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution[0],
+			defaultTerm,
+		}))
 
-	// Unset, the relay renders none of them.
+	// Unset, the relay renders no node selector and no tolerations, and an
+	// affinity that holds only the default term.
 	unset := buildRelayDeployment(relayOVNCentral()).Spec.Template.Spec
 	g.Expect(unset.NodeSelector).To(BeNil())
 	g.Expect(unset.Tolerations).To(BeNil())
-	g.Expect(unset.Affinity).To(BeNil())
+	g.Expect(unset.Affinity).To(Equal(&corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+		PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{defaultTerm},
+	}}))
 }
 
 // A published relay is a NodePort Service on one port for the whole tier. The

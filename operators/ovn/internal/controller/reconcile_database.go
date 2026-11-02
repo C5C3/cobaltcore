@@ -461,12 +461,14 @@ func raftPerPodService(cr *ovnv1alpha1.OVNCentral, db raftDB, ordinal int32) *co
 // The pods take the database block's node placement and priority class; a nil
 // or empty priority class renders none.
 //
-// The members carry the two default spread constraints of the API Deployments:
-// zone and hostname, maxSkew 1, ScheduleAnyway. The spread is soft because the
-// CI legs and the quick start run three members on one kind node, where a hard
-// constraint would leave two of them Pending. A hard spread is a required pod
-// anti-affinity on kubernetes.io/hostname, set through spec.<db>.affinity; the
-// scheduler honors it beside the soft constraints.
+// The members carry the default spread of the API Deployments, both parts
+// selecting the database's own members: the zone constraint (maxSkew 1,
+// ScheduleAnyway) and the preferred pod anti-affinity term on
+// kubernetes.io/hostname, appended after the block's own affinity. The spread
+// is soft because the CI legs and the quick start run three members on one kind
+// node, where a hard rule would leave two of them Pending. A hard spread is a
+// required pod anti-affinity on kubernetes.io/hostname, set through
+// spec.<db>.affinity; it stays, and the preferred term is added beside it.
 func raftStatefulSet(cr *ovnv1alpha1.OVNCentral, db raftDB) *appsv1.StatefulSet {
 	name := raftName(cr, db)
 	sts := &appsv1.StatefulSet{
@@ -522,6 +524,7 @@ func raftStatefulSet(cr *ovnv1alpha1.OVNCentral, db raftDB) *appsv1.StatefulSet 
 		},
 	}
 	deployment.ApplyNodePlacement(&sts.Spec.Template.Spec, &db.spec.NodePlacementSpec)
+	deployment.ApplyDefaultHostnameSpread(&sts.Spec.Template.Spec, raftSelectorLabels(cr, db))
 	return sts
 }
 

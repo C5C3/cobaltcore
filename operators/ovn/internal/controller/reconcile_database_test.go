@@ -530,7 +530,8 @@ func TestRaftStatefulSet_MembersRequestTheFloorWhenTheCRSetsNone(t *testing.T) {
 }
 
 // Each database block's placement and priority class reach its own Raft
-// StatefulSet only.
+// StatefulSet only; the default hostname term is appended to the block's
+// affinity on the rendered spec, never to the CR.
 func TestRaftStatefulSet_RendersPlacementAndPriority(t *testing.T) {
 	g := NewWithT(t)
 	cr := testOVNCentral()
@@ -547,15 +548,23 @@ func TestRaftStatefulSet_RendersPlacementAndPriority(t *testing.T) {
 	g.Expect(nb.PriorityClassName).To(Equal("ovn-critical"))
 	g.Expect(nb.NodeSelector).To(Equal(cr.Spec.Northbound.NodeSelector))
 	g.Expect(nb.Tolerations).To(Equal(cr.Spec.Northbound.Tolerations))
-	g.Expect(nb.Affinity).To(Equal(cr.Spec.Northbound.Affinity))
+	g.Expect(nb.Affinity).To(Equal(&corev1.Affinity{
+		NodeAffinity: cr.Spec.Northbound.Affinity.NodeAffinity,
+		PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+				deployment.DefaultHostnameSpreadTerm(raftSelectorLabels(cr, northboundDB(cr))),
+			},
+		},
+	}))
+	g.Expect(cr.Spec.Northbound.Affinity.PodAntiAffinity).To(BeNil(), "the default term must not be written into the CR")
 
 	sb := raftStatefulSet(cr, southboundDB(cr)).Spec.Template.Spec
 	g.Expect(sb.PriorityClassName).To(BeEmpty())
 	g.Expect(sb.NodeSelector).To(BeNil())
 }
 
-// Unset fields render nothing, and an empty priority class renders none, so a
-// StatefulSet whose CR sets neither does not roll.
+// Unset placement fields render nothing but the default hostname term, and an
+// empty priority class renders none.
 func TestRaftStatefulSet_RendersNoneWhenUnset(t *testing.T) {
 	g := NewWithT(t)
 	cr := testOVNCentral()
@@ -566,13 +575,18 @@ func TestRaftStatefulSet_RendersNoneWhenUnset(t *testing.T) {
 		g.Expect(spec.PriorityClassName).To(BeEmpty(), db.suffix)
 		g.Expect(spec.NodeSelector).To(BeNil(), db.suffix)
 		g.Expect(spec.Tolerations).To(BeNil(), db.suffix)
-		g.Expect(spec.Affinity).To(BeNil(), db.suffix)
+		g.Expect(spec.Affinity).To(Equal(&corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+			PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+				deployment.DefaultHostnameSpreadTerm(raftSelectorLabels(cr, db)),
+			},
+		}}), db.suffix)
 	}
 }
 
-// The members of both databases carry the two soft default constraints of the
-// API Deployments, selecting their own database's members. A database block's
-// affinity, the way to make the spread hard, still renders beside them.
+// The members of both databases carry the default spread of the API
+// Deployments, the zone constraint and the preferred hostname term, both
+// selecting their own database's members. A database block's required term,
+// the way to make the spread hard, stays beside the preferred one.
 func TestRaftStatefulSet_RendersTheDefaultSpread(t *testing.T) {
 	g := NewWithT(t)
 	cr := testOVNCentral()
@@ -588,8 +602,19 @@ func TestRaftStatefulSet_RendersTheDefaultSpread(t *testing.T) {
 		g.Expect(spec.TopologySpreadConstraints).To(Equal(
 			deployment.DefaultTopologySpreadConstraints(raftSelectorLabels(cr, db))), db.suffix)
 	}
-	g.Expect(raftStatefulSet(cr, northboundDB(cr)).Spec.Template.Spec.Affinity).To(Equal(cr.Spec.Northbound.Affinity))
-	g.Expect(raftStatefulSet(cr, southboundDB(cr)).Spec.Template.Spec.Affinity).To(BeNil())
+
+	nb := raftStatefulSet(cr, northboundDB(cr)).Spec.Template.Spec.Affinity
+	g.Expect(nb.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(Equal(
+		cr.Spec.Northbound.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution))
+	g.Expect(nb.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution).To(Equal(
+		[]corev1.WeightedPodAffinityTerm{deployment.DefaultHostnameSpreadTerm(raftSelectorLabels(cr, northboundDB(cr)))}))
+
+	sb := raftStatefulSet(cr, southboundDB(cr)).Spec.Template.Spec.Affinity
+	g.Expect(sb).To(Equal(&corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{
+		PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{
+			deployment.DefaultHostnameSpreadTerm(raftSelectorLabels(cr, southboundDB(cr))),
+		},
+	}}))
 }
 
 // maxUnavailable: 1 fits every member count: it keeps quorum for three

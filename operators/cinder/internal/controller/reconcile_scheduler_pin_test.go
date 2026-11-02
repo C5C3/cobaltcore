@@ -48,6 +48,17 @@ spec:
         app.kubernetes.io/managed-by: cinder-operator
         app.kubernetes.io/name: cinder
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: scheduler
+                  app.kubernetes.io/instance: cinder
+                  app.kubernetes.io/name: cinder
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - cinder-scheduler
@@ -139,14 +150,6 @@ spec:
             app.kubernetes.io/name: cinder
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: scheduler
-            app.kubernetes.io/instance: cinder
-            app.kubernetes.io/name: cinder
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:

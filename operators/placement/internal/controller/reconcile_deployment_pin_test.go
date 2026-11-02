@@ -48,6 +48,16 @@ spec:
         app.kubernetes.io/managed-by: placement-operator
         app.kubernetes.io/name: placement
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-placement
+                  app.kubernetes.io/name: placement
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -147,13 +157,6 @@ spec:
             app.kubernetes.io/name: placement
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-placement
-            app.kubernetes.io/name: placement
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
@@ -188,6 +191,16 @@ spec:
         app.kubernetes.io/managed-by: placement-operator
         app.kubernetes.io/name: placement
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-placement
+                  app.kubernetes.io/name: placement
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -287,13 +300,6 @@ spec:
             app.kubernetes.io/name: placement
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-placement
-            app.kubernetes.io/name: placement
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
@@ -329,6 +335,16 @@ spec:
         app.kubernetes.io/managed-by: placement-operator
         app.kubernetes.io/name: placement
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-placement
+                  app.kubernetes.io/name: placement
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -432,13 +448,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-placement
-            app.kubernetes.io/name: placement
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
           name: test-placement-config-abc
@@ -492,6 +501,16 @@ spec:
         app.kubernetes.io/managed-by: placement-operator
         app.kubernetes.io/name: placement
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-placement
+                  app.kubernetes.io/name: placement
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -591,13 +610,6 @@ spec:
             app.kubernetes.io/name: placement
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-placement
-            app.kubernetes.io/name: placement
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
