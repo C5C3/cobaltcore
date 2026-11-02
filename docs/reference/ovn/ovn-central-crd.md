@@ -88,11 +88,11 @@ floor for that resource.
 | `priorityClassName` | `*string` | no | `nil` | The priority class of the member pods. The webhook checks that the class exists. Unset or `""` renders none, and the cluster default applies |
 | `nodeSelector` | `map[string]string` | no | `nil` | Restricts the member pods to nodes that carry every listed label. The webhook checks the label grammar |
 | `tolerations` | `[]corev1.Toleration` | no | `nil` | Lets the member pods onto nodes with matching taints. The webhook applies the API server's toleration rules |
-| `affinity` | `*corev1.Affinity` | no | `nil` | Node affinity and pod (anti-)affinity rules for the member pods, rendered verbatim |
+| `affinity` | `*corev1.Affinity` | no | `nil` | Node affinity and pod (anti-)affinity rules for the member pods, rendered verbatim with the default hostname anti-affinity term appended (see [Disruption budget and spread](#disruption-budget-and-spread)) |
 
 The four fields let an operator pin OVN central to dedicated nodes as a whole.
-Unset fields render nothing, so a database whose CR sets none of them does not
-roll. Each member keeps its database on a claim, and node-local storage binds
+Unset fields render nothing of their own; the members carry the default spread
+either way. Each member keeps its database on a claim, and node-local storage binds
 that claim to one node. A selector, toleration set or affinity that excludes
 the node a member's claim is bound to leaves that member `Pending`, and the
 rolling update stops there while the other members keep serving. Move the
@@ -111,12 +111,18 @@ voluntary disruption at a time fits every member count:
 - Five members are evicted one at a time and keep one further failure of
   margin.
 
-The members also carry the two spread constraints the API Deployments get by
-default: `topology.kubernetes.io/zone` and `kubernetes.io/hostname`, both with
-`maxSkew: 1` and `whenUnsatisfiable: ScheduleAnyway`, both selecting the
-database's members. The spread is soft, so three members still schedule on a
-single node. To make it hard, set a required pod anti-affinity on
-`kubernetes.io/hostname` through the database block's `affinity`:
+The members also carry the default spread of the API Deployments, both parts
+selecting the database's members: the zone constraint
+(`topology.kubernetes.io/zone`, `maxSkew: 1`, `whenUnsatisfiable:
+ScheduleAnyway`) and a preferred pod anti-affinity term on
+`kubernetes.io/hostname` with weight 100, appended after the database block's
+own `affinity`. The term spreads the members across nodes on a cluster
+without zone labels too; see
+[What the spread needs from the cluster](../keystone/keystone-crd.md#what-the-spread-needs-from-the-cluster).
+The spread is soft, so three members still schedule on a single node. To make
+it hard, set a required pod anti-affinity on `kubernetes.io/hostname` through
+the database block's `affinity`. The operator keeps that required term and
+adds the preferred one beside it:
 
 ```yaml
 spec:
@@ -134,6 +140,18 @@ spec:
 
 With a hard spread every member needs a node of its own, and a member that
 finds none stays `Pending`.
+
+The database blocks have no field that switches the default spread off, so
+upgrading from an operator that rendered a zone and a hostname constraint
+changes the member template of every database: the hostname constraint goes,
+and the hostname term joins `affinity`. The StatefulSet recreates the members
+of each database once, one at a time, highest ordinal first. A member on
+node-local storage restarts on the node that holds its volume, so members that
+share a node before the upgrade keep sharing it after the roll. The term
+spreads only the members the scheduler places freely: those on a new claim or
+on storage every node can attach. The northd and relay Deployments roll once
+as well; see
+[Operator upgrade](../keystone/keystone-crd.md#operator-upgrade).
 
 ### OVNStorageSpec
 
