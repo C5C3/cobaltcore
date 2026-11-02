@@ -60,13 +60,14 @@ child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
 
-1. A running `cinder-operator` Helm release (namespace `cinder-system`).
-2. The prometheus-operator CRDs (`servicemonitors.monitoring.coreos.com`)
-   installed, and a Prometheus whose `serviceMonitorSelector` covers the
-   operator namespace.
-3. For the db-sync series in Step 3, a `Cinder` the operator has already
-   reconciled. On the ControlPlane devstack that is `controlplane-cinder`, the
-   child the plane projects once the block-storage service is declared.
+For a non-kind installation, install the prometheus-operator CRDs and configure
+Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
+`serviceMonitorNamespaceSelector` to include `cinder-system`. The db-sync series
+in Step 3 requires a reconciled `Cinder`. On the devstack that is
+`controlplane-cinder`, projected when the ControlPlane declares the
+block-storage service.
+
+## Step 1 — Enable the ServiceMonitor
 
 On that devstack, Step 1 is already done for you. `WITH_PROMETHEUS=true` patches
 `monitoring.serviceMonitor.enabled=true` onto the cinder-operator HelmRelease at
@@ -77,11 +78,9 @@ non-kind clusters that run their own Prometheus. Without
 `WITH_CONTROLPLANE=true` the release stays suspended, the patch is recorded but
 inert, and the bring-up log says so.
 
-## Step 1 — Enable the ServiceMonitor
-
 On the tutorial devstacks the `cinder-operator` release is owned by Flux (a
-`HelmRelease`), so set the chart value by patching that HelmRelease rather than
-running a raw `helm upgrade`. Flux's helm-controller reverts any out-of-band
+`HelmRelease`), so set the chart value by patching that HelmRelease.
+Flux's helm-controller reverts any out-of-band
 Helm revision on its next reconcile:
 
 ```bash
@@ -120,6 +119,12 @@ the HelmRelease patch above instead.
 
 ## Step 2 — Import the Grafana dashboard
 
+On the devstack, follow the
+[Grafana access instructions](../keystone/enable-keystone-operator-metrics.md#_2-import-the-reference-grafana-dashboard)
+to port-forward the Service, open <http://localhost:3000>, and retrieve the
+login credentials. For an existing Grafana, use its configured URL and
+credentials.
+
 The reference dashboard ships in-repo at
 `operators/cinder/dashboards/cinder-operator.json` (uid `cinder-operator`). Its
 six panels are the duration quantiles per sub-reconciler, the error rate per
@@ -129,10 +134,18 @@ pair for the service-remove Jobs, and the controller-runtime end-to-end
 reconcile histogram filtered to the `cinder` controller. Import it via the
 Grafana UI or provision it from a ConfigMap.
 
-## Step 3 — Verify the target
+## Step 3: Verify the target {#step-3-—-verify-the-target}
+
+Keep the port-forward running in a separate terminal:
 
 ```bash
-kubectl -n <prometheus-namespace> port-forward svc/prometheus-operated 9090 &
+kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
+```
+
+For an existing Prometheus, replace `monitoring` with its namespace.
+In another terminal, query the targets:
+
+```bash
 curl -s 'http://localhost:9090/api/v1/targets' \
   | jq '.data.activeTargets[] | select(.labels.namespace == "cinder-system") | .health'
 ```
@@ -178,11 +191,10 @@ reference, is not counted. The service-remove pair needs a backend detach:
 The chart's ServiceMonitor render-and-remove lifecycle is asserted on the CI e2e
 kind cluster by the chainsaw suite below (install with
 `monitoring.serviceMonitor.enabled=true`, assert the `ServiceMonitor` shape,
-uninstall, assert removal). The end-to-end scrape path (a live Prometheus that
-discovers the ServiceMonitor and marks the target Up) is the
-`WITH_PROMETHEUS=true` kind bring-up described under the prerequisites, not this
-suite: the e2e cluster ships only the prometheus-operator CRDs, not a Prometheus
-instance.
+uninstall, assert removal). The `WITH_PROMETHEUS=true` kind bring-up in
+Step 1 provides a live Prometheus that discovers the ServiceMonitor and
+marks the target Up. This suite checks the chart lifecycle on a cluster
+with only the prometheus-operator CRDs installed.
 
 ```bash
 chainsaw test --test-dir tests/e2e/cinder-operator/metrics
