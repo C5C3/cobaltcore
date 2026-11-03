@@ -1,0 +1,323 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the API replicas sit on different nodes, and the
+# APIs keep serving when one node hangs.
+#
+# Fault: docker pause of the victim worker's kind node container
+# (../lib/nodes.sh pause): every process on the node freezes. It is restored
+# with docker unpause once the replicas were replaced.
+#
+# Claim, phase by phase:
+#   spread    With one zone label per node, as a production cluster has, each
+#             of the Keystone, Neutron and Placement API Deployments runs one
+#             Ready pod on each of the three nodes (SPREAD-OK). This is the
+#             effective spread #625 asked for, read off the pods and not off
+#             the Deployment spec.
+#   replaced  Within 600 s of the pause each Deployment is back at
+#             readyReplicas 3 with no Ready pod on the victim, while the
+#             victim stays NotReady (REPLACED-OK): the node controller marks
+#             the node NotReady after about 45 s and evicts its pods after the
+#             default tolerationSeconds of 300, and an API pod starts within
+#             about 120 s on a CI node.
+#   ready     All three CRs read Ready=True/AllReady before the node is
+#             restored. Until the replacement DeploymentReady reads False,
+#             because IsDeploymentReady wants every replica, so the suite
+#             asserts no CR condition before it.
+#   served    The token, network and placement streams stay within the
+#             measured budget, and the OVN databases agree with Neutron.
+#
+# Blast radius: one whole worker, frozen: its API pods, kubelet, kindnet,
+# kube-proxy and chaos-daemon. The control-plane node is never faulted; the
+# OVNCentral, the Neutron workers and every singleton run there. A frozen
+# node's kernel still completes the TCP handshake on a frozen pod's listening
+# socket, so a request routed to it hangs until the client's 15-second timeout,
+# the hardest case for a client behind a Service. Requests fail until the node
+# turns NotReady and the EndpointSlices drop its pods.
+#
+# Leg: multinode (metadata.labels chaos.c5c3.io/topology: multinode), after
+# api-priority-preemption.
+#
+# Workload: the token, network and placement streams of ../lib/workload.sh,
+# judged with --ovn-db-sync. The workload pod runs off the victim, which is
+# cordoned before it starts.
+# Chaos matrix: keystone self node-pause
+# Chaos matrix: neutron self node-pause
+# Chaos matrix: placement self node-pause
+# Chaos random: none (scripted fault, no Chaos Mesh kind)
+# Chaos budget: failures=30 recovery=30s
+# Chaos budget measured: 2026-11-03, estimate, failures 15, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: api-worker-loss
+  labels:
+    chaos.c5c3.io/topology: multinode
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    assert: 10m
+  steps:
+  # ── Step 1: The OVN control plane on the control-plane node ─────────────
+  # The workers are still cordoned, so the database members and northd land
+  # on the node no fault touches.
+  - try:
+    - apply:
+        file: 02-ovncentral-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: worker-loss-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-worker-loss --dep-label=app.kubernetes.io/instance=keystone-worker-loss
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide --show-labels 2>&1 || true
+          for cr in keystone-worker-loss neutron-worker-loss placement-worker-loss worker-loss-ovn; do
+            echo "=== ${cr} ==="
+            kubectl get deploy,sts,pod -n "$NAMESPACE" -l "app.kubernetes.io/instance=${cr}" -o wide 2>&1 || true
+          done
+          for kind in keystone/keystone-worker-loss neutron/neutron-worker-loss placement/placement-worker-loss; do
+            kubectl get "$kind" -n "$NAMESPACE" \
+              -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          done
+          kubectl get events -n "$NAMESPACE" --sort-by=.lastTimestamp 2>&1 | tail -40 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump api-worker-loss
+  # ── Step 2: One zone per node, the workers open, the three APIs ─────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -eu
+          ../lib/nodes.sh zones
+          ../lib/nodes.sh open
+    - apply:
+        file: 00-keystone-cr.yaml
+    - apply:
+        file: 01-messaging-secret.yaml
+    - apply:
+        file: 03-neutron-cr.yaml
+    - apply:
+        file: 04-placement-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-worker-loss
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-worker-loss
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-worker-loss
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *dump
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../lib/nodes.sh close || true
+          ../lib/nodes.sh zones-clear || true
+          kubectl delete configmap worker-loss-verify -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 3: The replicas sit on three nodes ─────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          NODES="$(kubectl get nodes -o name | sed 's|^node/||' | LC_ALL=C sort)"
+          for deploy in keystone-worker-loss neutron-worker-loss placement-worker-loss; do
+            sel="$(kubectl get deploy "$deploy" -n "$NAMESPACE" -o json |
+              jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')"
+            ready="$(kubectl get pods -n "$NAMESPACE" -l "$sel" -o json | jq -r '.items[]
+              | select(.metadata.deletionTimestamp == null)
+              | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+              | .spec.nodeName' | LC_ALL=C sort)"
+            if [ "$ready" != "$NODES" ]; then
+              echo "FAIL: the Ready pods of ${deploy} run on [$(xargs <<<"$ready")], want one on each of [$(xargs <<<"$NODES")]"
+              exit 1
+            fi
+            echo "SPREAD-OK ${deploy} $(sed 's/$/=1/' <<<"$NODES" | xargs)"
+          done
+    catch: *dump
+  # ── Step 4: Keep the workload off the victim and start it ───────────────
+  - try:
+    - script:
+        timeout: 1m
+        content: ../lib/nodes.sh close "$(../lib/nodes.sh victim)"
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start api-worker-loss --
+          --streams token,network,placement
+          --keystone http://keystone-worker-loss.openstack.svc:5000/v3
+          --neutron http://neutron-worker-loss.openstack.svc:9696
+          --placement http://placement-worker-loss.openstack.svc:8778
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop api-worker-loss
+  # ── Step 5: Freeze the victim ───────────────────────────────────────────
+  # From here to the restore every catch brings the worker back first: a
+  # frozen worker fails every later suite of the leg.
+  - try:
+    - script:
+        shell: bash
+        timeout: 7m
+        content: |
+          set -euo pipefail
+          ../lib/workload.sh mark api-worker-loss fault-start
+          kubectl create configmap worker-loss-verify -n "$NAMESPACE" \
+            --from-literal=pausedAt="$(date +%s)" --dry-run=client -o yaml | kubectl apply -f -
+          ../lib/nodes.sh pause "$(../lib/nodes.sh victim)"
+    catch: &restore-dump
+    - script:
+        timeout: 6m
+        content: ../lib/nodes.sh restore "$(../lib/nodes.sh victim)"
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-worker-loss --dep-label=app.kubernetes.io/instance=keystone-worker-loss
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          for cr in keystone-worker-loss neutron-worker-loss placement-worker-loss; do
+            echo "=== ${cr} ==="
+            kubectl get deploy,pod -n "$NAMESPACE" -l "app.kubernetes.io/instance=${cr}" -o wide 2>&1 || true
+          done
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump api-worker-loss
+  # ── Step 6: The replicas are replaced while the victim stays lost ───────
+  - try:
+    - script:
+        shell: bash
+        timeout: 11m
+        content: |
+          set -euo pipefail
+          VICTIM="$(../lib/nodes.sh victim)"
+          PAUSED_AT="$(kubectl get configmap worker-loss-verify -n "$NAMESPACE" -o jsonpath='{.data.pausedAt}')"
+          deadline=$((PAUSED_AT + 600))
+          declare -A replaced=()
+          while true; do
+            node="$(kubectl get node "$VICTIM" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')"
+            if [ "$node" = True ]; then
+              echo "FAIL: ${VICTIM} reads Ready=True while it is paused"
+              exit 1
+            fi
+            pending=""
+            for deploy in keystone-worker-loss neutron-worker-loss placement-worker-loss; do
+              [ -z "${replaced[$deploy]:-}" ] || continue
+              sel="$(kubectl get deploy "$deploy" -n "$NAMESPACE" -o json |
+                jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')"
+              ready="$(kubectl get deploy "$deploy" -n "$NAMESPACE" -o jsonpath='{.status.readyReplicas}')"
+              on_victim="$(kubectl get pods -n "$NAMESPACE" -l "$sel" --field-selector "spec.nodeName=${VICTIM}" -o json |
+                jq '[.items[] | select(.metadata.deletionTimestamp == null)
+                  | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length')"
+              if [ "${ready:-0}" = 3 ] && [ "$on_victim" = 0 ]; then
+                replaced[$deploy]=$(($(date +%s) - PAUSED_AT))
+                echo "REPLACED-OK ${deploy} ${replaced[$deploy]}s after the pause"
+              else
+                pending="${pending} ${deploy}(readyReplicas=${ready:-0}, Ready on ${VICTIM}=${on_victim})"
+              fi
+            done
+            if [ -z "$pending" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 600s after the pause, with ${VICTIM} at Ready=${node}:${pending}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: every API runs three Ready pods off ${VICTIM}, which reads Ready=${node}"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-worker-loss
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-worker-loss
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-worker-loss
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *restore-dump
+  # ── Step 7: Restore the victim ──────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: ../lib/nodes.sh restore "$(../lib/nodes.sh victim)"
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark api-worker-loss fault-end
+    catch: *restore-dump
+  # ── Step 8: Judge the workload ──────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 20m
+        content: ../lib/workload.sh verify api-worker-loss --ovn-db-sync neutron-worker-loss
+    catch: *dump

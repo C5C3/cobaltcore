@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 69 chaos test suites validate operator behavior during and after fault
+The 70 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -85,7 +85,7 @@ and roles its fault reaches, and lists it with its scenario and its budget.
 
 ## Prerequisites
 
-All 69 test suites require the infrastructure stack to be deployed and healthy.
+All 70 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -582,10 +582,11 @@ the kind plane runs one replica, which the Deployment replaces.
 Every suite header names its entries in `# Chaos random: <entry>` lines beside
 its matrix lines, or carries exactly one `# Chaos random: none (<reason>)`
 line; the Random column of the [suite table](#test-suite-inventory) shows them.
-Eleven suites carry `none`: the scripted faults of `cinder-nfs-outage`,
+Twelve suites carry `none`: the scripted faults of `cinder-nfs-outage`,
 `deletion-stuck-finalizer`, `eso-down`, `openbao-sealed`,
 `openbao-tenant-policy-narrowed` and `cinder-upgrade-db-partition`, the node
-fault of `ovn-chassis-loss`, the filler pods of `api-priority-preemption`, the
+faults of `ovn-chassis-loss` and `api-worker-loss`, the filler pods of
+`api-priority-preemption`, the
 lifecycle fault of `cronjob-rotation-failure`, `keystone-federation`, whose
 IdP the random plane does not configure, and `openbao-pod-kill`, whose OpenBao
 starts sealed on kind. `tests/unit/ci/chaos_random_catalogue_test.sh` fails,
@@ -750,12 +751,12 @@ these lists fails the generator.
 
 | Component | operator | self | database | broker | cache | keystone | backend |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| keystone | [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) (pod-failure)<br>[operator-pod-crash](#operator-pod-crash) (pod-kill)<br>[operator-pod-kill](#operator-pod-kill) (pod-kill) | [api-pod-kill-pdb](#api-pod-kill-pdb) (pod-kill)<br>[api-priority-preemption](#api-priority-preemption) (preemption)<br>[cronjob-rotation-failure](#cronjob-rotation-failure) (pod-failure)<br>[keystone-federation](#keystone-federation) (container-kill) | [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) (pod-kill)<br>[deletion-stuck-finalizer](#deletion-stuck-finalizer) (scale-to-zero)<br>[mariadb-network-latency](#mariadb-network-latency) (delay)<br>[mariadb-network-partition](#mariadb-network-partition) (partition)<br>[mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) (pod-failure)<br>[mariadb-pod-kill](#mariadb-pod-kill) (pod-kill) | — | [memcached-network-partition](#memcached-network-partition) (partition)<br>[memcached-pod-kill](#memcached-pod-kill) (pod-kill) | — | [keystone-federation](#keystone-federation) (pod-failure)<br>[openbao-pod-kill](#openbao-pod-kill) (pod-kill)<br>[openbao-sealed](#openbao-sealed) (seal) |
+| keystone | [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) (pod-failure)<br>[operator-pod-crash](#operator-pod-crash) (pod-kill)<br>[operator-pod-kill](#operator-pod-kill) (pod-kill) | [api-pod-kill-pdb](#api-pod-kill-pdb) (pod-kill)<br>[api-priority-preemption](#api-priority-preemption) (preemption)<br>[api-worker-loss](#api-worker-loss) (node-pause)<br>[cronjob-rotation-failure](#cronjob-rotation-failure) (pod-failure)<br>[keystone-federation](#keystone-federation) (container-kill) | [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) (pod-kill)<br>[deletion-stuck-finalizer](#deletion-stuck-finalizer) (scale-to-zero)<br>[mariadb-network-latency](#mariadb-network-latency) (delay)<br>[mariadb-network-partition](#mariadb-network-partition) (partition)<br>[mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) (pod-failure)<br>[mariadb-pod-kill](#mariadb-pod-kill) (pod-kill) | — | [memcached-network-partition](#memcached-network-partition) (partition)<br>[memcached-pod-kill](#memcached-pod-kill) (pod-kill) | — | [keystone-federation](#keystone-federation) (pod-failure)<br>[openbao-pod-kill](#openbao-pod-kill) (pod-kill)<br>[openbao-sealed](#openbao-sealed) (seal) |
 | horizon | [horizon-operator-pod-kill](#horizon-operator-pod-kill) (pod-kill) | [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) (pod-kill) | — | — | [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) (pod-kill) | — | — |
 | glance | [glance-operator-pod-kill](#glance-operator-pod-kill) (pod-kill) | — | [glance-mariadb-outage](#glance-mariadb-outage) (partition) | — | — | [glance-keystone-outage](#glance-keystone-outage) (pod-failure) | [glance-garage-outage](#glance-garage-outage) (partition) |
-| placement | [placement-operator-pod-kill](#placement-operator-pod-kill) (pod-kill) | — | [placement-mariadb-outage](#placement-mariadb-outage) (partition) | — | — | [placement-keystone-outage](#placement-keystone-outage) (pod-failure) | — |
+| placement | [placement-operator-pod-kill](#placement-operator-pod-kill) (pod-kill) | [api-worker-loss](#api-worker-loss) (node-pause) | [placement-mariadb-outage](#placement-mariadb-outage) (partition) | — | — | [placement-keystone-outage](#placement-keystone-outage) (pod-failure) | — |
 | barbican | [barbican-operator-pod-kill](#barbican-operator-pod-kill) (pod-kill) | — | [barbican-mariadb-outage](#barbican-mariadb-outage) (partition) | — | — | [barbican-keystone-outage](#barbican-keystone-outage) (pod-failure) | [barbican-openbao-outage](#barbican-openbao-outage) (partition) |
-| neutron | [neutron-operator-pod-kill](#neutron-operator-pod-kill) (pod-kill) | [neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) (pod-kill) | [neutron-mariadb-outage](#neutron-mariadb-outage) (partition) | [neutron-broker-outage](#neutron-broker-outage) (partition) | — | [neutron-keystone-outage](#neutron-keystone-outage) (pod-failure) | — |
+| neutron | [neutron-operator-pod-kill](#neutron-operator-pod-kill) (pod-kill) | [api-worker-loss](#api-worker-loss) (node-pause)<br>[neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) (pod-kill) | [neutron-mariadb-outage](#neutron-mariadb-outage) (partition) | [neutron-broker-outage](#neutron-broker-outage) (partition) | — | [neutron-keystone-outage](#neutron-keystone-outage) (pod-failure) | — |
 | ovn | [ovn-operator-pod-kill](#ovn-operator-pod-kill) (pod-kill) | [ovn-chassis-loss](#ovn-chassis-loss) (node-kill)<br>[ovn-controller-pod-kill](#ovn-controller-pod-kill) (pod-kill)<br>[ovn-northd-pod-kill](#ovn-northd-pod-kill) (pod-kill)<br>[ovn-southbound-outage](#ovn-southbound-outage) (pod-failure) | — | — | — | — | — |
 | cinder | [cinder-operator-pod-kill](#cinder-operator-pod-kill) (pod-kill) | [cinder-volume-pod-kill](#cinder-volume-pod-kill) (pod-kill) | [cinder-mariadb-outage](#cinder-mariadb-outage) (partition)<br>[cinder-upgrade-db-partition](#cinder-upgrade-db-partition) (partition) | [cinder-broker-outage](#cinder-broker-outage) (partition)<br>[cinder-broker-pod-kill](#cinder-broker-pod-kill) (pod-kill)<br>[cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) (pod-kill) | — | [cinder-keystone-outage](#cinder-keystone-outage) (pod-failure) | [cinder-nfs-outage](#cinder-nfs-outage) (scale-to-zero) |
 | nova | [nova-operator-pod-kill](#nova-operator-pod-kill) (pod-kill) | [novacompute-drain-compute-kill](#novacompute-drain-compute-kill) (pod-kill) | [nova-mariadb-outage](#nova-mariadb-outage) (partition) | [nova-broker-outage](#nova-broker-outage) (partition) | — | [nova-keystone-outage](#nova-keystone-outage) (pod-failure) | [nova-placement-outage](#nova-placement-outage) (partition) |
@@ -778,6 +779,7 @@ these lists fails the generator.
 | --- | --- | --- | --- | --- |
 | [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone/self` | failures=0 recovery=30s | `keystone-api-pod-kill` |
 | [api-priority-preemption](#api-priority-preemption) | — | `keystone/self` | failures=0 recovery=0s | none |
+| [api-worker-loss](#api-worker-loss) | — | `keystone/self`, `neutron/self`, `placement/self` | failures=30 recovery=30s | none |
 | [barbican-keystone-outage](#barbican-keystone-outage) | — | `barbican/keystone` | failures=400 recovery=150s | `keystone-api-pod-failure` |
 | [barbican-mariadb-outage](#barbican-mariadb-outage) | — | `barbican/database`, `mariadb/self` | failures=40 recovery=90s | `barbican-mariadb-partition` |
 | [barbican-openbao-outage](#barbican-openbao-outage) | — | `barbican/backend`, `openbao/self` | — | `barbican-openbao-partition` |
@@ -4969,6 +4971,71 @@ allocated resources of both workers, the Keystone and filler pods, the
   `spec.deployment` unless `spec.jobs` sets its own. The hourly trust-flush pod
   would then preempt a filler, or finish and leave room, on a filled worker, so
   `spec.jobs` opts out of the class and pins those pods to the control-plane node.
+
+---
+
+### api-worker-loss
+
+**File:** `tests/e2e-chaos/api-worker-loss/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Two questions a single node cannot answer: do the API replicas
+really sit on different nodes, and do Keystone, Neutron and Placement keep
+serving when one node hangs? The suite reads the spread off the Ready pods, then
+freezes one worker with `docker pause` (`nodes.sh pause`) and waits for the
+cluster to replace the replicas it held.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | OVN control plane | `apply` + `assert` (10m) | `worker-loss-ovn` at `Ready=True/AllReady` while the workers are cordoned, so it runs on the control-plane node |
+| 2 | Zones, workers, APIs | `script` (2m) + `apply` + `assert` (10m) | `nodes.sh zones`, `nodes.sh open`; `keystone-worker-loss`, `neutron-worker-loss` and `placement-worker-loss`, each at `replicas: 3`, at `Ready=True/AllReady`. The step cleanup cordons the workers and removes the zone labels |
+| 3 | The spread | `script` (3m) | Each of the three Deployments runs one Ready pod on each of the three nodes (`SPREAD-OK`) |
+| 4 | Start the workload | `script` (1m) + `script` (6m) | `nodes.sh close <victim>` keeps the workload pod off the victim; `workload.sh start` with the `token`, `network` and `placement` streams |
+| 5 | Freeze the victim | `script` (7m) | `mark fault-start`, the pause time into ConfigMap `worker-loss-verify`, `nodes.sh pause <victim>` |
+| 6 | Replaced | `script` (11m) + `assert` (10m) | Within 600 s of the pause each Deployment is back at `readyReplicas: 3` with no Ready pod on the victim, while the victim reads `Ready!=True` (`REPLACED-OK`); then all three CRs at `Ready=True/AllReady`, before the restore |
+| 7 | Restore | `script` (6m) + `script` (1m) | `nodes.sh restore <victim>`, `mark fault-end` |
+| 8 | Judge the workload | `script` (20m) | `workload.sh verify` with `--ovn-db-sync neutron-worker-loss` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-messaging-secret.yaml`,
+`02-ovncentral-cr.yaml` and `03-neutron-cr.yaml`, the stack of
+`ovn-operator-pod-kill` under the `worker-loss` prefix with three API replicas, the
+Neutron's `spec.workers.deployment.nodeSelector` on the control-plane node and
+`spec.ovnDBSync: {syncMode: log, suspend: true}`; `04-placement-cr.yaml`, the
+Placement of `placement-operator-pod-kill` at three replicas against
+`keystone-worker-loss`.
+
+**Workload:** the `token`, `network` and `placement` streams against the suite's
+three APIs, judged against the measured budget. Requests fail in the first 45 to
+60 seconds of the pause, until the node turns NotReady and the EndpointSlices drop
+its pods.
+
+**Blast radius:** one whole worker, frozen; never the control plane.
+
+**Catch blocks:** from step 5 on every catch runs `nodes.sh restore <victim>`
+first, then dumps the Keystone through `../diagnostics.sh`, the three Deployments
+and their pods, and the workload.
+
+**Design notes:**
+
+- `docker pause` is deliberate. The frozen node's kernel still completes the TCP
+  handshake on a frozen pod's listening socket, so a request routed there hangs
+  until the client's 15-second timeout, the hardest case for a client behind a
+  Service.
+- The suite labels one zone per node, as a production cluster has. #1587 found that
+  the default spread placed every replica on one node of a cluster without zone
+  labels and fixed it: the zone constraint stays, and the node spread is a
+  hostname anti-affinity term that scores on every node. `SPREAD-OK` reads the
+  spread a zoned cluster gets.
+- Until the replacement, `DeploymentReady` reads `False` on each CR, because
+  `IsDeploymentReady` (`internal/common/deployment/deployment.go`) wants every
+  replica, so the suite asserts no CR condition before it.
+- The replacement waits for the node controller: the node turns NotReady after
+  about 45 seconds, and its pods are evicted after the default `tolerationSeconds`
+  of 300. The 600-second bound adds an API pod's cold start of up to 120 seconds
+  on a CI node.
 
 ---
 
