@@ -1,0 +1,578 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: a compute node dies, its owner drains it and
+# evacuates its server, and the pool deletes its compute service.
+#
+# Fault: docker kill -s KILL of the victim worker's kind node container
+# (../lib/nodes.sh kill), with server loss-guest on its nova-compute. The node
+# comes back with docker start once the drain has nothing left to wait for
+# but the node's own pod.
+#
+# The pool never migrates: emptying a host is openstack-hypervisor-operator's
+# eviction or the owner's (reconcile_novacompute_services.go), and that
+# operator does not run on kind. The suite's scripts play the owner: they take
+# the dead node out of the pool and evacuate its server.
+#
+# Claim, phase by phase:
+#   down      Nova lists the victim's nova-compute down within 120 s; the
+#             node entry stays Active with serviceState down, ServicesReady
+#             reads False/ServicesDown naming the victim, and the pool
+#             disabled nothing: it does nothing by itself.
+#   drain     Removing the pool label from the dead node: phase Draining,
+#             serviceStatus disabled, instances 1, ServicesReady=True/Draining.
+#   evacuate  openstack --os-compute-api-version 2.94 server evacuate puts
+#             loss-guest ACTIVE on the survivor within 300 s, with a migration
+#             of type evacuation and status done. From 2.95 an evacuated server
+#             stays stopped.
+#   hold      The entry turns Releasing and stays there for 120 s: the pod on
+#             the dead node stays Terminating, nodesRunningPods still counts
+#             it, and Nova still lists the service (RELEASING-HELD-OK).
+#   release   After the restore the pod ends, and within 600 s status.nodes
+#             holds the survivor alone, the pool reports
+#             ComputeServiceDeleted, and Nova lists no service, hypervisor or
+#             resource provider for the victim.
+#   kept      loss-guest is still ACTIVE on the survivor, and the placement
+#             audit finds no orphaned allocation.
+#
+# Blast radius: one whole worker, killed: its nova-compute and chassis pods,
+# kubelet, kindnet, kube-proxy and chaos-daemon. The control-plane node is
+# never faulted; the stack runs there, and the workers stay cordoned, so the
+# two pool pods and the chassis are the suite's only pods on the workers. A
+# node that never returns holds its entry in Releasing until someone deletes
+# its Node object or the pod by hand; the suite restores the node instead.
+#
+# Leg: multinode (metadata.labels chaos.c5c3.io/topology: multinode), last of
+# its suites.
+#
+# Workload: the token and network streams of ../lib/workload.sh against this
+# suite's Keystone and Neutron, and the placement audit of the Nova in verify.
+# Nothing on the request path of either stream runs on a worker, so the budget
+# is zero and a failed record is a defect to find.
+# Chaos matrix: nova self node-kill
+# Chaos random: none (scripted fault, no Chaos Mesh kind)
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-11-03, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: novacompute-node-loss
+  labels:
+    chaos.c5c3.io/topology: multinode
+spec:
+  namespace: openstack
+  # The chassis and nova-compute pods run with hostNetwork and own
+  # /run/openvswitch and /var/lib/nova on both workers.
+  concurrent: false
+  timeouts:
+    # The stack takes about 8 minutes to Ready (../../e2e/nova/basic-deployment),
+    # and the pool's drain moves at its 30- and 60-second polls of Nova.
+    assert: 10m
+  steps:
+  # ── Step 1: Label both workers ─────────────────────────────────────────
+  # The chassis label, the zone openstack-hypervisor-operator would read, and
+  # the pool label nova-loss-pool selects. The victim and the survivor go into
+  # the ConfigMap the Jobs and the probes read them from.
+  - try:
+    - script:
+        shell: bash
+        timeout: 1m
+        content: |
+          set -euo pipefail
+          VICTIM="$(../lib/nodes.sh victim)"
+          SURVIVOR="$(../lib/nodes.sh survivor)"
+          kubectl label node "$VICTIM" "$SURVIVOR" openstack.c5c3.io/chassis=true \
+            topology.kubernetes.io/zone=nova-loss-az1 \
+            openstack.c5c3.io/nova-compute-pool=loss --overwrite
+          kubectl create configmap nova-loss-verify -n "$NAMESPACE" \
+            --from-literal=victim="$VICTIM" --from-literal=survivor="$SURVIVOR" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "OK: labelled ${VICTIM} (victim) and ${SURVIVOR} (survivor)"
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 1m
+        content: |
+          for node in $(../lib/nodes.sh victim) $(../lib/nodes.sh survivor); do
+            kubectl label node "$node" openstack.c5c3.io/chassis- \
+              topology.kubernetes.io/zone- openstack.c5c3.io/nova-compute-pool- || true
+          done
+          kubectl delete configmap nova-loss-verify -n "$NAMESPACE" --ignore-not-found || true
+          echo "OK: removed the suite's labels and its ConfigMap"
+  # ── Step 2: Bring up the stack and the chassis ─────────────────────────
+  # The workers are cordoned, so everything but the DaemonSets lands on the
+  # control-plane node.
+  - try:
+    - script:
+        shell: bash
+        timeout: 25m
+        content: |
+          set -euo pipefail
+
+          # run_job <name> <fixture> <timeout>: the Job is deleted first because
+          # a Job's pod template is immutable.
+          run_job() {
+            kubectl delete job "$1" -n "$NAMESPACE" --ignore-not-found
+            kubectl apply -f "$2"
+            kubectl wait --for=condition=complete "job/$1" -n "$NAMESPACE" --timeout="$3" || {
+              kubectl logs -n "$NAMESPACE" "job/$1" 2>&1 || true
+              kubectl get pods -n "$NAMESPACE" -l job-name="$1" -o wide
+              exit 1
+            }
+          }
+
+          # One vhost per suite: nova's RPC topics are named after the service
+          # rather than after the CR. See ../../e2e/cinder/broker-vhost.sh.
+          ../../e2e/cinder/broker-vhost.sh create nova-loss nova-loss-messaging openstack
+
+          kubectl apply -f 00-keystone-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=8m \
+            keystone/keystone-nova-loss -n "$NAMESPACE"
+          echo "OK: Keystone/keystone-nova-loss is Ready"
+
+          run_job nova-loss-catalog-setup 01-catalog-setup-job.yaml 5m
+          echo "OK: the compute, placement, image and network rows are registered"
+
+          for fixture in 02-messaging-secret.yaml 03-ovncentral-cr.yaml \
+                         04-neutron-cr.yaml 05-placement-cr.yaml \
+                         06-glance-cr.yaml 07-glancebackend-cr.yaml; do
+            kubectl apply -f "$fixture"
+          done
+          for target in ovncentral/nova-loss-ovn neutron/neutron-nova-loss \
+                        placement/placement-nova-loss glance/glance-nova-loss \
+                        glancebackend/glance-nova-loss-s3; do
+            kubectl wait --for=condition=Ready --timeout=8m "$target" -n "$NAMESPACE"
+            echo "OK: $target is Ready"
+          done
+
+          run_job nova-loss-image-seed 08-image-seed-job.yaml 5m
+          echo "OK: the seed image is registered"
+
+          kubectl apply -f 09-metadata-secret.yaml
+          kubectl apply -f 10-nova-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=10m nova/nova-loss -n "$NAMESPACE"
+          echo "OK: Nova/nova-loss is Ready"
+
+          # The chassis the nova-compute pods wait for.
+          kubectl apply -f 11-ovnchassis-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=5m \
+            ovnchassis/nova-loss-chassis -n "$NAMESPACE"
+          echo "OK: OVNChassis/nova-loss-chassis is Ready"
+    catch:
+    - &pool-dump
+      script:
+        shell: bash
+        timeout: 3m
+        content: |
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide 2>&1 || true
+          echo "=== NovaCompute nova-loss-pool ==="
+          kubectl get novacompute nova-loss-pool -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== nova-compute DaemonSet and pods ==="
+          kubectl get ds,pods -n "$NAMESPACE" -l app.kubernetes.io/name=novacompute -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=novacompute -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n "$NAMESPACE" "$pod" 2>&1 | tail -40 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=100 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Nova workloads ==="
+          kubectl get nova nova-loss -n "$NAMESPACE" \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          kubectl get deploy,pods -n "$NAMESPACE" -l app.kubernetes.io/instance=nova-loss -o wide 2>&1 || true
+          echo "=== Job logs ==="
+          for job in nova-loss-catalog-setup nova-loss-image-seed nova-loss-discover-hosts \
+                     nova-loss-boot-server nova-loss-delete-server; do
+            echo "--- job/$job ---"
+            kubectl logs -n "$NAMESPACE" "job/$job" 2>&1 || true
+          done
+          echo "=== Pool events ==="
+          kubectl get events -n "$NAMESPACE" \
+            --field-selector involvedObject.kind=NovaCompute,involvedObject.name=nova-loss-pool 2>&1 || true
+          kubectl logs -n nova-system -l app.kubernetes.io/name=nova-operator --tail=200 2>&1 || true
+    - &workload-dump
+      script:
+        timeout: 1m
+        content: ../lib/workload.sh dump novacompute-node-loss
+    cleanup:
+    # The seed image goes first, through the Glance that stored it: every Glance
+    # writes into the one glance-images bucket keyed by image id, and an object
+    # left there fails the next upload of this id. Best-effort: a stack that
+    # never came up has no image to delete.
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          . ./probe-lib.sh
+          os_probe nova-loss-image-delete 240 \
+            'openstack image delete 4e0a0000-0000-4000-8000-000000001392' || true
+    # Best-effort. The Nova goes first and is waited for, because its finalizer
+    # drives the MariaDB teardown and needs the credentials that come down with
+    # the rest. The pool and the server are already gone: their cleanups run
+    # before this one.
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          kubectl delete nova nova-loss -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=300s || true
+          kubectl delete ovnchassis nova-loss-chassis -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=180s || true
+          kubectl delete job nova-loss-catalog-setup nova-loss-image-seed \
+            nova-loss-boot-server nova-loss-delete-server -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glancebackend glance-nova-loss-s3 -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glance glance-nova-loss -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete placement placement-nova-loss -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete neutron neutron-nova-loss -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete ovncentral nova-loss-ovn -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete secret nova-loss-messaging neutron-nova-loss-messaging \
+            nova-loss-metadata-secret -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete keystone keystone-nova-loss -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete memcached keystone-nova-loss-cache -n "$NAMESPACE" --ignore-not-found || true
+          ../../e2e/cinder/broker-vhost.sh delete nova-loss || true
+  # ── Step 3: Apply the pool, both workers turn Active ───────────────────
+  - try:
+    - apply:
+        file: 12-novacompute-pool.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: NovaCompute
+          metadata:
+            name: nova-loss-pool
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (length((nodes || `[]`)[?phase == 'Active' && serviceStatus == 'enabled' && serviceState == 'up'])): 2
+    catch:
+    - *pool-dump
+    cleanup:
+    # Runs before the stack's cleanup. A pool that is still draining would hold
+    # its finalizer for as long as Nova reports an instance, so after a failed
+    # run the suite strips the finalizer, the documented escape, rather than
+    # wedging the shared namespace.
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          kubectl delete novacompute nova-loss-pool -n "$NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl wait --for=delete novacompute/nova-loss-pool -n "$NAMESPACE" --timeout=180s 2>/dev/null || true
+          if kubectl get novacompute nova-loss-pool -n "$NAMESPACE" >/dev/null 2>&1; then
+            kubectl patch novacompute nova-loss-pool -n "$NAMESPACE" --type=merge \
+              -p '{"metadata":{"finalizers":null}}' || true
+          fi
+  # ── Step 4: Boot a server onto the victim ──────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          kubectl delete job nova-loss-boot-server -n "$NAMESPACE" --ignore-not-found
+          kubectl apply -f 15-boot-server-job.yaml
+          kubectl wait --for=condition=complete job/nova-loss-boot-server \
+            -n "$NAMESPACE" --timeout=8m || {
+            kubectl logs -n "$NAMESPACE" job/nova-loss-boot-server 2>&1 || true
+            exit 1
+          }
+          LOGS="$(kubectl logs -n "$NAMESPACE" job/nova-loss-boot-server)"
+          echo "$LOGS"
+          grep -q 'NOVA-LOSS-BOOT-OK' <<<"$LOGS"
+    catch:
+    - *pool-dump
+    cleanup:
+    # Runs before the pool's cleanup: a server left on a node of the pool would
+    # hold the pool's finalizer. Best-effort: a boot that failed left none.
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          kubectl delete job nova-loss-delete-server -n "$NAMESPACE" --ignore-not-found || true
+          kubectl apply -f 16-delete-server-job.yaml || true
+          kubectl wait --for=condition=complete job/nova-loss-delete-server \
+            -n "$NAMESPACE" --timeout=4m 2>/dev/null || true
+          kubectl logs -n "$NAMESPACE" job/nova-loss-delete-server 2>&1 || true
+  # ── Step 5: Start the workload ─────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start novacompute-node-loss --
+          --streams token,network
+          --keystone http://keystone-nova-loss.openstack.svc:5000/v3
+          --neutron http://neutron-nova-loss.openstack.svc:9696
+    catch:
+    - *pool-dump
+    - *workload-dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop novacompute-node-loss
+  # ── Step 6: Kill the victim ────────────────────────────────────────────
+  # From here to the restore every catch brings the worker back first: a dead
+  # worker fails every later suite of the leg.
+  - try:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh mark novacompute-node-loss fault-start
+    - script:
+        timeout: 5m
+        content: ../lib/nodes.sh kill "$(../lib/nodes.sh victim)"
+    catch: &restore-dump
+    - script:
+        timeout: 6m
+        content: ../lib/nodes.sh restore "$(../lib/nodes.sh victim)"
+    - *pool-dump
+    - *workload-dump
+  # ── Step 7: Nova sees the service down, the pool does nothing ──────────
+  # service_down_time defaults to 60 s, and the pool polls an Active node
+  # every 60 s.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          VICTIM="$(victim_node)"
+          SURVIVOR="$(survivor_node)"
+          os_probe nova-loss-down-probe 240 'set -u
+          end=$(( $(date +%s) + 120 ))
+          while true; do
+            state="$(openstack compute service list --host "$VICTIM" --service nova-compute -f value -c State 2>&1 || true)"
+            echo "SAMPLE state=${state}"
+            if [ "$state" = down ]; then
+              echo SERVICE-DOWN-OK
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              exit 1
+            fi
+            sleep 5
+          done'
+          deadline=$(($(date +%s) + 180))
+          while true; do
+            entry="$(node_entry "$VICTIM")"
+            services="$(services_ready)"
+            message="$(services_message)"
+            if [[ "$entry" == "Active|enabled|down|"* ]] && [ "$services" = False/ServicesDown ] &&
+              grep -qF "$VICTIM" <<<"$message"; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the victim's entry reads '${entry}' and ServicesReady ${services} (${message}), want Active|enabled|down and False/ServicesDown naming ${VICTIM}"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: ${VICTIM} is Active with its service down, ServicesReady=False/ServicesDown: ${message}"
+          survivor="$(node_entry "$SURVIVOR")"
+          if [[ "$survivor" != "Active|enabled|up|"* ]]; then
+            echo "FAIL: the survivor's entry reads '${survivor}', want Active|enabled|up"
+            exit 1
+          fi
+          disabled="$(event_count ComputeServiceDisabled)"
+          if [ "$disabled" != 0 ]; then
+            echo "FAIL: the pool disabled a service ${disabled} times by itself"
+            exit 1
+          fi
+          echo "DOWN-OK: the pool reports the dead node and disables nothing by itself"
+    catch: *restore-dump
+  # ── Step 8: The owner drains the dead node ─────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          VICTIM="$(victim_node)"
+          REASON="c5c3.io: leaving NovaCompute openstack/nova-loss-pool"
+          kubectl label node "$VICTIM" openstack.c5c3.io/nova-compute-pool-
+          deadline=$(($(date +%s) + 600))
+          while true; do
+            entry="$(node_entry "$VICTIM")"
+            services="$(services_ready)"
+            if [[ "$entry" == "Draining|disabled|"*"|${REASON}|1" ]] && [ "$services" = True/Draining ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 600s after the label removal the victim's entry reads '${entry}' and ServicesReady ${services}, want Draining|disabled|<state>|${REASON}|1 and True/Draining"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "DRAINING-OK: ${VICTIM} reads ${entry}, ServicesReady=True/Draining"
+    catch: *restore-dump
+  # ── Step 9: Evacuate the server ────────────────────────────────────────
+  # Microversion 2.94: from 2.95 an evacuated server stays stopped. The API
+  # refuses with ComputeServiceInUse while the source service is up, which the
+  # kill ruled out, and the fake driver supports evacuation.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          os_probe nova-loss-evacuate 420 'set -euo pipefail
+          openstack --os-compute-api-version 2.94 server evacuate loss-guest
+          end=$(( $(date +%s) + 300 ))
+          while true; do
+            status="$(openstack server show loss-guest -f value -c status)"
+            host="$(openstack server show loss-guest -f value -c OS-EXT-SRV-ATTR:host)"
+            echo "SAMPLE status=${status} host=${host}"
+            if [ "$status" = ACTIVE ] && [ "$host" = "$SURVIVOR" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$end" ]; then
+              echo "loss-guest is ${status} on ${host} 300s after the evacuate call, want ACTIVE on ${SURVIVOR}"
+              openstack server show loss-guest || true
+              exit 1
+            fi
+            sleep 5
+          done
+          openstack --os-compute-api-version 2.59 server migration list --server loss-guest -f json |
+            python3 -c "import json, sys
+          rows = json.load(sys.stdin)
+          print(rows)
+          sys.exit(0 if any(r.get(\"Type\") == \"evacuation\" and r.get(\"Status\") == \"done\" for r in rows) else 1)"
+          echo EVACUATED-OK'
+    catch: *restore-dump
+  # ── Step 10: The entry holds in Releasing while the node is dead ───────
+  # The pool releases the node's pod once Nova counts no server on it, but the
+  # pod on the dead node stays Terminating and nodesRunningPods still counts
+  # it. One probe pod samples Nova for the window while the script samples the
+  # pool every 5 s.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          VICTIM="$(victim_node)"
+          deadline=$(($(date +%s) + 180))
+          until [[ "$(node_entry "$VICTIM")" == Releasing* ]]; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: the victim's entry reads '$(node_entry "$VICTIM")' 180s after the evacuation, want Releasing"
+              exit 1
+            fi
+            sleep 5
+          done
+          probe_out="$(mktemp)"
+          trap 'rm -f "$probe_out"' EXIT
+          os_probe nova-loss-hold-probe 300 'set -u
+          end=$(( $(date +%s) + 120 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            rows="$(openstack compute service list --host "$VICTIM" --service nova-compute -f value -c Host 2>&1)" || {
+              echo "SAMPLE-ERROR ${rows}"
+              exit 1
+            }
+            echo "SAMPLE services=$(grep -cx "$VICTIM" <<<"$rows")"
+            sleep 5
+          done
+          echo PROBE-DONE' >"$probe_out" 2>&1 &
+          probe_pid=$!
+          end=$(($(date +%s) + 120))
+          samples=0
+          while true; do
+            entry="$(node_entry "$VICTIM")"
+            if [[ "$entry" != Releasing* ]]; then
+              echo "FAIL: the victim's entry reads '${entry}' during the hold, want Releasing"
+              kill "$probe_pid" 2>/dev/null || true
+              exit 1
+            fi
+            samples=$((samples + 1))
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          echo "OK: ${samples} samples read the victim's entry Releasing for 120s"
+          pods="$(pool_pods)"
+          echo "pool pods: ${pods}"
+          rc=0
+          wait "$probe_pid" || rc=$?
+          cat "$probe_out"
+          if [ "$rc" -ne 0 ] || ! grep -qx PROBE-DONE "$probe_out"; then
+            echo "FAIL: the Nova probe did not finish its window"
+            exit 1
+          fi
+          listed="$(grep -cx 'SAMPLE services=1' "$probe_out" || true)"
+          if [ "${listed:-0}" -lt 2 ] || grep -q '^SAMPLE services=0' "$probe_out"; then
+            echo "FAIL: Nova listed the victim's service on ${listed:-0} samples, want every sample and at least 2"
+            exit 1
+          fi
+          echo "RELEASING-HELD-OK: the entry held in Releasing and Nova kept the service for 120s"
+    catch: *restore-dump
+  # ── Step 11: The node returns, the pool deletes its service ────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: ../lib/nodes.sh restore "$(../lib/nodes.sh victim)"
+    - script:
+        shell: bash
+        timeout: 15m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          VICTIM="$(victim_node)"
+          SURVIVOR="$(survivor_node)"
+          deadline=$(($(date +%s) + 600))
+          while true; do
+            names="$(node_names)"
+            on="$(pool_pods | awk '{print $3}' | sort -u | xargs)"
+            if [ "$names" = "$SURVIVOR" ] && [ "$on" = "$SURVIVOR" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 600s after the restore status.nodes names [${names}] and the pool runs pods on [${on}], want ${SURVIVOR} alone"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: status.nodes holds ${SURVIVOR} alone, and so do the pool's pods"
+          if [ "$(event_count ComputeServiceDeleted)" -lt 1 ]; then
+            echo "FAIL: no ComputeServiceDeleted event on the pool"
+            exit 1
+          fi
+          out="$(os_probe nova-loss-release-probe 240 'set -euo pipefail
+          services="$(openstack compute service list --host "$VICTIM" --service nova-compute -f value -c Host | grep -cx "$VICTIM" || true)"
+          hypervisors="$(openstack --os-compute-api-version 2.87 hypervisor list -f value -c "Hypervisor Hostname" | grep -cx "$VICTIM" || true)"
+          providers="$(openstack resource provider list --name "$VICTIM" -f value -c name | grep -cx "$VICTIM" || true)"
+          echo "RELEASED services=${services} hypervisors=${hypervisors} providers=${providers}"')"
+          echo "$out"
+          if ! grep -qx 'RELEASED services=0 hypervisors=0 providers=0' <<<"$out"; then
+            echo "FAIL: Nova still lists the victim"
+            exit 1
+          fi
+          echo "RELEASE-OK: the pool deleted the victim's service, and Nova lists no service, hypervisor or resource provider for it"
+    catch: *restore-dump
+  # ── Step 12: The server stayed on the survivor; judge the workload ──────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ./probe-lib.sh
+          os_probe nova-loss-kept-probe 240 'set -euo pipefail
+          status="$(openstack server show loss-guest -f value -c status)"
+          host="$(openstack server show loss-guest -f value -c OS-EXT-SRV-ATTR:host)"
+          echo "loss-guest is ${status} on ${host}"
+          if [ "$status" != ACTIVE ] || [ "$host" != "$SURVIVOR" ]; then
+            echo "FAIL: loss-guest is ${status} on ${host}, want ACTIVE on ${SURVIVOR}"
+            exit 1
+          fi
+          echo KEPT-OK'
+          ../lib/workload.sh mark novacompute-node-loss fault-end
+    - script:
+        timeout: 25m
+        content: ../lib/workload.sh verify novacompute-node-loss --placement-audit nova-loss
+    catch:
+    - *pool-dump
+    - *workload-dump

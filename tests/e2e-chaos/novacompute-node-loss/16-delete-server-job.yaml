@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A copy of the fixture of ../../e2e/nova/compute-node-pool/ under the
+# nova-loss prefix, for novacompute-node-loss.
+#
+# Deletes the server loss-guest at the end of novacompute-node-loss, from the
+# cleanup of the step that booted it. The server outlives the suite's claims
+# on the survivor it was evacuated to, and a pool that still counts a server
+# would hold its finalizer when the step cleanups delete it.
+#
+# backoffLimit is 0 because the script is not idempotent: a retry would find no
+# server loss-guest and fail on the delete.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-loss-delete-server
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: delete-server
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-loss.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # wait_gone <kind> <name> <timeoutSeconds>: poll until a show of
+              # the object fails, which is how the client reports one that is
+              # gone. A delete is asynchronous, so a later check would race it.
+              wait_gone() {
+                wg_deadline=$(( $(date +%s) + $3 ))
+                while true; do
+                  if ! openstack "$1" show "$2" >/dev/null 2>&1; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${wg_deadline}" ]; then
+                    echo "ERROR: $1 $2 still present after $3s"
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              openstack server delete loss-guest
+              wait_gone server loss-guest 120
+              echo "OK: server loss-guest deleted"
+
+              echo NOVA-LOSS-DELETE-OK

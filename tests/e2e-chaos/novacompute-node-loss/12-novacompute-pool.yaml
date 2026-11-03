@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The node pool under test: the pool of ../novacompute-drain-compute-kill/ as
+# nova-loss-pool, on both workers. It selects the nodes step 1 labels with
+# openstack.c5c3.io/nova-compute-pool=loss, and removing that label from the
+# dead victim is how step 8 starts its drain. It declares no traits: a pool
+# without traits never reads a Hypervisor (reconcile_novacompute_traits.go),
+# and no stand-in Hypervisor CRD runs on this leg.
+#
+# spec.extraConfig is the fake-driver seam: kind has no KVM, and
+# FakeDriverWithoutFakeNodes reports one node named after [DEFAULT] host, which
+# the pod takes from spec.nodeName, so the compute service, the hypervisor and
+# the resource provider of each worker carry the worker's name. The fake
+# driver supports evacuation, which step 9 runs. vif plugging is switched off
+# because no ML2 agent runs here to report a port as bound; the server carries
+# no NIC either way.
+apiVersion: nova.openstack.c5c3.io/v1alpha1
+kind: NovaCompute
+metadata:
+  name: nova-loss-pool
+  namespace: openstack
+spec:
+  novaRef:
+    name: nova-loss
+  nodeSelector:
+    openstack.c5c3.io/nova-compute-pool: loss
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 768Mi
+  extraConfig:
+    DEFAULT:
+      compute_driver: fake.FakeDriverWithoutFakeNodes
+      vif_plugging_is_fatal: "false"
+      vif_plugging_timeout: "0"
