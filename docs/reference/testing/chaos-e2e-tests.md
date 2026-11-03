@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 70 chaos test suites validate operator behavior during and after fault
+The 71 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -85,7 +85,7 @@ and roles its fault reaches, and lists it with its scenario and its budget.
 
 ## Prerequisites
 
-All 70 test suites require the infrastructure stack to be deployed and healthy.
+All 71 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -582,11 +582,11 @@ the kind plane runs one replica, which the Deployment replaces.
 Every suite header names its entries in `# Chaos random: <entry>` lines beside
 its matrix lines, or carries exactly one `# Chaos random: none (<reason>)`
 line; the Random column of the [suite table](#test-suite-inventory) shows them.
-Twelve suites carry `none`: the scripted faults of `cinder-nfs-outage`,
+Thirteen suites carry `none`: the scripted faults of `cinder-nfs-outage`,
 `deletion-stuck-finalizer`, `eso-down`, `openbao-sealed`,
 `openbao-tenant-policy-narrowed` and `cinder-upgrade-db-partition`, the node
-faults of `ovn-chassis-loss` and `api-worker-loss`, the filler pods of
-`api-priority-preemption`, the
+faults of `ovn-chassis-loss`, `api-worker-loss` and `novacompute-node-loss`, the
+filler pods of `api-priority-preemption`, the
 lifecycle fault of `cronjob-rotation-failure`, `keystone-federation`, whose
 IdP the random plane does not configure, and `openbao-pod-kill`, whose OpenBao
 starts sealed on kind. `tests/unit/ci/chaos_random_catalogue_test.sh` fails,
@@ -759,7 +759,7 @@ these lists fails the generator.
 | neutron | [neutron-operator-pod-kill](#neutron-operator-pod-kill) (pod-kill) | [api-worker-loss](#api-worker-loss) (node-pause)<br>[neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) (pod-kill) | [neutron-mariadb-outage](#neutron-mariadb-outage) (partition) | [neutron-broker-outage](#neutron-broker-outage) (partition) | — | [neutron-keystone-outage](#neutron-keystone-outage) (pod-failure) | — |
 | ovn | [ovn-operator-pod-kill](#ovn-operator-pod-kill) (pod-kill) | [ovn-chassis-loss](#ovn-chassis-loss) (node-kill)<br>[ovn-controller-pod-kill](#ovn-controller-pod-kill) (pod-kill)<br>[ovn-northd-pod-kill](#ovn-northd-pod-kill) (pod-kill)<br>[ovn-southbound-outage](#ovn-southbound-outage) (pod-failure) | — | — | — | — | — |
 | cinder | [cinder-operator-pod-kill](#cinder-operator-pod-kill) (pod-kill) | [cinder-volume-pod-kill](#cinder-volume-pod-kill) (pod-kill) | [cinder-mariadb-outage](#cinder-mariadb-outage) (partition)<br>[cinder-upgrade-db-partition](#cinder-upgrade-db-partition) (partition) | [cinder-broker-outage](#cinder-broker-outage) (partition)<br>[cinder-broker-pod-kill](#cinder-broker-pod-kill) (pod-kill)<br>[cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) (pod-kill) | — | [cinder-keystone-outage](#cinder-keystone-outage) (pod-failure) | [cinder-nfs-outage](#cinder-nfs-outage) (scale-to-zero) |
-| nova | [nova-operator-pod-kill](#nova-operator-pod-kill) (pod-kill) | [novacompute-drain-compute-kill](#novacompute-drain-compute-kill) (pod-kill) | [nova-mariadb-outage](#nova-mariadb-outage) (partition) | [nova-broker-outage](#nova-broker-outage) (partition) | — | [nova-keystone-outage](#nova-keystone-outage) (pod-failure) | [nova-placement-outage](#nova-placement-outage) (partition) |
+| nova | [nova-operator-pod-kill](#nova-operator-pod-kill) (pod-kill) | [novacompute-drain-compute-kill](#novacompute-drain-compute-kill) (pod-kill)<br>[novacompute-node-loss](#novacompute-node-loss) (node-kill) | [nova-mariadb-outage](#nova-mariadb-outage) (partition) | [nova-broker-outage](#nova-broker-outage) (partition) | — | [nova-keystone-outage](#nova-keystone-outage) (pod-failure) | [nova-placement-outage](#nova-placement-outage) (partition) |
 | controlplane | [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) (pod-kill) | — | [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) (pod-kill) | [rabbitmq-operator-cascading-failure](#rabbitmq-operator-cascading-failure) (pod-failure) | — | [controlplane-keystone-degraded](#controlplane-keystone-degraded) (pod-failure)<br>[keystoneuser-rotation-keystone-outage](#keystoneuser-rotation-keystone-outage) (pod-failure) | [controlplane-deletion-korc-outage](#controlplane-deletion-korc-outage) (pod-failure)<br>[korc-provisioning-outage](#korc-provisioning-outage) (pod-failure) |
 | k-orc | — | [controlplane-deletion-korc-outage](#controlplane-deletion-korc-outage) (pod-failure)<br>[korc-provisioning-outage](#korc-provisioning-outage) (pod-failure) | — | — | — | [keystoneuser-rotation-keystone-outage](#keystoneuser-rotation-keystone-outage) (pod-failure)<br>[korc-network-partition](#korc-network-partition) (partition) | — |
 | mariadb | [deletion-stuck-finalizer](#deletion-stuck-finalizer) (scale-to-zero)<br>[mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) (pod-kill) | [barbican-mariadb-outage](#barbican-mariadb-outage) (partition)<br>[cinder-mariadb-outage](#cinder-mariadb-outage) (partition)<br>[controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) (pod-kill)<br>[glance-mariadb-outage](#glance-mariadb-outage) (partition)<br>[mariadb-network-partition](#mariadb-network-partition) (partition)<br>[mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) (pod-failure)<br>[mariadb-pod-kill](#mariadb-pod-kill) (pod-kill)<br>[neutron-mariadb-outage](#neutron-mariadb-outage) (partition)<br>[nova-mariadb-outage](#nova-mariadb-outage) (partition)<br>[placement-mariadb-outage](#placement-mariadb-outage) (partition) | — | — | — | — | — |
@@ -833,6 +833,7 @@ these lists fails the generator.
 | [nova-operator-pod-kill](#nova-operator-pod-kill) | — | `nova/operator` | failures=0 recovery=0s | `nova-operator-pod-kill` |
 | [nova-placement-outage](#nova-placement-outage) | — | `nova/backend` | failures=0 recovery=0s | `nova-placement-partition` |
 | [novacompute-drain-compute-kill](#novacompute-drain-compute-kill) | — | `nova/self` | failures=0 recovery=0s | `nova-fake-compute-pod-kill`, `nova-compute-pod-kill` |
+| [novacompute-node-loss](#novacompute-node-loss) | — | `nova/self` | failures=0 recovery=0s | none |
 | [openbao-pod-kill](#openbao-pod-kill) | SC-CHAOS-003 | `keystone/backend`, `openbao/self` | failures=0 recovery=0s | none |
 | [openbao-sealed](#openbao-sealed) | — | `keystone/backend`, `openbao/self` | failures=0 recovery=0s | none |
 | [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `external-secrets/backend`, `openbao/self` | failures=0 recovery=0s | none |
@@ -5036,6 +5037,74 @@ and their pods, and the workload.
   about 45 seconds, and its pods are evicted after the default `tolerationSeconds`
   of 300. The 600-second bound adds an API pod's cold start of up to 120 seconds
   on a CI node.
+
+---
+
+### novacompute-node-loss
+
+**File:** `tests/e2e-chaos/novacompute-node-loss/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A compute node dies with a server on it (`nodes.sh kill`). The pool
+never migrates: emptying a host is openstack-hypervisor-operator's eviction or the
+owner's (`operators/nova/internal/controller/reconcile_novacompute_services.go`),
+and that operator does not run on kind. The suite's scripts play the owner. They
+take the dead node out of the pool and evacuate its server, and the suite pins
+what the pool does along the way, up to the deleted compute service. The
+operator's code names this path (a NotReady hypervisor leaving its pool,
+`reconcile_novacompute_daemonset.go`), and no other test reaches it.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Label both workers | `script` (1m) | `openstack.c5c3.io/chassis=true`, `topology.kubernetes.io/zone=nova-loss-az1` and `openstack.c5c3.io/nova-compute-pool=loss`; the victim and the survivor go into ConfigMap `nova-loss-verify`. The step cleanup removes the labels |
+| 2 | Bring up the stack and the chassis | `script` (25m) | The `nova-loss` stack of fixtures `00` to `11` on a vhost of its own, as `novacompute-drain-compute-kill` step 2 brings up its own. The step cleanup deletes the seed image through Glance before it deletes the stack |
+| 3 | Apply the pool | `apply` + `assert` (10m) | `nova-loss-pool` at `Ready=True/AllReady` with two node entries `Active`, `enabled` and `up`. The step cleanup deletes the pool, with the finalizer escape |
+| 4 | Boot a server | `script` (10m) | Job `nova-loss-boot-server` boots `loss-guest` onto the victim with `--os-compute-api-version 2.74 server create --host`. The step cleanup deletes the server, before the pool's cleanup |
+| 5 | Start the workload | `script` (6m) | `workload.sh start` with the `token` and `network` streams |
+| 6 | Kill the victim | `script` (1m) + `script` (5m) | `mark fault-start`, `nodes.sh kill <victim>` |
+| 7 | Down | `script` (8m) | Nova lists the victim's `nova-compute` `down` within 120 s; within 180 s its entry reads `Active` with `serviceState: down` and `ServicesReady=False/ServicesDown` names it; the survivor stays `Active` and `up`, and no `ComputeServiceDisabled` event fired (`DOWN-OK`) |
+| 8 | Drain | `script` (12m) | Removes the pool label from the victim; its entry reads `phase: Draining`, `serviceStatus: disabled` with the pool's reason and `instances: 1`, and `ServicesReady=True/Draining` (`DRAINING-OK`) |
+| 9 | Evacuate | `script` (8m) | `openstack --os-compute-api-version 2.94 server evacuate loss-guest`; the server is `ACTIVE` on the survivor within 300 s, and `server migration list` shows a migration of type `evacuation` with status `done` (`EVACUATED-OK`) |
+| 10 | The release holds | `script` (8m) | The victim's entry turns `Releasing` within 180 s and reads `Releasing` on every 5-second sample for 120 s, while a probe pod finds the victim's `nova-compute` service on every sample of the window (`RELEASING-HELD-OK`) |
+| 11 | Restore and release | `script` (6m) + `script` (15m) | `nodes.sh restore <victim>`; within 600 s `status.nodes` and the pool's pods hold the survivor alone, the pool carries a `ComputeServiceDeleted` event, and Nova lists no service, hypervisor or resource provider for the victim (`RELEASE-OK`) |
+| 12 | Judge | `script` (5m) + `script` (25m) | `loss-guest` still `ACTIVE` on the survivor (`KEPT-OK`), `mark fault-end`, `workload.sh verify` with `--placement-audit nova-loss` |
+
+**Fixtures:** `00` to `12`, `15` and `16` of `novacompute-drain-compute-kill` under
+the `nova-loss` prefix, with the seed image id
+`4e0a0000-0000-4000-8000-000000001392`, the pool `nova-loss-pool` selecting
+`openstack.c5c3.io/nova-compute-pool=loss` on both workers, and the boot Job pinning
+the server to the victim; `probe-lib.sh` with the pool helpers for two node
+entries and `os_probe`.
+
+**Workload:** the `token` and `network` streams against `keystone-nova-loss` and
+`neutron-nova-loss`, judged against `failures=0 recovery=0s`, with the placement
+audit of `nova-loss`. Nothing on the request path of either stream runs on a
+worker.
+
+**Blast radius:** one whole worker, killed, with its nova-compute and chassis
+pods; never the control plane.
+
+**Catch blocks:** from step 6 to step 11 every catch runs
+`nodes.sh restore <victim>` first. Every catch dumps the nodes, the pool, the nova-compute
+DaemonSet and pods with their current and previous logs, the Nova's conditions and
+workloads, the Job logs, the pool's events, the nova-operator log and the workload.
+
+**Design notes:**
+
+- Microversion 2.94 keeps the evacuated server `ACTIVE`; from 2.95 an evacuated
+  server stays stopped (nova 33.0.0, `nova/api/openstack/compute/evacuate.py`). The
+  API refuses an evacuation with `ComputeServiceInUse` while the source service is
+  up, and the fake driver supports evacuation.
+- The entry holds in `Releasing` because the pod on the dead node stays
+  `Terminating` and `nodesRunningPods` counts every pod that has not finished.
+- Deleting the service removes the victim's resource provider, and with it the
+  allocation the evacuated server still held there
+  (`_remove_allocations_for_evacuated_instances` in nova's report client), so the
+  placement audit finds nothing orphaned although the source never restarted its
+  nova-compute.
 
 ---
 

@@ -302,7 +302,7 @@ test_the_repository() {
   assert_eq "check_catalogue reports nothing" "" "$out"
   entries="$(yq '.[].name' "$CATALOGUE")"
   assert_eq "the catalogue holds 51 entries" "51" "$(grep -c . <<<"$entries")"
-  assert_eq "twelve suites carry a none line" "12" \
+  assert_eq "thirteen suites carry a none line" "13" \
     "$(grep -l '^# Chaos random: none (' "$SUITES_DIR"/*/chainsaw-test.yaml | grep -c .)"
   assert_eq "the four lab faults carry a source" "lab F1 lab F2 lab F3 lab F4" \
     "$(yq -r '[.[] | select(.source != null) | .source] | sort | join(" ")' "$CATALOGUE")"

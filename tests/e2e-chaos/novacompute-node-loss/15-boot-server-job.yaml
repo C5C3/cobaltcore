@@ -1,0 +1,99 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A copy of the fixture of ../../e2e/nova/compute-node-pool/ under the
+# nova-loss prefix, for novacompute-node-loss.
+#
+# Boots the server loss-guest onto the victim, the worker step 7 kills, with
+# the boot of ../../e2e/nova/basic-deployment/12-verify-job.yaml. The victim's
+# name comes from ConfigMap nova-loss-verify. --host needs compute API
+# microversion 2.74 and admin rights; it puts the server on the victim
+# whatever the scheduler would have weighed.
+#
+# backoffLimit is 0 because the script is not idempotent: a second attempt would
+# find the server loss-guest the first one created and fail on the name.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-loss-boot-server
+  namespace: openstack
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: boot-server
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: VICTIM
+              valueFrom:
+                configMapKeyRef:
+                  name: nova-loss-verify
+                  key: victim
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-loss.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+
+              # The image seeded by 08-image-seed-job.yaml under an id this
+              # suite owns.
+              SEED=4e0a0000-0000-4000-8000-000000001392
+
+              # wait_status <kind> <name> <want> <timeoutSeconds>: poll one
+              # object's status every 5s; on the deadline print its show output,
+              # whose fault message explains a server that reached ERROR.
+              wait_status() {
+                ws_deadline=$(( $(date +%s) + $4 ))
+                while true; do
+                  ws_status="$(openstack "$1" show "$2" -f value -c status 2>/dev/null || true)"
+                  if [ "${ws_status}" = "$3" ]; then
+                    return 0
+                  fi
+                  if [ "$(date +%s)" -ge "${ws_deadline}" ]; then
+                    echo "ERROR: $1 $2 status '${ws_status:-<none>}' != $3 within $4s"
+                    openstack "$1" show "$2" 2>&1 || true
+                    exit 1
+                  fi
+                  sleep 5
+                done
+              }
+
+              openstack flavor show m1.nano >/dev/null 2>&1 \
+                || openstack flavor create --vcpus 1 --ram 128 --disk 1 m1.nano
+              echo "OK: flavor m1.nano"
+
+              # --nic none: no port is bound, so the boot needs neither an ML2
+              # agent nor a network of its own.
+              openstack --os-compute-api-version 2.74 server create --host "${VICTIM}" \
+                --image "${SEED}" --flavor m1.nano --nic none loss-guest
+              wait_status server loss-guest ACTIVE 300
+              echo "OK: server loss-guest is ACTIVE"
+
+              SERVER_HOST="$(openstack server show loss-guest -f value -c OS-EXT-SRV-ATTR:host)"
+              if [ "${SERVER_HOST}" != "${VICTIM}" ]; then
+                echo "ERROR: server loss-guest landed on '${SERVER_HOST}', want ${VICTIM}"
+                exit 1
+              fi
+              echo "OK: server loss-guest landed on ${VICTIM}"
+
+              echo NOVA-LOSS-BOOT-OK
