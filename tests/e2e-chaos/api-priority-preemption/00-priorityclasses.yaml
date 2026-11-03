@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The two priority classes of api-priority-preemption. They are applied before
+# the Keystone, because the keystone webhook looks the named class up.
+#
+# chaos-preempt-high is the API pods' class and may preempt. chaos-preempt-low
+# is the filler pods' class with preemptionPolicy Never, so a filler that lost
+# its node cannot preempt anything back, and its Pending replacement is the
+# control that the node is full.
+#
+# chaos-preempt-low sits below zero, the priority of every pod without a
+# class, such as the workload pod and chaos-daemon. The scheduler's victim
+# search tries to keep a node's lower-priority pods in order of priority,
+# highest first, so on a worker it keeps every such pod and the filler is the
+# one victim. Above zero, a pod of 50m or more beside the filler would be
+# preempted in its place.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: chaos-preempt-high
+globalDefault: false
+value: 1000000
+preemptionPolicy: PreemptLowerPriority
+description: The Keystone API pods of the api-priority-preemption chaos suite.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: chaos-preempt-low
+globalDefault: false
+value: -1000
+preemptionPolicy: Never
+description: The filler pods of the api-priority-preemption chaos suite.

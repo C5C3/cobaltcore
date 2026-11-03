@@ -1,0 +1,278 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: an API pod with a PriorityClass preempts its way
+# onto a full node (#625 Phase 5).
+#
+# Fault: scheduler pressure. Both workers are filled with low-priority filler
+# pods until less CPU is left than an API pod requests, and the Keystone, whose
+# API pods run under the class chaos-preempt-high on those two workers, is
+# scaled from two replicas to three. Kubelet eviction under real memory
+# pressure is out: kind nodes share the runner's memory, and that fault would
+# take the runner down.
+#
+# Claim, phase by phase:
+#   full      Each worker's filler requests its allocatable CPU minus the
+#             requests of its pods minus 20m, and is Ready.
+#   preempt   The third API pod preempts a filler: the filler pod carries a
+#             DisruptionTarget condition with reason PreemptionByScheduler and
+#             a Preempted event, and the Keystone is back at
+#             Ready=True/AllReady with three Ready pods.
+#   control   The preempted filler's replacement stays Pending with a
+#             FailedScheduling event for 60 s: the node really is full, and
+#             the low class preempts nothing back.
+#
+# Blast radius: the two filler pods, one per worker; the scheduler preempts
+# one of them. The step cleanups delete the fillers, cordon the workers again,
+# remove the preempt label and delete both classes after the Keystone.
+#
+# Leg: multinode (metadata.labels chaos.c5c3.io/topology: multinode), after
+# ovn-chassis-loss.
+#
+# Workload: the token stream of ../lib/workload.sh against keystone-preempt.
+# The two API pods that serve it before the scale-up stay where they are, so
+# the budget is zero.
+# Chaos matrix: keystone self preemption
+# Chaos random: none (scripted fault, no Chaos Mesh kind)
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-11-03, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: api-priority-preemption
+  labels:
+    chaos.c5c3.io/topology: multinode
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    assert: 10m
+  steps:
+  # ── Step 1: The classes, the workers labelled and opened ────────────────
+  # The classes go first: the keystone webhook looks the named class up. The
+  # cleanup runs after the Keystone's and cordons the workers again.
+  - try:
+    - apply:
+        file: 00-priorityclasses.yaml
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -eu
+          for node in $(../lib/nodes.sh victim) $(../lib/nodes.sh survivor); do
+            kubectl label node "$node" chaos.c5c3.io/preempt=true --overwrite
+          done
+          ../lib/nodes.sh open
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../lib/nodes.sh close || true
+          kubectl label nodes -l chaos.c5c3.io/preempt chaos.c5c3.io/preempt- || true
+  # ── Step 2: The Keystone on the two workers ─────────────────────────────
+  - try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-preempt
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos keystone-preempt --dep-label=app.kubernetes.io/instance=keystone-preempt
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide 2>&1 || true
+          for node in $(kubectl get nodes -l chaos.c5c3.io/preempt -o name 2>/dev/null); do
+            kubectl describe "$node" 2>&1 | sed -n '/^Allocated resources:/,/^Events:/p' || true
+          done
+          echo "=== Keystone and filler pods ==="
+          kubectl get deploy,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=keystone-preempt -o wide 2>&1 || true
+          kubectl get deploy,pod -n "$NAMESPACE" -l app.kubernetes.io/name=chaos-preempt-filler -o wide 2>&1 || true
+          kubectl get events -n "$NAMESPACE" --field-selector reason=Preempted 2>&1 || true
+          kubectl get events -n "$NAMESPACE" --field-selector reason=FailedScheduling 2>&1 | tail -20 || true
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump api-priority-preemption
+  # ── Step 3: Start the workload ──────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start api-priority-preemption --
+          --streams token
+          --keystone http://keystone-preempt.openstack.svc:5000/v3
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop api-priority-preemption
+  # ── Step 4: Fill both workers ───────────────────────────────────────────
+  # The request is the node's allocatable CPU minus the requests of its pods
+  # that have not finished, minus 20m: less than the 70m an API pod requests,
+  # and no CPU actually used. A pod's request is the larger of its containers'
+  # sum and its largest init container, plus its overhead, as the scheduler
+  # counts it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          n=0
+          for node in $(../lib/nodes.sh victim) $(../lib/nodes.sh survivor); do
+            n=$((n + 1))
+            alloc="$(kubectl get node "$node" -o jsonpath='{.status.allocatable.cpu}')"
+            used="$(kubectl get pods -A --field-selector "spec.nodeName=${node}" -o json | jq '
+              def mc: if . == null then 0 elif endswith("m") then (.[:-1] | tonumber) else (tonumber * 1000) end;
+              [.items[] | select(.status.phase != "Succeeded" and .status.phase != "Failed")
+               | ([.spec.containers[].resources.requests.cpu | mc] | add // 0) as $c
+               | ([.spec.initContainers[]? | select(.restartPolicy == "Always") | .resources.requests.cpu | mc] | add // 0) as $s
+               | ([.spec.initContainers[]? | select(.restartPolicy != "Always") | .resources.requests.cpu | mc] | max // 0) as $i
+               | ([$c + $s, $i + $s] | max) + (.spec.overhead.cpu | mc)]
+              | add // 0 | floor')"
+            alloc_m="$(jq -n --arg q "$alloc" '$q | if endswith("m") then (.[:-1] | tonumber) else (tonumber * 1000) end | floor')"
+            cpu=$((alloc_m - used - 20))
+            if [ "$cpu" -le 0 ]; then
+              echo "FAIL: no room to fill on ${node}: ${alloc_m}m allocatable, ${used}m requested"
+              exit 1
+            fi
+            sed -e "s/@N@/${n}/g" -e "s/@NODE@/${node}/g" -e "s/@CPU@/${cpu}/g" 02-filler.yaml | kubectl apply -f -
+            kubectl rollout status "deployment/chaos-preempt-filler-${n}" -n "$NAMESPACE" --timeout=3m
+            echo "FILLED ${node} ${cpu}m (${alloc_m}m allocatable, ${used}m requested)"
+          done
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 2m
+        content: kubectl delete deployment -n "$NAMESPACE" -l app.kubernetes.io/name=chaos-preempt-filler --ignore-not-found --wait=true --timeout=90s || true
+  # ── Step 5: Scale up; the third API pod preempts a filler ───────────────
+  # A watch records every state of the filler pods, since a preempted pod with
+  # a one-second grace period is gone before a poll could read its condition.
+  - try:
+    - script:
+        shell: bash
+        timeout: 8m
+        content: |
+          set -euo pipefail
+          watch="$(mktemp)"
+          kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/name=chaos-preempt-filler \
+            --watch --output-watch-events -o json >"$watch" 2>/dev/null &
+          watcher=$!
+          trap 'kill "$watcher" 2>/dev/null || true; rm -f "$watch"' EXIT
+          sleep 2
+          ../lib/workload.sh mark api-priority-preemption fault-start
+          kubectl patch keystone keystone-preempt -n "$NAMESPACE" --type=merge \
+            -p '{"spec":{"deployment":{"replicas":3}}}'
+          deadline=$(($(date +%s) + 300))
+          while true; do
+            # A partial object at the end of the file is read on the next poll.
+            found="$(jq -r 'select(any(.object.status.conditions[]?;
+                .type == "DisruptionTarget" and .reason == "PreemptionByScheduler"))
+              | "\(.object.metadata.name) \(.object.metadata.labels["app.kubernetes.io/instance"])"' \
+              "$watch" 2>/dev/null | head -1 || true)"
+            if [ -n "$found" ]; then
+              read -r victim instance <<<"$found"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no filler pod carried DisruptionTarget/PreemptionByScheduler within 300s of the scale-up"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: ${victim} carries DisruptionTarget with reason PreemptionByScheduler"
+          deadline=$(($(date +%s) + 60))
+          until kubectl get events -n "$NAMESPACE" --field-selector "reason=Preempted,involvedObject.name=${victim}" -o name | grep -q .; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: no Preempted event names ${victim}"
+              exit 1
+            fi
+            sleep 2
+          done
+          kubectl get events -n "$NAMESPACE" --field-selector "reason=Preempted,involvedObject.name=${victim}"
+          kubectl create configmap api-preempt-verify -n "$NAMESPACE" \
+            --from-literal=victim="$victim" --from-literal=instance="$instance" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "PREEMPTED-OK: ${victim} of ${instance}"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-preempt
+            namespace: openstack
+          status:
+            readyReplicas: 3
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-preempt
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete configmap api-preempt-verify -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 6: The node stays full for 60 s ────────────────────────────────
+  # The preempted filler's ReplicaSet starts a replacement on the same node,
+  # which no longer fits there and may preempt nothing.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          set -euo pipefail
+          victim="$(kubectl get configmap api-preempt-verify -n "$NAMESPACE" -o jsonpath='{.data.victim}')"
+          instance="$(kubectl get configmap api-preempt-verify -n "$NAMESPACE" -o jsonpath='{.data.instance}')"
+          end=$(($(date +%s) + 60))
+          samples=0
+          while true; do
+            pending="$(kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${instance}" \
+              --field-selector status.phase=Pending -o name | sed 's|^pod/||' | grep -vx "$victim" || true)"
+            if [ "$(grep -c . <<<"$pending")" != 1 ]; then
+              echo "FAIL: ${instance} has [$(xargs <<<"$pending")] Pending, want its one replacement"
+              kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/instance=${instance}" -o wide || true
+              exit 1
+            fi
+            if ! kubectl get events -n "$NAMESPACE" --field-selector "reason=FailedScheduling,involvedObject.name=${pending}" -o name | grep -q .; then
+              if [ "$samples" -gt 2 ]; then
+                echo "FAIL: ${pending} is Pending without a FailedScheduling event"
+                exit 1
+              fi
+            fi
+            samples=$((samples + 1))
+            if [ "$(date +%s)" -ge "$end" ]; then
+              break
+            fi
+            sleep 5
+          done
+          kubectl get events -n "$NAMESPACE" --field-selector "reason=FailedScheduling,involvedObject.name=${pending}" | tail -3
+          echo "STILL-FULL-OK: ${pending} stayed Pending for 60s (${samples} samples)"
+          ../lib/workload.sh mark api-priority-preemption fault-end
+    catch: *dump
+  # ── Step 7: Judge the workload ──────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 15m
+        content: ../lib/workload.sh verify api-priority-preemption
+    catch: *dump

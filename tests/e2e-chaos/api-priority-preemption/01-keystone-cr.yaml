@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR of api-priority-preemption: two API replicas under the class
+# chaos-preempt-high, restricted to the two workers step 1 labels
+# chaos.c5c3.io/preempt=true. Step 5 scales it to three once both workers are
+# full, so the third pod has to preempt a filler.
+#
+# Without spec.jobs every Job and CronJob pod takes the class and the
+# nodeSelector of spec.deployment, so the hourly trust-flush pod would preempt
+# a filler, or finish and free room, on a filled worker. spec.jobs opts out of
+# the class and pins those pods to the control-plane node.
+#
+# The bootstrap admin password comes from the pre-seeded keystone-admin
+# Secret, which the workload's token stream authenticates with.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-preempt
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 2
+    priorityClassName: chaos-preempt-high
+    nodeSelector:
+      chaos.c5c3.io/preempt: "true"
+  jobs:
+    priorityClassName: ""
+    nodeSelector:
+      node-role.kubernetes.io/control-plane: ""
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_preempt
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
