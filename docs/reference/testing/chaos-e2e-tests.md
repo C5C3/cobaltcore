@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 68 chaos test suites validate operator behavior during and after fault
+The 69 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -85,7 +85,7 @@ and roles its fault reaches, and lists it with its scenario and its budget.
 
 ## Prerequisites
 
-All 68 test suites require the infrastructure stack to be deployed and healthy.
+All 69 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -582,10 +582,10 @@ the kind plane runs one replica, which the Deployment replaces.
 Every suite header names its entries in `# Chaos random: <entry>` lines beside
 its matrix lines, or carries exactly one `# Chaos random: none (<reason>)`
 line; the Random column of the [suite table](#test-suite-inventory) shows them.
-Ten suites carry `none`: the scripted faults of `cinder-nfs-outage`,
+Eleven suites carry `none`: the scripted faults of `cinder-nfs-outage`,
 `deletion-stuck-finalizer`, `eso-down`, `openbao-sealed`,
 `openbao-tenant-policy-narrowed` and `cinder-upgrade-db-partition`, the node
-fault of `ovn-chassis-loss`, the
+fault of `ovn-chassis-loss`, the filler pods of `api-priority-preemption`, the
 lifecycle fault of `cronjob-rotation-failure`, `keystone-federation`, whose
 IdP the random plane does not configure, and `openbao-pod-kill`, whose OpenBao
 starts sealed on kind. `tests/unit/ci/chaos_random_catalogue_test.sh` fails,
@@ -750,7 +750,7 @@ these lists fails the generator.
 
 | Component | operator | self | database | broker | cache | keystone | backend |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| keystone | [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) (pod-failure)<br>[operator-pod-crash](#operator-pod-crash) (pod-kill)<br>[operator-pod-kill](#operator-pod-kill) (pod-kill) | [api-pod-kill-pdb](#api-pod-kill-pdb) (pod-kill)<br>[cronjob-rotation-failure](#cronjob-rotation-failure) (pod-failure)<br>[keystone-federation](#keystone-federation) (container-kill) | [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) (pod-kill)<br>[deletion-stuck-finalizer](#deletion-stuck-finalizer) (scale-to-zero)<br>[mariadb-network-latency](#mariadb-network-latency) (delay)<br>[mariadb-network-partition](#mariadb-network-partition) (partition)<br>[mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) (pod-failure)<br>[mariadb-pod-kill](#mariadb-pod-kill) (pod-kill) | — | [memcached-network-partition](#memcached-network-partition) (partition)<br>[memcached-pod-kill](#memcached-pod-kill) (pod-kill) | — | [keystone-federation](#keystone-federation) (pod-failure)<br>[openbao-pod-kill](#openbao-pod-kill) (pod-kill)<br>[openbao-sealed](#openbao-sealed) (seal) |
+| keystone | [fernet-rotation-operator-outage](#fernet-rotation-operator-outage) (pod-failure)<br>[operator-pod-crash](#operator-pod-crash) (pod-kill)<br>[operator-pod-kill](#operator-pod-kill) (pod-kill) | [api-pod-kill-pdb](#api-pod-kill-pdb) (pod-kill)<br>[api-priority-preemption](#api-priority-preemption) (preemption)<br>[cronjob-rotation-failure](#cronjob-rotation-failure) (pod-failure)<br>[keystone-federation](#keystone-federation) (container-kill) | [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) (pod-kill)<br>[deletion-stuck-finalizer](#deletion-stuck-finalizer) (scale-to-zero)<br>[mariadb-network-latency](#mariadb-network-latency) (delay)<br>[mariadb-network-partition](#mariadb-network-partition) (partition)<br>[mariadb-operator-cascading-failure](#mariadb-operator-cascading-failure) (pod-failure)<br>[mariadb-pod-kill](#mariadb-pod-kill) (pod-kill) | — | [memcached-network-partition](#memcached-network-partition) (partition)<br>[memcached-pod-kill](#memcached-pod-kill) (pod-kill) | — | [keystone-federation](#keystone-federation) (pod-failure)<br>[openbao-pod-kill](#openbao-pod-kill) (pod-kill)<br>[openbao-sealed](#openbao-sealed) (seal) |
 | horizon | [horizon-operator-pod-kill](#horizon-operator-pod-kill) (pod-kill) | [horizon-dashboard-pod-kill](#horizon-dashboard-pod-kill) (pod-kill) | — | — | [horizon-memcached-pod-kill](#horizon-memcached-pod-kill) (pod-kill) | — | — |
 | glance | [glance-operator-pod-kill](#glance-operator-pod-kill) (pod-kill) | — | [glance-mariadb-outage](#glance-mariadb-outage) (partition) | — | — | [glance-keystone-outage](#glance-keystone-outage) (pod-failure) | [glance-garage-outage](#glance-garage-outage) (partition) |
 | placement | [placement-operator-pod-kill](#placement-operator-pod-kill) (pod-kill) | — | [placement-mariadb-outage](#placement-mariadb-outage) (partition) | — | — | [placement-keystone-outage](#placement-keystone-outage) (pod-failure) | — |
@@ -777,6 +777,7 @@ these lists fails the generator.
 | Suite | Scenario ID | Matrix | Budget | Random |
 | --- | --- | --- | --- | --- |
 | [api-pod-kill-pdb](#api-pod-kill-pdb) | SC-CHAOS-008 | `keystone/self` | failures=0 recovery=30s | `keystone-api-pod-kill` |
+| [api-priority-preemption](#api-priority-preemption) | — | `keystone/self` | failures=0 recovery=0s | none |
 | [barbican-keystone-outage](#barbican-keystone-outage) | — | `barbican/keystone` | failures=400 recovery=150s | `keystone-api-pod-failure` |
 | [barbican-mariadb-outage](#barbican-mariadb-outage) | — | `barbican/database`, `mariadb/self` | failures=40 recovery=90s | `barbican-mariadb-partition` |
 | [barbican-openbao-outage](#barbican-openbao-outage) | — | `barbican/backend`, `openbao/self` | — | `barbican-openbao-partition` |
@@ -4904,6 +4905,70 @@ first, then dumps the chassis, the data path and the workload.
   restart wipes it with `br-int`, the port and the namespace, as a reboot does.
   The system-id survives in the record the OVNChassis keeps per node, so the
   chassis rejoins under its own `Chassis` row.
+
+---
+
+### api-priority-preemption
+
+**File:** `tests/e2e-chaos/api-priority-preemption/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** Phase 5 of #625 gave the API Deployments a `priorityClassName`, and
+`tests/e2e/keystone/priority-class/` checks that the field reaches the pod spec.
+This suite checks what the field is for: on a node that is full by requests, the
+scheduler preempts a low-priority pod for an API pod of a higher class. "Node
+pressure" here is scheduler pressure. Kubelet eviction under real memory pressure
+is out, because kind nodes share the runner's memory.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Classes and workers | `apply` + `script` (2m) | `chaos-preempt-high` (1000000, `PreemptLowerPriority`) and `chaos-preempt-low` (-1000, `preemptionPolicy: Never`); `chaos.c5c3.io/preempt=true` on both workers and `nodes.sh open`. The step cleanup cordons the workers and removes the label; the classes go after the Keystone |
+| 2 | Keystone | `apply` + `assert` (10m) | `keystone-preempt`, two replicas under `chaos-preempt-high` on the labelled workers, at `Ready=True/AllReady` |
+| 3 | Start the workload | `script` (6m) | `workload.sh start` with the `token` stream |
+| 4 | Fill both workers | `script` (6m) | Per worker, a filler Deployment requests the node's `allocatable.cpu` minus the requests of its pods that have not finished, minus 20m (`FILLED`); a remainder of zero or less fails with `no room to fill on <node>`. The step cleanup deletes the fillers |
+| 5 | Scale up | `script` (8m) + `assert` (10m) | `mark fault-start`, `spec.deployment.replicas: 3`; a watch on the filler pods sees one carry `DisruptionTarget` with reason `PreemptionByScheduler`, and a `Preempted` event names it (`PREEMPTED-OK`); the Deployment at `readyReplicas: 3` and the Keystone at `Ready=True/AllReady` |
+| 6 | The node stays full | `script` (4m) | For 60 s the preempted filler's replacement is `Pending` with a `FailedScheduling` event (`STILL-FULL-OK`); `mark fault-end` |
+| 7 | Judge the workload | `script` (15m) | `workload.sh verify` |
+
+**Fixtures:** `00-priorityclasses.yaml`, `01-keystone-cr.yaml` (`keystone-preempt`,
+`replicas: 2`, `priorityClassName: chaos-preempt-high`, `nodeSelector:
+{chaos.c5c3.io/preempt: "true"}`, and `spec.jobs` with `priorityClassName: ""`
+and the control-plane node as its nodeSelector), `02-filler.yaml` (a Deployment
+rendered per worker, `priorityClassName: chaos-preempt-low`,
+`ghcr.io/c5c3/keystone:2026.1` running `sleep infinity`,
+`terminationGracePeriodSeconds: 1`, pinned by a `kubernetes.io/hostname`
+nodeSelector).
+
+**Workload:** the `token` stream against `keystone-preempt`, judged against
+`failures=0 recovery=0s`: the two API pods that serve it before the scale-up stay
+where they are.
+
+**Catch blocks:** every catch dumps the Keystone through `../diagnostics.sh`, the
+allocated resources of both workers, the Keystone and filler pods, the
+`Preempted` and `FailedScheduling` events, and the workload.
+
+**Design notes:**
+
+- A filler requests CPU and uses none, so filling a node costs the runner nothing.
+  The 20m it leaves is less than the 70m an API pod requests, so the third pod
+  fits nowhere without a preemption.
+- A filler is placed by a nodeSelector rather than by `nodeName`, so the scheduler
+  places it and can preempt it, and its replacement reports `FailedScheduling`.
+- A preempted pod with a one-second grace period is gone before a poll could read
+  its `DisruptionTarget` condition, so a watch records the filler pods' states from
+  before the scale-up.
+- `chaos-preempt-low` is -1000, below the priority 0 of every pod without a class,
+  such as the workload pod and chaos-daemon. The scheduler keeps a node's
+  lower-priority pods in order of priority, highest first, as long as the
+  preemptor still fits, so the filler is the one victim on a worker. With the
+  filler above zero, a 50m pod beside it would be preempted in its place.
+- Every Keystone Job and CronJob pod takes the class and the nodeSelector of
+  `spec.deployment` unless `spec.jobs` sets its own. The hourly trust-flush pod
+  would then preempt a filler, or finish and leave room, on a filled worker, so
+  `spec.jobs` opts out of the class and pins those pods to the control-plane node.
 
 ---
 
