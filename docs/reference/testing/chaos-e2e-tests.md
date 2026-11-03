@@ -15,7 +15,7 @@ For happy-path E2E tests, see [Keystone E2E Test Suites](./keystone-e2e-tests.md
 
 ## Overview
 
-The 67 chaos test suites validate operator behavior during and after fault
+The 68 chaos test suites validate operator behavior during and after fault
 injection. Phase 1 covers infrastructure dependency pod kills. Phase 2 adds
 operator self-recovery, CronJob workload fault tolerance, and PDB availability
 guarantee scenarios. Phase 3 adds an all-pod operator kill with leader
@@ -85,7 +85,7 @@ and roles its fault reaches, and lists it with its scenario and its budget.
 
 ## Prerequisites
 
-All 67 test suites require the infrastructure stack to be deployed and healthy.
+All 68 test suites require the infrastructure stack to be deployed and healthy.
 The suites that apply a chaos resource require Chaos Mesh as well.
 
 ::: warning Run `WITH_CHAOS_MESH=true make deploy-infra` first
@@ -582,9 +582,10 @@ the kind plane runs one replica, which the Deployment replaces.
 Every suite header names its entries in `# Chaos random: <entry>` lines beside
 its matrix lines, or carries exactly one `# Chaos random: none (<reason>)`
 line; the Random column of the [suite table](#test-suite-inventory) shows them.
-Nine suites carry `none`: the scripted faults of `cinder-nfs-outage`,
+Ten suites carry `none`: the scripted faults of `cinder-nfs-outage`,
 `deletion-stuck-finalizer`, `eso-down`, `openbao-sealed`,
-`openbao-tenant-policy-narrowed` and `cinder-upgrade-db-partition`, the
+`openbao-tenant-policy-narrowed` and `cinder-upgrade-db-partition`, the node
+fault of `ovn-chassis-loss`, the
 lifecycle fault of `cronjob-rotation-failure`, `keystone-federation`, whose
 IdP the random plane does not configure, and `openbao-pod-kill`, whose OpenBao
 starts sealed on kind. `tests/unit/ci/chaos_random_catalogue_test.sh` fails,
@@ -755,7 +756,7 @@ these lists fails the generator.
 | placement | [placement-operator-pod-kill](#placement-operator-pod-kill) (pod-kill) | — | [placement-mariadb-outage](#placement-mariadb-outage) (partition) | — | — | [placement-keystone-outage](#placement-keystone-outage) (pod-failure) | — |
 | barbican | [barbican-operator-pod-kill](#barbican-operator-pod-kill) (pod-kill) | — | [barbican-mariadb-outage](#barbican-mariadb-outage) (partition) | — | — | [barbican-keystone-outage](#barbican-keystone-outage) (pod-failure) | [barbican-openbao-outage](#barbican-openbao-outage) (partition) |
 | neutron | [neutron-operator-pod-kill](#neutron-operator-pod-kill) (pod-kill) | [neutron-metadata-agent-pod-kill](#neutron-metadata-agent-pod-kill) (pod-kill) | [neutron-mariadb-outage](#neutron-mariadb-outage) (partition) | [neutron-broker-outage](#neutron-broker-outage) (partition) | — | [neutron-keystone-outage](#neutron-keystone-outage) (pod-failure) | — |
-| ovn | [ovn-operator-pod-kill](#ovn-operator-pod-kill) (pod-kill) | [ovn-controller-pod-kill](#ovn-controller-pod-kill) (pod-kill)<br>[ovn-northd-pod-kill](#ovn-northd-pod-kill) (pod-kill)<br>[ovn-southbound-outage](#ovn-southbound-outage) (pod-failure) | — | — | — | — | — |
+| ovn | [ovn-operator-pod-kill](#ovn-operator-pod-kill) (pod-kill) | [ovn-chassis-loss](#ovn-chassis-loss) (node-kill)<br>[ovn-controller-pod-kill](#ovn-controller-pod-kill) (pod-kill)<br>[ovn-northd-pod-kill](#ovn-northd-pod-kill) (pod-kill)<br>[ovn-southbound-outage](#ovn-southbound-outage) (pod-failure) | — | — | — | — | — |
 | cinder | [cinder-operator-pod-kill](#cinder-operator-pod-kill) (pod-kill) | [cinder-volume-pod-kill](#cinder-volume-pod-kill) (pod-kill) | [cinder-mariadb-outage](#cinder-mariadb-outage) (partition)<br>[cinder-upgrade-db-partition](#cinder-upgrade-db-partition) (partition) | [cinder-broker-outage](#cinder-broker-outage) (partition)<br>[cinder-broker-pod-kill](#cinder-broker-pod-kill) (pod-kill)<br>[cinder-upgrade-broker-pod-kill](#cinder-upgrade-broker-pod-kill) (pod-kill) | — | [cinder-keystone-outage](#cinder-keystone-outage) (pod-failure) | [cinder-nfs-outage](#cinder-nfs-outage) (scale-to-zero) |
 | nova | [nova-operator-pod-kill](#nova-operator-pod-kill) (pod-kill) | [novacompute-drain-compute-kill](#novacompute-drain-compute-kill) (pod-kill) | [nova-mariadb-outage](#nova-mariadb-outage) (partition) | [nova-broker-outage](#nova-broker-outage) (partition) | — | [nova-keystone-outage](#nova-keystone-outage) (pod-failure) | [nova-placement-outage](#nova-placement-outage) (partition) |
 | controlplane | [c5c3-operator-pod-kill](#c5c3-operator-pod-kill) (pod-kill) | — | [controlplane-provisioning-mariadb-kill](#controlplane-provisioning-mariadb-kill) (pod-kill) | [rabbitmq-operator-cascading-failure](#rabbitmq-operator-cascading-failure) (pod-failure) | — | [controlplane-keystone-degraded](#controlplane-keystone-degraded) (pod-failure)<br>[keystoneuser-rotation-keystone-outage](#keystoneuser-rotation-keystone-outage) (pod-failure) | [controlplane-deletion-korc-outage](#controlplane-deletion-korc-outage) (pod-failure)<br>[korc-provisioning-outage](#korc-provisioning-outage) (pod-failure) |
@@ -834,6 +835,7 @@ these lists fails the generator.
 | [openbao-tenant-policy-narrowed](#openbao-tenant-policy-narrowed) | — | `external-secrets/backend`, `openbao/self` | failures=0 recovery=0s | none |
 | [operator-pod-crash](#operator-pod-crash) | SC-CHAOS-004 | `keystone/operator` | failures=0 recovery=0s | `keystone-operator-pod-kill` |
 | [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone/operator` | failures=0 recovery=0s | `keystone-operator-pod-kill` |
+| [ovn-chassis-loss](#ovn-chassis-loss) | — | `ovn/self` | failures=0 recovery=0s | none |
 | [ovn-controller-pod-kill](#ovn-controller-pod-kill) | — | `ovn/self` | failures=0 recovery=0s | `ovn-controller-pod-kill` |
 | [ovn-northd-pod-kill](#ovn-northd-pod-kill) | — | `ovn/self` | failures=0 recovery=0s | `ovn-northd-pod-kill` |
 | [ovn-operator-pod-kill](#ovn-operator-pod-kill) | — | `ovn/operator` | failures=0 recovery=0s | `ovn-operator-pod-kill` |
@@ -4846,6 +4848,62 @@ logs, the chassis and Neutron children, the data path and the workload.
 - The random catalogue's entry `ovn-northd-pod-kill` selects every northd of the
   plane's OVNCentral by label. The kind plane runs one replica, so a draw there
   shows the Deployment's replacement rather than a failover.
+
+---
+
+### ovn-chassis-loss
+
+**File:** `tests/e2e-chaos/ovn-chassis-loss/chainsaw-test.yaml`
+
+**Scenario:** none
+
+**Purpose:** A worker dies with the OVN chassis on it (`nodes.sh kill`, a
+`docker kill` of its kind node). The suite pins that traffic between the
+surviving chassis is untouched, that the Southbound database keeps the dead
+chassis while it is gone, and that the node rejoins under its own identity once
+it is back. A chassis on each of the three nodes forms the tunnel mesh, so the
+control-plane node and the survivor keep a tunnel between them.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Label every node | `script` (1m) | `openstack.c5c3.io/chassis=true` on all three nodes; the step cleanup removes it |
+| 2 | Stack and chassis | `apply` + `assert` (10m) + `script` (1m) | `keystone-ovn-chassis-loss`, `ovn-chassis-loss-ovn`, `neutron-ovn-chassis-loss` and `ovn-chassis-loss-chassis` at `Ready=True/AllReady`, the chassis with `numberReady: 3`; the system-ids go into ConfigMap `ovn-chassis-loss-verify` |
+| 3 | Data path | `script` (12m) | `lsp-cp` (`10.97.0.10`) on the control-plane node, `lsp-victim` (`.11`) and `lsp-survivor` (`.12`); pings `cp-survivor` and `cp-victim` from the control-plane node, each with a baseline reply. The step cleanup runs `datapath.sh teardown` |
+| 4 | Start the workload | `script` (6m) | `workload.sh start` with the `token` and `network` streams |
+| 5 | Kill the victim | `script` (1m) + `script` (5m) | `mark fault-start`, `nodes.sh kill <victim>` |
+| 6 | The loss holds | `script` (8m) | Once the OVNChassis reads `numberReady: 2`, for 120 s every sample finds the victim's `Chassis` row, its `lsp-victim` binding and `numberReady: 2`; then `ping-dark cp-victim 60` and the `cp-survivor` ping pod still `Running` (`LOSS-HELD-OK`) |
+| 7 | Restore | `script` (6m) + `assert` (10m) | `nodes.sh restore <victim>`; the OVNChassis back at `Ready=True/AllReady` with `numberReady: 3` |
+| 8 | Rebuild the port | `script` (8m) | `datapath.sh probe` replaces the victim's probe pod, `plug` rebuilds `lsp-victim`, and `cp-victim` answers within 120 s |
+| 9 | Identity | `script` (6m) | Exactly three `Chassis` rows, one per hostname, the victim's named by its recorded system-id, three `geneve` encaps; `mark fault-end` (`REJOIN-OK`) |
+| 10 | Judge | `script` (3m) + `script` (4m) + `script` (20m) | `ping-wait cp-survivor 60`, then `ping-verdict ovn-chassis-loss cp-survivor`, `datapath.sh teardown`, `workload.sh verify` with `--ovn-db-sync neutron-ovn-chassis-loss` |
+
+**Fixtures:** `00` to `04`, the stack of `ovn-controller-pod-kill` under the
+`ovn-chassis-loss` prefix, the chassis on all three nodes. No chaos resource:
+the fault is a runner-side call.
+
+**Workload:** the `token` and `network` streams against
+`keystone-ovn-chassis-loss` and `neutron-ovn-chassis-loss`, judged against
+`failures=0 recovery=0s`: nothing on the request path of either stream runs on
+a worker. The data path is judged against
+`# Chaos datapath budget: cp-survivor lost=2`.
+
+**Blast radius:** one whole worker and its tmpfs `/run`; never the control plane.
+
+**Catch blocks:** from step 5 on every catch runs `nodes.sh restore <victim>`
+first, then dumps the chassis, the data path and the workload.
+
+**Design notes:**
+
+- `docker kill`, not `docker pause`: a frozen node's kernel still answers the
+  ICMP echo of a port in its namespaces, so only a dead node makes `cp-victim`
+  go dark, and `ping-dark` is the control that the fault is real.
+- Kind mounts a tmpfs on a node's `/run`, and the local OVS database lives in
+  `/run/openvswitch` (`operators/ovn/internal/controller/reconcile_ovs.go`). The
+  restart wipes it with `br-int`, the port and the namespace, as a reboot does.
+  The system-id survives in the record the OVNChassis keeps per node, so the
+  chassis rejoins under its own `Chassis` row.
 
 ---
 

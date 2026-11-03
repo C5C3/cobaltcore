@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The chassis of ovn-chassis-loss, on the nodes step 1 labels
+# openstack.c5c3.io/chassis=true: all three nodes. Three chassis form the
+# tunnel mesh, so the two that survive the kill of one still have a tunnel
+# between them; with two workers alone the tunnel's other end would be the
+# dead node.
+#
+# No bridge mappings and no gateway: the data path is one logical switch
+# between ports the suite plugs into network namespaces. spec.image is unset,
+# so the operator resolves the OVN image the control plane runs.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-chassis-loss-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: ovn-chassis-loss-ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
