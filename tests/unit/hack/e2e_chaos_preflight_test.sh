@@ -9,6 +9,10 @@
 # fast-fail with a clear remediation message instead of letting chainsaw
 # attempt the suite against a cluster that lacks the dependency.
 #
+# The sweep leaves out the suites labelled chaos.c5c3.io/topology:
+# multinode (#1392), and `make e2e-chaos-multinode` runs them alone, after a
+# two-worker preflight that names the bring-up.
+#
 # Implementation: bash + tests/lib/assertions.sh (project-native, matches the
 # sibling tests/unit/hack/deploy_infra_*_test.sh pattern). The repository has
 # zero .bats files and no bats binary on CI, so introducing one would add an
@@ -33,20 +37,22 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # Helpers
 # ---------------------------------------------------------------------------
 
-# write_stubs <dir> <kubectl_get_ns_exit> [<kubectl_version_exit>]
+# write_stubs <dir> <kubectl_get_ns_exit> [<kubectl_version_exit>] [<workers>]
 # Creates kubectl + chainsaw shims in <dir>:
-#   - kubectl ONLY answers the two verbs the `make e2e-chaos` preflight
-#     invokes today (`kubectl version` and `kubectl get ns chaos-mesh`);
-#     for each verb it exits with the supplied per-verb exit code
-#     (<kubectl_version_exit> defaults to 0 = cluster reachable). Any
+#   - kubectl ONLY answers the verbs the two recipes invoke today
+#     (`kubectl version`, `kubectl get ns chaos-mesh` and the worker list
+#     of e2e-chaos-multinode); for the first two it exits with the supplied
+#     per-verb exit code (<kubectl_version_exit> defaults to 0 = cluster
+#     reachable), and the worker list names <workers> nodes (default 0). Any
 #     other invocation is treated as a test-harness drift signal and
 #     exits non-zero with a marker line on stderr — a future change that
-#     adds a third kubectl call expecting fail-fast behaviour will
+#     adds another kubectl call expecting fail-fast behaviour will
 #     surface here instead of silently passing under a blanket `exit 0`.
-#   - chainsaw writes a sentinel file `$dir/CHAINSAW_INVOKED` and exits 0
-#     so the test can assert whether the recipe invoked it.
+#   - chainsaw writes its arguments to the sentinel file
+#     `$dir/CHAINSAW_INVOKED` and exits 0, so the test can assert whether
+#     and how the recipe invoked it.
 write_stubs() {
-  local dir="$1" ns_exit="$2" version_exit="${3:-0}"
+  local dir="$1" ns_exit="$2" version_exit="${3:-0}" workers="${4:-0}"
   mkdir -p "$dir"
 
   cat >"$dir/kubectl" <<STUB
@@ -62,6 +68,10 @@ fi
 if [ "\$1" = "get" ] && [ "\$2" = "ns" ] && [ "\$3" = "chaos-mesh" ]; then
   exit ${ns_exit}
 fi
+if [ "\$*" = "get nodes -l !node-role.kubernetes.io/control-plane -o name" ]; then
+  for i in \$(seq 1 ${workers}); do echo "node/worker\$i"; done
+  exit 0
+fi
 echo "[kubectl-stub] unexpected invocation: \$*" >&2
 exit 64
 STUB
@@ -71,24 +81,24 @@ STUB
 #!/bin/bash
 # Test stub record invocation so the test can assert whether the
 # Makefile recipe reached the chainsaw step after the preflight.
-touch "${dir}/CHAINSAW_INVOKED"
+echo "\$*" >"${dir}/CHAINSAW_INVOKED"
 exit 0
 STUB
   chmod +x "$dir/chainsaw"
 }
 
-# run_make_e2e_chaos <stub_dir> <stdout_file> <stderr_file>
-# Runs `make e2e-chaos` against the project Makefile with PATH limited to
+# run_make_e2e_chaos <stub_dir> <stdout_file> <stderr_file> [<target>]
+# Runs `make <target>` (default e2e-chaos) against the project Makefile with PATH limited to
 # <stub_dir> plus /usr/bin and /bin so make itself, plus core utilities the
 # recipe uses (echo), still resolve. Captures stdout and stderr to separate
 # files so callers can assert per-stream contents (specifies the remediation message must land on stderr). Returns the make exit code.
 run_make_e2e_chaos() {
-  local stub_dir="$1" stdout_file="$2" stderr_file="$3"
+  local stub_dir="$1" stdout_file="$2" stderr_file="$3" target="${4:-e2e-chaos}"
   (
     PATH="$stub_dir:/usr/bin:/bin"
     export PATH
     cd "$PROJECT_ROOT" || exit 1
-    make -f "$MAKEFILE" e2e-chaos
+    make -f "$MAKEFILE" "$target"
   ) >"$stdout_file" 2>"$stderr_file"
 }
 
@@ -162,6 +172,9 @@ test_happy_path_when_namespace_present() {
     echo "  FAIL: chainsaw should be invoked when preflight succeeds"
     FAIL=$((FAIL + 1))
   fi
+  assert_contains "the sweep leaves out the multinode suites" \
+    "$(cat "$tmp/CHAINSAW_INVOKED" 2>/dev/null)" \
+    "--selector chaos.c5c3.io/topology!=multinode tests/e2e-chaos/"
 }
 
 # ---------------------------------------------------------------------------
@@ -215,11 +228,80 @@ test_fast_fail_when_kubectl_unreachable() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 4: e2e-chaos-multinode on a single-node cluster -> fast-fail naming
+# the two-worker bring-up, no chainsaw
+# ---------------------------------------------------------------------------
+test_multinode_fast_fails_without_two_workers() {
+  echo "Test: e2e-chaos-multinode fast-fails on a cluster without two workers"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  write_stubs "$tmp" 0 0 1
+
+  local stdout_file="$tmp/stdout" stderr_file="$tmp/stderr" exit_code
+  run_make_e2e_chaos "$tmp" "$stdout_file" "$stderr_file" e2e-chaos-multinode
+  exit_code=$?
+
+  local stderr
+  stderr="$(cat "$stderr_file")"
+
+  assert_nonzero_exit "make e2e-chaos-multinode exits non-zero with one worker" "$exit_code"
+  assert_contains "stderr names the two-worker config" \
+    "$stderr" "kind create cluster --name cobaltcore --config hack/kind-config-multinode.yaml"
+  assert_contains "stderr names the prepare step" \
+    "$stderr" "run tests/e2e-chaos/lib/nodes.sh prepare before make deploy-infra"
+  assert_not_contains "the chaos-mesh probe is not reached" \
+    "$stderr" "chaos-mesh is not installed"
+
+  if [ -e "$tmp/CHAINSAW_INVOKED" ]; then
+    echo "  FAIL: chainsaw must NOT be invoked on a single-node cluster"
+    FAIL=$((FAIL + 1))
+  else
+    echo "  PASS: chainsaw was not invoked on a single-node cluster"
+    PASS=$((PASS + 1))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test 5: e2e-chaos-multinode on two workers -> chainsaw runs the multinode
+# suites alone
+# ---------------------------------------------------------------------------
+test_multinode_runs_the_multinode_suites() {
+  echo "Test: e2e-chaos-multinode runs the multinode suites on two workers"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  write_stubs "$tmp" 0 0 2
+
+  local stdout_file="$tmp/stdout" stderr_file="$tmp/stderr" exit_code
+  run_make_e2e_chaos "$tmp" "$stdout_file" "$stderr_file" e2e-chaos-multinode
+  exit_code=$?
+
+  assert_eq "make e2e-chaos-multinode exits 0 on two workers" "0" "$exit_code"
+  assert_contains "chainsaw selects the multinode suites" \
+    "$(cat "$tmp/CHAINSAW_INVOKED" 2>/dev/null)" \
+    "test --config tests/e2e-chaos/chainsaw-config.yaml --selector chaos.c5c3.io/topology=multinode tests/e2e-chaos/"
+
+  write_stubs "$tmp" 1 0 2
+  rm -f "$tmp/CHAINSAW_INVOKED"
+  run_make_e2e_chaos "$tmp" "$stdout_file" "$stderr_file" e2e-chaos-multinode
+  exit_code=$?
+  assert_nonzero_exit "without chaos-mesh it exits non-zero" "$exit_code"
+  assert_contains "and says so" "$(cat "$stderr_file")" "chaos-mesh is not installed"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_fast_fail_when_namespace_absent
 test_happy_path_when_namespace_present
 test_fast_fail_when_kubectl_unreachable
+test_multinode_fast_fails_without_two_workers
+test_multinode_runs_the_multinode_suites
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

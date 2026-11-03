@@ -716,10 +716,39 @@ e2e:
 # are kept separate so the kubectl/cluster-reachability failure is not conflated with
 # the chaos-mesh-not-installed failure — see review pattern
 # .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+#
+# The selector leaves out the suites labelled chaos.c5c3.io/topology:
+# multinode, which fault a kind worker and need the two-worker cluster of
+# e2e-chaos-multinode below. With failFast: true one of them on a single-node
+# cluster would abort the sweep.
 e2e-chaos:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@kubectl get ns chaos-mesh >/dev/null 2>&1 || { echo 'chaos-mesh is not installed; run `WITH_CHAOS_MESH=true make deploy-infra` first' >&2; exit 1; }
-	chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/
+	chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml --selector 'chaos.c5c3.io/topology!=multinode' tests/e2e-chaos/
+
+.PHONY: e2e-chaos-multinode
+# e2e-chaos-multinode runs the chaos suites labelled chaos.c5c3.io/topology:
+# multinode, the multinode entry of the e2e-chaos CI job: node faults and OVN
+# data-path faults on a kind cluster of one control-plane node and two
+# workers. The preflights of e2e-chaos run as well, after the two-worker check
+# of e2e-ovn-overlay.
+#
+# The bring-up, in this order, because the cordon has to come before the stack:
+#   kind create cluster --name cobaltcore --config hack/kind-config-multinode.yaml
+#   tests/e2e-chaos/lib/nodes.sh prepare
+#   SKIP_KIND_CREATE=true WITH_CHAOS_MESH=true WITH_MESSAGING=true \
+#     WITH_OVN_KERNEL_MODULES=true make deploy-infra
+# then the eight operator deploys of the nova entry, each as
+# `OPERATOR=<op> IMAGE_REPO=ghcr.io/c5c3/<op>-operator NAMESPACE=<op>-system
+# hack/ci-deploy-operator.sh`: keystone (in the default namespace), horizon,
+# glance, barbican (with
+# BARBICAN_SECRET_STORE_GRANTS=openstack=openbao-instance-provisioner), ovn,
+# placement, neutron and nova.
+e2e-chaos-multinode:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@[ "$$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name | wc -l | tr -d ' ')" -ge 2 ] || { echo 'the multinode chaos suites need two workers: create the cluster with kind create cluster --name cobaltcore --config hack/kind-config-multinode.yaml and run tests/e2e-chaos/lib/nodes.sh prepare before make deploy-infra' >&2; exit 1; }
+	@kubectl get ns chaos-mesh >/dev/null 2>&1 || { echo 'chaos-mesh is not installed; run `WITH_CHAOS_MESH=true make deploy-infra` first' >&2; exit 1; }
+	chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml --selector 'chaos.c5c3.io/topology=multinode' tests/e2e-chaos/
 
 .PHONY: e2e-prometheus
 # e2e-prometheus runs the kube-prometheus-stack chainsaw suite against a deployed
