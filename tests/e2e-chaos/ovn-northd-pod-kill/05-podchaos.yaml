@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos that kills the active ovn-northd of ovn-northd-kill-ovn.
+#
+# One-shot pod-kill with gracePeriod 0 of one named pod: step 6 replaces
+# @POD@ with the pod that reported "Status: active" in step 3 before it
+# applies the resource. Naming the pod is what makes the fault a failover: a
+# label selector with mode: one could pick the standby and prove nothing.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-active-northd
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  gracePeriod: 0
+  selector:
+    pods:
+      openstack:
+      - "@POD@"

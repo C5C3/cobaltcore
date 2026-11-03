@@ -1,0 +1,364 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: the active ovn-northd killed, its standby takes over.
+#
+# Fault: a PodChaos pod-kill with gracePeriod: 0 on the one northd pod of
+# OVNCentral ovn-northd-kill-ovn that reports "Status: active"
+# (05-podchaos.yaml, the pod named at run time). The two northd replicas share
+# a lock in the Southbound database, so one is active and the other waits
+# (operators/ovn/internal/controller/reconcile_northd.go).
+#
+# Claim, phase by phase:
+#   before    Exactly one of the two northd pods, on two different nodes,
+#             reports Status: active.
+#   failover  Within 30 s of the kill the other pod reports Status: active,
+#             and within 120 s a pod with a new UID replaces the killed one.
+#   compiles  ovn-nbctl --wait=sb sync returns, which needs an active northd,
+#             and a port lsp-new (10.97.0.13) written after the kill reaches
+#             the Southbound Port_Binding table, is bound, and answers a ping.
+#   datapath  The ping between lsp-victim and lsp-survivor that ran through
+#             the kill lost no more than its datapath budget: northd is in no
+#             data path.
+#
+# Blast radius: the PodChaos names the active northd pod alone. The workers are
+# opened and every node carries a zone, so the two northd replicas sit on two
+# nodes; the chassis run on both workers.
+#
+# Leg: multinode (metadata.labels chaos.c5c3.io/topology: multinode), after
+# ovn-controller-pod-kill.
+#
+# Workload: the token and network streams of ../lib/workload.sh against this
+# suite's Keystone and Neutron, judged with --ovn-db-sync. northd is on no
+# request path of a Neutron write, so the budget is zero.
+# Chaos matrix: ovn self pod-kill
+# Chaos random: ovn-northd-pod-kill
+# Chaos datapath budget: victim-survivor lost=2
+# Chaos datapath budget measured: 2026-11-03, estimate, lost 1, longest gap 1 s
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-11-03, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-northd-pod-kill
+  labels:
+    chaos.c5c3.io/topology: multinode
+spec:
+  namespace: openstack
+  # The chassis and the probes run with hostNetwork and own /run/openvswitch
+  # and /run/netns on both workers.
+  concurrent: false
+  timeouts:
+    assert: 10m
+  steps:
+  # ── Step 1: Label the workers, one zone per node, open the workers ──────
+  # The cleanup cordons the workers again and removes both labels, the leg's
+  # default state for the next suite.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -eu
+          for node in $(../lib/nodes.sh victim) $(../lib/nodes.sh survivor); do
+            kubectl label node "$node" openstack.c5c3.io/chassis=true --overwrite
+          done
+          ../lib/nodes.sh zones
+          ../lib/nodes.sh open
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../lib/nodes.sh close || true
+          ../lib/nodes.sh zones-clear || true
+          kubectl label nodes -l openstack.c5c3.io/chassis openstack.c5c3.io/chassis- || true
+  # ── Step 2: Bring up the stack and the chassis ──────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - apply:
+        file: 01-messaging-secret.yaml
+    - apply:
+        file: 02-ovncentral-cr.yaml
+    - apply:
+        file: 03-neutron-cr.yaml
+    - apply:
+        file: 04-ovnchassis-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ovn-northd-kill
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-northd-kill-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-northd-kill-ovn-northd
+            namespace: openstack
+          status:
+            readyReplicas: 2
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-ovn-northd-kill
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: ovn-northd-kill-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            numberReady: 2
+    catch: &dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos ovn-northd-kill-ovn --cr-kind=ovncentral --dep-label=app.kubernetes.io/instance=ovn-northd-kill-ovn
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide --show-labels 2>&1 || true
+          echo "=== OVN and Neutron children ==="
+          kubectl get deploy,sts,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-northd-kill-ovn -o wide 2>&1 || true
+          kubectl get ds,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-northd-kill-chassis -o wide 2>&1 || true
+          kubectl get deploy,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-ovn-northd-kill -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-northd-kill-ovn,app.kubernetes.io/component=northd -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl exec -n "$NAMESPACE" "$pod" -c northd -- ovn-appctl -t /var/run/ovn/ovn-northd.ctl status 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          kubectl get configmap ovn-northd-kill-verify -n "$NAMESPACE" -o yaml 2>&1 || true
+          kubectl get podchaos -n "$NAMESPACE" 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --tail=100 2>&1 || true
+    - script:
+        timeout: 3m
+        content: ../lib/datapath.sh dump
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump ovn-northd-pod-kill
+  # ── Step 3: Exactly one northd is active ────────────────────────────────
+  # The two pods sit on two nodes, and one holds the Southbound lock. Its name
+  # and UID go into ConfigMap ovn-northd-kill-verify for the kill.
+  - try:
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          SEL=app.kubernetes.io/instance=ovn-northd-kill-ovn,app.kubernetes.io/component=northd
+          PODS="$(kubectl get pods -n "$NAMESPACE" -l "$SEL" \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.uid} {.spec.nodeName}{"\n"}{end}')"
+          echo "$PODS"
+          if [ "$(grep -c . <<<"$PODS")" != 2 ] || [ "$(awk '{print $3}' <<<"$PODS" | sort -u | grep -c .)" != 2 ]; then
+            echo "FAIL: want two northd pods on two nodes"
+            exit 1
+          fi
+          # Both pods answer the status call once they reach the databases, the
+          # active one first; the standby needs the lock holder to exist.
+          deadline=$(($(date +%s) + 120))
+          while true; do
+            active=""
+            while read -r name uid node; do
+              status="$(kubectl exec -n "$NAMESPACE" "$name" -c northd -- \
+                ovn-appctl -t /var/run/ovn/ovn-northd.ctl status </dev/null 2>&1 || true)"
+              echo "${name} on ${node}: ${status}"
+              if grep -qx 'Status: active' <<<"$status"; then
+                active="${active}${name} ${uid}"$'\n'
+              fi
+            done <<<"$PODS"
+            if [ "$(grep -c . <<<"$active")" = 1 ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: $(grep -c . <<<"$active") northd pods report Status: active, want exactly one"
+              exit 1
+            fi
+            sleep 5
+          done
+          read -r name uid <<<"$active"
+          kubectl create configmap ovn-northd-kill-verify -n "$NAMESPACE" \
+            --from-literal=active="$name" --from-literal=uid="$uid" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "ACTIVE-OK: ${name} (${uid}) holds the lock"
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete configmap ovn-northd-kill-verify -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 4: Build the data path and ping across the tunnel ──────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          DP=../lib/datapath.sh
+          VICTIM="$(../lib/nodes.sh victim)"
+          SURVIVOR="$(../lib/nodes.sh survivor)"
+          $DP probe "$VICTIM"
+          $DP probe "$SURVIVOR"
+          $DP nb ovn-northd-kill-ovn -- --may-exist ls-add chaos-dp-sw \
+            -- --may-exist lsp-add chaos-dp-sw lsp-victim \
+            -- lsp-set-addresses lsp-victim "0a:00:0a:61:00:0b 10.97.0.11" \
+            -- --may-exist lsp-add chaos-dp-sw lsp-survivor \
+            -- lsp-set-addresses lsp-survivor "0a:00:0a:61:00:0c 10.97.0.12"
+          $DP plug "$VICTIM" lsp-victim dpp-victim dp-victim 0a:00:0a:61:00:0b 10.97.0.11
+          $DP plug "$SURVIVOR" lsp-survivor dpp-survivor dp-survivor 0a:00:0a:61:00:0c 10.97.0.12
+          $DP ping-start victim-survivor "$VICTIM" dp-victim 10.97.0.12
+          $DP ping-wait victim-survivor 120
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 4m
+        content: ../lib/datapath.sh teardown ovn-northd-kill-ovn
+  # ── Step 5: Start the workload ──────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start ovn-northd-pod-kill --
+          --streams token,network
+          --keystone http://keystone-ovn-northd-kill.openstack.svc:5000/v3
+          --neutron http://neutron-ovn-northd-kill.openstack.svc:9696
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop ovn-northd-pod-kill
+  # ── Step 6: Kill the active northd ──────────────────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          SEL=app.kubernetes.io/instance=ovn-northd-kill-ovn,app.kubernetes.io/component=northd
+          ACTIVE="$(kubectl get configmap ovn-northd-kill-verify -n "$NAMESPACE" -o jsonpath='{.data.active}')"
+          OLD="$(kubectl get configmap ovn-northd-kill-verify -n "$NAMESPACE" -o jsonpath='{.data.uid}')"
+          OTHER="$(kubectl get pods -n "$NAMESPACE" -l "$SEL" -o name | sed 's|^pod/||' | grep -vx "$ACTIVE")"
+          ../lib/workload.sh mark ovn-northd-pod-kill fault-start
+          sed "s/@POD@/${ACTIVE}/" 05-podchaos.yaml | kubectl apply -f -
+          start="$(date +%s)"
+          while true; do
+            status="$(kubectl exec -n "$NAMESPACE" "$OTHER" -c northd -- \
+              ovn-appctl -t /var/run/ovn/ovn-northd.ctl status 2>&1 || true)"
+            if grep -qx 'Status: active' <<<"$status"; then
+              break
+            fi
+            if [ "$(($(date +%s) - start))" -ge 30 ]; then
+              echo "FAIL: 30s after the kill ${OTHER} reports '${status}', want Status: active"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "FAILOVER-OK: ${OTHER} took the lock $(($(date +%s) - start))s after the kill of ${ACTIVE}"
+          deadline=$((start + 120))
+          while true; do
+            pods="$(kubectl get pods -n "$NAMESPACE" -l "$SEL" \
+              -o jsonpath='{range .items[*]}{.metadata.uid} {.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}')"
+            if ! grep -q "^${OLD} " <<<"$pods" && [ "$(grep -c ' True$' <<<"$pods")" = 2 ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 120s after the kill the northd pods read [${pods}], want two Ready pods without ${OLD}"
+              exit 1
+            fi
+            sleep 2
+          done
+          kubectl delete podchaos kill-active-northd -n "$NAMESPACE" --ignore-not-found
+          echo "OK: a new northd pod replaced ${ACTIVE}"
+    catch:
+    - script:
+        timeout: 1m
+        content: kubectl delete podchaos kill-active-northd -n "$NAMESPACE" --ignore-not-found 2>&1 || true
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos ovn-northd-kill-ovn --cr-kind=ovncentral --dep-label=app.kubernetes.io/instance=ovn-northd-kill-ovn
+    - script:
+        timeout: 3m
+        content: ../lib/datapath.sh dump
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump ovn-northd-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete podchaos kill-active-northd -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 7: New logical state reaches the data path ─────────────────────
+  # --wait=sb returns only once northd has compiled the Northbound write into
+  # the Southbound database, so it needs the new active northd.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          DP=../lib/datapath.sh
+          VICTIM="$(../lib/nodes.sh victim)"
+          SURVIVOR="$(../lib/nodes.sh survivor)"
+          $DP nb ovn-northd-kill-ovn --timeout=30 --wait=sb sync
+          echo "SYNC-OK: an active northd compiled the Northbound database"
+          $DP nb ovn-northd-kill-ovn -- --may-exist lsp-add chaos-dp-sw lsp-new \
+            -- lsp-set-addresses lsp-new "0a:00:0a:61:00:0d 10.97.0.13"
+          $DP plug "$SURVIVOR" lsp-new dpp-new dp-new 0a:00:0a:61:00:0d 10.97.0.13
+          deadline=$(($(date +%s) + 60))
+          while true; do
+            bound="$($DP sb ovn-northd-kill-ovn --bare --columns=chassis find Port_Binding logical_port=lsp-new | grep . || true)"
+            if [ -n "$bound" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: lsp-new is not bound in Port_Binding 60s after the plug"
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "BINDING-OK: lsp-new is bound to ${bound}"
+          $DP ping-start victim-new "$VICTIM" dp-victim 10.97.0.13
+          $DP ping-wait victim-new 60
+          ../lib/workload.sh mark ovn-northd-pod-kill fault-end
+    catch: *dump
+  # ── Step 8: The data path, then the workload ────────────────────────────
+  - try:
+    - script:
+        timeout: 2m
+        content: ../lib/datapath.sh ping-verdict ovn-northd-pod-kill victim-survivor
+    - script:
+        timeout: 4m
+        content: ../lib/datapath.sh teardown ovn-northd-kill-ovn
+    - script:
+        timeout: 20m
+        content: ../lib/workload.sh verify ovn-northd-pod-kill --ovn-db-sync neutron-ovn-northd-kill
+    catch: *dump

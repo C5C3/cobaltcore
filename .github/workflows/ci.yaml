@@ -2226,6 +2226,7 @@ jobs:
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/ovn-controller-pod-kill
+              tests/e2e-chaos/ovn-northd-pod-kill
     runs-on: self-hosted
     # 170 minutes for the nova leg, 160 for multinode, 135 for network, 135
     # for pod, 120 for controlplane, 80 for upgrade and 45 for ovn: 845

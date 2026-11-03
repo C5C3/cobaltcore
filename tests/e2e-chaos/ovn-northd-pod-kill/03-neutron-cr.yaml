@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR of ovn-northd-pod-kill: the Neutron of
+# ../ovn-operator-pod-kill/03-neutron-cr.yaml under the ovn-northd-kill prefix.
+#
+# Every network the workload creates is written to the Northbound database of
+# 02-ovncentral-cr.yaml. spec.ovnDBSync renders the db-sync CronJob in log
+# mode and suspended, as in ../nova-operator-pod-kill/05-neutron-cr.yaml, so
+# the --ovn-db-sync check of workload.sh verify can run it once.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-ovn-northd-kill
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_ovn_northd_kill
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-ovn-northd-kill-messaging
+  ovn:
+    centralRef:
+      name: ovn-northd-kill-ovn
+  ovnDBSync:
+    syncMode: log
+    suspend: true
+  keystoneEndpoint: http://keystone-ovn-northd-kill.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
