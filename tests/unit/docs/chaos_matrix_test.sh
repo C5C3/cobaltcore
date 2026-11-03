@@ -11,7 +11,9 @@
 #     included, a cell joins its suites with <br> in suite order, and the
 #     suite table carries the scenario, the component/role pairs, the
 #     budget and the random entries (joined by ", ", "none", or "—" without
-#     a random line); a second run changes nothing and --check passes;
+#     a random line), the node-kill, node-pause and preemption kinds of the
+#     multinode leg included; a second run changes nothing and --check
+#     passes;
 #   - --check on a changed header prints the diff -u and fails naming the
 #     stale page, which it leaves untouched;
 #   - a suite without a matrix line, a matrix line with two fields, an
@@ -139,6 +141,11 @@ fixture() {
   suite "$root/suites" c-three \
     "# Chaos matrix: cinder backend scale-to-zero" \
     "# Chaos random: none (scripted fault, no Chaos Mesh kind)"
+  suite "$root/suites" d-four \
+    "# Chaos matrix: nova self node-kill" \
+    "# Chaos matrix: neutron self node-pause" \
+    "# Chaos matrix: placement self preemption" \
+    "# Chaos random: none (scripted fault, no Chaos Mesh kind)"
   {
     echo "# Chaos page"
     echo ""
@@ -203,6 +210,9 @@ test_the_generated_tables() {
     "| mariadb | — | [b-two](#b-two) (partition) |"
   assert_contains "a backend cell" "$rows" \
     "| cinder | — | — | — | — | — | — | [c-three](#c-three) (scale-to-zero) |"
+  assert_contains "a node kill" "$rows" "| nova | — | [d-four](#d-four) (node-kill) | — |"
+  assert_contains "a node pause" "$rows" "| neutron | — | [d-four](#d-four) (node-pause) | — |"
+  assert_contains "a preemption" "$rows" "| placement | — | [d-four](#d-four) (preemption) | — |"
   assert_file_contains_fixed "the suite table has its header" "$root/page.md" \
     $'\n| Suite | Scenario ID | Matrix | Budget | Random |\n| --- | --- | --- | --- | --- |\n'
   assert_file_contains_fixed "a suite with a scenario and a budget and no random line" "$root/page.md" \
@@ -279,6 +289,12 @@ test_an_invalid_header_fails() {
   sed -i.bak 's/ scale-to-zero$/ disk-fill/' "$f"
   expect_fail "an unknown kind" "$root" \
     "FAIL: $f:6: \"# Chaos matrix: cinder backend disk-fill\": unknown kind \"disk-fill\""
+
+  # A node fault outside the three the multinode leg injects (#1392).
+  fixture "$root"
+  sed -i.bak 's/ scale-to-zero$/ node-reboot/' "$f"
+  expect_fail "an unknown node fault" "$root" \
+    "FAIL: $f:6: \"# Chaos matrix: cinder backend node-reboot\": unknown kind \"node-reboot\""
 
   fixture "$root"
   f="$root/suites/a-one/chainsaw-test.yaml"

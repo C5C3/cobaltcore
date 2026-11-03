@@ -40,7 +40,11 @@
 #               hypervisor-operator kvm-node-agent
 #   roles       operator self database broker cache keystone backend
 #   kinds       pod-kill pod-failure container-kill partition delay
-#               scale-to-zero seal policy
+#               scale-to-zero seal policy node-kill node-pause preemption
+#
+# node-kill and node-pause are a docker kill and a docker pause of a kind
+# worker by tests/e2e-chaos/lib/nodes.sh; preemption is a node filled with
+# low-priority pods that a higher PriorityClass preempts.
 #
 # Before it writes anything it fails, naming <file>:<line> and the line where
 # one exists, when no suite exists, a marker is missing, doubled or out of
@@ -95,7 +99,7 @@ END_MARKER='<!-- END chaos-matrix -->'
 
 COMPONENTS="keystone horizon glance placement barbican neutron ovn cinder nova controlplane k-orc mariadb memcached rabbitmq openbao garage nfs cert-manager external-secrets envoy-gateway flux hypervisor-operator kvm-node-agent"
 ROLES="operator self database broker cache keystone backend"
-KINDS="pod-kill pod-failure container-kill partition delay scale-to-zero seal policy"
+KINDS="pod-kill pod-failure container-kill partition delay scale-to-zero seal policy node-kill node-pause preemption"
 
 # ---------------------------------------------------------------------------
 # 2. The suites and the markers
