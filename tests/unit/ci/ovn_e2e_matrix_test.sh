@@ -283,8 +283,9 @@ test_e2e_leg_opts_into_kernel_modules() {
 test_overlay_job_is_wired() {
   echo "Test: the e2e-ovn-overlay job runs the multi-node suite non-blocking"
 
-  # The job is the only consumer of hack/kind-config-multinode.yaml and of the
-  # e2e-ovn-overlay change signal. Every assertion below is a silent failure
+  # The job is the only consumer of the e2e-ovn-overlay change signal, and one
+  # of the two of hack/kind-config-multinode.yaml beside the multinode entry
+  # of e2e-chaos. Every assertion below is a silent failure
   # otherwise: a wrong runner label leaves the job queued forever, a missing
   # continue-on-error turns a kernel-module gap on the host into a red PR, a
   # single-node config makes the suite fail its own two-node preflight, and an
@@ -387,9 +388,10 @@ test_chaos_ovn_leg_is_wired() {
 
   local setup dump
   setup=$(job_step e2e-chaos "Setup E2E infrastructure")
-  # The nova leg's neutron-metadata-agent-pod-kill runs an OVNChassis too.
-  assert_contains "the ovn and nova legs ask for the OVN kernel modules" "$setup" \
-    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}"
+  # The nova leg's neutron-metadata-agent-pod-kill and the multinode leg's
+  # OVN and compute suites run an OVNChassis too.
+  assert_contains "the ovn, nova and multinode legs ask for the OVN kernel modules" "$setup" \
+    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'multinode') && 'true' || '' }}"
   assert_contains "Chaos Mesh stays on for every leg" "$setup" \
     'WITH_CHAOS_MESH: "true"'
   dump=$(job_step e2e-chaos "Dump diagnostic info")

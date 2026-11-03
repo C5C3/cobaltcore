@@ -2234,8 +2234,8 @@ test_ci_runs_placement_on_the_pod_and_network_legs() {
       "if: matrix.suite == 'pod' || matrix.suite == 'network'" \
       "$(grep -E '^ *if:' <<<"$step" | sed 's/^ *//')"
   done
-  assert_eq "the nova leg's placement deploy keeps its own condition" \
-    "if: matrix.suite == 'nova'" \
+  assert_eq "the nova and multinode legs' placement deploy keeps its own condition" \
+    "if: matrix.suite == 'nova' || matrix.suite == 'multinode'" \
     "$(job_step e2e-chaos "Deploy placement operator (nova leg)" | grep -E '^ *if:' | sed 's/^ *//')"
   assert_contains "the network leg runs the placement database outage" \
     "$(e2e_chaos_matrix_entry network)" "tests/e2e-chaos/placement-mariadb-outage"

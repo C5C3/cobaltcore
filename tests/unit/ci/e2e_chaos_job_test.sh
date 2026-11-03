@@ -118,7 +118,7 @@ test_each_suite_has_its_own_wall() {
   echo "Test: each e2e-chaos suite has its own wall and every suite gates"
 
   assert_eq "the wall is sized per suite" \
-    "timeout-minutes: \${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}" \
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 170 || matrix.suite == 'multinode' && 160 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}" \
     "$(job_line e2e-chaos timeout-minutes)"
   # Every leg gates (#1388): a red leg fails the job and skips tempest.
   assert_eq "no leg is exempt from gating" "" \

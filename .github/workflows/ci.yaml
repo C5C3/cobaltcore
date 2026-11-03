@@ -2085,10 +2085,10 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The split into six matrix entries is kept so PodChaos, NetworkChaos, the
-    # OVN datapath suite, the Nova stack, the ControlPlane suites and the
-    # Cinder release-upgrade suites each report on their own and run in
-    # parallel.
+    # The split into seven matrix entries is kept so PodChaos, NetworkChaos,
+    # the OVN datapath suite, the Nova stack, the ControlPlane suites, the
+    # Cinder release-upgrade suites and the node faults of the multinode
+    # entry each report on their own and run in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly, so a new test
     # directory must be added to the appropriate suite below when introduced.
@@ -2212,11 +2212,29 @@ jobs:
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/cinder-upgrade-db-partition
               tests/e2e-chaos/cinder-upgrade-broker-pod-kill
+          # The suites of #1392 that fault a whole kind worker or the OVN data
+          # path between nodes, on hack/kind-config-multinode.yaml: one
+          # control-plane node and two workers. "Prepare the multinode leg"
+          # removes the control-plane taint and cordons both workers, so every
+          # singleton of the stack lands on the control-plane node, which no
+          # fault touches; DaemonSet pods and pods with nodeName still reach
+          # the workers. It deploys the nova entry's stack. The cheap suites
+          # run first, so a red one on a pull request saves the expensive
+          # ones. Its cluster binds the host ports every entry's does, on a
+          # runner of its own.
+          - suite: multinode
+            test_dirs: >-
+              tests/e2e/infrastructure/chaos-mesh-health
     runs-on: self-hosted
-    # 170 minutes for the nova leg, 135 for network, 135 for pod, 120 for
-    # controlplane, 80 for upgrade and 45 for ovn: 685 minutes for the six,
-    # which the author of #1394 accepted on 2026-10-25 against the 600 that
-    # D6 of #1386 allows; the estimated run is about 575 minutes. The last
+    # 170 minutes for the nova leg, 160 for multinode, 135 for network, 135
+    # for pod, 120 for controlplane, 80 for upgrade and 45 for ovn: 845
+    # minutes for the seven. The author of #1394 accepted 685 for the first
+    # six on 2026-10-25 against the 600 that D6 of #1386 allows; their
+    # estimated run is about 575 minutes. The multinode leg of #1392 is
+    # estimated at about 130 minutes: 45 for the bring-up (nineteen images on
+    # three nodes, the stack and eight operator deploys), 80 for its six
+    # suites (10, 10, 12, 8, 18 and 22 in leg order) and 5 for the
+    # diagnostics; its wall adds 30 for one stalled step of a suite. The last
     # full run, on PR #1444 (2026-10-17), took 110 minutes on pod, 140 on
     # network, which hit its wall, 12 on ovn, 133 on nova and 46 on
     # controlplane. #1394 adds a Fernet rotation suite to pod, a drain suite
@@ -2247,7 +2265,7 @@ jobs:
     # and re-derive if one overruns. D6 of #1386 counts the runner minutes a
     # night measures, not these walls: report-nightly-chaos files a night
     # whose self-hosted jobs took more than 600 minutes together.
-    timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}
+    timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'multinode' && 160 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}
     # Every leg gates (#1388), so the job has no job-level error override. The
     # NetworkChaos and OVN kernel modules load without a warning on the
     # self-hosted runners, and no red leg on record named a module.
@@ -2268,12 +2286,21 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.work
+      # The multinode entry's cluster has two workers beside the control-plane
+      # node; every other entry runs on the single node of hack/kind-config.yaml.
       - name: Create kind cluster
         uses: ./.github/actions/create-kind-cluster
         with:
           version: ${{ env.KIND_VERSION }}
-          config: hack/kind-config.yaml
+          config: ${{ matrix.suite == 'multinode' && 'hack/kind-config-multinode.yaml' || 'hack/kind-config.yaml' }}
           cluster-name: ${{ env.KIND_CLUSTER }}
+      # Before anything is scheduled: the control-plane node takes the taint
+      # off and both workers are cordoned, the multinode entry's default
+      # state (tests/e2e-chaos/lib/nodes.sh). A suite that needs replicas on
+      # the workers uncordons them and cordons them again in its cleanup.
+      - name: Prepare the multinode leg
+        if: matrix.suite == 'multinode'
+        run: tests/e2e-chaos/lib/nodes.sh prepare
       # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version
@@ -2329,25 +2356,26 @@ jobs:
             # operator one.
             ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The seven nova-stack suites run on the nova leg alone. The OVN
-            # pair above already covers that leg (!= 'pod'), and the keystone,
-            # glance and tempest images arrive with the keystone stack on every
-            # non-ovn leg, so seven refs are left to name here.
+            # The seven nova-stack suites run on the nova leg, and the
+            # multinode leg brings up the same stack. The OVN pair above
+            # already covers both legs (!= 'pod'), and the keystone, glance and
+            # tempest images arrive with the keystone stack on every non-ovn
+            # leg, so seven refs are left to name here.
             # A Nova boots no server without a Placement to claim from.
-            ${{ matrix.suite == 'nova' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Placement API that operator rolls out.
-            ${{ matrix.suite == 'nova' && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/placement:2026.1', env.IMAGE_PREFIX) || '' }}
             # The port of every booted server comes from a Neutron.
-            ${{ matrix.suite == 'nova' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Neutron API and the metadata agent beside it.
-            ${{ matrix.suite == 'nova' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
             # The operator whose CRs the seven suites drive.
-            ${{ matrix.suite == 'nova' && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The five Nova workloads and the fake compute beside them.
-            ${{ matrix.suite == 'nova' && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The nova-compute DaemonSet of novacompute-drain-compute-kill's
-            # NovaCompute pool.
-            ${{ matrix.suite == 'nova' && format('{0}/nova-compute:2026.1', env.IMAGE_PREFIX) || '' }}
+            ${{ (matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
+            # The nova-compute DaemonSet of the NovaCompute pools of
+            # novacompute-drain-compute-kill and novacompute-node-loss.
+            ${{ (matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/nova-compute:2026.1', env.IMAGE_PREFIX) || '' }}
             # The controlplane leg's own operator; its Keystone children run
             # the keystone image the keystone stack above already loads.
             ${{ matrix.suite == 'controlplane' && format('{0}/c5c3-operator:dev', env.IMAGE_PREFIX) || '' }}
@@ -2398,12 +2426,12 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
-      # The nova leg's own seven. None of the per-leg steps above reaches them:
-      # the placement pair is gated on the pod and network legs and the
-      # neutron pair on the network one. The OVN pair this leg also needs is
-      # loaded by the `!= 'pod'` step above.
+      # The nova leg's own seven, which the multinode leg loads too. None of
+      # the per-leg steps above reaches them: the placement pair is gated on
+      # the pod and network legs and the neutron pair on the network one. The
+      # OVN pair both legs also need is loaded by the `!= 'pod'` step above.
       - name: Load nova leg images into kind
-        if: matrix.suite == 'nova'
+        if: matrix.suite == 'nova' || matrix.suite == 'multinode'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
@@ -2430,16 +2458,17 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
-      # The chassis DaemonSets of the ovn leg's ovn-southbound-outage and of
-      # the nova leg's neutron-metadata-agent-pod-kill open a Geneve tunnel
-      # from the kind node, which needs the openvswitch and geneve modules on
-      # the host. Empty on the other two legs, where deploy-infra.sh keeps its
-      # default of not touching the host's modules.
+      # The chassis DaemonSets of the ovn leg's ovn-southbound-outage, of
+      # the nova leg's neutron-metadata-agent-pod-kill and of the multinode
+      # leg's OVN and compute suites open a Geneve tunnel from the kind nodes,
+      # which needs the openvswitch and geneve modules on the host. Empty on
+      # the other legs, where deploy-infra.sh keeps its default of not
+      # touching the host's modules.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_CHAOS_MESH: "true"
-          WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}
+          WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'multinode') && 'true' || '' }}
           # The seven cinder suites attach an NFS backend, which the operator
           # mounts as an inline CSI volume from the kind NFS export, and five
           # of them take a vhost on the shared broker; cinder-broker-outage and
@@ -2450,10 +2479,12 @@ jobs:
           # nova-broker-outage brings its own broker for the same reason. The
           # two upgrade suites attach an NFS backend too, and
           # cinder-upgrade-db-partition takes a vhost on the shared broker;
-          # cinder-upgrade-broker-pod-kill brings its own. Empty elsewhere,
-          # where deploy-infra.sh keeps its default of installing neither.
+          # cinder-upgrade-broker-pod-kill brings its own. The multinode leg's
+          # novacompute-node-loss takes a vhost for its Nova, as the nova
+          # leg's suites do. Empty elsewhere, where deploy-infra.sh keeps its
+          # default of installing neither.
           WITH_NFS: ${{ (matrix.suite == 'network' || matrix.suite == 'upgrade') && 'true' || '' }}
-          WITH_MESSAGING: ${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade') && 'true' || '' }}
+          WITH_MESSAGING: ${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade' || matrix.suite == 'multinode') && 'true' || '' }}
           # The controlplane leg prepares the ControlPlane path the way the
           # e2e-controlplane job does: the infrastructure overlay without the
           # standalone MariaDB, Memcached and shim ExternalSecrets, and the
@@ -2606,22 +2637,23 @@ jobs:
           OPERATOR: cinder
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
           NAMESPACE: cinder-system
-      # The seven nova-stack suites run on the nova leg alone, so the three
-      # operators they need beyond the ovn one deploy there alone. The first two names carry a
+      # The seven nova-stack suites run on the nova leg, and the multinode
+      # leg's suites on the same stack, so the three operators they need
+      # beyond the ovn one deploy on those two legs. The first two names carry a
       # "(nova leg)" suffix because tests/lib/ci_yaml.sh returns the first step
       # of an exact name and the placement and neutron steps above are pinned
       # by theirs: a second step under either name would be invisible to every
       # assertion in tests/unit/ci/. No ovn step is needed here: the one above
       # is gated `!= 'pod'` and already covers this leg.
       - name: Deploy placement operator (nova leg)
-        if: matrix.suite == 'nova'
+        if: matrix.suite == 'nova' || matrix.suite == 'multinode'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: placement
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
           NAMESPACE: placement-system
       - name: Deploy neutron operator (nova leg)
-        if: matrix.suite == 'nova'
+        if: matrix.suite == 'nova' || matrix.suite == 'multinode'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: neutron
@@ -2631,7 +2663,7 @@ jobs:
       # endpoint, a Placement and a Neutron, and none of the three is
       # reconciled before the steps above ran.
       - name: Deploy nova operator
-        if: matrix.suite == 'nova'
+        if: matrix.suite == 'nova' || matrix.suite == 'multinode'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: nova
@@ -2647,6 +2679,18 @@ jobs:
           chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \
             ${{ github.event_name != 'pull_request' && '--fail-fast=false' || '' }} \
             ${{ matrix.test_dirs }}
+      # A wall that kills chainsaw skips every suite cleanup, and a worker left
+      # paused or dead would hide the diagnostics and the coverage counters of
+      # its node. Each worker's Docker state is printed and every one that is
+      # not running and Ready is brought back. A cancelled run waits a minute
+      # per worker, which leaves "Delete kind cluster" its grace window.
+      - name: Restore the workers
+        if: always() && matrix.suite == 'multinode'
+        continue-on-error: true
+        timeout-minutes: 12
+        env:
+          CHAOS_NODES_RESTORE_SECONDS: ${{ job.status == 'cancelled' && '60' || '300' }}
+        run: tests/e2e-chaos/lib/nodes.sh restore-all
       # Use shared diagnostic dump script. It derives the operator namespace
       # from OPERATOR, and the ovn leg has no keystone-system to dump.
       - name: Dump diagnostic info
@@ -2655,7 +2699,7 @@ jobs:
         env:
           OPERATOR: ${{ matrix.suite == 'ovn' && 'ovn' || 'keystone' }}
       # The dump above derives its namespace from one OPERATOR, so on the nova
-      # leg it covers keystone-system and nothing else. The script reads a
+      # and multinode legs it covers keystone-system and nothing else. The script reads a
       # single OPERATOR per run, hence one call per remaining namespace.
       # OPERATOR_ONLY keeps each pass to the three sections that differ: the
       # infrastructure block and the openstack Job and pod logs are the same
@@ -2664,7 +2708,7 @@ jobs:
       # the grace window `Delete kind cluster` below needs when the job wall
       # cancels the run.
       - name: Dump diagnostic info (nova leg)
-        if: always() && matrix.suite == 'nova'
+        if: always() && (matrix.suite == 'nova' || matrix.suite == 'multinode')
         run: |
           for op in nova placement glance ovn neutron; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh

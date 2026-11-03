@@ -67,13 +67,20 @@ cluster_creating_steps() {
   ' "${WORKFLOWS[@]}"
 }
 
-# kind_config_inputs — Echo every `config:` value passed to a create-kind-cluster
-# step, one per line.
+# kind_config_inputs — Echo every kind config file a create-kind-cluster step
+# passes in its `config:` value, one per line. A value that is an expression
+# choosing between files names each of them.
 kind_config_inputs() {
   awk -v ref="$ACTION_REF" '
     $0 == "        uses: " ref { in_step = 1; next }
     in_step && /^        [a-z]/ && !/^        with:/ { in_step = 0 }
-    in_step && /^          config: / { print $2 }
+    in_step && /^          config: / {
+      value = $0
+      while (match(value, /hack\/[A-Za-z0-9._-]+\.yaml/)) {
+        print substr(value, RSTART, RLENGTH)
+        value = substr(value, RSTART + RLENGTH)
+      }
+    }
   ' "${WORKFLOWS[@]}"
 }
 
@@ -147,29 +154,32 @@ test_inputs_match() {
 # Test C2: each job creates its cluster from the config it needs
 # ---------------------------------------------------------------------------
 
-# job_kind_configs — Echo "<job> <config>" for every create-kind-cluster step,
-# in file order, with <none> for a step that passes no config.
+# job_kind_configs — Echo "<job><TAB><config>" for every create-kind-cluster
+# step, in file order, with <none> for a step that passes no config. The config
+# is the whole value, so an expression choosing between files is read as one.
 job_kind_configs() {
   awk -v ref="$ACTION_REF" '
-    function flush() { if (in_step) print job, (config == "" ? "<none>" : config); in_step = 0 }
+    function flush() { if (in_step) print job "\t" (config == "" ? "<none>" : config); in_step = 0 }
     /^  [a-z0-9_-]+:$/ { flush(); job = $1; sub(/:$/, "", job) }
     /^      - / { flush() }
     $0 == "        uses: " ref { in_step = 1; config = ""; next }
-    in_step && /^          config: / { config = $2 }
+    in_step && /^          config: / { config = $0; sub(/^          config: /, "", config) }
     END { flush() }
   ' "$CI_YAML"
 }
 
 # expected_kind_config <job> — the config(s) a job's create-kind-cluster steps
-# pass, space-separated. The two jobs that deploy operators under test read the
+# pass, joined by "|". The two jobs that deploy operators under test read the
 # kube-apiserver audit log, so only they pay for writing it; e2e-ovn-overlay
-# needs worker nodes; the bare target cluster of e2e-orders-multicluster takes
-# no config and so binds no host port beside its management cluster.
+# and the multinode entry of e2e-chaos need worker nodes; the bare target
+# cluster of e2e-orders-multicluster takes no config and so binds no host port
+# beside its management cluster.
 expected_kind_config() {
   case "$1" in
     e2e-operator | e2e-controlplane) echo "hack/kind-config-audit.yaml" ;;
     e2e-ovn-overlay) echo "hack/kind-config-multinode.yaml" ;;
-    e2e-orders-multicluster) echo "<none> hack/kind-config.yaml" ;;
+    e2e-chaos) echo "\${{ matrix.suite == 'multinode' && 'hack/kind-config-multinode.yaml' || 'hack/kind-config.yaml' }}" ;;
+    e2e-orders-multicluster) echo "<none>|hack/kind-config.yaml" ;;
     *) echo "hack/kind-config.yaml" ;;
   esac
 }
@@ -179,12 +189,12 @@ test_each_job_uses_its_config() {
 
   local configs job have
   configs="$(job_kind_configs)"
-  for job in $(cut -d' ' -f1 <<<"$configs" | uniq); do
-    have="$(awk -v j="$job" '$1 == j { printf "%s%s", sep, $2; sep = " " }' <<<"$configs")"
+  for job in $(cut -f1 <<<"$configs" | uniq); do
+    have="$(awk -F '\t' -v j="$job" '$1 == j { printf "%s%s", sep, $2; sep = "|" }' <<<"$configs")"
     assert_eq "$job passes $(expected_kind_config "$job")" "$(expected_kind_config "$job")" "$have"
   done
   assert_eq "exactly two jobs create the audited cluster" "2" \
-    "$(grep -c ' hack/kind-config-audit.yaml$' <<<"$configs" | tr -d ' ')"
+    "$(grep -c "$(printf '\t')hack/kind-config-audit.yaml\$" <<<"$configs" | tr -d ' ')"
 }
 
 # ---------------------------------------------------------------------------
