@@ -1,0 +1,338 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test: ovn-controller killed on a worker while a ping
+# crosses the Geneve tunnel to it, the CI form of lab fault F3.
+#
+# Fault: a PodChaos pod-kill with mode: one and gracePeriod: 0 on the
+# ovn-controller pod of OVNChassis ovn-ctl-kill-chassis on the victim worker
+# (05-podchaos.yaml, its node rendered at run time).
+#
+# Claim, phase by phase:
+#   baseline  lsp-victim (10.97.0.11) on the victim answers a ping from
+#             lsp-survivor (10.97.0.12) on the survivor, across the tunnel.
+#   kill      A pod with a new UID is Ready on the victim within 120 s, and
+#             the OVNChassis is back at Ready=True/AllReady with numberReady 2.
+#   datapath  The ping that ran through the kill lost no more sequence
+#             numbers than the datapath budget of survivor-victim.
+#   identity  The Southbound database holds two Chassis rows, the victim's
+#             under the system-id it had, lsp-victim is bound, and
+#             status.nodes[].systemID is unchanged.
+#
+# Blast radius: the PodChaos selects the ovn-controller pod of this suite's
+# chassis on the victim alone. The stack runs on the control-plane node; the
+# chassis pods and the data-path probes are the only pods of the suite on the
+# workers, which stay cordoned.
+#
+# Leg: multinode (metadata.labels chaos.c5c3.io/topology: multinode), first of
+# its suites after the health check.
+#
+# Workload: the token and network streams of ../lib/workload.sh against this
+# suite's Keystone and Neutron, judged with --ovn-db-sync. ovn-controller is on
+# no request path of either stream, so the budget is zero and a failed record
+# is a defect to find. The lab saw no lost ping at a 2-second interval (F3);
+# the 0.5-second interval here is finer, so the datapath budget is measured.
+# Chaos matrix: ovn self pod-kill
+# Chaos random: ovn-controller-pod-kill
+# Chaos datapath budget: survivor-victim lost=4
+# Chaos datapath budget measured: 2026-11-03, estimate, lost 2, longest gap 1 s
+# Chaos budget: failures=0 recovery=0s
+# Chaos budget measured: 2026-11-03, estimate, failures 0, recovery 0 s
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-controller-pod-kill
+  labels:
+    chaos.c5c3.io/topology: multinode
+spec:
+  namespace: openstack
+  # The chassis and the probes run with hostNetwork and own /run/openvswitch
+  # and /run/netns on both workers.
+  concurrent: false
+  timeouts:
+    assert: 10m
+  steps:
+  # ── Step 1: Label both workers the chassis selects ──────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 1m
+        content: |
+          set -eu
+          for node in $(../lib/nodes.sh victim) $(../lib/nodes.sh survivor); do
+            kubectl label node "$node" openstack.c5c3.io/chassis=true --overwrite
+          done
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 1m
+        content: |
+          kubectl label nodes -l openstack.c5c3.io/chassis openstack.c5c3.io/chassis- || true
+          echo "OK: no node carries openstack.c5c3.io/chassis"
+  # ── Step 2: Bring up the stack and the chassis ──────────────────────────
+  # The workers are cordoned, so everything but the chassis DaemonSets lands
+  # on the control-plane node. The system-ids go into a ConfigMap for step 6.
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - apply:
+        file: 01-messaging-secret.yaml
+    - apply:
+        file: 02-ovncentral-cr.yaml
+    - apply:
+        file: 03-neutron-cr.yaml
+    - apply:
+        file: 04-ovnchassis-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-ovn-ctl-kill
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-ctl-kill-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-ovn-ctl-kill
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: ovn-ctl-kill-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            numberReady: 2
+    - script:
+        shell: bash
+        timeout: 1m
+        content: |
+          set -euo pipefail
+          IDS="$(kubectl get ovnchassis ovn-ctl-kill-chassis -n "$NAMESPACE" \
+            -o jsonpath='{range .status.nodes[*]}{.name}={.systemID}{"\n"}{end}' | LC_ALL=C sort | xargs)"
+          if [ "$(wc -w <<<"$IDS" | tr -d ' ')" != 2 ]; then
+            echo "FAIL: status.nodes reads '${IDS}', want two entries"
+            exit 1
+          fi
+          kubectl create configmap ovn-ctl-kill-verify -n "$NAMESPACE" \
+            --from-literal=systemids="$IDS" --dry-run=client -o yaml | kubectl apply -f -
+          echo "OK: the chassis registered as ${IDS}"
+    catch: &dump
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos ovn-ctl-kill-chassis --cr-kind=ovnchassis --dep-label=app.kubernetes.io/instance=ovn-ctl-kill-chassis
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide 2>&1 || true
+          echo "=== OVN and Neutron children ==="
+          kubectl get ds,deploy,sts,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-ctl-kill-chassis -o wide 2>&1 || true
+          kubectl get deploy,sts,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-ctl-kill-ovn -o wide 2>&1 || true
+          kubectl get deploy,pod -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-ovn-ctl-kill -o wide 2>&1 || true
+          kubectl get ovnchassis ovn-ctl-kill-chassis -n "$NAMESPACE" -o yaml 2>&1 || true
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-ctl-kill-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=30 --previous 2>&1 || true
+          done
+          kubectl get podchaos -n "$NAMESPACE" 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --tail=100 2>&1 || true
+    - script:
+        timeout: 3m
+        content: ../lib/datapath.sh dump
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump ovn-controller-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete configmap ovn-ctl-kill-verify -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 3: Build the data path and ping across the tunnel ──────────────
+  # lsp-victim on the victim, lsp-survivor on the survivor, and a ping from the
+  # survivor that runs until the teardown. The first reply is the baseline.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          DP=../lib/datapath.sh
+          VICTIM="$(../lib/nodes.sh victim)"
+          SURVIVOR="$(../lib/nodes.sh survivor)"
+          $DP probe "$VICTIM"
+          $DP probe "$SURVIVOR"
+          $DP nb ovn-ctl-kill-ovn -- --may-exist ls-add chaos-dp-sw \
+            -- --may-exist lsp-add chaos-dp-sw lsp-victim \
+            -- lsp-set-addresses lsp-victim "0a:00:0a:61:00:0b 10.97.0.11" \
+            -- --may-exist lsp-add chaos-dp-sw lsp-survivor \
+            -- lsp-set-addresses lsp-survivor "0a:00:0a:61:00:0c 10.97.0.12"
+          $DP plug "$VICTIM" lsp-victim dpp-victim dp-victim 0a:00:0a:61:00:0b 10.97.0.11
+          $DP plug "$SURVIVOR" lsp-survivor dpp-survivor dp-survivor 0a:00:0a:61:00:0c 10.97.0.12
+          $DP ping-start survivor-victim "$SURVIVOR" dp-survivor 10.97.0.11
+          $DP ping-wait survivor-victim 120
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 4m
+        content: ../lib/datapath.sh teardown ovn-ctl-kill-ovn
+  # ── Step 4: Start the workload ──────────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: >-
+          ../lib/workload.sh start ovn-controller-pod-kill --
+          --streams token,network
+          --keystone http://keystone-ovn-ctl-kill.openstack.svc:5000/v3
+          --neutron http://neutron-ovn-ctl-kill.openstack.svc:9696
+    catch: *dump
+    cleanup:
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh stop ovn-controller-pod-kill
+  # ── Step 5: Kill ovn-controller on the victim ───────────────────────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          VICTIM="$(../lib/nodes.sh victim)"
+          SEL=app.kubernetes.io/name=ovnchassis,app.kubernetes.io/instance=ovn-ctl-kill-chassis,app.kubernetes.io/component=ovn-controller
+          # pods_on: "<uid> <Ready>" of the ovn-controller pods on the victim.
+          pods_on() {
+            kubectl get pods -n "$NAMESPACE" -l "$SEL" --field-selector "spec.nodeName=${VICTIM}" \
+              -o jsonpath='{range .items[*]}{.metadata.uid} {.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+          }
+          OLD="$(pods_on | awk '{print $1}')"
+          if [ "$(grep -c . <<<"$OLD")" != 1 ]; then
+            echo "FAIL: want one ovn-controller pod on ${VICTIM}, found: ${OLD:-none}"
+            exit 1
+          fi
+          ../lib/workload.sh mark ovn-controller-pod-kill fault-start
+          sed "s/@VICTIM@/${VICTIM}/" 05-podchaos.yaml | kubectl apply -f -
+          deadline=$(($(date +%s) + 120))
+          while true; do
+            now="$(pods_on || true)"
+            if [ -n "$now" ] && ! grep -q "^${OLD} " <<<"$now" && grep -q ' True$' <<<"$now"; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "FAIL: 120s after the kill ${VICTIM} runs [${now}], want a Ready ovn-controller pod other than ${OLD}"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: ovn-controller on ${VICTIM} is back as $(grep ' True$' <<<"$now" | awk '{print $1}'), replacing ${OLD}"
+    - assert:
+        timeout: 3m
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: ovn-ctl-kill-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            numberReady: 2
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete podchaos kill-ovn-controller -n "$NAMESPACE" --ignore-not-found
+          ../lib/workload.sh mark ovn-controller-pod-kill fault-end
+    catch:
+    - script:
+        timeout: 1m
+        content: kubectl delete podchaos kill-ovn-controller -n "$NAMESPACE" --ignore-not-found 2>&1 || true
+    - script:
+        timeout: 3m
+        content: ../diagnostics.sh chaos ovn-ctl-kill-chassis --cr-kind=ovnchassis --dep-label=app.kubernetes.io/instance=ovn-ctl-kill-chassis
+    - script:
+        timeout: 3m
+        content: ../lib/datapath.sh dump
+    - script:
+        timeout: 1m
+        content: ../lib/workload.sh dump ovn-controller-pod-kill
+    cleanup:
+    - script:
+        timeout: 1m
+        content: kubectl delete podchaos kill-ovn-controller -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 6: The data path and the chassis identity ──────────────────────
+  # ping-wait first: the verdict counts the whole outage only once the tunnel
+  # answers again.
+  - try:
+    - script:
+        shell: bash
+        timeout: 6m
+        content: |
+          set -euo pipefail
+          DP=../lib/datapath.sh
+          VICTIM="$(../lib/nodes.sh victim)"
+          $DP ping-wait survivor-victim 60
+          $DP ping-verdict ovn-controller-pod-kill survivor-victim
+          ROWS="$($DP sb ovn-ctl-kill-ovn --bare --columns=hostname list Chassis | grep . || true)"
+          echo "Chassis rows: $(xargs <<<"$ROWS")"
+          if [ "$(grep -c . <<<"$ROWS")" != 2 ]; then
+            echo "FAIL: the Southbound database holds $(grep -c . <<<"$ROWS") Chassis rows, want 2"
+            exit 1
+          fi
+          BOUND="$($DP sb ovn-ctl-kill-ovn --bare --columns=chassis find Port_Binding logical_port=lsp-victim | grep . || true)"
+          if [ -z "$BOUND" ]; then
+            echo "FAIL: lsp-victim is bound to no chassis"
+            exit 1
+          fi
+          BEFORE="$(kubectl get configmap ovn-ctl-kill-verify -n "$NAMESPACE" -o jsonpath='{.data.systemids}')"
+          AFTER="$(kubectl get ovnchassis ovn-ctl-kill-chassis -n "$NAMESPACE" \
+            -o jsonpath='{range .status.nodes[*]}{.name}={.systemID}{"\n"}{end}' | LC_ALL=C sort | xargs)"
+          if [ "$BEFORE" != "$AFTER" ]; then
+            echo "FAIL: status.nodes reads '${AFTER}', want '${BEFORE}'"
+            exit 1
+          fi
+          WANT="$(tr ' ' '\n' <<<"$BEFORE" | sed -n "s/^${VICTIM}=//p")"
+          NAME="$($DP sb ovn-ctl-kill-ovn --bare --columns=name find Chassis "hostname=${VICTIM}" | grep . || true)"
+          if [ "$NAME" != "$WANT" ]; then
+            echo "FAIL: the Chassis row of ${VICTIM} is '${NAME}', want the system-id ${WANT}"
+            exit 1
+          fi
+          echo "IDENTITY-OK: two Chassis rows, lsp-victim bound to ${BOUND}, ${VICTIM} still ${WANT}"
+    catch: *dump
+  # ── Step 7: Tear the data path down, judge the workload ─────────────────
+  - try:
+    - script:
+        timeout: 4m
+        content: ../lib/datapath.sh teardown ovn-ctl-kill-ovn
+    - script:
+        timeout: 20m
+        content: ../lib/workload.sh verify ovn-controller-pod-kill --ovn-db-sync neutron-ovn-ctl-kill
+    catch: *dump

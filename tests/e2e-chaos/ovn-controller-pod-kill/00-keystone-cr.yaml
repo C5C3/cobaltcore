@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR for ovn-controller-pod-kill: a copy of
+# ../ovn-operator-pod-kill/00-keystone-cr.yaml under the ovn-ctl-kill prefix, with the
+# database keystone_ovn_ctl_kill.
+#
+# The Neutron API rejects an unauthenticated request, so the workload needs a
+# token, and the Neutron CR's keystoneEndpoint resolves to the Service the
+# operator projects under the CR name. The bootstrap admin password comes from
+# the pre-seeded keystone-admin Secret, which is also the Neutron serviceUser's.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-ovn-ctl-kill
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_ovn_ctl_kill
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

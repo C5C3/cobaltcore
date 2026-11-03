@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane of ovn-controller-pod-kill.
+#
+# Single-member Raft clusters and one northd keep the bring-up short. The
+# backup CronJob is suspended: this suite asserts nothing about it.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-ctl-kill-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true
