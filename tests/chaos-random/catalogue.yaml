@@ -18,7 +18,7 @@
 #                 the # Chaos budget: recovery of the suites that name the
 #                 entry, the largest of them, and 60s at least; an entry of a
 #                 lab fault takes the bound of that fault's gate
-#   source        only on an entry no suite names: the lab fault it stands for
+#   source        on an entry of a lab fault: the fault it stands for
 #   spec          the Chaos Mesh spec without duration
 #
 # @CP@ and @NS@ stand for the ControlPlane's name and namespace. A projected
@@ -687,6 +687,20 @@
         app.kubernetes.io/name: ovncentral
         app.kubernetes.io/instance: "@CP@-ovn"
         app.kubernetes.io/component: sb
+- name: ovn-northd-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: ovncentral
+        app.kubernetes.io/instance: "@CP@-ovn"
+        app.kubernetes.io/component: northd
 
 # --- The platform ----------------------------------------------------------
 - name: cert-manager-pod-failure
