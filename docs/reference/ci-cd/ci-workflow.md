@@ -56,7 +56,7 @@ pushes the `changes` job forces all areas and all operators active, so every ope
 images and charts are published regardless of which files the tagged commit touched.
 
 A scheduled or dispatched run is the nightly chaos run of #1388. It runs `changes`,
-`test-shell`, `build-e2e-images`, the six [`e2e-chaos`](#e2e-chaos) matrix entries,
+`test-shell`, `build-e2e-images`, the seven [`e2e-chaos`](#e2e-chaos) matrix entries,
 the random chaos run [`e2e-chaos-random`](#e2e-chaos-random) of #1395 and
 `cleanup-e2e-tags`, and on a schedule [`report-nightly-chaos`](#report-nightly-chaos)
 files what went red. Every other job keeps its `pull_request` or `push` guard and
@@ -112,7 +112,7 @@ Seven labels add jobs. None of them ever removes one.
 | --- | --- |
 | `ci:full` | everything, and builds every image |
 | `ci:tempest` | the Tempest legs of the services the pull request touches, plus the legs that deploy a changed `ovn` or `placement` operator (neither has a leg of its own), or the keystone legs when it touches none |
-| `ci:chaos` | all six `e2e-chaos` legs, and not `e2e-chaos-random`. `run-chaos` is an alias |
+| `ci:chaos` | all seven `e2e-chaos` legs, and not `e2e-chaos-random`. `run-chaos` is an alias |
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling`, `e2e-orders-multicluster` |
 | `ci:multicluster` | `e2e-multicluster`, `e2e-orders-multicluster` |
 | `ci:pressure` | `keystone-pressure`, one leg per release that ships a Keystone image |
@@ -1292,7 +1292,7 @@ and no red entry on record named a module.
 On-demand pre-validation of every entry is available via the `ci:chaos` PR
 label, with `run-chaos` kept as an alias.
 
-The job runs as a six-entry matrix, split by chaos type and by the stack each
+The job runs as a seven-entry matrix, split by chaos type and by the stack each
 leg needs:
 
 | Leg | Operators deployed | Suites |
@@ -1303,8 +1303,9 @@ leg needs:
 | `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill`, `novacompute-drain-compute-kill` |
 | `controlplane` | keystone, horizon, glance, barbican, ovn, K-ORC, c5c3 | the eight suites that bring up a ControlPlane of their own: `korc-provisioning-outage`, `korc-network-partition`, `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure`, `controlplane-provisioning-mariadb-kill`, `controlplane-deletion-korc-outage`, `keystoneuser-rotation-keystone-outage` |
 | `upgrade` | keystone, horizon, glance, barbican, ovn, cinder | the two suites that fault a Cinder release upgrade from 2026.1 to 2026.2: `cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill` |
+| `multinode` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | the six suites that fault a whole kind worker or the OVN data path between nodes, on `hack/kind-config-multinode.yaml`: `ovn-controller-pod-kill`, `ovn-northd-pod-kill`, `ovn-chassis-loss`, `api-priority-preemption`, `api-worker-loss`, `novacompute-node-loss` |
 
-All six legs run on the `self-hosted` runners. The split lets each entry
+All seven legs run on the `self-hosted` runners. The split lets each entry
 report on its own and lets them run in parallel. Each matrix entry lists its
 per-suite test directories explicitly.
 
@@ -1322,14 +1323,16 @@ seven images of its own: `placement-operator:dev`, `placement:2026.1`,
 `nova-compute:2026.1`, the last for the NovaCompute pool of
 `novacompute-drain-compute-kill`. The `upgrade` entry names `cinder-operator:dev`, `cinder:2026.1` and
 `cinder:2026.2`, the only 2026.2 image of the job, and loads them through
-`Load upgrade leg images into kind`. `WITH_MESSAGING` is set on the `network`,
-`nova` and `upgrade` legs: for the vhosts the Cinder suites take, and because
-every Nova process dials the bus. `WITH_NFS` is set on the `network` and
-`upgrade` legs, whose Cinders attach an NFS backend. `Setup E2E infrastructure` passes
-`WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}`,
+`Load upgrade leg images into kind`. The `multinode` entry pulls and loads the
+seven images of the `nova` entry through the same refs and the same step.
+`WITH_MESSAGING` is set on the `network`, `nova`, `upgrade` and `multinode` legs:
+for the vhosts the Cinder suites take, and because every Nova process dials the
+bus. `WITH_NFS` is set on the `network` and `upgrade` legs, whose Cinders attach
+an NFS backend. `Setup E2E infrastructure` passes
+`WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'multinode') && 'true' || '' }}`,
 which is what makes `hack/deploy-infra.sh` load `openvswitch` and `geneve` for
-the chassis DaemonSets of `ovn-southbound-outage` and
-`neutron-metadata-agent-pod-kill`. The diagnostics dump follows the leg through
+the chassis DaemonSets of `ovn-southbound-outage`,
+`neutron-metadata-agent-pod-kill` and the `multinode` suites. The diagnostics dump follows the leg through
 `OPERATOR: ${{ matrix.suite == 'ovn' && 'ovn' || 'keystone' }}`, because the
 `ovn` leg has no `keystone-system` namespace to dump.
 
@@ -1357,10 +1360,29 @@ adds the cinder-operator sections under `OPERATOR_ONLY=1`. The keystone and OVN
 stacks run on it as well: the workload pod needs the Tempest image the keystone
 stack loads.
 
+The `multinode` entry creates its cluster from `hack/kind-config-multinode.yaml`:
+`Create kind cluster` passes
+`config: ${{ matrix.suite == 'multinode' && 'hack/kind-config-multinode.yaml' || 'hack/kind-config.yaml' }}`.
+`Prepare the multinode leg` follows it and runs
+`tests/e2e-chaos/lib/nodes.sh prepare`, which removes the control-plane taint and
+cordons both workers, so every singleton of the stack lands on the control-plane
+node, which no fault touches. DaemonSet pods and pods with `nodeName` still reach
+the workers. Every `nova` gate also accepts `multinode`: the seven image refs, the
+kind load, the placement, neutron and nova deploys and `Dump diagnostic info (nova
+leg)`. `Restore the workers` runs `nodes.sh restore-all` after `Run chaos E2E
+tests` and before the diagnostics, under `if: always() && matrix.suite ==
+'multinode'` and `continue-on-error: true`: a wall that kills chainsaw skips every
+suite cleanup, and a paused or dead worker would hide the diagnostics and the
+coverage counters of its node. On a cancelled run it waits a minute per worker,
+which leaves `Delete kind cluster` its grace window.
+
 The wall is
-`timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}`,
-685 minutes in all, which the author of #1394 accepted on 2026-10-25 against the
-600 that D6 of #1386 allows; the estimated run is about 575 minutes. The last full
+`timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'multinode' && 160 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}`,
+845 minutes in all. The author of #1394 accepted 685 for the first six on
+2026-10-25 against the 600 that D6 of #1386 allows; their estimated run is about
+575 minutes. The `multinode` leg of #1392 is estimated at about 130 minutes: 45
+for the bring-up, 80 for its six suites and 5 for the diagnostics, and its wall
+adds 30 for one stalled step of a suite. The last full
 run, on PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where
 it hit the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of
 #1394 add about 12 minutes each to `pod`, `nova` and `controlplane`, and the
@@ -1380,28 +1402,30 @@ green run with them.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` for the `go tool covdata` of step 12 |
-| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 4 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
-| 5 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
-| 6 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the eight nova-leg images (`nova`), `c5c3-operator:dev` (`controlplane`), and the three cinder images of `upgrade` |
-| 7 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs, `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane`, `WITH_NFS=true` on `network` and `upgrade`, and `WITH_MESSAGING=true` on `network`, `nova` and `upgrade` |
-| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, each with the coverage counter volume of the job-level `E2E_COVERAGE: "true"`, the placement-operator on the `pod` and `network` legs; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator`; `upgrade` adds `Deploy cinder operator (upgrade leg)` |
-| 9 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml`. On every event but `pull_request` it adds `--fail-fast=false`, which overrides the config's `failFast: true`, so a red suite skips none of the entry's later suites |
-| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` leg repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log, and one on `upgrade` the cinder-operator under `OPERATOR_ONLY=1` |
-| 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
-| 12 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh chaos`: final flush, one profile per operator, the totals in the job summary |
-| 13 | Upload operator coverage | Only when step 12 found a profile. Uploads the profiles to Codecov under `chaos-<op>` and `chaos-common` |
-| 14 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` for the `go tool covdata` of step 14 |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION`, from `hack/kind-config-multinode.yaml` on the `multinode` leg |
+| 4 | `Prepare the multinode leg` (`multinode`) | `tests/e2e-chaos/lib/nodes.sh prepare`: removes the control-plane taint and cordons both workers |
+| 5 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
+| 6 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
+| 7 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the seven images of the `nova` entry (`nova` and `multinode`), `c5c3-operator:dev` (`controlplane`), and the three cinder images of `upgrade` |
+| 8 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn`, `nova` and `multinode` legs, `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane`, `WITH_NFS=true` on `network` and `upgrade`, and `WITH_MESSAGING=true` on `network`, `nova`, `upgrade` and `multinode` |
+| 9 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, each with the coverage counter volume of the job-level `E2E_COVERAGE: "true"`, the placement-operator on the `pod` and `network` legs; the `nova` and `multinode` legs add three steps of their own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator`; `upgrade` adds `Deploy cinder operator (upgrade leg)` |
+| 10 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml`. On every event but `pull_request` it adds `--fail-fast=false`, which overrides the config's `failFast: true`, so a red suite skips none of the entry's later suites |
+| 11 | `Restore the workers` (always, `multinode`, `continue-on-error`) | `tests/e2e-chaos/lib/nodes.sh restore-all`: prints every worker's Docker state and Ready condition and brings back a worker a killed chainsaw left paused or dead |
+| 12 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` and `multinode` legs repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log, and one on `upgrade` the cinder-operator under `OPERATOR_ONLY=1` |
+| 13 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
+| 14 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh chaos`: final flush, one profile per operator, the totals in the job summary |
+| 15 | Upload operator coverage | Only when step 14 found a profile. Uploads the profiles to Codecov under `chaos-<op>` and `chaos-common` |
+| 16 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Key differences from `e2e-operator`:**
 
 | Aspect | `e2e-operator` | `e2e-chaos` |
 | --- | --- | --- |
-| Matrix | Dynamic per-operator | Six suites (`pod` / `network` / `ovn` / `nova` / `controlplane` / `upgrade`) on different runners |
+| Matrix | Dynamic per-operator | Seven suites (`pod` / `network` / `ovn` / `nova` / `controlplane` / `upgrade` / `multinode`) on different runners |
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
-| Timeout | 68 minutes, 150 for the `nova` leg | 135 minutes for `pod`, 135 for `network`, 45 for `ovn`, 170 for `nova`, 120 for `controlplane`, 80 for `upgrade` |
+| Timeout | 68 minutes, 150 for the `nova` leg | 135 minutes for `pod`, 135 for `network`, 45 for `ovn`, 170 for `nova`, 120 for `controlplane`, 80 for `upgrade`, 160 for `multinode` |
 | Blocking | Yes | Yes, every entry (no `continue-on-error`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
 | Service images | 2026.1 + 2026.1-upgraded + 2026.2 | 2026.1, plus `cinder:2026.2` on `upgrade` and the pinned OVN daemon image |
@@ -1434,8 +1458,8 @@ needs a second schedulable node.
 
 **Multi-node legs.** A suite that does need one uses
 `hack/kind-config-multinode.yaml` (one control-plane node plus two workers) in
-a job of its own, never on a runner that also holds a `hack/kind-config.yaml`
-cluster. Both configs bind the same host ports, so the second cluster fails to
+a job or a matrix entry of its own, never on a runner that also holds a
+`hack/kind-config.yaml` cluster. Both configs bind the same host ports, so the second cluster fails to
 create. The `e2e-multicluster` job sidesteps the same collision by creating its
 management cluster with no kind config.
 
@@ -1506,7 +1530,7 @@ holds `plan.json`, `windows.tsv`, `targets.tsv`, the soak's report under
 
 ### report-nightly-chaos
 
-Files a red nightly chaos run on tracking issues. It runs after the six
+Files a red nightly chaos run on tracking issues. It runs after the seven
 `e2e-chaos` entries and `e2e-chaos-random` of a scheduled run and reads the run's
 job listing and the JUnit reports of the entries and the random run.
 
@@ -1523,7 +1547,7 @@ The job runs on `ubuntu-latest` with `timeout-minutes: 10`.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/download-artifact@v8` | Downloads every `e2e-chaos-junit-report-*` artifact into `_output/nightly/<artifact>/`, under `continue-on-error: true`: an entry that hit its wall uploaded no report |
-| 3 | `Report the night` | Runs `hack/ci-report-nightly-chaos.sh` with `RUN_ID`, `RUN_URL`, `REPORT_SHA`, `REPORTS_DIR: _output/nightly` and `BUDGET_MINUTES: "720"` |
+| 3 | `Report the night` | Runs `hack/ci-report-nightly-chaos.sh` with `RUN_ID`, `RUN_URL`, `REPORT_SHA`, `REPORTS_DIR: _output/nightly` and `BUDGET_MINUTES: "780"` |
 
 The script lists the run's jobs (`gh api --paginate .../jobs?filter=latest`) and
 files each finding through `hack/ci-report-red-run.sh`, which comments on the open
@@ -1545,11 +1569,14 @@ self-hosted total against the budget, to the step summary. A green night files
 nothing, and a human closes an issue once its cause is fixed. Re-running the job
 comments on the same open issues and opens none.
 
-The budget is 720 minutes, which the author of #1395 set for the random run in
-place of the 600 of D6 of #1386, counted in measured minutes. The walls of the six
-entries sum to 685 minutes, `e2e-chaos-random` adds 120 and `build-e2e-images` a
-wall of 120, so the walls allow 925 minutes; green runs of the entries measured
-about 450 before the random run joined them.
+The budget is 780 minutes, counted in measured minutes. The author of #1395 set
+720 for the random run in place of the 600 of D6 of #1386, and the author of #1392
+set 780 for the `multinode` entry: the scheduled nights of 2026-11-01 and
+2026-11-02 measured 574 and 591 minutes, and the entry adds about 130. The walls of
+the seven entries sum to 845 minutes, `e2e-chaos-random` adds 120 and
+`build-e2e-images` a wall of 120, so the walls allow 1085 minutes. The job name of
+the `multinode` entry, `e2e-chaos (multinode, ...`, and its artifact
+`e2e-chaos-junit-report-multinode` reach the report like every entry's.
 
 ### e2e-ovn-overlay
 
