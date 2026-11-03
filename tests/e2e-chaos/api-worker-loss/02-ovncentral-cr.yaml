@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane of api-worker-loss, the one the Neutron programs.
+#
+# Step 1 applies it while the workers are still cordoned, so its database
+# members and northd run on the control-plane node, which no fault touches.
+# Single-member Raft clusters and one northd keep the bring-up short; the
+# backup CronJob is suspended.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: worker-loss-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

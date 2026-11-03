@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR of api-worker-loss: three API replicas, one per node.
+#
+# The workers Deployment is pinned to the control-plane node: it is on no
+# request path, and pinning it keeps the frozen worker to the API pods the
+# suite is about. spec.ovnDBSync renders the db-sync CronJob in log mode and
+# suspended, as in ../nova-operator-pod-kill/05-neutron-cr.yaml, so the
+# --ovn-db-sync check of workload.sh verify can run it once.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-worker-loss
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 3
+  workers:
+    deployment:
+      replicas: 1
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_worker_loss
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-worker-loss-messaging
+  ovn:
+    centralRef:
+      name: worker-loss-ovn
+  ovnDBSync:
+    syncMode: log
+    suspend: true
+  keystoneEndpoint: http://keystone-worker-loss.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

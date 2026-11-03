@@ -37,7 +37,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # The suites of the multinode entry, in leg order: the cheap ones first.
-MULTINODE_SUITES=(ovn-controller-pod-kill ovn-northd-pod-kill ovn-chassis-loss api-priority-preemption)
+MULTINODE_SUITES=(ovn-controller-pod-kill ovn-northd-pod-kill ovn-chassis-loss api-priority-preemption api-worker-loss)
 # The images the leg pulls beyond the keystone and OVN stacks: the nova
 # entry's seven.
 NOVA_REFS=(placement-operator:dev placement:2026.1 neutron-operator:dev neutron:2026.1
