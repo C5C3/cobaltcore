@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Multi-node kind cluster configuration: one control-plane node plus two
-# workers. The variant for suites that need more than one schedulable node;
-# the first consumer is the OVN overlay datapath suite (issue #905). Opt in
+# workers. The variant for suites that need more than one schedulable node. Its
+# consumers are the e2e-ovn-overlay job (issue #905) and the multinode entry
+# of e2e-chaos (#1392), which removes the control-plane taint and cordons both
+# workers with tests/e2e-chaos/lib/nodes.sh prepare before the stack. Opt in
 # with `KIND_CONFIG=hack/kind-config-multinode.yaml make deploy-infra`; the
 # default stays the single-node hack/kind-config.yaml.
 #

@@ -29,7 +29,10 @@ with a [Chaos Mesh](https://chaos-mesh.org/) `PodChaos` or `NetworkChaos`.
 Deployment to zero with `kubectl scale` instead, `openbao-sealed` seals OpenBao
 with `bao operator seal`, `openbao-tenant-policy-narrowed` writes a narrowed
 policy with `bao policy write`, and `cinder-upgrade-db-partition` applies two
-egress NetworkPolicies. Tests use
+egress NetworkPolicies. `api-worker-loss`, `ovn-chassis-loss` and
+`novacompute-node-loss` fault a whole kind worker from the runner with
+`docker pause` or `docker kill` (see [Node faults](#node-faults)), and
+`api-priority-preemption` fills two nodes with low-priority pods. Tests use
 [Chainsaw](https://kyverno.github.io/chainsaw/) to orchestrate the assertion
 lifecycle.
 
@@ -74,8 +77,10 @@ steps without a chaos resource: step 2 scales a Deployment to zero, and step 5
 scales it back. `openbao-sealed` seals OpenBao in step 2 and unseals it in step
 5, and `openbao-tenant-policy-narrowed` narrows a policy and writes the captured
 one back. `cinder-upgrade-db-partition` applies its NetworkPolicies in step 2 and
-deletes them in step 5. The suites of the `pod`, `network`, `ovn`, `nova` and
-`upgrade` matrix entries run in the namespace `openstack`. The eight of the
+deletes them in step 5. The three node suites kill or freeze a worker in step 2
+and restore it in step 5, and `api-priority-preemption` scales an API up onto
+its full nodes. The suites of the `pod`, `network`, `ovn`, `nova`, `upgrade` and
+`multinode` matrix entries run in the namespace `openstack`. The eight of the
 `controlplane` entry each bring up a ControlPlane in a short namespace of their
 own, `chaos-korc-out` and its siblings.
 `keystoneuser-rotation-keystone-outage` adds `chaos-ku-rot-tenant` for its
@@ -118,19 +123,43 @@ describes them and holds their record.
 | OpenBao instance | Running in `shared-services` namespace |
 | ControlPlane stack | For the `controlplane` matrix entry: `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external` on the infrastructure bring-up, K-ORC from `hack/ci-deploy-korc.sh` and the c5c3-operator in `c5c3-system` |
 | Upgrade entry | For the `upgrade` matrix entry: `WITH_NFS=true WITH_MESSAGING=true` on the infrastructure bring-up, the cinder-operator in `cinder-system`, and the `cinder:2026.1` and `cinder:2026.2` images on the node |
+| Multinode entry | For the `multinode` matrix entry: a kind cluster of one control-plane node and two workers (`hack/kind-config-multinode.yaml`), prepared by `tests/e2e-chaos/lib/nodes.sh prepare` before the stack, `WITH_MESSAGING=true WITH_OVN_KERNEL_MODULES=true` on the infrastructure bring-up, and the placement-, neutron- and nova-operators beside the others |
 
 ## Running the Tests
 
 ```bash
-# Run all chaos E2E tests
+# Run all chaos E2E tests of a single-node cluster
 make e2e-chaos
 
 # Run with chainsaw directly (equivalent)
-chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/
+chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \
+  --selector 'chaos.c5c3.io/topology!=multinode' tests/e2e-chaos/
 
 # Run a specific scenario
 chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml tests/e2e-chaos/mariadb-pod-kill/
 ```
+
+The six suites of the `multinode` matrix entry carry the label
+`chaos.c5c3.io/topology: multinode`, which `make e2e-chaos` leaves out. They need
+two workers, and the cordon has to come before the stack, so the bring-up runs
+in this order:
+
+```bash
+kind create cluster --name cobaltcore --config hack/kind-config-multinode.yaml
+tests/e2e-chaos/lib/nodes.sh prepare
+SKIP_KIND_CREATE=true WITH_CHAOS_MESH=true WITH_MESSAGING=true \
+  WITH_OVN_KERNEL_MODULES=true make deploy-infra
+# the eight operator deploys of the entry, for example:
+OPERATOR=nova IMAGE_REPO=ghcr.io/c5c3/nova-operator NAMESPACE=nova-system \
+  hack/ci-deploy-operator.sh
+make e2e-chaos-multinode
+```
+
+The deploys are keystone (in the default namespace), horizon, glance, barbican
+(with `BARBICAN_SECRET_STORE_GRANTS=openstack=openbao-instance-provisioner`), ovn,
+placement, neutron and nova, each in `<operator>-system`. `make
+e2e-chaos-multinode` fails before chainsaw starts on a cluster with fewer than two
+workers, naming this bring-up.
 
 ## Chainsaw Configuration
 
@@ -363,7 +392,7 @@ always exit 0. A local run pulls the Tempest image from GHCR unless
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
 The job runs on a pull request that changes a suite or carries the `ci:chaos`
-label, and every night against `main`. All six of its matrix entries gate. See
+label, and every night against `main`. All seven of its matrix entries gate. See
 [CI Workflow: e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job
 documentation.
 
@@ -421,7 +450,7 @@ on the open issue of the title that `github-actions[bot]` opened, or opens one:
 | `Nightly chaos suite <suite> is red` | A suite of an entry that is not green failed; one issue per suite, read from the entry's JUnit report |
 | `Nightly chaos leg <leg> is red` | An entry is not green and names no failed suite: it hit its wall, a step outside the suites failed, or its report is missing or unreadable |
 | `Nightly chaos run is red` | No entry ran, because `changes` or `build-e2e-images` did not succeed |
-| `Nightly chaos run is over its runner budget` | The completed self-hosted jobs of the night took more than 600 minutes together |
+| `Nightly chaos run is over its runner budget` | The completed self-hosted jobs of the night took more than 780 minutes together |
 
 A suite or entry issue names the entry, the suite and the job, and quotes the
 failure message inside a fence. Every night writes a table of the entries, their
@@ -430,12 +459,12 @@ night files nothing, and a human closes an issue once its cause is fixed.
 Re-running the report job comments on the same open issues and opens none, and a
 dispatched run never reports.
 
-**Runner budget:** D6 of #1386 gives the night ten runner hours, counted in
-measured self-hosted minutes. The six walls below sum to 685
-minutes and `build-e2e-images` adds a wall of 120, so the walls allow 805
-minutes. Green runs of the five entries before #1394 measured about 450, and
-#1394 estimates its six entries at about 575. A night over 600 minutes files
-the budget issue above.
+**Runner budget:** D6 of #1386 gave the night ten runner hours, counted in
+measured self-hosted minutes. #1395 raised the budget to 720 minutes for the
+random run, and #1392 to 780 for the `multinode` entry. The seven walls below sum
+to 845 minutes and `build-e2e-images` adds a wall of 120. The scheduled nights of
+2026-11-01 and 2026-11-02 measured 574 and 591 minutes, and the `multinode` entry
+adds about 130. A night over 780 minutes files the budget issue above.
 
 **Matrix entries and what they carry:** the `pod` entry runs the PodChaos suites
 of the keystone stack, the Keystone outage suites of Glance, Placement and
@@ -518,14 +547,38 @@ backend, `cinder-upgrade-db-partition` takes a vhost on the shared broker, and
 `cinder-upgrade-broker-pod-kill` brings a RabbitmqCluster of its own. A
 `Dump diagnostic info (upgrade leg)` step dumps the cinder-operator.
 
+The `multinode` entry is the seventh, on the `self-hosted` runners. Its six suites
+(`ovn-controller-pod-kill`, `ovn-northd-pod-kill`, `ovn-chassis-loss`,
+`api-priority-preemption`, `api-worker-loss`, `novacompute-node-loss`, in that
+order, the cheap ones first) fault a whole kind worker or the OVN data path
+between nodes. `Create kind cluster` creates its cluster from
+`hack/kind-config-multinode.yaml`: one control-plane node and two workers. The
+step `Prepare the multinode leg` runs `tests/e2e-chaos/lib/nodes.sh prepare`
+right after it, which removes the control-plane taint and cordons both workers.
+Every singleton of the stack then lands on the control-plane node, which no
+fault touches, while DaemonSet pods and pods with `nodeName` still reach the
+workers. A suite that needs replicas on the workers uncordons them and cordons
+them again in its cleanup. The entry brings up the stack of the `nova` entry: the
+same seven images beside the keystone and OVN stacks, the placement, neutron and
+nova operators, `WITH_MESSAGING=true` and `WITH_OVN_KERNEL_MODULES=true`. The
+step `Restore the workers` runs `nodes.sh restore-all` after the suites, on every
+outcome and without failing the job, because a wall that kills chainsaw skips
+every suite cleanup, and a paused or dead worker would hide the diagnostics and
+the coverage counters of its node. The `nova` entry's dump step covers this entry
+too.
+
 Every entry but `ovn` loads `ghcr.io/c5c3/tempest:2026.1` with the keystone
 stack, the image the [workload pod](#workload-and-consistency-harness) runs on.
 
-**Timeout:** 170 minutes for the `nova` entry, 135 for `network`, 135 for `pod`,
-120 for `controlplane`, 80 for `upgrade` and 45 for `ovn`, 685 minutes in all, to
-accommodate serial test execution and longer recovery assertion windows. The
-author of #1394 accepted that sum on 2026-10-25, against the 600 minutes D6 of
-#1386 allows; the estimated run is about 575 minutes. The last full run, on
+**Timeout:** 170 minutes for the `nova` entry, 160 for `multinode`, 135 for
+`network`, 135 for `pod`, 120 for `controlplane`, 80 for `upgrade` and 45 for
+`ovn`, 845 minutes in all, to accommodate serial test execution and longer
+recovery assertion windows. The author of #1394 accepted 685 for the first six on
+2026-10-25, against the 600 minutes D6 of #1386 allows; their estimated run is
+about 575 minutes. The `multinode` entry is estimated at about 130 minutes: 45 for
+the bring-up (nineteen images on three nodes, the stack and eight operator
+deploys), 80 for its suites (10, 10, 12, 8, 18 and 22 in entry order) and 5 for
+the diagnostics. Its wall adds 30 for one stalled step of a suite. The last full run, on
 PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where it hit
 the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of #1394
 add about 12 minutes each to `pod`, `nova` and `controlplane`, and the `upgrade`
@@ -737,7 +790,10 @@ The kinds name the fault. `pod-kill`, `pod-failure` and `container-kill` are
 PodChaos actions, `partition` and `delay` NetworkChaos actions;
 `cinder-upgrade-db-partition` cuts its `partition` with egress NetworkPolicies.
 `scale-to-zero` is `kubectl scale --replicas=0`, `seal` is `bao operator seal`,
-and `policy` is `bao policy write` narrowing a policy.
+and `policy` is `bao policy write` narrowing a policy. `node-kill` and
+`node-pause` are a `docker kill` and a `docker pause` of a kind worker by
+`tests/e2e-chaos/lib/nodes.sh`, and `preemption` is a node filled with
+low-priority pods that a higher PriorityClass preempts.
 
 The matrix has one row per component of the vocabulary, in its order, so a
 component no suite reaches keeps an empty row: `keystone`, `horizon`, `glance`,
@@ -895,6 +951,16 @@ through `../../e2e-chaos/lib/workload.sh` and carries the same budget line
 (`failures=0 recovery=0s`), so a matrix that counts lifecycle faults counts it with
 the suites below. See
 [Suite: keystone-helm-upgrade-pod-kill](./operator-upgrade-e2e-tests.md#suite-keystone-helm-upgrade-pod-kill).
+
+### A compute node that never returns
+
+`novacompute-node-loss` restores the node it kills. A node that never returns
+holds its entry of the NovaCompute pool in `Releasing`: the pool waits until the
+node runs no pod of the pool (`nodesRunningPods` in
+`operators/nova/internal/controller/reconcile_novacompute_services.go`), and the
+pod on a dead node stays `Terminating`, since no kubelet confirms its end. The
+entry moves on once someone deletes the node's Node object or the pod by hand, a
+step no suite tests.
 
 ---
 
@@ -4851,7 +4917,7 @@ logs, the chassis and Neutron children, the data path and the workload.
   standby, and the suite would then prove nothing about a failover.
 - The random catalogue's entry `ovn-northd-pod-kill` selects every northd of the
   plane's OVNCentral by label. The kind plane runs one replica, so a draw there
-  shows the Deployment's replacement rather than a failover.
+  shows the Deployment replacing it, and this suite owns the failover.
 
 ---
 
@@ -4900,13 +4966,13 @@ first, then dumps the chassis, the data path and the workload.
 
 **Design notes:**
 
-- `docker kill`, not `docker pause`: a frozen node's kernel still answers the
-  ICMP echo of a port in its namespaces, so only a dead node makes `cp-victim`
-  go dark, and `ping-dark` is the control that the fault is real.
+- The fault is a `docker kill`. A frozen node's kernel still answers the ICMP
+  echo of a port in its namespaces, so only a dead node makes `cp-victim` go
+  dark, and `ping-dark` is the control that the fault is real.
 - Kind mounts a tmpfs on a node's `/run`, and the local OVS database lives in
   `/run/openvswitch` (`operators/ovn/internal/controller/reconcile_ovs.go`). The
   restart wipes it with `br-int`, the port and the namespace, as a reboot does.
-  The system-id survives in the record the OVNChassis keeps per node, so the
+  The system-id stays in the record the OVNChassis keeps per node, so the
   chassis rejoins under its own `Chassis` row.
 
 ---
@@ -4958,8 +5024,8 @@ allocated resources of both workers, the Keystone and filler pods, the
 - A filler requests CPU and uses none, so filling a node costs the runner nothing.
   The 20m it leaves is less than the 70m an API pod requests, so the third pod
   fits nowhere without a preemption.
-- A filler is placed by a nodeSelector rather than by `nodeName`, so the scheduler
-  places it and can preempt it, and its replacement reports `FailedScheduling`.
+- A filler is pinned by a `kubernetes.io/hostname` nodeSelector. The scheduler
+  places it, so it can preempt it, and its replacement reports `FailedScheduling`.
 - A preempted pod with a one-second grace period is gone before a poll could read
   its `DisruptionTarget` condition, so a watch records the filler pods' states from
   before the scale-up.
@@ -5190,6 +5256,64 @@ capability beyond just running.
 6. Patch `spec.deployment.replicas` from 1 to 2
 7. Assert Deployment has `replicas: 2` and `availableReplicas: 2`, and `Ready=True`
 
+### Node faults
+
+Used by the `multinode` matrix entry, whose kind cluster has one control-plane
+node and two workers. A kind node is a Docker container on the runner, so a node
+fault is a runner-side `docker` call and no Chaos Mesh resource, and its blast
+radius is one whole worker: every pod on it, its kubelet, kindnet, kube-proxy and
+chaos-daemon. `tests/e2e-chaos/lib/nodes.sh` holds the calls. `nodes.sh victim`
+and `nodes.sh survivor` name the first and the second of the sorted workers.
+
+| Command | What it does |
+| --- | --- |
+| `nodes.sh kill <node>` | Waits for `Ready=True`, runs `docker kill -s KILL <node>`, waits for `Ready!=True` |
+| `nodes.sh pause <node>` | The same with `docker pause`: every process on the node freezes |
+| `nodes.sh restore <node>` | Unpauses a paused container, starts an exited one, leaves a running one alone, and waits for `Ready=True` |
+| `nodes.sh restore-all` | Prints every worker's Docker state and Ready condition and restores each one that is not running and Ready; a worker list it cannot read fails it |
+
+The timings, measured on 2026-11-02 with kind v0.33.0, `kindest/node:v1.37.0`,
+Docker 29.9.2 and the default kube-controller-manager timers:
+
+| Fault | Measured |
+| --- | --- |
+| `docker kill` of a Ready worker | `Ready=Unknown` after 59 s, with the `unreachable` `NoExecute` taint; its pods are evicted at 359 s (the default `tolerationSeconds: 300` on top), and the replacement lands on a survivor in that second |
+| `docker start` after it | `Ready=True` within seconds, on the same IP; the pod that was `Terminating` is gone within 20 s |
+| `docker pause` of a Ready worker | `Ready=Unknown` after 44 to 48 s |
+| `docker unpause` | `Ready=True` after 10 s |
+| `docker kill` of a worker that is still joining | it did not return within 241 s, so `kill` and `pause` wait for `Ready=True` first |
+
+Rules the node suites keep:
+
+- The control-plane node is never faulted. `nodes.sh kill`, `pause` and `restore`
+  refuse it, a container without the `io.x-k8s.kind.cluster` label, and a name
+  that is no worker Node of the cluster, before any other `docker` call: the
+  runners are reused between jobs. The matrix entry keeps both workers cordoned by default
+  (`nodes.sh prepare`), so every singleton of the stack runs on the control-plane
+  node.
+- From the fault to the restore, every `catch:` block runs `nodes.sh restore`
+  first. The job's `Restore the workers` step catches a run whose wall killed
+  chainsaw before any catch could run, and `hack/ci-reset-kind-cluster.sh` removes
+  a paused node a cancelled job left on the runner.
+- Kind mounts a tmpfs on a node's `/run`, so a killed node comes back without its
+  local OVS database, `br-int`, its OVS ports and its network namespaces, as a
+  rebooted host does. A suite that probes the data path rebuilds them.
+- A frozen node's kernel still answers the ICMP echo of a port in its namespaces
+  and completes the TCP handshake on a frozen pod's listening socket. A ping proves
+  a fault only against a killed node, and a request to a frozen pod hangs until the
+  client's timeout.
+
+`tests/e2e-chaos/lib/datapath.sh` builds the OVN data path the three OVN suites
+probe through their faults: privileged `hostNetwork` probe pods per node, ports of
+the switch `chaos-dp-sw` on `10.97.0.0/24` plugged into network namespaces, and
+ping pods whose log is the record. `ping-verdict <suite> <pair>` counts the
+sequence numbers lost from the first reply to the last packet sent, less one
+still in flight, so replies that stop for good count as lost. It fails above the
+suite's `# Chaos datapath budget: <pair> lost=<n>` line, which sits beside the
+matrix lines with a `# Chaos datapath budget measured:` line under it. An empty
+record and a missing budget line fail. `ping-dark <pair> <seconds>` fails on a
+reply within the last `<seconds>`.
+
 ## PodChaos CRD Pattern
 
 Phase 1 scenarios (SC-CHAOS-001 through SC-CHAOS-003), SC-CHAOS-004/SC-CHAOS-008, and
@@ -5384,6 +5508,18 @@ tests/e2e-chaos/
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-api, replicas: 3)
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone API pods (multi-label)
 │   └── chainsaw-test.yaml            Test: PDB minAvailable=1, availability maintained
+├── api-priority-preemption/          An API pod preempts a filler on a full node (multinode)
+│   ├── 00-priorityclasses.yaml       chaos-preempt-high and chaos-preempt-low (preemptionPolicy: Never)
+│   ├── 01-keystone-cr.yaml           Keystone keystone-preempt, two replicas on the workers
+│   ├── 02-filler.yaml                Filler Deployment, rendered per worker with its CPU request
+│   └── chainsaw-test.yaml            Test: the third API pod preempts a filler, the node stays full
+├── api-worker-loss/                  A frozen worker under three-replica APIs (multinode)
+│   ├── 00-keystone-cr.yaml           Keystone keystone-worker-loss, three replicas
+│   ├── 01-messaging-secret.yaml      Transport URL that never resolves
+│   ├── 02-ovncentral-cr.yaml         OVNCentral worker-loss-ovn
+│   ├── 03-neutron-cr.yaml            Neutron neutron-worker-loss, three replicas
+│   ├── 04-placement-cr.yaml          Placement placement-worker-loss, three replicas
+│   └── chainsaw-test.yaml            Test: one replica per node, all replaced while the node hangs
 ├── barbican-keystone-outage/         Keystone outage under the Barbican API
 │   ├── 00-keystone-cr.yaml           Keystone keystone-barbican-ks-outage, the one the outage takes
 │   ├── 01-barbican-cr.yaml           Barbican barbican-ks-outage
@@ -5577,7 +5713,9 @@ tests/e2e-chaos/
 │   └── chainsaw-test.yaml            Test: the blind window, then one credential in Keystone
 ├── lib/                              Shared helpers of the suites, no suite
 │   ├── controlplane.sh               ControlPlane bring-up, waits, @NS@ fixtures, teardown and dump (controlplane entry)
+│   ├── datapath.sh                   OVN data-path probes, ports, pings and their verdicts (multinode entry)
 │   ├── gateway.sh                    The ClusterIP of the proxy of Gateway openstack-gw
+│   ├── nodes.sh                      Prepare, kill, freeze and restore kind workers (multinode entry)
 │   ├── openbao.sh                    The root token and the bao calls into openbao-0
 │   ├── pods.sh                       The UID-gated wait for the replaced pods of a Deployment
 │   ├── workload.py                   The workload streams (run) and the verdict (evaluate)
@@ -5711,6 +5849,13 @@ tests/e2e-chaos/
 │   ├── 17-podchaos.yaml              PodChaos pod-kill of the pool's nova-compute pod
 │   ├── chainsaw-test.yaml            Test: the drain outlives the restart, the release completes
 │   └── probe-lib.sh                  Pool helpers and os_probe, the openstack client in a pod
+├── novacompute-node-loss/            A dead compute node drained and evacuated (multinode)
+│   ├── 00-… to 11-*.yaml             The stack of novacompute-drain-compute-kill as nova-loss
+│   ├── 12-novacompute-pool.yaml      NovaCompute nova-loss-pool on both workers
+│   ├── 15-boot-server-job.yaml       Boots loss-guest onto the victim
+│   ├── 16-delete-server-job.yaml     Deletes loss-guest, from a cleanup
+│   ├── chainsaw-test.yaml            Test: down, drained, evacuated, released after the restore
+│   └── probe-lib.sh                  Pool helpers for two node entries and os_probe
 ├── openbao-pod-kill/                 SC-CHAOS-003: OpenBao pod kill
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-bao)
 │   ├── 01-podchaos.yaml              PodChaos targeting openbao in shared-services
@@ -5732,6 +5877,20 @@ tests/e2e-chaos/
 │   ├── 01-podchaos.yaml              PodChaos targeting keystone-operator (mode: all)
 │   ├── 02-patch-replicas.yaml        Patch replicas 1→2 for post-failover reconciliation
 │   └── chainsaw-test.yaml            Test: Leader re-election, conditions maintained, replica patch
+├── ovn-chassis-loss/                 A chassis dies with its worker (multinode)
+│   ├── 00- to 03-*.yaml              Keystone, messaging Secret, OVNCentral and Neutron as ovn-chassis-loss
+│   ├── 04-ovnchassis-cr.yaml         OVNChassis ovn-chassis-loss-chassis on all three nodes
+│   └── chainsaw-test.yaml            Test: the survivors' ping holds, the chassis rejoins under its system-id
+├── ovn-controller-pod-kill/          ovn-controller pod kill, lab fault F3 (multinode)
+│   ├── 00- to 03-*.yaml              Keystone, messaging Secret, OVNCentral and Neutron as ovn-ctl-kill
+│   ├── 04-ovnchassis-cr.yaml         OVNChassis ovn-ctl-kill-chassis on both workers
+│   ├── 05-podchaos.yaml              PodChaos pod-kill of ovn-controller on the victim
+│   └── chainsaw-test.yaml            Test: a new pod on the victim, the tunnel ping within its budget
+├── ovn-northd-pod-kill/              Kill of the active ovn-northd (multinode)
+│   ├── 00- to 03-*.yaml              Keystone, messaging Secret, OVNCentral (two northd) and Neutron
+│   ├── 04-ovnchassis-cr.yaml         OVNChassis ovn-northd-kill-chassis on both workers
+│   ├── 05-podchaos.yaml              PodChaos pod-kill of the pod named at run time
+│   └── chainsaw-test.yaml            Test: the standby takes the lock, new logical state reaches the data path
 ├── ovn-operator-pod-kill/            ovn-operator pod kill
 │   ├── 00-keystone-cr.yaml           Keystone keystone-ovn-chaos-op
 │   ├── 01-messaging-secret.yaml      Transport URL that never resolves
@@ -5793,9 +5952,15 @@ tests/e2e-chaos/
 9. For a suite that faults a release upgrade, add the directory to the `upgrade`
    entry in `.github/workflows/ci.yaml`, the entry that loads the 2026.2 image, and
    to `UPGRADE_SUITES` in `tests/unit/ci/upgrade_chaos_matrix_test.sh`
-10. Add the directory to a matrix entry of `e2e-chaos`; the entry gates, so the
+10. For a suite that needs two workers, give its Test
+   `metadata.labels: {chaos.c5c3.io/topology: multinode}`, which keeps it out of
+   `make e2e-chaos`, and add the directory to the `multinode` entry and to
+   `MULTINODE_SUITES` in `tests/unit/ci/multinode_chaos_matrix_test.sh`. Fault a
+   node with `../lib/nodes.sh` only (see [Node faults](#node-faults)), and leave
+   the workers cordoned and unlabelled in its cleanup
+11. Add the directory to a matrix entry of `e2e-chaos`; the entry gates, so the
    suite gates from its first run
-11. All files must include the `SPDX-License-Identifier: Apache-2.0` header
+12. All files must include the `SPDX-License-Identifier: Apache-2.0` header
 
 ## Related Resources
 - [Keystone E2E Test Suites](./keystone-e2e-tests.md): Happy-path E2E tests

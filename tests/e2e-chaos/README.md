@@ -15,6 +15,10 @@ WITH_CHAOS_MESH=true make deploy-infra
 make e2e-chaos            # preflights fail fast with a remediation hint
 ```
 
+The six suites of the `multinode` matrix entry need a kind cluster with two
+workers and run through `make e2e-chaos-multinode`; its Makefile comment lists
+the bring-up.
+
 ## Conventions (deltas from tests/e2e/)
 
 The base conventions — directory per suite, numbered fixtures,
@@ -31,8 +35,11 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   matrix leg (chainsaw's include/exclude-regex flags match the test name
   `chainsaw/<metadata.name>`, not a directory, so they are not used). A new
   suite **must** be added to the `pod`, `network`, `ovn`, `nova`,
-  `controlplane` or `upgrade` leg there, or it never runs in CI.
-- **Runners and gating:** all six legs run on the `self-hosted` runners,
+  `controlplane`, `upgrade` or `multinode` leg there, or it never runs in CI.
+  A suite of the `multinode` leg carries
+  `metadata.labels: {chaos.c5c3.io/topology: multinode}`, which
+  `make e2e-chaos` selects away and `make e2e-chaos-multinode` selects.
+- **Runners and gating:** all seven legs run on the `self-hosted` runners,
   every leg gates, and every leg runs against `main` each night at 22:00
   UTC with `--fail-fast=false`; `report-nightly-chaos` files a red night
   as one issue per failed suite. The
@@ -81,8 +88,15 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `WITH_MESSAGING=true`, within a wall of 80 minutes. Its partitions are
   NetworkPolicies that rest on kindnet's enforcement. The `pod` leg runs the
   eight platform suites of #1390 that need only the standalone stack and
-  `fernet-rotation-operator-outage` on top of its own, within 135 minutes; the six walls sum to 685 minutes, which the
-  author of #1394 accepted on 2026-10-25.
+  `fernet-rotation-operator-outage` on top of its own, within 135 minutes.
+  The `multinode` leg runs the six suites of #1392 on
+  `hack/kind-config-multinode.yaml` with the stack of the `nova` leg, within a
+  wall of 160 minutes. `Prepare the multinode leg` removes the control-plane
+  taint and cordons both workers, so the stack runs on the control-plane node,
+  which no fault touches; a suite that needs replicas on the workers uncordons
+  them and cordons them again in its cleanup. `Restore the workers` brings back
+  a worker a killed chainsaw left paused or dead. The seven walls sum to 845
+  minutes; the author of #1394 accepted 685 for the first six on 2026-10-25.
 - **Shared state is restored in every catch.** A step that changes shared
   platform state (a scale-down, a narrowed policy, a sealed OpenBao, a chaos
   object) undoes it in its own `catch:`, and so does every later step up to
@@ -135,6 +149,14 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   wait for each stage within budgets that fit the 40-minute bring-up step,
   put the suite's namespace into `@NS@` fixtures, tear the plane down within
   12 minutes, and dump it for a `catch:` block.
+- `lib/nodes.sh prepare|victim|survivor|kill|pause|restore|restore-all|zones|zones-clear|open|close`
+  — the node faults of the `multinode` leg: a `docker kill` or `docker pause`
+  of a kind worker and its restore, guarded so it never touches the control
+  plane or a container outside kind. See the chaos page's Node faults section.
+- `lib/datapath.sh probe|nb|sb|plug|ping-start|ping-wait|ping-verdict|ping-dark|dump|teardown`
+  — the OVN data path of the `multinode` OVN suites: probe pods, logical
+  switch ports in network namespaces, and pings judged against a
+  `# Chaos datapath budget: <pair> lost=<n>` header line.
 - `lib/gateway.sh`, `lib/openbao.sh`, `lib/pods.sh` — sourced helpers: the
   ClusterIP of the proxy of Gateway `openstack-gw`; the root token and `bao`
   calls into `openbao-0`, with the token on stdin; and the UID-gated wait for
