@@ -22,7 +22,7 @@
 #     e2e-chaos-random, only on a scheduled run, on ubuntu-latest with a
 #     10-minute wall, contents: read, issues: write and actions: read, the
 #     JUnit reports downloaded without failing the job, and the seven inputs
-#     of hack/ci-report-nightly-chaos.sh with a budget of 720 minutes;
+#     of hack/ci-report-nightly-chaos.sh with a budget of 780 minutes;
 #   - no self-hosted job of ci.yaml holds issues: write, and the report job
 #     is the only holder;
 #   - a copy whose concurrency group drops the event, a copy whose e2e-chaos job
@@ -217,7 +217,7 @@ check_report_job() {
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPORT_SHA: ${{ github.sha }}
           REPORTS_DIR: _output/nightly
-          BUDGET_MINUTES: "720"' "$(step_env "$wf" "$REPORT_JOB" "Report the night")"
+          BUDGET_MINUTES: "780"' "$(step_env "$wf" "$REPORT_JOB" "Report the night")"
 }
 
 check_issue_writers() {

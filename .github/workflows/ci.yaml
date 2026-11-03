@@ -2270,7 +2270,7 @@ jobs:
     # these sums; read each leg's duration off the first green run with them
     # and re-derive if one overruns. D6 of #1386 counts the runner minutes a
     # night measures, not these walls: report-nightly-chaos files a night
-    # whose self-hosted jobs took more than 600 minutes together.
+    # whose self-hosted jobs took more than 780 minutes together.
     timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'multinode' && 160 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}
     # Every leg gates (#1388), so the job has no job-level error override. The
     # NetworkChaos and OVN kernel modules load without a warning on the
@@ -3005,9 +3005,11 @@ jobs:
 
   # Files a red nightly chaos run (#1388): one issue per failed suite, per
   # red leg that names no suite, for a night where no leg ran, and for a
-  # night whose self-hosted jobs took longer than 720 minutes together (the
-  # budget the author of #1395 set for the random run, superseding the 600 of
-  # D6 of #1386), each through hack/ci-report-red-run.sh
+  # night whose self-hosted jobs took longer than 780 minutes together (the
+  # budget the author of #1392 set for the multinode leg, superseding the 720
+  # of #1395 and the 600 of D6 of #1386; the scheduled nights of 2026-11-01
+  # and 2026-11-02 took 574 and 591 minutes, and the leg adds about 130),
+  # each through hack/ci-report-red-run.sh
   # (hack/ci-report-nightly-chaos.sh). This GitHub-hosted job is the only one
   # in this workflow that holds issues: write; actions: read lists the jobs
   # of the run. A dispatch never reports, as in flux-path.yaml. A re-run
@@ -3040,7 +3042,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           REPORT_SHA: ${{ github.sha }}
           REPORTS_DIR: _output/nightly
-          BUDGET_MINUTES: "720"
+          BUDGET_MINUTES: "780"
 
   # End-to-end Prometheus stack tests using kind cluster,
   # kube-prometheus-stack, and Chainsaw.  Loads the keystone-operator and

@@ -21,7 +21,9 @@
 #   - a red e2e-chaos-random job is the leg random: a JUnit failure of
 #     tests/chaos-random/random-quiet-tail files that suite, one without a
 #     report files the leg, and a skipped one files nothing;
-#   - self-hosted jobs summing 730 minutes file the budget of 720, 700 do not;
+#   - a red multinode leg (#1392) is a leg like any other: its failed suite is
+#     filed and the step summary lists the leg;
+#   - self-hosted jobs summing 790 minutes file the budget of 780, 770 do not;
 #     an ubuntu-latest job and a job without completed_at add nothing;
 #   - a failing listing, a listing that is no JSON and a page without a jobs
 #     array exit 1 before any filing;
@@ -197,7 +199,7 @@ test_a_green_night_files_nothing() {
     assert_file_contains "the step summary names the $leg leg" "$STEP_SUMMARY" "^| $leg | success | "
   done
   assert_file_contains "the step summary counts build and legs as self-hosted" "$STEP_SUMMARY" \
-    "^Self-hosted runner time: 402 of 720 minutes\.$"
+    "^Self-hosted runner time: 402 of 780 minutes\.$"
   assert_contains "the step summary goes to stdout too" "$OUT" "### Nightly chaos run"
 }
 
@@ -306,33 +308,47 @@ test_a_night_without_legs_files_the_run() {
 }
 
 test_the_runner_budget() {
-  echo "Test: 730 self-hosted minutes file the budget of 720, 700 do not"
+  echo "Test: 790 self-hosted minutes file the budget of 780, 770 do not"
   reset
   STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 282)" \
-    "$(job e2e-chaos-random success self-hosted 100)" \
+    "$(job e2e-chaos-random success self-hosted 170)" \
     "$(job report-nightly-chaos success ubuntu-latest 300)" \
     "$(job e2e-prometheus success self-hosted -)")"
 
   run_report
-  assert_eq "700 minutes, an ubuntu-latest job and an unfinished job file nothing" "" "$(calls)"
-  assert_file_contains "the step summary shows 700 of 720" "$STEP_SUMMARY" "^Self-hosted runner time: 700 of 720 minutes\.$"
+  assert_eq "770 minutes, an ubuntu-latest job and an unfinished job file nothing" "" "$(calls)"
+  assert_file_contains "the step summary shows 770 of 780" "$STEP_SUMMARY" "^Self-hosted runner time: 770 of 780 minutes\.$"
 
   reset
   STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 283)" \
-    "$(job e2e-chaos-random success self-hosted 129)")"
+    "$(job e2e-chaos-random success self-hosted 189)")"
 
   run_report
   assert_eq "it exits 0" "0" "$RC"
-  assert_eq "730 minutes file the budget" "Nightly chaos run is over its runner budget|failure" "$(calls)"
+  assert_eq "790 minutes file the budget" "Nightly chaos run is over its runner budget|failure" "$(calls)"
   assert_file_contains "the table lists the build" "$TMP_DIR/summary-1.md" '^| `build-e2e-images` | success | 18 |$'
   assert_file_contains "the table lists a leg" "$TMP_DIR/summary-1.md" '^| `e2e-chaos (nova, .*` | success | 283 |$'
-  assert_file_contains "the table lists the random run" "$TMP_DIR/summary-1.md" '^| `e2e-chaos-random` | success | 129 |$'
-  assert_file_contains "the table carries the total" "$TMP_DIR/summary-1.md" '^| Total | | 730 |$'
+  assert_file_contains "the table lists the random run" "$TMP_DIR/summary-1.md" '^| `e2e-chaos-random` | success | 189 |$'
+  assert_file_contains "the table carries the total" "$TMP_DIR/summary-1.md" '^| Total | | 790 |$'
 
   reset
   STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 300)" "$(leg nova success 282)")"
   run_report BUDGET_MINUTES=500
   assert_eq "BUDGET_MINUTES moves the line" "Nightly chaos run is over its runner budget|failure" "$(calls)"
+}
+
+test_the_multinode_leg() {
+  echo "Test: a red multinode leg files its failed suite like any other leg"
+  reset
+  STUB_JOBS="$(page "$(green_prefix)" "$(leg pod success 100)" "$(leg multinode failure 131)")"
+  junit multinode ovn-controller-pod-kill "" ovn-chassis-loss "exit status 1"
+
+  run_report
+  assert_eq "it exits 0" "0" "$RC"
+  assert_eq "the failed suite is filed" "Nightly chaos suite ovn-chassis-loss is red|failure" "$(calls)"
+  assert_file_contains "the summary names the leg multinode" "$TMP_DIR/summary-1.md" '^Leg: `multinode`$'
+  assert_file_contains "the step summary lists the leg" "$STEP_SUMMARY" \
+    "^| multinode | failure | 131 | ovn-chassis-loss |$"
 }
 
 test_the_random_leg() {
@@ -458,6 +474,7 @@ test_a_message_cannot_break_out_of_its_fence
 test_a_leg_without_a_suite_files_the_leg
 test_a_night_without_legs_files_the_run
 test_the_runner_budget
+test_the_multinode_leg
 test_the_random_leg
 test_a_broken_listing_files_nothing
 test_a_second_page_is_read
