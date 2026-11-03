@@ -55,7 +55,7 @@ test_the_entry_runs_the_upgrade_suites() {
     "$(grep -m1 -oE 'tests/e2e[^ ]*' <<<"$entry")"
   for suite in "${UPGRADE_SUITES[@]}"; do
     assert_contains "it runs ${suite}" "$entry" "tests/e2e-chaos/${suite}"
-    for leg in pod network ovn nova controlplane; do
+    for leg in pod network ovn nova controlplane multinode; do
       other="$(e2e_chaos_matrix_entry "$leg")"
       assert_not_contains "the ${leg} entry does not run ${suite}" "$other" "tests/e2e-chaos/${suite}"
     done
@@ -89,8 +89,8 @@ test_the_leg_asks_for_nfs_and_the_broker() {
   setup="$(job_step e2e-chaos "Setup E2E infrastructure")"
   assert_contains "WITH_NFS on the network and upgrade legs" "$setup" \
     "WITH_NFS: \${{ (matrix.suite == 'network' || matrix.suite == 'upgrade') && 'true' || '' }}"
-  assert_contains "WITH_MESSAGING on the network, nova and upgrade legs" "$setup" \
-    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade') && 'true' || '' }}"
+  assert_contains "WITH_MESSAGING on the network, nova, upgrade and multinode legs" "$setup" \
+    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade' || matrix.suite == 'multinode') && 'true' || '' }}"
   assert_contains "Chaos Mesh stays on for every leg" "$setup" 'WITH_CHAOS_MESH: "true"'
   assert_not_contains "the leg asks for no ControlPlane path" "$setup" "matrix.suite == 'upgrade' && 'external'"
 }

@@ -1101,13 +1101,13 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   load=$(job_step e2e-chaos "Load E2E images")
   kind_load=$(job_step e2e-chaos "Load nova leg images into kind")
   assert_not_empty "the leg loads its own images onto the node" "$kind_load"
-  assert_contains "that load runs on the nova leg alone" "$kind_load" \
-    "if: matrix.suite == 'nova'"
+  assert_contains "that load runs on the nova and multinode legs alone" "$kind_load" \
+    "if: matrix.suite == 'nova' || matrix.suite == 'multinode'"
   for ref in placement-operator:dev placement:2026.1 neutron-operator:dev \
     neutron:2026.1 nova-operator:dev nova:2026.1 nova-compute:2026.1; do
     # Pulled from GHCR ...
     assert_contains "the leg pulls ${ref}" "$load" \
-      "matrix.suite == 'nova' && format('{0}/${ref}', env.IMAGE_PREFIX)"
+      "(matrix.suite == 'nova' || matrix.suite == 'multinode') && format('{0}/${ref}', env.IMAGE_PREFIX)"
     # ... and handed to the kind node, which the per-leg steps above do not do
     # for this leg: the placement pair is gated on pod and network, the
     # neutron pair on network.
@@ -1119,17 +1119,18 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # broker (nova-broker-outage brings its own RabbitmqCluster, the one its
   # fault severs), so the leg asks deploy-infra.sh for it. The NFS export is
   # not widened to it: no nova suite mounts a volume. Both lines also carry
-  # the upgrade leg of #1394, whose Cinders attach an NFS backend.
+  # the upgrade leg of #1394, whose Cinders attach an NFS backend, and the
+  # broker line the multinode leg of #1392, which runs a Nova on this stack.
   local setup
   setup=$(job_step e2e-chaos "Setup E2E infrastructure")
   assert_contains "the nova leg opts into the shared broker" "$setup" \
-    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade') && 'true' || '' }}"
+    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade' || matrix.suite == 'multinode') && 'true' || '' }}"
   assert_contains "the NFS export stays off the nova leg" "$setup" \
     "WITH_NFS: \${{ (matrix.suite == 'network' || matrix.suite == 'upgrade') && 'true' || '' }}"
   # neutron-metadata-agent-pod-kill runs an OVNChassis, whose DaemonSets need
   # the openvswitch and geneve modules on the host, as the ovn leg's do.
   assert_contains "the nova leg loads the OVN kernel modules beside the ovn leg" "$setup" \
-    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}"
+    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'multinode') && 'true' || '' }}"
 
   # Three deploys on top of the keystone stack and the ovn-operator the
   # `!= 'pod'` step installs here already. The first two names carry a
@@ -1146,9 +1147,10 @@ test_chaos_nova_leg_runs_the_nova_suites() {
     deploy=$(job_step e2e-chaos "$name")
     assert_not_empty "the ${op}-operator is deployed" "$deploy"
     # The whole condition, not a substring of it: an extra `|| always()` would
-    # install this operator on all four legs.
-    assert_eq "the ${op} deploy runs on the nova leg alone" \
-      "if: matrix.suite == 'nova'" \
+    # install this operator on every leg. The multinode leg runs the same
+    # stack (#1392).
+    assert_eq "the ${op} deploy runs on the nova and multinode legs alone" \
+      "if: matrix.suite == 'nova' || matrix.suite == 'multinode'" \
       "$(grep -E '^ *if:' <<<"$deploy" | sed 's/^ *//')"
     assert_contains "it goes through the shared deploy script" "$deploy" \
       "run: hack/ci-deploy-operator.sh"
@@ -1204,7 +1206,7 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   dump=$(job_step e2e-chaos "Dump diagnostic info (nova leg)")
   assert_not_empty "the leg dumps the Namespaces the first dump misses" "$dump"
   assert_contains "it dumps even when the suites failed" "$dump" \
-    "if: always() && matrix.suite == 'nova'"
+    "if: always() && (matrix.suite == 'nova' || matrix.suite == 'multinode')"
   assert_contains "it goes through the shared dump script" "$dump" \
     "hack/ci-dump-diagnostics.sh"
   # One pass per operator because the script reads a single OPERATOR, and a
@@ -1226,11 +1228,11 @@ test_chaos_nova_leg_runs_the_nova_suites() {
   # block runs and no JUnit report is written, and the leg then reports a
   # cancellation that names no suite. The whole expression is read:
   # the network and ovn walls moved with #1389, #1390 added the
-  # controlplane leg, and #1394 added the upgrade leg and moved the nova,
-  # controlplane and pod walls, so the six sum to the 685 minutes its
-  # author accepted (170 + 135 + 120 + 80 + 45 + 135).
+  # controlplane leg, #1394 added the upgrade leg and moved the nova,
+  # controlplane and pod walls, and #1392 added the multinode leg, so the
+  # seven sum to 845 minutes (170 + 160 + 135 + 120 + 80 + 45 + 135).
   assert_contains "each leg gets its wall" "$job" \
-    "timeout-minutes: \${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}"
+    "timeout-minutes: \${{ matrix.suite == 'nova' && 170 || matrix.suite == 'multinode' && 160 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}"
 
   # And the leg is its own: the network leg was not widened into these
   # suites.

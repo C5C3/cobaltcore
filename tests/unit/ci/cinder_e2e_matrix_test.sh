@@ -306,7 +306,7 @@ test_chaos_network_leg_runs_the_cinder_suites() {
   assert_contains "the chaos leg opts into the NFS stack" "$setup" \
     "WITH_NFS: \${{ (matrix.suite == 'network' || matrix.suite == 'upgrade') && 'true' || '' }}"
   assert_contains "and into the shared broker" "$setup" \
-    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade') && 'true' || '' }}"
+    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade' || matrix.suite == 'multinode') && 'true' || '' }}"
 
   local deploy
   deploy=$(job_step e2e-chaos "Deploy cinder operator")
