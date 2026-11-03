@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos that kills ovn-controller on the victim worker.
+#
+# One-shot pod-kill with gracePeriod 0 of the ovn-controller pod of OVNChassis
+# ovn-ctl-kill-chassis, narrowed to one node: step 5 replaces @VICTIM@ with
+# the first worker's name (tests/e2e-chaos/lib/nodes.sh victim) before it
+# applies the resource. The DaemonSet starts a new pod on that node, which
+# finds its system-id in the OVS database the chassis keeps.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-ovn-controller
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: one
+  gracePeriod: 0
+  selector:
+    namespaces:
+    - openstack
+    nodes:
+    - "@VICTIM@"
+    labelSelectors:
+      app.kubernetes.io/name: ovnchassis
+      app.kubernetes.io/instance: ovn-ctl-kill-chassis
+      app.kubernetes.io/component: ovn-controller
