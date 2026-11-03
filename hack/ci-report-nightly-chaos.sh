@@ -42,8 +42,9 @@
 #   REPORTS_DIR     — the directory the JUnit artifacts were downloaded into,
 #                     one e2e-chaos-junit-report-<leg>/ directory per leg
 # Optional env vars:
-#   BUDGET_MINUTES  — the self-hosted minutes a night may take (default 720,
-#                     the budget the author of #1395 set for the random run)
+#   BUDGET_MINUTES  — the self-hosted minutes a night may take (default 780,
+#                     the budget the author of #1392 set for the multinode
+#                     leg)
 #   REPORT_SHA      — the commit the run tested; ci-report-red-run.sh names it
 #   GITHUB_STEP_SUMMARY — the step summary file; GitHub Actions sets it
 # gh reads GH_TOKEN and GH_REPO itself; the token needs actions: read and
@@ -68,7 +69,7 @@ for name in RUN_ID RUN_URL REPORTS_DIR; do
     exit 1
   fi
 done
-BUDGET_MINUTES="${BUDGET_MINUTES:-720}"
+BUDGET_MINUTES="${BUDGET_MINUTES:-780}"
 case "${BUDGET_MINUTES}" in
   '' | *[!0-9]*)
     echo "ERROR: BUDGET_MINUTES is no whole number" >&2
