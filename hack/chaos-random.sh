@@ -787,10 +787,10 @@ cr_errors_at() {
 # dizzy goes on from, and those are no failed operation:
 #   - http_404 on a delete or a detach: the resource is gone or detached
 #     already, which dizzy folds into success.
-#   - http_400 on a volume attach: the volume is attached already, on a repeat
-#     of an attach whose answer or in-use wait failed; dizzy reads the
-#     attachment and goes on. An attach right after a detach no longer does
-#     this: since v0.9.0 dizzy waits for Nova to drop the attachment first.
+# A refusal that dizzy confirms as a change already in place, such as the 400
+# of a repeated volume attach or the 409 of a repeated port attach, records
+# as a success since v0.11.0 and never reaches the counter. Such a 400 or 409
+# in the counter is one dizzy did not confirm, and it counts.
 # A failed query prints its message and returns 1.
 cr_tail_errors() {
   local query='sum%20by%20%28kind%2Coperation%2Cerror_kind%29%20%28dizzy_operation_errors_total%29' before after
@@ -806,8 +806,7 @@ cr_tail_errors() {
     def key: "\(.metric.kind // "unknown") \(.metric.operation // "unknown") \(.metric.error_kind // "unknown")";
     def counts: [.data.result[] | {key: key, value: (.value[1] | tonumber | floor)}] | from_entries;
     def absorbed: split(" ") as [$kind, $operation, $error]
-      | (($operation == "delete" or $operation == "detach") and $error == "http_404")
-        or ($kind == "volume" and $operation == "attach" and $error == "http_400");
+      | ($operation == "delete" or $operation == "detach") and $error == "http_404";
     ($before | counts) as $from
     | [$after | counts | to_entries[] | {key, value: (.value - ($from[.key] // 0))} | select(.value > 0)]
     | sort_by(.key)

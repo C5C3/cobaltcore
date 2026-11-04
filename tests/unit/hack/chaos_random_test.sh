@@ -643,13 +643,17 @@ test_quiet_tail() {
     "$(run_quiet)"
   vm_series "$to" server create http_500 3 >"$tmp/vm.$to"
   assert_eq "an unchanged count passes" "true" "$(run_quiet | cut -d' ' -f1)"
-  vm_series "$to" server create http_500 3 server delete http_404 2 volume detach http_404 1 volume attach http_400 2 >"$tmp/vm.$to"
-  assert_eq "the 404 of a delete or a detach and the 400 of a volume attach are absorbed by dizzy" \
-    "true no failed operation between 2026-01-01T00:03:00Z and the churn end 2026-01-01T00:13:00Z; left out as absorbed by dizzy: 2 server delete http_404, 2 volume attach http_400, 1 volume detach http_404" \
+  vm_series "$to" server create http_500 3 server delete http_404 2 volume detach http_404 1 >"$tmp/vm.$to"
+  assert_eq "the 404 of a delete or a detach is absorbed by dizzy" \
+    "true no failed operation between 2026-01-01T00:03:00Z and the churn end 2026-01-01T00:13:00Z; left out as absorbed by dizzy: 2 server delete http_404, 1 volume detach http_404" \
     "$(run_quiet)"
-  vm_series "$to" server create http_404 1 volume attach http_400 1 >"$tmp/vm.$to"
+  vm_series "$to" server create http_404 1 volume detach http_404 1 >"$tmp/vm.$to"
   assert_eq "a 404 elsewhere counts, and an absorbed answer does not hide it" \
     "false dizzy counted 1 failed operation(s) between 2026-01-01T00:03:00Z (the last lift 2026-01-01T00:00:00Z plus its recovery) and the churn end 2026-01-01T00:13:00Z: 1 server create http_404" \
+    "$(run_quiet)"
+  vm_series "$to" volume attach http_400 2 >"$tmp/vm.$to"
+  assert_eq "a 400 of a volume attach counts: dizzy records a confirmed repeat as a success" \
+    "false dizzy counted 2 failed operation(s) between 2026-01-01T00:03:00Z (the last lift 2026-01-01T00:00:00Z plus its recovery) and the churn end 2026-01-01T00:13:00Z: 2 volume attach http_400" \
     "$(run_quiet)"
   vm_series "$to" port attach http_400 1 >"$tmp/vm.$to"
   assert_eq "a 400 of another attach counts" "false" "$(run_quiet | cut -d' ' -f1)"
