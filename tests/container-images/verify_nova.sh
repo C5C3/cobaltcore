@@ -563,7 +563,7 @@ test_failed_local_delete_clears_task_state() {
   # as it does when Placement is down. Without the patch the server keeps
   # DELETING, and the API ignores every later delete once the service is up.
   local output="" exit_code=0
-  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+  output=$(run_python_in_image \
     'from unittest import mock
 
 from nova.compute import api
@@ -607,7 +607,7 @@ test_failed_attach_and_detach_clean_up() {
   # detaching status back, so the volume stays reserved, attaching or
   # detaching.
   local output="" exit_code=0
-  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+  output=$(run_python_in_image \
     'from unittest import mock
 
 from cinderclient import exceptions as cinder_exception
