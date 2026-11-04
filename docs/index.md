@@ -16,6 +16,8 @@ Kubernetes hosts the control plane: the APIs and supporting services that
 manage your cloud. Compute hosts provide the capacity to run virtual machines.
 You can evaluate the APIs locally before connecting real compute infrastructure.
 
+<span id="start-here"></span>
+
 ## Getting started
 
 **[Quick Start: deploy CobaltCore and verify it works](./quick-start.md)**
@@ -32,12 +34,16 @@ Choose a guide when you need to configure the deployment environment.
 | A Kubernetes cluster you already manage | [Deploy on an Existing Kubernetes Cluster](./deployment/existing-kubernetes.md) |
 | KVM workers on a Gardener / metal-stack cluster | [Deploy on Bare Metal](./quick-start-metal-stack.md) |
 
+<span id="what-s-inside"></span>
+
 ## Tutorials
 
 - [Deploy a ControlPlane](./quick-start-controlplane.md): enable and verify more OpenStack services.
 - [Provision Resources](./quick-start-orders.md): give a service its own identity, database, and messaging credentials. CobaltCore calls these resource requests **Orders**.
 - [Run E2E Tests](./tutorials/run-e2e-tests.md): check deployment behavior with the test suites.
 - [Configure Your Deployment](./guides/advanced-configuration.md): adjust sizing, connect existing infrastructure, and configure service behavior.
+
+<span id="go-deeper"></span>
 
 ## Operate your cloud
 

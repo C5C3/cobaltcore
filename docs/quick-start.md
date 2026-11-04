@@ -21,6 +21,8 @@ dashboard. It uses the `Minimal` sizing profile for a single-node evaluation.
 Add networking, images, and compute with [Deploy a ControlPlane](./quick-start-controlplane.md)
 after verifying this deployment.
 
+<span id="prerequisites"></span>
+
 ## Before you start
 
 - Run Docker Desktop on macOS or Docker Engine on Linux.
@@ -35,6 +37,8 @@ before changing its mode. This walkthrough creates a local evaluation cloud;
 running virtual machines requires compute hosts, covered by
 [Deploy on Bare Metal](./quick-start-metal-stack.md).
 
+<span id="step-1-—-clone"></span>
+
 ## 1. Get CobaltCore
 
 ```bash
@@ -47,7 +51,15 @@ export PATH="${HOME}/.local/bin:${PATH}"
 The installer supplies pinned versions of kind, kubectl, and Chainsaw.
 Run the remaining commands from this repository directory.
 
+<span id="step-2-—-cluster-infrastructure-stack"></span>
+<span id="step-3-—-keystone-operator"></span>
+<span id="step-4-—-keystone-service-image"></span>
+<span id="step-5-—-keystone-cr"></span>
+
 ## 2. Deploy
+
+For a standalone Keystone operator, service image, and custom resource, follow
+[Deploy Keystone Locally](./quick-start-extended.md#step-5-—-deploy-the-keystone-operator).
 
 ```bash
 EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=true make deploy-infra
@@ -71,6 +83,8 @@ kubectl get pods -n openstack
 ```
 
 See [Diagnose a Deployment](./guides/observability.md) for further checks.
+
+<span id="step-6-—-verify"></span>
 
 ## 3. Verify API access
 
@@ -112,6 +126,16 @@ as you enable those services.
 - [Deploy a ControlPlane](./quick-start-controlplane.md): add OpenStack services to this deployment.
 - [Provision Resources](./quick-start-orders.md): request service identities, databases, and credentials.
 - [Deploy on an Existing Kubernetes Cluster](./deployment/existing-kubernetes.md): prepare a cluster outside your workstation.
+
+<span id="optional-—-uis"></span>
+
+For optional management interfaces, see the local setup instructions for
+[Headlamp](./quick-start-extended.md#step-4-—-open-the-headlamp-ui),
+[Flux](./quick-start-extended.md#step-4a-flux-web-ui),
+[OpenBao](./quick-start-extended.md#step-4b-openbao-ui), and
+[Grafana](./quick-start-extended.md#step-4c-grafana-ui).
+
+<span id="teardown"></span>
 
 ## Remove the local deployment
 

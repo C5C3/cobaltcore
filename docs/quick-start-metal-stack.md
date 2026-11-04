@@ -7,6 +7,8 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
+<span id="quick-start-metal-stack-controlplane-and-kvm-hypervisors-on-a-metal-stack-cluster"></span>
+
 # Deploy on Bare Metal
 
 Deploy an OpenStack cloud on an existing Gardener cluster backed by
@@ -295,7 +297,7 @@ kubectl wait ovncentral/controlplane-ovn -n openstack --for=condition=Ready --ti
 
 The echo prints the suffix of the `Access:` lines of Step 3, such as
 `154-41-192-90.nip.io`. The directory holds the `OVNCentral`
-`controlplane-ovn` and the ControlPlane `controlplane` of Deploy a ControlPlane. The ControlPlane carries that page's block-storage block with
+`controlplane-ovn` and the ControlPlane `controlplane` from the local ControlPlane guide. The ControlPlane carries that page's block-storage block with
 the Ceph of Step 3 in place of its NFS shares: the RBD volume backend `ceph1`
 on the pool `volumes` and the RBD backup target `cephbk` on the pool
 `backups`, each with the key Secret of its Ceph user. Its services set no
@@ -342,7 +344,7 @@ unset BAO_TOKEN
 The first wait gives the c5c3-operator time to create the MariaDB: without it
 the Ready wait fails at once with `Error from server (NotFound)` while the
 MariaDB is missing.
-Step 5 of the [Deploy a ControlPlane](./quick-start-controlplane.md)
+Step 5 of [Deploy a ControlPlane](./quick-start-controlplane.md)
 explains what the script sets up.
 
 ### Step 6: Wait for the chain {#cp-access}
@@ -352,7 +354,7 @@ kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --time
 ```
 
 The wait covers the twenty-one conditions of the figure.
-[Step 6 of the Deploy a ControlPlane](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
+[Step 6 of Deploy a ControlPlane](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
 lists what each one waits for.
 
 ![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations. RegistrationTenantStoresReady and NamespaceAssignmentsReady have no gate.](./diagrams/controlplane-gate-graph.svg)

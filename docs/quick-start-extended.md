@@ -7,6 +7,8 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
+<span id="quick-start-extended-keystone-operator-on-kind"></span>
+
 # Deploy Keystone Locally
 
 Deploy a standalone OpenStack identity service to explore Keystone or test
@@ -16,6 +18,9 @@ endpoint on a local kind cluster.
 For a first CobaltCore deployment with a ControlPlane and dashboard, use the
 [Quick Start](./quick-start.md). This standalone guide uses a separate
 cluster; do not apply it over a ControlPlane deployment.
+
+<span id="system-requirements"></span>
+<span id="required-and-optional-tools"></span>
 
 ## Prerequisites
 

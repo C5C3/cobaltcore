@@ -9,6 +9,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Provision Resources
 
+<span id="quick-start-orders-keystone-mariadb-and-rabbitmq-pieces-from-an-assigned-namespace"></span>
+
 Give a service the identity, database and messaging resources it needs from an
 existing CobaltCore ControlPlane. This tutorial provisions them in a namespace
 named `workflow`, delivers credentials as Kubernetes Secrets, and verifies
