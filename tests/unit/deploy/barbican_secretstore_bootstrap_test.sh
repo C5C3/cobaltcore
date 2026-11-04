@@ -55,7 +55,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-# make_kubectl <dir> <log> <secrets_json> <readable_kv_path>
+# make_kubectl <dir> <log> <secrets_json> <readable_kv_path> [<unreadable_kv_path> [<failures>]]
 # Installs a recording kubectl stub in <dir>. Every invocation's argument string
 # lands in <log>; the canned answers are the ones the scripts branch on:
 #
@@ -64,13 +64,16 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 #   - `bao auth list` returns an empty map, so setup-auth.sh enables its mounts
 #     (the enables themselves are recorded and swallowed).
 #   - `bao kv get` succeeds only for <readable_kv_path> — that is the existence
-#     probe write_secret_if_missing reads. Every other path reports a miss and is
+#     probe write_secret_if_missing reads. For <unreadable_kv_path> it fails the
+#     way a dropped `kubectl exec` does: every time, or only the first
+#     <failures> times, after which that path answers like any other. Every
+#     other path reports a miss the way bao does ("No value found at") and is
 #     therefore seeded.
 #
 # Everything else (engine enables, role writes, kv puts, metadata puts) is
 # recorded and answered with exit 0, so each script runs to completion.
 make_kubectl() {
-  local dir="$1" log="$2" secrets_json="$3" readable_kv_path="$4"
+  local dir="$1" log="$2" secrets_json="$3" readable_kv_path="$4" unreadable_kv_path="${5:-}" failures="${6:-}"
   mkdir -p "$dir"
   : >"$log"
   cat >"$dir/kubectl" <<STUB
@@ -85,11 +88,20 @@ case "\$*" in
     printf '%s' '{}'
     ;;
   *"bao kv get"*)
+    if [[ -n "${unreadable_kv_path}" && "\$*" == *"${unreadable_kv_path}"* ]]; then
+      failed="\$(cat "${dir}/probe-failures" 2>/dev/null || echo 0)"
+      if [[ -z "${failures}" || "\${failed}" -lt "${failures}" ]]; then
+        echo "\$((failed + 1))" >"${dir}/probe-failures"
+        echo 'error: unable to upgrade connection: container not found ("openbao")' >&2
+        exit 1
+      fi
+    fi
     if [[ -n "${readable_kv_path}" && "\$*" == *"${readable_kv_path}"* ]]; then
       printf '%s' '{"data":{"data":{}}}'
       exit 0
     fi
-    exit 1
+    echo "No value found at \${!#}" >&2
+    exit 2
     ;;
 esac
 exit 0
@@ -320,6 +332,64 @@ test_never_rewrites_an_existing_unseal_key() {
 }
 
 # ---------------------------------------------------------------------------
+# Test: a failed existence probe never rewrites the unseal key
+# ---------------------------------------------------------------------------
+# A probe that fails for any other reason than a missing path says nothing about
+# the path. Seeding on it would rewrite a key that may exist, and a second,
+# different static-seal key leaves the proving instance sealed for good.
+test_never_rewrites_the_unseal_key_on_a_failed_probe() {
+  echo "Test: write-bootstrap-secrets.sh never rewrites the unseal key when its probe fails"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # The unseal key's probe fails; every other seed path reports a miss.
+  make_kubectl "$tmp" "$tmp/calls.log" "$ENGINES_WITHOUT_BARBICAN" "" "$UNSEAL_PATH"
+
+  local output exit_code puts
+  output="$(run_bootstrap "$tmp" "$SEED_SCRIPT")"
+  exit_code=$?
+  puts="$(grep "bao kv put" "$tmp/calls.log")"
+
+  assert_nonzero_exit "the run fails" "$exit_code"
+  assert_contains "the failure names the path it could not check" \
+    "$output" "could not check whether '$UNSEAL_PATH' exists"
+  assert_not_contains "the unseal key is not written" \
+    "$puts" "BAO_KV_PATH=$UNSEAL_PATH"
+  assert_not_contains "the run does not report success" "$output" "=== Done ==="
+}
+
+# ---------------------------------------------------------------------------
+# Test: a probe that fails once is retried, and the unseal key is not rewritten
+# ---------------------------------------------------------------------------
+# A single dropped `kubectl exec` on a loaded node must not end the bootstrap.
+# The retry reads the key as present, so the run goes on and leaves it alone.
+test_retries_a_probe_that_fails_once() {
+  echo "Test: write-bootstrap-secrets.sh retries a failed probe of the unseal key"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # The unseal key's first probe fails; the retry finds the key.
+  make_kubectl "$tmp" "$tmp/calls.log" "$ENGINES_WITHOUT_BARBICAN" "$UNSEAL_PATH" "$UNSEAL_PATH" 1
+
+  local output exit_code puts
+  output="$(run_bootstrap "$tmp" "$SEED_SCRIPT")"
+  exit_code=$?
+  puts="$(grep "bao kv put" "$tmp/calls.log")"
+
+  assert_eq "the run succeeds" "0" "$exit_code"
+  assert_contains "the failed probe is logged" \
+    "$output" "probe of '$UNSEAL_PATH' failed (attempt 1/3)"
+  assert_contains "the retry finds the unseal key" \
+    "$output" "Secret '$UNSEAL_PATH' already exists"
+  assert_not_contains "the stored key is left untouched" \
+    "$puts" "BAO_KV_PATH=$UNSEAL_PATH"
+}
+
+# ---------------------------------------------------------------------------
 # Test: every bootstrap script refuses to run without a token
 # ---------------------------------------------------------------------------
 test_every_bootstrap_script_demands_a_token() {
@@ -387,6 +457,8 @@ test_writes_the_barbican_approle_role
 test_barbican_secretstore_policy_backs_the_role
 test_seeds_the_unseal_key_when_it_is_missing
 test_never_rewrites_an_existing_unseal_key
+test_never_rewrites_the_unseal_key_on_a_failed_probe
+test_retries_a_probe_that_fails_once
 test_every_bootstrap_script_demands_a_token
 test_aborts_when_openbao_is_unreachable
 

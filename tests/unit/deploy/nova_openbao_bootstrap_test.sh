@@ -68,8 +68,8 @@ source "$PROJECT_ROOT/tests/lib/service_tenants.sh"
 #   - `bao auth list` returns an empty map, so setup-auth.sh enables its mounts
 #     (the enables themselves are recorded and swallowed).
 #   - `bao kv get` succeeds only for <readable_kv_path>, the existence probe
-#     write_secret_if_missing reads. Every other path reports a miss and is
-#     therefore seeded.
+#     write_secret_if_missing reads. Every other path reports a miss the way bao
+#     does ("No value found at") and is therefore seeded.
 #
 # Everything else (mount enables, role writes, kv puts, metadata puts) is
 # recorded and answered with exit 0, so each script runs to completion.
@@ -93,7 +93,8 @@ case "\$*" in
       printf '%s' '{"data":{"data":{}}}'
       exit 0
     fi
-    exit 1
+    echo "No value found at \${!#}" >&2
+    exit 2
     ;;
 esac
 exit 0

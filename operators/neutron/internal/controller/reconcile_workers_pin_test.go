@@ -48,6 +48,17 @@ spec:
         app.kubernetes.io/managed-by: neutron-operator
         app.kubernetes.io/name: neutron
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: periodic-workers
+                  app.kubernetes.io/instance: neutron
+                  app.kubernetes.io/name: neutron
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - neutron-periodic-workers
@@ -114,14 +125,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: periodic-workers
-            app.kubernetes.io/instance: neutron
-            app.kubernetes.io/name: neutron
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
           name: neutron-config-abc
@@ -167,6 +170,17 @@ spec:
         app.kubernetes.io/managed-by: neutron-operator
         app.kubernetes.io/name: neutron
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: ovn-maintenance-worker
+                  app.kubernetes.io/instance: neutron
+                  app.kubernetes.io/name: neutron
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - neutron-ovn-maintenance-worker
@@ -232,14 +246,6 @@ spec:
             app.kubernetes.io/name: neutron
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: ovn-maintenance-worker
-            app.kubernetes.io/instance: neutron
-            app.kubernetes.io/name: neutron
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:

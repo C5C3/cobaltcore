@@ -34,13 +34,15 @@ interpretation.
 
 ## Trigger Events
 
-The workflow triggers on two event types in three scopes:
+The workflow triggers on four event types:
 
 | Event | Scope | Description |
 | --- | --- | --- |
 | `push` | `branches: [main]` | Runs on every push to the main branch |
 | `push` | `tags: ["v*"]` | Runs on every v-prefixed tag push (triggers publish and release jobs) |
 | `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; the `labeled` type lets a `ci:*` label schedule jobs the paths alone did not |
+| `schedule` | `cron: "0 22 * * *"` | The nightly chaos run against `main` at 22:00 UTC |
+| `workflow_dispatch` | no inputs | The same run on demand, for example `gh workflow run ci.yaml --ref main` |
 
 Most gate, test, and E2E jobs run **only on `pull_request` events** — they each carry a
 `github.event_name == 'pull_request'` guard. `test-shell` is the exception. It carries no
@@ -53,6 +55,18 @@ already green, so the E2E suite is not re-run on push ("publish-only-on-merge").
 pushes the `changes` job forces all areas and all operators active, so every operator's
 images and charts are published regardless of which files the tagged commit touched.
 
+A scheduled or dispatched run is the nightly chaos run of #1388. It runs `changes`,
+`test-shell`, `build-e2e-images`, the six [`e2e-chaos`](#e2e-chaos) matrix entries,
+the random chaos run [`e2e-chaos-random`](#e2e-chaos-random) of #1395 and
+`cleanup-e2e-tags`, and on a schedule [`report-nightly-chaos`](#report-nightly-chaos)
+files what went red. Every other job keeps its `pull_request` or `push` guard and
+skips.
+
+The operator upgrade suites run after a push to `main` from a workflow of their own.
+When the CI or the Build Images run of such a push succeeds,
+`.github/workflows/operator-upgrade.yaml` runs the suite of every operator whose image
+that commit published; see [e2e-operator-upgrade](#e2e-operator-upgrade).
+
 ## Change classes and labels
 
 A pull request runs the jobs whose inputs it changes. The `changes` job
@@ -63,19 +77,22 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 
 | Change class | Paths | What it schedules |
 | --- | --- | --- |
-| `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
+| `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg and its `e2e-operator-upgrade` job. `c5c3` adds the four ControlPlane jobs and `e2e-orders-multicluster` |
 | `nova_chart_egress` | `operators/nova/helm/nova-operator/templates/_helpers.tpl` | the `keystone` and `placement` `test` and `test-integration` legs, whose unit tests check the nova chart's Keystone and Placement egress rules |
 | `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**` | that service's `e2e-operator` leg; `image_keystone` also `keystone-pressure` |
 | `keystone_pressure` | `hack/keystone-pressure-ab.sh`, `hack/dizzy.sh`, `tests/load/keystone-pressure/**` | `keystone-pressure` |
 | `image_ovn`, `image_tempest` | the OVN and Tempest image sources (the Tempest locks included) | the ovn `e2e-operator` job; the Tempest image rebuild |
 | `image_proxy` | `images/keystone-federation-proxy/**`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | the keystone `e2e-operator` job and the federation proxy image rebuild |
 | `image_libvirt` | `images/libvirt/**`, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | `e2e-nova-libvirt` and the libvirt image rebuild |
-| `go_common` | `internal/**`, `go.work`, `.golangci.yml`, `flake.nix`, `flake.lock`, `nix/lib/operator-image.nix`, `nix/lib/static-image.nix`, `nix/lib/image-defaults.nix`, `hack/ci-nix-build-e2e-images.sh` | every operator's Go gates and operator image, every `e2e-operator` leg, `e2e-operator-upgrade`; a push publishes every operator image |
+| `go_common` | `internal/**`, `go.work`, `.golangci.yml`, `flake.nix`, `flake.lock`, `nix/lib/operator-image.nix`, `nix/lib/static-image.nix`, `nix/lib/image-defaults.nix`, `hack/ci-nix-build-e2e-images.sh` | every operator's Go gates and operator image, every `e2e-operator` leg, every `e2e-operator-upgrade` job; a push publishes every operator image |
 | `images_base` | `flake.nix`, `flake.lock`, `nix/lib/**`, `nix/pkgs/**`, `releases/**`, `scripts/**`, `overrides/**`, `hack/ci-nix-build-e2e-images.sh`, `hack/ci-service-image-releases.sh` | every service image, every Tempest image (one per release), every service operator's e2e leg |
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
-| `tests_e2e_<op>` | `tests/e2e/<op>/**` and `tests/e2e/<op>-operator/**` (`tests/e2e/c5c3/**` alone for c5c3); `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova), and `tests/e2e/lib/assert-operator-env-clean.sh` alone for c5c3, ovn and neutron, whose `env-key-material` suites run only that script | that operator's `e2e-operator` leg |
+| `tests_e2e_<op>` | `tests/e2e/<op>/**` and `tests/e2e/<op>-operator/**` (`tests/e2e/c5c3/**` and `tests/e2e/c5c3-operator/**` for c5c3); `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova); for ovn and neutron the three shared scripts their suites run, `tests/e2e/lib/assert-operator-env-clean.sh`, `assert-operator-metric-families.sh` and `assert-steady-state-events.sh`, and for neutron also `tests/e2e/lib/assert-networkpolicy-enforced.sh`, the NetworkPolicy probe its `network-policy` suite runs; and the first two of them for c5c3, whose `env-key-material` suite runs the scan and whose `sizing-profile` suite runs the metric-family check | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
-| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
+| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
+| `tests_chaos_random` | `tests/chaos-random/**`, `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`, `deploy/lab/metal-stack/dizzy-soak/**`, `tests/e2e-chaos/lib/consistency.sh` | `e2e-chaos-random` |
+| `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
+| `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`; keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls, and `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**` with the `tests/e2e-chaos/lib/workload.sh` and `workload.py` that suite calls | that operator's `e2e-operator-upgrade` job |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
 | `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
@@ -95,11 +112,11 @@ Seven labels add jobs. None of them ever removes one.
 | --- | --- |
 | `ci:full` | everything, and builds every image |
 | `ci:tempest` | the Tempest legs of the services the pull request touches, plus the legs that deploy a changed `ovn` or `placement` operator (neither has a leg of its own), or the keystone legs when it touches none |
-| `ci:chaos` | all four `e2e-chaos` legs. `run-chaos` is an alias |
+| `ci:chaos` | all six `e2e-chaos` legs, and not `e2e-chaos-random`. `run-chaos` is an alias |
 | `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone`, `e2e-autoscaling`, `e2e-orders-multicluster` |
 | `ci:multicluster` | `e2e-multicluster`, `e2e-orders-multicluster` |
 | `ci:pressure` | `keystone-pressure`, one leg per release that ships a Keystone image |
-| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all twelve Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
+| `ci:measure-sizing` | `e2e-controlplane`, `e2e-controlplane-sso` and all thirteen Tempest legs, each with the [sizing measurement](#sizing-measurement). Neither `ci:full` nor a tag push implies it |
 
 The `labeled` trigger means a label applied after the last push starts a run that
 evaluates the new label set. A label outside this set resolves to nothing: the
@@ -145,6 +162,7 @@ env:
   CONTROLLER_GEN_VERSION: v0.22.0
   GOFUMPT_VERSION: v0.12.0
   GOLANGCI_LINT_VERSION: v2.14.0
+  HELM_VERSION: v4.3.1
 ```
 
 `REGISTRY` and `IMAGE_PREFIX` are referenced by `build-e2e-images`, by the jobs
@@ -158,16 +176,27 @@ cluster with, passed to the `create-kind-cluster` composite action, which hands 
 `helm/kind-action`'s `version` input. That action defaults to v0.31.0, whose kindnetd
 does not enforce NetworkPolicy egress against the post-DNAT destination; pinning it
 keeps CI on the enforcing build and in lockstep with the `KIND_VERSION` in
-`hack/install-test-deps.sh` that local development installs and the one of the
-nightly `.github/workflows/performance.yaml`. Renovate groups the three pins so
-they bump in one pull request, and
+`hack/install-test-deps.sh` that local development installs, the ones of the
+nightlies `.github/workflows/performance.yaml` and
+`.github/workflows/flux-path.yaml`, and the one of the reusable
+`.github/workflows/e2e-operator-upgrade.yaml`, which does not inherit this env.
+Renovate groups the five pins, these four and the one of `ci.yaml`, so they
+bump in one pull request, and
 `tests/unit/renovate/workflow_pins_custommanager_test.sh` asserts they agree.
 `CONTROLLER_GEN_VERSION` is used by `verify-codegen` to pin controller-gen to a specific
 version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specific
 version; the same version is mirrored in the Makefile (`GOFUMPT_VERSION ?= v0.12.0`) so
 that `make fmt` and `make format-check` use a consistent version locally.
 `GOLANGCI_LINT_VERSION` pins the golangci-lint binary installed by the `lint` job and
-keys its analysis cache. `setup-envtest` is installed via `@release-0.23` because the
+keys its analysis cache. `HELM_VERSION` is the Helm CLI that every
+`azure/setup-helm` step installs (`helm-validate`, `helm-push`,
+`helm-push-target-cluster` and `github-release`, and the `upgrade` job of the
+reusable `.github/workflows/e2e-operator-upgrade.yaml`, which repeats the pin in its
+own env). Without a version input the action installs the newest Helm release when
+the job starts. Renovate bumps both copies in one pull request without automerge,
+because `helm-push` runs only after a merge and no pull request run pushes a chart
+with the new Helm. `tests/unit/ci/helm_wiring_test.sh` fails when a `setup-helm`
+step passes no `version` or when the two copies disagree. The other E2E jobs use the Helm of the runner image. `setup-envtest` is installed via `@release-0.23` because the
 sub-module does not publish its own release tags.
 
 ## Permissions
@@ -184,7 +213,8 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 | Job | Additional Permissions | Reason |
 | --- | --- | --- |
 | `build-e2e-images` | `packages: write` | Push the E2E images to GHCR under run-scoped tags |
-| `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
+| `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-chaos-random`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` | `packages: read` | Pull the E2E images from GHCR |
+| `report-nightly-chaos` | `issues: write`, `actions: read` | List the jobs of the nightly chaos run and file what went red on tracking issues |
 | `cleanup-e2e-tags` | `packages: write` | Delete the run-scoped tags from GHCR |
 | `build-and-push` | `packages: write` | Push per-platform operator image digests to GHCR |
 | `merge-operator-images` | `packages: write` | Push final multi-arch operator image manifest list |
@@ -194,16 +224,18 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 39 jobs. `changes` and `test-shell` run on every event. The
-gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard, and
-`cleanup-e2e-tags` follows `build-e2e-images`, which runs on a pull request
-only. The publish and release jobs run on push events only.
+The workflow defines 41 jobs. `changes` and `test-shell` run on every event. The
+gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard.
+`build-e2e-images`, `e2e-chaos` and `e2e-chaos-random` also run on a `schedule` or
+`workflow_dispatch` event, the nightly chaos run, and `report-nightly-chaos` runs on a `schedule` event
+alone. `cleanup-e2e-tags` follows `build-e2e-images`. The publish and release jobs
+run on push events only.
 
 The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -229,6 +261,8 @@ section that describes the job.
 | [`e2e-operator`](#e2e-operator) | E2E fan-out | `changes`, `build-e2e-images` |
 | [`e2e-operator-upgrade`](#e2e-operator-upgrade) | E2E fan-out | `changes`, `build-e2e-images` |
 | [`e2e-chaos`](#e2e-chaos) | Chaos | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images`, `e2e-operator` |
+| [`e2e-chaos-random`](#e2e-chaos-random) | Chaos | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
+| [`report-nightly-chaos`](#report-nightly-chaos) | Chaos | `changes`, `build-e2e-images`, `e2e-chaos`, `e2e-chaos-random` |
 | [`e2e-prometheus`](#e2e-prometheus) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-controlplane`](#e2e-controlplane) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`e2e-controlplane-sso`](#e2e-controlplane-sso) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
@@ -240,7 +274,7 @@ section that describes the job.
 | [`e2e-nova-libvirt`](#e2e-nova-libvirt) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`keystone-pressure`](#keystone-pressure) | E2E fan-out | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `chainsaw-lint`, `build-e2e-images` |
 | [`tempest`](#tempest) | Tempest | `changes`, `build-e2e-images`, `e2e-infra`, `e2e-operator`, `e2e-chaos`, `e2e-prometheus` |
-| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
+| [`cleanup-e2e-tags`](#cleanup-e2e-tags) | Cleanup | `changes`, `build-e2e-images`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`, `e2e-chaos-random`, `e2e-prometheus`, `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone`, `e2e-multicluster`, `e2e-orders-multicluster`, `e2e-ovn-overlay`, `e2e-nova-libvirt`, `keystone-pressure`, `tempest` |
 | [`build-and-push`](#build-and-push) | Publish images | `changes` |
 | [`merge-operator-images`](#merge-operator-images) | Publish images | `changes`, `build-and-push` |
 | [`helm-push`](#helm-push) | Publish charts | `changes` |
@@ -263,30 +297,35 @@ other job except `test-shell` lists it in `needs`.
 
 **Dependencies:** none (the job has no `needs:`)
 **Condition:** none. The job has no `if:` and runs on every event that starts
-the workflow: a push to `main`, a `v*` tag push, and a `pull_request` event of
-type `opened`, `synchronize`, `reopened` or `labeled`.
+the workflow: a push to `main`, a `v*` tag push, a `pull_request` event of
+type `opened`, `synchronize`, `reopened` or `labeled`, and the `schedule` and
+`workflow_dispatch` events of the nightly chaos run.
 
 The job runs on `ubuntu-latest` with `timeout-minutes: 8`.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches |
-| 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets` and `e2e-operators` |
-| 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
+| 2 | `dorny/paths-filter@v4` | Step id `filter`. Matches the changed paths against the `filters:` block and writes one output per change class, `true` when a changed path matches. Runs on `pull_request` and `push` events only; on the nightly chaos run its outputs are empty |
+| 3 | `Resolve effective changes` | Step id `result`. Runs `hack/ci-resolve-changes.sh`. The step `env` passes each class as `FILTER_<class>`, the pull request's label names as the JSON array `PR_LABELS`, the event as `EVENT_NAME`, `EVENT_ACTION` and `EVENT_LABEL`, and the operator lists `ALL_OPERATORS`, `SERVICE_OPERATORS` and `CANARY_OPERATOR: keystone`. The script writes `noop`, the job flags, the change sets, `tempest-services`, `test-targets`, `e2e-operators` and `e2e-operator-upgrade-operators` |
+| 4 | `Generate Tempest release matrix` | Step id `tempest-matrix`. Runs `hack/ci-generate-tempest-matrix.sh` with `TEMPEST_SERVICES` set to the `tempest-services` list of step 3, joined with spaces. The script scans `releases/*/` and writes `tempest-releases` with one entry per selected service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. An empty selection emits every service. The script fails when the `tests/tempest/<service>-<slug>/` directory of any service is missing for any release, whatever the selection |
 | 5 | `Generate keystone-pressure release matrix` | Step id `keystone-pressure-matrix`. Runs `hack/ci-service-image-releases.sh` with `OPERATOR=keystone` and writes `keystone-pressure-releases` with one entry per release whose `releases/<release>/source-refs.yaml` carries a Keystone ref |
 | 6 | `Generate cleanup package matrix` | Step id `cleanup-matrix`. Runs `hack/ci-generate-cleanup-matrix.sh`, which derives the GHCR package names from `images/*/` and from every `operators/*/` directory that holds a `go.mod`. It writes `cleanup-packages` and `cleanup-e2e-packages`. The job exports the second |
 | 7 | `Shard the e2e-operator matrix` | Step id `e2e-operator-legs`. A `jq` filter turns `e2e-operators` into an `include` list and splits `nova` into two entries, `shard: "1"` and `shard: "2"`. It writes `legs` |
 
-Step 3 has three special cases. A `labeled` event whose label is
+Step 3 has four special cases. A `labeled` event whose label is
 neither a `ci:*` label nor `run-chaos` resolves to `noop=true`: every other flag
-is `false`, the change sets are `[]`, and `test-targets` and `e2e-operators`
-hold the placeholder `__none__`. The `ci:full` label and a `v*` tag push force
+is `false`, the change sets are `[]`, and `test-targets`, `e2e-operators` and
+`e2e-operator-upgrade-operators` hold the placeholder `__none__`. The `ci:full` label and a `v*` tag push force
 every job flag on and select every operator. `measure-sizing` is the exception:
 only the `ci:measure-sizing` label sets it. On a push to `main` the script sets
 `build-e2e-images` to `false`, and `e2e-operators` holds every operator when the
 `go_common` or `publish_legacy` class changed, otherwise the operators whose own
-class or `image_<op>` class changed.
+class or `image_<op>` class changed. A `schedule` or `workflow_dispatch` event
+ignores every class and label: `e2e-chaos` and `build-e2e-images` are `true`,
+every other flag is `false`, the change sets are `[]`, and the three matrices
+hold `__none__`. That case runs last, so neither a tag ref nor the push case
+undoes it.
 [Change classes and labels](#change-classes-and-labels) describes the classes
 and the labels.
 
@@ -340,8 +379,9 @@ The matrices come last:
 | --- | --- |
 | `e2e-operators` | `{"operator":[...]}`. The matrix of `merge-operator-images` and `helm-push` and the `operator` dimension of `build-and-push`. `github-release` loops over it to package the charts |
 | `e2e-operator-legs` | Written by step 7: the operators of `e2e-operators` as `include` entries, with `nova` split into shards `1` and `2`. The matrix of `e2e-operator` |
+| `e2e-operator-upgrade-operators` | `{"operator":[...]}` in `ALL_OPERATORS` order: every operator whose Go code is affected (`go_common` included) or whose `tests_operator_upgrade_<op>` class changed, every operator when `tests_operator_upgrade` changed or under `ci:full` and a `v*` tag, the `__none__` placeholder when none. The matrix `e2e-operator-upgrade` passes to the reusable workflow; the `e2e-operator-upgrade` flag is `true` when it names an operator |
 | `test-targets` | `{"target":[...]}` with `common` and operator names. The matrix of `test` and `test-integration` |
-| `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release. The matrix of `tempest` |
+| `tempest-releases` | Written by step 4: `{"include":[...]}` with one entry per service and release, plus one `keystone-upgrade` entry for the newest release when `keystone` is selected and two or more releases exist. The matrix of `tempest` |
 | `keystone-pressure-releases` | Written by step 5: `{"release":[...]}` with the releases that ship a Keystone image. The matrix of `keystone-pressure` |
 | `cleanup-e2e-packages` | Written by step 6: JSON array of the GHCR packages that may receive run-scoped tags, every published package. The `package` matrix of `cleanup-e2e-tags` |
 
@@ -550,8 +590,9 @@ Timeout: 8 minutes.
 
 Runs every `*_test.sh` under `tests/unit/`, found by discovery, and fails on a `.sh`
 file there whose name would make the discovery skip it. The job carries no event
-guard, so it runs on pull requests and on the push
-runs for `main` and `v*` tags: a breakage that lands on `main` fails main's own run.
+guard, so it runs on pull requests, on the push
+runs for `main` and `v*` tags, and on the nightly chaos run: a breakage that lands
+on `main` fails main's own run.
 Tests read repo files only (no cluster, no untrusted input) and the job takes six to
 eight minutes. Tests that depend on `yq` or `kustomize` are written to
 skip gracefully when those tools are missing; the job installs `kustomize` explicitly so
@@ -787,7 +828,7 @@ validated without editing the job.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI (SHA-pinned) |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` (SHA-pinned) |
 | 3 | `helm plugin install helm-unittest` | Installs helm-unittest plugin (pinned to `v1.0.3`) |
 | 4 | `make verify-helm-schema` | Fails if any chart's `values.schema.json` has drifted from the shared generator |
 | 5 | `make verify-helm-rbac` | Fails if any chart's `templates/_rbac-rules.tpl` or `templates/_webhook-rbac-rules.tpl` has drifted from its committed `config/rbac/role.yaml`, or if a webhook rule grants a read the manager rules do not |
@@ -816,7 +857,7 @@ each operator chart's own `tests/` suites cover what that chart adds.
 
 | Chart | Test File | Key Assertions |
 | --- | --- | --- |
-| testbed | `deployment_test.yaml` | Image, replicas, resources, `nodeSelector`/`tolerations`/`priorityClassName`, securityContext, probes, args (including the `webhook.standalone` args), `extraArgs`/`extraEnv`, conditional webhook volume mount |
+| testbed | `deployment_test.yaml` | Image, replicas, resources, `nodeSelector`/`tolerations`/`priorityClassName`, securityContext, probes, args (including the `webhook.standalone` args), `extraArgs`/`extraEnv`, conditional webhook volume mount, `extraVolumes`/`extraVolumeMounts` after it |
 | testbed | `networkpolicy_test.yaml`, `certificate_test.yaml`, `service_test.yaml`, `serviceaccount_test.yaml`, `clusterrolebinding_test.yaml`, `rolebinding_test.yaml`, `pdb_test.yaml`, `servicemonitor_test.yaml`, `release_namespace_test.yaml` | The shared manifests, their conditionals and the release-namespace threading |
 | testbed | `clusterrole_test.yaml`, `role_test.yaml` | The shared RBAC templates: rendering per scope, the webhook rule set under `webhook.standalone`, the webhook guard, the hook-less default |
 | testbed | `schema_validation_test.yaml` | The shared values schema: type, enum, range, quantity and conditional constraints, including the `webhook.standalone` rule |
@@ -872,8 +913,10 @@ the `load-e2e-images` composite action instead of rebuilding.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]`
 
-**Condition:** Runs only when `build-e2e-images == 'true'` and no gate job
-failed. The resolver sets that flag when any job downstream of this one is
+**Condition:** Runs on a `pull_request`, `schedule` or `workflow_dispatch` event,
+and only when `build-e2e-images == 'true'` and no gate job failed. On the nightly
+chaos run the resolver sets the flag for the five `e2e-chaos` entries, and the job
+builds their coverage-instrumented `:cover` operator images. The resolver sets that flag when any job downstream of this one is
 scheduled, so the four-way OR the job used to carry lives in one place. Uses `always()` so the job runs when upstream Go jobs are
 skipped (e.g. pure E2E test-definition PRs where `go=false`). Skipped on PRs from
 forks (the workflow's `GITHUB_TOKEN` is read-only on `packages:` for forked
@@ -889,13 +932,13 @@ guard.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) with full history, which the resolver's revision check reads, and with `persist-credentials: false`, so no token lies in `/github/runner_temp` for the build users of step 5 to read |
 | 2 | `docker/setup-buildx-action@v4` | Provides `docker buildx imagetools inspect`, which the resolver of step 4 reads digests and revision annotations with; the job runs no BuildKit build |
 | 3 | `registry-login` composite action | Authenticates to GHCR with `GITHUB_TOKEN` |
-| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy`, `changed-ovn` and `changed-libvirt`; writes the `BUILD_*` variables, `OVN_VERSION` and the `image-map` output |
-| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true, `libvirt-image` when `BUILD_LIBVIRT` is true, `keystone-federation-proxy-image` when `BUILD_PROXY` is true and `<op>-operator-image` for each name in `BUILD_OPERATORS` in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt, `keystone-federation-proxy-latest.tar` for the federation proxy, `<op>-operator-latest.tar` for an operator) |
-| 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>` (`<IMAGE_PREFIX>/<op>-operator:latest` for an operator), then the tar is removed |
+| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest`, `changed-proxy`, `changed-ovn` and `changed-libvirt`, and with `BUILD_COVER_IMAGES` true when `e2e-operator`, `e2e-chaos` or `tempest` will run; writes the `BUILD_*` variables, `OVN_VERSION` and the `image-map` output |
+| 5 | Build Nix images | Only when `BUILD_NIX_IMAGES` is true. Runs `hack/ci-nix-build-e2e-images.sh` in the `nixos/nix` container (`docker://nixos/nix`, pinned by tag and digest): builds the flake attribute `<svc>-<rel_>-image` for each `<service> <release>` line of `BUILD_SERVICE_IMAGES` (`<image>-<rel_>-image` for a line with a third field, such as `nova 2026.1 nova-compute`), `tempest-<rel_>-image` for each release of `BUILD_TEMPEST_RELEASES`, `ovn-image` when `BUILD_OVN` is true, `libvirt-image` when `BUILD_LIBVIRT` is true, `keystone-federation-proxy-image` when `BUILD_PROXY` is true, `<op>-operator-image` for each name in `BUILD_OPERATORS` and `<op>-operator-cover-image` for each name in `BUILD_COVER_OPERATORS` in one `nix build`, as build users of its own, and writes each image stream to `.nix-e2e/<name>-<release>.tar` (`ovn-<OVN_VERSION>.tar` for ovn, `libvirt-latest.tar` for libvirt, `keystone-federation-proxy-latest.tar` for the federation proxy, `<op>-operator-latest.tar` for an operator, `<op>-operator-cover.tar` for its coverage-instrumented variant) |
+| 6 | Load Nix images | Only when `BUILD_NIX_IMAGES` is true. `docker load` of each tar listed in `.nix-e2e/images.txt`, tagged `<IMAGE_PREFIX>/<name>:<release>` (`<IMAGE_PREFIX>/<op>-operator:latest` for an operator, `<IMAGE_PREFIX>/<op>-operator:cover` for a cover image), then the tar is removed |
 | 7 | Tag federation proxy image | Only when `BUILD_PROXY` is true. Tags `<IMAGE_PREFIX>/keystone-federation-proxy:latest`, which step 6 loaded, as `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, the tag the keystone federation suites and step 10 address |
 | 8 | Tag operator images | Tags `<IMAGE_PREFIX>/<op>-operator:latest`, which step 6 loaded, as `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS`, the tag the suites and step 10 address |
-| 9 | Verify operator images | Runs `tests/container-images/verify_operator_image.sh` on `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS`: the layout of `nix/lib/static-image.nix`, `/usr/bin/manager` as `65532:65532`, and the four static labels alone |
-| 10 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`: the operator images under `<op>-operator:dev`, `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true, `<IMAGE_PREFIX>/libvirt:latest` only when `BUILD_LIBVIRT` is true |
+| 9 | Verify operator images | Runs `tests/container-images/verify_operator_image.sh` on `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS`: the layout of `nix/lib/static-image.nix`, `/usr/bin/manager` as `65532:65532`, and the four static labels alone. Each `<IMAGE_PREFIX>/<op>-operator:cover` of `BUILD_COVER_OPERATORS` runs with the third argument `cover`, which expects the description `CobaltCore <op> operator, coverage-instrumented` |
+| 10 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push`: the operator images under `<op>-operator:dev`, the cover images under `<op>-operator:cover` (`e2e-${run_id}-cover`), `<IMAGE_PREFIX>/ovn:<OVN_VERSION>` only when `BUILD_OVN` is true, `<IMAGE_PREFIX>/libvirt:latest` only when `BUILD_LIBVIRT` is true |
 
 `hack/ci-resolve-e2e-images.sh` derives the image set from the tree: an operator image
 per `operators/<op>/` with a `go.mod`, a service image per (operator, release) pair in
@@ -910,6 +953,17 @@ digest behind its published tag (`<op>-operator:latest`, `<svc>:<release>`,
 `libvirt:latest`), which the run pulls instead of rebuilding.
 A source that has never been published, the state of a new operator before its first
 merge, is built instead of failing the run.
+
+The coverage-instrumented operator images are keyed `<IMAGE_PREFIX>/<op>-operator:cover`.
+When `e2e-operator`, `e2e-chaos` or `tempest` will run, step 4 passes
+`BUILD_COVER_IMAGES=true`, and the resolver adds that key for all ten operators,
+whether or not the pull request changed one, so a pull request that only adds a
+suite is measured too. `main` never publishes a cover image, so each is built,
+mapped to `<op>-operator:e2e-${run_id}-cover` and listed in
+`BUILD_COVER_OPERATORS`, which also switches the Nix step on. `cleanup-e2e-tags`
+prunes the tags with the rest of the run's. Any other value of
+`BUILD_COVER_IMAGES` adds no key. The three jobs fill their operator `:dev`
+refs from these images ([Operator coverage](#operator-coverage)).
 
 An operator image is reused only when every commit in the checkout that touches the
 operator's sources is in the history of the commit its index annotation
@@ -952,7 +1006,8 @@ Timeout: 120 minutes. The job needs 45 without the ovn and libvirt images. A run
 builds the ovn image without a cached build of the pin compiles Open vSwitch and OVN
 from source, and one that builds the libvirt image compiles libvirt and QEMU, which is
 what the `build-ovn` and `build-libvirt` jobs of `build-images.yaml` budget 60 minutes
-for; one `nix build` builds both side by side. Every E2E job gates on `build-e2e-images` succeeding, so a job killed at its
+for; one `nix build` builds both side by side. The ten cover images build in the same
+`nix build` and take about 6 minutes of the slack. Every E2E job gates on `build-e2e-images` succeeding, so a job killed at its
 timeout costs the pull request its whole E2E coverage.
 
 ### e2e-operator
@@ -971,18 +1026,20 @@ Chainsaw E2E test suites.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` from `hack/kind-config-audit.yaml`, whose API server writes the audit log step 12 reads |
-| 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
+| 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
 | 5 | `kind load docker-image` | Loads the operator image, one service image per release under `releases/` (2026.1 and 2026.2 today) and the 2026.1-upgraded image into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs; the `nova` leg also loads the five sibling operator images, the sibling service images for every release (`keystone`, `placement`, `glance` and `neutron` at 2026.1 and 2026.2) and `ovn:<pin>`; the `c5c3` leg, which ships no service image, loads `keystone:2026.1` as the shell its `env-key-material` suite runs in |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn`, `neutron` and `nova` legs pass `WITH_OVN_KERNEL_MODULES: true`, the `cinder` and `nova` legs pass `WITH_MESSAGING: true`, and the `cinder` leg alone passes `WITH_NFS: true` |
 | 7 | `hack/ci-deploy-operator.sh` (sibling operators) | `nova` leg: keystone-, placement- and glance-operator; `neutron` and `nova` legs: ovn-operator; `nova` leg: neutron-operator. Each goes into its `<op>-system` Namespace, ahead of the matrix operator |
-| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
+| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm; the job-level `E2E_COVERAGE: "true"` gives this operator and the siblings of step 7 a coverage counter volume and `GOCOVERDIR` |
 | 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` and `tests/e2e/<operator>-operator/`, among them the operator's `env-key-material` suite, which reads the operator pod's spec and process environment for key material; a `nova` shard runs its half of the suite directories |
 | 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, node pressure (capacity and allocated requests, containers with restarts and their last termination reason, per-pod memory working set, kernel OOM lines from the kind node), events, operator logs |
 | 11 | `hack/ci-dump-diagnostics.sh` (always, sibling operators) | The `neutron` leg dumps `ovn-system`; the `nova` leg dumps `keystone-system`, `placement-system`, `glance-system`, `ovn-system` and `neutron-system`, one call per operator under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again |
 | 12 | `hack/ci-rbac-usage-report.sh` (always, `continue-on-error`) | Diffs the requests of the operator's ServiceAccount in the kube-apiserver audit log against the ClusterRole its markers render and prints the [RBAC usage report](../testing/rbac-usage-audit.md); never fails the job |
 | 13 | Upload RBAC usage report (always) | Uploads `_output/rbac-usage/` as the `rbac-usage-<operator>` artifact, `rbac-usage-nova-<shard>` on a `nova` shard (14-day retention) |
 | 14 | Upload JUnit report | Uploads test results as the `e2e-<operator>-junit-report` artifact, `e2e-nova-<shard>-junit-report` on a `nova` shard (14-day retention) |
-| 15 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 15 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh e2e`: final flush, one profile per operator, the totals in the job summary |
+| 16 | Upload operator coverage | Only when step 15 found a profile. Uploads the profiles to Codecov under `e2e-<op>` and `e2e-common` |
+| 17 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Matrix strategy:**
 
@@ -1114,27 +1171,95 @@ no suite runs Nova against a real second cluster yet
 
 ### e2e-operator-upgrade
 
-Operator helm-upgrade-in-place E2E. Installs the last released keystone-operator
-chart+image from GHCR as the baseline, brings a Keystone CR to Ready, then
-`helm upgrade`s the release to the locally built chart+CRDs and asserts the
-deployed Keystone survives the operator upgrade (Ready persists,
-`status.installedRelease` unchanged, no re-bootstrap). See
-[Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md) for suite
-details.
+Operator helm-upgrade-in-place E2E, one matrix job per operator. Each job installs
+the chart and image that `tests/e2e-operator-upgrade/<op>-helm-upgrade/baseline.yaml`
+pins as the baseline, brings the suite's CR to Ready, then `helm upgrade`s the release
+to the in-repo chart, CRDs and `:dev` image. The suite asserts that the deployed CR
+keeps its workloads, its `status.installedRelease` and its Ready condition. The
+keystone suite also applies the in-repo CRDs before the upgrade and checks its
+Keystone while the released operator still runs it (the
+[CRD window](../testing/operator-upgrade-e2e-tests.md#the-crd-window)). The keystone
+job then runs a second pass: it installs the baseline again and runs
+`keystone-helm-upgrade-pod-kill`, which kills every operator pod in the middle of the
+upgrade. See [Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md)
+for the suites.
 
 **Dependencies:** `needs: [changes, build-e2e-images]`
 **Condition:** Runs on `pull_request` when `e2e-operator-upgrade == 'true'`,
 `build-e2e-images` succeeded, and no dependency failed or was cancelled. The
-resolver sets that flag from the suite's own tree or a keystone code change.
+resolver sets that flag when `e2e-operator-upgrade-operators` names an operator.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
-Unlike the per-CR `e2e-operator` matrix, this suite manages the operator Helm
-release itself, so it runs in its own single job. The job pulls the run-scoped
-`:dev` operator and `2026.1` service images, `helm registry login`s GHCR,
-fetches the released baseline via `hack/ci-fetch-released-operator.sh`, deploys the
-infra stack, installs the baseline via `hack/ci-deploy-operator.sh` (with `CHART_DIR`
-pointing at the pulled chart and `IMAGE_TAG=latest`), and runs the suite from
-`tests/e2e-operator-upgrade/`. Blocking (no `continue-on-error`). Timeout: 68 minutes.
+The job has no steps of its own. It calls the reusable workflow
+`.github/workflows/e2e-operator-upgrade.yaml` with `operators` set to
+`e2e-operator-upgrade-operators` and `image-map` set to the output of
+`build-e2e-images`. Its checks therefore read
+`e2e-operator-upgrade / e2e-operator-upgrade (<op>)`. A pull request runs the job of
+every operator whose Go code is affected (`go_common` included, as for
+`e2e-operator`) or whose suite changed, and all ten when an input the suites share
+changed; see [Change classes and labels](#change-classes-and-labels).
+
+The reusable workflow takes three inputs: `operators` (the `{"operator":[...]}`
+matrix), `image-map`, and `ref`, the commit to check out (empty for the caller's).
+A called workflow does not inherit the caller's `env`, so it sets `REGISTRY`,
+`IMAGE_PREFIX`, `KIND_CLUSTER`, `KIND_VERSION`, `HELM_VERSION` and the
+`BARBICAN_SECRET_STORE_GRANTS` of `e2e-operator` itself. Its one job, `upgrade`,
+runs on `self-hosted` with `fail-fast: false` and a 68-minute timeout:
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out `ref` |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` for the registry login and the chart pull |
+| 3 | `create-kind-cluster` composite action | Creates the kind cluster |
+| 4 | `Resolve the upgrade leg` | Runs `hack/ci-operator-upgrade-leg.sh`, which writes the operator's image refs, its infrastructure opt-ins, its sibling operators, whether it needs the c5c3-operator's watched CRDs, and the `with-chaos-mesh` and `pod-kill-suite` outputs of the second pass (keystone only) |
+| 5 | `load-e2e-images` composite action | Pulls the refs of step 4 through `image-map` |
+| 6 | `Load images into kind` | One `kind load docker-image` call for every ref |
+| 7 | `Log in to GHCR for Helm` | `helm registry login` with the job's token |
+| 8 | `Fetch released operator baseline` | Runs `hack/ci-fetch-released-operator.sh`, which pulls the pinned chart and image and writes `chart_dir` and `image_tag` |
+| 9 | `setup-e2e-infra` composite action | Deploys the infrastructure with the `WITH_CHAOS_MESH`, `WITH_NFS`, `WITH_MESSAGING` and `WITH_OVN_KERNEL_MODULES` of step 4 |
+| 10 | `Install CRDs watched by the c5c3-operator` | c5c3 only: the keystone, horizon, glance and placement CRDs and `hack/ci-deploy-korc.sh` |
+| 11 | `Deploy sibling operators` | neutron only: the ovn-operator at `:dev` through `hack/ci-deploy-operator.sh` |
+| 12 | `Deploy released operator (baseline)` | `hack/ci-deploy-operator.sh` with `CHART_DIR` and `IMAGE_TAG` from step 8, into `<op>-system` |
+| 13 | `Run operator upgrade E2E` | `chainsaw test` of `tests/e2e-operator-upgrade/<op>-helm-upgrade/` |
+| 14 | `Reinstall released operator (pod-kill baseline)` | When `pod-kill-suite` is `true`: `helm uninstall --wait` of the release, then `hack/ci-deploy-operator.sh` with the env of step 12, which also applies the released CRDs again |
+| 15 | `Run operator upgrade pod-kill E2E` | When `pod-kill-suite` is `true`: `chainsaw test` of `tests/e2e-operator-upgrade/<op>-helm-upgrade-pod-kill/` with `--report-name chainsaw-operator-upgrade-pod-kill-report` |
+| 16 | `Dump diagnostic info` | `hack/ci-dump-diagnostics.sh` for the operator, then `OPERATOR_ONLY=1` for each sibling (always) |
+| 17 | `actions/upload-artifact@v7` | Uploads `e2e-operator-upgrade-<op>-junit-report` (always) |
+| 18 | `Delete kind cluster` | `hack/ci-delete-kind-cluster.sh` (always) |
+
+Each suite's step 3 except keystone's upgrades the release through
+`hack/ci-deploy-operator.sh` with `HELM_UPGRADE=true`, so the upgrade passes the
+values the baseline install passed. The keystone suite runs its own `helm upgrade`
+with its own `--set` list.
+Steps 14 and 15 run after a first suite that passed. Their report name keeps the
+JUnit file of step 13.
+Blocking (no `continue-on-error`). The keystone job took 10 to 12 minutes in the pull
+request runs of 2026-10-20 and 2026-10-21, before the second pass added the Chaos
+Mesh install, the reinstall and about 12 minutes of suite.
+
+The same workflow runs after every publish on `main`.
+`.github/workflows/operator-upgrade.yaml`, named `Operator Upgrade`, triggers on
+`workflow_run` when the `CI` or the `Build Images` workflow completes on `main`. Its
+`resolve` job runs only when the triggering run was a `push`, succeeded, and came
+from this repository, since `workflow_run` also fires for pull-request runs, and a
+fork's branch may be named `main`. It checks out the commit that run built and runs
+`hack/ci-operator-upgrade-main-matrix.sh`, which asks the registry for each
+operator's `sha-<commit>` tag. The operators that have one form the matrix, except
+those whose `baseline.yaml` pin equals the commit's `Chart.yaml` version: the same
+publish tagged the commit's image and pushed its chart under that version, so the
+baseline is the commit itself, and the script leaves the operator out with a
+`::notice::` until a `Chart.yaml` bump freezes the pin. The image map sends every
+published operator's `:dev` ref to the published digest and every other operator's
+to `:latest`. Each further image their suites load maps to itself once the registry
+confirms it exists. A ref that is not published yet, typically an `ovn:<version>`
+that a push bumped before Build Images pushed it, drops the suites that need it
+with a warning; the run that the Build Images completion triggers covers them. A
+registry that keeps failing fails `resolve`. The `upgrade` job calls the reusable
+workflow with that matrix, that map and `ref` set to the commit. A run that passes
+the `resolve` guards joins the concurrency group `operator-upgrade-main`, which
+cancels the run in flight, so at most one runs. Every other run gets a group of its
+own, because the group is chosen before any job's `if`. Main's CI runs never wait for it, because they share a concurrency group that
+never cancels (see [Concurrency](#concurrency)).
 
 ### e2e-chaos
 
@@ -1152,43 +1277,35 @@ its number.
 ![Two panels. The first shows the chaos test bed and the six steps of a suite. Chainsaw on the runner applies the service resources and asserts the baseline, applies the chaos resource, a PodChaos or a NetworkChaos, waits until the fault is injected, asserts the behaviour under the fault, deletes the chaos resource and asserts recovery. In the cluster, the chaos-controller-manager in the namespace chaos-mesh reconciles the chaos resource and calls the chaos-daemon on the node of a victim. The daemon kills the pod or a container, or sets rules in the network namespace of the pod. The victims are pods in the namespace openstack or in another namespace: shared-services, or the namespace of an operator. The second panel shows why a partition rule sits on the server pods. A client pod dials the ClusterIP of a Service, and kube-proxy rewrites the destination to the address of a server pod only in the root network namespace of the node. A rule in the client pods that matches the addresses of the server pods never sees one, so the partition does nothing. A rule in the server pods matches the source address of the client pod, which the packet still carries, and drops it.](../../diagrams/test-chaos-bed.svg)
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]`
-**Condition:** Runs only when `e2e-chaos == 'true'`, `build-e2e-images` succeeded, and no dependency failed or was cancelled. The resolver sets that flag from the `tests_chaos` class or the `ci:chaos` label, so the job's own condition no longer reads the label set.
+**Condition:** Runs on a `pull_request`, `schedule` or `workflow_dispatch` event, and only when `e2e-chaos == 'true'`, `build-e2e-images` succeeded, and no dependency failed or was cancelled. On a pull request the resolver sets that flag from the `tests_chaos` class or the `ci:chaos` label, so the job's own condition no longer reads the label set. A scheduled or dispatched run always sets it: that run is the nightly chaos run of every entry against `main`.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
-tests run after the happy-path operator E2E suite has passed. Gating is set per
-matrix leg via `continue-on-error: ${{ matrix.suite == 'network' || matrix.suite
-== 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}`: the
-`pod` leg is **blocking**, so an operator-restart, PDB, or rotation regression
-fails the build. The `network`, `ovn`, `nova` and `controlplane` legs stay
-**non-blocking**. The expression names those four rather than negating `pod`, so
-a leg added to the matrix later gates merges until it is argued out of that.
-The `network`
-leg's `ip_set`/`sch_netem` kernel-module dependency keeps it prone to
-environment flakiness, the `ovn` leg builds an OVN datapath out of the
-host's `openvswitch` and `geneve` modules, and three of the `nova` leg's six
-suites are NetworkChaos partitions on the same `sch_netem` and `ip_set` modules
-the `network` leg's suites use, while its `neutron-metadata-agent-pod-kill`
-needs the `openvswitch` and `geneve` modules for an OVNChassis. The
-`controlplane` entry's `korc-network-partition` is a NetworkChaos partition on
-the `sch_netem` and `ip_set` modules as well, which places all four under
-[Kernel-module-dependent suites](#kernel-module-dependent-suites). On-demand
-pre-validation of any leg is available via the `ci:chaos` PR label, with
-`run-chaos` kept as an alias.
+tests run after the happy-path operator E2E suite has passed. Every matrix entry
+gates (#1388): the job carries no `continue-on-error`, so a red entry fails the
+job, and `tempest`, which needs `e2e-chaos`, skips on that run. An entry added to
+the matrix gates from its first run. `main` lists no required status checks, so
+gating means the job result and the skipped Tempest jobs. The `ip_set` and
+`sch_netem` modules of the NetworkChaos suites and the `openvswitch` and `geneve`
+modules of the OVN suites load without a warning on the `self-hosted` runners,
+and no red entry on record named a module.
+On-demand pre-validation of every entry is available via the `ci:chaos` PR
+label, with `run-chaos` kept as an alias.
 
-The job runs as a five-entry matrix, split by chaos type and by the stack each
+The job runs as a six-entry matrix, split by chaos type and by the stack each
 leg needs:
 
 | Leg | Operators deployed | Suites |
 | --- | --- | --- |
-| `pod` | keystone, horizon, glance, placement, barbican | the PodChaos suites of the keystone stack, the Keystone outage suites of Glance, Placement and Barbican, `horizon-dashboard-pod-kill`, and the eight platform suites that need only the standalone stack (`cert-manager-outage`, `eso-down`, `eso-pod-kill`, `openbao-sealed`, `openbao-tenant-policy-narrowed`, `envoy-gateway-outage`, `envoy-proxy-pod-kill`, `mariadb-operator-cascading-failure`) |
+| `pod` | keystone, horizon, glance, placement, barbican | the PodChaos suites of the keystone stack, the Keystone outage suites of Glance, Placement and Barbican, `horizon-dashboard-pod-kill`, the eight platform suites that need only the standalone stack (`cert-manager-outage`, `eso-down`, `eso-pod-kill`, `openbao-sealed`, `openbao-tenant-policy-narrowed`, `envoy-gateway-outage`, `envoy-proxy-pod-kill`, `mariadb-operator-cascading-failure`), and `fernet-rotation-operator-outage` |
 | `network` | keystone, horizon, glance, placement, barbican, ovn, neutron, cinder | the NetworkChaos suites and every suite that needs the neutron, cinder or ovn operators: the four Neutron suites (`neutron-mariadb-outage`, `neutron-broker-outage`, `neutron-keystone-outage`, `neutron-operator-pod-kill`), `ovn-operator-pod-kill`, the seven Cinder suites (`cinder-operator-pod-kill`, `cinder-broker-outage`, `cinder-nfs-outage`, `cinder-keystone-outage`, `cinder-mariadb-outage`, `cinder-volume-pod-kill`, `cinder-broker-pod-kill`), the database outages of Glance, Placement and Barbican, and `memcached-network-partition` |
 | `ovn` | ovn | `ovn-southbound-outage` |
-| `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill` |
-| `controlplane` | keystone, horizon, glance, barbican, ovn, K-ORC, c5c3 | the five suites that bring up a ControlPlane of their own: `korc-provisioning-outage`, `korc-network-partition`, `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure` |
+| `nova` | keystone, horizon, glance, barbican, placement, ovn, neutron, nova | `nova-broker-outage`, `nova-mariadb-outage`, `nova-placement-outage`, `nova-keystone-outage`, `nova-operator-pod-kill`, `neutron-metadata-agent-pod-kill`, `novacompute-drain-compute-kill` |
+| `controlplane` | keystone, horizon, glance, barbican, ovn, K-ORC, c5c3 | the eight suites that bring up a ControlPlane of their own: `korc-provisioning-outage`, `korc-network-partition`, `controlplane-keystone-degraded`, `c5c3-operator-pod-kill`, `rabbitmq-operator-cascading-failure`, `controlplane-provisioning-mariadb-kill`, `controlplane-deletion-korc-outage`, `keystoneuser-rotation-keystone-outage` |
+| `upgrade` | keystone, horizon, glance, barbican, ovn, cinder | the two suites that fault a Cinder release upgrade from 2026.1 to 2026.2: `cinder-upgrade-db-partition`, `cinder-upgrade-broker-pod-kill` |
 
-All five legs run on the `self-hosted` runners. The split keeps the legs
-independently gated and lets them run in parallel. Each matrix entry lists its
+All six legs run on the `self-hosted` runners. The split lets each entry
+report on its own and lets them run in parallel. Each matrix entry lists its
 per-suite test directories explicitly.
 
 A `Resolve OVN version` step reads the pin from `images/ovn/source.json` through
@@ -1200,11 +1317,15 @@ load `placement-operator:dev` and `placement:2026.1` for their Placement suites,
 and the `ovn` leg loads none of the keystone stack. The keystone stack carries `tempest:2026.1`, which the
 workload pod of `tests/e2e-chaos/lib/workload.sh` runs on and whose `openstack`
 client the `nova` leg's catalog, seed and verify Jobs run. The `nova` leg names
-six images of its own: `placement-operator:dev`, `placement:2026.1`,
-`neutron-operator:dev`, `neutron:2026.1`, `nova-operator:dev` and
-`nova:2026.1`. `WITH_MESSAGING` is set on the `network` and `nova` legs, the
-first for the vhosts five Cinder suites take, the second because every Nova
-process dials the bus. `Setup E2E infrastructure` passes
+seven images of its own: `placement-operator:dev`, `placement:2026.1`,
+`neutron-operator:dev`, `neutron:2026.1`, `nova-operator:dev`, `nova:2026.1` and
+`nova-compute:2026.1`, the last for the NovaCompute pool of
+`novacompute-drain-compute-kill`. The `upgrade` entry names `cinder-operator:dev`, `cinder:2026.1` and
+`cinder:2026.2`, the only 2026.2 image of the job, and loads them through
+`Load upgrade leg images into kind`. `WITH_MESSAGING` is set on the `network`,
+`nova` and `upgrade` legs: for the vhosts the Cinder suites take, and because
+every Nova process dials the bus. `WITH_NFS` is set on the `network` and
+`upgrade` legs, whose Cinders attach an NFS backend. `Setup E2E infrastructure` passes
 `WITH_OVN_KERNEL_MODULES: ${{ (matrix.suite == 'ovn' || matrix.suite == 'nova') && 'true' || '' }}`,
 which is what makes `hack/deploy-infra.sh` load `openvswitch` and `geneve` for
 the chassis DaemonSets of `ovn-southbound-outage` and
@@ -1228,48 +1349,62 @@ namespace of its own through `tests/e2e-chaos/lib/controlplane.sh`.
 500 lines of the K-ORC log. The `!= 'pod'` OVN steps and the `!= 'ovn'` keystone
 stack run on it as well, which costs about two minutes.
 
+The `upgrade` entry deploys the cinder-operator into `cinder-system` through
+`Deploy cinder operator (upgrade leg)`, suffixed because `tests/lib/ci_yaml.sh`
+returns the first step of an exact name and the `Deploy cinder operator` of the
+`network` entry is pinned by its own. `Dump diagnostic info (upgrade leg)`
+adds the cinder-operator sections under `OPERATOR_ONLY=1`. The keystone and OVN
+stacks run on it as well: the workload pod needs the Tempest image the keystone
+stack loads.
+
 The wall is
-`timeout-minutes: ${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}`,
-550 minutes in all, which the author of #1390 accepted on 2026-10-16. Run
-38903206716 took 62 minutes on `pod`, 125 on `network`, 11 on `ovn` and 130 on
-`nova`. `pod` gains the eight platform suites of #1390 at about 5 minutes each.
-The `controlplane` entry needs about 15 minutes for its bring-up and 8 to 12 for
-each of its five suites, from the 7 min 45 s the `keystone-service` suite took in
-run 38788542824 plus the fault and a teardown of up to 12 minutes. The `nova` leg loads eighteen images and runs
-eight operator deploys before its first suite, and its six suites each stand up
+`timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}`,
+685 minutes in all, which the author of #1394 accepted on 2026-10-25 against the
+600 that D6 of #1386 allows; the estimated run is about 575 minutes. The last full
+run, on PR #1444 (2026-10-17), took 110 minutes on `pod`, 140 on `network`, where
+it hit the wall, 12 on `ovn`, 133 on `nova` and 46 on `controlplane`. The suites of
+#1394 add about 12 minutes each to `pod`, `nova` and `controlplane`, and the
+`upgrade` entry runs two Cinder upgrades of about 20 minutes each. The
+`controlplane` entry needs about 15 minutes for its bring-up and 8 to 12 for each
+of its suites, from the 7 min 45 s the `keystone-service` suite took in run
+38788542824 plus the fault and a teardown of up to 12 minutes. The `nova` leg loads nineteen images and runs
+eight operator deploys before its first suite, and its seven suites each stand up
 a Keystone, an OVNCentral, a Neutron, a Placement, a Glance and a five-workload
 Nova, one after the other because `tests/e2e-chaos/chainsaw-config.yaml` sets
 `parallel: 1`. A wall that arrives mid-suite kills chainsaw outright: no
-`catch` block runs, no step `cleanup` runs, no JUnit report is written, and a
-non-blocking leg reports as a cancelled job that names no suite. The per-suite
+`catch` block runs, no step `cleanup` runs, no JUnit report is written, and the
+entry reports as a cancelled job that names no suite. The per-suite
 times of the new suites are estimates; confirm each duration against the first
 green run with them.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
-| 4 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the seven nova-leg images (`nova`), and `c5c3-operator:dev` (`controlplane`) |
-| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs and `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane` |
-| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, the placement-operator on the `pod` and `network` legs; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator` |
-| 8 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
-| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` leg repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log |
-| 10 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
-| 11 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` for the `go tool covdata` of step 12 |
+| 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
+| 4 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
+| 5 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
+| 6 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the eight nova-leg images (`nova`), `c5c3-operator:dev` (`controlplane`), and the three cinder images of `upgrade` |
+| 7 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` and `nova` legs, `WITH_CONTROLPLANE=true` with `CONTROLPLANE_OPERATORS=external` on `controlplane`, `WITH_NFS=true` on `network` and `upgrade`, and `WITH_MESSAGING=true` on `network`, `nova` and `upgrade` |
+| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm, each with the coverage counter volume of the job-level `E2E_COVERAGE: "true"`, the placement-operator on the `pod` and `network` legs; the `nova` leg adds three steps of its own, `Deploy placement operator (nova leg)`, `Deploy neutron operator (nova leg)` and `Deploy nova operator`, the first two suffixed so `tests/lib/ci_yaml.sh` still resolves the pinned steps above them; `controlplane` adds `Deploy K-ORC (controlplane leg)` (the Placement CRD and `hack/ci-deploy-korc.sh`) and `Deploy c5c3 operator`; `upgrade` adds `Deploy cinder operator (upgrade leg)` |
+| 9 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml`. On every event but `pull_request` it adds `--fail-fast=false`, which overrides the config's `failFast: true`, so a red suite skips none of the entry's later suites |
+| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg; a second step on the `nova` leg repeats the call for nova, placement, glance, ovn and neutron, and one on the `network` leg for neutron, ovn, cinder, placement, glance, barbican and horizon, each under `OPERATOR_ONLY=1` so only the three sections that differ per operator are emitted again; one on `controlplane` dumps the c5c3-operator under `OPERATOR_ONLY=1` and 500 lines of the K-ORC log, and one on `upgrade` the cinder-operator under `OPERATOR_ONLY=1` |
+| 11 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
+| 12 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh chaos`: final flush, one profile per operator, the totals in the job summary |
+| 13 | Upload operator coverage | Only when step 12 found a profile. Uploads the profiles to Codecov under `chaos-<op>` and `chaos-common` |
+| 14 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Key differences from `e2e-operator`:**
 
 | Aspect | `e2e-operator` | `e2e-chaos` |
 | --- | --- | --- |
-| Matrix | Dynamic per-operator | Five suites (`pod` / `network` / `ovn` / `nova` / `controlplane`) on different runners |
+| Matrix | Dynamic per-operator | Six suites (`pod` / `network` / `ovn` / `nova` / `controlplane` / `upgrade`) on different runners |
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
-| Timeout | 68 minutes, 150 for the `nova` leg | 120 minutes for `pod`, 135 for `network`, 45 for `ovn`, 150 for `nova`, 100 for `controlplane` |
-| Blocking | Yes | `pod` leg blocking; `network`, `ovn`, `nova` and `controlplane` legs non-blocking (`continue-on-error: ${{ matrix.suite == 'network' \|\| matrix.suite == 'ovn' \|\| matrix.suite == 'nova' \|\| matrix.suite == 'controlplane' }}`) |
+| Timeout | 68 minutes, 150 for the `nova` leg | 135 minutes for `pod`, 135 for `network`, 45 for `ovn`, 170 for `nova`, 120 for `controlplane`, 80 for `upgrade` |
+| Blocking | Yes | Yes, every entry (no `continue-on-error`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
-| Service images | 2026.1 + 2026.1-upgraded + 2026.2 | 2026.1 only, plus the pinned OVN daemon image |
+| Service images | 2026.1 + 2026.1-upgraded + 2026.2 | 2026.1, plus `cinder:2026.2` on `upgrade` and the pinned OVN daemon image |
 
 The chaos test Chainsaw config uses `parallel: 1` (serial execution) because chaos tests
 mutate shared infrastructure pod availability. The assert timeout is 300s (vs 120s for
@@ -1288,8 +1423,9 @@ because every OpenBao or Flux bump would otherwise pay for the chaos legs.
 A suite whose workload needs host kernel modules enters CI non-blocking: it
 runs on the `self-hosted` runners with `continue-on-error: true`. A separate,
 later change flips it to blocking, once its pass history on `main` justifies
-the flip. The `network` leg of `e2e-chaos` is the precedent, and it is still on
-the non-blocking side of that path.
+the flip. The `e2e-chaos` entries are the exception since #1388: their
+NetworkChaos and OVN suites gate from their first run (see
+[e2e-chaos](#e2e-chaos)).
 
 **Blocking baseline.** The suite that earns the flip first is the single-node
 one on `hack/kind-config.yaml`: the DaemonSet renders, its pods start, and the
@@ -1322,20 +1458,121 @@ chassis baseline (`tests/e2e/ovn/chassis-single-node`) and the Neutron
 metadata-agent suite (`tests/e2e/neutron/metadata-agent`) run blocking, inside
 the `e2e-operator` legs for `ovn` and `neutron`. Both assert what one node can
 answer. The `nova` leg loads the modules too: its `compute-node-pool` suite runs
-a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above,
-and so do the `ovn` leg of `e2e-chaos` and, for
-`neutron-metadata-agent-pod-kill`, its `nova` leg.
+a single-node chassis for the gate its `NovaCompute` pod waits on. The `e2e-ovn-overlay` job takes the non-blocking entry described above.
+
+### e2e-chaos-random
+
+The random chaos run of #1395: faults drawn from
+`tests/chaos-random/catalogue.yaml` and applied as one Chaos Mesh `Workflow`
+against a full ControlPlane on kind while the dizzy soak churns, then judged by
+`hack/chaos-random.sh`. The [Random runs](../testing/chaos-e2e-tests.md#random-runs)
+section of the chaos page describes the draw, the Workflow and the verdict.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs on a `pull_request`, `schedule` or `workflow_dispatch` event,
+and only when `e2e-chaos-random == 'true'`, `build-e2e-images` succeeded, and no
+dependency failed or was cancelled. The resolver sets the flag from the
+`tests_chaos_random` class on a pull request, under `ci:full` and on every
+night; `ci:chaos` and `run-chaos` leave it off. It gates like every `e2e-chaos` entry.
+**Permissions:** `contents: read`, `packages: read`.
+
+The job runs on `self-hosted` with `timeout-minutes: 120`, the wall the author
+of #1395 set in place of the 90 minutes of D6 of #1386: the plane takes about
+50 minutes to come up, as in `e2e-controlplane`, and the run takes the
+2-minute warm-up, the 30-minute window, the 10-minute tail and its checks.
+`OPERATOR_REPLICAS: "1"` deploys one replica per operator.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | Create kind cluster | `hack/kind-config.yaml` |
+| 3 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` |
+| 4 | Load E2E images, Load images into kind | The ten `:dev` operator images, the eight 2026.1 service images, `ovn:<OVN_VERSION>` and `tempest:2026.1` |
+| 5 | Setup E2E infrastructure | `WITH_CONTROLPLANE=true`, `CONTROLPLANE_OPERATORS=external`, `WITH_CONTROLPLANE_CR=false`, `WITH_NFS=true`, `WITH_MESSAGING=true`, `WITH_OVN_KERNEL_MODULES=true`, `WITH_CHAOS_MESH=true`, `WITH_DIZZY=true` and `WITH_METRICS_SERVER=true`, whose resource metrics `memory-growth` judges |
+| 6 | Deploy K-ORC | `hack/ci-deploy-korc.sh` |
+| 7 | Deploy the ten operators | `hack/ci-deploy-operator.sh` for keystone, horizon, glance, placement, barbican, ovn, neutron, cinder, nova and c5c3, each into `<op>-system`, in the order of `e2e-controlplane` |
+| 8 | Bring up the random chaos plane | `hack/chaos-random.sh up` with `CHAOS_RANDOM_ENV=ci`, within `timeout-minutes: 40` |
+| 9 | Run random chaos | `hack/chaos-random.sh run` with `CHAOS_RANDOM_ENV=ci` and `CHAOS_RANDOM_SEED: ${{ github.run_id }}`, within `timeout-minutes: 65` |
+| 10 | Dump diagnostic info | `if: always()`: `OPERATOR=c5c3`, then one `OPERATOR_ONLY=1` pass per other operator |
+| 11 | Upload JUnit report, Upload the random run | `_output/reports/` as `e2e-chaos-junit-report-random`, which `report-nightly-chaos` downloads, and `_output/chaos-random/` as `e2e-chaos-random-report`, both for 14 days |
+| 12 | Delete kind cluster | `hack/ci-delete-kind-cluster.sh`, `if: always()` |
+
+The seed is the run id, so `CHAOS_RANDOM_ENV=ci CHAOS_RANDOM_SEED=<run id> make chaos-random-draw`
+prints the plan of a red night without a cluster. `e2e-chaos-random-report`
+holds `plan.json`, `windows.tsv`, `targets.tsv`, the soak's report under
+`soak/`, `random-verdict.json` and `report.md`.
+
+### report-nightly-chaos
+
+Files a red nightly chaos run on tracking issues. It runs after the six
+`e2e-chaos` entries and `e2e-chaos-random` of a scheduled run and reads the run's
+job listing and the JUnit reports of the entries and the random run.
+
+**Dependencies:** `needs: [changes, build-e2e-images, e2e-chaos, e2e-chaos-random]`
+**Condition:** `always() && github.event_name == 'schedule'`. It runs on a green
+night too, for the step summary, and never on a dispatch, as in `flux-path.yaml`.
+**Permissions:** `contents: read`, `issues: write`, `actions: read`. It is the only
+job of the workflow that holds `issues: write`, and it runs on `ubuntu-latest`,
+so no `self-hosted` job can write an issue.
+
+The job runs on `ubuntu-latest` with `timeout-minutes: 10`.
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | `actions/download-artifact@v8` | Downloads every `e2e-chaos-junit-report-*` artifact into `_output/nightly/<artifact>/`, under `continue-on-error: true`: an entry that hit its wall uploaded no report |
+| 3 | `Report the night` | Runs `hack/ci-report-nightly-chaos.sh` with `RUN_ID`, `RUN_URL`, `REPORT_SHA`, `REPORTS_DIR: _output/nightly` and `BUDGET_MINUTES: "720"` |
+
+The script lists the run's jobs (`gh api --paginate .../jobs?filter=latest`) and
+files each finding through `hack/ci-report-red-run.sh`, which comments on the open
+`github-actions[bot]` issue of that title or opens one:
+
+| Title | Filed when |
+| --- | --- |
+| `Nightly chaos suite <suite> is red` | Once per failed suite of an entry that is not green, read from its JUnit report by `hack/ci-junit-failed-suites.py`. The job `e2e-chaos-random` reports as the entry `random`, and each failed check of its verdict is a suite `random-<check>`, such as `Nightly chaos suite random-quiet-tail is red` |
+| `Nightly chaos leg <leg> is red` | An entry that is not green and names no failed suite: it hit its wall, a step outside the suites failed, or its report is missing or unreadable. The result is the job's conclusion |
+| `Nightly chaos run is red` | No entry ran. The result is the conclusion of `changes`, else of `build-e2e-images`, and `missing` when the listing lacks the job |
+| `Nightly chaos run is over its runner budget` | The completed `self-hosted` jobs of the run took more than `BUDGET_MINUTES` together, with a table of each job's minutes |
+
+A suite or entry issue names the entry, the suite and the job URL, and carries the
+failure message inside a fence, so an `@name` in it notifies nobody. A failed
+listing files nothing and fails the job. A failed filing does not stop the next
+one, and the job fails naming each title it could not file. Every night writes a
+table of the entries, their conclusions, minutes and failed suites, plus the
+self-hosted total against the budget, to the step summary. A green night files
+nothing, and a human closes an issue once its cause is fixed. Re-running the job
+comments on the same open issues and opens none.
+
+The budget is 720 minutes, which the author of #1395 set for the random run in
+place of the 600 of D6 of #1386, counted in measured minutes. The walls of the six
+entries sum to 685 minutes, `e2e-chaos-random` adds 120 and `build-e2e-images` a
+wall of 120, so the walls allow 925 minutes; green runs of the entries measured
+about 450 before the random run joined them.
 
 ### e2e-ovn-overlay
 
-Runs the `tests/e2e-ovn-overlay/geneve-datapath/` Chainsaw suite on a two-worker
-kind cluster: an `OVNCentral`, an `OVNChassis` selecting both workers, one
-logical switch port per worker, and a ping between two network namespaces that
-can only reach each other across the Geneve tunnel. The suite asserts
-`numberReady: 2` on the chassis, two `status.nodes` entries carrying two
-different system-ids, a `Port_Binding` for `lsp-a` bound to a chassis, and two
-Geneve `Encap` rows on two addresses. A single node answers none of those
-questions, so the suite lives outside `tests/e2e/` and gets a job of its own.
+Runs the two Chainsaw suites under `tests/e2e-ovn-overlay/` on a two-worker
+kind cluster, `default-spread` first. A single node answers none of their
+questions, so they live outside `tests/e2e/` and get a job of their own.
+
+- `default-spread` checks the nodes the pods run on. Its first step fails
+  unless the cluster has two schedulable workers and neither carries a
+  `topology.kubernetes.io/zone` label. A ballast Pod then requests 40 % of the
+  first worker's allocatable CPU and memory, and the suite applies an
+  `OVNCentral` that names no spread. It requires the four northd replicas two
+  on each worker and the three Northbound members on both, and asserts the
+  default spread on both pod templates: one zone constraint and one preferred
+  anti-affinity entry on `kubernetes.io/hostname` with weight 100. Without the
+  ballast both workers score alike, and the resource scorers alone already
+  spread the replicas. With it, the resource scorers put all four northd
+  replicas on the second worker, so the suite passes only with a node spread
+  the scheduler scores on nodes without a zone label.
+- `geneve-datapath` brings up an `OVNCentral`, an `OVNChassis` selecting both
+  workers, one logical switch port per worker, and a ping between two network
+  namespaces that can only reach each other across the Geneve tunnel. The
+  suite asserts `numberReady: 2` on the chassis, two `status.nodes` entries
+  carrying two different system-ids, a `Port_Binding` for `lsp-a` bound to a
+  chassis, and two Geneve `Encap` rows on two addresses.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-ovn-overlay == 'true'`, the upstream
@@ -1343,20 +1580,28 @@ questions, so the suite lives outside `tests/e2e/` and gets a job of its own.
 
 The job runs on `self-hosted` with `continue-on-error: true` under the
 kernel-module rule above, and creates its cluster from
-`config: hack/kind-config-multinode.yaml`. `setup-e2e-infra` receives
+`config: hack/kind-config-multinode.yaml`. `default-spread` needs no kernel
+module, but it needs the two workers, so it runs in this job and is
+non-blocking with it. `setup-e2e-infra` receives
 `WITH_OVN_KERNEL_MODULES: "true"`, `hack/ci-deploy-operator.sh` installs the
 ovn-operator into `ovn-system`, and the suite runs through
 `make e2e-ovn-overlay`, the same target a developer calls locally. The OVN
 daemon image is loaded at the tag `hack/ci-resolve-ovn-version.sh` reads from
 `images/ovn/source.json`, so the workflow spells no version of its own.
 Diagnostics run with `OPERATOR: ovn`, and `_output/reports/` is uploaded as the
-`e2e-ovn-overlay-junit-report` artifact (14-day retention). `cleanup-e2e-tags`
+`e2e-ovn-overlay-junit-report` artifact (14-day retention), which carries the
+result of both suites. The job is non-blocking, so its result is in that
+report. The config sets `failFast: true`: a failed
+`default-spread` skips `geneve-datapath` in the same run. `cleanup-e2e-tags`
 lists the job in its `needs`, so the run-scoped image tags survive until it
 finishes.
 
 **Path filter:** `tests/e2e-ovn-overlay/**` (the `tests_ovn_overlay` class),
 `operators/ovn/**` (`ovn`), and `images/ovn/**` and `images/backup-shifter/**`
 (`image_ovn`). A shared Go change does not schedule the job, and `ci:full` forces it on.
+That includes `internal/common/deployment`, which renders the default spread
+`default-spread` checks: the byte-identity pin goldens of every operator fail
+on any change to the rendered default, so the path needs no job of this size.
 
 ### e2e-nova-libvirt
 
@@ -1427,7 +1672,7 @@ the profiles and how to read the comparison.
 `build-e2e-images` job succeeded, and no dependency failed or was cancelled.
 
 The job runs one leg per release in `keystone-pressure-releases`, on
-`self-hosted` with `continue-on-error: true` and a wall of 120 minutes. Each
+`self-hosted` with `continue-on-error: true` and a wall of 150 minutes. Each
 leg first pulls `keystone:<release>` from GHCR and tags it
 `keystone:<release>-main`: that is the base. `load-e2e-images` then points
 `keystone:<release>` at the image of the map, which is this run's build when
@@ -1437,7 +1682,7 @@ the pull request changed the Keystone image and `main`'s otherwise, and pulls
 `keystone-system`. `make keystone-pressure-ab`, the target a developer calls
 locally, then runs `hack/keystone-pressure-ab.sh` with
 `KEYSTONE_PRESSURE_DURATION=2m` and, for the four stages of `effective-fan`,
-`KEYSTONE_PRESSURE_PROFILE_DURATIONS=effective-fan=6m`:
+`KEYSTONE_PRESSURE_PROFILE_DURATIONS=effective-fan=12m`:
 
 1. It tags both images for their side and loads them and the dizzy image of
    the pin in `hack/dizzy.sh` into kind.
@@ -1471,10 +1716,15 @@ the job. The `ci:pressure` label asks for it on any pull request, and
 
 End-to-end kube-prometheus-stack tests using kind cluster, Flux-managed
 `kube-prometheus-stack` HelmRelease, and Chainsaw. Pulls the
-keystone operator image, deploys it alongside the monitoring stack, and runs
-the prometheus suite under `tests/e2e/keystone/prometheus-stack/` to verify
-HelmRelease readiness, ServiceMonitor presence, and live Prometheus scraping
-of the operator metrics endpoint.
+keystone-operator and horizon-operator images, deploys both alongside the
+monitoring stack, and runs two prometheus suites.
+`tests/e2e/keystone/prometheus-stack/` verifies HelmRelease readiness, the
+kind posture, ServiceMonitor presence, live Prometheus scraping of the
+keystone-operator metrics endpoint and the Grafana dashboard.
+`tests/e2e/horizon/prometheus-stack/` verifies the horizon-operator
+ServiceMonitor in `horizon-system`, that every `horizon-operator` target is
+up, and that Prometheus ingested a `controller_runtime_reconcile_total` series
+of that job.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-prometheus == 'true'`, the upstream
@@ -1486,34 +1736,40 @@ in its step `env`, which threads through to `hack/deploy-infra.sh` and gates the
 post-deploy `enable_operator_servicemonitor` patch (applied to the keystone-operator,
 horizon-operator, glance-operator, placement-operator, barbican-operator, ovn-operator,
 neutron-operator, cinder-operator and nova-operator HelmReleases). The Deploy operator
-step runs `hack/ci-deploy-operator.sh` with `WITH_PROMETHEUS: "true"` in its step `env`,
+and Deploy horizon-operator steps run `hack/ci-deploy-operator.sh` with
+`WITH_PROMETHEUS: "true"` in their step `env`,
 which adds `--set monitoring.serviceMonitor.enabled=true` to the Helm install command —
 without this flag the chart's gated `ServiceMonitor` template renders nothing and the
 chainsaw step `servicemonitor-exists` (and the dependent `prometheus-target-up`) cannot
-pass. The kind base kustomization keeps the keystone-operator HelmRelease suspended, so
-the runtime `kubectl patch` cannot reactively enable the ServiceMonitor — the
+pass. The horizon step sets `NAMESPACE: horizon-system`, where the horizon suite reads
+the ServiceMonitor; the script default is `keystone-system`. The kind base
+kustomization keeps the keystone-operator and horizon-operator HelmReleases suspended,
+so the runtime `kubectl patch` cannot reactively enable the ServiceMonitors, and the
 install-time flag is the single source of truth.
 
-Unlike `e2e-chaos`, `e2e-prometheus` runs with `continue-on-error: false`:
-the kube-prometheus stack is deterministic on kind, so any failure is a
-genuine regression of the kind-only Quick Start observability story.
+`e2e-prometheus` runs with `continue-on-error: false`: the kube-prometheus
+stack is deterministic on kind, so any failure is a genuine regression of the
+kind-only Quick Start observability story.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `load-e2e-images` composite | Pulls `keystone-operator:dev` and `keystone:2026.1` from GHCR and re-tags them to their canonical local references |
-| 4 | `kind load docker-image` | Loads operator and service images into kind |
+| 3 | `load-e2e-images` composite | Pulls `keystone-operator:dev`, `keystone:2026.1` and `horizon-operator:dev` from GHCR and re-tags them to their canonical local references |
+| 4 | `kind load docker-image` | Loads the two operator images and the service image into kind |
 | 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_PROMETHEUS: "true"` |
 | 6 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys keystone operator via Helm with `WITH_PROMETHEUS: "true"` (gates `--set monitoring.serviceMonitor.enabled=true`) |
-| 7 | `chainsaw test` | Runs the prometheus E2E suite from `tests/e2e/keystone/prometheus-stack/` |
-| 8 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone` |
-| 9 | Upload JUnit report | Uploads `_output/reports/` as `e2e-prometheus-junit-report` artifact (14-day retention) |
-| 10 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 7 | Deploy horizon-operator | Runs `hack/ci-deploy-operator.sh` with `OPERATOR: horizon`, `NAMESPACE: horizon-system` and `WITH_PROMETHEUS: "true"` |
+| 8 | `chainsaw test` | Runs the prometheus E2E suites from `tests/e2e/keystone/prometheus-stack/` and `tests/e2e/horizon/prometheus-stack/` |
+| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, then the horizon-system sections with `OPERATOR=horizon OPERATOR_ONLY=1` |
+| 10 | Upload JUnit report | Uploads `_output/reports/` as `e2e-prometheus-junit-report` artifact (14-day retention) |
+| 11 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
-**Path filter:** `tests/e2e/keystone/prometheus-stack/**`, `deploy/kind/prometheus/**`,
-`operators/keystone/dashboards/**` and
-`operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml` (the
+**Path filter:** `tests/e2e/keystone/prometheus-stack/**`,
+`tests/e2e/horizon/prometheus-stack/**`, `deploy/kind/prometheus/**`,
+`operators/keystone/dashboards/**`,
+`operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml` and
+`operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml` (the
 `tests_prometheus` class). No Go code change and no other E2E test change schedules the
 job, and `ci:full` forces it on.
 
@@ -1590,8 +1846,35 @@ materialised `clouds.yaml`, the rotation driven by a `CredentialRotation`, a
 collision held at `ServiceCollision` / `ServiceAccountCollision` until
 `catalog.adopt` takes the row over, and residue-free deletion. Both are separate
 steps for the same `failFast` reason, and this one writes its JUnit XML as
-`chainsaw-report-keystone-service-own-namespace`, so the uploaded artifact
-carries four report files.
+`chainsaw-report-keystone-service-own-namespace`.
+
+A fifth chainsaw step runs `tests/e2e/c5c3/healthcheck/`, which asserts that a
+Keystone-only ControlPlane reports `KeystoneReady` and `Ready` only after its
+Keystone child's API probe passes and that `/v3` answers 200 on a single attempt
+when the plane first reports `Ready`. A sixth runs
+`tests/e2e/c5c3/pod-security-restricted/`, which labels the plane's namespace
+`enforce=restricted`, `enforce-version=latest` and asserts that a managed
+Keystone-only plane reaches `Ready=True/AllReady` with no PodSecurity violation
+event. Each brings up a plane of its own, stays a separate step for the same
+`failFast` reason, and writes its JUnit XML as
+`chainsaw-report-controlplane-healthcheck` and
+`chainsaw-report-controlplane-pod-security-restricted`.
+
+Steps seven to ten run the per-ControlPlane scoping and teardown suites, each
+in a step of its own for the same `failFast` reason and under a report name of
+its own, so the uploaded artifact carries ten report files:
+`tests/e2e/c5c3/admin-password-scoping/` as
+`chainsaw-report-admin-password-scoping`, `tests/e2e/c5c3/db-credential-scoping/`
+as `chainsaw-report-db-credential-scoping`, `tests/e2e/c5c3/multi-controlplane/`
+as `chainsaw-report-multi-controlplane`, and
+`tests/e2e/c5c3/deletion-orchestration/` as
+`chainsaw-report-deletion-orchestration`. They prove that a plane's admin
+password and dynamic DB credential sit on paths of its own, that two planes in
+`tenant-a` and `tenant-b` cannot read or rotate each other's credentials, and
+that deleting a plane after its Keystone is gone still completes and reclaims
+its Barbican ensemble. Each brings up its own planes outside `openstack`, where
+the full-chain plane stays, seeds their OpenBao paths and onboards their
+database-engine roles itself, and deletes its planes before the next step.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
@@ -1624,30 +1907,42 @@ fails the step above 4000m CPU or 16Gi memory. The job-level `env` sets
 `hack/ci-deploy-operator.sh`, so every operator runs one replica, as in the kind
 devstack, and the gate counts that footprint. The other e2e jobs keep the chart
 default of two. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 360-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 540-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + ten operators +
-OpenBao + ESO + K-ORC on one node is resource-heavy, and its four chainsaw
+OpenBao + ESO + K-ORC on one node is resource-heavy, and its ten chainsaw
 suites run in sequence on that one node, so their budgets add up rather than
 overlap. A suite's ceiling is not its `exec` budget alone: chainsaw applies that
 budget to every script operation, so `try`, `catch` and `finally` each get one,
-and the `cleanup` budget runs after all three. Each of the four suites
+and the `cleanup` budget runs after all three. Each of the ten suites
 therefore pins its `catch` and `finally` timeouts explicitly, which puts the
-ceilings at 120, 80, 110 and 90 minutes. The job wall has to outlast the bring-up plus
-the suites that pass plus the full ceiling of the one that stalls, or a stalled
-suite is killed before its own timeout fires and reports as a cancelled job with
-no JUnit XML. The 360 minutes cover roughly 45 minutes of bring-up, the
-120-minute ceiling of the full-chain suite, roughly 25 minutes for the
-foreign-namespace pass and 55 for the keystone-user pass, and the 110-minute
-ceiling of the keystone-user suite, the largest of the other three, for the
-suite that stalls: 45+120+25+55+110 = 355 minutes in all; the bring-up and the
-two pass terms are
-estimates, so confirm them against the first green run of the leg and re-derive
-the wall if one overruns.
+ceilings at 140, 80, 110 and 90 minutes for the first four, at 65 minutes each
+for healthcheck and pod-security-restricted, and at 50
+(admin-password-scoping), 50 (db-credential-scoping), 100 (multi-controlplane)
+and 75 minutes (deletion-orchestration) for steps seven to ten. The job wall
+has to outlast the bring-up plus the suites that pass plus the full ceiling of
+the one that stalls, or a stalled suite is killed before its own timeout fires
+and reports as a cancelled job with no JUnit XML.
+
+The 540 minutes cover roughly 45 minutes of bring-up, the 140-minute ceiling of
+the full-chain suite, the passes of eight of the nine other suites, and the
+110-minute ceiling of the keystone-user suite, still the largest of the nine
+others, for the suite that stalls. The eight passes leave out the smallest, the
+roughly 10 minutes of healthcheck or pod-security-restricted, and add up to 235
+minutes: about 55 for keystone-user, 45 for multi-controlplane, 40 for
+deletion-orchestration, 25 each for the foreign-namespace and own-namespace
+suites, 20 for db-credential-scoping, 15 for admin-password-scoping and 10 for
+the other Keystone-only suite. That makes 45+140+235+110 = 530 minutes in all.
+The pass estimates of the other three earlier suites stand because their
+measured passes in run 39853183141 (4.3, 14.6 and 6.6 minutes for
+foreign-namespace, keystone-user and own-namespace) sit well under them; the
+full-chain suite enters the sum at its ceiling. The six newer pass terms and the
+bring-up are estimates, so confirm them against the first green run of the leg
+and re-derive the wall if one overruns.
 
 Under `ci:measure-sizing` the job runs the
 [sizing measurement](#sizing-measurement): the watch starts after
 `Setup E2E infrastructure`, and the collect and upload steps follow
-`Run own-namespace registration E2E test` and publish `sizing-e2e-controlplane`.
+`Run deletion-orchestration E2E test` and publish `sizing-e2e-controlplane`.
 
 The job creates its cluster from `hack/kind-config-audit.yaml`, so the API
 server writes an audit log. After the diagnostics dumps, the `Report RBAC usage`
@@ -1974,7 +2269,8 @@ lists the commands of a job in order.
 `ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder nova)` with every
 `releases/<version>/` directory, writing the result to the `tempest-releases`
 output the job consumes as `matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}`.
-Two releases and six services make twelve legs. A service without a
+Two releases and six services make twelve legs, and one `keystone-upgrade`
+entry for the newest transition makes thirteen. A service without a
 `tests/tempest/<service>-<slug>` configuration directory fails the generator.
 `TEMPEST_SERVICES`, set from the change resolver, narrows the emitted entries to
 the services a pull request touches; the directory check still covers all six.
@@ -1988,7 +2284,10 @@ name the compute stack their legs bring up. Both carry `ovn-cr-name`,
 `neutron-cr-name`, `placement-cr-name`, `glance-cr-name` and
 `tempest-concurrency: "2"`; the cinder entries add `nova-cr-name`, which on a
 nova entry is the leg's own service CR. Steps read them as `matrix.release`,
-`matrix.config-dir`, `matrix.cr-name` and so on. For the names each leg ends up
+`matrix.config-dir`, `matrix.cr-name` and so on. The `keystone-upgrade` entry
+carries the five keys of the newest release's `keystone` entry plus
+`upgrade-from`, the second-newest release, which the leg deploys before it
+upgrades the Keystone in place to `release`. For the names each leg ends up
 with, see
 [Tempest Test Infrastructure](../testing/tempest-test-infrastructure.md).
 
@@ -1998,16 +2297,19 @@ with, see
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/source.json` holds the pin |
-| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>`; the nova and cinder legs pull the four compute-stack operator images plus `neutron:<release>`, `placement:<release>`, `nova:<release>` and `ovn:<OVN_VERSION>` |
-| 6 | `kind load docker-image` | Loads keystone operator and service images into kind |
+| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs, filling every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image (`operator-variant: cover`, also on the glance and barbican load steps; see [Operator coverage](#operator-coverage)); the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>`; the nova and cinder legs pull the four compute-stack operator images plus `neutron:<release>`, `placement:<release>`, `nova:<release>` and `ovn:<OVN_VERSION>` |
+| 6 | `kind load docker-image` | Loads keystone operator and service images into kind; on the keystone-upgrade leg `keystone:<release>` is the image the upgrade moves to |
+| 6a | `kind load docker-image` *(keystone-upgrade leg only)* | Loads `keystone:<upgrade-from>`, which step 5 pulled on that leg; without it the node would pull the published tag and upgrade main's image |
 | 7 | `kind load docker-image` *(neutron leg only)* | Loads the two operator images, the neutron and OVN service images, and the tempest image the catalog Job runs in-cluster |
 | 8 | `kind load docker-image` *(nova and cinder legs)* | Loads the eight compute-stack refs both legs share in one call, so the layers the service images and the operator images each share are saved and imported once; each leg's glance pair and tempest image come from a step above, the cinder leg's from its own and the nova leg's from the glance one |
 | 9 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack. `WITH_MESSAGING` is set on the cinder and nova legs, `WITH_NFS` on the cinder leg and `WITH_OVN_KERNEL_MODULES` on the nova leg |
 | 9a | Start the sizing measurement *(`ci:measure-sizing` only)* | Starts the background watch of [Sizing measurement](#sizing-measurement); step 9 then also carries `WITH_VPA` |
-| 10 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
+| 10 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm; the job-level `E2E_COVERAGE: "true"` gives this operator and those of steps 11 and 12 a coverage counter volume and `GOCOVERDIR` |
 | 11 | `hack/ci-deploy-operator.sh` ×2 *(neutron, nova and cinder legs)* | Deploys the ovn-operator into `ovn-system` and the neutron-operator into `neutron-system`; a Neutron never reaches Ready without a live OVNCentral, and all three legs run one |
 | 12 | `hack/ci-deploy-operator.sh` ×2 *(nova and cinder legs)* | Deploys the placement- and nova-operator, each into its own `<op>-system` Namespace; the glance-, ovn- and neutron-operator both legs also need come from the steps above |
-| 13 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
+| 13 | Deploy Keystone CR *(every leg but keystone-upgrade)* | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
+| 13a | Deploy Keystone CR at the previous release *(keystone-upgrade leg only)* | Applies `matrix.config-dir/00-keystone-cr.yaml` with `spec.image.tag` set to `matrix.upgrade-from` by `yq` `strenv()`, waits 300 s for Ready and 60 s for `status.installedRelease` to read `upgrade-from`; any other value fails the step, because Tempest would then test a fresh database |
+| 13b | Upgrade Keystone to the leg's release *(keystone-upgrade leg only)* | Patches `spec.image.tag` to `matrix.release`, waits 600 s for `status.installedRelease` to follow and 60 s for the `<cr>-db-expand`, `<cr>-db-migrate` and `<cr>-db-contract` Jobs. It then polls 300 s for the `<cr>-schema-check` Job to run at `:<release>` and waits 300 s for it to complete, 300 s for Ready and 300 s for the rollout, then checks that the Deployment's image ends in `:<release>`. The status write that moves `installedRelease` reports Ready before the operator re-runs `<cr>-db-sync` and `<cr>-schema-check` (`keystone-manage db_sync --check`) at the new image, so only a Ready after that check covers the upgraded schema |
 | 14 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `neutron-tempest-catalog-setup` Job to complete |
 | 15 | Deploy OVNCentral *(neutron leg only)* | Applies `02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/ovn-neutron-tempest-<slug>` Ready |
 | 16 | Deploy Neutron CR *(neutron leg only)* | Applies `04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready |
@@ -2033,13 +2335,51 @@ with, see
 | 34b | Upload the sizing measurement (always) *(`ci:measure-sizing` only)* | Uploads `_output/sizing/` as `sizing-tempest-<service>-<release>` (14-day retention) |
 | 35 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
 | 36 | `hack/ci-dump-diagnostics.sh` ×5 or ×6 (always) *(nova and cinder legs)* | One `OPERATOR_ONLY=1` pass per extra operator: `nova`, `placement`, `ovn`, `neutron`, `glance`, and `cinder` on the cinder legs |
-| 37 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
+| 37 | Collect operator coverage (always, `continue-on-error`) | `hack/ci-collect-e2e-coverage.sh tempest`: final flush, one profile per operator, the totals in the job summary |
+| 38 | Upload operator coverage | Only when step 37 found a profile. Uploads the profiles to Codecov under `tempest-<op>` and `tempest-common` |
+| 39 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 The compute-stack steps name their fixtures by suffix glob, because the numeric
 prefixes differ between `tests/tempest/nova-<slug>/` and
 `tests/tempest/cinder-<slug>/`.
 
 Timeout: 68 minutes, 150 for the `nova` legs and 120 for the `cinder` legs.
+
+### Operator coverage
+
+`e2e-operator`, `e2e-chaos` and `tempest` measure which operator code their
+suites reach. The other jobs that deploy operators keep the production image, so
+a pull request still exercises the binary that ships.
+
+1. Each of the three jobs sets `E2E_COVERAGE: "true"` in its job-level `env:`,
+   and its load steps pass `operator-variant: cover` to `load-e2e-images`. Every
+   `<op>-operator:dev` ref the job loads into kind is then the
+   `<op>-operator:cover` image `build-e2e-images` built: the manager compiled
+   with `-cover -covermode=atomic` and a `-coverpkg` of the operator's module
+   and `internal/common`
+   ([Operator images](./nix-image-build.md#operator-images)).
+2. `hack/ci-deploy-operator.sh` creates `/var/lib/cobaltcore-coverage/<op>` on
+   the kind node and gives the operator a hostPath volume of it at `/coverage`,
+   with `GOCOVERDIR=/coverage`. The manager writes its counters there every
+   minute (`internal/common/bootstrap/coverage.go`). A pod that a chaos pod-kill
+   deletes keeps the counters up to its last flush, which an `emptyDir` would
+   lose with the pod.
+3. "Collect operator coverage" runs `hack/ci-collect-e2e-coverage.sh` with the
+   job's family, `e2e`, `chaos` or `tempest`, right before "Delete kind
+   cluster". It scales the instrumented managers to 0 so each flushes once
+   more, merges the counters into one profile per operator and writes the
+   statements and coverage of each operator to the job summary. On a cancelled
+   run it skips the scale-down and copies what the last periodic flush wrote.
+4. "Upload operator coverage" sends the profiles to Codecov in one upload, under
+   the flags `<family>-<op>` and `<family>-common`, with `disable_search: true`
+   so the raw counter files stay behind. The flags report and gate no status
+   ([Codecov Configuration](#codecov-configuration)).
+
+The collect step runs with `continue-on-error` and the upload with
+`fail_ci_if_error: false`, so a coverage problem does not fail a job. The
+releases a suite installs with its own `helm install`, those of the `metrics`
+and `namespace-scoped-rbac` suites and of `network-policy-egress`, run the
+`:cover` binary without a counter volume and are not measured.
 
 ### cleanup-e2e-tags
 
@@ -2071,16 +2411,19 @@ per-platform manifests untagged via `push-by-digest` and needs those digests
 intact for `merge-operator-images` (GH-312).
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-operator,
-e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane,
-e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster,
-e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, keystone-pressure,
-tempest]`
+e2e-operator-upgrade, e2e-chaos, e2e-chaos-random, e2e-prometheus,
+e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone,
+e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt,
+keystone-pressure, tempest]`
 **Permissions:** `contents: read`, `packages: write`
 
 The job is `continue-on-error`: pruning is housekeeping, and a package whose only
 tagged version is the run-scoped one cannot be pruned at all (GHCR refuses to
 delete a package's last version). The nightly `cleanup-e2e-stale-tags` job in
-`cleanup-images.yaml` is the safety net for anything a cancelled run leaks.
+`cleanup-images.yaml` is the safety net for anything a cancelled run leaks. It
+keeps a version that a run still in progress tagged, since a reproducible build
+can add a new run's tag to a version older than 24 hours
+([Retention](build-images-workflow.md#retention)).
 
 Timeout: 15 minutes.
 
@@ -2139,9 +2482,10 @@ list, and pushes it with the final tags.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `docker/setup-buildx-action@v4` + `registry-login` composite action | Authenticates to GHCR |
-| 3 | `docker/metadata-action@v6` | Generates final image tags and, with `DOCKER_METADATA_ANNOTATIONS_LEVELS: index`, the index annotations (`created`, `revision`, `source`, `url`, `version`, and title, description, licenses and vendor as the image labels set them) |
-| 4 | Download digests | `actions/download-artifact@v8` | Downloads all `digests-operator-<operator>-*` artifacts |
-| 5 | Create and push manifest list | Shell | `docker buildx imagetools create` with the annotations from step 3 and `--annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}"` assembles per-platform digests under the final tags from step 3; `hack/ci-resolve-e2e-images.sh` reads the revision annotation |
+| 3 | `Read the chart version` | Step id `chart`. Reads the version of `operators/<op>/helm/<op>-operator/Chart.yaml` with `hack/ci-read-chart-version.sh` and writes it as `version`; a value that is not `X.Y.Z` writes nothing and logs a `::warning::`, so the index gets no chart-version tag but keeps `sha-<full-sha>` and `latest` |
+| 4 | `docker/metadata-action@v6` | Generates final image tags and, with `DOCKER_METADATA_ANNOTATIONS_LEVELS: index`, the index annotations (`created`, `revision`, `source`, `url`, `version`, and title, description, licenses and vendor as the image labels set them) |
+| 5 | Download digests | `actions/download-artifact@v8` | Downloads all `digests-operator-<operator>-*` artifacts |
+| 6 | Create and push manifest list | Shell | `docker buildx imagetools create` with the annotations from step 4 and `--annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}"` assembles per-platform digests under the final tags from step 4; `hack/ci-resolve-e2e-images.sh` reads the revision annotation |
 
 **Matrix strategy:** Same `operator` dimension as `build-and-push` (via `fromJson(needs.changes.outputs.e2e-operators)`).
 
@@ -2149,11 +2493,16 @@ list, and pushes it with the final tags.
 
 | Trigger | Tags Applied |
 | --- | --- |
-| Push to main | `sha-<full-sha>`, `latest` |
+| Push to main | `sha-<full-sha>`, `latest`, `<chart version>` (the operator's `Chart.yaml` version, e.g. `0.14.0`) |
 | Push v* tag (from main) | `sha-<full-sha>`, `latest`, `<version>` (e.g. `0.1.0`, v prefix stripped) |
 | Push v* tag (from non-main) | `sha-<full-sha>`, `<version>` (no `latest` — restricted to default branch) |
 
-Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`.
+Images are published at `ghcr.io/c5c3/<operator>-operator:<tag>`. The chart-version
+tag carries the `enable={{is_default_branch}}` rule of `latest`, so on `main` the two
+name one digest. `hack/ghcr-prune-stale-versions.py` keeps a version with a bare
+`X.Y.Z` tag forever, and once `Chart.yaml` moves past a version no push writes that
+tag again. The operator upgrade suites pin their baseline to it
+([Operator Upgrade E2E Tests](../testing/operator-upgrade-e2e-tests.md)).
 
 ### helm-push
 
@@ -2169,9 +2518,9 @@ push without re-running the E2E suite.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` |
 | 3 | Helm registry login | Authenticates to GHCR via `helm registry login` |
-| 4 | Package and push | Packages chart and pushes to `oci://ghcr.io/c5c3/charts/` |
+| 4 | Package and push | Packages chart and pushes it to `oci://ghcr.io/c5c3/charts/` with `hack/ci-helm-push.sh` |
 
 **Chart version derivation:**
 
@@ -2186,6 +2535,21 @@ packaged and pushed.
 
 The `make helm-package` target packages `operators/<operator>/helm/<operator>-operator/`.
 When `CHART_VERSION` is set (for tag pushes), it overrides the version in `Chart.yaml`.
+
+**Push retry:** `helm push` uploads the chart manifest by digest, fetches that
+digest back and uploads it again under the chart version. ghcr.io now and then
+answers the fetch with 404, and helm fails with `Error: failed to perform "Tag"
+on destination: sha256:<digest>: not found`. The manifest is in the registry by
+then, but the chart version still points at the previous push. Runs 39266486878
+(`helm-push (horizon)`) and 39922685226 (`helm-push (placement)`) failed this
+way. `hack/ci-helm-push.sh` retries this one error, up to three attempts in
+total with a 5 s and a 15 s pause, the backoff `hack/ci-merge-manifest.sh` uses
+for the same ghcr.io behaviour. Helm stamps the archive's modification time as
+the manifest's creation time, so the retry builds the same manifest, skips what
+the registry already serves and repeats the tag step. Every other error fails on
+the first attempt. `tests/unit/hack/ci_helm_push_test.sh` covers the script, and
+`tests/unit/ci/helm_wiring_test.sh` fails when a workflow runs `helm push`
+directly.
 
 ### helm-push-target-cluster
 
@@ -2208,9 +2572,9 @@ on for a `v*` tag push.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` |
 | 3 | `Login to GHCR` | Authenticates to `ghcr.io` via `helm registry login` with `github.actor` and `secrets.GITHUB_TOKEN` |
-| 4 | `Package and push Helm chart` | Removes stale `target-cluster-access-*.tgz` files, runs `make helm-package-target-cluster` and pushes the tarball to `oci://ghcr.io/c5c3/charts` |
+| 4 | `Package and push Helm chart` | Removes stale `target-cluster-access-*.tgz` files, runs `make helm-package-target-cluster` and pushes the tarball to `oci://ghcr.io/c5c3/charts` with `hack/ci-helm-push.sh` (see [push retry](#helm-push)) |
 
 **Chart version derivation:**
 
@@ -2242,7 +2606,7 @@ Creates a GitHub Release with auto-generated release notes on v* tag pushes.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `azure/setup-helm@v5` | Installs Helm CLI for chart packaging |
+| 2 | `azure/setup-helm@v5` | Installs Helm CLI `HELM_VERSION` for chart packaging |
 | 3 | Package Helm charts | Packages operator Helm charts with release version |
 | 4 | `softprops/action-gh-release@v3` | Creates release with `generate_release_notes: true` and attaches chart tarballs |
 
@@ -2269,10 +2633,11 @@ Dumps diagnostic information after E2E failures. Shared across every `e2e-*` job
 | `OPERATOR_ONLY` | No | (empty) | When set, emits only the three sections that differ per operator (operator pods, operator logs, CR status). For callers that loop over several operators in one job, where the infrastructure block and the `NAMESPACE` Job and pod logs are the same dump every pass |
 | `NAMESPACE` | No | `openstack` | Kubernetes namespace for operator-specific queries |
 
-**Infrastructure diagnostics (always emitted):** HelmReleases, pods, DaemonSets, the K-ORC
-controller log (`deploy/orc-controller-manager` in `orc-system`, a `SKIP:` line with
-kubectl's reason on a cluster without it), events (last 50), and Flux logs across all
-namespaces.
+**Infrastructure diagnostics (always emitted):** HelmReleases, pods, DaemonSets, the OpenBao
+server log (`openbao-0` in `shared-services`, last 200 lines, a `SKIP:` line with kubectl's
+reason on a cluster without it), the K-ORC controller log (`deploy/orc-controller-manager`
+in `orc-system`, a `SKIP:` line with kubectl's reason on a cluster without it), events
+(last 50), and Flux logs across all namespaces.
 
 **Operator diagnostics (when `OPERATOR` is set):** Operator pods and logs, job descriptions
 and logs in the target namespace, all pod logs (current and previous) in the namespace,
@@ -2297,10 +2662,13 @@ deploying the operator via Helm with the specified container image.
 | `IMAGE_REPO` | Yes | - | Full image repository (e.g. `ghcr.io/c5c3/keystone-operator`) |
 | `IMAGE_TAG` | No | `dev` | Image tag |
 | `DEFAULT_IMAGE_PULL_POLICY` | No | `IfNotPresent` | The operator's default image pull policy (`Always`, `IfNotPresent` or `Never`), passed as `--set controller.defaultImagePullPolicy=<value>`. Any other value exits 1 with an `::error::` line before anything is applied. |
+| `E2E_COVERAGE` | No | `false` | `true` gives the operator a coverage counter volume and `GOCOVERDIR` (below). Empty means `false`; any other value exits 1 with an `::error::` line before anything is applied. |
+| `KIND_CLUSTER` | No | `cobaltcore` | The kind cluster whose nodes get the counter directory |
+| `HELM_UPGRADE` | No | `false` | `true` runs `helm upgrade` on the existing `<op>-operator` release instead of `helm install`, with the same CRD apply and `--set` list and without `--create-namespace`. Every operator upgrade suite except keystone's uses it. Any other value than `true` or `false` exits 1 with an `::error::` line before anything is applied. |
 
 The script runs `kubectl apply --server-side --force-conflicts -f <chart>/crds/`, waits for
-CRD establishment, then runs `helm install` with `image.pullPolicy=Never` (suitable for
-kind-loaded images) and `controller.defaultImagePullPolicy=IfNotPresent`, so the
+CRD establishment, then runs `helm install` (`helm upgrade` under `HELM_UPGRADE=true`)
+with `image.pullPolicy=Never` (suitable for kind-loaded images) and `controller.defaultImagePullPolicy=IfNotPresent`, so the
 workloads run the service images CI loaded into kind under the published tag.
 The script passes `controller.defaultImagePullPolicy` only when the chart's
 `values.schema.json` names it: a released chart installed through `CHART_DIR`
@@ -2309,6 +2677,21 @@ policy anyway. The banner line `Image pull policy` shows the value, or
 `<chart has no such value>`. Server-side apply keeps the CRD out of the 262,144-byte
 `last-applied-configuration` annotation that client-side apply writes, which the Nova and
 Cinder CRDs exceed.
+
+Under `E2E_COVERAGE=true`, which the `e2e-operator`, `e2e-chaos` and `tempest` jobs
+set ([Operator coverage](#operator-coverage)), the script checks before it applies the
+CRDs that the chart's `values.schema.json` names `extraVolumes` (operator-library 0.12.0
+or later), lists the nodes with `kind get nodes --name "${KIND_CLUSTER}"` and creates
+`/var/lib/cobaltcore-coverage/<op>` with mode 1777 on each through `docker exec`. The
+manager runs as uid 65532, and a hostPath directory the kubelet creates belongs to
+root. A chart without the value, a cluster without nodes and a failing `docker exec`
+each exit 1 with an `::error::` line. `helm install` then gets three `--set-json`
+values: an `extraVolumes` entry `coverage`, a hostPath of that directory with
+`type: Directory`, so a missing directory fails the pod at start; an
+`extraVolumeMounts` entry at `/coverage`; and `extraEnv` with `GOCOVERDIR=/coverage`.
+The banner line `E2E coverage` shows the value.
+`tests/unit/hack/ci_deploy_operator_coverage_test.sh` covers it with stub `helm`,
+`kubectl`, `kind` and `docker` binaries.
 
 Usage:
 
@@ -2330,13 +2713,15 @@ image set `hack/ci-resolve-e2e-images.sh` wrote.
 | `OVN_VERSION` | With `BUILD_OVN` | (empty) | The pinned OVN version, the tag `docker load` prints for the ovn image; `hack/ci-resolve-e2e-images.sh` writes it |
 | `BUILD_LIBVIRT` | No | (empty) | `true` builds the libvirt image, the flake attribute `libvirt-image` |
 | `BUILD_OPERATORS` | No | (empty) | One operator name per line; each builds the flake attribute `<op>-operator-image` |
+| `BUILD_COVER_OPERATORS` | No | (empty) | One operator name per line; each builds the flake attribute `<op>-operator-cover-image`, the coverage-instrumented variant |
 | `GITHUB_WORKSPACE` | Yes | - | The checkout the flake is evaluated in; set by the runner |
 
 The script writes the group `e2ebld` (gid 40000) and one build user per CPU (uids
 from 40001) to the container's account files (`NIX_E2E_ETC`, `/etc` by default), then
 builds the flake attributes `<name>-<rel_>-image` of every image (`<name>` the third
 field of a line that has one), `ovn-image` with `BUILD_OVN`, `libvirt-image` with
-`BUILD_LIBVIRT` and `<op>-operator-image` for each name of `BUILD_OPERATORS`, in one
+`BUILD_LIBVIRT`, `<op>-operator-image` for each name of `BUILD_OPERATORS` and
+`<op>-operator-cover-image` for each name of `BUILD_COVER_OPERATORS`, in one
 `nix build` with `--option sandbox false`,
 `--option build-users-group e2ebld` and one job per CPU. The builders, which run the setup code of every sdist the locks build, run as
 those users: the runner mounts its Docker socket and the workspace into the container,
@@ -2344,7 +2729,7 @@ and a build user can neither open the socket nor write the workspace. Their uids
 those of a host Nix daemon's build users. It then writes each image stream to
 `.nix-e2e/<name>-<release>.tar` and appends `<name> <release>` to `.nix-e2e/images.txt`;
 the ovn image is listed as `ovn <OVN_VERSION>`, the libvirt image as `libvirt latest`
-and an operator image as `<op>-operator latest`, the tag `docker load` prints for it. A line with four fields exits 1
+an operator image as `<op>-operator latest` and a cover image as `<op>-operator cover`, the tag `docker load` prints for it. A line with four fields exits 1
 with `ci-nix-build-e2e-images.sh: malformed line '<line>'`, a `BUILD_OVN` without
 `OVN_VERSION` with `ci-nix-build-e2e-images.sh: BUILD_OVN is true but OVN_VERSION is
 empty`, both before nix runs, and a missing attribute or a
@@ -2355,6 +2740,49 @@ Before anything else it adds the workspace to git's `safe.directory`, because th
 container's root does not own the checkout, and its `EXIT` trap hands `.nix-e2e/` back
 to the owner of the workspace. `tests/unit/ci/nix_e2e_build_test.sh` drives it with
 stub `nix`, `git` and `nproc` binaries and scratch account files.
+
+### hack/ci-collect-e2e-coverage.sh
+
+Collects the operator coverage of an `e2e-operator`, `e2e-chaos` or `tempest` matrix
+entry before its kind cluster is deleted ([Operator coverage](#operator-coverage)). The only
+argument is the family, `e2e`, `chaos` or `tempest`, which names the profiles and
+the Codecov flags.
+
+| Environment Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `GITHUB_OUTPUT` | Yes | - | The output file `found`, `files` and `flags` go to |
+| `GITHUB_STEP_SUMMARY` | No | stdout | The file the coverage table goes to |
+| `KIND_CLUSTER` | No | `cobaltcore` | The kind cluster whose nodes hold the counters |
+| `SCALE_DOWN` | No | `true` | `true` makes every manager flush once more before the copy; the jobs pass `false` on a cancelled run |
+
+The script works in four steps:
+
+1. Final flush. Under `SCALE_DOWN=true` it scales every Deployment whose `manager`
+   container sets `GOCOVERDIR` to 0 replicas and waits up to 60 s per Deployment
+   for its pods, selected by `.spec.selector.matchLabels`, to be deleted. Each
+   manager flushes on SIGTERM. A failed `kubectl` call or a timeout prints a
+   `::warning::` and the script carries on.
+2. Copy. `docker cp` copies `/var/lib/cobaltcore-coverage` of every node
+   `kind get nodes` lists to `_output/coverage/raw/<node>/`. A node without it prints a
+   `::notice::` and is skipped.
+3. Merge. Each operator directory, whose name must match `^[a-z][a-z0-9-]*$`, is
+   gathered from every node and merged with `go tool covdata textfmt` into
+   `<family>-<op>.out`. A set without a `covcounters.*` file, a failed merge and a
+   profile with no line beyond `mode:` are skipped with a `::notice::` or
+   `::warning::`.
+4. Summary and outputs. The job summary gets `### Operator coverage (<family>)`
+   and a row per profile: statements, covered statements and coverage of the
+   blocks under `operators/<op>/`, without those of `internal/common`. With no
+   profile it says `No operator coverage counters were collected.`
+   `GITHUB_OUTPUT` gets `found=true|false`, `files` (the profiles, comma-joined,
+   sorted by operator) and `flags` (`<family>-<op>` in the same order, then
+   `<family>-common`).
+
+It exits 1 for a family other than the three or a missing `GITHUB_OUTPUT`, and 0
+in every other case. It removes the profiles and counters an earlier run left in
+`_output/coverage`, because a self-hosted runner reuses its workspace.
+`tests/unit/hack/ci_collect_e2e_coverage_test.sh` drives it with stub `kind`,
+`docker`, `kubectl` and `go` binaries.
 
 ### hack/ci-resolve-ovn-version.sh
 
@@ -2590,13 +3018,17 @@ unchanged. Shared between the `tempest` job and every `e2e-*` job except `e2e-in
 The map holds one of two forms per ref: `<repo>:e2e-<run-id>-<tag>` for an image this
 run built, or `<repo>@sha256:...` for one it reused from `main`. A ref the map does
 not carry falls back to the run-scoped tag, and so does every ref when `image-map` is
-left empty. A malformed map fails the step before the first pull.
+left empty. A malformed map fails the step before the first pull. With
+`operator-variant: cover`, a ref that ends in `-operator:dev` is looked up, with the
+same fallback, as the same repository's `cover` tag, and the pulled image is tagged
+as the `:dev` ref, so the job's `kind load` and deploy lines stay as they are.
 
 | Input | Default | Description |
 | --- | --- | --- |
 | `run-id` | `${{ github.run_id }}` | Run ID used as the tag prefix (`e2e-<run-id>-`) |
 | `images` | (required) | Multiline list of canonical local refs (e.g. `ghcr.io/c5c3/keystone:2026.1`); blank/comment lines are ignored |
 | `image-map` | `''` | The `image-map` output of `build-e2e-images`; empty means pull every ref by run-scoped tag |
+| `operator-variant` | `''` | Empty, or `cover` to fill every `<repo>-operator:dev` ref from `<repo>-operator:cover`; any other value fails the step before the first pull. `e2e-operator`, `e2e-chaos` and `tempest` pass `cover` |
 | `registry` | `ghcr.io` | Registry to authenticate against |
 | `username` | `${{ github.actor }}` | Login user |
 | `password` | `${{ github.token }}` | Login token |
@@ -2653,7 +3085,7 @@ All Go-based jobs use `actions/setup-go@v7` with:
 go-version-file: go.work
 ```
 
-This reads the Go version from `go.work` (currently Go 1.27.2) rather than hardcoding a
+This reads the Go version from `go.work` (currently Go 1.27.3) rather than hardcoding a
 `go-version` value. The repository root contains `go.work` (not `go.mod`) because the
 project uses a Go Workspace with multiple modules (`internal/common`, `operators/keystone`,
 `operators/c5c3`). Module dependency caching is enabled by default in
@@ -2665,7 +3097,7 @@ The workflow uses a concurrency group scoped per-branch per-workflow:
 
 ```yaml
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}', github.ref, github.workflow) }}
+  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}-{2}', github.ref, github.workflow, github.event_name) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
@@ -2681,6 +3113,19 @@ job resolves it to nothing; the run costs one `ubuntu-latest` runner for about
 twenty seconds. A `ci:*` label (or `run-chaos`) stays in the branch's group and is
 meant to supersede the run in flight, since it asks for jobs that run did not
 schedule.
+
+The group names the event, so a scheduled run (`refs/heads/main-CI-schedule`) and a
+dispatched run never join main's push group (`refs/heads/main-CI-push`). GitHub
+keeps one pending run per group and cancels the older pending one, so a night in
+main's push group would delay main's publish jobs or be cancelled by the next push.
+Neither event cancels a run in flight: a second dispatch waits for the first.
+
+The `Operator Upgrade` workflow (`.github/workflows/operator-upgrade.yaml`) has a
+group of its own, `operator-upgrade-main`, with `cancel-in-progress: true`: a newer
+successful completion of a CI or Build Images push run on `main` cancels the upgrade
+run in flight, and main's CI runs never wait for it. Every completion starts a run,
+so a run whose jobs the `resolve` guards skip (a failed run, a fork's run) gets a
+group keyed on its run id and cancels nothing.
 
 ## Action Pinning
 
@@ -2728,6 +3173,10 @@ This mirrors the lint exclusion of the same files (see the note above the
 | Project | `auto` (threshold: 1%) | Overall coverage must not decrease by more than 1% |
 | Patch | `90%` | New/changed lines in a PR must meet 90% coverage |
 
+Both statuses list their `flags`: the 22 `unit-*` and `integration-*` flags. The
+`e2e-*`, `chaos-*` and `tempest-*` flags show in the pull request comment and the flag
+and file views, and no status counts them.
+
 `fail_ci_if_error: false` is set on each `codecov/codecov-action` step in the workflow
 (not in `.codecov.yml`, where it is not a valid key) because fork PRs do not have access
 to `CODECOV_TOKEN`. This prevents CI from failing due to upload issues on forks.
@@ -2735,9 +3184,10 @@ to `CODECOV_TOKEN`. This prevents CI from failing due to upload issues on forks.
 ### Flag Management
 
 The `flag_management` section in `.codecov.yml` links CI-uploaded flags to coverage tracking
-rules. Flags follow the `[unit|integration]-<target>` naming convention, matching the CI
-matrix targets (`common`, `keystone`, `c5c3`, `horizon`, `glance`, `placement`, `barbican`,
-`ovn`, `neutron`, `cinder`, `nova`).
+rules. Flags follow the `<prefix>-<target>` naming convention with five prefixes, `unit`,
+`integration`, `e2e`, `chaos` and `tempest`, and the CI matrix targets (`common`,
+`keystone`, `c5c3`, `horizon`, `glance`, `placement`, `barbican`, `ovn`, `neutron`,
+`cinder`, `nova`).
 Each flag has `carryforward: true`, which ensures that when only a subset of flags is
 uploaded (e.g., only one operator changed), the missing flags carry forward their
 last-known coverage instead of reducing the total.
@@ -2768,6 +3218,15 @@ Defined flags:
 | `integration-neutron` | `operators/neutron/` | `test-integration` job, `neutron` matrix leg |
 | `integration-cinder` | `operators/cinder/` | `test-integration` job, `cinder` matrix leg |
 | `integration-nova` | `operators/nova/` | `test-integration` job, `nova` matrix leg |
+| `e2e-<target>` | `internal/common/` for `e2e-common`, `operators/<target>/` otherwise | `e2e-operator` job, one upload per matrix entry, naming every operator it deployed |
+| `chaos-<target>` | `internal/common/` for `chaos-common`, `operators/<target>/` otherwise | `e2e-chaos` job, one upload per matrix entry, naming every operator it deployed |
+| `tempest-<target>` | `internal/common/` for `tempest-common`, `operators/<target>/` otherwise | `tempest` job, one upload per matrix entry, naming every operator it deployed |
+
+An e2e, chaos or Tempest upload carries the profile of every operator a matrix entry
+deployed, and each profile holds the blocks of `internal/common` too. Every flag of
+the upload applies to all of its profiles, and the flag's `paths` keep the files of
+its own tree: `e2e-keystone` those under `operators/keystone/`, `e2e-common` those
+under `internal/common/`.
 
 ### Component Thresholds
 
@@ -2778,6 +3237,9 @@ Each component is tracked independently on the Codecov dashboard:
 | `common` | `internal/common/**` | 80% | Shared library code underpinning all operators |
 | `controllers` | `operators/*/internal/controller/**` | 70% | Controller reconciliation logic (envtest-dependent paths harder to cover) |
 | `webhooks` | `operators/*/api/**` | 90% | Webhook validation/defaulting (incorrect admission logic causes silent data corruption) |
+
+Each component sets `flag_regexes` `^unit-` and `^integration-`, so its status counts
+the unit and integration flags alone.
 
 ## Makefile Targets
 
@@ -2881,6 +3343,9 @@ The CI workflow depends on the following artifacts:
 | `flake.nix`, `flake.lock`, `nix/locks/` | `build-e2e-images` job | The flake the e2e images are built from |
 | `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-autoscaling`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
 | `hack/ci-deploy-operator.sh` | the `tempest` job and every `e2e-*` job except `e2e-infra` | Deploys operator via Helm; `e2e-controlplane` sets `OPERATOR_REPLICAS=1` |
+| `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-leg.sh` | `e2e-operator-upgrade.yaml` | Fetch the pinned baseline chart and image; name what an operator's upgrade suite loads and deploys |
+| `hack/ci-read-chart-version.sh` | `merge-operator-images`, `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-main-matrix.sh` | Prints the version a `Chart.yaml` or a `baseline.yaml` pin names |
+| `hack/ci-operator-upgrade-main-matrix.sh` | `operator-upgrade.yaml` | Selects the operators a push to `main` published whose pin is frozen, and maps the images their suites load |
 | `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |
 | `hack/ci-vpa-recommendations.sh` | `e2e-controlplane`, `e2e-controlplane-sso`, `tempest` jobs under `ci:measure-sizing`, and by hand in the [lab measurement](../testing/sizing-calibration.md#lab-measurement) | Records the VPA recommendations of the `openstack` workloads for the [sizing measurement](#sizing-measurement); its `prepare` subcommand removes the MariaDB scale subresource on the lab, which refuses `WITH_VPA=true` |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |

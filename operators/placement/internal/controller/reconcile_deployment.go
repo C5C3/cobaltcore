@@ -254,16 +254,16 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 				Name:          "placement-api",
 				ContainerPort: placementAPIPort,
 			}},
-			// All three probes GET "/", the version document placement serves without
-			// authentication and without touching the database. The startup probe
+			// The startup and readiness probes GET "/", the version document
+			// placement serves without authentication and without touching the
+			// database. The startup probe
 			// carries the cold-start window: before the app answers, every uWSGI
 			// worker imports placement and syncs the traits and resource classes
 			// against the database (loadapp calls update_database, which runs
 			// trait.ensure_sync and resource_class.ensure_sync). Under a CPU limit set
 			// on the container or on a contended node that took 41 to 45 seconds
-			// (measured in a kind pod at 120m CPU), while the liveness probe alone
-			// restarts the container 55 seconds after it started. The timings are the
-			// sibling operators': 30x10s of startup budget, and an 8s timeout because
+			// (measured in a kind pod at 120m CPU). The timings are the sibling
+			// operators': 30x10s of startup budget, and an 8s timeout because
 			// a cold-starting WSGI app can hold even a plain HTTP GET past the
 			// kubelet's 1s default.
 			StartupProbe: &corev1.Probe{
@@ -272,14 +272,18 @@ func buildPlacementDeployment(placement *placementv1alpha1.Placement, configMapN
 				PeriodSeconds:    10,
 				TimeoutSeconds:   8,
 			},
+			// The liveness probe only connects. uWSGI's HTTP router accepts while
+			// every worker waits on a dependency, a database behind a partition or
+			// a broker that restarts, and a GET behind those workers restarts a
+			// healthy API. The readiness probe keeps the GET and takes a saturated
+			// pod out of the Service instead. 10s stays below the 20s period.
 			LivenessProbe: &corev1.Probe{
-				ProbeHandler:        placementRootProbeHandler(),
+				ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(placementAPIPort)},
+				},
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
-				// A single-worker API holds the probe's GET for the whole request in
-				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
-				// is the readiness probe's timeout, below the 20s period.
-				TimeoutSeconds: 10,
+				TimeoutSeconds:      10,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        placementRootProbeHandler(),
@@ -337,7 +341,7 @@ func placementPodAnnotations(dsnDigest, authtokenDigest string) map[string]strin
 	return annotations
 }
 
-// placementRootProbeHandler returns the shared startup/readiness/liveness probe
+// placementRootProbeHandler returns the shared startup/readiness probe
 // handler: an HTTP GET of "/" on the API port.
 func placementRootProbeHandler() corev1.ProbeHandler {
 	return corev1.ProbeHandler{

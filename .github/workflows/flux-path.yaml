@@ -1,0 +1,143 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+name: Flux path
+
+# Brings up the ControlPlane devstack every night the way
+# docs/quick-start-controlplane.md tells a user to (#1531). deploy-infra runs
+# with WITH_CONTROLPLANE=true and nothing else, so it takes its default
+# operator path: the operator charts and images main published, and K-ORC from
+# its Flux source. hack/ci-quick-start-controlplane.sh then runs Steps 3 to 6
+# with the page's own YAML blocks: the full CR of the quick start (Keystone,
+# Horizon, Glance, Placement, Barbican, Neutron and Nova over a referenced
+# OVNCentral), not the Keystone and Horizon CR that WITH_CONTROLPLANE_CR=true
+# applies. The run fails when that ControlPlane does not become Ready. Every
+# e2e job in ci.yaml installs operators built from the checkout instead, so
+# only this run sees a published chart, image digest, K-ORC pin or quick start
+# CR that breaks a new user's first command.
+#
+# The job runs on self-hosted, like every e2e job and performance.yaml: the
+# page asks for 16 GB for the container runtime alone. It starts at 02:45 UTC,
+# after performance.yaml's 01:30 start and 75-minute wall. A green night is
+# estimated at 40 to 45 minutes; the wall is 90.
+#
+# A red scheduled night files one tracking issue, "Scheduled Flux path run is
+# red", or comments on the open one (hack/ci-report-red-run.sh). A human
+# closes it once the cause is fixed; a green night does not. Only the report
+# job may write issues, and it runs on a GitHub-hosted runner: the self-hosted
+# job installs published charts and never holds a write token. A dispatch or
+# pull request run never reports.
+#
+# The pull_request trigger proves a change to this file or its two scripts on
+# the pull request itself: GitHub dispatches workflow_dispatch only for a
+# workflow on the default branch. A fork's pull request does not run the job.
+# The night does not log in to GHCR, because a user pulls the public images
+# anonymously.
+#
+# A workflow of its own rather than a trigger on ci.yaml, for the reason
+# performance.yaml gives: every ci.yaml job gates on pull_request or on the
+# changes resolver. docs/reference/testing/controlplane-e2e-tests.md
+# describes the run.
+
+"on":
+  schedule:
+    # Nightly at 02:45 UTC
+    - cron: "45 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/flux-path.yaml'
+      - 'hack/ci-quick-start-controlplane.sh'
+      - 'hack/ci-report-red-run.sh'
+
+permissions:
+  contents: read
+
+# A newer push supersedes a pull request run. GitHub replaces a pending run
+# with the next one queued in its group, so a night has a group of its own: in
+# a shared one, a second dispatch would cancel a night waiting behind the first.
+concurrency:
+  group: flux-path-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Kind cluster name, as in ci.yaml.
+  KIND_CLUSTER: cobaltcore
+  # Held in lockstep with every other kind pin; the list of pins lives in
+  # tests/unit/renovate/workflow_pins_custommanager_test.sh, which asserts
+  # they match, and the Renovate kind group bumps them in one pull request.
+  KIND_VERSION: v0.33.0
+
+jobs:
+  controlplane:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true
+    runs-on: self-hosted
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          cluster-name: ${{ env.KIND_CLUSTER }}
+          config: hack/kind-config.yaml
+      # The quick start's Step 2 on port 443. The operator path is
+      # deploy-infra's default, the one the page relies on.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+      - name: Bring up the quick start ControlPlane
+        run: hack/ci-quick-start-controlplane.sh up
+      - name: Summarize the failure
+        if: failure()
+        run: |
+          hack/ci-quick-start-controlplane.sh summary _output/flux-path/summary.md
+          cat _output/flux-path/summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Dump diagnostic info
+        if: failure()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: c5c3
+      # The report job puts the summary into the tracking issue.
+      - name: Upload the summary
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flux-path-summary
+          path: _output/flux-path/summary.md
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read.
+      # Never fails the job (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
+
+  report:
+    needs: controlplane
+    if: always() && github.event_name == 'schedule' && needs.controlplane.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A job that hit its wall uploaded nothing; the report then says so.
+      - name: Download the summary
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: flux-path-summary
+          path: _output/flux-path
+      - name: Report the red night
+        run: hack/ci-report-red-run.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPORT_TITLE: Scheduled Flux path run is red
+          REPORT_RESULT: ${{ needs.controlplane.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT_SHA: ${{ github.sha }}
+          SUMMARY_FILE: _output/flux-path/summary.md

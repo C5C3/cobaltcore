@@ -23,18 +23,22 @@
 #                           built
 #   BUILD_OPERATORS         one operator name per line, each built as
 #                           <op>-operator-image
+#   BUILD_COVER_OPERATORS   one operator name per line, each built as
+#                           <op>-operator-cover-image, the
+#                           coverage-instrumented variant
 #
 # It builds the flake attributes <name>-<rel_>-image, <rel_> the release with
 # its dot replaced by _ and <name> the service or, on a three-field line, the
 # derived image, and ovn-image, libvirt-image,
-# keystone-federation-proxy-image and <op>-operator-image, which carry no
-# release, in one nix invocation that runs one job per CPU, so the
+# keystone-federation-proxy-image, <op>-operator-image and
+# <op>-operator-cover-image, which carry no release, in one nix invocation that runs one job per CPU, so the
 # derivations of every image build side by side. It then writes each image
 # stream to .nix-e2e/<name>-<release>.tar and appends "<name> <release>" to
 # .nix-e2e/images.txt, which the "Load Nix images" step reads to load and tag
 # the images on the runner; for the ovn image the release is OVN_VERSION, for
 # the libvirt, the keystone-federation-proxy and the <op>-operator images
-# latest, the tags docker load prints for them.
+# latest and for the <op>-operator cover images cover, the tags docker load
+# prints for them.
 #
 # The container is unprivileged and cannot create the namespaces of the Nix
 # sandbox, so the builds run without it. The builders, which run the setup
@@ -123,6 +127,10 @@ fi
 for op in ${BUILD_OPERATORS:-}; do
   images+=("${op}-operator latest")
   attrs+=(".#${op}-operator-image")
+done
+for op in ${BUILD_COVER_OPERATORS:-}; do
+  images+=("${op}-operator cover")
+  attrs+=(".#${op}-operator-cover-image")
 done
 
 if [ "${#images[@]}" -eq 0 ]; then

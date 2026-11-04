@@ -78,6 +78,17 @@ spec:
         app.kubernetes.io/managed-by: ovncentral-operator
         app.kubernetes.io/name: ovncentral
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: sb-relay
+                  app.kubernetes.io/instance: ovn
+                  app.kubernetes.io/name: ovncentral
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - /usr/share/ovn/scripts/ovn-ctl
@@ -150,14 +161,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: sb-relay
-            app.kubernetes.io/instance: ovn
-            app.kubernetes.io/name: ovncentral
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - emptyDir: {}
         name: run
@@ -199,6 +202,17 @@ spec:
         app.kubernetes.io/managed-by: ovncentral-operator
         app.kubernetes.io/name: ovncentral
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: sb-relay
+                  app.kubernetes.io/instance: ovn
+                  app.kubernetes.io/name: ovncentral
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - /usr/share/ovn/scripts/ovn-ctl
@@ -268,14 +282,6 @@ spec:
             app.kubernetes.io/name: ovncentral
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: sb-relay
-            app.kubernetes.io/instance: ovn
-            app.kubernetes.io/name: ovncentral
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - emptyDir: {}

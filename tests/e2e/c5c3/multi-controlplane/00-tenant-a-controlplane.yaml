@@ -24,21 +24,23 @@
 # enforces ONE ControlPlane per namespace, so the two ControlPlanes MUST live in
 # separate namespaces — hence the bundled Namespace object here.
 #
-# DECISION the per-namespace prerequisites this CR references
-# — the keystone-admin password Secret and the managed MariaDB/Memcached
-# infrastructure — are provisioned by the deploy stack in ITS namespace, not in
-# tenant-a/tenant-b. Wiring those per-tenant prerequisites into kind CI is the
-# same documented fast-follow as full-controlplane-keystone's chain wiring
-# (GitOps/CI, /): this test is behind a presence guard and
-# SKIPs cleanly when the c5c3 + K-ORC stack (and these prerequisites) are absent,
-# so it never hard-fails the default kind E2E job. We intentionally do NOT invent
-# unrelated infra here; managed-mode mirrors full-controlplane-keystone's shape so
-# that when the fast-follow lands these CRs reconcile against production-shaped
-# infrastructure. Reviewer: please verify the per-tenant prerequisite wiring.
+# DECISION the per-namespace prerequisites this CR references (the
+# admin-password path in OpenBao and the database-engine role for the managed
+# MariaDB) are provisioned by the suite itself: it seeds both identities with
+# write-bootstrap-secrets.sh before the apply and onboards both tenants with
+# setup-database-tenant.sh once their MariaDBs are Ready. The suite runs on the
+# e2e-controlplane job, which carries the c5c3 + K-ORC stack, and its finally
+# block deletes this ControlPlane and then the bundled Namespace. It deletes
+# them only when the Namespace carries the c5c3.io/e2e-suite label set below,
+# and the suite refuses to run when a tenant-a it did not create exists. Managed
+# mode mirrors full-controlplane-keystone's shape, so these CRs reconcile
+# against production-shaped infrastructure.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: tenant-a
+  labels:
+    c5c3.io/e2e-suite: multi-controlplane
 ---
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane

@@ -228,6 +228,8 @@ func TestReconcileCredentialKeys_CronJobScheduleUpdated(t *testing.T) {
 		Data: map[string][]byte{"0": []byte("key")},
 	}
 
+	// The pre-created CronJob carries no concurrency policy, as the CronJob of
+	// an older operator did.
 	oldCronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-keystone-credential-rotate",
@@ -274,6 +276,8 @@ func TestReconcileCredentialKeys_CronJobScheduleUpdated(t *testing.T) {
 		Name:      "test-keystone-credential-rotate",
 	}, &cronJob)).To(Succeed())
 	g.Expect(cronJob.Spec.Schedule).To(Equal("0 */6 * * *"))
+	g.Expect(cronJob.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent),
+		"a CronJob created without a policy must gain Forbid on the next reconcile")
 }
 
 func TestReconcileCredentialKeys_GeneratedKeysAreValid(t *testing.T) {
@@ -617,8 +621,8 @@ func TestReconcileCredentialKeys_ConditionMessages(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
-// TestCredentialRotationCronJob_SecurityContext verifies that both containers in the
-// credential rotation CronJob have a restricted SecurityContext.
+// TestCredentialRotationCronJob_SecurityContext verifies that the container in the
+// credential rotation CronJob has a restricted SecurityContext.
 func TestCredentialRotationCronJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
@@ -626,9 +630,6 @@ func TestCredentialRotationCronJob_SecurityContext(t *testing.T) {
 	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
-
-	// Verify init container "copy-keys" SecurityContext (through).
-	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
 
 	// Verify main container "credential-rotate" SecurityContext (through).
 	expectRestrictedSecurityContext(g, findContainerByName(podSpec.Containers, "credential-rotate"))
@@ -683,12 +684,9 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	// Verify ServiceAccount.
 	g.Expect(podSpec.ServiceAccountName).To(Equal("test-keystone-credential-rotate"))
 
-	// Verify init container copies keys from read-only Secret to writable emptyDir.
-	g.Expect(podSpec.InitContainers).To(HaveLen(1))
-	initContainer := podSpec.InitContainers[0]
-	g.Expect(initContainer.Name).To(Equal("copy-keys"))
-	g.Expect(initContainer.Image).To(Equal("ghcr.io/c5c3/keystone:2026.1"))
-	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))
+	// No init container: the rotate script copies the keys from the read-only
+	// Secret into the writable emptyDir itself.
+	g.Expect(podSpec.InitContainers).To(BeEmpty())
 
 	// Verify main container uses script from versioned ConfigMap.
 	container := podSpec.Containers[0]
@@ -712,9 +710,10 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.Key).To(Equal(database.ConnectionSecretKey))
 
-	// Verify volume mounts on main container: credential-keys + fernet-keys (read-only) + config + scripts.
-	g.Expect(container.VolumeMounts).To(HaveLen(4))
-	var credMount, fernetMount, cfgMount, scriptsMount corev1.VolumeMount
+	// Verify volume mounts on main container: credential-keys + fernet-keys (read-only) + config + scripts
+	// + credential-keys-src (read-only) + rotation-state.
+	g.Expect(container.VolumeMounts).To(HaveLen(6))
+	var credMount, fernetMount, cfgMount, scriptsMount, srcMount, stateMount corev1.VolumeMount
 	for _, vm := range container.VolumeMounts {
 		switch vm.Name {
 		case "credential-keys":
@@ -725,6 +724,10 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 			cfgMount = vm
 		case "scripts":
 			scriptsMount = vm
+		case "credential-keys-src":
+			srcMount = vm
+		case "rotation-state":
+			stateMount = vm
 		}
 	}
 	g.Expect(credMount.MountPath).To(Equal("/etc/keystone/credential-keys"))
@@ -734,10 +737,15 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 	g.Expect(cfgMount.ReadOnly).To(BeTrue())
 	g.Expect(scriptsMount.MountPath).To(Equal("/scripts"))
 	g.Expect(scriptsMount.ReadOnly).To(BeTrue())
+	g.Expect(srcMount.MountPath).To(Equal("/credential-keys-src"))
+	g.Expect(srcMount.ReadOnly).To(BeTrue())
+	g.Expect(stateMount.MountPath).To(Equal("/rotation-state"))
+	g.Expect(stateMount.ReadOnly).To(BeFalse())
 
-	// Verify volumes: credential-keys-src (Secret), credential-keys (emptyDir), fernet-keys (Secret), config (ConfigMap), scripts (ConfigMap).
-	g.Expect(podSpec.Volumes).To(HaveLen(5))
-	var srcVol, workVol, fernetVol, cfgVol, scriptsVol corev1.Volume
+	// Verify volumes: credential-keys-src (Secret), credential-keys (emptyDir), fernet-keys (Secret), config (ConfigMap), scripts (ConfigMap),
+	// rotation-state (emptyDir).
+	g.Expect(podSpec.Volumes).To(HaveLen(6))
+	var srcVol, workVol, fernetVol, cfgVol, scriptsVol, stateVol corev1.Volume
 	for _, v := range podSpec.Volumes {
 		switch v.Name {
 		case "credential-keys-src":
@@ -750,8 +758,11 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 			cfgVol = v
 		case "scripts":
 			scriptsVol = v
+		case "rotation-state":
+			stateVol = v
 		}
 	}
+	g.Expect(stateVol.EmptyDir).NotTo(BeNil())
 	g.Expect(srcVol.Secret).NotTo(BeNil())
 	g.Expect(srcVol.Secret.SecretName).To(Equal("test-keystone-credential-keys"))
 	g.Expect(workVol.EmptyDir).NotTo(BeNil())
@@ -777,7 +788,7 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 // directory passes upstream Keystone's "key_repository is world readable"
 // check. All other PodSecurityContext fields must
 // remain nil — Pod-level FSGroup is orthogonal to the container-level
-// PSS-Restricted SecurityContext on the rotate/init containers.
+// PSS-Restricted SecurityContext on the rotate container.
 func TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
@@ -791,7 +802,7 @@ func TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 
 	// do not set any other Pod-level SecurityContext field. Pod-level
 	// RunAs* / Seccomp / SELinux / AppArmor would conflict with or override
-	// the container-level SecurityContext on init/rotate containers.
+	// the container-level SecurityContext on the rotate container.
 	g.Expect(psc.RunAsUser).To(BeNil(), "RunAsUser must stay container-level")
 	g.Expect(psc.RunAsGroup).To(BeNil(), "RunAsGroup must stay container-level")
 	g.Expect(psc.RunAsNonRoot).To(BeNil(), "RunAsNonRoot must stay container-level")
@@ -807,7 +818,7 @@ func TestCredentialRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 // TestCredentialRotationCronJob_KeySecretVolumesSetDefaultMode0400 verifies
 // that the read-only Secret-backed key volumes mounted into the rotation Pod
 // use file mode 0o400 (owner read-only): `credential-keys-src` (the production
-// keys the init container copies into the writable emptyDir) and `fernet-keys`
+// keys the rotate script copies into the writable emptyDir) and `fernet-keys`
 // (mounted read-only purely so the directory exists for keystone-manage)
 // The writable `credential-keys` emptyDir, the
 // `config` ConfigMap, and the `scripts` ConfigMap are out of scope and must
@@ -852,38 +863,15 @@ func TestCredentialRotationCronJob_KeySecretVolumesSetDefaultMode0400(t *testing
 	g.Expect(*scriptsVol.ConfigMap.DefaultMode).To(Equal(int32(0o555)), "scope guard: scripts DefaultMode must remain 0o555")
 }
 
-// TestCredentialRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadableMode
-// verifies that the `copy-keys` init container materialises the rotation
-// working set with mode 0o400. A plain `cp` would inherit the kubelet's mount
-// mode for the destination emptyDir (typically 0o755) and re-introduce the
-// world-readable directory that fixes. Using `install -m 0400` (or
-// equivalent `cp` + explicit `chmod 0400`) keeps the writable copy in lockstep
-// with the read-only source mode.
-func TestCredentialRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadableMode(t *testing.T) {
-	g := NewGomegaWithT(t)
-	ks := credentialTestKeystone()
-
-	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
-
-	initContainer := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers, "copy-keys")
-	g.Expect(initContainer).NotTo(BeNil(), "copy-keys init container must exist")
-	g.Expect(initContainer.Command).NotTo(BeEmpty(), "copy-keys init container must have a Command")
-
-	// Assert the full ["sh", "-c", "<cmd>"] argv shape so a future change to
-	// `bash` or a non-shell entrypoint fails the unit test. The fernet side has equivalent integration coverage via full-
-	// slice equality at integration_test.go.
-	g.Expect(len(initContainer.Command)).To(BeNumerically(">=", 3), "copy-keys Command must be sh -c <cmd>")
-	g.Expect(initContainer.Command[0]).To(Equal("sh"), "copy-keys Command[0] must be `sh`")
-	g.Expect(initContainer.Command[1]).To(Equal("-c"), "copy-keys Command[1] must be `-c`")
-	g.Expect(initContainer.Command[2]).To(ContainSubstring("install -m 0400"), "copy-keys command must use `install -m 0400` to preserve the non-world-readable mode")
-}
-
 // TestCredentialRotationCronJob_RotateContainerVolumeMountsUnchanged is an
-// active regression guard: only changes Pod-level FSGroup, Secret
-// volume DefaultMode, and the init container's copy command. The
+// active regression guard: only changes Pod-level FSGroup and Secret
+// volume DefaultMode. The
 // credential-rotate container's VolumeMounts (including the read-only
 // fernet-keys mount and the read-only config/scripts mounts) must stay
-// byte-for-byte identical to what reconcile_credential.go declares today
+// byte-for-byte identical to what reconcile_credential.go declares today.
+// The list includes the read-only credential-keys-src mount and the writable
+// rotation-state mount that a restarted container needs to retry without
+// rotating or migrating again.
 func TestCredentialRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := credentialTestKeystone()
@@ -898,12 +886,14 @@ func TestCredentialRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testi
 		corev1.VolumeMount{Name: "fernet-keys", MountPath: "/etc/keystone/fernet-keys", ReadOnly: true},
 		corev1.VolumeMount{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
 		corev1.VolumeMount{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
+		corev1.VolumeMount{Name: "credential-keys-src", MountPath: "/credential-keys-src", ReadOnly: true},
+		corev1.VolumeMount{Name: "rotation-state", MountPath: "/rotation-state"},
 	), "scope guard: credential-rotate container VolumeMounts must not be modified")
 }
 
 // TestCredentialRotationCronJob_RotationContainerSecurityContextUnchanged is
 // an active regression guard: must NOT touch container-level
-// SecurityContext on the rotate or init containers — those are fully owned by
+// SecurityContext on the rotate container — those are fully owned by
 // Pod-level FSGroup and container-level RunAs*/Seccomp/Capabilities
 // are independent fields.
 func TestCredentialRotationCronJob_RotationContainerSecurityContextUnchanged(t *testing.T) {
@@ -913,7 +903,6 @@ func TestCredentialRotationCronJob_RotationContainerSecurityContextUnchanged(t *
 	cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 
-	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
 	expectRestrictedSecurityContext(g, findContainerByName(podSpec.Containers, "credential-rotate"))
 }
 
@@ -947,26 +936,23 @@ func TestCredentialRotateScript_EmbeddedContent(t *testing.T) {
 	g.Expect(credentialRotateScript).To(ContainSubstring("python3 << 'PYTHON'"))
 }
 
-// TestCredentialRotateScript_RotateBeforeMigrate verifies that the credential
-// rotation script invokes keystone-manage credential_rotate before
-// credential_migrate, and that the Python K8s API PATCH block is present.
-// credential_rotate must precede credential_migrate so that the active keyset
-// is rotated first before existing credentials are re-encrypted under the
-// new keys.
-func TestCredentialRotateScript_RotateBeforeMigrate(t *testing.T) {
+// TestCredentialRotateScript_MigrateRotateMigrateOrder verifies the order of the
+// keystone-manage commands in the credential rotation script. The first
+// credential_migrate puts stray credentials under the production primary key,
+// because credential_rotate refuses while any credential is under another key.
+// The second re-encrypts every credential under the new primary key, so none
+// becomes inaccessible once the old primary is purged.
+func TestCredentialRotateScript_MigrateRotateMigrateOrder(t *testing.T) {
 	g := NewWithT(t)
 
-	g.Expect(credentialRotateScript).NotTo(BeEmpty(), "credentialRotateScript must not be empty — check go:embed directive")
-
-	rotateIdx := strings.Index(credentialRotateScript, "credential_rotate")
-	migrateIdx := strings.Index(credentialRotateScript, "credential_migrate")
-
-	g.Expect(rotateIdx).To(BeNumerically(">=", 0), "credential_rotate invocation must be present")
-	g.Expect(migrateIdx).To(BeNumerically(">=", 0), "credential_migrate invocation must be present")
-	g.Expect(strings.Index(credentialRotateScript, "python3 << 'PYTHON'")).To(BeNumerically(">=", 0), "python3 PATCH heredoc must be present")
-
-	g.Expect(rotateIdx).To(BeNumerically("<", migrateIdx),
-		"credential_rotate must run before credential_migrate so the active keyset is rotated first")
+	var commands []string
+	for _, line := range strings.Split(credentialRotateScript, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "keystone-manage ") {
+			fields := strings.Fields(line)
+			commands = append(commands, fields[len(fields)-1])
+		}
+	}
+	g.Expect(commands).To(Equal([]string{"credential_migrate", "credential_rotate", "credential_migrate"}))
 }
 
 // TestReconcileCredentialKeys_ConditionObservedGeneration verifies that
@@ -1082,6 +1068,32 @@ func TestCredentialRotationCronJob_SuspendTrue(t *testing.T) {
 	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
 	g.Expect(cronJob.Spec.Schedule).To(Equal(ks.Spec.CredentialKeys.RotationSchedule),
 		"toggling suspend must not change the rotation schedule")
+}
+
+// TestCredentialRotationCronJob_ConcurrencyPolicyForbid verifies that the
+// rotation CronJob forbids overlapping scheduled runs, and bounds each run so
+// a stuck one cannot hold the only slot, whether or not
+// spec.credentialKeys.suspend is set.
+func TestCredentialRotationCronJob_ConcurrencyPolicyForbid(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		suspend bool
+	}{
+		{name: "not suspended", suspend: false},
+		{name: "suspended", suspend: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := credentialTestKeystone()
+			ks.Spec.CredentialKeys.Suspend = tc.suspend
+
+			cronJob := credentialRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-credential-rotate-script-abc123", "")
+
+			g.Expect(cronJob.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
+			g.Expect(cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds).To(HaveValue(Equal(int64(3600))),
+				"a Job that never finishes must fail, or Forbid skips every later rotation")
+		})
+	}
 }
 
 // TestEnsureCredentialRotationRBAC_MainSecretIsReadOnly verifies that the Role

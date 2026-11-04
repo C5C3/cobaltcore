@@ -44,9 +44,9 @@ it with `DIZZY_ARGS="--duration 30m"`.
   on the metal-stack lab `EXTERNAL_CLUSTER=true WITH_DIZZY=true` beside the
   lab's other flags). The runners refuse to start when the `dizzy` namespace
   is absent.
-- On the metal-stack lab, two port-forwards from the workstation: the
-  Gateway's on local port 8443 and one to VictoriaMetrics on local port 8428
-  (see [Running a soak](#running-a-soak)).
+- On the metal-stack lab, the Gateway's public address reachable from the
+  workstation and a port-forward to VictoriaMetrics on local port 8428 (see
+  [Running a soak](#running-a-soak)).
 - A Ready quick-start ControlPlane. The runners read the admin password from the
   `controlplane-keystone-admin-credentials` Secret in the `openstack` namespace
   and generate `_output/dizzy/clouds.yaml` (mode 600, cloud key `devstack-c5c3`)
@@ -77,30 +77,29 @@ Each target runs three separate preflights before handing off to
 the ControlPlane admin Secret. Each failure prints its own message so the three
 causes stay distinguishable.
 
-On the metal-stack lab nothing outside the cluster reaches the stack. Open the
-two port-forwards, each in a terminal of its own, then run the soak with
+On the metal-stack lab Keystone answers on the Gateway's public address, and
+VictoriaMetrics only inside the cluster. Open the port-forward to
+VictoriaMetrics in a terminal of its own, then run the soak with
 `EXTERNAL_CLUSTER=true`:
 
 ```bash
-kubectl -n envoy-gateway-system port-forward \
-  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
 kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
 EXTERNAL_CLUSTER=true make dizzy-keystone
 ```
 
-`hack/dizzy.sh` then takes the Keystone URL
-`https://keystone.127-0-0-1.nip.io:8443/v3` of the first port-forward, exports
-to `localhost:8428` through the second, and calls no `docker`. Neither
-script opens a port-forward; restart one that has ended.
+`hack/dizzy.sh` then takes the Keystone URL `https://keystone.<suffix>/v3` on
+the Gateway, with the suffix from the first DNS name of the Certificate
+`openstack/openstack-gw-tls`, exports to `localhost:8428` through the
+port-forward, and calls no `docker`. The script opens no port-forward; restart
+one that has ended.
 
-The admin password goes only to a Keystone that holds one of the Gateway's
-keys. `hack/dizzy.sh` collects the Gateway's certificates from the Secrets
-`openstack/*-nip-io-tls` with `jq`, as
-[Step 7](../../quick-start-metal-stack.md#cp-verify) of the Quick Start
-(metal-stack) does, into `_output/dizzy/gateway-ca.pem`, and names that file as
-`cacert` in `clouds.yaml`. dizzy then verifies Keystone and the endpoints of
-its catalog against them. Without such a certificate the script exits 1 and
-writes no `clouds.yaml`. The kind mode writes `verify: false`.
+The admin password goes only to a Keystone that holds a certificate of the lab
+CA. `hack/dizzy.sh` writes the lab CA, the `ca.crt` of the Certificate's
+Secret, as [Step 7](../../quick-start-metal-stack.md#cp-verify) of the Quick
+Start (metal-stack) does, into `_output/dizzy/lab-ca.pem`, and names that file
+as `cacert` in `clouds.yaml`. dizzy then verifies Keystone and the endpoints of
+its catalog against it. Without the Certificate or the CA the script exits 1
+and writes no `clouds.yaml`. The kind mode writes `verify: false`.
 
 ## In-cluster soak
 
@@ -119,6 +118,16 @@ away while the soak runs.
 The overlay is `deploy/lab/metal-stack/dizzy-soak/`; see
 [Lab dizzy soak](../infrastructure/infrastructure-manifests.md#lab-dizzy-soak)
 for its objects and posture.
+
+The soak injects no fault. The random chaos run of `hack/chaos-random.sh` is
+the soak with faults ([#1395](https://github.com/c5c3/cobaltcore/issues/1395)):
+it starts this soak for the warm-up, the window and the tail, applies faults
+drawn from the chaos suites as one Chaos Mesh Workflow during the window, and
+judges the soak's report together with the faults' windows and targets (see
+[Random runs](./chaos-e2e-tests.md#random-runs)). CI runs it every night on a
+kind ControlPlane, with `DIZZY_SCENARIO` set to
+`tests/chaos-random/kind/scenario.yaml`; the lab runs it over six hours with
+`make lab-chaos-random`. `make dizzy-soak-start` stays the fault-free soak.
 
 ### Soak prerequisites
 
@@ -214,6 +223,12 @@ under the service `mix`, as in [Watching the run](#watching-the-run).
 | `DIZZY_SOAK_SAMPLE_INTERVAL` | `60` | Seconds between two platform samples. |
 | `DIZZY_SOAK_MAX_ERROR_RATE` | empty | The maximum share of failed operations in percent, from 0 to 100. Empty runs no `error-rate` check. |
 | `DIZZY_SOAK_MAX_P95_SECONDS` | empty | The maximum overall p95 latency in seconds. Empty runs no `p95` check. |
+| `DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT` | `10` | The heap growth of an operator pod in percent, a positive number. `operator-leak` fails a pod above it and above `DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB` at once. A run whose `DIZZY_SOAK_NAMESPACES` leaves out the operator namespaces (`<op>-system`) lists no operator pod and fails `operator-leak`. |
+| `DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB` | `16` | The heap growth of an operator pod in MiB, a positive number. `operator-leak` fails a pod above it and above `DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT` at once. The in-use heap of a reconciling operator swings by several MiB between garbage collections: nightly random chaos measured 32 to 47 MiB on the c5c3-operator with flat goroutines, and on a short run a tenth is four samples. |
+| `DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH` | `10` | The maximum goroutine growth of an operator pod, a positive number of goroutines. `operator-leak` fails above it. |
+| `DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT` | `10` | The memory growth of a container over the second half of the run in percent, a positive number. `memory-growth` fails a container above it and above `DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB` at once. |
+| `DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB` | `16` | The memory growth of a container over the second half of the run in MiB, a positive number. `memory-growth` fails a container above it and above `DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT` at once. |
+| `DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES` | `flux-system` | The namespaces whose containers `memory-growth` does not judge, space-separated. Set but empty, it judges every namespace. |
 
 `start` writes the runner's settings and the resolved `DIZZY_VERSION` into the
 ConfigMap `dizzy-soak-config`, which the Job reads once at its start.
@@ -234,9 +249,9 @@ such as `20261012T081500Z`. `report` copies it to `_output/dizzy/soak/<run>/`.
 
 | File | Content |
 | --- | --- |
-| `report.md` | The verdict and its checks, the run's parameters and times, dizzy's table report, the leak-check line, the restarts and OOM kills, the pods created during the run per namespace (owner other than a Job), the 15 containers with the largest memory growth and the 15 with the highest mean CPU, the conditions, and the line count of `platform/errors.log`. The runner prints it to the pod log as well. |
+| `report.md` | The verdict and its checks, the run's parameters and times, dizzy's table report, the leak-check line, the restarts and OOM kills, the pods created during the run per namespace (owner other than a Job), the 15 containers with the largest memory growth and the 15 with the highest mean CPU, the 15 judged containers with the largest growth over the second half, the operator goroutines and heap, the conditions, and the line count of `platform/errors.log`. The runner prints it to the pod log as well. |
 | `verdict.json` | `{"verdict": "PASS" or "FAIL", "checks": [{"name", "pass", "detail"}]}`. |
-| `meta.json` | The run name, start and end time, service, duration, dizzy version and arguments, platform namespaces, sample interval, both thresholds, and dizzy's exit code. |
+| `meta.json` | The run name, start and end time, service, duration, dizzy version and arguments, platform namespaces, sample interval, the six thresholds, and dizzy's exit code. |
 | `scenario.yaml` | The scenario of the run. |
 | `dizzy.log` | dizzy's output. |
 | `run-<id>.json` | dizzy's run record, which dizzy rewrites once a minute while it runs. |
@@ -244,10 +259,14 @@ such as `20261012T081500Z`. `report` copies it to `_output/dizzy/soak/<run>/`.
 | `platform/containers.tsv` | One line per container of the platform's pods and sample: timestamp, namespace, pod, pod UID, pod creation time, owner kind, container, `restartCount`, last terminated reason and its `finishedAt`. |
 | `platform/usage.tsv` | One line per container and sample of the metrics API: timestamp, namespace, pod, container, CPU in millicores and memory in bytes. |
 | `platform/pod-samples.log` | The time of every pod sample that succeeded. |
-| `platform/errors.log` | One line per failed read, with kubectl's message. |
+| `platform/errors.log` | One line per failed read, with kubectl's or curl's message. |
 | `platform/conditions-start.json`, `conditions-end.json` | The `status.conditions` of every ControlPlane and service CR at the start and the end. A kind whose CRD is absent is skipped. |
 | `platform/restarts.tsv` | Per pod UID and container: the restarts during the run (the last `restartCount` minus the first sample's, or minus 0 for a pod created during the run) and the OOM kills (a last termination `OOMKilled` with `finishedAt` inside the run). |
 | `platform/usage-summary.tsv` | Per container: the sample count, CPU mean and maximum, the memory mean of its first and of its last tenth of samples, the maximum, and the growth between the two means in MiB and percent. |
+| `platform/memory-growth.tsv` | Per container: the sample count, the memory in MiB as the mean of its samples around the run's midpoint (index `ceil(0.45 n)` to `floor(0.55 n)`, the sample at `round(n/2)` when that range is empty) and as the mean of its last tenth, the growth between the two in MiB and percent, and `judged`: `yes`, or the reason `memory-growth` does not judge the container. |
+| `platform/operator-pods.tsv` | One line per operator pod and pod sample: timestamp, namespace, pod, creation time, pod IP and the port of its container port `metrics`. An operator pod is a Running pod with a pod IP whose label `app.kubernetes.io/name` is one of the operator chart names, such as `keystone-operator`, and which has a container port named `metrics`. |
+| `platform/operators.tsv` | One line per operator pod and scrape of its `/metrics`: timestamp, namespace, pod, `go_goroutines`, `go_memstats_heap_inuse_bytes` and `process_resident_memory_bytes` as whole numbers, and the leader: `1` when `leader_election_master_status` is above 0, `0` at 0, `-` without the gauge. A failed scrape writes no line and one line to `platform/errors.log`. |
+| `platform/operators-summary.tsv` | Per operator pod: the sample count, the leader state (`0>1` when it changed), the goroutines and the heap in MiB as the means of its first and of its last tenth of samples and the growth between them, the heap growth in percent, the RSS mean of its last tenth in MiB, and `judged`: `yes`, or the reason `operator-leak` does not judge the pod. |
 | `platform/conditions.tsv` | Per object: kind, namespace, name, `Ready` at the start and at the end, and every condition whose `lastTransitionTime` lies inside the run. |
 
 The runner reads the conditions of `controlplanes.c5c3.io` and of
@@ -257,7 +276,7 @@ The runner reads the conditions of `controlplanes.c5c3.io` and of
 
 ### Verdict checks
 
-The verdict is PASS when every check that ran passed. The first four checks
+The verdict is PASS when every check that ran passed. The first six checks
 always run, the last two only when their setting is set.
 
 | Check | Fails when |
@@ -266,8 +285,68 @@ always run, the last two only when their setting is set.
 | `leak-check` | The last leak-check line of `dizzy.log` is not the clean one, `leak check: no run-tagged resources remain` (`glance`: `leak check: no run-tagged images remain`; `keystone`: `leak check: no run-named resources remain`). dizzy exits 0 even when its leak check finds resources, so the check reads the log. Its detail is dizzy's leak-check line, or `leak check line not found`. |
 | `controlplane-ready` | No ControlPlane was read at the end, the read failed, or one is not `Ready=True`. |
 | `no-restarts` | No pod sample succeeded, or a container of the platform restarted or was OOM-killed during the run. |
+| `operator-leak` | No pod sample succeeded, no operator pod was listed in the sampled namespaces, a listed operator pod has no metrics sample, or, listed in more than 20 pod samples, none in more than one and more than a tenth of them, or a judged operator pod's heap grew by more than `DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB` and by more than `DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT` percent at once, or its goroutines by more than `DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH`. |
+| `memory-growth` | No sample of the metrics API succeeded, no container could be judged, or a judged container's memory grew over the second half of the run by more than `DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB` and by more than `DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT` percent at once. |
 | `error-rate` | `.metrics.overall.failed / .metrics.overall.attempted` of `dizzy-report.json`, in percent, exceeds `DIZZY_SOAK_MAX_ERROR_RATE`, or no operation was attempted. |
 | `p95` | `.metrics.overall.latency.p95` of `dizzy-report.json` exceeds `DIZZY_SOAK_MAX_P95_SECONDS`. |
+
+`operator-leak` reads four series of each operator pod: `go_goroutines`,
+`go_memstats_heap_inuse_bytes`, `process_resident_memory_bytes` and
+`leader_election_master_status`. On every sample the runner fetches
+`http://<pod IP>:<port>/metrics` with curl, over the pod network and within
+10 seconds, 3 of them for the connection. After a stop the sampler finishes
+the pod at hand, and the runner then scrapes every pod once more for the
+report. A pod's growth is the mean of its last tenth of samples minus the
+mean of its first tenth, a tenth being at least one sample. The goroutine
+bound is absolute, because a standby replica holds a few dozen goroutines
+and a relative bound would flag noise there. The check judges a pod only
+when the pod existed at the run's start, has at least 20 samples, and held
+the same leadership state in its first and its last sample. A pod created
+during the run fills its informer caches, and a standby that takes over the
+lease starts its controllers' workers, so both grow without a leak. The
+detail names every pod the check did not judge, with the reason. A listed
+pod without a sample fails with the last scrape error of
+`platform/errors.log`, such as curl's timeout, also when it was created
+during the run. So does a pod whose scrapes failed: one listed in more than
+20 pod samples and without a metrics sample in more than one of them and in
+more than a tenth. The one allows for the sampler's last scrape, which a stop
+cuts short. A pod listed in 20 pod samples or fewer has fewer than 20 samples
+after one miss and is not judged, so its misses do not fail it. A judged pod
+above a bound fails with its heap growth in percent, its goroutine growth,
+and the means of both. The check compares the values as `operators-summary.tsv`
+prints them, to one decimal, and a growth equal to a bound passes.
+
+`memory-growth` reads `platform/memory-growth.tsv`. A container's growth is
+the mean of its last tenth of samples minus the mean of its samples around
+the midpoint, so the warm-up of the first half, in which caches and pools
+fill, does not count. The check exists because the six-hour lab soak of
+[#1311](https://github.com/c5c3/cobaltcore/issues/1311) showed
+`nova-scheduler` growing from 128 to 191 MiB, and only a reader of the report
+table noticed. A container fails only above both bounds: 16 MiB is ordinary
+churn for a large container, and 10 % is for a small one. The check judges a
+container only when its pod is not in `EXEMPT_PODS`, its namespace is not in
+`DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES`, it has at least 20 samples, its
+pod kept one UID in every pod sample and was created before the run, and it
+did not restart. A failure names the container with both means, the growth
+in MiB and in percent; a pass names how many containers were judged and the
+largest growth. The values compare as the table prints them,
+to one decimal, and a growth equal to a bound passes. `EXEMPT_PODS`, one
+`<namespace>/<pod>` per line, is empty in a soak: the ConfigMap does not
+carry it. A random run sets it to the targets of its faults when it judges a
+soak's tables again, and `no-restarts` and `memory-growth` then skip those
+pods and name how many they skipped.
+
+`flux-system` is skipped by default, and the check's detail names how many
+of its containers it skipped. Flux refreshes its sources every hour and
+reconciles its HelmReleases every half hour, and the working set of
+`source-controller` and `helm-controller` jumps for a few minutes each time.
+On a kind cluster, `source-controller` went from 54 to 255 MiB one hour
+after `make deploy-infra` had created the sources. A soak that ends then
+reads the refresh in its last tenth as growth.
+
+A plain soak that sets neither memory setting runs `memory-growth` with the
+defaults, so a soak that passed before this check existed can end `FAIL`
+and its Job `Failed`. A report written before has no `memory-growth` row.
 
 The runner exits 0 on PASS and 1 on FAIL, so the Job ends Complete or Failed
 by verdict. A completed duration, a `stop`, a deleted Job and a pod eviction
@@ -283,15 +362,21 @@ removes its resources and prints its leak check. Then it writes the report.
 - No resize and no cold migration in the default scenario, since the lab's
   compute image has no ssh client.
 - No default thresholds for the error rate or the latency, and no quotas for
-  the project. A larger scenario, such as one run with
-  `--set resources.servers=20`, needs Nova's quotas raised by hand.
+  the project. The operator leak bounds and the memory growth bounds are the
+  exceptions with a default: a heap growth of 10 % and a goroutine growth of
+  10, and a container growth of 10 % and 16 MiB. A larger scenario, such
+  as one run with `--set resources.servers=20`, needs Nova's quotas raised by
+  hand.
 - Nothing restarts a soak: `backoffLimit: 0` ends it when its pod is lost.
   After a TERM the pod has 540 seconds to clean up and report; a teardown of
   dizzy that takes longer is cut short and leaves resources behind.
-- The report reads the Kubernetes API directly. It holds no events and no node
-  conditions, and the platform's samples go to no VictoriaMetrics series.
+- The report reads the Kubernetes API and the operators' metrics endpoints
+  directly. It holds no events and no node conditions, and the platform's
+  samples go to no VictoriaMetrics series.
 - Nothing in the soak is specific to the lab but the overlay's location and
-  the scenario's names; only the lab run is proven.
+  the scenario's names. CI runs the soak under the random run of
+  `e2e-chaos-random`, on a kind ControlPlane, with the scenario of
+  `tests/chaos-random/kind/`.
 - K-ORC applies the user's password only when the name of its Secret changes.
   To reset it, delete the K-ORC User `dizzy-soak` and the Secret
   `dizzy-soak-user-password` in `openstack` together; the next `start`
@@ -370,7 +455,8 @@ settings on `newforge`, the lab's shoot of three workers with 16 vCPUs and
 10 s liveness timeouts of #1296 and the 1Gi broker of #1298. Verdict PASS:
 `dizzy-exit` pass (exit 0, `run-dd8c475c.json` written), `leak-check` pass
 (no run-tagged resource left), `controlplane-ready` pass, `no-restarts` pass
-(151 containers, 0 restarts, 0 OOM kills). dizzy ran 9912 operations with
+(151 containers, 0 restarts, 0 OOM kills). The run predates the
+`operator-leak` check. dizzy ran 9912 operations with
 0 failures (error rate 0 %): 3885 server, 3263 volume, 1178 network, 797
 port, 788 subnet and 1 server group; p50 145 ms, p95 6.1 s, p99 7.6 s, with
 the port and server p95 the live-migration waits of the Legacy persona.
@@ -412,14 +498,14 @@ own. The dizzy version pin lives only in `hack/dizzy.sh`.
 | `DIZZY_SECRET` | Name of the ControlPlane admin Secret (default `controlplane-keystone-admin-credentials`). |
 | `DIZZY_CP_NAMESPACE` | Namespace of the admin Secret (default `openstack`). |
 | `KIND_CLUSTER` | Cluster name for the `docker port` probes (default `cobaltcore`). Note that `make deploy-infra` itself keys off `CLUSTER_NAME`. Not read under `EXTERNAL_CLUSTER=true`. |
-| `EXTERNAL_CLUSTER` | `true` runs against the metal-stack lab: the Keystone URL of the Gateway port-forward on local port 8443, verified against the Gateway's certificates, no `docker port` probe, and a hint to open the VictoriaMetrics port-forward when `localhost:8428` does not answer. Any other value keeps the kind mode. `make deploy-infra` and `make teardown-infra` read the same variable. |
+| `EXTERNAL_CLUSTER` | `true` runs against the metal-stack lab: the Keystone URL on the Gateway's public hostname, verified against the lab CA, no `docker port` probe, and a hint to open the VictoriaMetrics port-forward when `localhost:8428` does not answer. Any other value keeps the kind mode. `make deploy-infra` and `make teardown-infra` read the same variable. |
 
 ## Watching the run
 
 Grafana serves the dizzy dashboards at `https://dizzy.127-0-0-1.nip.io`; append
 `:<KIND_HOST_PORT>` when that override is set to something other than 443. On
-the metal-stack lab it answers at `https://dizzy.127-0-0-1.nip.io:8443` through
-the Gateway port-forward. Access is anonymous Viewer, so no login is needed.
+the metal-stack lab it answers at `https://dizzy.<suffix>` on the Gateway's
+public address. Access is anonymous Viewer, so no login is needed.
 Three dashboards ship with the overlay:
 
 | Dashboard | UID |

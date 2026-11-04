@@ -58,9 +58,12 @@ make perf-benchmark CR_COUNTS="1 3" RESULT_JSON=_output/perf/reconcile.json
 ```
 
 The script is idempotent: each count generates uniquely named CRs
-(`keystone-perf-<i>`) with unique database names (`keystone_perf_<i>`), waits for
-Ready, samples, then deletes the CRs and waits for finalizer cleanup before the
-next count.
+(`keystone-perf-<count>-<i>`) with unique database names
+(`keystone_perf_<count>_<i>`), waits for Ready, samples, then deletes the CRs and
+waits for finalizer cleanup before the next count. The count is part of both
+names because a deleted CR's MariaDB `Database`, `User` and `Grant` outlive its
+finalizer: a CR re-created under the same name runs into their teardown and may
+never turn Ready.
 
 A 25-CR run spawns 25 Deployments plus their db-sync, schema-check, and
 bootstrap Jobs and MariaDB Database/User/Grant objects, which does not fit a CI
@@ -96,9 +99,11 @@ For each count the script prints a block like:
 ```
 
 Compare the end-to-end p95 against the steady-state SLO (p95 ≤ 2s) and the
-per-sub-reconciler p95 against the ≤ 300ms target. A `nan` means no reconciles
-were sampled in the window: increase `SETTLE_SECONDS` or check that the CRs are
-actually reconciling.
+per-sub-reconciler p95 against the ≤ 300ms target. A Ready CR reconciles every
+30s, when its [probe-cache entry expires](../keystone/keystone-reconciler.md#reconcilehealthcheck),
+so the nightly's 120s window holds about four passes per CR. A `nan` means no
+reconciles were sampled in the window: keep `SETTLE_SECONDS` above 30, and check
+that the CRs are actually reconciling.
 
 With `RESULT_JSON` set, the script also writes the six quantiles of every count
 to that file, under `metrics` as `reconcile.<count>.e2e_p50_s`,
@@ -222,7 +227,17 @@ and a `recorded` block that names where they come from.
 The tolerance is 20 %, the figure #625 Phase 8 named. A measured file whose
 `meta.release` differs from `recorded.release` makes `compare` exit 2 and name
 both releases, so moving the nightly to another release forces a new baseline.
-Until the file exists, the comparison exits 2 with `cannot read`.
+`tests/unit/ci/performance_workflow_test.sh` fails when the file is missing,
+names another release than the nightly resolves, or lacks one of the twenty
+metrics, so `make test-shell` reports what would otherwise turn the night red.
+
+Runs of one commit differ. The end-to-end histogram holds few samples and has a
+bucket edge at 0.2s: three runs of one commit measured `reconcile.1.e2e_p95_s`
+at 0.1975s, 0.245s and 0.245s, 24 % apart. `token.validate.p99_ms` ranged from
+43ms to 65ms over eleven nights. A baseline written from the low end of that
+spread fails later nights without a regression, so
+[Re-baselining](#re-baselining) measures three runs and keeps the one the other
+two pass against.
 
 ## The Performance workflow
 
@@ -244,15 +259,26 @@ with a 75-minute wall and read-only `contents` and `packages` permissions:
 4. It runs the token measurement and then the reconcile benchmark with
    `CR_COUNTS="1 3"`, `SETTLE_SECONDS=120` and `GATE_P95_SECONDS=2`, each
    writing its JSON under `_output/perf/`.
-5. It runs `perf-baseline.py compare --tolerance-percent 20` on both files.
-   A failed measurement ends the job before this step.
+5. It runs `perf-baseline.py compare --tolerance-percent 20` on both files
+   and writes its output, inside a text fence, to `_output/perf/summary.md`
+   through `tee`. The step runs under `set -o pipefail` and exits with the
+   status of `compare`, so a regression still fails it. A failed measurement
+   ends the job before this step.
 6. It uploads `_output/perf/` as the artifact `performance-results`, kept for
    90 days, dumps diagnostics when a step failed, and deletes the cluster.
 
-A red night fails the run. GitHub notifies the user who last changed the cron
-schedule of the workflow file; the workflow opens no issue. The workflow pins
-`KIND_VERSION` like `ci.yaml` and `hack/install-test-deps.sh`, and Renovate's
-`kind` group moves the three pins in one pull request
+A red night fails the run. On a scheduled run the `report` job then files it
+on one tracking issue, "Scheduled performance run is red", through
+`hack/ci-report-red-run.sh`: it comments on the open issue of that title that
+`github-actions[bot]` opened, or opens one, with `_output/perf/summary.md` of
+the `performance-results` artifact as the body. A night that failed before the
+comparison has no summary, and the issue points at the run log. The `report`
+job runs on `ubuntu-latest` and is the only job of the workflow that holds
+`issues: write`. A dispatched run never reports, and a human closes the issue
+once the cause is fixed. The workflow pins
+`KIND_VERSION` like `ci.yaml`, `e2e-operator-upgrade.yaml`, `flux-path.yaml`
+and `hack/install-test-deps.sh`, and Renovate's `kind` group moves the five
+pins in one pull request
 (`tests/unit/renovate/workflow_pins_custommanager_test.sh` asserts they agree).
 
 ## Re-baselining
@@ -262,27 +288,40 @@ Write a new baseline when the nightly moves to another release (`compare` exits
 purpose, or when the measurement itself changes. Diagnose a red night from its
 artifact before re-baselining it away.
 
-1. Dispatch the workflow on the branch to measure:
+1. Dispatch the workflow on the branch to measure, three times. Runs of one ref
+   go one at a time and only one waits, so dispatch the third after the first
+   has finished. The comparison of these runs may fail: the artifact is
+   uploaded either way.
 
    ```bash
    gh workflow run performance.yaml --ref <branch>
    ```
 
-2. Download the artifact of that run and note the commit it measured:
+2. Download the artifact of each run and note the commit they measured:
 
    ```bash
-   gh run download <run-id> -n performance-results -D /tmp/perf
+   gh run download <run-id> -n performance-results -D /tmp/perf/<run-id>
    gh run view <run-id> --json headSha -q .headSha
    ```
 
-3. Write the baseline:
+3. Write the baseline from the run with the highest latencies:
 
    ```bash
    python3 hack/perf-baseline.py write-baseline \
-     --measured /tmp/perf/token.json /tmp/perf/reconcile.json \
+     --measured /tmp/perf/<run-id>/token.json /tmp/perf/<run-id>/reconcile.json \
      --release <release> --commit <head-sha> \
      --run https://github.com/C5C3/cobaltcore/actions/runs/<run-id> \
      --out tests/perf/baseline.json
    ```
 
-4. Commit `tests/perf/baseline.json`, naming the run in the commit message.
+4. Judge the other two runs against it. Both have to exit 0; a `REGRESSION` means
+   the run sits at the low end of the spread, so repeat step 3 with the run that
+   failed:
+
+   ```bash
+   python3 hack/perf-baseline.py compare \
+     --baseline tests/perf/baseline.json --tolerance-percent 20 \
+     --measured /tmp/perf/<other-run-id>/token.json /tmp/perf/<other-run-id>/reconcile.json
+   ```
+
+5. Commit `tests/perf/baseline.json`, naming the run in the commit message.

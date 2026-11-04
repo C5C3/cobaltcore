@@ -35,6 +35,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 #   - `describe daemonset -n chaos-mesh chaos-daemon` → emits a stub marker
 #   - `get deployment orc-controller-manager -n orc-system` → exits 1 with
 #     kubectl's NotFound on stderr (no K-ORC on this cluster)
+#   - `get pod openbao-0 -n shared-services` → exits 1 with kubectl's NotFound
+#     on stderr (no OpenBao on this cluster)
 #   - infra-summary verbs the dump always runs (`get helmrelease`,
 #     `get pods`, `get daemonsets`, `get nodes`, `get events`,
 #     `api-resources`) → exit 0
@@ -65,6 +67,13 @@ case "\$1" in
         if [ "\$3" = "orc-controller-manager" ] && [ "\$4" = "-n" ] \\
             && [ "\$5" = "orc-system" ]; then
           echo 'Error from server (NotFound): deployments.apps "orc-controller-manager" not found' >&2
+          exit 1
+        fi
+        ;;
+      pod)
+        if [ "\$3" = "openbao-0" ] && [ "\$4" = "-n" ] \\
+            && [ "\$5" = "shared-services" ]; then
+          echo 'Error from server (NotFound): pods "openbao-0" not found' >&2
           exit 1
         fi
         ;;

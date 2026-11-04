@@ -117,7 +117,7 @@ run_script() {
     shift 2
   fi
   for input in BUILD_SERVICE_IMAGES= BUILD_TEMPEST_RELEASES= BUILD_OVN=false OVN_VERSION= \
-    BUILD_LIBVIRT=false BUILD_PROXY=false BUILD_OPERATORS=; do
+    BUILD_LIBVIRT=false BUILD_PROXY=false BUILD_OPERATORS= BUILD_COVER_OPERATORS=; do
     [ "${input%%=*}" = "$unset_name" ] || inputs+=("$input")
   done
   rm -rf "$workspace" "$NIX_LOG" "$GIT_LOG"
@@ -330,6 +330,65 @@ test_builds_the_operator_images() {
   assert_eq "an empty BUILD_OPERATORS calls no nix" "" "$(cat "$NIX_LOG" 2>/dev/null)"
 }
 
+test_builds_the_cover_images() {
+  echo "Test: BUILD_COVER_OPERATORS builds <op>-operator-cover-image and lists it under cover"
+
+  local ws="$TMP_DIR/ws-cover"
+  run_script "$ws" BUILD_COVER_OPERATORS=$'keystone\nnova'
+
+  assert_eq "the script exits 0" "0" "$RC"
+  assert_eq "nix builds both cover images in one call" \
+    "--extra-experimental-features nix-command flakes build --option sandbox false --option build-users-group e2ebld --max-jobs 3 .#keystone-operator-cover-image .#nova-operator-cover-image --print-build-logs --out-link .nix-e2e/result" \
+    "$(cat "$NIX_LOG")"
+  assert_eq "images.txt lists the cover images under cover, the tag docker load prints" \
+    $'keystone-operator cover\nnova-operator cover' "$(cat "$ws/.nix-e2e/images.txt")"
+  assert_eq "the keystone cover stream is written to its tar" "stream of keystone-operator-cover-image" \
+    "$(cat "$ws/.nix-e2e/keystone-operator-cover.tar")"
+  assert_eq "the nova cover stream is written to its tar" "stream of nova-operator-cover-image" \
+    "$(cat "$ws/.nix-e2e/nova-operator-cover.tar")"
+
+  run_script "$ws" BUILD_OPERATORS=$'keystone\n' BUILD_COVER_OPERATORS=$'keystone\n'
+  assert_eq "an operator image and its cover image build in one nix call" "1" \
+    "$(wc -l <"$NIX_LOG" | tr -d ' ')"
+  assert_contains "the cover attribute follows the latest one" "$(cat "$NIX_LOG")" \
+    ".#keystone-operator-image .#keystone-operator-cover-image --print-build-logs"
+  assert_eq "images.txt follows the attribute order" \
+    $'keystone-operator latest\nkeystone-operator cover' "$(cat "$ws/.nix-e2e/images.txt")"
+
+  run_script "$TMP_DIR/ws-cover-empty" BUILD_COVER_OPERATORS=$'\n'
+  assert_contains "an empty BUILD_COVER_OPERATORS alone builds nothing" "$OUTPUT" \
+    "ci-nix-build-e2e-images.sh: nothing to build"
+  assert_eq "an empty BUILD_COVER_OPERATORS calls no nix" "" "$(cat "$NIX_LOG" 2>/dev/null)"
+
+  run_script "$TMP_DIR/ws-cover-unset" --unset BUILD_COVER_OPERATORS BUILD_OPERATORS=$'keystone\n'
+  assert_eq "an unset BUILD_COVER_OPERATORS exits 0" "0" "$RC"
+  assert_not_contains "an unset BUILD_COVER_OPERATORS adds no cover attribute" "$(cat "$NIX_LOG")" \
+    "cover-image"
+}
+
+test_ci_wires_the_cover_images() {
+  echo "Test: build-e2e-images resolves, builds, verifies and pushes the cover images"
+
+  assert_contains "Resolve images asks for the cover images when a coverage job runs" \
+    "$(job_step build-e2e-images "Resolve images")" \
+    "BUILD_COVER_IMAGES: \${{ needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.tempest == 'true' }}"
+  assert_contains "Build Nix images passes BUILD_COVER_OPERATORS" \
+    "$(job_step build-e2e-images "Build Nix images")" \
+    'BUILD_COVER_OPERATORS: ${{ env.BUILD_COVER_OPERATORS }}'
+
+  local verify push
+  verify=$(job_step build-e2e-images "Verify operator images")
+  assert_contains "the verify step loops over BUILD_COVER_OPERATORS" "$verify" \
+    'for op in $BUILD_COVER_OPERATORS; do'
+  assert_contains "the verify step checks each cover image as the cover variant" "$verify" \
+    'bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:cover" "${op}" cover'
+  push=$(job_step build-e2e-images "Push E2E images to GHCR")
+  assert_contains "the push step loops over BUILD_COVER_OPERATORS" "$push" \
+    'for op in $BUILD_COVER_OPERATORS; do'
+  assert_contains "the push step pushes each cover image" "$push" \
+    'push_image "${IMAGE_PREFIX}/${op}-operator:cover"'
+}
+
 test_ci_wires_the_operators_through_the_nix_step() {
   echo "Test: build-e2e-images builds the operator images in the Nix step and retags them :dev"
 
@@ -420,6 +479,8 @@ test_ovn_without_a_version_fails
 test_builds_the_libvirt_image
 test_builds_the_proxy_image
 test_builds_the_operator_images
+test_builds_the_cover_images
+test_ci_wires_the_cover_images
 test_ci_wires_the_operators_through_the_nix_step
 test_ci_verifies_the_operator_images
 test_ci_wires_the_proxy_through_the_nix_step

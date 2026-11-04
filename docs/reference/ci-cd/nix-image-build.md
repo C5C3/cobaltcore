@@ -48,6 +48,7 @@ on, the images input adds these outputs:
 | `packages.<system>.<name>-<rel_>-image` | the image of a Python service or of tempest for one release, built from the lock `nix/locks/<release>/<name>/` (`keystone-2026_1-image`) |
 | `packages.<system>.nova-compute-<rel_>-image` | the compute image for each nova lock, built from that lock with its `nova-compute` dependency group ([Hypervisor images](#hypervisor-images)) |
 | `packages.<system>.<op>-operator-image` | the image of a CobaltCore operator, built from `nix/lib/operator-image.nix` for every `operators/<op>/go.mod` (`keystone-operator-image`, [Operator images](#operator-images)) |
+| `packages.<system>.<op>-operator-cover-image` | the coverage-instrumented variant of that image, tagged `cover`, which only the e2e builds use ([Operator images](#operator-images)) |
 | `packages.<system>.<name>-<rel_>-test-run` | the unit tests of a service lock, a build that succeeds whenever the suite ran ([Unit tests](#unit-tests)) |
 | `checks.<system>.<name>-<rel_>-tests` | fails unless that run passed |
 | `checks.<system>.go-directive` | fails evaluation unless `go_1_27` of `nixpkgs-images` is at or above the `go` directive of `go.work` ([Operator images](#operator-images)) |
@@ -172,7 +173,13 @@ upstream files.
 theirs from one table in that file, each row with the error that made it
 necessary. The project itself is built from its source with pbr and a
 throwaway git commit of the fetched tree, which gives pbr its version and its
-file list.
+file list. The `dogpile-cache` row of that table patches the installed wheel
+with `nix/lib/patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch`: oslo.cache's
+`[cache] socket_timeout` reaches pymemcache as its connect and read timeout,
+and every pymemcache error becomes a cache miss unless `distributed_lock` is
+set (#1560). The row runs
+`patch --fuzz=0`, so a dogpile.cache release that moves the patched lines fails
+the build with `Hunk #N FAILED`; #1562 tracks that re-check.
 
 ## Service images
 
@@ -407,6 +414,26 @@ make image OPERATOR=keystone IMG=keystone-operator:dev
 docker inspect keystone-operator:dev --format '{{.Config.User}} {{.Config.Entrypoint}}'   # 65532:65532 [/usr/bin/manager]
 ```
 
+`<op>-operator-cover-image` is the same expression with `cover = true`. Its
+manager is built with `-cover -covermode=atomic` and
+`-coverpkg=github.com/c5c3/cobaltcore/operators/<op>/...,github.com/c5c3/cobaltcore/internal/common/...`,
+so its counters cover the operator's module and the shared library. A
+`preBuild` hook appends the three flags to `GOFLAGS`, because the pinned
+`buildGoModule` reads no `buildFlags` and replaces an `env.GOFLAGS` the
+caller passes. The flags change neither the source nor the module download,
+so `vendor.json`'s `vendorHash` holds for both variants. The image is tagged
+`cover` and its description is `CobaltCore <op> operator, coverage-instrumented`;
+the layout, the user, the entrypoint and the other three labels are those of
+`<op>-operator-image`. With `GOCOVERDIR` set, the manager writes its counters
+to that directory every minute and on exit (`internal/common/bootstrap/coverage.go`).
+Only `build-e2e-images` builds the variant ([e2e builds](#e2e-builds)), and
+nothing publishes it.
+
+```bash
+$(nix build --no-link --print-out-paths .#keystone-operator-cover-image) | docker load   # keystone-operator:cover
+bash tests/container-images/verify_operator_image.sh keystone-operator:cover keystone cover
+```
+
 ## Hypervisor images
 
 `nova-compute` and `libvirt` run on the hypervisor nodes and share one libvirt
@@ -580,7 +607,11 @@ name in `BUILD_OPERATORS` builds `<op>-operator-image` in the same call. Its
 stream loads as `<op>-operator:latest`, and the `Tag operator images` step
 tags it `:dev`, the tag the suites and the push step address. The
 `Verify operator images` step runs `tests/container-images/verify_operator_image.sh`
-on it.
+on it. Each name in `BUILD_COVER_OPERATORS`, all ten operators when
+`e2e-operator`, `e2e-chaos` or `tempest` will run, builds
+`<op>-operator-cover-image` in the same call. Its stream loads as
+`<op>-operator:cover`, which the verify step checks with the argument `cover`
+and the push step pushes under the run-scoped tag `e2e-<run_id>-cover`.
 
 The container is unprivileged and cannot create the namespaces of the build
 sandbox, so the builds run with `--option sandbox false`. The builders, which
@@ -697,7 +728,10 @@ with `python3 -m http.server` on `127.0.0.1:18765`, passes it to vulnix as
 run depends on a cache and none asks for the `modified` feed, which the
 reconstruction does not publish. The step summary gets the line
 `nvd-feeds: <tag>, <first year> to <last year>`. Both steps use the `curl`
-and `python3` of the runner image.
+and `python3` of the runner image. The tag lookup and every download retry
+any error six times with curl's doubling back-off (1 s up to 32 s, about a
+minute in all), because GitHub's release downloads answer 502 for seconds at
+a time.
 
 Then the action takes one of two paths:
 

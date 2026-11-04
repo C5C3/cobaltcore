@@ -18,7 +18,7 @@ to the minimum required for correct reconciliation.
 > policy is also the containment layer for `web-download` image imports: its
 > auto-derived egress covers DNS, the database, the cache, and the S3 backends
 > only, so an import needs an explicit `spec.networkPolicy.additionalEgress`
-> rule naming the mirrors — and nothing else stays reachable. Enable it whenever
+> rule naming the mirrors; nothing else stays reachable. Enable it whenever
 > `spec.importFiltering` widens the operator's HTTPS-on-443 default, because the
 > remaining `disallowedHosts` filter matches host strings literally and cannot
 > cover every spelling of an address.
@@ -39,22 +39,7 @@ is running (namespace `glance-system`) alongside the projected
 `controlplane-glance` image service.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy — for real
-   enforcement.** Confirm with your platform team (Calico, Cilium, and Antrea
-   enforce).
-
-   ::: warning Enforcement cannot be verified on the default devstack CNI
-   The ControlPlane Quick Start kind devstack uses the default `kindnet` CNI,
-   which **silently ignores** NetworkPolicy objects, and kind fixes the CNI at
-   cluster creation so it cannot be swapped in afterwards. The policy object
-   is still created and the operator keeps reconciling, so Step 2 below
-   confirms only the policy's **shape** and that enabling it does **not
-   break** reconciliation — it does **not** prove that packets outside the
-   allow-list are dropped. Real enforcement requires a cluster whose CNI
-   enforces NetworkPolicy — typically your production platform, not the kind
-   devstack.
-   :::
-2. A running `glance-operator` Helm release (namespace `glance-system`).
+A running `glance-operator` Helm release (namespace `glance-system`) is required.
 
 ## Step 1 — Enable the policy
 
@@ -68,8 +53,8 @@ kubectl get endpoints kubernetes -n default -o json \
   | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
 ```
 
-Record **every** endpoint IP the command prints, not just the first. A kind
-devstack reports a single `10.96.0.1/32`, but an HA control plane reports one
+Record **every** endpoint IP the command prints. A kind devstack reports a
+single `10.96.0.1/32`, but an HA control plane reports one
 per API server replica:
 
 ```
@@ -82,9 +67,9 @@ The rule must cover all of them, or the operator loses its leader-election
 lease whenever it happens to be talking to an excluded replica.
 
 On the tutorial devstacks the `glance-operator` release is owned by Flux (a
-`HelmRelease`), so set the values by patching its `spec.values` — not with a
-raw `helm upgrade`, which the Flux helm-controller reverts on its next
-reconcile. Substitute the CIDRs and ports from above — the single-CIDR list
+`HelmRelease`), so set the values by patching its `spec.values`. The Flux
+helm-controller reverts a raw `helm upgrade` on its next
+reconcile. Substitute the CIDRs and ports from above; the single-CIDR list
 below is the kind case, so extend it to every IP you recorded:
 
 ```bash
@@ -109,7 +94,7 @@ ingress peer is appended to every rendered policy).
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), set the
-values with a rolling `helm upgrade` — remember the fail-closed guard requires
+values with a rolling `helm upgrade`. The fail-closed guard requires
 `kubeApiServer.cidrs` and `ports`:
 
 ```bash
@@ -127,9 +112,18 @@ reconcile. Use the HelmRelease patch above instead.
 
 ## Step 2 — Verify
 
-On the kind devstack this verifies the policy's **shape** and that enabling it
-does **not break** reconciliation — not traffic enforcement, which the default
-`kindnet` CNI does not apply (see the prerequisite above).
+On kind v0.32 and later this checks the policy's shape and reconciliation
+under enforcement. These commands do not attempt traffic outside the allow-list.
+Restart the operator to test new connections; existing connections can remain
+open after a policy change:
+
+```bash
+kubectl -n glance-system rollout restart deploy/glance-operator
+kubectl -n glance-system rollout status deploy/glance-operator --timeout=5m
+```
+
+If the rollout times out, inspect the operator logs and the API-server rules
+using the troubleshooting steps below.
 
 ```bash
 kubectl -n glance-system get networkpolicy
@@ -164,8 +158,8 @@ leader-election lease renewals fail with `context deadline exceeded`, and the
 
 **Diagnosis:** the egress allow-list does not match the API server the operator
 actually dials. Either `kubeApiServer.cidrs` is missing one or more of the
-current endpoint IPs — an HA control plane may have added a replica, or a
-control-plane node may have been replaced with a different IP — or your CNI maps
+current endpoint IPs (an HA control plane may have added a replica, or a
+control-plane node may have been replaced with a different IP), or your CNI maps
 the API server behind a port that is not in `kubeApiServer.ports`.
 
 **Fix:** re-run the discovery command from Step 1 and update
@@ -189,7 +183,7 @@ the same error.
 `failurePolicy=Fail` on create and update, so an unreachable operator turns into
 a cluster-wide rejection of every write to either kind. The usual cause is an API
 server that calls webhooks from an IP that is **not** in `endpoints/kubernetes`
-— for example, because it sits behind a front-end proxy.
+(for example, because it sits behind a front-end proxy).
 `networkPolicy.webhookClients.cidrs` falls back to `kubeApiServer.cidrs` when
 empty, which is wrong in that topology.
 
@@ -203,7 +197,7 @@ kubectl patch helmrelease glance-operator -n glance-system --type=merge \
 ```
 
 If the wedge blocks you from recovering, set `networkPolicy.enabled=false` with
-the same patch shape — the policy object is removed on the next reconcile and
+the same patch shape. The policy object is removed on the next reconcile and
 the operator reverts to unrestricted pod networking without a pod restart.
 
 ## Tested by
@@ -213,9 +207,19 @@ the shared operator-library, whose helm-unittest
 (`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
 pins the shared rules. The glance chart's helm-unittest
 (`operators/glance/helm/glance-operator/tests/networkpolicy_test.yaml`) pins the
-egress rule the chart adds for its API health check. The keystone chart's policy
-is exercised end-to-end on the CI e2e kind cluster by the chainsaw suite below.
+egress rule the chart adds for its API health check. These tests cover rendering
+only; they do not exercise packet enforcement.
+
+The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
+provides runtime enforcement coverage for the Keystone chart using the shared
+template. It does not install the Glance chart or test Glance-specific runtime
+egress. There is no Glance operator `network-policy-egress` suite.
+With the linked suite's prerequisites satisfied, run its Keystone-only example
+from the repository root:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
 ```
+
+The per-CR suite `tests/e2e/glance/network-policy` covers the Glance workload
+policy, a different scope from this guide.

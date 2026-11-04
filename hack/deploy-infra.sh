@@ -375,9 +375,9 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # StorageClass, no node-local-dns, a Ready node and, under WITH_NFS=true, a
 # foreign NFS CSIDriver and the node network, otherwise for the NFS CSIDriver
 # the Cinder backends of the overlay's ControlPlane mount, before anything is
-# applied (check_external_cluster), and the Gateway is reached with `kubectl
-# port-forward` on 8443. Defaults to false; any value other than `true` keeps
-# the kind mode.
+# applied (check_external_cluster), and the Gateway is published as
+# EXTERNAL_LOADBALANCER and PUBLIC_SOURCE_RANGES below describe. Defaults to
+# false; any value other than `true` keeps the kind mode.
 EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 
 # The overlay root the external-cluster mode applies: its base/ in Step 3 and its
@@ -425,20 +425,55 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # EXTERNAL_CLUSTER=true.
 EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
 
-# Derived from the two knobs above, not overridable. OVERLAY_ROOT is the
-# directory whose base/ and infrastructure/ Steps 3 and 5 apply. PUBLIC_PORT is
-# the port the *.127-0-0-1.nip.io endpoints are reached on: the kind host port in
-# kind mode, 8443 (the local end of the documented port-forward) in external mode.
+# How the external-cluster mode publishes the Gateway openstack-gw; read only
+# under EXTERNAL_CLUSTER=true. With true, the default, the overlay's EnvoyProxy
+# envoy-public stays a Service of type LoadBalancer, and Step 5 waits for the
+# address the cluster's load balancer gives it. The Gateway's hostnames are
+# then <service>.<a-b-c-d>.nip.io, for that address with its dots turned into
+# dashes, which the public nip.io DNS resolves to it from anywhere, and the
+# Gateway answers on <address>:443. Any other value makes the Service a
+# ClusterIP Service, for a cluster that hands out no address: the hostnames
+# are then <service>.127-0-0-1.nip.io, reached through a port-forward on local
+# port 443, which takes root on the workstation. Under EXTERNAL_CLUSTER=true
+# the overlay's infrastructure/ has to render the EnvoyProxy envoy-public in
+# envoy-gateway-system and carry gateway-certificate.yaml, the template of the
+# Gateway's Certificate with the placeholder PUBLIC_SUFFIX, which Step 5
+# applies once it knows the suffix (configure_public_gateway).
+EXTERNAL_LOADBALANCER="${EXTERNAL_LOADBALANCER:-true}"
+
+# The sources the Gateway admits under EXTERNAL_CLUSTER=true
+# EXTERNAL_LOADBALANCER=true: IPv4 CIDRs, separated by commas or blanks, which
+# Step 5 sets as the proxy Service's loadBalancerSourceRanges. Empty, the
+# default, admits every source, and the completion banner says so. kube-proxy
+# applies the ranges to pods that dial the address as well, so Step 1 adds the
+# pod and node networks of the Gardener ConfigMap kube-system/shoot-info and
+# refuses a cluster without it (resolve_public_source_ranges). Refused
+# anywhere else.
+PUBLIC_SOURCE_RANGES="${PUBLIC_SOURCE_RANGES:-}"
+
+# Derived from the knobs above, not overridable. OVERLAY_ROOT is the directory
+# whose base/ and infrastructure/ Steps 3 and 5 apply. PUBLIC_PORT is the port
+# the Gateway's hostnames are reached on: the kind host port in kind mode, 443
+# in external mode, on the load balancer's address or at the local end of the
+# port-forward. PUBLIC_SUFFIX is the domain of those hostnames,
+# 127-0-0-1.nip.io in kind mode; in external mode Step 5 sets it from the
+# Gateway's address (configure_public_gateway).
 if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
   case "${EXTERNAL_OVERLAY}" in
     /*) OVERLAY_ROOT="${EXTERNAL_OVERLAY}" ;;
     *) OVERLAY_ROOT="${REPO_ROOT}/${EXTERNAL_OVERLAY}" ;;
   esac
-  PUBLIC_PORT="8443"
+  PUBLIC_PORT="443"
 else
   OVERLAY_ROOT="${REPO_ROOT}/deploy/kind"
   PUBLIC_PORT="${KIND_HOST_PORT}"
 fi
+PUBLIC_SUFFIX="127-0-0-1.nip.io"
+# Set in Step 1 under PUBLIC_SOURCE_RANGES (resolve_public_source_ranges).
+PUBLIC_SOURCE_RANGES_RESOLVED=""
+# Set in Step 5 in external mode to the <namespace>/<name> of the Gateway's
+# Certificate (apply_gateway_certificate).
+GATEWAY_CERTIFICATE="openstack/openstack-gw-tls"
 
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup.
@@ -453,7 +488,7 @@ fi
 # install_gateway_api_crds(): it enumerates the standard-channel CRD names of
 # this bundle, and a release that adds a CRD needs the new name added there —
 # otherwise the presence check passes on the old set and skips the install.
-GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.6.2}"
+GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.6.3}"
 GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml}"
 
 # Envoy Gateway CRD release asset, applied right after the Gateway API bundle.
@@ -927,6 +962,172 @@ wait_for_gateway_programmed() {
 
     sleep 10
   done
+}
+
+# ---------------------------------------------------------------------------
+# render_envoy_proxy — Filter a rendered manifest stream from stdin to stdout,
+# setting the Service of the EnvoyProxy envoy-public as the external-cluster
+# mode asks: type ClusterIP without externalTrafficPolicy under
+# EXTERNAL_LOADBALANCER other than true (a ClusterIP Service refuses the
+# field), the loadBalancerSourceRanges of PUBLIC_SOURCE_RANGES_RESOLVED under
+# PUBLIC_SOURCE_RANGES. Every other document passes unchanged, and the kind
+# mode, whose render has no envoy-public, passes the stream through untouched.
+# Step 5 pipes the overlay's infrastructure/ through it.
+# ---------------------------------------------------------------------------
+render_envoy_proxy() {
+  if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then
+    cat
+    return
+  fi
+  local select='select(.kind == "EnvoyProxy" and .metadata.name == "envoy-public")'
+  local service='.spec.provider.kubernetes.envoyService'
+  if [[ "${EXTERNAL_LOADBALANCER}" != "true" ]]; then
+    yq eval "(${select} | ${service}.type) = \"ClusterIP\" | del(${select} | ${service}.externalTrafficPolicy)" -
+  elif [[ -n "${PUBLIC_SOURCE_RANGES_RESOLVED}" ]]; then
+    RANGES="${PUBLIC_SOURCE_RANGES_RESOLVED}" \
+      yq eval "(${select} | ${service}.loadBalancerSourceRanges) = (strenv(RANGES) | split(\"\\n\"))" -
+  else
+    cat
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# envoy_service_address — Print the address the load balancer gave the
+# Gateway's proxy Service, or nothing while it has none. The Service is the one
+# Envoy Gateway labels with the owning Gateway openstack-gw; a hostname in
+# place of an address is printed as well and refused by the caller.
+# ---------------------------------------------------------------------------
+envoy_service_address() {
+  kubectl -n envoy-gateway-system get svc \
+    -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw \
+    -o jsonpath='{.items[0].status.loadBalancer.ingress[0].ip}{.items[0].status.loadBalancer.ingress[0].hostname}' \
+    2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# apply_gateway_certificate SUFFIX — Apply the overlay's
+# infrastructure/gateway-certificate.yaml with SUFFIX in place of the
+# placeholder PUBLIC_SUFFIX: the Gateway's certificate for *.SUFFIX. Sets
+# GATEWAY_CERTIFICATE to the applied object's <namespace>/<name>, as the API
+# server returns it, and aborts when the apply fails.
+# ---------------------------------------------------------------------------
+apply_gateway_certificate() {
+  local out rc=0
+  out="$(sed "s|PUBLIC_SUFFIX|$1|g" "${OVERLAY_ROOT}/infrastructure/gateway-certificate.yaml" |
+    kubectl apply -f - -o jsonpath='{.metadata.namespace}/{.metadata.name}')" || rc=$?
+  if [[ ${rc} -ne 0 || "${out}" != */?* ]]; then
+    log "ERROR: applying ${OVERLAY_ROOT}/infrastructure/gateway-certificate.yaml for *.$1 failed (kubectl's error is above; it printed '${out}')."
+    exit 1
+  fi
+  GATEWAY_CERTIFICATE="${out}"
+  log "Certificate ${GATEWAY_CERTIFICATE} applied for *.$1."
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_gateway_certificate TIMEOUT — Wait until the Certificate
+# GATEWAY_CERTIFICATE, which apply_gateway_certificate set, reports Ready=True
+# for its current generation. A Ready condition of the previous generation, the
+# one a re-apply with a new suffix leaves until cert-manager has reissued, does
+# not count. On timeout, dumps the Certificate and the CertificateRequests of
+# its namespace and exits 1.
+# ---------------------------------------------------------------------------
+wait_for_gateway_certificate() {
+  local timeout="$1"
+  local namespace="${GATEWAY_CERTIFICATE%%/*}" name="${GATEWAY_CERTIFICATE#*/}"
+  local deadline=$(( $(date +%s) + timeout ))
+
+  log "Waiting up to ${timeout}s for Certificate/${name} in '${namespace}' to be Ready..."
+  while true; do
+    local ready
+    ready="$(kubectl get certificate "${name}" -n "${namespace}" -o json 2>/dev/null |
+      jq -r '.metadata.generation as $g | [.status.conditions[]? | select(.type == "Ready" and .status == "True" and .observedGeneration == $g)] | length' 2>/dev/null)" || true
+    if [[ "${ready}" == "1" ]]; then
+      log "Certificate/${name} is Ready."
+      return 0
+    fi
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: Timed out waiting for Certificate/${name} in '${namespace}' after ${timeout}s."
+      kubectl describe certificate "${name}" -n "${namespace}" 2>/dev/null || true
+      kubectl get certificaterequest -n "${namespace}" 2>/dev/null || true
+      exit 1
+    fi
+    sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
+# configure_public_gateway — Issue the Gateway's certificate and set
+# PUBLIC_SUFFIX, the domain of the Gateway's hostnames, in the external-cluster
+# mode. Runs in Step 5 after the infrastructure overlay, before the Gateway
+# wait.
+#
+# The one listener of the overlay's Gateway terminates with the Certificate of
+# infrastructure/gateway-certificate.yaml, issued for *.PUBLIC_SUFFIX. Under
+# EXTERNAL_LOADBALANCER=true the suffix is <a-b-c-d>.nip.io for the address of
+# the proxy Service, which exists only once the listener can start. So the
+# certificate is applied first for the address the Service already has, on a
+# re-run, or for 127-0-0-1.nip.io, then the address is awaited for POD_TIMEOUT
+# seconds, and the certificate is applied again when the suffix changed. Under
+# any other EXTERNAL_LOADBALANCER the suffix is 127-0-0-1.nip.io, the end of a
+# port-forward. Waits until the certificate is Ready at its last generation.
+#
+# When the HTTPRoute dizzy/dizzy-grafana exists, which WITH_DIZZY=true applies
+# in Step 3, it also moves the route's hostname onto the suffix. A later
+# re-apply of the dizzy overlay keeps it: kubectl apply leaves a field alone
+# whose rendered value did not change since the last apply.
+#
+# Aborts when the Service gets no address in time, or a hostname in place of
+# one: nip.io needs an IPv4 address.
+# ---------------------------------------------------------------------------
+configure_public_gateway() {
+  local address="" suffix="127-0-0-1.nip.io"
+
+  if [[ "${EXTERNAL_LOADBALANCER}" == "true" ]]; then
+    address="$(envoy_service_address)"
+    if [[ -n "${address}" ]] && valid_ipv4_cidr "${address}/32"; then
+      suffix="${address//./-}.nip.io"
+    fi
+  fi
+  apply_gateway_certificate "${suffix}"
+
+  if [[ "${EXTERNAL_LOADBALANCER}" == "true" ]]; then
+    local deadline=$(( $(date +%s) + POD_TIMEOUT ))
+    log "Waiting up to ${POD_TIMEOUT}s for the load balancer to give the Gateway's Service an address..."
+    while true; do
+      address="$(envoy_service_address)"
+      [[ -z "${address}" ]] || break
+      if [[ $(date +%s) -ge ${deadline} ]]; then
+        log "ERROR: the Gateway's Service in envoy-gateway-system got no load-balancer address within ${POD_TIMEOUT}s."
+        kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw 2>/dev/null || true
+        kubectl -n envoy-gateway-system get events --field-selector involvedObject.kind=Service 2>/dev/null || true
+        log "       On a cluster that hands out no address, rerun with EXTERNAL_LOADBALANCER=false"
+        log "       and reach the Gateway through a port-forward on local port 443."
+        exit 1
+      fi
+      sleep 5
+    done
+    if ! valid_ipv4_cidr "${address}/32"; then
+      log "ERROR: the Gateway's Service got '${address}' from the load balancer, which is no"
+      log "       IPv4 address; the hostnames <service>.<a-b-c-d>.nip.io need one. Rerun with"
+      log "       EXTERNAL_LOADBALANCER=false."
+      exit 1
+    fi
+    log "Gateway address     : ${address}"
+    if [[ "${address//./-}.nip.io" != "${suffix}" ]]; then
+      suffix="${address//./-}.nip.io"
+      apply_gateway_certificate "${suffix}"
+    fi
+  fi
+
+  wait_for_gateway_certificate "${POD_TIMEOUT}"
+  PUBLIC_SUFFIX="${suffix}"
+  log "Gateway hostnames   : <service>.${PUBLIC_SUFFIX}"
+
+  if [[ -n "$(kubectl -n dizzy get httproute dizzy-grafana --ignore-not-found -o name 2>/dev/null)" ]]; then
+    kubectl -n dizzy patch httproute dizzy-grafana --type=merge \
+      -p "{\"spec\":{\"hostnames\":[\"dizzy.${PUBLIC_SUFFIX}\"]}}"
+    log "HTTPRoute dizzy/dizzy-grafana moved to dizzy.${PUBLIC_SUFFIX}."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1606,6 +1807,12 @@ preflight_checks() {
   if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
     preflight_external_cluster
   else
+    # The kind Gateway is a NodePort behind the kind host port, which has no
+    # source ranges to set.
+    if [[ -n "${PUBLIC_SOURCE_RANGES}" ]]; then
+      log "ERROR: PUBLIC_SOURCE_RANGES is read only under EXTERNAL_CLUSTER=true EXTERNAL_LOADBALANCER=true; the kind Gateway is reached through the kind host port."
+      exit 1
+    fi
     # The lab Ceph needs raw block volumes and three OSDs per node; neither kind nor
     # CI runs it yet.
     if [[ "${WITH_CEPH}" == "true" ]]; then
@@ -1620,6 +1827,62 @@ preflight_checks() {
   fi
 
   log "Pre-flight checks passed."
+}
+
+# ---------------------------------------------------------------------------
+# preflight_public_source_ranges — Check the Gateway's knobs before anything
+# is applied: require mikefarah/yq where render_envoy_proxy needs it, refuse
+# PUBLIC_SOURCE_RANGES beside EXTERNAL_LOADBALANCER other than true, where the
+# proxy Service is a ClusterIP Service that takes no source ranges, and refuse
+# an entry that is no IPv4 CIDR. Commas and blanks both separate entries. The
+# shoot's networks are added in Step 1 (resolve_public_source_ranges).
+# ---------------------------------------------------------------------------
+preflight_public_source_ranges() {
+  # render_envoy_proxy writes the ClusterIP type or the ranges with yq; the
+  # default, a LoadBalancer for every source, passes the render unchanged.
+  if [[ "${EXTERNAL_LOADBALANCER}" != "true" || -n "${PUBLIC_SOURCE_RANGES}" ]]; then
+    if ! command -v yq &>/dev/null; then
+      log "ERROR: EXTERNAL_LOADBALANCER other than true and PUBLIC_SOURCE_RANGES need 'yq' on PATH (Step 5 writes the Gateway's Service with it)."
+      exit 1
+    fi
+    require_mikefarah_yq
+  fi
+  [[ -n "${PUBLIC_SOURCE_RANGES}" ]] || return 0
+  if [[ "${EXTERNAL_LOADBALANCER}" != "true" ]]; then
+    log "ERROR: PUBLIC_SOURCE_RANGES needs EXTERNAL_LOADBALANCER=true: under EXTERNAL_LOADBALANCER='${EXTERNAL_LOADBALANCER}' the Gateway's Service is a ClusterIP Service, which no source reaches from outside the cluster."
+    exit 1
+  fi
+  local range
+  while IFS= read -r range; do
+    if ! valid_ipv4_cidr "${range}"; then
+      log "ERROR: PUBLIC_SOURCE_RANGES holds '${range}', which is no IPv4 CIDR (a.b.c.d/n)."
+      exit 1
+    fi
+  done < <(split_ranges "${PUBLIC_SOURCE_RANGES}")
+}
+
+# split_ranges LIST — LIST, split at commas and blanks, one entry per line,
+# without empty entries. read splits without pathname expansion, so an entry
+# is never globbed; the length guard keeps bash 3.2 from failing on an empty
+# array under set -u.
+split_ranges() {
+  local list="${1//,/ }" entry
+  local -a entries=()
+  read -r -a entries <<<"${list//$'\t'/ }"
+  [[ ${#entries[@]} -gt 0 ]] || return 0
+  for entry in "${entries[@]}"; do
+    printf '%s\n' "${entry}"
+  done
+}
+
+# valid_ipv4_cidr CIDR — Return 0 when CIDR is a.b.c.d/n with every octet at
+# most 255 and n at most 32.
+valid_ipv4_cidr() {
+  [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]|[12][0-9]|3[0-2])$ ]] || return 1
+  local i
+  for i in 1 2 3 4; do
+    (( 10#${BASH_REMATCH[i]} <= 255 )) || return 1
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -1672,6 +1935,14 @@ preflight_external_cluster() {
     log "ERROR: EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}' has no base/ and infrastructure/ kustomization (resolved to ${OVERLAY_ROOT})."
     exit 1
   fi
+
+  # Step 5 issues the Gateway's certificate from this template once it knows
+  # the Gateway's suffix (configure_public_gateway).
+  if [[ ! -f "${OVERLAY_ROOT}/infrastructure/gateway-certificate.yaml" ]]; then
+    log "ERROR: EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}' has no infrastructure/gateway-certificate.yaml, the template of the Gateway's certificate Step 5 applies (resolved to ${OVERLAY_ROOT})."
+    exit 1
+  fi
+  preflight_public_source_ranges
 
   # The clients of the kind NFS overlay need nfs and nfsv4, which this mode does
   # not load on the host, so WITH_NFS=true takes the overlay's own nfs/. The
@@ -1944,9 +2215,12 @@ check_relocated_infrastructure() {
 #      inline volume of that driver, which the kubelet mounts only for that
 #      mode, and without WITH_NFS=true nothing installs it; the pods would hang
 #      in ContainerCreating and the ControlPlane would never become Ready.
+#   7. Under PUBLIC_SOURCE_RANGES: the pod and node networks the Gateway
+#      admits beside the ranges (resolve_public_source_ranges).
 #
-# The class, the node names, the node network and the NFS driver's modes are
-# logged, so the transcript records what the cluster had.
+# The class, the node names, the node network, the NFS driver's modes and the
+# Gateway's sources are logged, so the transcript records what the cluster
+# had.
 # ---------------------------------------------------------------------------
 check_external_cluster() {
   local out rc
@@ -2052,6 +2326,10 @@ check_external_cluster() {
       log "NFS CSI driver      : nfs.csi.k8s.io ${out}"
     fi
   fi
+
+  if [[ -n "${PUBLIC_SOURCE_RANGES}" ]]; then
+    resolve_public_source_ranges
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2112,6 +2390,62 @@ resolve_nfs_node_network() {
     exit 1
   fi
   log "NFS client network  : ${NFS_NODE_NETWORK}"
+}
+
+# ---------------------------------------------------------------------------
+# resolve_public_source_ranges — Set PUBLIC_SOURCE_RANGES_RESOLVED, the
+# loadBalancerSourceRanges Step 5 writes into the EnvoyProxy envoy-public:
+# PUBLIC_SOURCE_RANGES, then the pod and node networks of the ConfigMap
+# kube-system/shoot-info, each once, one per line.
+#
+# Check 7 of check_external_cluster, under PUBLIC_SOURCE_RANGES alone. kube-proxy
+# checks the ranges for every client of the address, a pod or a host-network
+# pod inside the cluster included, and the lab's pods reach the public
+# hostnames through that address as well. A probe on newforge on 2026-11-02
+# timed out from both kinds of pod until the two networks were in the list. The
+# ConfigMap carries both as lists (data.podNetworks, data.nodeNetworks) and as
+# single values (data.podNetwork, data.nodeNetwork); all four are read.
+#
+# Aborts when the ConfigMap cannot be read, is absent, or names a network that
+# is no IPv4 CIDR, or no pod or no node network: the in-cluster clients would
+# time out without a word.
+# ---------------------------------------------------------------------------
+resolve_public_source_ranges() {
+  local rc=0 shoot_info
+  # An absent ConfigMap prints nothing under --ignore-not-found, and stderr
+  # stays out of the capture, as in resolve_nfs_node_network.
+  shoot_info="$(kubectl get configmap shoot-info -n kube-system --ignore-not-found -o json)" || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    log "ERROR: cannot read ConfigMap kube-system/shoot-info (kubectl's error is above)."
+    exit 1
+  fi
+  if [[ -z "${shoot_info}" ]]; then
+    log "ERROR: PUBLIC_SOURCE_RANGES needs the pod and node networks of the Gardener ConfigMap"
+    log "       kube-system/shoot-info, which this cluster does not have: kube-proxy would drop"
+    log "       the cluster's own pods that dial the Gateway's address. Deploy without"
+    log "       PUBLIC_SOURCE_RANGES."
+    exit 1
+  fi
+
+  local pod_networks node_networks network
+  pod_networks="$(jq -r '[.data.podNetworks, .data.podNetwork] | map(select(. != null)) | join(",")' <<<"${shoot_info}")"
+  node_networks="$(jq -r '[.data.nodeNetworks, .data.nodeNetwork] | map(select(. != null)) | join(",")' <<<"${shoot_info}")"
+  if [[ -z "$(split_ranges "${pod_networks}")" || -z "$(split_ranges "${node_networks}")" ]]; then
+    log "ERROR: ConfigMap kube-system/shoot-info names no pod network or no node network"
+    log "       (pod: '${pod_networks}', node: '${node_networks}'); PUBLIC_SOURCE_RANGES needs both."
+    exit 1
+  fi
+  while IFS= read -r network; do
+    if ! valid_ipv4_cidr "${network}"; then
+      log "ERROR: ConfigMap kube-system/shoot-info names '${network}' as a pod or node network,"
+      log "       which is no IPv4 CIDR."
+      exit 1
+    fi
+  done < <(split_ranges "${pod_networks},${node_networks}")
+
+  PUBLIC_SOURCE_RANGES_RESOLVED="$(split_ranges "${PUBLIC_SOURCE_RANGES},${pod_networks},${node_networks}" |
+    awk '!seen[$0]++')"
+  log "Gateway sources     : $(tr '\n' ' ' <<<"${PUBLIC_SOURCE_RANGES_RESOLVED}")(PUBLIC_SOURCE_RANGES and the shoot's pod and node networks)"
 }
 
 # ---------------------------------------------------------------------------
@@ -3145,7 +3479,11 @@ main() {
   log "ExternalSecret timeout : ${EXTERNALSECRET_TIMEOUT}s"
   log "Webhook timeout     : ${WEBHOOK_TIMEOUT}s"
   if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
-    log "Cluster mode        : external (EXTERNAL_CLUSTER=true; overlay ${OVERLAY_ROOT}; port-forward on ${PUBLIC_PORT})"
+    if [[ "${EXTERNAL_LOADBALANCER}" == "true" ]]; then
+      log "Cluster mode        : external (EXTERNAL_CLUSTER=true; overlay ${OVERLAY_ROOT}; Gateway on a load-balancer address, port ${PUBLIC_PORT}, sources: ${PUBLIC_SOURCE_RANGES:-any})"
+    else
+      log "Cluster mode        : external (EXTERNAL_CLUSTER=true; overlay ${OVERLAY_ROOT}; Gateway through a port-forward on local port ${PUBLIC_PORT}, EXTERNAL_LOADBALANCER=${EXTERNAL_LOADBALANCER})"
+    fi
   else
     log "Cluster mode        : kind (set EXTERNAL_CLUSTER=true to deploy onto the current kubeconfig context)"
     log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
@@ -3590,7 +3928,12 @@ main() {
     # c5c3-operator and the c5c3-charts / k-orc sources are left un-suspended
     # (the base applied them active). The k-orc Kustomization is the exception:
     # the base applies it suspended (see deploy/kind/base/kustomization.yaml),
-    # and the WITH_CONTROLPLANE step below lifts that before waiting on it.
+    # so it is lifted here with the operators. The c5c3-operator cannot start
+    # without the K-ORC CRDs, and its release has no dependsOn edge to hold the
+    # pod back. Lifted at the end of this run, the CRDs landed minutes after the
+    # pod started, when the kubelet had backed the crash loop off to 160 s or
+    # 300 s, and the pod missed the 120 s admission probe (#1568). The
+    # WITH_CONTROLPLANE step below still waits for the Kustomization.
     log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, glance-operator, placement-operator, barbican-operator, ovn-operator, neutron-operator, cinder-operator, nova-operator, k-orc, c5c3-operator)."
     kubectl patch helmrelease keystone-operator -n keystone-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
@@ -3609,6 +3952,8 @@ main() {
     kubectl patch helmrelease cinder-operator -n cinder-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     kubectl patch helmrelease nova-operator -n nova-system \
+      --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+    kubectl patch kustomization/k-orc -n flux-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     # Pin the GHCR :latest operator images to their current digest so a
     # feature merged since the last deploy actually rolls out (the tag is
@@ -3835,7 +4180,7 @@ main() {
   fi
 
   if [[ "${WITH_DIZZY}" == "true" ]]; then
-    local dizzy_grafana_url="https://dizzy.127-0-0-1.nip.io"
+    local dizzy_grafana_url="https://dizzy.${PUBLIC_SUFFIX}"
     if [[ "${PUBLIC_PORT}" != "443" ]]; then
       dizzy_grafana_url="${dizzy_grafana_url}:${PUBLIC_PORT}"
     fi
@@ -3933,8 +4278,12 @@ main() {
     # its own MariaDB root password. Step 8's shim wait is skipped to match.
     kubectl kustomize "${OVERLAY_ROOT}/infrastructure" \
       | yq eval 'select(.kind != "MariaDB" and .kind != "Memcached" and (.kind != "ExternalSecret" or (.metadata.name != "keystone-admin" and .metadata.name != "keystone-db" and .metadata.name != "mariadb-root-password")))' - \
+      | render_envoy_proxy \
       | kubectl apply -f -
     log "Infrastructure overlay applied WITHOUT MariaDB/Memcached and the standalone-shim ExternalSecrets (WITH_CONTROLPLANE=true; the ControlPlane provisions them)."
+  elif [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    kubectl kustomize "${OVERLAY_ROOT}/infrastructure" | render_envoy_proxy | kubectl apply -f -
+    log "Infrastructure kustomize overlay applied."
   else
     kubectl apply -k "${OVERLAY_ROOT}/infrastructure"
     log "Infrastructure kustomize overlay applied."
@@ -3960,6 +4309,12 @@ main() {
     kubectl apply -k "${REPO_ROOT}/deploy/kind/messaging"
     log "Message bus overlay applied (WITH_MESSAGING=true)."
     wait_for_rabbitmqcluster shared-rabbitmq openstack "${POD_TIMEOUT}"
+  fi
+
+  # The external overlay's Gateway terminates with a certificate for the
+  # address its Service gets, which this issues once the address is there.
+  if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
+    configure_public_gateway
   fi
 
   # Gateway/openstack-gw can only report Programmed=True after the
@@ -4216,12 +4571,11 @@ main() {
     local operators_awaited=false
     log "=== WITH_CONTROLPLANE: bringing up the c5c3 ControlPlane stack ==="
     if [[ "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then
-      # Remove suspension from Flux HelmReleases and Kustomizations
+      # Remove suspension from Flux HelmReleases
       kubectl patch helmrelease/keystone-operator -n keystone-system --type merge \
         -p '{"spec":{"suspend":false}}' 2>/dev/null || true
 
-      kubectl patch kustomization/k-orc -n flux-system --type merge \
-        -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+      # Step 3 lifted the k-orc Kustomization.
       # This wait hard-fails: the c5c3-operator watches the K-ORC kinds
       # unconditionally and cannot start without their CRDs, so continuing
       # would end a "successful" run with a crash-looping operator. The source
@@ -4317,6 +4671,15 @@ main() {
           "${cp_manifest}"
         log "  Set ControlPlane publicEndpoint to https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3 (public port ${PUBLIC_PORT})."
       fi
+      # The external mode's Gateway answers for the suffix of its own address
+      # (configure_public_gateway), so the bundled CR's hostnames move there.
+      if [[ "${PUBLIC_SUFFIX}" != "127-0-0-1.nip.io" ]]; then
+        local cp_public
+        cp_public="$(mktemp)"
+        sed "s/127-0-0-1\.nip\.io/${PUBLIC_SUFFIX}/g" "${cp_manifest}" >"${cp_public}"
+        mv "${cp_public}" "${cp_manifest}"
+        log "  Moved the ControlPlane's hostnames onto the Gateway's ${PUBLIC_SUFFIX}."
+      fi
 
       # Pin the backing-service knobs that are set onto the bundled CR. The
       # bundled CR names spec.sizing.profile: Minimal, which already sizes the
@@ -4367,8 +4730,9 @@ main() {
         rm -f "${overlay_probe}"
       fi
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically."
-      log "  Apply the overlay's OVNCentral and ControlPlane (the CR is named '${CONTROLPLANE_NAME}'):"
-      log "    kubectl apply -k ${OVERLAY_ROOT}/controlplane"
+      log "  Apply the overlay's OVNCentral and ControlPlane (the CR is named '${CONTROLPLANE_NAME}')"
+      log "  with its hostnames moved from 127-0-0-1.nip.io onto the Gateway's ${PUBLIC_SUFFIX}:"
+      log "    kubectl kustomize ${OVERLAY_ROOT}/controlplane | sed 's/127-0-0-1\\.nip\\.io/${PUBLIC_SUFFIX}/g' | kubectl apply -f -"
       log "  Then onboard the OpenBao database-engine tenant once MariaDB is Ready"
       log "  (docs/quick-start-controlplane.md, Step 5):"
       log "    deploy/openbao/bootstrap/setup-database-tenant.sh openstack ${CONTROLPLANE_NAME}"
@@ -4412,13 +4776,28 @@ main() {
     else
       envoy_target="\"\$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)\""
     fi
-    log "Access: kubectl -n envoy-gateway-system port-forward ${envoy_target} ${PUBLIC_PORT}:443"
-    log "        then https://keystone.127-0-0-1.nip.io:${PUBLIC_PORT}/v3 and the other *.127-0-0-1.nip.io:${PUBLIC_PORT} hostnames"
+    local gateway_secret=""
+    if [[ -n "${GATEWAY_CERTIFICATE}" ]]; then
+      gateway_secret="$(kubectl get certificate "${GATEWAY_CERTIFICATE#*/}" -n "${GATEWAY_CERTIFICATE%%/*}" \
+        -o jsonpath='{.spec.secretName}' 2>/dev/null || true)"
+    fi
+    if [[ "${EXTERNAL_LOADBALANCER}" == "true" ]]; then
+      log "Access: https://keystone.${PUBLIC_SUFFIX}/v3, https://horizon.${PUBLIC_SUFFIX} and the other <service>.${PUBLIC_SUFFIX} hostnames"
+      if [[ -n "${PUBLIC_SOURCE_RANGES}" ]]; then
+        log "        from ${PUBLIC_SOURCE_RANGES} (PUBLIC_SOURCE_RANGES) and from the cluster's own pods and nodes"
+      else
+        log "        WARNING: from every source the load balancer admits, the internet on metal-stack; PUBLIC_SOURCE_RANGES=<cidr>,... narrows that"
+      fi
+    else
+      log "Access: sudo --preserve-env=KUBECONFIG kubectl -n envoy-gateway-system port-forward ${envoy_target} ${PUBLIC_PORT}:443"
+      log "        then https://keystone.${PUBLIC_SUFFIX}/v3 and the other <service>.${PUBLIC_SUFFIX} hostnames; local port ${PUBLIC_PORT} takes root"
+    fi
+    log "        trust the lab CA: kubectl get secret ${gateway_secret:-openstack-gw-tls} -n ${GATEWAY_CERTIFICATE%%/*} -o jsonpath='{.data.ca\\.crt}' | base64 -d > lab-ca.pem"
     # VictoriaMetrics has no route on the Gateway; dizzy's OTLP export takes a
-    # second port-forward, which hack/dizzy.sh expects on localhost:8428.
+    # port-forward, which hack/dizzy.sh expects on localhost:8428.
     if [[ "${WITH_DIZZY}" == "true" ]]; then
       log "dizzy:  kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428"
-      log "        then EXTERNAL_CLUSTER=true make dizzy-keystone, and Grafana at https://dizzy.127-0-0-1.nip.io:${PUBLIC_PORT} through the port-forward above"
+      log "        then EXTERNAL_CLUSTER=true make dizzy-keystone, and Grafana at https://dizzy.${PUBLIC_SUFFIX}"
     fi
     if [[ "${WITH_CEPH}" == "true" ]]; then
       log "Ceph:   kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status"

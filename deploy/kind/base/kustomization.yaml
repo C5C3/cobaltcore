@@ -5,7 +5,7 @@
 # Kustomize overlay for kind cluster — base FluxCD manifests.
 # References the production flux-system kustomization and patches
 # the OpenBao HelmRelease to standalone mode (1 replica, HA disabled,
-# no retry_join peers, standard storage class) suitable for a
+# no retry_join peers, no service registration, standard storage class) suitable for a
 # single-node kind cluster. It also sizes the operators, OpenBao and the
 # Flux controllers for the one 4 vCPU / 16 GiB node the devstack targets,
 # which the e2e-controlplane job checks with hack/ci-check-node-budget.sh.
@@ -45,6 +45,16 @@ patches:
               replicas: 1
             standalone:
               enabled: true
+              # No service_registration "kubernetes" stanza. The chart grants the
+              # Role that lets the server label its own pod only in HA mode. In
+              # standalone mode every GET of the pod gets a 403, and the server
+              # retries every 5 seconds for as long as it runs. OpenBao 2.7.1
+              # leaks one goroutine per retry (client.do in
+              # internal/serviceregistration/kubernetes never cancels its
+              # context), so the pod reached its 512Mi limit and was OOMKilled
+              # after six to eight days on the lab, then came back sealed.
+              # Nothing reads those labels without the HA mode's active and
+              # standby Services.
               config: |
                 # kind-only — production keeps ui = false
                 ui = true
@@ -63,8 +73,6 @@ patches:
                 storage "raft" {
                   path = "/openbao/data"
                 }
-
-                service_registration "kubernetes" {}
             dataStorage:
               storageClass: standard
             # The production release asks 250m. One idle standalone server
@@ -333,7 +341,8 @@ patches:
   # <name>@<digest>).
   # Suspended at apply time, nothing reconciles K-ORC until a path lifts the
   # suspension; the CONTROLPLANE_OPERATORS=flux branch of hack/deploy-infra.sh
-  # does so right before it waits for the Kustomization.
+  # does so in Step 3 with the operator HelmReleases, because the c5c3-operator
+  # crash-loops until the K-ORC CRDs exist.
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

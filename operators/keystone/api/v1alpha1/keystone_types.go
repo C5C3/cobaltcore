@@ -70,12 +70,11 @@ type KeystoneSpec struct {
 	// Jobs sizes, prioritizes and places the pods of every Keystone Job and
 	// CronJob: db-sync, schema-check, the db-expand, db-migrate and db-contract
 	// upgrade phases, bootstrap, policy-validation, the fernet-rotate and
-	// credential-rotate CronJobs (their copy-keys init container included),
-	// trust-flush, and the admin-password rotation. A field left unset falls
-	// back to spec.deployment: the priority class, the node selector, the
-	// tolerations, and the node affinity (never the pod (anti-)affinity). An
-	// empty value opts out of the fallback. Unset resources default to a 70m
-	// CPU request and 368Mi memory as request and limit.
+	// credential-rotate CronJobs, trust-flush, and the admin-password rotation.
+	// A field left unset falls back to spec.deployment: the priority class, the
+	// node selector, the tolerations, and the node affinity (never the pod
+	// (anti-)affinity). An empty value opts out of the fallback. Unset resources
+	// default to a 70m CPU request and 368Mi memory as request and limit.
 	// +optional
 	Jobs *commonv1.JobSpec `json:"jobs,omitempty"`
 

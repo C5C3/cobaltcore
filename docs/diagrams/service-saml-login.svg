@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1580" height="1200" viewBox="0 0 1580 1200" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="SAML login through Horizon">
+<title>SAML login through Horizon</title>
+<rect width="1580" height="1200" fill="#F6F5F1"/>
+<text x="40" y="61.8" font-size="30" font-weight="700" fill="#17202B">SAML WebSSO through Horizon</text>
+<rect x="45" y="95" width="270" height="54" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="180" y="130.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Browser</text>
+<text x="180.5" y="176.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">public URLs</text>
+<polyline points="180,195 180,1020" fill="none" stroke="#7D8794" stroke-width="1" stroke-dasharray="4 4"/>
+<rect x="345" y="95" width="270" height="54" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="480" y="130.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Horizon</text>
+<text x="480" y="176.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">dashboard</text>
+<polyline points="480,195 480,1020" fill="none" stroke="#7D8794" stroke-width="1" stroke-dasharray="4 4"/>
+<rect x="645" y="95" width="270" height="54" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="780" y="130.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Federation proxy</text>
+<text x="780" y="176.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">mod_auth_mellon</text>
+<polyline points="780,195 780,1020" fill="none" stroke="#7D8794" stroke-width="1" stroke-dasharray="4 4"/>
+<rect x="945" y="95" width="270" height="54" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1080" y="130.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Keystone</text>
+<text x="1080" y="176.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">127.0.0.1:5000</text>
+<polyline points="1080,195 1080,1020" fill="none" stroke="#7D8794" stroke-width="1" stroke-dasharray="4 4"/>
+<rect x="1245" y="95" width="270" height="54" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="1380" y="130.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">Identity provider</text>
+<text x="1380.5" y="176.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">SAML 2.0</text>
+<polyline points="1380,195 1380,1020" fill="none" stroke="#7D8794" stroke-width="1" stroke-dasharray="4 4"/>
+<polyline points="180,235 480,235" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="465,242.2 480,235 465,227.8" fill="none" stroke="#2457C5" stroke-width="3"/>
+<circle cx="202" cy="210" r="18" fill="#17202B"/>
+<text x="202" y="217.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">1</text>
+<text x="230" y="214.2" font-size="20" font-weight="400" fill="#2B3440">Choose SAML provider</text>
+<polyline points="180,375 780,375" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="765,382.2 780,375 765,367.8" fill="none" stroke="#2457C5" stroke-width="3"/>
+<circle cx="202" cy="350" r="18" fill="#17202B"/>
+<text x="202" y="357.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">2</text>
+<text x="230" y="354.2" font-size="20" font-weight="400" fill="#2B3440">Open per-IdP WebSSO path with origin</text>
+<polyline points="180,515 1380,515" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="1365,522.2 1380,515 1365,507.8" fill="none" stroke="#2457C5" stroke-width="3"/>
+<circle cx="202" cy="490" r="18" fill="#17202B"/>
+<text x="202" y="497.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">3</text>
+<text x="230" y="494.2" font-size="20" font-weight="400" fill="#2B3440">Visit IdP and log in</text>
+<polyline points="180,655 780,655" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="765,662.2 780,655 765,647.8" fill="none" stroke="#2457C5" stroke-width="3"/>
+<circle cx="202" cy="630" r="18" fill="#17202B"/>
+<text x="202" y="637.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">4</text>
+<text x="230" y="634.2" font-size="20" font-weight="400" fill="#2B3440">POST SAMLResponse to .../mellon/postResponse</text>
+<polyline points="780,755 1069.5,755" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1080,755 1065,762.2 1065,747.8" fill="#2457C5"/>
+<circle cx="802" cy="730" r="18" fill="#17202B"/>
+<text x="802" y="737.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">5</text>
+<text x="830" y="734.2" font-size="20" font-weight="400" fill="#2B3440">MELLON headers</text>
+<polyline points="180,895 480,895" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polyline points="465,902.2 480,895 465,887.8" fill="none" stroke="#2457C5" stroke-width="3"/>
+<circle cx="202" cy="870" r="18" fill="#17202B"/>
+<text x="202" y="877.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">6</text>
+<text x="230" y="874.2" font-size="20" font-weight="400" fill="#2B3440">POST token to /auth/websso/</text>
+<polyline points="480,995 1069.5,995" fill="none" stroke="#2457C5" stroke-width="3"/>
+<polygon points="1080,995 1065,1002.2 1065,987.8" fill="#2457C5"/>
+<circle cx="502" cy="970" r="18" fill="#17202B"/>
+<text x="502" y="977.2" font-size="20" font-weight="700" fill="#FDFCF9" text-anchor="middle">7</text>
+<text x="530" y="974.2" font-size="20" font-weight="400" fill="#2B3440">Validate token (cluster-local Keystone URL)</text>
+<polyline points="480,295 190.5,295" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="8 8"/>
+<polygon points="180,295 195,287.8 195,302.2" fill="#7D8794"/>
+<text x="200" y="278.2" font-size="20" font-weight="400" fill="#55606E">Redirect to Keystone</text>
+<polyline points="780,435 190.5,435" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="8 8"/>
+<polygon points="180,435 195,427.8 195,442.2" fill="#7D8794"/>
+<text x="200" y="418.2" font-size="20" font-weight="400" fill="#55606E">IdP redirect with SAML authentication request</text>
+<polyline points="1380,575 190.5,575" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="8 8"/>
+<polygon points="180,575 195,567.8 195,582.2" fill="#7D8794"/>
+<text x="200" y="558.2" font-size="20" font-weight="400" fill="#55606E">Form with SAML response containing a signed assertion</text>
+<polyline points="1080,815 190.5,815" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="8 8"/>
+<polygon points="180,815 195,807.8 195,822.2" fill="#7D8794"/>
+<text x="200" y="798.2" font-size="20" font-weight="400" fill="#55606E">Token form via proxy (trusted dashboard origin)</text>
+<text x="40" y="1071.2" font-size="20" font-weight="400" fill="#55606E">Open blue arrow: browser request. Filled blue arrow: call between servers. Dashed grey: response.</text>
+<text x="40" y="1111.2" font-size="20" font-weight="400" fill="#55606E">Mellon validates the SAML response before step 5. Horizon starts a session after step 7.</text>
+<text x="40" y="1151.2" font-size="20" font-weight="400" fill="#55606E">No proxy-to-IdP token exchange. Gateway and Service routing are omitted.</text>
+</svg>

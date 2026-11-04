@@ -17,9 +17,20 @@
 # Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
 # so this fixture uses a unique CR name (`horizon-smoke`) to avoid clashing
 # with the sibling horizon suites on the shared `openstack-memcached` cluster
-# and on HTTPRoute object names inside the `openstack` namespace. No other
-# horizon suite attaches to the nip.io Gateway hostname, so a root-path route
-# does not conflict.
+# and on HTTPRoute object names inside the `openstack` namespace.
+#
+# HTTPRoute path isolation:
+#   The sibling gateway-quick-start fixture attaches to `openstack-gw` with
+#   hostname `horizon.127-0-0-1.nip.io` and path `/`, a root-path match.
+#   Under `parallel: 4` the two Horizon CRs reconcile concurrently and the
+#   operator creates TWO HTTPRoutes (`horizon-smoke` and
+#   `horizon-gateway-qs`) on the same listener. If both routes matched on
+#   path `/` they would overlap entirely, and the controller would mark one
+#   `Accepted=False, reason=RouteRuleConflict`; whichever loses the race
+#   never flips HTTPRouteReady=True and its suite times out. Path `/auth`
+#   makes the smoke HTTPRoute strictly more specific, so both routes attach
+#   without conflict, and it still matches the `/auth/login/` URL the smoke
+#   curl fetches.
 #
 # The login page renders without a live Keystone (Keystone is only contacted on
 # login submit), so keystoneEndpoint points at the cluster-local convention URL
@@ -50,4 +61,5 @@ spec:
     parentRef:
       name: openstack-gw
     hostname: horizon.127-0-0-1.nip.io
-    path: /
+    # Not `/`: see "HTTPRoute path isolation" above.
+    path: /auth

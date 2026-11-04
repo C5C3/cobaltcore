@@ -7,11 +7,13 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
+<span id="quick-start-metal-stack-controlplane-and-kvm-hypervisors-on-a-metal-stack-cluster"></span>
+
 # Deploy on Bare Metal
 
 Deploy an OpenStack cloud on an existing Gardener cluster backed by
 metal-stack, then run virtual machines on its KVM workers. Gardener manages
-Kubernetes and metal-stack provides the machines; CobaltCore manages OpenStack
+Kubernetes and metal-stack provides the machines. CobaltCore manages OpenStack
 on that cluster.
 
 This lab uses at least two workers. Follow the parts in order:
@@ -20,12 +22,12 @@ This lab uses at least two workers. Follow the parts in order:
 2. [Connect compute hosts](#hypervisors), boot virtual machines, and verify storage and migration.
 3. Add the optional NFS backend if you need to test another storage option.
 
-You access the cloud through a local port-forward. The configuration is for
+The Gateway publishes the APIs and Horizon on the load balancer’s address over HTTPS. The configuration is for
 evaluation, with single-instance backing services and lab certificates. Review
 [Configure Your Deployment](./guides/advanced-configuration.md) before planning
 availability, capacity, and public access for your own environment.
 
-![One Gardener cluster runs the OpenStack control plane and Ceph. Each worker runs KVM compute and OVN networking; a port-forward gives the workstation access to the API gateway.](./diagrams/compute-metal-stack-lab.svg)
+![One Gardener cluster runs the OpenStack control plane and Ceph. Each worker runs KVM compute and OVN networking. The Gateway serves APIs and Horizon on the load balancer’s address over HTTPS on port 443.](./diagrams/compute-metal-stack-lab.svg)
 
 ## Prerequisites
 
@@ -47,6 +49,7 @@ The lab assumes a cluster of this shape:
 | Room in that class for one 100Gi raw block volume per OSD and one 10Gi monitor volume, from a provisioner that serves `volumeMode: Block`; the manifest starts with nine OSDs, and Step 3 describes fresh two-worker sizing | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
 | Only with the optional `WITH_NFS=true` of Part 3: room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy, which exits 1 otherwise |
 | Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
+| An address from the shoot's load balancer for a Service of type `LoadBalancer`, which metal-stack's cloud controller takes from the project's internet network, reachable on TCP 443 from where you work | the address wait of Step 3, which exits 1 otherwise |
 | TCP 16514 and 49152 to 49215 open between the workers | `hack/lab-node-ports.sh` |
 
 The shoot's kubeconfig is saved as `kubeconfig` in the root of the clone;
@@ -176,9 +179,36 @@ and never switches the context. It refuses the opt-ins this cluster does not
 take, checks the cluster before it applies anything, and installs the shared
 infrastructure and the ControlPlane operator stack. It returns once the ten
 operator releases are Ready and the cluster admits the manifests of Step 4.
-When it completes, it prints the port-forward command on its `Access:` line.
 [`make deploy-infra`](./reference/infrastructure/e2e-deployment.md#make-deploy-infra)
 describes every step and variable.
+
+The deploy publishes the Gateway `openstack-gw` on a public address. Its proxy
+Service is of type `LoadBalancer`, and the shoot's load balancer gives it an
+address of the project's internet network. Every hostname of the Gateway ends
+in that address with its dots turned into dashes, so `154.41.192.90` gives
+`keystone.154-41-192-90.nip.io`, which the public nip.io DNS resolves to the
+address from anywhere. The Gateway serves one certificate for all of them,
+`*.154-41-192-90.nip.io`, signed by a lab CA the deploy creates. When it
+completes, its `Access:` lines print the Keystone and Horizon URLs and the
+command that saves the lab CA, which Step 7 runs. The
+[Public Gateway](./reference/infrastructure/infrastructure-manifests.md#public-gateway)
+gives the reasons behind each piece.
+
+::: warning The Gateway answers every source
+The shoot's firewall admits every source to the address, so Keystone and
+Horizon are reachable from the internet, behind their logins. To admit your
+own networks alone, add them to the deploy command, for example
+`PUBLIC_SOURCE_RANGES=203.0.113.7/32`; commas or blanks separate several. The
+deploy adds the shoot's pod and node networks, so the cluster's own pods keep
+reaching the address.
+:::
+
+On a cluster whose load balancer hands out no address, the deploy fails at its
+address wait. `EXTERNAL_LOADBALANCER=false` added to the deploy command keeps
+the Gateway inside the cluster under the hostnames
+`<service>.127-0-0-1.nip.io`, and every later step works the same through a
+port-forward on local port 443, which needs root:
+`sudo --preserve-env=KUBECONFIG kubectl -n envoy-gateway-system port-forward "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 443:443`.
 
 `WITH_CEPH=true` deploys the
 [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph)
@@ -214,8 +244,9 @@ nodes; see
 `WITH_DIZZY=true` is optional too, and this page does not need it either.
 Added to the deploy command, it deploys the metrics stack of a dizzy load or
 chaos soak: VictoriaMetrics, which keeps the metrics on a volume, and Grafana
-with dizzy's dashboards. A soak reaches them through the port-forward of
-Step 6 and a second one to VictoriaMetrics; see
+with dizzy's dashboards. Grafana answers on the Gateway at
+`https://dizzy.<a-b-c-d>.nip.io`, and a soak reaches VictoriaMetrics through a
+port-forward; see
 [Lab dizzy stack](./reference/infrastructure/infrastructure-manifests.md#lab-dizzy-stack).
 Once Part 2 has run, `make dizzy-soak-start` starts a six-hour soak inside the
 cluster that needs no port-forward and ends with a report and a verdict; see
@@ -250,19 +281,29 @@ kubectl -n kube-system get configmap shoot-info -o jsonpath='{.data.podNetwork} 
 
 The read prints `10.240.0.0/13 10.248.0.0/18` on `forge` and `newforge`, the
 two networks `controlplane-lab.yaml` names; on another shoot, write its own two
-there first. Then apply the directory:
+there first.
+
+The directory names every hostname on `127-0-0-1.nip.io`, the suffix of the
+kind quick start. Read the Gateway's suffix from the first DNS name of its
+certificate, then apply the directory with the suffix in place:
 
 ```bash
-kubectl apply -k deploy/lab/metal-stack/controlplane
+export PUBLIC_SUFFIX=$(kubectl get certificate openstack-gw-tls -n openstack -o jsonpath='{.spec.dnsNames[0]}' | cut -c3-)
+echo "${PUBLIC_SUFFIX}"
+kubectl kustomize deploy/lab/metal-stack/controlplane |
+  sed "s/127-0-0-1\.nip\.io/${PUBLIC_SUFFIX}/g" | kubectl apply -f -
 kubectl wait ovncentral/controlplane-ovn -n openstack --for=condition=Ready --timeout=10m
 ```
 
-The directory holds the `OVNCentral` `controlplane-ovn` and the ControlPlane
-`controlplane` of the Deploy a ControlPlane. The ControlPlane carries that
-page's block-storage block with the Ceph of Step 3 in place of its NFS shares:
-the RBD volume backend `ceph1` on the pool `volumes` and the RBD backup target
-`cephbk` on the pool `backups`, each with the key Secret of its Ceph user. It
-adds three settings for the lab:
+The echo prints the suffix of the `Access:` lines of Step 3, such as
+`154-41-192-90.nip.io`. The directory holds the `OVNCentral`
+`controlplane-ovn` and the ControlPlane `controlplane` from the local ControlPlane guide. The ControlPlane carries that page's block-storage block with
+the Ceph of Step 3 in place of its NFS shares: the RBD volume backend `ceph1`
+on the pool `volumes` and the RBD backup target `cephbk` on the pool
+`backups`, each with the key Secret of its Ceph user. Its services set no
+`publicEndpoint`, so the operator derives each public URL from the hostname on
+port 443, `https://keystone.<suffix>/v3` for Keystone, and the catalog
+advertises URLs any client resolves. It adds four settings for the lab:
 
 - `sizing.profile: Minimal` gives every component one replica and the database
   a 512Mi volume, which a worker carries beside its servers.
@@ -271,6 +312,9 @@ adds three settings for the lab:
 - `hypervisorOperator: {}` provisions the Keystone account of the hypervisor
   operator and the Secret `controlplane-nova-hypervisor-operator-auth` it logs
   in with in Part 2.
+- `consoleProxy.gateway` publishes the noVNC console proxy at
+  `nova-console.<suffix>`, where Horizon's console tab and
+  `openstack console url show` send a browser.
 
 [Lab ControlPlane](./reference/infrastructure/infrastructure-manifests.md#lab-controlplane)
 gives the reason behind each setting and the source of every value of the Ceph
@@ -300,54 +344,43 @@ unset BAO_TOKEN
 The first wait gives the c5c3-operator time to create the MariaDB: without it
 the Ready wait fails at once with `Error from server (NotFound)` while the
 MariaDB is missing.
-Step 5 of the [Deploy a ControlPlane](./quick-start-controlplane.md)
+Step 5 of [Deploy a ControlPlane](./quick-start-controlplane.md)
 explains what the script sets up.
 
-### Step 6: Wait for the chain and open the port-forward {#cp-access}
+### Step 6: Wait for the chain {#cp-access}
 
 ```bash
 kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --timeout=30m
 ```
 
 The wait covers the twenty-one conditions of the figure.
-[Step 6 of the Deploy a ControlPlane](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
+[Step 6 of Deploy a ControlPlane](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
 lists what each one waits for.
 
 ![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations. RegistrationTenantStoresReady and NamespaceAssignmentsReady have no gate.](./diagrams/controlplane-gate-graph.svg)
 
 No image is preloaded on the lab, so the wait allows 30 minutes, twice the
-15 of the Deploy a ControlPlane. Then open the port-forward to the Gateway
-in a second terminal, from the root of the clone, and keep it running for the
-rest of the page:
-
-```bash
-export KUBECONFIG="$PWD/kubeconfig"
-kubectl -n envoy-gateway-system port-forward \
-  "$(kubectl -n envoy-gateway-system get svc -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw -o name)" 8443:443
-```
-
-It is the command of the `Access:` line of Step 3. When it ends, for example
-after the Envoy pod restarted, start it again.
+15 minutes in the local ControlPlane guide.
 
 ### Step 7: Verify {#cp-verify}
 
-The Gateway serves one self-signed certificate per hostname, each in a Secret
-`<service>-nip-io-tls` in `openstack` whose `ca.crt` is the certificate
-itself. Each names its hostname as its subject, which lets one CA file hold
-all of them. Collect them into that file for the OpenStack CLI:
+The Gateway terminates TLS with one certificate for `*.<suffix>`, signed by
+the lab CA. The CA is the `ca.crt` of the certificate's Secret
+`openstack-gw-tls`; save it for the OpenStack CLI:
 
 ```bash
-kubectl get secret -n openstack --field-selector type=kubernetes.io/tls -o json |
-  jq -r '.items[] | select(.metadata.name | endswith("-nip-io-tls")) | .data["ca.crt"] | @base64d' > gateway-ca.pem
-grep -c 'BEGIN CERTIFICATE' gateway-ca.pem
+kubectl get secret openstack-gw-tls -n openstack -o jsonpath='{.data.ca\.crt}' | base64 -d > lab-ca.pem
+grep -c 'BEGIN CERTIFICATE' lab-ca.pem
 ```
 
-The count is the number of Gateway hostnames, twelve on the lab. `.gitignore`
-keeps `*.pem` out of git. Then log in as the admin through the port-forward:
+The count is 1. `.gitignore` keeps `*.pem` out of git. The CA may sign names
+under `nip.io` alone, a name constraint the CLI and the browsers check, so
+trusting it vouches for no other site. Then log in as the admin on the
+Gateway's address:
 
 ```bash
-export OS_CACERT="$PWD/gateway-ca.pem"
-export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io:8443/v3
+export OS_CACERT="$PWD/lab-ca.pem"
+export OS_AUTH_URL="https://keystone.${PUBLIC_SUFFIX}/v3"
 export OS_USERNAME=admin
 export OS_PASSWORD=$(kubectl get secret controlplane-keystone-admin-credentials -n openstack -o jsonpath='{.data.password}' | base64 -d)
 export OS_PROJECT_NAME=admin
@@ -357,14 +390,14 @@ openstack token issue
 ```
 
 The command prints a token table. `OS_CACERT` makes the CLI verify every
-endpoint against the Gateway's certificates, so no command on this page takes
-`--insecure`, and the admin password goes only to a listener that holds one of
-their keys. A `certificate verify failed` error means the file predates a
-reissued certificate; write it again. On a host that cannot resolve
-`*.nip.io`, the tip in Step 7 of the
-[Deploy a ControlPlane](./quick-start-controlplane.md) gives the
-`/etc/hosts` entries. Then list the catalog, the compute services and the
-hypervisors:
+endpoint against the lab CA, so no command on this page takes `--insecure`,
+and the admin password goes only to the Gateway. A `certificate verify failed`
+error means the file holds the CA of an earlier deploy; write it again. The
+same variables work on any host that reaches the address, with `lab-ca.pem`
+copied there. On a host that cannot resolve `*.nip.io`, add each hostname with
+the Gateway's address to `/etc/hosts`, as the tip in Step 7 of
+[Deploy a ControlPlane](./quick-start-controlplane.md) does with
+`127.0.0.1`. Then list the catalog, the compute services and the hypervisors:
 
 ```bash
 openstack catalog list
@@ -375,7 +408,8 @@ openstack hypervisor list
 ```
 
 The catalog holds a row per service of the ControlPlane, among them
-`block-storage` for Cinder. The pool wait catches a volume service that started
+`block-storage` for Cinder, and every public URL in it is a `https://` URL on
+the suffix without a port. The pool wait catches a volume service that started
 but could not reach Ceph: its row in the service list reads `up` while its pool
 never reports. The volume service list shows `cinder-scheduler`,
 `cinder-volume` on the host `controlplane-cinder@ceph1` and `cinder-backup`,
@@ -394,6 +428,26 @@ they carry there:
 with the `python-barbicanclient` plugin, and
 [Create a first volume](./quick-start-controlplane.md#create-a-first-volume).
 
+### Step 8: Open Horizon {#cp-horizon}
+
+Horizon answers at `https://horizon.<suffix>`. For a browser to accept its
+certificate, add the lab CA to the trust store the browser reads. On macOS
+that is the login keychain, and the second command prints the URL to open:
+
+```bash
+security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db lab-ca.pem
+echo "https://horizon.${PUBLIC_SUFFIX}/"
+```
+
+macOS asks for your password before it changes a trust setting. On Linux,
+Firefox and Chromium keep stores of their own; import `lab-ca.pem` under their
+certificate settings as an authority trusted to identify websites. Log in as
+`admin` with the password in `OS_PASSWORD`, domain `Default`. The dashboard
+redirects to `/project/`, and its Identity panel lists the users and projects
+the ControlPlane provisioned. Once Part 2 has booted servers, the Console tab
+of a server opens its noVNC console on `nova-console.<suffix>`, which the same
+CA vouches for.
+
 ## Part 2: The hypervisors {#hypervisors}
 
 Part 2 turns every worker into a KVM hypervisor and boots a server on each. It
@@ -404,10 +458,9 @@ up, restores the backup into a new volume, and rotates the key of the Ceph user
 them up: a `Ready` ControlPlane `controlplane` in `openstack` with
 `spec.services.nova.hypervisorOperator` and `spec.services.cinder` on the
 [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph),
-a running port-forward to the Gateway
-on local port 8443, and the `OS_*` variables of an admin login exported,
-`OS_CACERT` with the Gateway's certificates among them. Run
-it from the root of the clone with `KUBECONFIG` pointing at the cluster. The
+the Gateway's address reachable on port 443, and `PUBLIC_SUFFIX` and the
+`OS_*` variables of an admin login exported, `OS_CACERT` naming the lab CA.
+Run it from the root of the clone with `KUBECONFIG` pointing at the cluster. The
 commands read the names of all nodes into the array `nodes`, and their
 availability zone. A command that needs one node takes it by slice,
 `${nodes[@]:0:1}` for the first and `${nodes[@]:1:1}` for the second. bash and
@@ -575,10 +628,10 @@ kubectl exec -it -n openstack "${libvirt_pod}" -c libvirtd -- virsh console "${d
 ```
 
 Press Enter for the login prompt and log in as `cirros` with the password
-`gocubsgo`. In a browser, the noVNC console of
-[Expose the Console Proxy](./guides/nova/expose-the-console-proxy.md) reaches
-the same server. On the console, with `<lab-1>` replaced by the address the
-first command printed:
+`gocubsgo`. In a browser, the Console tab of `lab-0` in Horizon, or the URL
+`openstack console url show lab-0 -f value -c url` prints, opens the noVNC
+console on `nova-console.<suffix>`, which reaches the same server. On the
+console, with `<lab-1>` replaced by the address the first command printed:
 
 ```sh
 curl http://169.254.169.254/latest/meta-data/instance-id
@@ -898,9 +951,9 @@ the volume up to Ceph. Part 3 needs a lab deployed with `WITH_NFS=true` added
 to the command of Part 1, Step 3,
 `EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_NFS=true make deploy-infra`,
 and Part 2 through Step 11, which leaves `lab-restored` attached to `lab-0`,
-`lab-vol` attached to `lab-1`, and both servers `ACTIVE`. The port-forward of
-Part 1, Step 6 keeps running, and the `OS_*` variables of Part 1, Step 7 and
-`KUBECONFIG` stay exported. Part 2 moved `lab-0` and left `domain` on `lab-1`,
+`lab-vol` attached to `lab-1`, and both servers `ACTIVE`. `PUBLIC_SUFFIX` of
+Part 1, Step 4, the `OS_*` variables of Part 1, Step 7 and `KUBECONFIG` stay
+exported. Part 2 moved `lab-0` and left `domain` on `lab-1`,
 so Part 3 sets `host`, `domain` and `libvirt_pod` itself.
 
 ### Step 1: Put an NFS backend beside Ceph {#nfs-apply}
@@ -910,7 +963,8 @@ Check the NFS stack and apply the variant behind that check:
 ```bash
 kubectl -n openstack rollout status deployment/nfs-server --timeout=60s &&
   kubectl get csidriver nfs.csi.k8s.io &&
-  kubectl apply -k deploy/lab/metal-stack/controlplane-nfs
+  kubectl kustomize deploy/lab/metal-stack/controlplane-nfs |
+  sed "s/127-0-0-1\.nip\.io/${PUBLIC_SUFFIX}/g" | kubectl apply -f -
 ```
 
 The rollout status reports the Deployment `nfs-server` rolled out, and the
@@ -919,7 +973,10 @@ read lists the CSIDriver `nfs.csi.k8s.io`. On a lab deployed without
 not run: the volume service of `nfs1` would wait for a share nothing serves,
 and so would the backup pod, which mounts the export of every NFS volume
 backend to read the volumes it backs up. The variant adds `nfs1` after `ceph1`
-to `spec.services.cinder.backends` and keeps the backup target `cephbk`.
+to `spec.services.cinder.backends` and keeps the backup target `cephbk`. The
+`sed` moves its hostnames onto the Gateway's suffix, as in Part 1, Step 4;
+without it the apply would move the ControlPlane's endpoints back to
+`127-0-0-1.nip.io`.
 
 Then wait for the NFS entry, for the backup Deployment to mount its share, and
 for the volume service of `nfs1`:
@@ -1107,18 +1164,27 @@ deployed with `WITH_DIZZY=true` goes in the teardown's step 3, and its claim
 with it. Where the default class has the reclaim policy `Delete`, the metrics
 on its volume go too. A Prometheus deployed with `WITH_PROMETHEUS=true` goes in
 the same step, and its claim with it, then the Service and the Endpoints
-`kube-prometheus-stack-kubelet` that its operator wrote in `kube-system`. Stop
-the port-forward of Part 1, and those to VictoriaMetrics, Prometheus and
-Grafana if you opened them, once the teardown has finished. Delete
-`gateway-ca.pem`, and `_output/dizzy/clouds.yaml` if a soak wrote it: it holds
-the admin password of the removed stack.
+`kube-prometheus-stack-kubelet` that its operator wrote in `kube-system`. The
+Gateway's Service goes with Envoy Gateway, and the load balancer takes its
+address back; the next deploy may get another one, and with it another suffix.
+Stop the port-forwards to VictoriaMetrics, Prometheus and Grafana if you
+opened them, once the teardown has finished. Delete `lab-ca.pem`, and
+`_output/dizzy/clouds.yaml` if a soak wrote it: it holds the admin password of
+the removed stack. The lab CA went with the cluster, and the next deploy
+creates a new one, so remove the old one from the browser's trust store; on
+macOS, `security delete-certificate -t -c "CobaltCore metal-stack lab CA"`
+removes it and its trust setting from the login keychain.
 
 ## Caveats
 
-Nothing on the lab is reachable from outside the cluster. MetalLB has no
-address pool, so no Service gets an external address, and the APIs answer only
-through the port-forward of the workstation that opened it. Tenant networks
-have no router, so a server is reached through its console.
+The Gateway is the lab's one public address. Without `PUBLIC_SOURCE_RANGES`
+it admits every source, so every API, Horizon and the console proxy face the
+internet behind their logins, and the admin password of Step 7 opens all of
+them. The hostnames depend on nip.io, a public DNS service; a host that cannot
+reach it needs the `/etc/hosts` entries of Part 1, Step 7. The lab CA's key
+lives in the cluster, in the Secret `cert-manager/lab-ca`, so whoever reads
+Secrets there can sign names under `nip.io` that your browser then trusts.
+Tenant networks have no router, so a server is reached through its console.
 
 A server lives on its worker's local disk, under `/var/lib/nova`. A worker that
 Gardener replaces, after a machine update or a failed health check, takes its
@@ -1281,6 +1347,17 @@ delete.
 No lab run has set `WITH_PROMETHEUS=true` yet; the
 [Lab Prometheus run](./reference/infrastructure/infrastructure-manifests.md#lab-prometheus-run)
 lists the steps that would prove it.
+
+Every run above reached the Gateway through a port-forward on local port 8443,
+with the hostnames on `127-0-0-1.nip.io`. The public Gateway has not run the
+page yet: the load-balancer address, the lab CA, the suffix of Part 1, Step 4,
+Horizon in Step 8 and the console tab of Part 2, Step 6. What ran is a probe on
+`newforge` on 2026-11-02, a Service of type `LoadBalancer` in front of an echo
+pod: it got its address within seconds, announced over BGP from all three
+workers, and answered on `<address>:443` through its `nip.io` name from a
+workstation and from pods of the cluster. With `loadBalancerSourceRanges` set,
+a source outside the ranges timed out, and so did the cluster's own pods until
+the shoot's pod and node networks were in the list.
 
 ## Related references
 

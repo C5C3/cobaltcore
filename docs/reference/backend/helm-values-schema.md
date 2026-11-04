@@ -73,7 +73,7 @@ Every chart exposes the same core value keys — `image`, `replicas`,
 `resources`, `nodeSelector`, `tolerations`, `priorityClassName`, `rbac`,
 `leaderElection`, `controller`, `webhook`, `metrics`,
 `logging`, `monitoring`, `serviceAccount`, `extraArgs`, `extraEnv`,
-`nameOverride`, `fullnameOverride`. A few keys are conditional on what a chart
+`extraVolumes`, `extraVolumeMounts`, `nameOverride`, `fullnameOverride`. A few keys are conditional on what a chart
 ships, so they are present only where they apply:
 
 | Key | Charts | Source |
@@ -269,17 +269,33 @@ Each `metadataAllowCidrs` entry is validated against the same shared
 `--federation-metadata-allow-cidrs` flag and its runtime semantics are covered in
 the [keystone-operator packaging reference](./keystone-operator-packaging.md#federation).
 
-### extraArgs and extraEnv
+### extraArgs, extraEnv, extraVolumes and extraVolumeMounts
 
 | Field | Type | Constraint | Default |
 | --- | --- | --- | --- |
 | `extraArgs` | `array` | non-empty strings | `[]` |
 | `extraEnv` | `array` | objects with a non-empty `name` (Kubernetes `EnvVar`) | `[]` |
+| `extraVolumes` | `array` | objects with a non-empty `name` (Kubernetes `Volume`) | `[]` |
+| `extraVolumeMounts` | `array` | objects with a non-empty `name` and `mountPath` (Kubernetes `VolumeMount`) | `[]` |
 
-Both are appended verbatim to the manager container — `extraArgs` after the
+`extraArgs` and `extraEnv` are appended verbatim to the manager container — `extraArgs` after the
 flags the chart renders itself, `extraEnv` after the variables the chart
 derives from its own values — for a flag or variable the operator binary
 accepts but the chart exposes no value for.
+
+`extraVolumes` goes verbatim into the pod's `volumes` and `extraVolumeMounts`
+into the manager container's `volumeMounts`, each after the `webhook-certs`
+entry. The chart renders `volumes` and `volumeMounts` when the webhook is
+enabled or the list is non-empty, so the default render carries the webhook
+certificate alone. The CI deploy helper uses them for the coverage counter
+directory of the `e2e-operator`, `e2e-chaos` and `tempest` jobs
+([hack/ci-deploy-operator.sh](../ci-cd/ci-workflow.md#hack-ci-deploy-operator-sh)).
+
+The two volume keys need operator-library 0.12.0, which the chart versions
+keystone-operator 0.15.0, c5c3-operator 0.20.0, horizon-operator 0.8.0,
+cinder-, nova- and ovn-operator 0.6.0, and barbican-, glance-, neutron- and
+placement-operator 0.7.0 carry. The root-level `additionalProperties: false`
+of an older chart's schema rejects both keys.
 
 ### operator-library
 
@@ -417,6 +433,7 @@ ships an enforced schema and covers the keys its extras file adds.
 | Standalone webhook type | `webhook.standalone: "yes"` |
 | Logging constraints | `logging.development: "yes"`, `logging.encoder: "xml"`, `logging.level: "verbose"` |
 | Placement constraints | `nodeSelector: {role: 1}`, a toleration with `operator: Sometimes`, `effect: NoSchedul`, `tolerationSeconds: "300"` or the unknown key `taint`, `priorityClassName: 5`, a `priorityClassName` of 254 characters |
+| Extra volumes | an `extraVolumeMounts` entry without `mountPath`, an `extraVolumes` entry without `name` |
 
 ### Positive Tests (acceptance)
 

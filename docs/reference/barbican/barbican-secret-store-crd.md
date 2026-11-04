@@ -313,7 +313,15 @@ its own bound: the operator derives the AppRole credentials Secret by appending
 
 The managed flow (an `OpenBaoCluster` in the suite, the minted `-approle`
 Secret, and the rendered store section) lives in
-`tests/e2e/barbican/secretstore-managed`. The brownfield flow, where the AppRole
+`tests/e2e/barbican/secretstore-managed`. That suite also forces a proactive
+re-mint: it sets `barbican.c5c3.io/secret-id-minted-at` on the `-approle` Secret
+to `2000-01-01T00:00:00Z` and `barbican.c5c3.io/secret-id-ttl-seconds` to `3600`,
+which puts the secret ID past two thirds of its lifetime. The controller does not
+watch that Secret, so the suite then sets an annotation on the store to enqueue
+it. Once the Secret carries a new `secret-id-minted-at` and `CredentialsReady` is
+`True`, the suite reads
+`barbican_operator_secretstore_remints_total{trigger="proactive"}` off the
+barbican-operator release. The brownfield flow, where the AppRole
 is seeded outside the operator and the store is validate-only, lives in
 `tests/e2e/barbican/secretstore-brownfield`. Clearing the default, which keeps
 the last-good config, and replacing the store by a new default one, which

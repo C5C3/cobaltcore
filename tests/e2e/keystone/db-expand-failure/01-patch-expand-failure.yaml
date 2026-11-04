@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch that starts a sequential upgrade from 2026.1 to 2026.2 whose expand
+# Job cannot succeed. The Job runs the real 2026.2 image, and a memory limit
+# of 16Mi, given alone, is its request as well, so the kernel OOM-kills the
+# container on every one of its five attempts and the Job fails with
+# BackoffLimitExceeded. An unpullable image would only wedge the pod in
+# ImagePullBackOff, which never exhausts the backoffLimit (see upgrade-abort).
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-db-expand-failure
+  namespace: openstack
+spec:
+  image:
+    tag: "2026.2"
+  jobs:
+    resources:
+      limits:
+        memory: 16Mi

@@ -15,7 +15,9 @@
 # ci:controlplane / ci:multicluster / ci:pressure switch on one area each;
 # ci:multicluster runs e2e-multicluster and e2e-orders-multicluster, and
 # ci:pressure the keystone-pressure job. run-chaos is kept as an alias of
-# ci:chaos. ci:measure-sizing, the seventh label, adds the VPA sizing
+# ci:chaos, which runs the e2e-chaos legs and not the random chaos run
+# e2e-chaos-random: that one runs on a change to its own files and under
+# ci:full. ci:measure-sizing, the seventh label, adds the VPA sizing
 # measurement to e2e-controlplane, e2e-controlplane-sso and every Tempest leg.
 #
 # A `labeled` event for a label outside that set resolves to nothing at all
@@ -36,7 +38,9 @@
 #   FILTER_<filter>   — One per paths-filter key; anything but "true" is false
 #   PR_LABELS         — JSON array of the pull request's label names. Unset, "",
 #                       null and any non-array all mean "no labels"
-#   EVENT_NAME        — github.event_name (default pull_request)
+#   EVENT_NAME        — github.event_name (default pull_request); schedule and
+#                       workflow_dispatch resolve to the nightly chaos run,
+#                       the e2e-chaos legs and e2e-chaos-random
 #   EVENT_ACTION      — github.event.action, for the labeled no-op
 #   EVENT_LABEL       — github.event.label.name, for the labeled no-op
 #
@@ -50,6 +54,10 @@
 #   4. When the operator ships a service image, add a paths filter image_<op>
 #      listing images/<op>/** and patches/<op>/**, and add <op> to
 #      SERVICE_OPERATORS
+#   5. Add the operator's helm upgrade suite under
+#      tests/e2e-operator-upgrade/<op>-helm-upgrade/ with a baseline.yaml pin,
+#      a paths filter tests_operator_upgrade_<op> listing that directory, and a
+#      row in hack/ci-operator-upgrade-leg.sh
 #   The test matrices, the e2e matrix and the build set follow automatically;
 #   tests/unit/ci/change_classes_wiring_test.sh fails when a step is missed.
 
@@ -169,7 +177,7 @@ fi
 if [[ "${noop}" == "true" ]]; then
   emit noop true
   for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
-    e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
+    e2e-chaos e2e-chaos-random e2e-prometheus e2e-controlplane e2e-controlplane-sso \
     e2e-external-keystone e2e-autoscaling e2e-multicluster \
     e2e-orders-multicluster e2e-ovn-overlay e2e-nova-libvirt e2e-operator-upgrade tempest measure-sizing changed-tempest \
     changed-proxy changed-ovn changed-libvirt build-e2e-images actionlint keystone-pressure; do
@@ -180,6 +188,7 @@ if [[ "${noop}" == "true" ]]; then
   done
   emit test-targets "$(matrix_of target "")"
   emit e2e-operators "$(matrix_of operator "")"
+  emit e2e-operator-upgrade-operators "$(matrix_of operator "")"
   exit 0
 fi
 emit noop false
@@ -286,6 +295,13 @@ cond=false
 if filter_on tests_chaos || has_label "ci:chaos" || has_label "run-chaos"; then cond=true; fi
 e2e_chaos=$(or_force "$cond")
 
+# The random chaos run (#1395) runs on a change to its own files and under
+# ci:full. ci:chaos and run-chaos ask for the legs, whose suites it does not
+# run, so they leave it out.
+cond=false
+if filter_on tests_chaos_random; then cond=true; fi
+e2e_chaos_random=$(or_force "$cond")
+
 cond=false
 if filter_on tests_prometheus; then cond=true; fi
 e2e_prometheus=$(or_force "$cond")
@@ -297,8 +313,9 @@ e2e_prometheus=$(or_force "$cond")
 #
 # Deliberately FILTER_c5c3 rather than membership of op_changed: a shared Go
 # change puts every operator in that set, and these four jobs are the most
-# expensive in the pipeline (up to 240 minutes each). A shared change still runs
-# the c5c3 e2e leg; ci:controlplane or ci:full asks for the full chain.
+# expensive in the pipeline (e2e-controlplane alone has a 540-minute wall). A
+# shared change still runs the c5c3 e2e leg; ci:controlplane or ci:full asks
+# for the full chain.
 cp_common=false
 if filter_on c5c3 || has_label "ci:controlplane"; then cp_common=true; fi
 
@@ -330,9 +347,12 @@ cond="$cp_common"
 if filter_on tests_orders_multicluster || has_label "ci:multicluster"; then cond=true; fi
 e2e_orders_multicluster=$(or_force "$cond")
 
-# The multi-node OVN overlay job. Its inputs are the suite, the ovn-operator
-# and the OVN daemon image: the datapath it proves is built by the chassis
-# DaemonSets those two ship, and nothing else reaches it.
+# The multi-node OVN overlay job. Its inputs are the two suites, the
+# ovn-operator and the OVN daemon image: the datapath geneve-datapath proves is
+# built by the chassis DaemonSets those two ship, and nothing else reaches it.
+# default-spread also reads the default spread internal/common/deployment
+# renders, and that path does not schedule the job either: the byte-identity
+# pin goldens of every operator fail on any change to the rendered default.
 #
 # Deliberately FILTER_ovn rather than membership of op_changed, for the reason
 # the ControlPlane trio gives above: the job brings up a second kind cluster
@@ -358,9 +378,17 @@ if filter_on tests_nova_libvirt || filter_on nova || filter_on image_nova || fil
 fi
 e2e_nova_libvirt=$(or_force "$cond")
 
-cond=false
-if filter_on tests_operator_upgrade || op_is_changed keystone; then cond=true; fi
-e2e_operator_upgrade=$(or_force "$cond")
+# One upgrade job per operator whose code changed (go_common included, as for
+# the e2e-operator legs) or whose own suite changed, and every operator when an
+# input all the upgrade jobs share changed.
+upgrade_ops=""
+for op in $ALL_OPERATORS; do
+  if op_is_changed "$op" || filter_on "tests_operator_upgrade_${op}"; then
+    upgrade_ops=$(set_add "$upgrade_ops" "$op")
+  fi
+done
+{ [[ "$force" == "true" ]] || filter_on tests_operator_upgrade; } && upgrade_ops="$ALL_OPERATORS"
+e2e_operator_upgrade=$(yesno test -n "$upgrade_ops")
 
 # The Keystone token-path load (hack/keystone-pressure-ab.sh). Its inputs are
 # the Keystone service image it compares against main's, which a downstream
@@ -504,7 +532,7 @@ fi
 has_e2e_operators=$(yesno test -n "$e2e_ops")
 
 build_e2e_images=false
-if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" ||
+if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" || "$e2e_chaos_random" == "true" ||
   "$e2e_prometheus" == "true" || "$e2e_controlplane" == "true" ||
   "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
   "$e2e_autoscaling" == "true" ||
@@ -519,7 +547,37 @@ fi
 [[ "${EVENT_NAME}" == "push" && "$is_tag" != "true" ]] && build_e2e_images=false
 
 # ---------------------------------------------------------------------------
-# 5. Emit
+# 5. The night
+#
+# A scheduled or dispatched run is the nightly chaos run: every e2e-chaos leg
+# and the random chaos run against the ref, on the images build-e2e-images
+# builds. Paths and labels mean
+# nothing on it, so every FILTER_* and PR_LABELS value is ignored. This runs
+# last and overrides every flag above, the tag force and the push branch
+# included.
+# ---------------------------------------------------------------------------
+if [[ "${EVENT_NAME}" == "schedule" || "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+  for flag in go docs helm target_cluster_chart e2e_infra e2e_prometheus \
+    e2e_controlplane e2e_controlplane_sso e2e_external_keystone \
+    e2e_autoscaling e2e_multicluster e2e_orders_multicluster e2e_ovn_overlay \
+    e2e_nova_libvirt e2e_operator_upgrade tempest keystone_pressure measure \
+    actionlint changed_tempest changed_proxy changed_ovn changed_libvirt \
+    has_e2e_operators; do
+    printf -v "$flag" false
+  done
+  e2e_chaos=true
+  e2e_chaos_random=true
+  build_e2e_images=true
+  changed_operators=""
+  changed_services=""
+  tempest_services=""
+  test_targets=""
+  e2e_ops=""
+  upgrade_ops=""
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Emit
 # ---------------------------------------------------------------------------
 emit go "$go"
 emit docs "$docs"
@@ -528,6 +586,7 @@ emit target-cluster-chart "$target_cluster_chart"
 
 emit e2e-infra "$e2e_infra"
 emit e2e-chaos "$e2e_chaos"
+emit e2e-chaos-random "$e2e_chaos_random"
 emit e2e-prometheus "$e2e_prometheus"
 emit e2e-controlplane "$e2e_controlplane"
 emit e2e-controlplane-sso "$e2e_controlplane_sso"
@@ -556,3 +615,4 @@ emit tempest-services "$(json_list "$(order_by "$TEMPEST_ALL_SERVICES" "$tempest
 
 emit test-targets "$(matrix_of target "$(order_by "common $ALL_OPERATORS" "$test_targets")")"
 emit e2e-operators "$(matrix_of operator "$(order_by "$ALL_OPERATORS" "$e2e_ops")")"
+emit e2e-operator-upgrade-operators "$(matrix_of operator "$(order_by "$ALL_OPERATORS" "$upgrade_ops")")"

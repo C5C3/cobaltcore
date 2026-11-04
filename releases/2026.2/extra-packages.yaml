@@ -19,7 +19,12 @@ keystone:
   pip_packages: []
 horizon:
   pip_extras: []
-  pip_packages: []
+  pip_packages:
+    # The horizon-operator's format: json LOGGING formatter imports
+    # oslo_log.formatters.JSONFormatter. Horizon 27.0.0 lost oslo.log
+    # together with python-neutronclient, so nothing else installs it.
+    # Pinned by upper-constraints.txt.
+    - oslo.log
 glance:
   pip_extras: []
   pip_packages:

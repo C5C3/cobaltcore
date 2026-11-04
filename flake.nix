@@ -57,6 +57,12 @@
 #                                    nix/lib/static-image.nix; .manager is
 #                                    the binary, .manager.siblings the
 #                                    operators its go.mod replaces
+#   packages.<system>.<op>-operator-cover-image
+#                                    the same expression with cover = true:
+#                                    the coverage-instrumented manager,
+#                                    tagged cover, which only the e2e,
+#                                    chaos and Tempest legs build and which
+#                                    is never published
 #   packages.<system>.<name>-<rel_>-test-run
 #                                    the unit tests of a service lock, a build
 #                                    that succeeds whenever the suite ran and
@@ -398,6 +404,15 @@
             op:
             lib.nameValuePair "${op}-operator-image" (operatorImage {
               name = op;
+            })
+          ) operators
+        )
+        // lib.listToAttrs (
+          map (
+            op:
+            lib.nameValuePair "${op}-operator-cover-image" (operatorImage {
+              name = op;
+              cover = true;
             })
           ) operators
         )

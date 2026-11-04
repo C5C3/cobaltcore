@@ -7,8 +7,9 @@
 #
 # A chaos suite is a directory directly under tests/e2e-chaos/ that holds a
 # chainsaw-test.yaml. docs/reference/testing/chaos-e2e-tests.md lists every
-# suite in the table under `## Test Suite Inventory` and describes it in a
-# `### <suite>` section. The matrix of the e2e-chaos job in
+# suite in the `| Suite |` table under `## Test Suite Inventory`, which
+# hack/gen-chaos-matrix.sh generates from the suite headers, and describes it
+# in a `### <suite>` section. The matrix of the e2e-chaos job in
 # .github/workflows/ci.yaml runs every suite in exactly one entry: a line
 # `- suite: <leg>` starts an entry, and the `tests/e2e-chaos/<suite>` tokens
 # on the lines below it are its suites. check_chaos_suites prints one problem

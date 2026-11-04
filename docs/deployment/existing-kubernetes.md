@@ -12,7 +12,7 @@ SPDX-License-Identifier: Apache-2.0
 Install CobaltCore's operators and a small ControlPlane on a Kubernetes
 cluster you already manage. This walkthrough uses the same Keystone and
 Horizon services as the [Quick Start](../quick-start.md), reached through a
-local port-forward.
+local port-forward on port 443.
 
 The repository ships a lab overlay for Gardener on metal-stack. Other
 environments need an overlay reviewed for their storage, networking, and
@@ -30,8 +30,8 @@ controllers, webhooks, and namespaces, and bootstraps OpenBao. Check for
 existing Flux, cert-manager, Gateway API, and backing-service installations
 before applying an overlay that manages them.
 
-The workstation needs `git`, `make`, `kubectl`, `jq`, and Mike Farah's `yq`
-v4.40.1 or newer. Docker and kind are not required in external-cluster mode.
+The workstation needs Bash, `git`, `make`, `kubectl`, `jq`, Mike Farah's `yq`
+v4.40.1 or newer, GNU `timeout` and `sha256sum`, and the OpenStack CLI. Docker and kind are not required in external-cluster mode.
 
 ```bash
 git clone https://github.com/c5c3/cobaltcore.git
@@ -61,7 +61,11 @@ Review available capacity against your chosen
 
 An external overlay must contain `base/kustomization.yaml` and
 `infrastructure/kustomization.yaml`. The first installs controllers and Flux
-resources; the second adds resources that need their CRDs.
+resources. The second adds resources that need their CRDs, including the
+`envoy-public` EnvoyProxy and the lab CA issuer. Keep
+`infrastructure/gateway-certificate.yaml` alongside the kustomization. The
+installer fills in its `PUBLIC_SUFFIX` and applies the certificate after the
+Gateway is ready.
 
 For a Gardener metal-stack evaluation, use the supplied overlay:
 
@@ -105,6 +109,7 @@ MariaDB and Memcached changes.
 
 ```bash
 EXTERNAL_CLUSTER=true \
+EXTERNAL_LOADBALANCER=false \
 WITH_CONTROLPLANE=true \
 WITH_CONTROLPLANE_CR=true \
 make deploy-infra
@@ -115,7 +120,7 @@ kubectl get controlplane,keystone,horizon -n openstack
 ```
 
 `WITH_CONTROLPLANE_CR=true` installs the bundled minimal ControlPlane and
-sets its public URLs to port `8443`. It does not install the full
+configures its service URLs on port 443. It does not install the full
 metal-stack ControlPlane or its Ceph and hypervisor resources. Leaving the
 flag unset installs the operator stack and leaves applying a ControlPlane
 to you.
@@ -128,7 +133,13 @@ prerequisites in your overlay. See
 
 ## Connect and verify
 
-Keep the following port-forward running in a separate terminal:
+The command above selects `EXTERNAL_LOADBALANCER=false` so the Gateway stays
+inside the cluster. For a public load-balancer address, see the
+[bare-metal Gateway setup](../quick-start-metal-stack.md#cp-deploy), including
+the source ranges that control who can reach it.
+
+In a second terminal, point `KUBECONFIG` at the same cluster. Forward local
+port 443 to the Gateway. Binding that port may require elevated privileges.
 
 ```bash
 export KUBECONFIG=/absolute/path/to/your/kubeconfig
@@ -136,18 +147,28 @@ kubectl config current-context
 ENVOY_SERVICE=$(kubectl get svc -n envoy-gateway-system \
   -l gateway.envoyproxy.io/owning-gateway-name=openstack-gw \
   -o jsonpath='{.items[0].metadata.name}')
-kubectl port-forward -n envoy-gateway-system "svc/${ENVOY_SERVICE}" 8443:443
+sudo kubectl --kubeconfig="$KUBECONFIG" -n envoy-gateway-system \
+  port-forward "svc/${ENVOY_SERVICE}" 443:443
 ```
 
-Check the identity API:
+Back in the first terminal, trust the Gateway's lab CA and verify discovery
+and authentication. A successful token request prints its expiry and ID.
 
 ```bash
-curl -fk https://keystone.127-0-0-1.nip.io:8443/v3
+kubectl get secret openstack-gw-tls -n openstack -o jsonpath='{.data.ca\.crt}' | base64 -d > lab-ca.pem
+export OS_CACERT="$PWD/lab-ca.pem"
+export OS_AUTH_URL=https://keystone.127-0-0-1.nip.io/v3
+export OS_USERNAME=admin OS_PROJECT_NAME=admin
+export OS_USER_DOMAIN_NAME=Default OS_PROJECT_DOMAIN_NAME=Default
+export OS_PASSWORD=$(kubectl get secret controlplane-keystone-admin-credentials \
+  -n openstack -o jsonpath='{.data.password}' | base64 -d)
+curl --fail --cacert "$OS_CACERT" "$OS_AUTH_URL"
+openstack token issue
 ```
 
-The response identifies API version `v3`. Complete the authentication and
-Horizon checks in the [Quick Start](../quick-start.md). Those URLs use the
-same hostnames and port as this port-forward.
+For Horizon, trust the same CA in your browser and open
+[the dashboard](https://horizon.127-0-0-1.nip.io/). Sign in as `admin`
+in the `Default` domain with the password from the Secret.
 
 If readiness fails, inspect the conditions and events with
 [Observability and Diagnostics](../guides/observability.md) before rerunning

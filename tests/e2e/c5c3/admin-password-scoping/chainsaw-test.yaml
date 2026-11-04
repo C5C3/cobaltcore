@@ -3,39 +3,40 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for per-ControlPlane admin-password scoping
-# It applies the canonical ControlPlane
-# ("controlplane" in namespace "openstack") and asserts that the c5c3-operator's
-# reconcileAdminPassword sub-reconciler projects a per-ControlPlane,
-# OpenBao-backed admin password:
+# It applies a ControlPlane named "controlplane" in chainsaw's ephemeral
+# namespace and asserts that the c5c3-operator's reconcileAdminPassword
+# sub-reconciler projects a per-ControlPlane, OpenBao-backed admin password:
 #
 #   - an ExternalSecret named "controlplane-keystone-admin-credentials" in the
-#     ControlPlane namespace, owned by the ControlPlane, whose single "password"
-#     remoteRef reads the per-CP OpenBao key
-#     "bootstrap/openstack/controlplane-keystone/admin"
-#     ( = bootstrap/{cp.Namespace}/{keystoneName(cp)}/admin ) at property
-#     "password"; and
+#     ControlPlane namespace, owned by the ControlPlane, read through the
+#     per-tenant SecretStore "openbao-tenant-store"
+#     (effectiveControlPlaneStoreRef in reconcile_esotenant.go), whose single
+#     "password" remoteRef reads the per-CP OpenBao key
+#     "bootstrap/<namespace>/controlplane-keystone/admin"
+#     ( = bootstrap/{cp.KeystoneNamespace()}/{keystoneName(cp)}/admin ) at
+#     property "password"; and
 #   - the materialised Secret of the same name carrying the "password" key ESO
 #     synced from that path.
 #
-# The per-CP path is what the deploy-infra seed writes for the default identity
-# at bootstrap/{ns}/{keystoneName}/admin
-# (deploy/openbao/bootstrap/write-bootstrap-secrets.sh); it is keystone-NAME
-# scoped (not cp-name scoped) so it matches the keystone-operator Model B
-# rotation PushSecret, which reads/writes the admin password at the same path.
+# The suite seeds that path itself with
+# deploy/openbao/bootstrap/write-bootstrap-secrets.sh before the apply. It is
+# keystone-NAME scoped (not cp-name scoped) so it matches the keystone-operator
+# Model B rotation PushSecret, which reads/writes the admin password at the same
+# path.
 #
-# ── DECISION: belt-and-braces presence guard + single consolidated script ────
-# Mirrors tests/e2e/c5c3/full-controlplane-keystone: the c5c3-operator + OpenBao
-# stack the admin-password link spans is NOT installed by the current kind E2E
-# wiring (hack/deploy-infra.sh + hack/ci-deploy-operator.sh), and the suite runs
-# under execution.failFast: true (tests/e2e/chainsaw-config.yaml), so a pure
-# declarative `assert` test would HARD-FAIL every cluster missing that stack —
-# including the PR that introduces this file. A runtime presence guard probes for
-# the required CRDs + the OpenBao ClusterSecretStore and exits 0 with a SKIP line
-# when the stack is absent; when present it asserts the link. Because chainsaw has
-# no step-level skip, the guard and all assertions live in ONE script step.
-# Reviewer: please verify, and note that wiring the c5c3-operator + OpenBao into
-# kind E2E (so this test exercises rather than skips) is the documented
-# fast-follow (/).
+# The suite also onboards the plane's OpenBao database-engine role with
+# setup-database-tenant.sh. The ControlPlane pipeline stops at the first
+# sub-reconciler that is still waiting, and reconcileDBCredentials runs before
+# reconcileAdminPassword (controlplane_controller.go), so without that role the
+# DB credential never syncs and the admin-password ExternalSecret is never
+# projected.
+#
+# ── DECISION: presence guard + single consolidated script ───────────────────
+# The e2e-operator (c5c3) leg runs this directory on a cluster that carries the
+# stack's CRDs alone, so the guard SKIPs there. The e2e-controlplane job sets
+# E2E_REQUIRE_CONTROLPLANE_STACK=true, so the guard fails there instead. The
+# suite seeds its own OpenBao path. Because chainsaw has no step-level skip, the
+# guard and all assertions live in ONE script step.
 #
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -43,31 +44,49 @@ kind: Test
 metadata:
   name: admin-password-scoping
 spec:
-  namespace: openstack
+  # No spec.namespace: chainsaw runs the suite in an ephemeral namespace of its
+  # own, which keeps it clear of the full-chain plane that stays in openstack
+  # (the webhook admits one ControlPlane per namespace). Every script operation
+  # pins its own timeout, so the suite's ceiling is 30+5+10+5 = 50m.
   timeouts:
     assert: 5m
-    exec: 10m
+    exec: 30m
+    cleanup: 5m
   steps:
   # ── Step 1: Presence-gate, apply the ControlPlane, assert the admin link ───
   - try:
     - script:
-        timeout: 10m
+        # 30m > the 1140s sum of the sequential poll deadlines below
+        # (InfrastructureReady 600 + MariaDB 120 + ExternalSecret 300 +
+        # AdminPasswordReady 120), so a hung poll prints its own error.
+        timeout: 30m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone e2e script pins bash for the same reason.
         shell: bash
         content: |
           set -euo pipefail
 
-          CP_NS=openstack
+          CP_NS="${NAMESPACE}"
           CP_NAME=controlplane
           ADMIN_SECRET=controlplane-keystone-admin-credentials
-          ADMIN_REMOTE_KEY=bootstrap/openstack/controlplane-keystone/admin
+          ADMIN_REMOTE_KEY="bootstrap/${CP_NS}/controlplane-keystone/admin"
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
 
           # ── Presence guard ──────────────────────────────
           # Probe for the CRDs the admin-password link spans plus the OpenBao
-          # ClusterSecretStore the ExternalSecret reads through. Their absence
-          # means the c5c3-operator + OpenBao stack is not deployed here — SKIP
-          # cleanly (exit 0).
+          # ClusterSecretStore. Their absence means the c5c3-operator + OpenBao
+          # stack is not deployed here.
           missing=""
           for crd in \
             controlplanes.c5c3.io \
@@ -78,29 +97,53 @@ spec:
             fi
           done
           if [ -n "${missing}" ]; then
-            echo "SKIP: required CRDs not present:${missing}"
-            echo "      The c5c3-operator + OpenBao stack is not deployed on this"
-            echo "      cluster, so the admin-password scoping link cannot be"
-            echo "      exercised here."
-            exit 0
+            skip_or_fail "required CRDs not present:${missing}." \
+              "The c5c3-operator + OpenBao stack is not deployed on this" \
+              "cluster, so the admin-password scoping link cannot be" \
+              "exercised here."
           fi
           if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
-            echo "SKIP: openbao-cluster-store ClusterSecretStore not present;"
-            echo "      the admin-password ExternalSecret cannot sync."
-            exit 0
+            skip_or_fail "openbao-cluster-store ClusterSecretStore not present;" \
+              "the admin-password ExternalSecret cannot sync."
           fi
           # The CRDs alone no longer prove the stack: the e2e-operator (c5c3)
           # matrix leg installs every CRD the c5c3 controller watches WITHOUT
           # deploying the sibling operators. This suite's ControlPlane needs the
-          # keystone-operator to converge (and it shares the canonical
-          # namespace with the other stack suites), so probe for running pods
-          # (any namespace), not just the schema.
-          if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
-            echo "SKIP: no keystone-operator is running; the cluster carries the"
-            echo "      stack's CRDs only, so the ControlPlane cannot converge here."
-            exit 0
+          # keystone-operator and the c5c3-operator to converge, so probe for
+          # running pods (any namespace), not just the schema. The probe
+          # captures via command substitution and retries, so a transient
+          # apiserver error, or grep closing the pipe early, does not read as
+          # "no pods" (see full-controlplane-keystone).
+          operator_running() { # <app.kubernetes.io/name label value>
+            local pods
+            for _ in 1 2 3 4 5; do
+              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
+                && [ -n "${pods}" ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          if ! operator_running keystone-operator; then
+            skip_or_fail "no keystone-operator is running; the cluster carries the" \
+              "stack's CRDs only, so the ControlPlane cannot converge here."
           fi
-          echo "OK: c5c3 + ESO CRDs, OpenBao store, and a running keystone-operator"
+          if ! operator_running c5c3-operator; then
+            skip_or_fail "no c5c3-operator is running."
+          fi
+          if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
+            skip_or_fail "shared-services/openbao-0 not present."
+          fi
+          # The two deploy/openbao/bootstrap scripts below read the token from
+          # their environment.
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            skip_or_fail "could not extract the OpenBao root token."
+          fi
+          echo "OK: c5c3 + ESO CRDs, OpenBao, and running keystone- and c5c3-operators"
           echo "    present — running the per-ControlPlane admin-password scoping assertions."
 
           # ── Helpers ────────────────────────────────────────────────────────
@@ -131,21 +174,71 @@ spec:
             done
           }
 
-          # Apply the canonical ControlPlane now that the presence guard passed.
-          # Chainsaw runs scripts with the test directory as CWD. The CR is the
-          # same name/namespace the deploy stack provisions, so this apply is
-          # idempotent on a cluster that already carries it.
-          kubectl apply -f 00-controlplane-cr.yaml
+          # Explicit polls rather than `kubectl wait`, so a condition that is
+          # briefly absent retries and the failure names the last status seen.
+          wait_condition() { # <resource> <name> <namespace> <conditionType> <expected> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype}=${want}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${ctype} not ${want} within ${timeout}s (last: '${status:-<none>}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          wait_cp_condition() { # <conditionType> <timeoutSeconds>
+            wait_condition controlplane "${CP_NAME}" "${CP_NS}" "$1" True "$2"
+          }
+
+          # ── Seed the per-CR OpenBao path this plane reads ──────────────────
+          KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
+            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+          echo "OK: the per-CR admin-password path is seeded."
+
+          # Apply the ControlPlane now that the presence guard passed.
+          # Chainsaw runs scripts with the test directory as CWD.
+          kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
+
+          # ── Onboard the per-tenant OpenBao database-engine role ────────────
+          # reconcileAdminPassword runs only once reconcileDBCredentials stops
+          # waiting, which needs this role (see the header). InfrastructureReady
+          # comes first, because `kubectl wait` on a MariaDB the plane has not
+          # projected yet exits NotFound. InfrastructureReady is True only once
+          # the MariaDB is, so its own wait is short.
+          wait_cp_condition InfrastructureReady 600
+          kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=120s
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          unset BAO_TOKEN
+          echo "OK: OpenBao database-engine tenant onboarded."
 
           # ── Assert the admin-password ExternalSecret shape ─────────────────
           # The operator projects it owner-referenced to the ControlPlane, reading
-          # the per-CP OpenBao path at property "password".
+          # the per-CP OpenBao path at property "password". The window covers
+          # the DB-credential ExternalSecret's sync and the operator's requeue
+          # before this one is projected and syncs in turn.
           wait_ready_condition externalsecret "${ADMIN_SECRET}" "${CP_NS}" 300
 
           assert_eq "admin-password ExternalSecret owned by ControlPlane" "${CP_NAME}" \
             "$(kubectl get externalsecret "${ADMIN_SECRET}" -n "${CP_NS}" \
               -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}")"
-          assert_eq "admin-password ExternalSecret store" "openbao-cluster-store" \
+          # A ControlPlane without spec.secretStoreRef reads through the
+          # per-tenant SecretStore the operator provisions in its namespace
+          # (effectiveControlPlaneStoreRef, reconcile_esotenant.go), not through
+          # the shared cluster store.
+          assert_eq "admin-password ExternalSecret store kind" "SecretStore" \
+            "$(kubectl get externalsecret "${ADMIN_SECRET}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.secretStoreRef.kind}')"
+          assert_eq "admin-password ExternalSecret store" "openbao-tenant-store" \
             "$(kubectl get externalsecret "${ADMIN_SECRET}" -n "${CP_NS}" \
               -o 'jsonpath={.spec.secretStoreRef.name}')"
           assert_eq "password remoteRef key is per-CP bootstrap path" "${ADMIN_REMOTE_KEY}" \
@@ -166,22 +259,55 @@ spec:
           echo "OK: admin-password Secret carries 'password'"
 
           # ── Assert the ControlPlane AdminPasswordReady condition ───────────
-          assert_eq "ControlPlane AdminPasswordReady" "True" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
-              -o "jsonpath={.status.conditions[?(@.type=='AdminPasswordReady')].status}")"
+          # The operator sets it on the pass after the ExternalSecret turns
+          # Ready, so it is polled rather than read once.
+          wait_cp_condition AdminPasswordReady 120
           echo "OK: per-ControlPlane admin-password scoping verified."
     catch:
     - script:
+        # Pinned, because chainsaw applies the test's exec budget to every
+        # script operation; a dump against a wedged apiserver must not inherit
+        # 30m.
+        timeout: 5m
         shell: bash
         content: |
           echo "=== ControlPlane status.conditions ==="
-          kubectl get controlplane controlplane -n openstack \
+          kubectl get controlplane controlplane -n "${NAMESPACE}" \
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== admin-password ExternalSecret ==="
-          kubectl describe externalsecret controlplane-keystone-admin-credentials -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-admin-credentials -n "${NAMESPACE}" 2>&1 || true
+          echo "=== per-tenant SecretStore ==="
+          kubectl describe secretstore openbao-tenant-store -n "${NAMESPACE}" 2>&1 || true
           echo "=== admin-password Secret (keys only, no values) ==="
-          kubectl describe secret controlplane-keystone-admin-credentials -n openstack 2>&1 || true
+          kubectl describe secret controlplane-keystone-admin-credentials -n "${NAMESPACE}" 2>&1 || true
           echo "=== c5c3-operator logs (last 100 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
-          echo "=== Events (openstack ns, last 30) ==="
-          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Events (suite namespace, last 30) ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    finally:
+    - script:
+        # Pinned for the same reason as catch above. The wait below is bounded
+        # at 480s; 10m covers it plus the delete that drives it.
+        timeout: 10m
+        shell: bash
+        content: |
+          # The plane goes before chainsaw deletes the namespace, so its
+          # finalizer sequences the K-ORC teardown while Keystone still
+          # answers. A namespace deletion removes everything at once and runs
+          # into the orcTeardownDeadline stall (7m). The wait is bounded and
+          # best-effort; a plane that does not release inside it is left to
+          # chainsaw's cleanup.
+          gone_within() { # <resource> <name> <namespace> <timeoutSeconds>
+            local deadline
+            deadline=$(( $(date +%s) + $4 ))
+            while kubectl get "$1" "$2" -n "$3" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "WARN: $1/$2 in $3 still present after $4s; leaving it to chainsaw cleanup"
+                return 1
+              fi
+              sleep 5
+            done
+            return 0
+          }
+          kubectl delete controlplane controlplane -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within controlplane controlplane "${NAMESPACE}" 480 || true

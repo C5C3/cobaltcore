@@ -3,23 +3,29 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json has customManagers for the six GitHub Actions env-var
+# Verify renovate.json has customManagers for the seven GitHub Actions env-var
 # tool pins:
 #   - CONTROLLER_GEN_VERSION → kubernetes-sigs/controller-tools
 #   - GOFUMPT_VERSION        → mvdan/gofumpt
 #   - GOLANGCI_LINT_VERSION  → golangci/golangci-lint
+#   - HELM_VERSION           → helm/helm
 #   - KIND_VERSION           → kubernetes-sigs/kind
 #   - YQ_VERSION             → mikefarah/yq
 #   - ACTIONLINT_VERSION     → rhysd/actionlint
 #
 # For each: regex must capture the literal in the workflow file that pins it,
 # and the paired packageRule must disable majors and automerge minor/patch.
+# helm is the exception to the automerge: helm-push runs only on a push to
+# main, so no pull request run proves a new helm can still push a chart, and
+# its minor/patch rule must leave the merge to a human.
 #
-# KIND_VERSION carries one extra obligation. It is pinned three times — in ci.yaml
-# for the e2e clusters, in performance.yaml for the nightly's cluster and in
-# hack/install-test-deps.sh for local development — and the three must agree, or
-# CI, the nightly and a developer's kind enforce NetworkPolicy egress
-# differently. Renovate must therefore bump all three in ONE pull request, and
+# KIND_VERSION carries one extra obligation. It is pinned five times — in ci.yaml
+# for the e2e clusters, in e2e-operator-upgrade.yaml for the operator upgrade
+# clusters (a called workflow does not inherit ci.yaml's env), in
+# performance.yaml and flux-path.yaml for the two nightlies' clusters and in
+# hack/install-test-deps.sh for local development — and the five must agree,
+# or CI, the nightlies and a developer's kind enforce NetworkPolicy egress
+# differently. Renovate must therefore bump all five in ONE pull request, and
 # both kind packageRules must name every file; ungrouped it would open several,
 # each leaving the lockstep assertion below red.
 #
@@ -46,7 +52,11 @@ TOOLS=(
   "CONTROLLER_GEN_VERSION:kubernetes-sigs/controller-tools:.github/workflows/ci.yaml"
   "GOFUMPT_VERSION:mvdan/gofumpt:.github/workflows/ci.yaml"
   "GOLANGCI_LINT_VERSION:golangci/golangci-lint:.github/workflows/ci.yaml"
+  "HELM_VERSION:helm/helm:.github/workflows/ci.yaml"
+  "HELM_VERSION:helm/helm:.github/workflows/e2e-operator-upgrade.yaml"
   "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/ci.yaml"
+  "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/e2e-operator-upgrade.yaml"
+  "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/flux-path.yaml"
   "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/performance.yaml"
   "YQ_VERSION:mikefarah/yq:.github/workflows/verify-container-images.yaml"
   "ACTIONLINT_VERSION:rhysd/actionlint:.github/workflows/ci.yaml"
@@ -108,14 +118,19 @@ test_each_workflow_pin_has_manager() {
 }
 
 test_kind_version_is_pinned_in_lockstep() {
-  echo "Test: the kind pins in ci.yaml, performance.yaml and install-test-deps.sh agree, and bump together"
+  echo "Test: the kind pins in ci.yaml, e2e-operator-upgrade.yaml, flux-path.yaml, performance.yaml and install-test-deps.sh agree, and bump together"
 
-  local ci_file perf_file install_file ci_kind perf_kind install_kind
+  local ci_file upgrade_file flux_file perf_file install_file
+  local ci_kind upgrade_kind flux_kind perf_kind install_kind
   ci_file="$PROJECT_ROOT/.github/workflows/ci.yaml"
+  upgrade_file="$PROJECT_ROOT/.github/workflows/e2e-operator-upgrade.yaml"
+  flux_file="$PROJECT_ROOT/.github/workflows/flux-path.yaml"
   perf_file="$PROJECT_ROOT/.github/workflows/performance.yaml"
   install_file="$PROJECT_ROOT/hack/install-test-deps.sh"
 
   ci_kind="$(workflow_kind_pin "$ci_file")"
+  upgrade_kind="$(workflow_kind_pin "$upgrade_file")"
+  flux_kind="$(workflow_kind_pin "$flux_file")"
   perf_kind="$(workflow_kind_pin "$perf_file")"
   install_kind="$(sed -n 's/^KIND_VERSION="\(v[0-9.]*\)"$/\1/p' "$install_file" | head -1)"
 
@@ -125,6 +140,8 @@ test_kind_version_is_pinned_in_lockstep() {
   # that only holds on one of them reaches main unnoticed.
   assert_eq "the ci.yaml and install-test-deps.sh kind pins agree" "$install_kind" "$ci_kind"
   assert_eq "the ci.yaml and performance.yaml kind pins agree" "$ci_kind" "$perf_kind"
+  assert_eq "the ci.yaml and e2e-operator-upgrade.yaml kind pins agree" "$ci_kind" "$upgrade_kind"
+  assert_eq "the ci.yaml and flux-path.yaml kind pins agree" "$ci_kind" "$flux_kind"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (3 checks skipped)"
@@ -152,21 +169,21 @@ test_kind_version_is_pinned_in_lockstep() {
   files="$(jq -r '[.packageRules[]
     | select(((.matchPackageNames // []) | index("kubernetes-sigs/kind")) != null)
     | (.matchFileNames // []) | sort | join(",")] | unique | join(" ")' "$RENOVATE_FILE")"
-  assert_eq "both kind packageRules list the three pinning files" \
-    ".github/workflows/ci.yaml,.github/workflows/performance.yaml,hack/install-test-deps.sh" "$files"
+  assert_eq "both kind packageRules list the five pinning files" \
+    ".github/workflows/ci.yaml,.github/workflows/e2e-operator-upgrade.yaml,.github/workflows/flux-path.yaml,.github/workflows/performance.yaml,hack/install-test-deps.sh" "$files"
 }
 
 test_workflow_pins_share_a_package_rule() {
   echo "Test: workflow tool pins share a major-disable + minor-automerge packageRule"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (5 checks skipped)"
-    SKIP=$((SKIP + 5))
+    echo "  SKIP: jq not installed (6 checks skipped)"
+    SKIP=$((SKIP + 6))
     return
   fi
 
   local pkg
-  for pkg in kubernetes-sigs/controller-tools golangci/golangci-lint mikefarah/yq rhysd/actionlint; do
+  for pkg in kubernetes-sigs/controller-tools golangci/golangci-lint helm/helm mikefarah/yq rhysd/actionlint; do
     local major_rule
     major_rule="$(jq -c --arg pkg "$pkg" '.packageRules[]
       | select(
@@ -202,9 +219,36 @@ test_workflow_pins_share_a_package_rule() {
     "$(jq -r '.minimumReleaseAge' <<<"$minor_rule")"
 }
 
+test_helm_pin_is_not_automerged() {
+  echo "Test: helm minor/patch bumps wait for a human"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed (2 checks skipped)"
+    SKIP=$((SKIP + 2))
+    return
+  fi
+
+  # Every rule that lets Renovate open a helm pull request; one of them saying
+  # automerge: true is enough to merge a helm that cannot push a chart.
+  local automerge
+  automerge="$(jq -r '[.packageRules[]
+    | select(((.matchPackageNames // []) | index("helm/helm")) != null)
+    | select(((.matchUpdateTypes // []) | index("minor")) != null)
+    | (.automerge | tostring)] | unique | join(",")' "$RENOVATE_FILE")"
+  assert_eq "every helm minor/patch rule sets automerge: false" "false" "$automerge"
+
+  local age
+  age="$(jq -r '[.packageRules[]
+    | select(((.matchPackageNames // []) | index("helm/helm")) != null)
+    | select(((.matchUpdateTypes // []) | index("minor")) != null)
+    | .minimumReleaseAge] | unique | join(",")' "$RENOVATE_FILE")"
+  assert_eq "helm minor/patch updates wait minimumReleaseAge=3 days" "3 days" "$age"
+}
+
 test_each_workflow_pin_has_manager
 test_kind_version_is_pinned_in_lockstep
 test_workflow_pins_share_a_package_rule
+test_helm_pin_is_not_automerged
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

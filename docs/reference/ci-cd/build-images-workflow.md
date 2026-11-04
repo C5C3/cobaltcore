@@ -84,6 +84,8 @@ check every service and Tempest verify script sources, which the `base` filter n
 because it rebuilds those images (the `ovn` and `libvirt` filters name it as well), and
 `tests/lib/static_image.sh`, the
 static-image check the hvo and kna verify scripts source, which the `hvo` and `kna`
+filters name. They name `tests/lib/pymemcache.sh` as well, the pymemcache bound check
+the keystone and nova verify scripts source, which the `svc_keystone` and `svc_nova`
 filters name.
 
 > **Fork PRs are not supported.** Fork PRs receive a read-only `GITHUB_TOKEN`
@@ -1105,6 +1107,7 @@ survives while it carries a **keeper** tag:
 | Version | `keystone:29.0.0` | Names an upstream release |
 | Release | `keystone:2026.1` | Names an OpenStack release |
 | Semver prerelease | `keystone-operator:1.2.0-rc1` | Tagged operator build |
+| Operator chart version | `keystone-operator:0.14.1` | `merge-operator-images` tags each operator image it publishes from `main` with its `Chart.yaml` version; the [operator upgrade suites](../testing/operator-upgrade-e2e-tests.md) pin their baseline to it |
 | Pinned upstream commit | `openstack-hypervisor-operator:upstream-<commit>`, `kvm-node-agent:upstream-<commit>` | A chart of that commit names the image |
 | Libvirt keeper | `libvirt:12.2.0-r57`, and `libvirt:10.0.0-2ubuntu8.19-r2` of the Docker-built image | The lab manifests pin that build by digest; the Docker-built keepers are the lab's rollback target |
 
@@ -1112,6 +1115,14 @@ Everything else is a build artifact with a successor and is deleted once it is
 older than 24 hours: composite tags, SHA tags in all four shapes
 (`<sha>`, `<sha40>`, `sha-<sha40>`, `<release>-<sha40>`), run-scoped
 `e2e-<run_id>-*` tags, `dev`, and untagged leftovers.
+
+A version that carries the `e2e-<run_id>-*` tag of a workflow run that has not
+completed is kept, whatever its age. The Nix builds are reproducible, so a run
+whose sources did not change pushes the digest of an earlier run, and GHCR adds
+the new tag to that older version without changing its creation time. Judged by
+age alone, the version would be deleted while the run that tagged it still
+pulls it. The script reads the unfinished runs from the Actions API, which is
+why `cleanup-images.yaml` holds `actions: read`.
 
 The rule works per manifest, so the *current* main build is untouched: its
 composite and SHA tags sit on the same manifest as `29.0.0` and `2026.1`, and

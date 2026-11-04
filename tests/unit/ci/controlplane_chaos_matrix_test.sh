@@ -4,11 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the controlplane entry of the e2e-chaos matrix in
-# .github/workflows/ci.yaml (#1390): the entry and its suites, the
-# c5c3-operator image it loads, the infrastructure it asks setup-e2e-infra for,
-# the K-ORC and c5c3-operator deploys, its diagnostics, its wall and its place
-# among the non-blocking legs. It also checks that the DB client certificate
-# commonName of every suite's ControlPlane fits cert-manager's 64 bytes.
+# .github/workflows/ci.yaml (#1390, #1394): the entry and its suites, the c5c3-operator image it loads, the infrastructure it asks setup-e2e-infra for,
+# the K-ORC and c5c3-operator deploys, its diagnostics and its wall.
 #
 # Every signal here fails silently when it is missing. The matrix enumerates
 # test_dirs by hand, so a suite absent from the entry is lint-checked and never
@@ -16,9 +13,7 @@
 # runs, and every ControlPlane of the leg waits for a reconciler until its
 # bring-up times out. Without WITH_CONTROLPLANE the infrastructure overlay
 # still carries the standalone MariaDB and Memcached of `openstack`. Without
-# K-ORC no plane reaches KORCReady. A commonName over 64 bytes stops the plane
-# at DBCredentialsReady=False/GeneratorError after a long bring-up, on a leg
-# that does not gate the merge.
+# K-ORC no plane reaches KORCReady.
 #
 # Usage: bash tests/unit/ci/controlplane_chaos_matrix_test.sh
 
@@ -37,10 +32,12 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
-# The suites of #1390 that bring up a ControlPlane of their own.
+# The suites of #1390 and #1394 that bring up a ControlPlane of their own.
 CONTROLPLANE_SUITES=(rabbitmq-operator-cascading-failure
   korc-provisioning-outage controlplane-keystone-degraded
-  korc-network-partition c5c3-operator-pod-kill)
+  korc-network-partition c5c3-operator-pod-kill
+  controlplane-provisioning-mariadb-kill controlplane-deletion-korc-outage
+  keystoneuser-rotation-keystone-outage)
 # The suites of #1390 that need only the standalone stack, on the pod leg.
 POD_SUITES=(cert-manager-outage eso-down eso-pod-kill openbao-sealed
   openbao-tenant-policy-narrowed envoy-gateway-outage envoy-proxy-pod-kill
@@ -71,6 +68,23 @@ test_the_entry_runs_the_controlplane_suites() {
   done
   assert_eq "it runs nothing but the health check and the ControlPlane suites" \
     "$((1 + ${#CONTROLPLANE_SUITES[@]}))" "$(grep -cE '^ +tests/' <<<"$entry")"
+}
+
+# entry_key <key>: the tests/ paths under one key of the controlplane entry.
+entry_key() {
+  e2e_chaos_matrix_entry controlplane | awk -v key="$1:" '
+    $1 == key { on = 1; next }
+    /^ +[a-z_]+:/ { on = 0 }
+    on' | grep -oE 'tests/[^ ]+'
+}
+
+test_no_suite_runs_isolated() {
+  echo "Test: every suite of the controlplane leg runs in its one chainsaw invocation"
+  assert_eq "the entry holds no isolated_test_dirs" "" "$(entry_key isolated_test_dirs)"
+  assert_contains "test_dirs holds controlplane-provisioning-mariadb-kill" "$(entry_key test_dirs)" \
+    "tests/e2e-chaos/controlplane-provisioning-mariadb-kill"
+  assert_eq "no isolated run step exists" "" \
+    "$(job_step e2e-chaos "Run isolated chaos E2E tests (controlplane leg)")"
 }
 
 test_the_leg_loads_the_c5c3_operator_image() {
@@ -146,39 +160,22 @@ test_the_leg_dumps_its_operators() {
     "kubectl logs -n orc-system deployment/orc-controller-manager --tail=500 || true"
 }
 
-test_the_leg_has_its_wall_and_does_not_gate() {
-  echo "Test: the controlplane leg has a 100-minute wall and is named non-blocking"
+test_the_leg_has_its_wall() {
+  echo "Test: the controlplane leg has a 120-minute wall"
   local job
   job="$(job_block e2e-chaos)"
-  assert_contains "its arm of the wall reads 100 minutes" \
-    "$(grep -E '^ +timeout-minutes:' <<<"$job")" "matrix.suite == 'controlplane' && 100"
-  assert_contains "it is named in the non-blocking allowlist" \
-    "$(grep -E '^ +continue-on-error:' <<<"$job")" "matrix.suite == 'controlplane'"
-}
-
-test_each_plane_fits_the_commonname_budget() {
-  echo "Test: the DB client commonName of every ControlPlane suite fits 64 bytes"
-  # The c5c3-operator names the certificate
-  # <cp>-keystone-db-openbao-client.<namespace>.svc (reconcile_dbcredentials.go).
-  local suite dir ns cp cn
-  for suite in ${CONTROLPLANE_SUITES[@]+"${CONTROLPLANE_SUITES[@]}"}; do
-    dir="$PROJECT_ROOT/tests/e2e-chaos/${suite}"
-    ns="$(sed -n 's/^  namespace: //p' "$dir/chainsaw-test.yaml" | head -1)"
-    cp="$(sed -n 's/^  name: //p' "$dir/00-controlplane-cr.yaml" | head -1)"
-    cn="${cp}-keystone-db-openbao-client.${ns}.svc"
-    assert_not_empty "${suite}: the test fixes its namespace in spec.namespace" "$ns"
-    assert_not_empty "${suite}: the fixture names its ControlPlane" "$cp"
-    assert_gte "${suite}: ${cn} (${#cn} bytes) is at most 64 bytes" 64 "${#cn}"
-  done
+  assert_contains "its arm of the wall reads 120 minutes" \
+    "$(grep -E '^ +timeout-minutes:' <<<"$job")" "matrix.suite == 'controlplane' && 120"
+  # Gating is job-wide; e2e_chaos_job_test.sh pins it (#1388).
 }
 
 test_the_entry_runs_the_controlplane_suites
-test_each_plane_fits_the_commonname_budget
+test_no_suite_runs_isolated
 test_the_leg_loads_the_c5c3_operator_image
 test_the_leg_asks_for_the_controlplane_path
 test_the_leg_deploys_korc_and_the_c5c3_operator
 test_the_leg_dumps_its_operators
-test_the_leg_has_its_wall_and_does_not_gate
+test_the_leg_has_its_wall
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

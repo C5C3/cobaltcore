@@ -296,13 +296,11 @@ func TestBuildBarbicanDeployment_ReMintedSecretIDRollsThePods(t *testing.T) {
 }
 
 // Every uWSGI worker imports the whole app, so under a CPU limit set on the
-// container or on a contended node the cold start stretches past the liveness
-// budget once spec.apiServer.uwsgi.processes rises above the default (observed
-// 66-91s at processes=4 under the former 500m default CPU limit, against a ~55s
-// liveness budget: the container is killed before the app ever answers,
-// forever). The startup probe must therefore exist and carry a budget that
-// outlasts the worst observed cold start, and only then does the liveness probe
-// take over.
+// container or on a contended node the cold start stretches once
+// spec.apiServer.uwsgi.processes rises above the default (observed 66-91s at
+// processes=4 under the former 500m default CPU limit). The startup probe must
+// therefore exist and carry a budget that outlasts the worst observed cold
+// start.
 func TestBuildBarbicanDeployment_StartupProbeOutlastsSlowColdStarts(t *testing.T) {
 	g := NewGomegaWithT(t)
 	barbican := testBarbican()
@@ -319,21 +317,29 @@ func TestBuildBarbicanDeployment_StartupProbeOutlastsSlowColdStarts(t *testing.T
 	g.Expect(container.StartupProbe.TimeoutSeconds).To(Equal(int32(8)))
 }
 
-// One request in flight on a single-worker API holds the liveness probe's GET,
-// and three such probes 20 seconds apart restarted nova-api twice in 20 minutes
-// under the #1274 soak. The barbican liveness probe therefore waits as long as
-// the readiness probe, and stays below its period so probes never overlap.
-func TestBuildBarbicanDeployment_LivenessTimeoutOutlastsASlowRequest(t *testing.T) {
+// A liveness GET waits behind busy workers: under the random chaos run both
+// uWSGI workers of nova-api waited on a dependency, and three GETs 20 seconds
+// apart restarted a healthy API twice. The barbican liveness probe therefore
+// only connects, which uWSGI's HTTP router accepts while every worker waits,
+// and stays below its period so probes never overlap. The readiness probe
+// keeps the GET.
+func TestBuildBarbicanDeployment_LivenessProbeDoesNotWaitOnAWorker(t *testing.T) {
 	g := NewGomegaWithT(t)
 	barbican := testBarbican()
 
 	deploy := buildBarbicanDeployment(barbican, validProjection(), deploymentConfigSecretName, "", "")
-	probe := deploy.Spec.Template.Spec.Containers[0].LivenessProbe
+	container := deploy.Spec.Template.Spec.Containers[0]
+	probe := container.LivenessProbe
 
 	g.Expect(probe).NotTo(BeNil())
+	g.Expect(probe.HTTPGet).To(BeNil(), "a GET waits behind busy workers")
+	g.Expect(probe.TCPSocket).NotTo(BeNil())
+	g.Expect(probe.TCPSocket.Port.IntValue()).To(Equal(int(barbicanAPIPort)))
 	g.Expect(probe.TimeoutSeconds).To(Equal(int32(10)))
 	g.Expect(probe.TimeoutSeconds).To(BeNumerically("<", probe.PeriodSeconds),
 		"liveness timeout below its period")
+	g.Expect(container.ReadinessProbe.HTTPGet).NotTo(BeNil(),
+		"readiness keeps the GET and sheds a saturated pod")
 }
 
 // A request on a connection a MariaDB outage killed pins its worker for the TCP

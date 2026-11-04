@@ -1,0 +1,201 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The nova-compute of the random chaos plane on kind (#1395), a copy of
+# tests/e2e/c5c3/full-controlplane-keystone/06-fake-compute.yaml with every
+# controlplane-keystone name turned into controlplane: nova's fake virt driver
+# in a Deployment built from the contract Secret controlplane-nova-compute-config
+# that the nova operator writes once Nova is Ready. Its pods are labelled
+# app.kubernetes.io/name: nova-fake-compute, which no selector of the nova
+# operator matches, and app.kubernetes.io/instance: controlplane-nova; the
+# catalogue entry nova-fake-compute-pod-kill selects them.
+#
+# One departure from that file: fake_compute.py. The fake driver keeps its
+# guests in the memory of nova-compute, so a kill would leave every server of
+# the plane without a guest, and each later stop or interface detach of it
+# would fail. A hypervisor keeps its guests when the service dies, so the
+# wrapper adopts the guests the database places on the host at service start.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: controlplane-fake-compute-conf
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova-fake-compute
+    app.kubernetes.io/instance: controlplane-nova
+data:
+  compute.conf: |
+    [DEFAULT]
+    compute_driver = fake.FakeDriverWithoutFakeNodes
+    vif_plugging_is_fatal = false
+    vif_plugging_timeout = 0
+    state_path = /var/lib/nova
+    [oslo_concurrency]
+    lock_path = /var/lib/nova/tmp
+    [vnc]
+    server_listen = 0.0.0.0
+    server_proxyclient_address = 127.0.0.1
+  fake_compute.py: |
+    import sys
+
+    # First: the import monkey-patches the process, as nova-compute's does.
+    from nova.cmd import compute
+    from nova.compute import power_state
+    from nova import context
+    from nova import objects
+    from nova.virt import fake
+
+    init_host = fake.FakeDriver.init_host
+
+
+    def adopt_guests(self, host):
+        init_host(self, host)
+        guests = objects.InstanceList.get_by_host(
+            context.get_admin_context(), host,
+            expected_attrs=["flavor", "info_cache"])
+        for guest in guests:
+            # A guest that never spawned stays gone; nova-compute sets its
+            # server to ERROR.
+            if guest.power_state == power_state.NOSTATE:
+                continue
+            self.instances[guest.uuid] = fake.FakeInstance(
+                guest.name, guest.power_state, guest.uuid)
+            self.resources.claim(
+                vcpus=guest.flavor.vcpus, mem=guest.flavor.memory_mb,
+                disk=guest.flavor.root_gb)
+            for vif in guest.get_network_info():
+                self._interfaces[vif["id"]] = vif
+
+
+    fake.FakeDriver.init_host = adopt_guests
+    sys.exit(compute.main())
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controlplane-fake-compute
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova-fake-compute
+    app.kubernetes.io/instance: controlplane-nova
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nova-fake-compute
+      app.kubernetes.io/instance: controlplane-nova
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nova-fake-compute
+        app.kubernetes.io/instance: controlplane-nova
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 42424
+        runAsGroup: 42424
+        fsGroup: 42424
+      initContainers:
+        - name: node-identity
+          image: ghcr.io/c5c3/nova:2026.1
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c", 'printf %s "$COMPUTE_ID" > /var/lib/nova/compute_id']
+          env:
+            - name: COMPUTE_ID
+              value: d13d13d1-0000-4000-8000-000000000003
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: state
+              mountPath: /var/lib/nova
+      containers:
+        - name: nova-compute
+          image: ghcr.io/c5c3/nova:2026.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - /var/lib/openstack/bin/python
+            - /etc/nova/compute.conf.d/fake_compute.py
+            - --config-file
+            - /etc/nova/compute-config/nova-compute.conf
+            - --config-dir
+            - /etc/nova/compute.conf.d
+          env:
+            - name: OS_DEFAULT__HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OS_DEFAULT__TRANSPORT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-nova-compute-config
+                  key: transport_url
+            - name: OS_KEYSTONE_AUTHTOKEN__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-nova-compute-config
+                  key: password
+            - name: OS_SERVICE_USER__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-nova-compute-config
+                  key: password
+            - name: OS_PLACEMENT__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-nova-compute-config
+                  key: password
+            - name: OS_NEUTRON__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-nova-compute-config
+                  key: password
+            - name: OS_CINDER__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: controlplane-nova-compute-config
+                  key: password
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 768Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: compute-config
+              mountPath: /etc/nova/compute-config
+              readOnly: true
+            - name: compute-overlay
+              mountPath: /etc/nova/compute.conf.d
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/nova
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: compute-config
+          secret:
+            secretName: controlplane-nova-compute-config
+        - name: compute-overlay
+          configMap:
+            name: controlplane-fake-compute-conf
+        - name: state
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

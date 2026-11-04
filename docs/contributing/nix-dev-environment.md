@@ -67,7 +67,7 @@ pin them to an exact patch:
 | Go | `go_1_27` from nixpkgs; `go.work` sets only the minimum the modules need |
 | Node | `nodejs_24` from nixpkgs (CI pins the major only, `node-version: 24`) |
 | Python 3 | the runtime the Helm-schema generator and the docs site need |
-| Helm | CI uses `azure/setup-helm` with no version input, so it floats |
+| Helm | `ci.yaml` pins `HELM_VERSION` only for its `azure/setup-helm` jobs; the E2E jobs use the runner image's Helm |
 | `shellcheck`, `jq`, GNU userland | runner-preinstalled and unpinned in `ci.yaml` |
 | `yq` | pinned (`v4.53.6`) in `verify-container-images.yaml` and `build-images.yaml`; `ci.yaml` uses the runner's floating `yq`, so the flake tracks the nixpkgs `yq-go` |
 

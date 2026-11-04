@@ -3157,11 +3157,10 @@ func TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated(t *testing
 }
 
 // TestKeystoneJobs_PodSettings pins the pod settings of all 11 Keystone Jobs
-// and CronJobs: by default every container (the copy-keys init container
-// included) renders the Job defaults and no priority class; with
-// spec.deployment.priorityClassName every pod follows it, policy-validation
-// included; spec.jobs.priorityClassName overrides it for the Jobs while the
-// Deployment keeps its own.
+// and CronJobs: by default every container renders the Job defaults and no
+// priority class; with spec.deployment.priorityClassName every pod follows it,
+// policy-validation included; spec.jobs.priorityClassName overrides it for the
+// Jobs while the Deployment keeps its own.
 func TestKeystoneJobs_PodSettings(t *testing.T) {
 	const cm, domains = "keystone-config-abc123", ""
 	podSpecs := func(ks *keystonev1alpha1.Keystone) map[string]corev1.PodSpec {
@@ -3214,7 +3213,7 @@ func TestKeystoneJobs_PodSettings(t *testing.T) {
 					g.Expect(c.Resources).To(Equal(defaults), "%s/%s", name, c.Name)
 				}
 			}
-			g.Expect(specs["fernet-rotate"].InitContainers).To(HaveLen(1), "copy-keys")
+			g.Expect(specs["fernet-rotate"].InitContainers).To(BeEmpty())
 			if tc.deployment != nil {
 				deploy := buildKeystoneDeployment(ks, cm, "", "", nil)
 				g.Expect(deploy.Spec.Template.Spec.PriorityClassName).To(Equal(*tc.deployment))

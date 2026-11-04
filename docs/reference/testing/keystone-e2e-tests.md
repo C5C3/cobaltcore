@@ -23,19 +23,22 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **53 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **58 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
 
 Most suites run in the `openstack` namespace; `pod-security-restricted` creates
-its own `keystone-pss-restricted-test` namespace. Two operator-level suites,
+its own `keystone-pss-restricted-test` namespace, and `multi-namespace` creates
+`keystone-mns-a`, `keystone-mns-b` and `keystone-mns-c`. Two operator-level suites,
 `metrics` and `prometheus-stack`, exercise the keystone-operator Helm deployment
 in `keystone-system`, and `keystone-operator/env-key-material` reads the spec
 and the process environment of that deployment's pod.
 The operator-level suite `namespace-scoped-rbac` installs a namespace-scoped
-release and a standalone webhook release of the chart into `openstack`. All
-suites assume the pre-deployed infrastructure stack (MariaDB, Memcached, ESO,
+release and a standalone webhook release of the chart into `openstack`. The
+operator-level suite `keystone-operator/leader-election` deletes the operator's
+Lease in `keystone-system` and runs alone (`concurrent: false`), because the
+former leader can restart during it. All suites assume the pre-deployed infrastructure stack (MariaDB, Memcached, ESO,
 OpenBao).
 
 ## Prerequisites
@@ -95,12 +98,13 @@ Deployment rollout, bootstrap Job).
 | [ldap-domain-backend](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-ldap` | Full LDAP attach cycle against an in-suite OpenLDAP fixture: domain provisioning, config projection + rollout, LDAP user listing and token issuance, detach with deletionPolicy Delete |
 | [oidc-federation](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-oidc` | Full OIDC federation cycle against an in-suite two-realm Keycloak fixture: federation-object provisioning, mod_auth_openidc sidecar rollout + Service targetPort switch, bearer/CLI flow via introspection, browser websso round trip, mapping-driven group membership, multi-realm issuer pinning, clean detach. The multi-realm coverage exercises both discovery shapes: the second backend reaches Ready via discovery-mode `.well-known` metadata fetch against the in-cluster IdP (the e2e-operator job allowlists kind's Service CIDR through `federation.metadataAllowCidrs`), while the first keeps explicit `spec.oidc.endpoints` |
 | [saml-federation](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-saml` | Full SAML federation cycle against an in-suite Keycloak SAML realm: IdP-metadata Secret from the live descriptor, federation-object provisioning, mod_auth_mellon sidecar rollout + Service targetPort switch, SP-metadata export, OIDC/SAML coexistence on one sidecar, clean detach |
-| [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation |
+| [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule and `concurrencyPolicy: Forbid`, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation, staging-Secret recreation after an out-of-band delete, pruning past `maxActiveKeys` (a pruned token gets a 401), a refused staging PATCH retried without a second rotation, a held scheduled rotation skipped under Forbid (`JobAlreadyActive`) |
 | [scale](#scale) | `keystone-scale` | Replica scaling up (3→5) and down (5→2) |
 | [deletion-cleanup](#deletion-cleanup) | `keystone-cleanup` | Owner reference cascading deletion of all owned resources |
 | [policy-overrides](#policy-overrides) | `keystone-policy` | oslo.policy integration via ConfigMap reference |
 | [middleware-config](#middleware-config) | `keystone-middleware` | WSGI middleware pipeline customization in api-paste.ini |
 | [brownfield-database](#brownfield-database) | `keystone-brownfield` | Explicit database host (no MariaDB CRs created) |
+| [db-sync-partial-schema](#db-sync-partial-schema) | `keystone-partial-schema` | The db-sync pre-step drops the rowless schema an interrupted first `db_sync` leaves, and the first Job attempt rebuilds it |
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status |
 | [image-pull-policy](#image-pull-policy) | `keystone-ipp` | Without `spec.image.pullPolicy` every container of the Deployment and the db-sync Job carries the operator default `IfNotPresent`; `pullPolicy: Never` reaches every container of the Deployment and the CronJobs, re-runs db-sync and keeps the bootstrap Job |
 | [release-upgrade](#release-upgrade) | `keystone-release-upgrade` | Cross-release upgrade from 2026.1 to 2026.2 via expand-migrate-contract, API accessibility and admin authentication before/after, token continuity, fernet keys unchanged |
@@ -114,27 +118,32 @@ Deployment rollout, bootstrap Job).
 | [node-placement](#node-placement) | `keystone-np` | `spec.deployment` `nodeSelector`, `tolerations` and `affinity` on the Deployment; the db-sync Job and the fernet-rotate CronJob inherit the selector, the toleration and the node affinity, not the pod anti-affinity |
 | [schema-drift-detection](#schema-drift-detection) | `keystone-schema-drift` | `DatabaseReady=True` with message "revision verified"; schema-check Job runs and completes |
 | [semantic-invariants](#semantic-invariants) | `keystone-invariants` | `status.endpoint` URL format, `ownerReferences` fan-out, `observedGeneration` tracking, `lastTransitionTime` monotonicity, ConfigMap immutability |
-| [topology-spread](#topology-spread) | `keystone-tsc` | `spec.deployment.topologySpreadConstraints`: `nil` injects 2 defaults; non-empty slice passes through verbatim; `[]` disables all constraints |
+| [topology-spread](#topology-spread) | `keystone-tsc` | `spec.deployment.topologySpreadConstraints`: `nil` renders the zone constraint and the preferred hostname anti-affinity term; a non-empty slice passes through verbatim with no affinity; `[]` leaves neither constraints nor affinity |
 | [pod-security-restricted](#pod-security-restricted) | `keystone-pss-restricted` | Reconciliation reaches Ready=True/AllReady inside a `pod-security.kubernetes.io/enforce=restricted` namespace; every Pod the reconciler creates (API Deployment, bootstrap Job, db-sync Job, policy-validation Job, manually-triggered fernet-rotation Job) admits under PSS Restricted; zero `FailedCreate` events carry the literal violation `violates PodSecurity "restricted:latest"` |
 | admin-password-rotation | `keystone-adminpw` | Re-bootstrap on admin-password Secret change: stale bootstrap Job replaced, new password authenticates against `/v3` |
 | admin-password-scheduled-rotation | `keystone-adminpw-sched` | Model B scheduled rotation: rotation CronJob rendered from `spec.passwordRotation`, full OpenBao/ESO evidence chain |
 | autoscaling | `keystone-autoscaling` | HPA create/update/delete driven by `spec.autoscaling` (CPU and memory targets); the API PodDisruptionBudget follows the HPA minimum: `minAvailable: 1` with `minReplicas` unset, `maxUnavailable: 1` at `minReplicas: 1`, `minAvailable: 1` again after autoscaling is removed; a CPU target of 150 and a `scaleDown` behavior reach the HPA as `averageUtilization: 150` and `spec.behavior.scaleDown` |
 | basic-deployment-2026-2 | `keystone-basic-2026-2` | Happy-path deployment pinned to the 2026.2 release image |
 | configmap-no-secrets | `keystone-cc0080` | No secrets leak into the ConfigMap: placeholder URL in `keystone.conf`, real DSN only in the derived `<name>-db-connection` Secret |
-| credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step |
+| credential-rotation | `keystone-credential` | Credential-key CronJob schedule, manual rotation changes Secret data, `credential_migrate` step, a refused staging PATCH retried without a second rotation while a credential stored before it keeps its blob; after the rotation the keystone-operator release exports the `keystone_operator_key_rotation_age_seconds{key_type="credential"}` sample |
 | database-tls | `keystone-dbtls` | `spec.database.tls` up to `verify-full`: `DatabaseTLSReady=True`, cert-manager client cert, encrypted MariaDB connection |
+| [db-expand-failure](#db-expand-failure) | `keystone-db-expand-failure` | A 2026.1 → 2026.2 upgrade whose expand Job is OOM-killed until `BackoffLimitExceeded`: `DatabaseReady=False/ExpandFailed` naming the failed Job while `upgradePhase` stays `Expanding`, a Warning `ExpandFailed` event, the `keystone_operator_db_sync_total{result="failed"}` sample, and the Deployment still on 2026.1 |
 | env-key-material | — (operator-level) | The keystone-operator pod in `keystone-system` reads no Secret into env, and its manager's process environment, read from an ephemeral container on the `keystone:2026.1` image by `tests/e2e/lib/assert-operator-env-clean.sh`, holds no variable named like key material and no value such as a PEM block; a finding names the variable, never its value |
 | gateway-quick-start | `keystone-gateway-qs` | Envoy Gateway quick-start wiring: GatewayClass/Gateway Programmed, HTTPRoute attached, endpoint reachable |
 | gateway-quick-start-smoke | `keystone-smoke` | `curl https://keystone.127-0-0-1.nip.io/v3` returns HTTP 200 with a Keystone v3 JSON body |
 | httproute | `keystone-httproute` | `spec.gateway` lifecycle: HTTPRoute created, updated, and removed with the spec block |
 | invalid-cr | multiple (rejected) | Every CEL XValidation and webhook rejection path pinned to a deterministic admission failure |
 | key-repository-mode | `keystone-keymode` | Fernet/credential key volumes are not world-readable (no `key_repository is world readable` startup warning) |
+| [leader-election](#leader-election) | `keystone-lease` (operator-level) | Deleting the operator's Lease `keystone.openstack.c5c3.io` in `keystone-system`: a new Lease with a holder within 90s, acquired after the old one's last renewal unless the leader recreated it within its own term, renewed by its holder and unchanged for 30s; after a failover the former leader restarts; the CR stays Ready throughout and the re-elected leader reconciles a replica patch |
 | logging | `keystone-logging` | `spec.logging` propagation to oslo.log: defaults, level/format overrides, per-logger levels |
 | maintenance-endpoint-isolation | `keystone-endpoint-isolation` | Maintenance pods never become API Service backends: the non-terminating EndpointSlice address count for the API Service stays at exactly the live replica count — never above, never empty — across a sampling window that observes a live trust-flush pod holding a pod IP |
 | metrics | — (operator-level) | keystone-operator chart renders and removes the ServiceMonitor; metrics endpoint scrapeable |
-| namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` beside a standalone webhook release (`webhook.standalone=true`): the standalone release's ClusterRole carries only the two webhook reads, the CR is defaulted at admission and reconciles to Ready, an invalid cron expression is rejected at admission, and the standalone pod's `controller_runtime_webhook_requests_total` counters show that it admitted both. With the CR Ready, the operator installed with `rbac.namespaceScoped=true` and `webhook.enabled=false` has started in namespace-scoped mode, logged no forbidden watch, never restarted, and recorded a successful reconcile on its own metrics endpoint |
-| network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
+| [multi-namespace](#multi-namespace) | `keystone-mns` in `keystone-mns-a`, `keystone-mns-b` and `keystone-mns-c` | One Keystone name in three namespaces: every child owned by its own namespace's Keystone alone, one schema each, three distinct fernet backup keys and key sets, a token valid at home (200) and refused in the other two (401); deleting one instance leaves the other two unchanged |
+| namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` beside a standalone webhook release (`webhook.standalone=true`): the standalone release's ClusterRole carries only the two webhook reads, the CR is defaulted at admission and reconciles to Ready, an invalid cron expression is rejected at admission, and the standalone pod's `controller_runtime_webhook_requests_total` counters show that it admitted both. With the CR Ready, the operator installed with `rbac.namespaceScoped=true` and `webhook.enabled=false` has started in namespace-scoped mode, logged no forbidden watch, never restarted, and counted a run of its `HealthCheck` step on its own metrics endpoint |
+| network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources; probe pods then find the target dropped on 9999, resolving a cluster name and reaching 3306, 6443 and 11211, a `keystone-system` client dropped on 9999 and reaching 5000, and a `keystone-netpol-outside` client dropped on 5000 until the update admits its namespace |
+| [plugins](#plugins) | `keystone-plugins` | `spec.plugins` selects keystone's `strict_two_level` unified-limit model: the rendered `[unified_limit]` section and `GET /v3/limits/model` report it; pods of a model keystone cannot load never turn Ready while the old pod keeps serving; without the plugin the API reports `flat` |
 | prometheus-stack | — (operator-level) | `WITH_PROMETHEUS=true` opt-in addon: kube-prometheus-stack scrapes the operator end to end |
+| [rapid-spec-changes](#rapid-spec-changes) | `keystone-rapid` | Twelve back-to-back `extraConfig` patches converge on the last one: each bumps the generation and a misspelt one is refused, the live ConfigMap and every pod carry `expiration = 4320`, a token lives 4318 to 4320 s, a repeated patch renders no ConfigMap, at most four ConfigMaps remain, and nothing moves for 60s |
 | resources | `keystone-resources` | Render-time per-resource defaults on the Deployment and a running Pod (no CPU limit, Burstable), the Job defaults on the db-sync Job template (70m CPU and 368Mi memory requests, a 368Mi memory limit, no CPU limit), propagation of a patched `spec.deployment.resources`, and default memory that follows `spec.uwsgi.processes` once the block is removed |
 | rolling-update-zero-downtime | `keystone-rolling-update` | Full graceful-termination chain keeps the API serving during an image-tag rolling update |
 | trust-flush | `keystone-trust-flush` | Trust-flush CronJob creation, schedule and suspend tracking `spec.trustFlush` |
@@ -158,7 +167,8 @@ a Keystone CR with `clusterRef` and verifies that the five sub-conditions it ass
 `BootstrapReady`) progress to True,
 the aggregate Ready condition reaches True with reason `AllReady`, all owned resources
 exist, a ConfigMap with the expected prefix exists, and the Keystone API at `/v3` is
-accessible.
+accessible. It then reads the keystone-operator's own metric families and holds the Ready
+CR to a budget of zero events over 120 seconds.
 
 **Steps:**
 
@@ -168,8 +178,11 @@ accessible.
 | 2 | Assert all sub-conditions and Ready | `assert` (5m) | Verifies SecretsReady=True (SecretsAvailable), DatabaseReady=True (DatabaseSynced), FernetKeysReady=True (FernetKeysAvailable), DeploymentReady=True, BootstrapReady=True (BootstrapComplete), Ready=True (AllReady). Condition order follows the `subConditionTypes` display order. |
 | 3 | Assert Deployment and Service | `assert` (5m) | Deployment `keystone-basic-api` has `availableReplicas > 0`; Service `keystone-basic-api` has port 5000 |
 | 4 | Assert Fernet resources | `assert` (5m) | CronJob `keystone-basic-fernet-rotate`, Secret `keystone-basic-fernet-keys`, ServiceAccount/Role/RoleBinding `keystone-basic-fernet-rotate`, PushSecret `keystone-basic-fernet-keys-backup` all exist |
-| 5 | Assert ConfigMap exists | `script` | `kubectl get cm -n openstack -o name \| grep keystone-basic-config-` — verifies a ConfigMap with content-hash suffix exists |
-| 6 | Assert API accessibility | `script` | `curl -sf http://keystone-basic-api.openstack.svc:5000/v3` — verifies the Keystone API responds |
+| 5 | Assert OpenBao PushSecret sync | `assert` (5m) | PushSecrets `keystone-basic-fernet-keys-backup` and `keystone-basic-credential-keys-backup` report `Ready=True`, so ESO wrote both key sets to OpenBao |
+| 6 | Assert ConfigMap exists | `script` | `kubectl get cm -n openstack -o name \| grep keystone-basic-config-` — verifies a ConfigMap with content-hash suffix exists |
+| 7 | Assert API accessibility | `script` | `curl -sf http://keystone-basic-api.openstack.svc:5000/v3` — verifies the Keystone API responds |
+| 8 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `keystone-operator` release: a reconcile is counted, no error carries `condition_type="UNKNOWN"`, and the `keystone_operator_db_sync_total{result="succeeded"}` and `keystone_operator_db_sync_duration_seconds_count` samples of `keystone-basic` are exported |
+| 9 | Assert the steady state emits no event | `script` (4m) | `tests/e2e/lib/assert-steady-state-events.sh`: no event on `keystone-basic` appears or raises its count in 120 seconds, and the CR stays Ready at the same generation |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
@@ -206,10 +219,18 @@ resource. The ESO controller then syncs the actual Secret.
 **File:** `tests/e2e/keystone/fernet-rotation/chainsaw-test.yaml`
 
 **Purpose:** Validates the CronJob-based Fernet key rotation mechanism end-to-end.
-Deploys a Keystone CR, verifies the CronJob schedule matches `spec.fernet.rotationSchedule`,
-triggers a manual rotation via `kubectl create job --from=cronjob`, and verifies
-that Secret data changes, pod UIDs remain stable (no Deployment rollout), and a
-fernet token obtained before rotation still validates after rotation.
+Deploys a Keystone CR, verifies the CronJob schedule matches `spec.fernet.rotationSchedule`
+and the CronJob carries `concurrencyPolicy: Forbid`, triggers a manual rotation via
+`kubectl create job --from=cronjob`, and verifies that Secret data changes, pod UIDs remain
+stable (no Deployment rollout), and a fernet token obtained before rotation still validates
+after rotation. The suite then deletes the staging Secret between rotations and checks that
+the operator recreates it empty and commits nothing from it. A second rotation past
+`maxActiveKeys: 3` purges the key that signed the pre-rotation token: that token gets a 401,
+and tokens signed by surviving keys validate. A third rotation runs while an admission
+policy refuses its first staging PATCH: the kubelet restarts the rotate container in the
+same pod, and the retry commits the keys of one rotation. Last, an admission policy holds
+a scheduled rotation Job, and the CronJob controller skips the next tick with
+`JobAlreadyActive`.
 
 **Steps:**
 
@@ -217,17 +238,65 @@ fernet token obtained before rotation still validates after rotation.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-fernet` |
 | 2 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
-| 3 | Assert CronJob schedule matches spec | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` schedule is `"0 0 * * 0"` |
-| 4 | Trigger rotation, verify no rollout, validate token | `script` (180s) | Records pod UIDs and Secret hash before rotation, obtains a fernet token, creates manual Job from CronJob, verifies Secret data hash changed, asserts pod UIDs are unchanged (no rollout), validates the pre-rotation token still works |
+| 3 | Assert CronJob schedule, suspend and concurrency policy | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` has schedule `"0 0 * * 0"`, `suspend: false` and `concurrencyPolicy: Forbid` |
+| 4 | Trigger rotation, verify no rollout, validate token | `script` (180s) | Records pod UIDs and Secret hash before rotation, obtains a fernet token and stores it in the Secret `keystone-fernet-pre-rotation-token` for step 7, creates manual Job from CronJob, verifies Secret data hash changed, asserts pod UIDs are unchanged (no rollout), validates the pre-rotation token still works. The token reaches `kubectl` over stdin, and server-side apply keeps it out of the `kubectl.kubernetes.io/last-applied-configuration` annotation. A step `cleanup` deletes the token Secret at the end of the test; the `catch` lists it without its `token` key |
+| 4.5 | Assert rotation Role RBAC split | `script` | Role `keystone-fernet-fernet-rotate` grants `patch` on the staging Secret `keystone-fernet-fernet-keys-rotation` and never on the production Secret `keystone-fernet-fernet-keys` |
 | 5 | Assert Ready=True maintained | `assert` (5m) | Ready=True with reason AllReady after rotation |
+| 6 | Delete the staging Secret between rotations | `script` (180s) + `assert` (5m) | Waits up to 60 s for `keystone-fernet-fernet-keys-rotation` and records its UID, the production Secret's data hash and `cobaltcore.c5c3.io/rotation-completed-at` annotation, and the `FernetKeysRotated` event count. Deletes the staging Secret. Within 60 s a Secret of that name with a new UID must appear, with the label `cobaltcore.c5c3.io/rotation-target=fernet-keys`, a controller owner reference to Keystone `keystone-fernet`, no data and no completion annotation. After 20 s the hash, the annotation and the event count are unchanged and no `RotationRejected` event exists. The `assert` requires `FernetKeysReady=True` with reason `FernetKeysAvailable` and `Ready=True` with reason `AllReady` |
+| 7 | Prune a key past maxActiveKeys | `script` (600s) | Reads the stored token `T0`, waits up to 150 s until the API pod projects the production key set `B`, issues `T1`, and computes `E = {0, max(B), max(B)+1}` and the keys to purge, `P = B \ E`. Runs the manual Job `keystone-fernet-manual-rotate-2`, requires the production keys to equal `E` with 3 keys (`{0,3,4}` on an unrotated week), and waits for the projection of `E`. Then `T0` must get HTTP 401 within 60 s, and `T1` and a freshly issued `T2` must get HTTP 200 |
+| 8 | Retry a refused staging PATCH in place | `script` (90s) + `script` (660s) | The first script waits up to 60 s for the staging Secret `keystone-fernet-fernet-keys-rotation`, applies `05-refuse-staging-patch.yaml` with `kubectl`, and waits up to 30 s until a server-side dry-run PATCH of that Secret as the rotation ServiceAccount is refused with the policy message. The second waits for the projection of the production key set `B`, issues `T3`, computes `E = {0, max(B), max(B)+1}` (`{0,4,5}` on an unrotated week) and runs the manual Job `keystone-fernet-manual-rotate-3`. Within 90 s the container `fernet-rotate` must report `restartCount >= 1`, and its `--previous` log or, once the restarted attempt has failed as well, its current log must hold the policy message. The script then deletes the policy, waits up to 180 s for the Job to complete, and requires one Job pod and the production keys `E`. The new primary `max(B)+1` must hold the old key 0, key `max(B)` must keep its value, and the current log must show the `Retry: restoring ...` line. After the projection of `E`, `T3` must get HTTP 200. A step `finally` deletes the policy, pass or fail |
+| 9 | Hold a scheduled rotation under Forbid | `apply` + `script` (60s) + `patch` + `assert` + `script` (240s) + `patch` + `assert` + `script` (60s) | Applies `02-hold-scheduled-rotation.yaml` and waits up to 30 s until a server-side dry run of a probe pod with the rotation labels is refused with the policy message. Patches the schedule to `* * * * *` (`03-patch-schedule-every-minute.yaml`) and asserts it with `concurrencyPolicy: Forbid`. Expects one unfinished Job named `keystone-fernet-fernet-rotate-<minutes>`, listed in the CronJob's `status.active` and without a pod, then a `JobAlreadyActive` event on the CronJob, then still that one Job and an unchanged production key hash. Restores `"0 0 * * 0"` (`04-patch-schedule-weekly.yaml`), deletes the held Job and waits for an empty `status.active`. A step `finally` restores `"0 0 * * 0"` and then deletes Jobs with the scheduled name |
+| 10 | Pause rotation via spec.fernet.suspend | `patch` | Applies `01-patch-suspend-fernet.yaml` — `spec.fernet.suspend: true` |
+| 11 | Assert CronJob preserved, suspended, schedule unchanged | `assert` (5m) | CronJob `keystone-fernet-fernet-rotate` keeps schedule `"0 0 * * 0"` with `suspend: true` |
+| 12 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `keystone-operator` release, with the `keystone_operator_key_rotation_age_seconds{key_type="fernet"}` sample of `keystone-fernet` that the rotations of steps 4, 7 and 8 set |
 
-**Fixtures:** `00-keystone-cr.yaml`
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-suspend-fernet.yaml`, `02-hold-scheduled-rotation.yaml`,
+`03-patch-schedule-every-minute.yaml`, `04-patch-schedule-weekly.yaml`, `05-refuse-staging-patch.yaml`
 
 **Rotation verification approach:** The script step verifies in-place key delivery
 by asserting that pod UIDs remain unchanged after rotation. The Secret
 data hash comparison confirms the rotation actually occurred, while the token
 validation confirms that Keystone can still decrypt tokens issued with the
 previous key set.
+
+**Design notes:**
+
+- Step 8 refuses the staging PATCH with the ValidatingAdmissionPolicy
+  `keystone-fernet-refuse-staging-patch`. It matches only an UPDATE (the API server
+  admits a PATCH as UPDATE) of `keystone-fernet-fernet-keys-rotation` in `openstack` by
+  the ServiceAccount `keystone-fernet-fernet-rotate`, so the operator's own writes pass.
+  The step applies and deletes the policy itself with `kubectl`, because it lifts the
+  policy partway through the step, and its `finally` deletes the policy when the step
+  fails. The step runs before the hold step, because the hold policy stays in force to
+  the end of the test and would refuse the rotation pod.
+- Step 9 holds a scheduled Job with the ValidatingAdmissionPolicy
+  `keystone-fernet-hold-rotation`. It refuses every pod in `openstack` that carries
+  `app.kubernetes.io/instance=keystone-fernet` and
+  `app.kubernetes.io/component=fernet-rotation`. A refused pod creation does not count as
+  a pod failure, so the Job does not fail before its one-hour `activeDeadlineSeconds` and
+  stays in the CronJob's `status.active`, where
+  the next tick meets Forbid. The step waits for the dry-run probe to be refused before it
+  moves the schedule to every minute, so the first tick cannot run a real rotation.
+  Chainsaw deletes the policy and its binding at the end of the test, before it runs any
+  step `cleanup`. The step `finally` therefore runs while the policy is still in force,
+  pass or fail: it restores the weekly schedule, so no tick starts a new Job, and then
+  deletes Jobs with the scheduled name. A failed run leaves no held Job that starts once
+  the policy is gone.
+- `kubectl create job --from=cronjob/...` names the CronJob as the Job's controller, but
+  the CronJob controller never adds such a Job to `status.active` and records
+  `UnexpectedJob` for it while it runs. Forbid therefore never counts the manual Jobs
+  `keystone-fernet-manual-rotate`, `keystone-fernet-manual-rotate-2` and
+  `keystone-fernet-manual-rotate-3`, and step 9 counts only Jobs named
+  `keystone-fernet-fernet-rotate-<minutes>`, the name the CronJob controller gives a
+  scheduled Job. Step 9 also skips finished Jobs, because a completed weekly run carries
+  the same name.
+- The fixture's `extraConfig.cache.enabled: "false"` must stay. Keystone reads the key
+  repository on every token operation, and with caching on, a token cached on issue can
+  keep validating after its key is purged, so step 7 would see HTTP 200 for `T0`.
+- The weekly schedule (Sunday 00:00 UTC) can add a rotation between steps 4 and 8.
+  Steps 7 and 8 derive `E` from the key set they read first, so an extra rotation before
+  them shifts `E` and the checks still hold. A rotation inside the 20 s window of step 6
+  changes the production hash and fails that step.
 
 ---
 
@@ -338,6 +407,33 @@ reconciliation completes to Ready=True.
 | 2 | Assert no MariaDB CRs created | `error` | 3 error assertions verifying NotFound for: Database `keystone-brownfield`, User `keystone-brownfield`, Grant `keystone-brownfield` |
 | 3 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
 | 4 | Verify keystone.conf connection | `script` | Gets ConfigMap matching `keystone-brownfield-config-*`, verifies `keystone.conf` `[database]` section contains `openstack-db.openstack.svc.cluster.local` |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+---
+
+### db-sync-partial-schema
+
+**File:** `tests/e2e/keystone/db-sync-partial-schema/chainsaw-test.yaml`
+
+**Purpose:** Validates that the db-sync Job recovers a schema an interrupted first
+`db_sync` left behind. The suite seeds the database `keystone_partial_schema` by hand
+with three tables of the initial revision `27e647c0fad4` and no rows in them, an empty
+`alembic_version`, and the `<<keystone.domain.root>>` project row. A plain
+`keystone-manage db_sync` fails on that schema with MySQL error 1050. The pre-step
+`scripts/db_sync_reset.py` drops the four tables, and the `db_sync` of the same attempt
+rebuilds the schema. The seed replaces a real interruption because
+`controlplane-provisioning-mariadb-kill` catches the defect only when its kill lands
+inside the migration.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | seed-partial-schema | `script` | Reads the root Secret from `.spec.rootPasswordSecretKeyRef` of `mariadb/openstack-db` and pipes the password on stdin into `kubectl exec openstack-db-0 -c mariadb`, which drops and re-creates `keystone_partial_schema` and seeds it (up to three attempts under `timeout 20`) |
+| 2 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-partial-schema` in managed mode with `database.database: keystone_partial_schema` |
+| 3 | Wait for Ready=True | `assert` (5m) | Ready=True with reason AllReady |
+| 4 | verify-reset | `script` | Job `keystone-partial-schema-db-sync` reads `succeeded` 1 and no failed pod, and its log carries `db-sync-reset: dropped 4 tables an interrupted first db_sync left (recorded revisions: none): access_rule, alembic_version, application_credential, project` |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
@@ -659,7 +755,7 @@ so every kind node qualifies and the pods schedule.
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR with node placement | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-np` with a node selector, a `c5c3.io/e2e-dedicated` toleration, a required node affinity and a preferred pod anti-affinity |
-| 2 | Assert Ready and the rendered placement | `assert` (5m) | Ready `AllReady`; Deployment `keystone-np` carries all three fields; Job `keystone-np-db-sync` carries the selector and the toleration, `(affinity.nodeAffinity != null): true` and `(affinity.podAntiAffinity == null): true`; CronJob `keystone-np-fernet-rotate` carries the selector |
+| 2 | Assert Ready and the rendered placement | `assert` (5m) | Ready `AllReady`; Deployment `keystone-np` carries all three fields, with two preferred pod anti-affinity entries: the CR's own (selector `app.kubernetes.io/instance: keystone-np` alone) first, then the default hostname term; Job `keystone-np-db-sync` carries the selector and the toleration, `(affinity.nodeAffinity != null): true` and `(affinity.podAntiAffinity == null): true`; CronJob `keystone-np-fernet-rotate` carries the selector |
 
 **Fixtures:** `00-keystone-cr.yaml`
 
@@ -724,20 +820,22 @@ so every kind node qualifies and the pods schedule.
 **File:** `tests/e2e/keystone/topology-spread/chainsaw-test.yaml`
 
 **Purpose:** Validates `spec.deployment.topologySpreadConstraints` behavior:
-`nil` (unset) injects the two default constraints (zone + hostname,
-`MaxSkew=1`, `ScheduleAnyway`); a non-empty slice passes through verbatim;
-an empty slice explicitly disables all constraints.
+`nil` (unset) renders the default spread, one zone constraint (`MaxSkew=1`,
+`ScheduleAnyway`) and one preferred pod anti-affinity term on
+`kubernetes.io/hostname` (weight 100); a non-empty slice passes through
+verbatim and switches off the term; an empty slice leaves neither constraints
+nor affinity.
 
 **Steps:**
 
 | # | Step Name | Type | Details |
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR without TSC | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-tsc` |
-| 2 | Assert Ready + 2 default constraints | `assert` (5m) | Deployment `keystone-tsc-api` carries zone-spread and hostname-spread |
+| 2 | Assert Ready + default spread | `assert` (5m) | Deployment `keystone-tsc` carries a single constraint (`topology.kubernetes.io/zone`) and a single preferred anti-affinity entry (`weight: 100`, `topologyKey: kubernetes.io/hostname`, selector `app.kubernetes.io/name: keystone`, `app.kubernetes.io/instance: keystone-tsc`) |
 | 3 | Patch: custom TSC | `patch` | `01-patch-custom-tsc.yaml` |
-| 4 | Assert custom TSC applied verbatim | `assert` | Deployment has the patched constraints exactly |
+| 4 | Assert custom TSC applied verbatim | `assert` | Deployment has the patched constraints exactly and `affinity == null` |
 | 5 | Patch: empty TSC | `patch` | `02-patch-empty-tsc.yaml` |
-| 6 | Assert TSC disabled | `assert` | Deployment has no constraints |
+| 6 | Assert TSC and affinity gone | `script` (120 s poll) | Deployment reads empty for both `{.spec.template.spec.topologySpreadConstraints}` and `{.spec.template.spec.affinity}` |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-patch-custom-tsc.yaml`, `02-patch-empty-tsc.yaml`
 
@@ -866,6 +964,208 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   [`namespace-scoped-rbac`](#test-suite-inventory) pins to a pre-existing
   namespace via `spec.namespace: openstack`; this test opts out via
   `spec.namespace: ""`.
+
+---
+
+### db-expand-failure
+
+**File:** `tests/e2e/keystone/db-expand-failure/chainsaw-test.yaml`
+
+**Purpose:** Drives a release upgrade into the failure branch of the expand phase. The
+patch that moves `spec.image.tag` from 2026.1 to 2026.2 also sets a 16Mi memory limit in
+`spec.jobs.resources`. The expand Job runs the real 2026.2 image, the kernel OOM-kills its
+container on all five attempts, and the Job ends `Failed/BackoffLimitExceeded`.
+`upgrade-flow` covers a successful upgrade only, and `upgrade-abort` wedges its expand Job
+in `ImagePullBackOff`, which never exhausts the backoff limit.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR with initial release 2026.1 | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-db-expand-failure` at tag `"2026.1"` |
+| 2 | Assert Ready and installedRelease set | `assert` (8m) | `installedRelease: "2026.1"`, `Ready=True/AllReady` |
+| 3 | Patch the tag and a 16Mi Job memory limit | `patch` | `01-patch-expand-failure.yaml` sets tag `"2026.2"` and `spec.jobs.resources.limits.memory: 16Mi` |
+| 4 | Assert the expand phase failed for good | `assert` (8m) + `script` | `installedRelease: "2026.1"`, `targetRelease: "2026.2"`, `upgradePhase: Expanding`, `DatabaseReady=False/ExpandFailed`; Job `keystone-db-expand-failure-db-expand` has `Failed=True/BackoffLimitExceeded`; the `DatabaseReady` message contains `Expand job keystone-db-expand-failure-db-expand failed: job has permanently failed`. The script also prints how each Job pod terminated |
+| 5 | Assert the Warning ExpandFailed event | `script` (90s) | Polls `kubectl get events` on the CR's UID with `reason=ExpandFailed,type=Warning` |
+| 6 | Assert the failed phase Job is counted | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `keystone-operator` release, with the `keystone_operator_db_sync_total{result="failed"}` sample of `keystone-db-expand-failure` |
+| 7 | Assert the Deployment keeps the 2026.1 image | `assert` (8m) | Container `keystone` of Deployment `keystone-db-expand-failure` runs `ghcr.io/c5c3/keystone:2026.1`, because the Database step fails before the Deployment step runs |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-expand-failure.yaml`
+
+Chainsaw's cleanup deletes the CR while the upgrade is still in `Expanding`. The
+finalizer does not depend on the upgrade state.
+
+---
+
+### leader-election
+
+**File:** `tests/e2e/keystone-operator/leader-election/chainsaw-test.yaml`
+
+**Purpose:** Proves that the keystone-operator elects a leader again after its
+Lease is deleted, and that the elected leader reconciles. The chart runs two
+replicas with leader election on, and `bootstrap.Run`
+(`internal/common/bootstrap/manager.go`) keeps controller-runtime's default
+durations, so the Lease `keystone.openstack.c5c3.io` lives in `keystone-system`
+and names its holder as `<pod name>_<uuid>`. Every operator starts its manager
+through `bootstrap.Run`, so this suite covers the election code they share.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply the Keystone CR | `apply` + `assert` (5m) | `00-keystone-cr.yaml`, Keystone CR `keystone-lease` with one replica, reaches `Ready=True/AllReady` |
+| 2 | Delete the Lease and watch the re-election | `script` (6m) | Reads the Lease's uid, holder and `renewTime`, fails unless the holder is a Ready `keystone-operator` pod, and deletes the Lease. Within 90s a Lease with a new uid and a holder must exist (`ERROR: no new leader within 90s` otherwise). Its `acquireTime` must not predate the old `renewTime`, unless the same holder recreated it within its own term. Two reads 6s apart must show the holder renewing. Within 120s the operator Deployment is Ready again; when the standby won, the former leader's `manager` container has restarted and is Ready again. For 30s the Lease keeps its uid and holder. On every poll the CR's `Ready` must be `True`. Prints `OK: <pod> re-acquired the Lease` or `OK: failover to <pod>; <former pod> restarted <n> time(s)` |
+| 3 | The re-elected leader reconciles | `patch` + `script` (6m) | `01-patch-replicas.yaml` sets two replicas; within 300s `status.observedGeneration` equals `metadata.generation`, `Ready=True`, and Deployment `keystone-lease` has two ready replicas. Prints `OK: the re-elected operator reconciled generation <n>` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-replicas.yaml`
+
+**Catch blocks:** Steps 2 and 3 dump the Lease, the `keystone-system` pods, the
+last 100 log lines of each operator pod with and without `--previous`, and the
+`keystone-system` events.
+
+**Design notes:**
+
+- The suite runs alone (`concurrent: false`). When the standby wins, the former
+  leader loses its Lease and its manager exits, so its container restarts. Beside
+  another suite that restart would break the metric-family scrape and the
+  steady-state event window `basic-deployment` runs against the operator.
+- Which replica wins is a race between the leader's next renewal and the
+  standby's next poll, and both outcomes pass. When the leader wins, client-go's
+  fast path (`tryAcquireOrRenew` in `tools/leaderelection`) updates the Lease
+  with the `acquireTime` and `leaseTransitions` it observed before, and the API
+  server turns that update of the deleted Lease into a create. The new Lease
+  then carries the old `acquireTime`, which step 2 accepts for the same holder only.
+- Deleting the `kubectl delete lease` line makes step 2 fail with
+  `ERROR: no new leader within 90s`, so the step cannot pass without a new Lease.
+
+---
+
+### multi-namespace
+
+**File:** `tests/e2e/keystone/multi-namespace/chainsaw-test.yaml`
+
+**Purpose:** Runs one Keystone name, `keystone-mns`, in three namespaces at once
+and proves that the three instances share nothing: no child object, no key
+material and no token. Anything the operator keys by name alone would collide.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Namespaces, tenant stores and ExternalSecrets | `apply` + `script` (5m) + `assert` (10m) | `00-namespaces.yaml` creates the three namespaces with their `keystone-admin` and `keystone-db` ExternalSecrets. The script writes the namespace's MariaDB user name and copies the shared database and admin passwords to `openstack/keystone/<ns>/mns/db` and `bootstrap/<ns>/mns/admin` inside `openbao-0`, and runs `setup-eso-tenant.sh` for each namespace; the six ExternalSecrets reach `Ready=True` |
+| 2 | Brownfield schemas, users and grants | `apply` + `assert` (10m) | `00-brownfield-db-setup.yaml` in `openstack`: Databases `keystone_mns_a` to `keystone_mns_c`, each with its own MariaDB user (`keystone-mns-a` to `keystone-mns-c`) and Grant, all `Ready=True` |
+| 3 | Three Keystones of one name | `apply` + `assert` (10m) | `01-keystone-crs.yaml` applies all three at once; each reaches `Ready=True/AllReady` |
+| 4 | Objects, keys and tokens stay in their namespace | `script` (10m) | Per namespace, Deployment and Service `keystone-mns`, the config ConfigMap, Secrets `keystone-mns-fernet-keys` and `keystone-mns-db-connection`, and PushSecret `keystone-mns-fernet-keys-backup` exist with one ownerReference, to that namespace's Keystone. The connection URL names `keystone_mns_<x>`. The PushSecrets write to three distinct keys `openstack/keystone/<ns>/keystone-mns/fernet-keys` and are `Ready=True`. The three fernet key sets hash differently. A token issued in each namespace answers 200 there and 401 in the other two |
+| 5 | Deleting one instance | `script` (6m) | Records the Deployment uid, API pod uids, ConfigMap and fernet hash of `keystone-mns-b` and `keystone-mns-c` and a `keystone-mns-b` token, deletes the Keystone of `keystone-mns-a` and waits up to 180s for it to be gone. Both others stay `Ready=True` with the same values, and the token still answers 200 |
+
+**Fixtures:** `00-namespaces.yaml`, `00-brownfield-db-setup.yaml`, `01-keystone-crs.yaml`
+
+**Catch blocks:** Every step dumps, per namespace, the Keystone status, the pods,
+the events, and the ExternalSecret and SecretStore status. Step 1's `finally`
+removes the staged OpenBao root token.
+
+**Design notes:**
+
+- The suite sets `spec.namespace: ""` and applies its own namespaces, as
+  `pod-security-restricted` does.
+- `database.clusterRef` and `cache.clusterRef` are `LocalObjectReference`s, so the
+  three Keystones reach the shared `openstack-db` and `openstack-memcached`
+  through `database.host` and `cache.servers`, and the schemas are created in
+  `openstack`. `cleanupPolicy: Skip` keeps the three users and schemas at
+  cleanup, as in `pod-security-restricted`.
+- Each namespace connects as its own MariaDB user. A mariadb-operator `User`
+  allows 10 connections by default, and the canonical `keystone` user that
+  `brownfield-database` and `pod-security-restricted` share cannot also carry
+  three more Keystones: once it reaches the cap, a keystone request that needs
+  a new connection answers 500. The three users share the password of
+  `openstack/keystone-db`.
+- The OpenBao root token is staged in `openbao-0` over stdin at
+  `/tmp/.bao-token-keystone-multi-namespace`, a name no other suite uses, so a
+  parallel suite's cleanup cannot remove it. The staging fails the step when the
+  file's size differs from the token's length. Each field is copied by a pipe inside
+  the pod, so no value leaves `openbao-0` or appears in a command argument, which
+  the API server's audit log records. Tokens and passwords reach the API pods over
+  stdin.
+- The fixtures turn caching off. The three Keystones share `openstack-memcached`,
+  and keystone's cache keys carry no per-instance discriminator (#227), so a token
+  validation cached by one instance would answer the same token in the other two.
+- The connection URL always ends in `?charset=utf8`, so step 4 compares the URL's
+  path and never prints the URL, which carries the password.
+
+---
+
+### plugins
+
+**File:** `tests/e2e/keystone/plugins/chainsaw-test.yaml`
+
+**Purpose:** Proves that a driver selected through `spec.plugins` is the one
+keystone loads. `plugins.RenderPluginConfig` (`internal/common/plugins/plugins.go`)
+turns each entry into an INI section named by its `configSection`; the fixture's
+entry sets `[unified_limit] enforcement_model = strict_two_level`. Keystone resolves
+that option through stevedore (namespace `keystone.unified_limit.model`), and
+`GET /v3/limits/model` returns the name of the model it loaded.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply the Keystone CR | `apply` + `assert` (5m) | `00-keystone-cr.yaml`, Keystone CR `keystone-plugins` with the plugin, reaches `Ready=True/AllReady` |
+| 2 | The API reports the plugin's model | `script` (3m) | The ConfigMap the pod template names sets `enforcement_model = strict_two_level` under `[unified_limit]`, and `GET /v3/limits/model` in a Ready API pod reports `strict_two_level`, retried every 5s for up to 60s |
+| 3 | A model keystone cannot load never turns Ready | `script` (6m) | Records the Ready pod P0 and its ConfigMap, then patches `enforcement_model` to `no_such_model`. Within 120s the template names a new ConfigMap with that value and a pod mounts it. For the next 120s no such pod turns Ready, P0 stays Ready, and P0 still reports `strict_two_level`. The last 50 log lines of each new pod are printed either way |
+| 4 | Without spec.plugins keystone loads its default | `script` (8m) | Sets `spec.plugins` to `null`; within 300s the CR is `Ready=True` at its generation, the rollout finishes, the ConfigMap has no `[unified_limit]` section, and a pod of the new template reports `flat` |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+**Catch blocks:** Every step dumps the CR status, the ReplicaSets and pods, and the
+last 100 log lines of each API pod with and without `--previous`.
+
+**Design notes:**
+
+- The keystone image installs keystone with the `ldap` extra and no other package,
+  so no out-of-tree plugin exists to load. `strict_two_level` is an in-tree entry
+  point resolved through the same stevedore loader an out-of-tree driver uses.
+- The webhook never checks plugin values, so `no_such_model` is admitted, and
+  keystone fails to load its application. Step 3 does not assert the CR's `Ready`:
+  `IsDeploymentReady` (`internal/common/deployment/deployment.go`) counts the
+  Deployment ready while the old pod still serves, and the rollout runs with
+  `maxSurge: 1` and `maxUnavailable: 0`.
+- The fixture turns caching off for the token requests, for the shared-memcached
+  reason `fernet-rotation` gives (#227).
+
+---
+
+### rapid-spec-changes
+
+**File:** `tests/e2e/keystone/rapid-spec-changes/chainsaw-test.yaml`
+
+**Purpose:** Proves that a burst of spec changes, sent faster than the operator
+reconciles, converges on the last one in the running API. Each render writes an
+immutable ConfigMap named after the hash of its data, and a render cache keyed on
+the CR's uid and generation skips unchanged renders
+(`operators/keystone/internal/controller/reconcile_config.go`).
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply the Keystone CR | `apply` + `assert` (5m) | `00-keystone-cr.yaml`, Keystone CR `keystone-rapid` with `[token] expiration = 3600`, reaches `Ready=True/AllReady` |
+| 2 | Twelve patches in a burst | `script` (20m) | Twelve merge patches set `spec.extraConfig.token.expiration` from 3660 to 4320 in steps of 60 with no pause. Between patches 6 and 7 a patch of the misspelt `expiraton` is refused with `no such option in the keystone 2026.1 option catalog` and leaves the generation unchanged. The generation then stands at G0 + 12. Within 600s the CR is `Ready=True/AllReady` at that generation and `kubectl rollout status` finishes. The ConfigMap the pod template names sets `expiration = 4320` under `[token]`, and every live API pod mounts it. A project-scoped admin token issued in an API pod lives 4318 to 4320 seconds. Repeating the last patch leaves the generation unchanged and renders no ConfigMap within 30s. Within 120s at most four `keystone-rapid-config-` ConfigMaps remain. For 60s the template, the Deployment's generation and the CR's `observedGeneration` do not move |
+
+**Fixtures:** `00-keystone-cr.yaml`
+
+**Catch blocks:** Both steps dump the CR status, the Deployment and its
+ReplicaSets, the `keystone-rapid-config-` ConfigMaps, and the last 200 log lines
+of the keystone-operator pods.
+
+**Design notes:**
+
+- `extraConfig` is a map of strings, so every value is sent quoted. The values
+  stay 60 seconds apart, so the token lifetime tells the last value from any
+  earlier one.
+- The cap of four ConfigMaps is the current one plus the three the prune keeps,
+  the bound `config-pruning` asserts.
+- The fixture turns caching off for the token request, for the shared-memcached
+  reason `fernet-rotation` gives (#227).
 
 ---
 
@@ -1009,10 +1309,19 @@ tests/e2e/keystone/
 │   └── 00-keystone-cr.yaml             Keystone CR for env-override split
 ├── credential-rotation/
 │   ├── chainsaw-test.yaml              Credential key rotation
-│   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+│   ├── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+│   ├── 01-patch-suspend-credential.yaml Patch to suspend rotation
+│   └── 02-refuse-staging-patch.yaml    Admission policy that refuses the staging PATCH
 ├── database-tls/
 │   ├── chainsaw-test.yaml              Keystone ↔ MariaDB TLS (verify-full)
 │   └── 00-keystone-cr.yaml             Keystone CR with database.tls
+├── db-expand-failure/
+│   ├── chainsaw-test.yaml              Expand phase fails with ExpandFailed
+│   ├── 00-keystone-cr.yaml             Keystone CR at release 2026.1
+│   └── 01-patch-expand-failure.yaml    Tag 2026.2 with a 16Mi Job memory limit
+├── db-sync-partial-schema/
+│   ├── chainsaw-test.yaml              db-sync pre-step drops a half-built schema
+│   └── 00-keystone-cr.yaml             Keystone CR on the seeded database
 ├── deletion-cleanup/
 │   ├── chainsaw-test.yaml              Garbage collection
 │   └── 00-keystone-cr.yaml             Keystone CR for cleanup test
@@ -1021,7 +1330,13 @@ tests/e2e/keystone/
 │   └── 00-keystone-cr.yaml             Keystone CR for event test
 ├── fernet-rotation/
 │   ├── chainsaw-test.yaml              Fernet key rotation
-│   └── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+│   ├── 00-keystone-cr.yaml             Keystone CR with rotation schedule
+│   ├── 01-patch-suspend-fernet.yaml    Patch to suspend rotation
+│   ├── 02-hold-scheduled-rotation.yaml Admission policy that refuses rotation pods
+│   ├── 03-patch-schedule-every-minute.yaml Patch to rotate every minute
+│   ├── 04-patch-schedule-weekly.yaml   Patch to restore the weekly schedule
+│   ├── 05-refuse-staging-patch.yaml    Admission policy that refuses the staging PATCH
+│   └── key-helpers.sh                  Key and token helpers that steps 7 and 8 source
 ├── gateway-quick-start/
 │   ├── chainsaw-test.yaml              Envoy Gateway quick-start wiring
 │   ├── 00-namespace.yaml               Test namespace
@@ -1086,6 +1401,11 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              Secret dependency recovery
 │   ├── 00-keystone-cr.yaml             Keystone CR with non-existent secretRefs
 │   └── 01-late-secrets.yaml            ExternalSecrets created after CR
+├── multi-namespace/
+│   ├── chainsaw-test.yaml              One Keystone name in three namespaces
+│   ├── 00-namespaces.yaml              Three namespaces + their ExternalSecrets
+│   ├── 00-brownfield-db-setup.yaml     Three Databases, Users and Grants
+│   └── 01-keystone-crs.yaml            Keystone CR keystone-mns per namespace
 ├── namespace-scoped-rbac/
 │   ├── chainsaw-test.yaml              Namespace-scoped RBAC + standalone webhook
 │   ├── 00-keystone-cr.yaml             Keystone CR for RBAC test
@@ -1095,10 +1415,14 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              NetworkPolicy reconciliation
 │   ├── 00-keystone-cr.yaml             Keystone CR with ingress policy
 │   ├── 01-patch-update-ingress.yaml    Patch ingress rule
-│   └── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
+│   ├── 02-patch-disable-networkpolicy.yaml Patch to disable NetworkPolicy
+│   └── 03-probe-pods.yaml              Probe pods: target, sink, inside and outside clients
 ├── node-placement/
 │   ├── chainsaw-test.yaml              spec.deployment node placement, inherited by the Jobs
 │   └── 00-keystone-cr.yaml             Keystone CR with nodeSelector, tolerations and affinity
+├── plugins/
+│   ├── chainsaw-test.yaml              spec.plugins model reaches the API
+│   └── 00-keystone-cr.yaml             Keystone CR with the strict_two_level plugin
 ├── pod-security-restricted/
 │   ├── chainsaw-test.yaml              PSS-restricted admission gate
 │   ├── 00-namespace.yaml               PSS-labelled test namespace + plain Secrets
@@ -1122,6 +1446,9 @@ tests/e2e/keystone/
 │   └── 04-patch-jobs-empty-priority-class.yaml Patch opting the Jobs out
 ├── prometheus-stack/
 │   └── chainsaw-test.yaml              WITH_PROMETHEUS opt-in addon path
+├── rapid-spec-changes/
+│   ├── chainsaw-test.yaml              Twelve-patch burst converges on the last
+│   └── 00-keystone-cr.yaml             Keystone CR with [token] expiration 3600
 ├── release-upgrade/
 │   ├── chainsaw-test.yaml              Cross-release upgrade 2026.1→2026.2
 │   ├── 00-keystone-cr.yaml             Keystone CR with initial tag 2026.1

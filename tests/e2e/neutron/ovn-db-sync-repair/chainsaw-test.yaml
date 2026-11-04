@@ -6,10 +6,11 @@
 # a logical switch the Neutron database cannot account for is gone from the OVN
 # Northbound database after one run of the sync CronJob's pod template.
 #
-# The four steps are the four observation points: the CronJob exists and is
+# The five steps are the five observation points: the CronJob exists and is
 # suspended, the switch is in the Northbound database, one manual run of the
-# CronJob's template completes and names the switch in its log, and the switch
-# is gone while the condition still reports the suspended posture.
+# CronJob's template completes and names the switch in its log, the switch is
+# gone while the condition still reports the suspended posture, and the
+# neutron-operator release counts the run in neutron_operator_ovn_db_sync_total.
 #
 # ── Why this suite drives OVN instead of the Neutron API ──────────────
 # The neutron e2e-operator leg runs no Keystone. The keystoneEndpoint every
@@ -319,10 +320,10 @@ spec:
   # ── Step 4: Read the switch back, and the condition with it ─────────────
   # The condition is re-asserted here rather than left at step 1 because a
   # manual Job is exactly the event that could disturb the suspended posture,
-  # and the code says it cannot: reconcileOVNDBSync reports on the newest
-  # terminal Job the CronJob *controls*, and `kubectl create job --from` copies
-  # the labels but sets no controller reference, so newestTerminalJob skips this
-  # run, and the suspend arm outranks a failed run in any case.
+  # and the code says it cannot: `kubectl create job --from` makes the CronJob
+  # the Job's controller, so reconcileOVNDBSync reports on this run as the
+  # newest terminal Job the CronJob controls, and the suspend arm outranks its
+  # result, a failed run included.
   - try:
     - script:
         timeout: 6m
@@ -401,3 +402,27 @@ spec:
           fi
           echo "OK: the manual run left OVNDBSyncReady=True with reason OVNDBSyncSuspended"
     catch: *dbsync-dump
+  # ── Step 5: Assert the manual run is counted ───────────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # The manual run of Step 3 is controlled by the CronJob, so the operator
+  # counts it.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          ../../lib/assert-operator-metric-families.sh neutron-system neutron-operator neutron_operator \
+            'neutron_operator_ovn_db_sync_total{neutron="neutron-dbsync",namespace="openstack",result="succeeded"}'
+    catch:
+    - podLogs:
+        namespace: neutron-system
+        selector: app.kubernetes.io/instance=neutron-operator
+        tail: 200

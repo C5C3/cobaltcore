@@ -1,0 +1,339 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the default spread the operators render, read from
+# where the pods run rather than from the pod template. On the two workers of
+# hack/kind-config-multinode.yaml, which carry no topology.kubernetes.io/zone
+# label, it validates that:
+#   - the four northd replicas of an OVNCentral that names no spread land two
+#     on each worker
+#   - the three Northbound Raft members land on both workers, so losing one
+#     node does not take all three and the quorum with them
+#   - the northd Deployment and the Northbound StatefulSet carry one zone
+#     constraint (ScheduleAnyway) and one preferred pod anti-affinity entry on
+#     kubernetes.io/hostname with weight 100
+#
+# A ballast Pod requests 40 % of the first worker's allocatable CPU and memory
+# before the OVNCentral exists. Without it both workers score alike and the
+# resource scorers alone already spread the pods 2/2. With it, the resource
+# scorers put every replica on the second worker, and only a node spread the
+# scheduler scores on nodes without a zone label moves two of them back. A
+# hostname topology spread constraint beside the zone constraint is not such a
+# spread: the scheduler scores a pod's constraints only on nodes that carry
+# every key they name.
+#
+# spec.concurrent is false because the ballast loads one worker for the whole
+# test; a suite scheduling pods at the same time would land them by that load.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-default-spread
+spec:
+  namespace: openstack
+  concurrent: false
+  steps:
+  # ── Step 1: Preflight: two workers, neither with a zone label ──────────
+  # A zone label on one worker would give the zone constraint a domain of its
+  # own to score, and the suite would no longer prove the node spread on a
+  # cluster without zones.
+  - try:
+    - script:
+        content: |
+          set -eu
+          NODES="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+            -o jsonpath='{.items[*].metadata.name}')"
+          COUNT="$(echo "${NODES}" | wc -w | tr -d ' ')"
+          if [ "${COUNT}" -ne 2 ]; then
+            echo "ERROR: the spread suite needs exactly two schedulable workers, found ${COUNT}"
+            kubectl get nodes -o wide
+            exit 1
+          fi
+          ZONED="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane,topology.kubernetes.io/zone' \
+            -o jsonpath='{range .items[*]}{.metadata.name}={.metadata.labels.topology\.kubernetes\.io/zone}{"\n"}{end}')"
+          if [ -n "${ZONED}" ]; then
+            FIRST="$(echo "${ZONED}" | head -n 1)"
+            echo "ERROR: ${FIRST%%=*} carries topology.kubernetes.io/zone=${FIRST#*=}; the suite proves the spread on nodes without a zone label"
+            exit 1
+          fi
+          echo "OK: workers ${NODES} carry no topology.kubernetes.io/zone label"
+  # ── Step 2: Load the first worker with a ballast Pod ───────────────────
+  # The Pod sits in a namespace of its own, outside openstack, so no tenant
+  # LimitRange rewrites its requests. nodeName binds it without the
+  # scheduler, and pause:3.10 is the sandbox image every kind node already
+  # holds. Requests equal limits, so the kubelet admits it as Guaranteed; a
+  # kubelet that cannot fit it fails the Pod with OutOfcpu or OutOfmemory.
+  # The step cleanup deletes the namespace when the test ends, so the load
+  # stays on the worker through the placement check.
+  - try:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          NODES="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+            -o jsonpath='{.items[*].metadata.name}')"
+          WORKER_A="$(echo "${NODES}" | cut -d' ' -f1)"
+          test -n "${WORKER_A}"
+          CPU="$(kubectl get node "${WORKER_A}" -o jsonpath='{.status.allocatable.cpu}')"
+          MEM="$(kubectl get node "${WORKER_A}" -o jsonpath='{.status.allocatable.memory}')"
+          # Millicores from "16" or "15900m"; a number and a binary unit
+          # (Ki, Mi, Gi, or none for bytes) from the memory quantity.
+          case "${CPU}" in
+            *[0-9]m) CPU_M="${CPU%m}" ;;
+            *[0-9]) CPU_M="${CPU}000" ;;
+            *) CPU_M="" ;;
+          esac
+          case "${MEM}" in
+            *[0-9]Ki|*[0-9]Mi|*[0-9]Gi) MEM_NUM="${MEM%??}" ;;
+            *) MEM_NUM="${MEM}" ;;
+          esac
+          MEM_UNIT="${MEM#"${MEM_NUM}"}"
+          case "${CPU_M}:${MEM_NUM}" in
+            :*|*:|*[!0-9:]*)
+              echo "ERROR: cannot read the allocatable CPU '${CPU}' and memory '${MEM}' of ${WORKER_A}"
+              exit 1
+              ;;
+          esac
+          case "${MEM_UNIT}" in
+            Ki) MEM_MI="$((MEM_NUM / 1024))" ;;
+            Mi) MEM_MI="${MEM_NUM}" ;;
+            Gi) MEM_MI="$((MEM_NUM * 1024))" ;;
+            *) MEM_MI="$((MEM_NUM / 1048576))" ;;
+          esac
+          # Share of the first worker's allocatable CPU and memory the ballast
+          # takes.
+          BALLAST_PCT=40
+          BALLAST_CPU="$((CPU_M * BALLAST_PCT / 100))m"
+          BALLAST_MEM="$((MEM_MI * BALLAST_PCT / 100))Mi"
+
+          kubectl create namespace ovn-spread-ballast --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f - <<YAML
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ballast
+            namespace: ovn-spread-ballast
+          spec:
+            nodeName: ${WORKER_A}
+            automountServiceAccountToken: false
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65535
+              runAsGroup: 65535
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+            - name: pause
+              image: registry.k8s.io/pause:3.10
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: ${BALLAST_CPU}
+                  memory: ${BALLAST_MEM}
+                limits:
+                  cpu: ${BALLAST_CPU}
+                  memory: ${BALLAST_MEM}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                  - ALL
+          YAML
+
+          ELAPSED=0
+          PHASE=""
+          while [ "${ELAPSED}" -lt 60 ]; do
+            PHASE="$(kubectl get pod ballast -n ovn-spread-ballast -o jsonpath='{.status.phase}')"
+            case "${PHASE}" in
+              Running)
+                echo "OK: ballast requests ${BALLAST_CPU} CPU and ${BALLAST_MEM} on ${WORKER_A} (${BALLAST_PCT} % of ${CPU} CPU and ${MEM})"
+                exit 0
+                ;;
+              Failed)
+                echo "ERROR: the ballast pod failed on ${WORKER_A}: $(kubectl get pod ballast -n ovn-spread-ballast -o jsonpath='{.status.reason}')"
+                exit 1
+                ;;
+            esac
+            sleep 2
+            ELAPSED=$((ELAPSED + 2))
+          done
+          echo "ERROR: the ballast pod did not reach Running on ${WORKER_A} within 60s (phase ${PHASE:-<none>})"
+          kubectl describe pod ballast -n ovn-spread-ballast || true
+          exit 1
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl delete namespace ovn-spread-ballast --wait=true --ignore-not-found
+          echo "OK: deleted namespace ovn-spread-ballast"
+  # ── Step 3: Apply the OVNCentral and wait for northd to exist ──────────
+  # The operator creates the northd Deployment only once both databases are
+  # Ready, so this assert absorbs the certificate issuance and the Raft
+  # formation, and the placement check below waits for scheduling alone.
+  - try:
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ovn-spread-central-nb
+            namespace: openstack
+          spec:
+            replicas: 3
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-spread-central-northd
+            namespace: openstack
+          spec:
+            replicas: 4
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-spread-central -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Pods ==="
+          kubectl get pods -n $NAMESPACE -o wide 2>&1 || true
+          kubectl get pods -n ovn-spread-ballast -o wide 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the replicas spread over both workers ───────────────
+  # The scheduler places the replicas of a ReplicaSet or StatefulSet one at a
+  # time and counts the ones it already placed, so the result is the same on
+  # every run: northd 2/2, and the Northbound members 2/1 or 1/2.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          NODES="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+            -o jsonpath='{.items[*].metadata.name}')"
+          WORKER_A="$(echo "${NODES}" | cut -d' ' -f1)"
+          WORKER_B="$(echo "${NODES}" | cut -d' ' -f2)"
+          test -n "${WORKER_A}"
+          test -n "${WORKER_B}"
+          SEL="app.kubernetes.io/instance=ovn-spread-central"
+
+          # nodes_of <component> prints <pod>=<node> for every pod of the
+          # component, with an empty node for a pod not placed yet.
+          nodes_of() {
+            kubectl get pods -n "${NAMESPACE}" -l "${SEL},app.kubernetes.io/component=$1" \
+              -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}'
+          }
+          # placed <component> <count> succeeds once the component runs
+          # <count> pods and every one of them has a node.
+          placed() {
+            OUT="$(nodes_of "$1")"
+            TOTAL="$(printf '%s\n' "${OUT}" | grep -c '=' || true)"
+            UNPLACED="$(printf '%s\n' "${OUT}" | grep -c '=$' || true)"
+            [ "${TOTAL}" -eq "$2" ] && [ "${UNPLACED}" -eq 0 ]
+          }
+          # on <component> <node> counts the component's pods on the node.
+          on() {
+            nodes_of "$1" | grep -c "=$2\$" || true
+          }
+
+          ELAPSED=0
+          until placed northd 4 && placed nb 3; do
+            if [ "${ELAPSED}" -ge 240 ]; then
+              echo "FAIL: the 4 northd pods and the 3 Northbound members were not all scheduled within 240s"
+              kubectl get pods -n "${NAMESPACE}" -o wide || true
+              kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' | tail -30 || true
+              exit 1
+            fi
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+
+          NORTHD_A="$(on northd "${WORKER_A}")"
+          NORTHD_B="$(on northd "${WORKER_B}")"
+          NB_A="$(on nb "${WORKER_A}")"
+          NB_B="$(on nb "${WORKER_B}")"
+          if [ "${NORTHD_A}" -ne 2 ] || [ "${NORTHD_B}" -ne 2 ]; then
+            echo "FAIL: northd pods per worker ${WORKER_A}=${NORTHD_A} ${WORKER_B}=${NORTHD_B}, want 2/2"
+            exit 1
+          fi
+          if [ "${NB_A}" -lt 1 ] || [ "${NB_B}" -lt 1 ]; then
+            echo "FAIL: Northbound members per worker ${WORKER_A}=${NB_A} ${WORKER_B}=${NB_B}, want one or more on each"
+            exit 1
+          fi
+          echo "OK: northd pods per worker ${WORKER_A}=${NORTHD_A} ${WORKER_B}=${NORTHD_B}; Northbound members per worker ${WORKER_A}=${NB_A} ${WORKER_B}=${NB_B}"
+    catch:
+    - script:
+        content: |
+          echo "=== Pods ==="
+          kubectl get pods -n $NAMESPACE -o wide 2>&1 || true
+          kubectl get pods -n ovn-spread-ballast -o wide 2>&1 || true
+          echo "=== Worker allocation ==="
+          for node in $(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name 2>/dev/null); do
+            echo "--- $node ---"
+            kubectl describe "$node" 2>&1 | sed -n '/Allocated resources/,/Events/p' || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Assert the default spread on both pod templates ────────────
+  # Both workloads take the default: neither block of the CR names a spread or
+  # a placement.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-spread-central-northd
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(topologySpreadConstraints) == `1`): true
+                topologySpreadConstraints:
+                - topologyKey: topology.kubernetes.io/zone
+                  whenUnsatisfiable: ScheduleAnyway
+                (length(affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution) == `1`): true
+                affinity:
+                  podAntiAffinity:
+                    preferredDuringSchedulingIgnoredDuringExecution:
+                    - weight: 100
+                      podAffinityTerm:
+                        topologyKey: kubernetes.io/hostname
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ovn-spread-central-nb
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(topologySpreadConstraints) == `1`): true
+                topologySpreadConstraints:
+                - topologyKey: topology.kubernetes.io/zone
+                  whenUnsatisfiable: ScheduleAnyway
+                (length(affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution) == `1`): true
+                affinity:
+                  podAntiAffinity:
+                    preferredDuringSchedulingIgnoredDuringExecution:
+                    - weight: 100
+                      podAffinityTerm:
+                        topologyKey: kubernetes.io/hostname
+    catch:
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployment/ovn-spread-central-northd
+        - statefulset/ovn-spread-central-nb
+        - -n
+        - openstack
+        - -o
+        - yaml

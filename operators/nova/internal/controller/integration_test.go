@@ -48,6 +48,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
@@ -139,9 +140,10 @@ func registerNovaWebhooks(mgr ctrl.Manager) error {
 // duplicate registration in the operator binary.
 //
 // The health-check stub is what keeps the probe from firing slow HTTP GETs at a
-// Service DNS name nothing answers; envtest runs no kubelet.
+// Service DNS name nothing answers; envtest runs no kubelet. Each of
+// reconcilerOpts is applied to the NovaReconciler right after it is built.
 func registerNovaController(mgr ctrl.Manager, mcMgr mcmanager.Manager,
-	resolver commonmulticluster.ClusterResolver,
+	resolver commonmulticluster.ClusterResolver, reconcilerOpts ...func(*NovaReconciler),
 ) error {
 	opts := bootstrap.TypedControllerOptions[mcreconcile.Request](1)
 	opts.SkipNameValidation = ptr.To(true)
@@ -152,6 +154,9 @@ func registerNovaController(mgr ctrl.Manager, mcMgr mcmanager.Manager,
 		Recorder:   mgr.GetEventRecorderFor("nova-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 		HTTPClient: &stubDoer{status: http.StatusOK},
 		Resolver:   resolver,
+	}
+	for _, opt := range reconcilerOpts {
+		opt(nova)
 	}
 	return nova.setupWithOptions(mcMgr, opts)
 }
@@ -185,8 +190,9 @@ func registerNovaComputeController(mgr ctrl.Manager, mcMgr mcmanager.Manager,
 // gatewayAPIAvailable is not set by hand: the fake HTTPRoute CRD the helper
 // installs is what the setup-time RESTMapper probe answers from, so the HTTPRoute
 // watch and the three route steps run exactly as they do against a cluster that
-// has Gateway API.
-func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+// has Gateway API. Each opt is applied to the NovaReconciler right after it is
+// built.
+func setupEnvTestWithController(t testing.TB, opts ...func(*NovaReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupNovaEnvTestWithController(t,
 		novav1alpha1.AddToScheme,
@@ -196,7 +202,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 			if err != nil {
 				return err
 			}
-			return registerNovaController(mgr, mcMgr, nil)
+			return registerNovaController(mgr, mcMgr, nil, opts...)
 		},
 	)
 }
@@ -641,7 +647,8 @@ func expectControlledByNova(t testing.TB, obj client.Object, novaName, what stri
 func TestIntegrationNova_Lifecycle(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, func(r *NovaReconciler) { r.HTTPClient = doer })
 	ns := createTestNamespace(t, ctx, c)
 	createNovaPrerequisites(t, ctx, c, ns)
 
@@ -882,6 +889,14 @@ func TestIntegrationNova_Lifecycle(t *testing.T) {
 		g.Expect(c.Get(ctx, novaKey, cur)).To(Succeed())
 		g.Expect(cur.Status.Endpoint).To(Equal(internalNovaURL(cur)),
 			"without a gateway the endpoint is the cluster-local Service address")
+	})
+
+	t.Run("a Ready Nova re-probes its API without an event", func(t *testing.T) {
+		commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+			var got novav1alpha1.Nova
+			g.Expect(c.Get(ctx, novaKey, &got)).To(Succeed())
+			return got.Status.Conditions
+		}, conditionTypeNovaAPIReady, pollInterval)
 	})
 
 	t.Run("disabling the console proxy removes its Deployment and Service", func(t *testing.T) {

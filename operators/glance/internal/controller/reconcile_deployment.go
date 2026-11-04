@@ -376,29 +376,32 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 				Name:          "glance-api",
 				ContainerPort: glanceAPIPort,
 			}},
-			// All three probes GET /healthcheck on the API port, served by the oslo
-			// healthcheck middleware without touching the database. The startup probe
-			// carries the cold-start window: every worker imports glance, which under
-			// a CPU limit set on the container or on a contended node took 66 to 90
-			// seconds under uWSGI (measured in a kind pod at 120m CPU), while the
-			// liveness probe alone restarts the container 55 seconds after it started. The timings are the sibling
-			// operators': 30x10s of startup budget, and an 8s timeout because a
-			// cold-starting WSGI app can hold even a plain HTTP GET past the kubelet's
-			// 1s default.
+			// The startup and readiness probes GET /healthcheck on the API port,
+			// served by the oslo healthcheck middleware without touching the
+			// database. The startup probe carries the cold-start window: every
+			// worker imports glance, which under a CPU limit set on the container or
+			// on a contended node took 66 to 90 seconds under uWSGI (measured in a
+			// kind pod at 120m CPU). The timings are the sibling operators': 30x10s
+			// of startup budget, and an 8s timeout because a cold-starting WSGI app
+			// can hold even a plain HTTP GET past the kubelet's 1s default.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler:     glanceHealthcheckProbeHandler(),
 				FailureThreshold: 30,
 				PeriodSeconds:    10,
 				TimeoutSeconds:   8,
 			},
+			// The liveness probe only connects. uWSGI's HTTP router accepts while
+			// every worker waits on a dependency, a database behind a partition or
+			// a broker that restarts, and a GET behind those workers restarts a
+			// healthy API. The readiness probe keeps the GET and takes a saturated
+			// pod out of the Service instead. 10s stays below the 20s period.
 			LivenessProbe: &corev1.Probe{
-				ProbeHandler:        glanceHealthcheckProbeHandler(),
+				ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(glanceAPIPort)},
+				},
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
-				// A single-worker API holds the probe's GET for the whole request in
-				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
-				// is the readiness probe's timeout, below the 20s period.
-				TimeoutSeconds: 10,
+				TimeoutSeconds:      10,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        glanceHealthcheckProbeHandler(),
@@ -657,8 +660,8 @@ func glancePodAnnotations(dsnDigest, authtokenDigest string) map[string]string {
 	return annotations
 }
 
-// glanceHealthcheckProbeHandler returns the shared startup/readiness/liveness
-// probe handler: an HTTP GET of /healthcheck on the API port.
+// glanceHealthcheckProbeHandler returns the shared startup/readiness probe
+// handler: an HTTP GET of /healthcheck on the API port.
 func glanceHealthcheckProbeHandler() corev1.ProbeHandler {
 	return corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{

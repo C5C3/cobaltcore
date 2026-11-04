@@ -1,0 +1,371 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test: c5c3-operator helm-upgrade-in-place.
+#
+# The job installs the c5c3-operator chart and image that baseline.yaml pins
+# before chainsaw runs, after the CRDs of every kind the ControlPlane
+# controller watches and K-ORC. This suite brings the ControlPlane of
+# tests/e2e/c5c3/dedicated-backing-services/ to InfrastructureReady=True under
+# that released operator, upgrades the release in place to the in-repo chart,
+# CRDs and :dev image through hack/ci-deploy-operator.sh, and asserts what the
+# upgrade has to leave alone:
+#   - MariaDB/cp-keystone-db, Memcached/cp-keystone-cache and
+#     Memcached/cp-horizon-cache keep their UIDs: the upgrade changes them in
+#     place and never deletes and re-creates them;
+#   - InfrastructureReady holds after the new operator processed a new
+#     generation (spec.sizing.keystone.api.replicas 1 -> 2), once the
+#     dedicated MariaDB is Ready again, and the condition carries that
+#     generation.
+#
+# InfrastructureReady stands in for the aggregate Ready: no ControlPlane
+# reaches Ready=True without the sibling controllers this job does not run.
+# The patched field reaches only the projected Keystone child, and the suite
+# never waits for the pipeline to project it, so no workload shows the new
+# generation. The condition's own observedGeneration does:
+# status.observedGeneration is stamped on every status write, a pass that
+# stopped before the Infrastructure step included, while the condition takes
+# the generation only when that step ran.
+# The ControlPlane has no status.installedRelease and the infrastructure path
+# runs no db-sync Job, so neither is asserted.
+#
+# One ControlPlane is permitted per namespace, so the suite runs in chainsaw's
+# ephemeral namespace and applies the fixture, which carries no namespace, with
+# `kubectl apply -n`.
+#
+# The fixture is a copy: it must stay valid under the baseline's older CRD,
+# and an e2e fixture that adopts a new field would break this suite if it were
+# referenced by path.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-operator-helm-upgrade
+spec:
+  # No fixed spec.namespace: chainsaw runs this Test in its own ephemeral
+  # namespace and injects it as $NAMESPACE (see the note above).
+  steps:
+  # ── Step 1: ControlPlane to InfrastructureReady under the RELEASED operator
+  - name: deploy-cr-on-released-operator
+    try:
+    - script:
+        # Budget: the dedicated MariaDB Ready wait is bounded at 600s and every
+        # other probe is a bounded kubectl call, so 12m leaves headroom on a cold
+        # single-node cluster pulling the MariaDB image.
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME=cp
+          DEDICATED_DB=cp-keystone-db
+          DEDICATED_KS_CACHE=cp-keystone-cache
+          DEDICATED_HZ_CACHE=cp-horizon-cache
+
+          # The helpers of tests/e2e/c5c3/dedicated-backing-services.
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          assert_owned() { # <resource> <name>
+            local res="$1" name="$2" owner controller blocking
+            owner="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}")"
+            assert_eq "${res}/${name} is owned by the ControlPlane" "${CP_NAME}" "${owner}"
+            controller="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].controller}")"
+            assert_eq "${res}/${name} owner reference is a CONTROLLER reference" "true" "${controller}"
+            blocking="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].blockOwnerDeletion}")"
+            assert_eq "${res}/${name} owner reference blocks owner deletion" "true" "${blocking}"
+          }
+
+          wait_exists() { # <resource> <name> <timeoutSeconds>
+            local res="$1" name="$2" timeout="$3" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while ! kubectl get "${res}" "${name}" -n "${CP_NS}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} was not created within ${timeout}s"
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} provisioned"
+          }
+
+          wait_ready_condition() { # <resource> <name> <timeoutSeconds>
+            local res="$1" name="$2" timeout="$3" deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ${res}/${name} Ready=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} Ready not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # Chainsaw runs scripts with the test directory as CWD. The fixture
+          # carries no namespace, so it lands in the ephemeral one.
+          kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
+
+          wait_exists mariadb "${DEDICATED_DB}" 120
+          assert_owned mariadb "${DEDICATED_DB}"
+          for cache in "${DEDICATED_KS_CACHE}" "${DEDICATED_HZ_CACHE}"; do
+            wait_exists memcached "${cache}" 120
+            assert_owned memcached "${cache}"
+          done
+
+          wait_ready_condition mariadb "${DEDICATED_DB}" 600
+          READY_DEADLINE=$(( $(date +%s) + 180 ))
+          while true; do
+            INFRA_READY="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='InfrastructureReady')].status}" 2>/dev/null || true)"
+            [ "${INFRA_READY}" = "True" ] && break
+            if [ "$(date +%s)" -ge "${READY_DEADLINE}" ]; then
+              echo "ERROR: InfrastructureReady not True within 180s of the dedicated instances becoming Ready (last: '${INFRA_READY:-<none>}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: InfrastructureReady=True once every dedicated instance is Ready"
+    catch: &diagnostics
+    - script:
+        content: |
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          kubectl describe mariadb cp-keystone-db -n "${NAMESPACE}" 2>&1 || true
+          kubectl describe memcached cp-keystone-cache -n "${NAMESPACE}" 2>&1 || true
+          kubectl describe memcached cp-horizon-cache -n "${NAMESPACE}" 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=100 --previous 2>&1 || true
+          kubectl logs -n orc-system deploy/orc-controller-manager --pod-running-timeout=5s --tail=100 2>&1 || true
+          helm history c5c3-operator -n c5c3-system 2>&1 || true
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Stash the UIDs of the ControlPlane's dedicated instances ────
+  # A ConfigMap carries them across steps, applied idempotently so a local
+  # re-run does not fail on AlreadyExists.
+  - name: capture-baseline
+    try:
+    - script:
+        shell: bash
+        timeout: 60s
+        content: |
+          set -euo pipefail
+          WORKLOADS="MariaDB/cp-keystone-db Memcached/cp-keystone-cache Memcached/cp-horizon-cache"
+          literals=()
+          for ref in ${WORKLOADS}; do
+            kind="${ref%%/*}"
+            name="${ref#*/}"
+            uid="$(kubectl get "${kind}" "${name}" -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+            if [ -z "${uid}" ]; then
+              echo "FAIL: could not read the UID of ${ref} before the upgrade"
+              exit 1
+            fi
+            echo "Baseline UID of ${ref}: ${uid}"
+            literals+=(--from-literal="uid-$(tr '[:upper:]' '[:lower:]' <<<"${kind}")-${name}=${uid}")
+          done
+          kubectl create configmap c5c3-op-upgrade-baseline -n "${NAMESPACE}" \
+            "${literals[@]}" --dry-run=client -o yaml | kubectl apply -f -
+    catch: *diagnostics
+  # ── Step 3: helm upgrade to the in-repo chart + CRDs ───────────────────
+  # Chainsaw runs scripts with the test directory as CWD, so ../../.. is the
+  # repo root. hack/ci-deploy-operator.sh applies the new CRDs server-side
+  # first (Helm does not upgrade crds/), then upgrades the release with the
+  # values the baseline install passed.
+  - name: helm-upgrade-operator
+    try:
+    - script:
+        shell: bash
+        timeout: 300s
+        content: |
+          set -euo pipefail
+          cd ../../..
+          HELM_UPGRADE=true OPERATOR=c5c3 IMAGE_REPO="${IMAGE_PREFIX:-ghcr.io/c5c3}/c5c3-operator" \
+            IMAGE_TAG=dev NAMESPACE=c5c3-system hack/ci-deploy-operator.sh
+          kubectl -n c5c3-system rollout status deploy/c5c3-operator --timeout=120s
+    catch:
+    - script:
+        content: |
+          kubectl get deploy c5c3-operator -n c5c3-system -o yaml 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=100 --previous 2>&1 || true
+          helm history c5c3-operator -n c5c3-system 2>&1 || true
+          kubectl get events -n c5c3-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the operator Deployment actually rolled ─────────────
+  # Spec-only assertions are not proof: verify the rollout completed
+  # (updatedReplicas == replicas) and the manager container runs the :dev image.
+  - name: assert-operator-rolled
+    try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          IMG=$(kubectl get deploy c5c3-operator -n c5c3-system \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="manager")].image}')
+          echo "manager image: ${IMG}"
+          case "${IMG}" in
+            *:dev) echo "OK: manager runs the :dev image" ;;
+            *) echo "FAIL: manager image is not :dev (got ${IMG})"; exit 1 ;;
+          esac
+          UPD=$(kubectl get deploy c5c3-operator -n c5c3-system \
+            -o jsonpath='{.status.updatedReplicas}')
+          REP=$(kubectl get deploy c5c3-operator -n c5c3-system \
+            -o jsonpath='{.status.replicas}')
+          if [ -z "${UPD}" ] || [ "${UPD}" != "${REP}" ]; then
+            echo "FAIL: rollout incomplete (updatedReplicas=${UPD:-0} replicas=${REP:-0})"
+            exit 1
+          fi
+          echo "OK: rollout complete (updatedReplicas=${UPD} == replicas=${REP})"
+    catch: *diagnostics
+  # ── Step 5: Force one full reconcile by the NEW operator ───────────────
+  # Patch a real spec field (spec.sizing.keystone.api.replicas 1 -> 2) so
+  # metadata.generation advances; with the /status subresource an annotation
+  # would not. The webhook re-validates only the sizing bounds of the field
+  # (validateSizingReferences in controlplane_webhook.go). Step 6 then proves
+  # the NEW operator processed that generation.
+  - name: poke-reconcile
+    try:
+    - script:
+        shell: bash
+        # 2m budget: each failed patch attempt can block for the full 10s
+        # webhook timeout, and the retry loop below needs room for several
+        # attempts on top of the 30s chainsaw default.
+        timeout: 120s
+        content: |
+          set -euo pipefail
+          GEN_BEFORE=$(kubectl get controlplane cp -n "${NAMESPACE}" \
+            -o jsonpath='{.metadata.generation}')
+          # Retry the patch: it is the first webhook-gated request after the
+          # operator rollout, and the in-process webhook server just rolled
+          # with the operator pods. The apiserver may still hold a stale
+          # keep-alive connection to a terminated pod IP, which surfaces as a
+          # 10s context-deadline-exceeded InternalError on the first dial.
+          # Retrying forces a fresh connection to the new endpoints; the
+          # webhook being persistently down still fails via the deadline.
+          deadline=$(( $(date +%s) + 90 ))
+          until kubectl patch controlplane cp -n "${NAMESPACE}" --type=merge \
+              -p '{"spec":{"sizing":{"keystone":{"api":{"replicas":2}}}}}'; do
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: webhook-gated spec patch kept failing after the operator upgrade"
+              exit 1
+            fi
+            echo "patch rejected (webhook not reachable yet?); retrying in 3s ..."
+            sleep 3
+          done
+          GEN_AFTER=$(kubectl get controlplane cp -n "${NAMESPACE}" \
+            -o jsonpath='{.metadata.generation}')
+          echo "generation before poke=${GEN_BEFORE} after poke=${GEN_AFTER}"
+          if [ -z "${GEN_AFTER}" ] || [ "${GEN_AFTER}" -le "${GEN_BEFORE:-0}" ]; then
+            echo "FAIL: spec patch did not advance metadata.generation (${GEN_BEFORE} -> ${GEN_AFTER})"
+            exit 1
+          fi
+    catch: *diagnostics
+  # ── Step 6: Assert the ControlPlane is undisturbed by the upgrade ───────
+  # The generation poll runs first: InfrastructureReady was already True at
+  # the pre-poke generation, so only after observedGeneration caught up do the
+  # readiness checks below describe the NEW operator's work.
+  - name: assert-after-upgrade
+    try:
+    - script:
+        shell: bash
+        # 150s for observedGeneration, 600s for the dedicated MariaDB and 180s
+        # for InfrastructureReady.
+        timeout: 15m
+        content: |
+          set -euo pipefail
+          # Polled via kubectl rather than a declarative assert because a
+          # chainsaw `(expr): value` under `status` cannot resolve
+          # metadata.generation (it is nesting-scoped to status).
+          deadline=$(( $(date +%s) + 150 ))
+          while :; do
+            GEN=$(kubectl get controlplane cp -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.generation}')
+            OBS=$(kubectl get controlplane cp -n "${NAMESPACE}" \
+              -o jsonpath='{.status.observedGeneration}')
+            if [ -n "${OBS}" ] && [ "${OBS}" = "${GEN}" ]; then
+              echo "OK: observedGeneration=${OBS} caught up to generation=${GEN}"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "FAIL: observedGeneration (${OBS}) never caught up to generation (${GEN}): the new operator did not reconcile the new generation"
+              exit 1
+            fi
+            sleep 2
+          done
+          WORKLOADS="MariaDB/cp-keystone-db Memcached/cp-keystone-cache Memcached/cp-horizon-cache"
+          for ref in ${WORKLOADS}; do
+            kind="${ref%%/*}"
+            name="${ref#*/}"
+            key="uid-$(tr '[:upper:]' '[:lower:]' <<<"${kind}")-${name}"
+            BASE=$(kubectl get configmap c5c3-op-upgrade-baseline -n "${NAMESPACE}" \
+              -o "jsonpath={.data.${key}}")
+            if [ -z "${BASE}" ]; then
+              echo "FAIL: no baseline UID of ${ref} stashed by the capture-baseline step"
+              exit 1
+            fi
+            CUR=$(kubectl get "${kind}" "${name}" -n "${NAMESPACE}" \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+            if [ "${BASE}" != "${CUR}" ]; then
+              echo "FAIL: ${ref} was re-created across the operator upgrade (uid ${BASE} -> ${CUR:-<none>})"
+              exit 1
+            fi
+            echo "OK: ${ref} kept its UID ${CUR}"
+          done
+          # The readiness checks of step 1.
+          MARIADB_DEADLINE=$(( $(date +%s) + 600 ))
+          while true; do
+            DB_READY="$(kubectl get mariadb cp-keystone-db -n "${NAMESPACE}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}" 2>/dev/null || true)"
+            [ "${DB_READY}" = "True" ] && break
+            if [ "$(date +%s)" -ge "${MARIADB_DEADLINE}" ]; then
+              echo "FAIL: mariadb/cp-keystone-db Ready not True within 600s after the upgrade (last: '${DB_READY:-<none>}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: mariadb/cp-keystone-db Ready=True"
+          READY_DEADLINE=$(( $(date +%s) + 180 ))
+          while true; do
+            INFRA_READY="$(kubectl get controlplane cp -n "${NAMESPACE}" \
+              -o "jsonpath={.status.conditions[?(@.type=='InfrastructureReady')].status}" 2>/dev/null || true)"
+            INFRA_GEN="$(kubectl get controlplane cp -n "${NAMESPACE}" \
+              -o "jsonpath={.status.conditions[?(@.type=='InfrastructureReady')].observedGeneration}" 2>/dev/null || true)"
+            [ "${INFRA_READY}" = "True" ] && [ "${INFRA_GEN}" = "${GEN}" ] && break
+            if [ "$(date +%s)" -ge "${READY_DEADLINE}" ]; then
+              echo "FAIL: InfrastructureReady not True at generation ${GEN} within 180s after the upgrade (last: '${INFRA_READY:-<none>}' at generation '${INFRA_GEN:-<none>}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: InfrastructureReady=True at generation ${GEN} under the new operator"
+    catch:
+    - script:
+        content: |
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          kubectl describe mariadb cp-keystone-db -n "${NAMESPACE}" 2>&1 || true
+          kubectl describe memcached cp-keystone-cache -n "${NAMESPACE}" 2>&1 || true
+          kubectl describe memcached cp-horizon-cache -n "${NAMESPACE}" 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=100 --previous 2>&1 || true
+          kubectl logs -n orc-system deploy/orc-controller-manager --pod-running-timeout=5s --tail=100 2>&1 || true
+          helm history c5c3-operator -n c5c3-system 2>&1 || true
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          kubectl get configmap c5c3-op-upgrade-baseline -n "${NAMESPACE}" -o yaml 2>&1 || true
+    finally:
+    - script:
+        content: |
+          # The baseline stash is script-created, so chainsaw does not track it
+          # for cleanup; remove it so a local re-run starts clean.
+          kubectl delete configmap c5c3-op-upgrade-baseline -n "${NAMESPACE}" --ignore-not-found 2>&1 || true

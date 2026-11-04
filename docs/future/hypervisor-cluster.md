@@ -67,7 +67,7 @@ The figure shows the node layer as the Deploy on Bare Metal builds it
 today: on the workers of the control-plane cluster, without a dedicated compute
 cluster.
 
-![One Gardener cluster runs the OpenStack control plane and Ceph. Each worker runs KVM compute and OVN networking; a port-forward gives the workstation access to the API gateway.](../diagrams/compute-metal-stack-lab.svg)
+![One Gardener cluster runs the OpenStack control plane and Ceph. Each worker runs KVM compute and OVN networking. The Gateway serves APIs and Horizon on the load balancer’s address over HTTPS on port 443.](../diagrams/compute-metal-stack-lab.svg)
 
 ## Source
 

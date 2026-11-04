@@ -562,6 +562,106 @@ delete_where_crd_exists() {
   fi
 }
 
+# The command prefix of every bao call in shared-services/openbao-0: the
+# address and TLS files hack/deploy-infra.sh's openbao_kube_exec passes.
+OPENBAO_ENV=(env BAO_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/openbao/tls/ca.crt
+  VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt VAULT_CLIENT_KEY=/openbao/client-tls/tls.key)
+
+# ---------------------------------------------------------------------------
+# read_openbao_status — Set OPENBAO_STATUS to "<initialized> <sealed>
+# <threshold>" of shared-services/openbao-0, as `bao status` reports them.
+#
+# bao status exits 2 on a sealed OpenBao, and kubectl exec turns that into
+# "command terminated with exit code 2" on stderr, so neither says whether the
+# read worked: the JSON on stdout does. Without it, stderr is logged and the
+# teardown exits 1.
+# ---------------------------------------------------------------------------
+read_openbao_status() {
+  local json errfile line
+  errfile="$(mktemp)"
+  json="$(kubectl exec -n shared-services openbao-0 -- "${OPENBAO_ENV[@]}" \
+    bao status -format=json 2>"${errfile}")" || true
+  OPENBAO_STATUS="$(yq -p json -r '[.initialized, .sealed, .t] | join(" ")' <<<"${json}" 2>/dev/null)" || true
+  if [[ ! "${OPENBAO_STATUS}" =~ ^(true|false)\ (true|false)\ [0-9]+$ ]]; then
+    log "ERROR: cannot read the seal status of OpenBao shared-services/openbao-0:"
+    while IFS= read -r line; do
+      [[ -z "${line}" ]] || log "         ${line}"
+    done <"${errfile}"
+    rm -f "${errfile}"
+    exit 1
+  fi
+  rm -f "${errfile}"
+}
+
+# ---------------------------------------------------------------------------
+# unseal_openbao — Before the first delete of teardown_external_cluster,
+# unseal the shared OpenBao, shared-services/openbao-0, when it is sealed.
+#
+# ESO finalizes a PushSecret with deletionPolicy Delete by deleting its value
+# in OpenBao, and keeps a SecretStore while such a PushSecret names it. OpenBao
+# seals itself whenever its pod restarts, an OOM kill included, and nothing but
+# hack/deploy-infra.sh unseals it. Sealed, it answers ESO with 503, and step 1
+# deletes the ControlPlane all the same: its backup PushSecrets and the tenant
+# SecretStore wait for OpenBao, the ServiceAccount eso-tenant-auth the store
+# logs in with goes with the ControlPlane, so unsealing afterwards no longer
+# helps, and wait_for_stack_crs_gone runs out on them.
+#
+# Nothing is done without openbao-0 (a second run, a deploy that stopped
+# before it) or when OpenBao is unsealed or was never initialized. A sealed
+# OpenBao gets the first <threshold> unseal keys of the Secret
+# openbao-init-keys, which hack/deploy-infra.sh writes at init, sent the way
+# its openbao_init_unseal sends them: on stdin to sys/unseal, so no key is an
+# argument of kubectl or bao. Exits 1 before any delete when the pod, the seal
+# status or the Secret cannot be read, the Secret holds fewer keys than the
+# threshold, OpenBao rejects a key, or it is still sealed afterwards.
+# ---------------------------------------------------------------------------
+unseal_openbao() {
+  local pod initialized sealed threshold init count key i
+  if ! pod="$(kubectl get pod openbao-0 -n shared-services --ignore-not-found -o name)"; then
+    log "ERROR: cannot read the pod shared-services/openbao-0 (kubectl's error is above)."
+    exit 1
+  fi
+  [[ -n "${pod}" ]] || return 0
+  read_openbao_status
+  read -r initialized sealed threshold <<<"${OPENBAO_STATUS}"
+  if [[ "${sealed}" != "true" ]]; then
+    return 0
+  fi
+  if [[ "${initialized}" != "true" ]]; then
+    log "OpenBao shared-services/openbao-0 was never initialized, so it holds nothing to finalize; leaving it sealed."
+    return 0
+  fi
+
+  log "Unsealing OpenBao shared-services/openbao-0, which is sealed (it seals itself on every restart)..."
+  if ! init="$(kubectl get secret openbao-init-keys -n shared-services -o json |
+    yq -p json -r '(.data["init-output"] // "") | @base64d')"; then
+    log "ERROR: cannot read the unseal keys in Secret shared-services/openbao-init-keys (the error is above)."
+    log "       Unseal openbao-0 by hand, then rerun: the ESO finalizers of the ControlPlane's PushSecrets need it."
+    exit 1
+  fi
+  count="$(yq -p json -r '[.unseal_keys_b64[] | select(. != "")] | length' <<<"${init}" 2>/dev/null)" || count=0
+  if [[ ! "${count}" =~ ^[0-9]+$ ]] || ((count < threshold)); then
+    log "ERROR: Secret shared-services/openbao-init-keys holds fewer than the ${threshold} unseal keys OpenBao needs."
+    log "       Unseal openbao-0 by hand, then rerun: the ESO finalizers of the ControlPlane's PushSecrets need it."
+    exit 1
+  fi
+  for ((i = 0; i < threshold; i++)); do
+    key="$(yq -p json -r ".unseal_keys_b64[${i}]" <<<"${init}")"
+    if ! printf '%s' "${key}" |
+      kubectl exec -i -n shared-services openbao-0 -- "${OPENBAO_ENV[@]}" bao write sys/unseal key=- >/dev/null; then
+      log "ERROR: OpenBao rejected unseal key $((i + 1))/${threshold} of Secret shared-services/openbao-init-keys (the error is above)."
+      exit 1
+    fi
+  done
+  read_openbao_status
+  read -r initialized sealed threshold <<<"${OPENBAO_STATUS}"
+  if [[ "${sealed}" != "false" ]]; then
+    log "ERROR: OpenBao shared-services/openbao-0 is still sealed after the unseal keys of Secret shared-services/openbao-init-keys."
+    exit 1
+  fi
+  log "OpenBao shared-services/openbao-0 is unsealed."
+}
+
 # ---------------------------------------------------------------------------
 # teardown_chaos_mesh — The first step of teardown_external_cluster, before
 # step 0: release every Chaos Mesh fault and remove the overlay's chaos-mesh/,
@@ -1326,7 +1426,9 @@ teardown_dizzy() {
 # teardown_external_cluster — Remove the stack from the current context's cluster.
 #
 # The order makes every finalizer run while the controller that clears it still
-# exists. First, when the overlay has chaos-mesh/, Chaos Mesh goes
+# exists. Before any delete, a sealed shared OpenBao is unsealed
+# (unseal_openbao), since the ESO finalizers of steps 1 and 2 go through it.
+# First, when the overlay has chaos-mesh/, Chaos Mesh goes
 # (teardown_chaos_mesh): its schedules and workflows, then its experiments,
 # while chaos-controller-manager still releases their faults, then the overlay
 # without its Namespace, so the helm-controller uninstalls the chart. Next,
@@ -1438,6 +1540,10 @@ teardown_external_cluster() {
   log "Kubeconfig context  : $(kubectl config current-context 2>/dev/null || echo '<none>')"
   log "Overlay             : ${OVERLAY_ROOT}"
   log "Wait per step       : ${TEARDOWN_TIMEOUT}s (override via TEARDOWN_TIMEOUT)"
+
+  # OpenBao, before the first delete: the ESO finalizers of steps 1 and 2 go
+  # through it.
+  unseal_openbao
 
   # Chaos Mesh, before step 0: every fault is released while its controller
   # runs.

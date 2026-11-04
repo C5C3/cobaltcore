@@ -4,10 +4,25 @@
 
 # Chainsaw E2E test for fernet key rotation.
 # Verifies:
-#   - CronJob schedule matches spec.fernet.rotationSchedule
+#   - CronJob schedule matches spec.fernet.rotationSchedule, and the CronJob
+#     carries concurrencyPolicy: Forbid
 #   - Manual rotation via kubectl create job --from=cronjob changes Secret data
 #   - Pod UIDs remain unchanged after rotation (no Deployment rollout)
 #   - A fernet token obtained before rotation validates after rotation
+#   - A staging Secret deleted between rotations comes back empty with its
+#     label and controller owner reference, and nothing commits from it
+#   - A second rotation past maxActiveKeys prunes the key that signed the
+#     pre-rotation token, so that token gets a 401 while tokens signed by
+#     surviving keys validate
+#   - A rotation whose first staging PATCH is refused restarts its container
+#     in place, and the retry PATCHes the keys of one rotation: the new
+#     primary is the old staged key 0, and a token issued just before still
+#     validates
+#   - A held scheduled rotation makes the next tick skip with
+#     JobAlreadyActive
+#   - The keystone-operator release exports
+#     keystone_operator_key_rotation_age_seconds for the fernet keys once
+#     a rotation is applied
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -63,7 +78,9 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Assert CronJob schedule matches spec; not suspended by default ─
+  # ── Step 3: Assert CronJob schedule, suspend and concurrency policy ────
+  # The schedule matches spec, rotation is not suspended by default, and a
+  # scheduled rotation never overlaps an earlier one.
   - try:
     - assert:
         resource:
@@ -75,6 +92,7 @@ spec:
           spec:
             schedule: "0 0 * * 0"
             suspend: false
+            concurrencyPolicy: Forbid
   # ── Step 4: Trigger rotation, verify no rollout, validate token ─────────
   - try:
     - script:
@@ -119,6 +137,16 @@ spec:
             exit 1
           fi
           echo "OK: Obtained fernet token before rotation"
+          # Stash the token for step 7, which expects it to fail once a second
+          # rotation prunes its key. The stash is a Secret because the token is
+          # a credential. The apply form lets a local re-run on the same
+          # cluster pass instead of failing on AlreadyExists. The token goes
+          # over stdin, never into an argument, and server-side apply keeps it
+          # out of the last-applied-configuration annotation.
+          printf '%s' "$TOKEN" | kubectl create secret generic keystone-fernet-pre-rotation-token -n openstack \
+            --from-file=token=/dev/stdin \
+            --dry-run=client -o yaml | kubectl apply --server-side -f -
+          echo "OK: pre-rotation token stashed"
 
           # Trigger manual fernet key rotation.
           kubectl create job keystone-fernet-manual-rotate \
@@ -196,6 +224,19 @@ spec:
             -o wide 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+          echo "=== Pre-rotation token stash (token redacted) ==="
+          kubectl get secret keystone-fernet-pre-rotation-token -n $NAMESPACE 2>&1 || true
+          kubectl get secret keystone-fernet-pre-rotation-token -n $NAMESPACE -o json 2>/dev/null \
+            | jq 'del(.data.token, .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"])' 2>&1 || true
+    # The token stash is created by a script, so chainsaw does not track it.
+    # This is a step cleanup and not a finally on step 7: chainsaw runs a
+    # step's finally at the end of that step and skips every later step once
+    # one fails, while the cleanups of the steps that did run fire at the end
+    # of the test. So the token is deleted whichever step failed.
+    cleanup:
+    - script:
+        content: |
+          kubectl delete secret keystone-fernet-pre-rotation-token -n openstack --ignore-not-found 2>&1 || true
   # ── Step 4.5: Assert rotation Role RBAC split ─────────
   # Verifies the `keystone-fernet-fernet-rotate` Role grants `patch` ONLY on
   # the staging Secret (`keystone-fernet-fernet-keys-rotation`) and NEVER on
@@ -252,11 +293,734 @@ spec:
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
-  # ── Step 6: Pause rotation via spec.fernet.suspend: true (escape hatch) ──
+  # ── Step 6: Delete the staging Secret between rotations ────────────────
+  # Between rotations the staging Secret holds no data. Deleting it by hand
+  # wakes the operator through the Secret watch's owner-reference fallback,
+  # and the operator must recreate it empty, with its label and controller
+  # owner reference, and commit nothing from it. Step 7's rotation then
+  # commits through the recreated Secret.
+  - try:
+    - script:
+        timeout: 180s
+        shell: bash
+        content: |
+          set -euo pipefail
+          STAGING=keystone-fernet-fernet-keys-rotation
+          KS_UID=$(kubectl get keystone keystone-fernet -n openstack -o jsonpath='{.metadata.uid}')
+
+          # prod_state: "<sha256 of .data> <rotation-completed-at or none>" of
+          # the production Secret, from one read. sha256sum of empty input is
+          # a non-empty digest, so a missing .data fails instead of hashing.
+          prod_state() {
+            local secret data
+            secret=$(kubectl get secret keystone-fernet-fernet-keys -n openstack -o json)
+            data=$(printf '%s' "$secret" | jq -c '.data // empty')
+            if [ -z "$data" ]; then
+              echo "FAIL: keystone-fernet-fernet-keys has no data" >&2
+              return 1
+            fi
+            printf '%s %s\n' "$(printf '%s' "$data" | sha256sum | cut -d' ' -f1)" \
+              "$(printf '%s' "$secret" | jq -r '.metadata.annotations["cobaltcore.c5c3.io/rotation-completed-at"] // "none"')"
+          }
+          # rotated_count: the summed count of FernetKeysRotated events on the
+          # Keystone CR. The recorder raises an event's count on a repeat; an
+          # event without count counts as 1.
+          rotated_count() {
+            kubectl get events -n openstack \
+              --field-selector "involvedObject.uid=$KS_UID,reason=FernetKeysRotated" -o json \
+              | jq '[.items[] | .count // 1] | add // 0'
+          }
+
+          # The commit of step 4 deleted the staging Secret, and the next
+          # reconcile recreates it.
+          deadline=$((SECONDS + 60))
+          OLD_UID=""
+          until [ -n "$OLD_UID" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: staging Secret $STAGING does not exist after 60s"
+              exit 1
+            fi
+            sleep 2
+            OLD_UID=$(kubectl get secret "$STAGING" -n openstack -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+          done
+          PROD0=$(prod_state)
+          # The recorder sends step 4's FernetKeysRotated event asynchronously;
+          # wait for it so a late write cannot pass for a new commit.
+          COUNT0=$(rotated_count)
+          until [ "$COUNT0" -ge 1 ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: no FernetKeysRotated event on keystone-fernet after the rotation of step 4"
+              exit 1
+            fi
+            sleep 2
+            COUNT0=$(rotated_count)
+          done
+          echo "OK: staging Secret $STAGING exists (uid $OLD_UID); FernetKeysRotated count $COUNT0"
+
+          kubectl delete secret "$STAGING" -n openstack --wait=true
+
+          deadline=$((SECONDS + 60))
+          NEW=""
+          NEW_UID=""
+          until [ -n "$NEW_UID" ] && [ "$NEW_UID" != "$OLD_UID" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: staging Secret $STAGING was not recreated within 60s"
+              exit 1
+            fi
+            sleep 2
+            NEW=$(kubectl get secret "$STAGING" -n openstack -o json 2>/dev/null || true)
+            NEW_UID=$(printf '%s' "$NEW" | jq -r '.metadata.uid // empty' 2>/dev/null || true)
+          done
+          echo "OK: staging Secret $STAGING recreated (uid $NEW_UID)"
+
+          LABEL=$(printf '%s' "$NEW" | jq -r '.metadata.labels["cobaltcore.c5c3.io/rotation-target"] // "none"')
+          if [ "$LABEL" != "fernet-keys" ]; then
+            echo "FAIL: recreated $STAGING has rotation-target label $LABEL, expected fernet-keys"
+            exit 1
+          fi
+          OWNERS=$(printf '%s' "$NEW" | jq '[.metadata.ownerReferences // [] | .[]
+            | select(.kind == "Keystone" and .name == "keystone-fernet" and .controller == true)] | length')
+          if [ "$OWNERS" != "1" ]; then
+            echo "FAIL: recreated $STAGING has $OWNERS controller owner references to Keystone keystone-fernet, expected 1"
+            printf '%s' "$NEW" | jq '.metadata.ownerReferences'
+            exit 1
+          fi
+          DATA_KEYS=$(printf '%s' "$NEW" | jq '.data // {} | length')
+          if [ "$DATA_KEYS" != "0" ]; then
+            echo "FAIL: recreated $STAGING holds $DATA_KEYS data keys, expected none"
+            exit 1
+          fi
+          if printf '%s' "$NEW" | jq -e '.metadata.annotations // {} | has("cobaltcore.c5c3.io/rotation-completed-at")' >/dev/null; then
+            echo "FAIL: recreated $STAGING carries the rotation-completed-at annotation"
+            exit 1
+          fi
+          echo "OK: recreated $STAGING is empty, labelled fernet-keys and controlled by Keystone keystone-fernet"
+
+          # Longer than RequeueSecretPolling (15s), so a spurious commit from
+          # the recreated Secret would have happened by now.
+          sleep 20
+
+          PROD1=$(prod_state)
+          if [ "$PROD1" != "$PROD0" ]; then
+            echo "FAIL: production Secret changed after the staging Secret was deleted: hash and rotation-completed-at were [$PROD0], are [$PROD1]"
+            exit 1
+          fi
+          COUNT1=$(rotated_count)
+          if [ "$COUNT1" != "$COUNT0" ]; then
+            echo "FAIL: FernetKeysRotated count rose from $COUNT0 to $COUNT1 after the staging Secret was deleted"
+            exit 1
+          fi
+          REJECTED=$(kubectl get events -n openstack \
+            --field-selector "involvedObject.uid=$KS_UID,reason=RotationRejected" -o name)
+          if [ -n "$REJECTED" ]; then
+            echo "FAIL: RotationRejected event on keystone-fernet: $REJECTED"
+            exit 1
+          fi
+          echo "OK: production keys, rotation-completed-at and FernetKeysRotated count unchanged; no RotationRejected event"
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-fernet
+            namespace: openstack
+          status:
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+              reason: FernetKeysAvailable
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Staging Secret (data removed) ==="
+          kubectl get secret keystone-fernet-fernet-keys-rotation -n $NAMESPACE -o json 2>/dev/null | jq 'del(.data)' 2>&1 || true
+          echo "=== Production Secret (data removed) ==="
+          kubectl get secret keystone-fernet-fernet-keys -n $NAMESPACE -o json 2>/dev/null | jq 'del(.data)' 2>&1 || true
+          echo "=== Events of keystone-fernet ==="
+          kubectl get events -n $NAMESPACE --field-selector involvedObject.name=keystone-fernet --sort-by='.lastTimestamp' 2>&1 || true
+  # ── Step 7: Prune a key past maxActiveKeys ─────────────────────────────
+  # keystone-manage fernet_rotate renames key 0 to max+1, writes a new 0 and
+  # purges the lowest indices until maxActiveKeys (3) keys remain. Step 4
+  # left {0,2,3}; this rotation leaves {0,3,4} and purges 2, the primary key
+  # that signed the stashed token T0. The kubelet projects the Secret into
+  # the API pod in place, and keystone reads the key repository on every
+  # token operation (the fixture turns caching off), so T0 must get a 401
+  # while T1, signed by the surviving key 3, and a fresh T2 validate.
+  - try:
+    - script:
+        timeout: 600s
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # key-helpers.sh sets ADMIN_PASS and POD and defines the key and
+          # token helpers this step shares with step 8.
+          . ./key-helpers.sh
+
+          T0=$(kubectl get secret keystone-fernet-pre-rotation-token -n openstack \
+            -o jsonpath='{.data.token}' 2>/dev/null | base64 -d || true)
+          if [ -z "$T0" ]; then
+            echo "FAIL: no pre-rotation token stash (step 4 did not run or was cleaned up)"
+            exit 1
+          fi
+
+          wait_projection "$(prod_keys)" 150
+          T1=$(issue_token)
+          if [ -z "$T1" ]; then
+            echo "FAIL: no token issued before the second rotation"
+            exit 1
+          fi
+          echo "OK: token T1 issued under the projected key set"
+
+          # E is the set keystone leaves for max_active_keys 3; P holds the
+          # keys the rotation must purge.
+          B=$(prod_keys)
+          MAXB=${B##* }
+          E="0 $MAXB $((MAXB + 1))"
+          P=""
+          for k in $B; do
+            case " $E " in
+              *" $k "*) ;;
+              *) P="${P:+$P }$k" ;;
+            esac
+          done
+          if [ -z "$P" ]; then
+            echo "FAIL: no key would be pruned: B=[$B] E=[$E]"
+            exit 1
+          fi
+          echo "OK: keys before the second rotation [$B], expected after [$E], to be pruned [$P]"
+
+          BEFORE_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
+            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          kubectl create job keystone-fernet-manual-rotate-2 \
+            --from=cronjob/keystone-fernet-fernet-rotate -n openstack
+          kubectl wait --for=condition=complete \
+            job/keystone-fernet-manual-rotate-2 -n openstack --timeout=120s
+          AFTER_HASH="$BEFORE_HASH"
+          for _ in $(seq 1 60); do
+            AFTER_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
+              -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+            [ "$BEFORE_HASH" != "$AFTER_HASH" ] && break
+            sleep 1
+          done
+          if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
+            echo "FAIL: fernet Secret data did not change within 60s of the second rotation"
+            exit 1
+          fi
+
+          A=$(prod_keys)
+          read -ra A_KEYS <<<"$A"
+          if [ "$A" != "$E" ] || [ "${#A_KEYS[@]}" -ne 3 ]; then
+            echo "FAIL: key set after the second rotation is [$A], expected [$E] (before: [$B])"
+            exit 1
+          fi
+          echo "OK: second rotation left keys [$A] and pruned [$P]"
+
+          wait_projection "$E" 150
+          echo "OK: pod $POD projects keys [$E]"
+
+          until_s=$((SECONDS + 60))
+          CODE=""
+          while :; do
+            CODE=$(validate "$T0" || true)
+            [ "$CODE" = "401" ] && break
+            if [ "$SECONDS" -ge "$until_s" ]; then
+              echo "FAIL: pre-rotation token still returns HTTP $CODE after 60s; pruning kept its key (pruned candidates: P=[$P])"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: pre-rotation token T0 rejected with HTTP 401 after key [$P] was pruned"
+
+          CODE=$(validate "$T1")
+          if [ "$CODE" != "200" ]; then
+            echo "FAIL: token T1, signed by key $MAXB, returns HTTP $CODE; pruning dropped a surviving key"
+            exit 1
+          fi
+          echo "OK: token T1 signed by surviving key $MAXB validates (HTTP 200)"
+
+          T2=$(issue_token)
+          if [ -z "$T2" ]; then
+            echo "FAIL: no token issued after the second rotation"
+            exit 1
+          fi
+          CODE=$(validate "$T2")
+          if [ "$CODE" != "200" ]; then
+            echo "FAIL: token T2, issued after the second rotation, returns HTTP $CODE"
+            exit 1
+          fi
+          echo "OK: token T2 issued after the second rotation validates (HTTP 200)"
+    catch:
+    - script:
+        content: |
+          echo "=== Second rotation Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-fernet-manual-rotate-2 -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-fernet-manual-rotate-2 -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Production key names ==="
+          kubectl get secret keystone-fernet-fernet-keys -n $NAMESPACE -o json 2>/dev/null \
+            | jq -r '.data // {} | keys | join(" ")' 2>&1 || true
+          echo "=== API pod key directory ==="
+          for pod in $(kubectl get pods -n $NAMESPACE \
+              -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-fernet,pod-template-hash \
+              -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl exec -n $NAMESPACE "$pod" -- python3 -c 'import os; print(" ".join(sorted(os.listdir("/etc/keystone/fernet-keys"))))' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 8: Retry a refused staging PATCH in place ────────────────────
+  # The policy of 05-refuse-staging-patch.yaml refuses the staging PATCH of
+  # the rotation ServiceAccount. The refused PATCH fails the rotate
+  # container, and restartPolicy OnFailure restarts it in the same pod: the
+  # emptyDirs keep the keys the first attempt rotated. The retry must PATCH
+  # the keys of one rotation, not rotate them a second time. The scripts
+  # apply and delete the policy with kubectl rather than through a chainsaw
+  # apply, because script B lifts it partway through the step. The step runs
+  # before the hold step, because the hold policy stays in force to the end
+  # of the test.
+  - try:
+    - script:
+        timeout: 90s
+        shell: bash
+        content: |
+          set -euo pipefail
+          STAGING=keystone-fernet-fernet-keys-rotation
+          MESSAGE="fernet-rotation e2e refuses the staging PATCH once"
+
+          # The commit of step 7 deleted the staging Secret, and the next
+          # reconcile recreates it. The probe below PATCHes it.
+          deadline=$((SECONDS + 60))
+          until kubectl get secret "$STAGING" -n openstack -o name >/dev/null 2>&1; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: staging Secret $STAGING did not reappear within 60s"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: staging Secret $STAGING exists"
+
+          kubectl apply -f 05-refuse-staging-patch.yaml
+
+          # Without this wait, a policy not yet in force would admit the first
+          # PATCH of the Job. The probe PATCHes as the rotation ServiceAccount
+          # in a server-side dry run, so it passes admission without writing.
+          deadline=$((SECONDS + 30))
+          while :; do
+            if OUT=$(kubectl patch secret "$STAGING" -n openstack \
+                --as=system:serviceaccount:openstack:keystone-fernet-fernet-rotate \
+                --dry-run=server --type=merge \
+                -p '{"metadata":{"annotations":{"e2e.cobaltcore.c5c3.io/probe":"refused"}}}' 2>&1); then
+              : # admitted: the policy is not in force yet
+            elif grep -qF "$MESSAGE" <<<"$OUT"; then
+              echo "OK: the refuse policy refuses the staging PATCH of the rotation ServiceAccount"
+              exit 0
+            else
+              echo "FAIL: the probe PATCH was refused for another reason:"
+              echo "$OUT"
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: the refuse policy did not refuse the probe PATCH within 30s"
+              exit 1
+            fi
+            sleep 2
+          done
+    - script:
+        timeout: 660s
+        shell: bash
+        content: |
+          set -euo pipefail
+          JOB=keystone-fernet-manual-rotate-3
+
+          # key-helpers.sh sets ADMIN_PASS and POD and defines the key and
+          # token helpers this step shares with step 7.
+          . ./key-helpers.sh
+
+          wait_projection "$(prod_keys)" 150
+          T3=$(issue_token)
+          if [ -z "$T3" ]; then
+            echo "FAIL: no token issued before the retried rotation"
+            exit 1
+          fi
+          echo "OK: token T3 issued under the projected key set"
+
+          # E is the set one rotation of B leaves for max_active_keys 3. One
+          # rotation promotes the staged key 0 to MAXB+1 and keeps the primary
+          # MAXB; the values are compared, never printed.
+          B=$(prod_keys)
+          MAXB=${B##* }
+          E="0 $MAXB $((MAXB + 1))"
+          PROD=$(kubectl get secret keystone-fernet-fernet-keys -n openstack -o json)
+          OLD0=$(jq -r '.data["0"] // ""' <<<"$PROD")
+          OLDP=$(jq -r --arg k "$MAXB" '.data[$k] // ""' <<<"$PROD")
+          BEFORE_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
+            -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+          echo "OK: keys before the retried rotation [$B], expected after [$E]"
+
+          kubectl create job "$JOB" \
+            --from=cronjob/keystone-fernet-fernet-rotate -n openstack
+
+          # The refused PATCH fails the first attempt, and the kubelet starts
+          # the container again in the same pod.
+          deadline=$((SECONDS + 90))
+          JOB_POD=""
+          RESTARTS=""
+          while :; do
+            JOB_POD=$(kubectl get pods -n openstack -l "job-name=$JOB" \
+              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+            if [ -n "$JOB_POD" ]; then
+              RESTARTS=$(kubectl get pod "$JOB_POD" -n openstack \
+                -o jsonpath='{.status.containerStatuses[?(@.name=="fernet-rotate")].restartCount}' 2>/dev/null || true)
+              [ "${RESTARTS:-0}" -ge 1 ] && break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: container fernet-rotate of $JOB did not restart within 90s of the refused PATCH"
+              exit 1
+            fi
+            sleep 2
+          done
+          # While the restarted attempt runs, --previous holds the log of the
+          # refused first attempt. Once the restarted attempt has failed on
+          # the refused PATCH as well, --previous prints "unable to retrieve
+          # container logs" and the current log holds that refusal, so the
+          # check reads both.
+          ATTEMPTS=$(kubectl logs -n openstack "$JOB_POD" -c fernet-rotate --previous 2>&1 || true)
+          ATTEMPTS+=$'\n'$(kubectl logs -n openstack "$JOB_POD" -c fernet-rotate 2>&1 || true)
+          if ! grep -qF "fernet-rotation e2e refuses the staging PATCH once" <<<"$ATTEMPTS"; then
+            echo "FAIL: no attempt in $JOB_POD failed on the refused PATCH; the last 20 lines of its logs:"
+            tail -20 <<<"$ATTEMPTS"
+            exit 1
+          fi
+          echo "OK: container fernet-rotate of $JOB_POD restarted ($RESTARTS) after the refused PATCH"
+
+          kubectl delete validatingadmissionpolicybinding/keystone-fernet-refuse-staging-patch \
+            validatingadmissionpolicy/keystone-fernet-refuse-staging-patch --wait=true
+          kubectl wait --for=condition=complete "job/$JOB" -n openstack --timeout=180s
+
+          PODS=$(kubectl get pods -n openstack -l "job-name=$JOB" -o json | jq '.items | length')
+          if [ "$PODS" != "1" ]; then
+            echo "FAIL: $JOB ran $PODS pods; the retry was not an in-place restart"
+            exit 1
+          fi
+          echo "OK: $JOB completed in its one pod $JOB_POD"
+
+          AFTER_HASH="$BEFORE_HASH"
+          for _ in $(seq 1 60); do
+            AFTER_HASH=$(kubectl get secret keystone-fernet-fernet-keys -n openstack \
+              -o jsonpath='{.data}' | sha256sum | cut -d' ' -f1)
+            [ "$BEFORE_HASH" != "$AFTER_HASH" ] && break
+            sleep 1
+          done
+          if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
+            echo "FAIL: fernet Secret data did not change within 60s of the retried rotation"
+            exit 1
+          fi
+
+          A=$(prod_keys)
+          read -ra A_KEYS <<<"$A"
+          if [ "$A" != "$E" ] || [ "${#A_KEYS[@]}" -ne 3 ]; then
+            echo "FAIL: key set after the retried rotation is [$A], expected [$E] (before: [$B]); the retry rotated again"
+            exit 1
+          fi
+          PROD=$(kubectl get secret keystone-fernet-fernet-keys -n openstack -o json)
+          if [ "$(jq -r --arg k "$((MAXB + 1))" '.data[$k] // ""' <<<"$PROD")" != "$OLD0" ]; then
+            echo "FAIL: the new primary key $((MAXB + 1)) is not the staged key 0 of [$B]; the retry rotated again"
+            exit 1
+          fi
+          if [ "$(jq -r --arg k "$MAXB" '.data[$k] // ""' <<<"$PROD")" != "$OLDP" ]; then
+            echo "FAIL: key $MAXB, the primary before the rotation, changed or was purged"
+            exit 1
+          fi
+          echo "OK: the retried rotation left keys [$A]; the new primary $((MAXB + 1)) is the staged key 0, and key $MAXB is kept"
+
+          CURRENT=$(kubectl logs -n openstack "$JOB_POD" -c fernet-rotate 2>&1 || true)
+          if ! grep -qF "Retry: restoring the Fernet keys this pod rotated earlier; not rotating again" <<<"$CURRENT"; then
+            echo "FAIL: the retried container did not restore the saved key set"
+            exit 1
+          fi
+          echo "OK: the retried container restored the saved key set"
+
+          wait_projection "$E" 150
+          CODE=$(validate "$T3")
+          if [ "$CODE" != "200" ]; then
+            echo "FAIL: token T3, issued before the retried rotation, returns HTTP $CODE"
+            exit 1
+          fi
+          echo "OK: token T3 issued before the retried rotation validates (HTTP 200)"
+    catch:
+    - script:
+        content: |
+          echo "=== Retried rotation Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=keystone-fernet-manual-rotate-3 -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=keystone-fernet-manual-rotate-3 -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" -c fernet-rotate --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" -c fernet-rotate --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Production key names ==="
+          kubectl get secret keystone-fernet-fernet-keys -n $NAMESPACE -o json 2>/dev/null \
+            | jq -r '.data // {} | keys | join(" ")' 2>&1 || true
+          echo "=== Refuse policy ==="
+          kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding keystone-fernet-refuse-staging-patch 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    # A failed run must not leave the staging Secret refused for the steps
+    # that follow, so this deletes the policy, pass or fail.
+    finally:
+    - script:
+        content: |
+          kubectl delete validatingadmissionpolicybinding/keystone-fernet-refuse-staging-patch \
+            validatingadmissionpolicy/keystone-fernet-refuse-staging-patch --ignore-not-found 2>&1 || true
+  # ── Step 9: Hold a scheduled rotation under concurrencyPolicy Forbid ───
+  # The policy of 02-hold-scheduled-rotation.yaml refuses the rotation pods
+  # of keystone-fernet. A refused pod creation never fails a Job, so the
+  # first scheduled Job stays in the CronJob's status.active, and Forbid
+  # skips the next tick with the Normal event JobAlreadyActive. Scheduled
+  # Jobs are named <cronjob>-<minutes>; the manual Jobs of steps 4, 7 and 8
+  # do not match that name, and the CronJob controller never lists them as
+  # active.
+  - try:
+    - apply:
+        file: 02-hold-scheduled-rotation.yaml
+    # Without this wait, a policy not yet in force when the first tick fires
+    # would let that tick run a real rotation. A server-side dry run passes
+    # admission without creating the probe or pulling its image.
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -uo pipefail
+          MESSAGE="fernet-rotation e2e holds the scheduled rotation Job"
+          probe() {
+            cat <<'PROBE'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: keystone-fernet-hold-probe
+            namespace: openstack
+            labels:
+              app.kubernetes.io/instance: keystone-fernet
+              app.kubernetes.io/component: fernet-rotation
+          spec:
+            containers:
+            - name: probe
+              image: ghcr.io/c5c3/keystone:2026.1
+              command: ["true"]
+          PROBE
+          }
+          deadline=$((SECONDS + 30))
+          while :; do
+            if OUT=$(probe | kubectl create --dry-run=server -f - 2>&1); then
+              : # admitted: the policy is not in force yet
+            elif grep -qF "$MESSAGE" <<<"$OUT"; then
+              echo "OK: the hold policy refuses rotation pods of keystone-fernet"
+              exit 0
+            else
+              echo "FAIL: the probe dry-run was refused for another reason:"
+              echo "$OUT"
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: the hold policy did not refuse the probe within 30s"
+              exit 1
+            fi
+            sleep 2
+          done
+    - patch:
+        file: 03-patch-schedule-every-minute.yaml
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-fernet-fernet-rotate
+            namespace: openstack
+          spec:
+            schedule: "* * * * *"
+            concurrencyPolicy: Forbid
+    # Scripts share no variables, so the production hash is taken and
+    # compared inside this one script, which spans both ticks.
+    - script:
+        timeout: 240s
+        shell: bash
+        content: |
+          set -euo pipefail
+          CRONJOB=keystone-fernet-fernet-rotate
+          CJ_UID=$(kubectl get cronjob "$CRONJOB" -n openstack -o jsonpath='{.metadata.uid}')
+
+          # scheduled_jobs: the unfinished Jobs with a scheduled name. A
+          # finished weekly run carries the same name pattern, so Jobs with a
+          # Complete or Failed condition are left out.
+          scheduled_jobs() {
+            kubectl get jobs -n openstack -o json | jq -r '[.items[]
+              | select(.metadata.name | test("^keystone-fernet-fernet-rotate-[0-9]+$"))
+              | select([.status.conditions // [] | .[]
+                  | select((.type == "Complete" or .type == "Failed") and .status == "True")] | length == 0)
+              | .metadata.name] | sort | join(" ")'
+          }
+          prod_hash() {
+            local data
+            data=$(kubectl get secret keystone-fernet-fernet-keys -n openstack -o json | jq -c '.data // empty')
+            if [ -z "$data" ]; then
+              echo "FAIL: keystone-fernet-fernet-keys has no data" >&2
+              return 1
+            fi
+            printf '%s' "$data" | sha256sum | cut -d' ' -f1
+          }
+          HASH0=$(prod_hash)
+
+          deadline=$((SECONDS + 90))
+          HELD=""
+          while :; do
+            JOBS=$(scheduled_jobs)
+            ACTIVE=$(kubectl get cronjob "$CRONJOB" -n openstack -o json \
+              | jq -r '[.status.active // [] | .[].name] | join(" ")')
+            read -ra JOB_LIST <<<"$JOBS"
+            if [ "${#JOB_LIST[@]}" -gt 1 ]; then
+              echo "FAIL: more than one scheduled rotation Job: $JOBS"
+              exit 1
+            fi
+            if [ "${#JOB_LIST[@]}" -eq 1 ] && [[ " $ACTIVE " == *" $JOBS "* ]]; then
+              HELD="$JOBS"
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: no scheduled rotation Job listed in status.active of CronJob $CRONJOB within 90s (scheduled Jobs: [$JOBS], status.active: [$ACTIVE])"
+              exit 1
+            fi
+            sleep 2
+          done
+          PODS=$(kubectl get pods -n openstack -l "job-name=$HELD" -o name)
+          if [ -n "$PODS" ]; then
+            echo "FAIL: held Job $HELD has pods: $PODS"
+            exit 1
+          fi
+          echo "OK: scheduled rotation Job $HELD is listed in status.active and has no pod"
+
+          deadline=$((SECONDS + 90))
+          while :; do
+            SKIPPED=$(kubectl get events -n openstack \
+              --field-selector "involvedObject.uid=$CJ_UID,reason=JobAlreadyActive" -o name)
+            [ -n "$SKIPPED" ] && break
+            for job in $(scheduled_jobs); do
+              if [ "$job" != "$HELD" ]; then
+                echo "FAIL: a second scheduled rotation Job $job started while $HELD was active; concurrencyPolicy is not Forbid"
+                exit 1
+              fi
+            done
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: no JobAlreadyActive event on CronJob $CRONJOB within 90s"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: the next tick was skipped with JobAlreadyActive"
+
+          JOBS=$(scheduled_jobs)
+          if [ "$JOBS" != "$HELD" ]; then
+            echo "FAIL: scheduled rotation Jobs are [$JOBS] after JobAlreadyActive, expected only $HELD"
+            exit 1
+          fi
+          if [ "$(prod_hash)" != "$HASH0" ]; then
+            echo "FAIL: production keys changed while the scheduled rotation was held"
+            exit 1
+          fi
+          echo "OK: $HELD is still the only scheduled rotation Job; production keys unchanged"
+    - patch:
+        file: 04-patch-schedule-weekly.yaml
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-fernet-fernet-rotate
+            namespace: openstack
+          spec:
+            schedule: "0 0 * * 0"
+    # The weekly schedule is back, so deleting the held Job starts no new
+    # one. The CronJob controller drops a deleted Job from status.active.
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -euo pipefail
+          JOBS=$(kubectl get jobs -n openstack -o json | jq -r \
+            '[.items[].metadata.name | select(test("^keystone-fernet-fernet-rotate-[0-9]+$"))] | join(" ")')
+          for job in $JOBS; do
+            kubectl delete job "$job" -n openstack --wait=true
+          done
+          deadline=$((SECONDS + 30))
+          ACTIVE=""
+          while :; do
+            ACTIVE=$(kubectl get cronjob keystone-fernet-fernet-rotate -n openstack -o json \
+              | jq -r '[.status.active[]?.name] | join(" ")')
+            [ -z "$ACTIVE" ] && break
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: CronJob keystone-fernet-fernet-rotate still lists [$ACTIVE] in status.active 30s after the scheduled Jobs were deleted"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "OK: scheduled rotation Jobs [$JOBS] deleted; status.active is empty"
+    catch:
+    - script:
+        content: |
+          echo "=== CronJob keystone-fernet-fernet-rotate ==="
+          kubectl get cronjob keystone-fernet-fernet-rotate -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Jobs ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null | grep -E '^job.batch/keystone-fernet-fernet-rotate-[0-9]+$'); do
+            echo "--- $job describe ---"
+            kubectl describe -n $NAMESPACE "$job" 2>&1 | tail -30 || true
+          done
+          echo "=== CronJob events ==="
+          kubectl get events -n $NAMESPACE \
+            --field-selector involvedObject.kind=CronJob,involvedObject.name=keystone-fernet-fernet-rotate \
+            --sort-by='.lastTimestamp' 2>&1 || true
+          echo "=== Hold policy ==="
+          kubectl get validatingadmissionpolicy,validatingadmissionpolicybinding keystone-fernet-hold-rotation 2>&1 || true
+    # A failed run must not leave a held Job behind: once chainsaw deletes
+    # the hold policy at the end of the test, the Job controller would start
+    # its pod and run a real rotation. Chainsaw deletes the policy before it
+    # runs a step cleanup, so this is a finally: it runs at the end of this
+    # step, pass or fail, while the policy is still in force. It restores the
+    # weekly schedule first, so no tick starts a new Job once the held one is
+    # deleted.
+    finally:
+    - script:
+        timeout: 90s
+        content: |
+          kubectl patch keystone keystone-fernet -n openstack --type=merge \
+            -p '{"spec":{"fernet":{"rotationSchedule":"0 0 * * 0"}}}' 2>&1 || true
+          SCHEDULE=""
+          for _ in $(seq 1 30); do
+            SCHEDULE=$(kubectl get cronjob keystone-fernet-fernet-rotate -n openstack -o jsonpath='{.spec.schedule}' 2>/dev/null || true)
+            [ "$SCHEDULE" = "0 0 * * 0" ] && break
+            sleep 2
+          done
+          if [ "$SCHEDULE" != "0 0 * * 0" ]; then
+            echo "WARNING: CronJob keystone-fernet-fernet-rotate has schedule [$SCHEDULE] after 60s, not 0 0 * * 0"
+          fi
+          for job in $(kubectl get jobs -n openstack -o name 2>/dev/null | grep -E '^job.batch/keystone-fernet-fernet-rotate-[0-9]+$'); do
+            kubectl delete "$job" -n openstack --ignore-not-found 2>&1 || true
+          done
+  # ── Step 10: Pause rotation via spec.fernet.suspend: true (escape hatch) ─
   - try:
     - patch:
         file: 01-patch-suspend-fernet.yaml
-  # ── Step 7: Assert CronJob preserved, suspended, schedule unchanged ─────
+  # ── Step 11: Assert CronJob preserved, suspended, schedule unchanged ────
   # suspend pauses rotation without deleting the CronJob and without changing
   # the rotation cadence, so an SRE can resume without churn.
   - try:
@@ -270,3 +1034,20 @@ spec:
           spec:
             schedule: "0 0 * * 0"
             suspend: true
+  # ── Step 12: Assert the operator's metric families ─────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # The rotations of steps 4, 7 and 8 set the age gauge, which no fresh
+  # deployment exports.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh keystone-system keystone-operator keystone_operator \
+            'keystone_operator_key_rotation_age_seconds{keystone="keystone-fernet",namespace="openstack",key_type="fernet"}'
+    catch:
+    - podLogs:
+        namespace: keystone-system
+        selector: app.kubernetes.io/instance=keystone-operator
+        tail: 200

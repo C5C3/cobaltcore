@@ -41,6 +41,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
@@ -92,10 +93,12 @@ const (
 // trip controller-runtime's process-global controller-name validation across the
 // sequential managers each test spins up, so the controllers opt out via
 // SkipNameValidation, exactly as keystone's, glance's and placement's
-// integration setups do.
+// integration setups do. Each opt is applied to the BarbicanReconciler right
+// after it is built.
 func setupEnvTestWithController(
 	t testing.TB,
 	newOpenBaoClient func(openbao.Config) (openbao.Client, error),
+	opts ...func(*BarbicanReconciler),
 ) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupBarbicanEnvTestWithController(
@@ -131,6 +134,9 @@ func setupEnvTestWithController(
 				// so the VPA latch is true as it would be at startup.
 				vpaAvailable: true,
 				apiReader:    mgr.GetAPIReader(),
+			}
+			for _, opt := range opts {
+				opt(r)
 			}
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&barbicanv1alpha1.Barbican{}, builder.WithPredicates(watch.CRUpdatePredicate())).
@@ -388,7 +394,8 @@ func mountedConfigSecretName(deploy *appsv1.Deployment) string {
 // against a live (in-process) OpenBao server: the store's AppRole credentials are
 // accepted, the parent projects the store into a rendered barbican.conf, the
 // db-sync Job and the API workload materialize, and the aggregate Ready of both
-// CRs turns True.
+// CRs turns True. A last phase stops the API answering without writing any
+// object and sees BarbicanAPIReady and Ready turn False, then True again.
 //
 // envtest runs no Job or Deployment controller, so the db-sync completion and the
 // Deployment rollout are simulated the way the sibling operators' integration
@@ -399,7 +406,8 @@ func TestIntegrationBarbican_BrownfieldStoreDrivesParentToReady(t *testing.T) {
 
 	bao := newFakeOpenBaoServer(t)
 
-	c, ctx, _ := setupEnvTestWithController(t, nil)
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, nil, func(r *BarbicanReconciler) { r.HTTPClient = doer })
 	ns := createTestNamespace(t, ctx, c)
 	createBarbicanPrerequisites(t, ctx, c, ns)
 
@@ -494,6 +502,12 @@ func TestIntegrationBarbican_BrownfieldStoreDrivesParentToReady(t *testing.T) {
 	// the projection and its own aggregate resolves.
 	waitForStoreCondition(t, ctx, c, storeKey, conditionTypeConfigProjected, metav1.ConditionTrue, eventuallyLongTimeout)
 	waitForStoreCondition(t, ctx, c, storeKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+
+	commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+		var got barbicanv1alpha1.Barbican
+		g.Expect(c.Get(ctx, barbicanKey, &got)).To(Succeed())
+		return got.Status.Conditions
+	}, conditionTypeBarbicanAPIReady, pollInterval)
 }
 
 // TestIntegrationBarbicanSecretStore_ManagedCredentialsSecretIsOwned proves the

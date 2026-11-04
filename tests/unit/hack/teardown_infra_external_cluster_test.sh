@@ -163,6 +163,15 @@
 #      after the claims and before the operator's delete, an overlay without
 #      ceph/cluster/ gets no Ceph call, and step 7 and step 8 name rook-ceph
 #      and the Rook CRD groups.
+#   10. A sealed shared OpenBao (shared-services/openbao-0) is unsealed before
+#      the first delete with the first <threshold> keys of the Secret
+#      openbao-init-keys, the threshold `bao status` reports, each key on
+#      stdin and none in an argument or the output, and its status is read
+#      again. Without the pod, and with an OpenBao that is unsealed or was
+#      never initialized, no key is read. A pod or status read that fails, a
+#      missing Secret, fewer keys than the threshold (no key sent), a key
+#      OpenBao rejects, and an OpenBao still sealed after the keys exit 1
+#      before any delete.
 #
 # main() runs against a recording kubectl stub on a private PATH prefix and the
 # real yq; the external-cluster checks are SKIP without yq.
@@ -383,6 +392,22 @@ ippools.crd.projectcalico.org"
 #                          a number n: the first n cleanup Job reads answer no
 #                          Job, the later ones both (the reads are counted in
 #                          job-reads beside the stub)
+#   KUBECTL_OPENBAO        the pod shared-services/openbao-0 exists, and its
+#                          `bao status` answers: unsealed, sealed (until
+#                          KUBECTL_OPENBAO_THRESHOLD keys are in unseal-keys
+#                          beside the stub), uninitialized, or unreachable
+#                          (the exec fails); empty (default): no such pod
+#   KUBECTL_OPENBAO_POD_RC non-empty: the read of that pod fails with Forbidden
+#   KUBECTL_OPENBAO_THRESHOLD
+#                          the unseal threshold `bao status` reports (default 3)
+#   KUBECTL_OPENBAO_STUCK  non-empty: OpenBao stays sealed whatever keys it got
+#   KUBECTL_OPENBAO_KEYS_ABSENT
+#                          non-empty: the Secret openbao-init-keys is not found;
+#                          otherwise it holds unseal-key-1 to unseal-key-5
+#   KUBECTL_OPENBAO_UNSEAL_RC
+#                          non-empty: every sys/unseal write fails with an
+#                          invalid key; each write appends its stdin to
+#                          unseal-keys either way
 # The step 0 reads answer two nodes, lab-a and lab-b, and a fixtures domain
 # hvo-cc3test that a second run no longer finds. On a second run the named
 # deletes of HelmReleases and HelmRepositories fail on the missing kind. The
@@ -888,6 +913,11 @@ case "$args" in
     cat >"$dir/cleanup.py"
     echo "kubectl ${args}" >>"$CALL_LOG"
     ;;
+  "exec -i -n shared-services openbao-0 -- env "*" bao write sys/unseal key=-")
+    # The unseal key arrives on stdin, one per call.
+    { cat; echo; } >>"$dir/unseal-keys"
+    echo "kubectl ${args}" >>"$CALL_LOG"
+    ;;
   *) echo "kubectl ${args}" >>"$CALL_LOG" ;;
 esac
 case "$args" in
@@ -939,6 +969,54 @@ case "$args" in
     echo "Client Version: v1.35.0"
     ;;
   "config current-context"*) echo "lab-forge" ;;
+  "get pod openbao-0 -n shared-services --ignore-not-found -o name")
+    if [ -n "${KUBECTL_OPENBAO_POD_RC:-}" ]; then
+      echo 'Error from server (Forbidden): pods "openbao-0" is forbidden: User "lab" cannot get resource "pods" in API group "" in the namespace "shared-services"' >&2
+      exit 1
+    fi
+    [ -z "${KUBECTL_OPENBAO:-}" ] || echo 'pod/openbao-0'
+    ;;
+  "exec -n shared-services openbao-0 -- env "*" bao status -format=json")
+    threshold="${KUBECTL_OPENBAO_THRESHOLD:-3}"
+    applied=0
+    [ ! -f "$dir/unseal-keys" ] || applied="$(grep -c . "$dir/unseal-keys")"
+    case "${KUBECTL_OPENBAO:-}" in
+      unreachable)
+        echo 'error: unable to upgrade connection: container not found ("openbao")' >&2
+        exit 1
+        ;;
+      uninitialized)
+        echo '{"type":"shamir","initialized":false,"sealed":true,"t":0,"n":0,"progress":0}'
+        echo 'command terminated with exit code 2' >&2
+        exit 2
+        ;;
+    esac
+    if [ "${KUBECTL_OPENBAO}" = "unsealed" ] ||
+      { [ -z "${KUBECTL_OPENBAO_STUCK:-}" ] && [ "$applied" -ge "$threshold" ]; }; then
+      echo "{\"type\":\"shamir\",\"initialized\":true,\"sealed\":false,\"t\":${threshold},\"n\":5,\"progress\":0}"
+    else
+      echo "{\"type\":\"shamir\",\"initialized\":true,\"sealed\":true,\"t\":${threshold},\"n\":5,\"progress\":${applied}}"
+      echo 'command terminated with exit code 2' >&2
+      exit 2
+    fi
+    ;;
+  "get secret openbao-init-keys -n shared-services -o json")
+    if [ -n "${KUBECTL_OPENBAO_KEYS_ABSENT:-}" ]; then
+      echo 'Error from server (NotFound): secrets "openbao-init-keys" not found' >&2
+      exit 1
+    fi
+    # init-output: the bao operator init output, with the unseal keys
+    # unseal-key-1 to unseal-key-5.
+    echo '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"openbao-init-keys"},"data":{"init-output":"eyJ1bnNlYWxfa2V5c19iNjQiOlsidW5zZWFsLWtleS0xIiwidW5zZWFsLWtleS0yIiwidW5zZWFsLWtleS0zIiwidW5zZWFsLWtleS00IiwidW5zZWFsLWtleS01Il0sInJvb3RfdG9rZW4iOiJzLnJvb3QtdG9rZW4ifQ=="}}'
+    ;;
+  "exec -i -n shared-services openbao-0 -- env "*" bao write sys/unseal key=-")
+    if [ -n "${KUBECTL_OPENBAO_UNSEAL_RC:-}" ]; then
+      printf '%s\n' 'Error writing data to sys/unseal: Error making API request.' '' \
+        'URL: PUT https://127.0.0.1:8200/v1/sys/unseal' 'Code: 400. Errors:' '' '* Unseal failed, invalid key' >&2
+      echo 'command terminated with exit code 2' >&2
+      exit 2
+    fi
+    ;;
   "get crd controlplanes.c5c3.io"*)
     if [ -n "${KUBECTL_SECOND_RUN:-}" ]; then
       echo 'Error from server (NotFound): customresourcedefinitions.apiextensions.k8s.io "controlplanes.c5c3.io" not found' >&2
@@ -3480,6 +3558,159 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# Test 10: a sealed OpenBao is unsealed before the first delete
+# ---------------------------------------------------------------------------
+test_openbao_unseal() {
+  echo "Test: a sealed OpenBao is unsealed before the first delete"
+
+  if ! have_yq; then
+    echo "  SKIP: yq not installed (46 checks skipped)"
+    SKIP=$((SKIP + 46))
+    return
+  fi
+
+  local tmp output rc calls status_read unseal_write first_unseal first_delete
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+  export CALL_LOG="$tmp/calls.log"
+  status_read='kubectl exec -n shared-services openbao-0 -- env BAO_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/openbao/tls/ca.crt VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt VAULT_CLIENT_KEY=/openbao/client-tls/tls.key bao status -format=json'
+  unseal_write='kubectl exec -i -n shared-services openbao-0 -- env BAO_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/openbao/tls/ca.crt VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt VAULT_CLIENT_KEY=/openbao/client-tls/tls.key bao write sys/unseal key=-'
+
+  # No openbao-0 (the default of every other test): one pod read, nothing else.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a cluster without openbao-0 tears down" "0" "$rc"
+  assert_eq "after one read of the pod" "1" \
+    "$(grep -cxF 'kubectl get pod openbao-0 -n shared-services --ignore-not-found -o name' <<<"$calls")"
+  assert_not_contains "and no exec into it" "$calls" "openbao-0 -- env"
+  assert_not_contains "nor a read of the unseal keys" "$calls" "openbao-init-keys"
+
+  # An unsealed OpenBao: one status read, no key.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=unsealed)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an unsealed OpenBao tears down" "0" "$rc"
+  assert_eq "after one status read" "1" "$(grep -cxF "$status_read" <<<"$calls")"
+  assert_not_contains "without reading the unseal keys" "$calls" "openbao-init-keys"
+  assert_not_contains "or unsealing" "$output" "Unsealing OpenBao"
+
+  # A sealed OpenBao: the first three keys of openbao-init-keys, each on
+  # stdin, before the first delete, then a second status read.
+  rm -f "$tmp/bin/unseal-keys"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=sealed)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a sealed OpenBao tears down" "0" "$rc"
+  assert_contains "says it unseals" "$output" \
+    "Unsealing OpenBao shared-services/openbao-0, which is sealed (it seals itself on every restart)..."
+  assert_eq "reads the unseal keys once" "1" \
+    "$(grep -cxF 'kubectl get secret openbao-init-keys -n shared-services -o json' <<<"$calls")"
+  assert_eq "sends three keys" "3" "$(grep -cxF "$unseal_write" <<<"$calls")"
+  assert_eq "the first three of the Secret, in order, on stdin" \
+    "$(printf '%s\n' unseal-key-1 unseal-key-2 unseal-key-3)" "$(cat "$tmp/bin/unseal-keys")"
+  assert_not_contains "no key is an argument" "$calls" "unseal-key-"
+  assert_not_contains "nor is printed" "$output" "unseal-key-"
+  assert_eq "reads the status again afterwards" "2" "$(grep -cxF "$status_read" <<<"$calls")"
+  assert_contains "says it is unsealed" "$output" "OpenBao shared-services/openbao-0 is unsealed."
+  first_unseal="$(grep -nxF "$unseal_write" "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  first_delete="$(grep -n '^kubectl delete ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  assert_eq "before the first delete" "true" \
+    "$([[ -n "$first_unseal" && -n "$first_delete" && "$first_unseal" -lt "$first_delete" ]] && echo true || echo false)"
+
+  # The threshold comes from bao status.
+  rm -f "$tmp/bin/unseal-keys"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=sealed KUBECTL_OPENBAO_THRESHOLD=2)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a threshold of two tears down" "0" "$rc"
+  assert_eq "with two keys" "2" "$(grep -cxF "$unseal_write" <<<"$calls")"
+
+  # An OpenBao that was never initialized holds nothing: no key.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=uninitialized)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an uninitialized OpenBao tears down" "0" "$rc"
+  assert_contains "says so" "$output" "was never initialized, so it holds nothing to finalize; leaving it sealed."
+  assert_not_contains "without reading the unseal keys" "$calls" "openbao-init-keys"
+
+  # The pod read fails: exit 1 before any delete.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO_POD_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a pod read that fails exits 1" "1" "$rc"
+  assert_contains "says so" "$output" \
+    "ERROR: cannot read the pod shared-services/openbao-0 (kubectl's error is above)."
+  assert_not_contains "and deletes nothing" "$calls" "kubectl delete"
+
+  # The status read fails: exit 1 with kubectl's error, before any delete.
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=unreachable)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a status read that fails exits 1" "1" "$rc"
+  assert_contains "says so" "$output" "ERROR: cannot read the seal status of OpenBao shared-services/openbao-0:"
+  assert_contains "with kubectl's error" "$output" 'unable to upgrade connection: container not found ("openbao")'
+  assert_not_contains "and deletes nothing" "$calls" "kubectl delete"
+
+  # Sealed without the Secret: exit 1 before any key and any delete.
+  rm -f "$tmp/bin/unseal-keys"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=sealed KUBECTL_OPENBAO_KEYS_ABSENT=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a sealed OpenBao without its keys exits 1" "1" "$rc"
+  assert_contains "says so" "$output" \
+    "ERROR: cannot read the unseal keys in Secret shared-services/openbao-init-keys (the error is above)."
+  assert_contains "after kubectl's error" "$output" 'secrets "openbao-init-keys" not found'
+  assert_eq "sends no key" "0" "$(grep -cxF "$unseal_write" <<<"$calls")"
+  assert_not_contains "and deletes nothing" "$calls" "kubectl delete"
+
+  # Fewer keys than the threshold: exit 1 before any key.
+  rm -f "$tmp/bin/unseal-keys"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=sealed KUBECTL_OPENBAO_THRESHOLD=6)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "fewer keys than the threshold exit 1" "1" "$rc"
+  assert_contains "says so" "$output" \
+    "ERROR: Secret shared-services/openbao-init-keys holds fewer than the 6 unseal keys OpenBao needs."
+  assert_eq "sends no key" "0" "$(grep -cxF "$unseal_write" <<<"$calls")"
+
+  # A key OpenBao rejects: exit 1 after it, before any delete.
+  rm -f "$tmp/bin/unseal-keys"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=sealed KUBECTL_OPENBAO_UNSEAL_RC=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "a rejected key exits 1" "1" "$rc"
+  assert_contains "names it" "$output" \
+    "ERROR: OpenBao rejected unseal key 1/3 of Secret shared-services/openbao-init-keys (the error is above)."
+  assert_contains "after bao's error" "$output" "* Unseal failed, invalid key"
+  assert_not_contains "and deletes nothing" "$calls" "kubectl delete"
+
+  # Still sealed after the keys: exit 1 before any delete.
+  rm -f "$tmp/bin/unseal-keys"
+  : >"$CALL_LOG"
+  output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OPENBAO=sealed KUBECTL_OPENBAO_STUCK=1)"
+  rc=$?
+  calls="$(cat "$CALL_LOG")"
+  assert_eq "an OpenBao still sealed after the keys exits 1" "1" "$rc"
+  assert_contains "says so" "$output" \
+    "ERROR: OpenBao shared-services/openbao-0 is still sealed after the unseal keys of Secret shared-services/openbao-init-keys."
+  assert_eq "after three keys" "3" "$(grep -cxF "$unseal_write" <<<"$calls")"
+  assert_not_contains "and deletes nothing" "$calls" "kubectl delete"
+  unset CALL_LOG
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_knobs
@@ -3497,6 +3728,7 @@ test_ceph_step
 test_prometheus_step
 test_requires_yq
 test_requires_mikefarah_yq
+test_openbao_unseal
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

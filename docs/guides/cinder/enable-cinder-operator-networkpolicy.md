@@ -45,21 +45,8 @@ child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy (required for
-   real enforcement).** Confirm with your platform team (Calico, Cilium, and
-   Antrea enforce).
-
-   ::: warning The devstack enforces this policy
-   The ControlPlane Quick Start kind devstack runs kind's default `kindnet`
-   CNI. On kind v0.32 and later, kindnet enforces NetworkPolicy and evaluates a
-   connection to a Service after the Service DNAT, so a `kubeApiServer` rule
-   that misses the API server's endpoint address cuts the operator off on the
-   devstack too. Step 2 below confirms the policy's **shape** and that the
-   operator still reconciles under it. It sends no traffic outside the
-   allow-list, so it does **not** prove that such traffic is dropped.
-   :::
-2. A running `cinder-operator` Helm release (namespace `cinder-system`).
-3. The ControlPlane declares `spec.services.cinder`. Without it no
+1. A running `cinder-operator` Helm release (namespace `cinder-system`).
+2. The ControlPlane declares `spec.services.cinder`. Without it no
    `controlplane-cinder` child exists and the Step 2 verification has nothing to
    roll.
 
@@ -80,7 +67,7 @@ kubectl get endpoints kubernetes -n default -o json \
   | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
 ```
 
-Record **every** endpoint IP the command prints, not just the first. A kind
+Record **every** endpoint IP the command prints. A kind
 devstack reports the one control-plane node's address on the kind bridge
 (`172.18.0.x`), but an HA control plane reports one per API server replica. The
 rule must cover all of them, or the operator loses its leader-election lease
@@ -150,7 +137,7 @@ kubectl delete networkpolicy cinder-operator-api-probe -n cinder-system \
 
 On the kind devstack this verifies the policy's **shape** and that the operator
 still reconciles under the enforced policy. It sends no traffic outside the
-allow-list (see the prerequisite above).
+allow-list.
 
 Restart the operator first. NetworkPolicy enforcement is stateful: a connection
 opened before the policy existed stays open, so a wrong `kubeApiServer` rule
@@ -290,8 +277,15 @@ the shared operator-library, whose helm-unittest
 (`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
 pins the shared rules. The cinder chart's helm-unittest
 (`operators/cinder/helm/cinder-operator/tests/networkpolicy_test.yaml`) pins the
-egress rule the chart adds for its API health check. The keystone chart's policy
-is exercised end-to-end on the CI e2e kind cluster by the chainsaw suite below.
+egress rule the chart adds for its API health check. These tests cover rendering
+only; they do not exercise packet enforcement.
+
+The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
+provides runtime enforcement coverage for the Keystone chart using the shared
+template. It does not install the Cinder chart or test Cinder-specific runtime
+egress. There is no Cinder operator `network-policy-egress` suite.
+With the linked suite's prerequisites satisfied, run its Keystone-only example
+from the repository root:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress

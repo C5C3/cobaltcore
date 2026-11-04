@@ -41,21 +41,8 @@ is running (namespace `placement-system`) alongside the projected
 `controlplane-placement` resource-tracking service.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy (required for
-   real enforcement).** Confirm with your platform team (Calico, Cilium, and
-   Antrea enforce).
-
-   ::: warning The devstack enforces this policy
-   The ControlPlane Quick Start kind devstack runs kind's default `kindnet`
-   CNI. On kind v0.32 and later, kindnet enforces NetworkPolicy and evaluates a
-   connection to a Service after the Service DNAT, so a `kubeApiServer` rule
-   that misses the API server's endpoint address cuts the operator off on the
-   devstack too. Step 2 below confirms the policy's **shape** and that the
-   operator still reconciles under it. It sends no traffic outside the
-   allow-list, so it does **not** prove that such traffic is dropped.
-   :::
-2. A running `placement-operator` Helm release (namespace `placement-system`).
-3. The ControlPlane declares `spec.services.placement`. Without it no
+1. A running `placement-operator` Helm release (namespace `placement-system`).
+2. The ControlPlane declares `spec.services.placement`. Without it no
    `controlplane-placement` child exists and the Step 2 verification has
    nothing to roll.
 
@@ -64,8 +51,9 @@ is running (namespace `placement-system`) alongside the projected
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
 template refuses to render. Gather the API server CIDRs and ports from the
-`kubernetes` **Endpoints** — the real API server addresses, not the `10.96.0.1`
-Service VIP that `kubectl get service kubernetes` reports. An enforcing CNI
+`kubernetes` **Endpoints**, which carry the real API server addresses. The
+`10.96.0.1` Service VIP that `kubectl get service kubernetes` reports is the
+wrong source. An enforcing CNI
 (Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
 Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
 IPs, so a rule naming the VIP never matches:
@@ -75,7 +63,7 @@ kubectl get endpoints kubernetes -n default -o json \
   | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
 ```
 
-Record **every** endpoint IP the command prints, not just the first. A kind
+Record **every** endpoint IP the command prints. A kind
 devstack reports the one control-plane node's address on the kind bridge
 (`172.18.0.x`), but an HA control plane reports one per API server replica:
 
@@ -89,10 +77,10 @@ The rule must cover all of them, or the operator loses its leader-election
 lease whenever it happens to be talking to an excluded replica.
 
 On the tutorial devstacks the `placement-operator` release is owned by Flux (a
-`HelmRelease`), so set the values by patching its `spec.values`, not with a
-raw `helm upgrade`, which the Flux helm-controller reverts on its next
+`HelmRelease`), so set the values by patching its `spec.values`. The Flux
+helm-controller reverts a raw `helm upgrade` on its next
 reconcile. Substitute the CIDRs and ports from above. The single-CIDR list
-below stands in for the kind case — one control-plane node — so replace
+below stands in for the kind case (one control-plane node), so replace
 `172.18.0.2/32` with the address you recorded and extend the list to every IP
 an HA control plane prints:
 
@@ -153,7 +141,7 @@ reconcile. Use the HelmRelease patch above instead.
 
 On the kind devstack this verifies the policy's **shape** and that the operator
 still reconciles under the enforced policy. It sends no traffic outside the
-allow-list (see the prerequisite above).
+allow-list.
 
 Restart the operator first. NetworkPolicy enforcement is stateful: a connection
 opened before the policy existed stays open, so a wrong `kubeApiServer` rule
@@ -231,8 +219,8 @@ leader-election lease renewals fail with `context deadline exceeded`, and the
 
 **Diagnosis:** the egress allow-list does not match the API server the operator
 actually dials. Either `kubeApiServer.cidrs` is missing one or more of the
-current endpoint IPs — an HA control plane may have added a replica, or a
-control-plane node may have been replaced with a different IP — or your CNI maps
+current endpoint IPs (an HA control plane may have added a replica, or a
+control-plane node may have been replaced with a different IP), or your CNI maps
 the API server behind a port that is not in `kubeApiServer.ports`.
 
 **Fix:** re-run the discovery command from Step 1 and update
@@ -279,10 +267,19 @@ the shared operator-library, whose helm-unittest
 (`operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`)
 pins the shared rules. The placement chart's helm-unittest
 (`operators/placement/helm/placement-operator/tests/networkpolicy_test.yaml`)
-pins the egress rule the chart adds for its API health check. The keystone
-chart's policy is exercised end-to-end on the CI e2e kind cluster by the
-chainsaw suite below.
+pins the egress rule the chart adds for its API health check. These tests check
+rendering only; they do not exercise packet enforcement.
+
+The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
+provides runtime enforcement coverage for the Keystone chart using the shared
+template. It does not install the Placement chart or test Placement-specific
+runtime egress. There is no Placement operator `network-policy-egress` suite.
+With the linked suite's prerequisites satisfied, run its Keystone-only example
+from the repository root:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
 ```
+
+The per-CR suite `tests/e2e/placement/network-policy` covers the Placement workload
+policy, a different scope from this guide.

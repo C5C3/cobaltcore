@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Admission policy that refuses the staging PATCH of the Fernet rotation Job of
+# keystone-fernet in step 8. It matches only an UPDATE (the API server admits a
+# PATCH as UPDATE) of the staging Secret keystone-fernet-fernet-keys-rotation
+# in openstack by the rotation ServiceAccount, so the operator's own writes
+# pass. Step 8 applies and deletes both objects itself, because it lifts the
+# policy partway through the step.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: keystone-fernet-refuse-staging-patch
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["v1"]
+      operations: ["UPDATE"]
+      resources: ["secrets"]
+      resourceNames: ["keystone-fernet-fernet-keys-rotation"]
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: openstack
+  matchConditions:
+  - name: rotation-service-account
+    expression: "request.userInfo.username == 'system:serviceaccount:openstack:keystone-fernet-fernet-rotate'"
+  validations:
+  - expression: "false"
+    message: fernet-rotation e2e refuses the staging PATCH once
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: keystone-fernet-refuse-staging-patch
+spec:
+  policyName: keystone-fernet-refuse-staging-patch
+  validationActions: [Deny]

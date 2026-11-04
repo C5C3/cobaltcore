@@ -103,6 +103,11 @@ JSON
         echo 'Error from server (NotFound): deployments.apps "orc-controller-manager" not found' >&2
         exit 1
         ;;
+      pod)
+        # The OpenBao guard reads it; this cluster runs no OpenBao.
+        echo 'Error from server (NotFound): pods "openbao-0" not found' >&2
+        exit 1
+        ;;
       helmrelease|daemonsets|events|fluxinstance,fluxreport)
         exit 0
         ;;

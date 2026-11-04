@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch removing spec.extraConfig. Chainsaw merge-patches with this manifest,
+# so null drops the field.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-events
+  namespace: openstack
+spec:
+  extraConfig: null

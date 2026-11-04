@@ -11,6 +11,13 @@
 # (10-chaos-e2e-testing.md:344-372).
 # Duration 180s acts as a safety net for auto-expiry if the test does not
 # explicitly delete the CR.
+#
+# The selector leaves out Job pods: every Job pod carries
+# batch.kubernetes.io/job-name, and no API pod does. The trust-flush CronJob of
+# every Keystone in the namespace runs hourly and labels its pods
+# app.kubernetes.io/name=keystone. Chaos Mesh cannot inject into a completed
+# pod ("pod not running"), so with such a pod in the selector AllInjected never
+# turns True once any Keystone's CronJob has run.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
@@ -24,6 +31,9 @@ spec:
       - openstack
     labelSelectors:
       app.kubernetes.io/name: keystone
+    expressionSelectors:
+      - key: batch.kubernetes.io/job-name
+        operator: DoesNotExist
   direction: to
   target:
     mode: all

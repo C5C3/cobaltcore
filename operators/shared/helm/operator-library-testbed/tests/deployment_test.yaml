@@ -471,3 +471,93 @@ tests:
                 secretKeyRef:
                   name: s
                   key: k
+
+  # extraVolumes / extraVolumeMounts: verbatim pass-through after webhook-certs.
+  - it: should render only the webhook certificate volume and mount by default
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 1
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: webhook-certs
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 1
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].name
+          value: webhook-certs
+
+  - it: should append extraVolumes and extraVolumeMounts after webhook-certs
+    set:
+      extraVolumes:
+        - name: extra-ca
+          configMap:
+            name: extra-ca
+      extraVolumeMounts:
+        - name: extra-ca
+          mountPath: /etc/extra-ca
+          readOnly: true
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.volumes
+          count: 2
+      - equal:
+          path: spec.template.spec.volumes[0].name
+          value: webhook-certs
+      - equal:
+          path: spec.template.spec.volumes[1]
+          value:
+            name: extra-ca
+            configMap:
+              name: extra-ca
+      - lengthEqual:
+          path: spec.template.spec.containers[0].volumeMounts
+          count: 2
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].name
+          value: webhook-certs
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[1]
+          value:
+            name: extra-ca
+            mountPath: /etc/extra-ca
+            readOnly: true
+
+  - it: should render only the extra entries when the webhook is disabled
+    set:
+      webhook:
+        enabled: false
+      extraVolumes:
+        - name: coverage
+          hostPath:
+            path: /var/lib/cobaltcore-coverage/testbed
+            type: Directory
+      extraVolumeMounts:
+        - name: coverage
+          mountPath: /coverage
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes
+          value:
+            - name: coverage
+              hostPath:
+                path: /var/lib/cobaltcore-coverage/testbed
+                type: Directory
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - name: coverage
+              mountPath: /coverage
+
+  - it: should render neither key when both lists are empty and the webhook is disabled
+    set:
+      webhook:
+        enabled: false
+      extraVolumes: []
+      extraVolumeMounts: []
+    asserts:
+      - notExists:
+          path: spec.template.spec.volumes
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts

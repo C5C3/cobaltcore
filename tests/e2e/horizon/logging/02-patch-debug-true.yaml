@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch turning on spec.logging.debug, which the operator renders as Django
+# DEBUG = True. Django then serves its technical 404 page.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-logging
+  namespace: openstack
+spec:
+  logging:
+    debug: true

@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The partition of the expand phase: an egress NetworkPolicy on the pods of
+# Job cinder-upg-part-db-expand, which reach nothing but the cluster DNS
+# while it exists.
+#
+# A NetworkPolicy and not a NetworkChaos: the Job's pod appears only once the
+# operator enters the phase, and a podSelector also covers pods created after
+# the policy, so the partition is in place before the pod starts. kindnet
+# drops the SYN of a denied connection
+# (tests/e2e/lib/assert-networkpolicy-enforced.sh), so the MariaDB connect of
+# cinder-manage times out: a partition, not a refusal. The one rule admits DNS
+# to the kube-dns pods, so the name of the database still resolves.
+#
+# Blast radius: the pods of the one phase Job alone. The operator puts no
+# label on a phase Job's pod template, so the job-name label Kubernetes sets
+# is the only selector that names them, and no other pod carries it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cinder-upg-part-cut-expand
+  namespace: openstack
+spec:
+  podSelector:
+    matchLabels:
+      job-name: cinder-upg-part-db-expand
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53

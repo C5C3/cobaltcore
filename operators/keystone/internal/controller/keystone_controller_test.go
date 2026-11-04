@@ -52,6 +52,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/cobaltcore/operators/keystone/internal/metrics"
@@ -350,6 +351,13 @@ func testHealthyHTTPClient() HTTPDoer {
 	}
 }
 
+// freezeProbeClock pins the probe cache's clock, so a converged pass requeues
+// for exactly HealthCheckCacheTTL instead of a wall-clock remainder.
+func freezeProbeClock(r *KeystoneReconciler) {
+	frozen := time.Unix(1_700_000_000, 0)
+	r.healthProbeCache.Now = func() time.Time { return frozen }
+}
+
 func TestReconcile_NotFound_ReturnsEmptyResult(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := newTestReconciler()
@@ -369,24 +377,62 @@ func TestReconcile_SetsAllSubConditionsTrue(t *testing.T) {
 	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 	r.HTTPClient = testHealthyHTTPClient()
+	freezeProbeClock(r)
 
 	result, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	})
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{}))
+	// A converged pass requeues for the moment the probe just stored expires.
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: healthcheck.HealthCheckCacheTTL}))
 
 	// Fetch the updated Keystone to inspect status conditions.
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
 
 	// TrustFlushReady reason is TrustFlushNotRequired here because tests use a fake client that bypasses the defaulting webhook.
-	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", conditionTypePolicyValidReady, "DeploymentReady", conditionTypeKeystoneAPIReady, "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady"} {
+	// PasswordRotationReady proves the requeue did not cut off the step after the HealthCheck group.
+	for _, condType := range []string{"SecretsReady", "FernetKeysReady", "CredentialKeysReady", "DatabaseReady", conditionTypePolicyValidReady, "DeploymentReady", conditionTypeKeystoneAPIReady, "HPAReady", "NetworkPolicyReady", "BootstrapReady", "TrustFlushReady", conditionTypePasswordRotationReady} {
 		cond := meta.FindStatusCondition(updated.Status.Conditions, condType)
 		g.Expect(cond).NotTo(BeNil(), "condition %s should exist", condType)
 		g.Expect(cond.Status).To(Equal(metav1.ConditionTrue), "condition %s should be True", condType)
 	}
+}
+
+// TestReconcile_ConvergedPassRequeuesAtProbeExpiry verifies that a converged
+// pass requeues for the moment the CR's probe-cache entry expires, not for a
+// fresh TTL: a pass 25s after the probe is served from the cache and requeues
+// for the remaining 5s, so the next pass probes on time.
+func TestReconcile_ConvergedPassRequeuesAtProbeExpiry(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	configMapName := testComputeConfigMapName(t)
+	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
+	r := newTestReconciler(objs...)
+	doer := testutil.NewSwitchableDoer(http.StatusOK)
+	r.HTTPClient = doer
+	clk := time.Unix(1_700_000_000, 0)
+	r.healthProbeCache.Now = func() time.Time { return clk }
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(context.Background(), req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: healthcheck.HealthCheckCacheTTL}))
+	g.Expect(doer.Calls()).To(Equal(int64(1)), "the first pass probes the API")
+
+	clk = clk.Add(25 * time.Second)
+	result, err = r.Reconcile(context.Background(), req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: 5 * time.Second}),
+		"a pass inside the TTL requeues for the entry's expiry")
+	g.Expect(doer.Calls()).To(Equal(int64(1)), "the second pass is served from the cache")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(context.Background(), req.NamespacedName, &updated)).To(Succeed())
+	apiReady := meta.FindStatusCondition(updated.Status.Conditions, conditionTypeKeystoneAPIReady)
+	g.Expect(apiReady).NotTo(BeNil())
+	g.Expect(apiReady.Status).To(Equal(metav1.ConditionTrue))
 }
 
 func TestReconcile_AggregatesReadyCondition(t *testing.T) {
@@ -437,12 +483,14 @@ func TestReconcile_Idempotent(t *testing.T) {
 	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 	r.HTTPClient = testHealthyHTTPClient()
+	freezeProbeClock(r)
 
 	// First reconcile.
 	result1, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result1).To(Equal(ctrl.Result{RequeueAfter: healthcheck.HealthCheckCacheTTL}))
 
 	// Second reconcile — should produce the same result.
 	result2, err := r.Reconcile(context.Background(), reconcile.Request{
@@ -893,13 +941,14 @@ func TestReconcile_ObservedGenerationTracked(t *testing.T) {
 	objs := append([]runtime.Object{ks, testCompletedDBSyncJob(configMapName), testCompletedSchemaCheckJob(configMapName), testCompletedBootstrapJob(configMapName), testDBCredentialsSecret(), testAdminCredentialsSecret(), testReadyKeystoneDeployment(), testFernetKeysSecret(), testCredentialKeysSecret()}, testReadyExternalSecrets()...)
 	r := newTestReconciler(objs...)
 	r.HTTPClient = testHealthyHTTPClient()
+	freezeProbeClock(r)
 
 	ctx := context.Background()
 	result, err := r.Reconcile(ctx, reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: healthcheck.HealthCheckCacheTTL}))
 
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
@@ -1802,12 +1851,14 @@ func TestReconcile_ParallelGroupSetsAllConditions(t *testing.T) {
 	)
 	r := newTestReconciler(objs...)
 	r.HTTPClient = testHealthyHTTPClient()
+	freezeProbeClock(r)
 
 	result, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{}), "full reconcile should not requeue")
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: healthcheck.HealthCheckCacheTTL}),
+		"a converged pass requeues for the probe-cache expiry")
 
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
@@ -2833,6 +2884,7 @@ func BenchmarkReconcile_FullReconcile(b *testing.B) {
 	)
 	r := newTestReconciler(objs...)
 	r.HTTPClient = testHealthyHTTPClient()
+	freezeProbeClock(r)
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	}
@@ -2841,8 +2893,8 @@ func BenchmarkReconcile_FullReconcile(b *testing.B) {
 	// Verify the result to catch setup issues early.
 	if res, err := r.Reconcile(context.Background(), req); err != nil {
 		b.Fatalf("warm-up reconcile failed: %v", err)
-	} else if !res.IsZero() {
-		b.Fatalf("warm-up reconcile returned non-zero result: %+v", res)
+	} else if res != (ctrl.Result{RequeueAfter: healthcheck.HealthCheckCacheTTL}) {
+		b.Fatalf("warm-up reconcile did not converge: %+v", res)
 	}
 
 	b.ReportAllocs()
@@ -2924,6 +2976,7 @@ func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 	r.HTTPClient = testHealthyHTTPClient()
+	freezeProbeClock(r)
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	}
@@ -2932,8 +2985,8 @@ func BenchmarkReconcile_FullReconcile_WithLatency(b *testing.B) {
 	// Verify the result to catch setup issues early.
 	if res, err := r.Reconcile(context.Background(), req); err != nil {
 		b.Fatalf("warm-up reconcile failed: %v", err)
-	} else if !res.IsZero() {
-		b.Fatalf("warm-up reconcile returned non-zero result: %+v", res)
+	} else if res != (ctrl.Result{RequeueAfter: healthcheck.HealthCheckCacheTTL}) {
+		b.Fatalf("warm-up reconcile did not converge: %+v", res)
 	}
 
 	b.ReportAllocs()

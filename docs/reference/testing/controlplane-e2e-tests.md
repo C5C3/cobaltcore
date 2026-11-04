@@ -54,11 +54,23 @@ OpenBao path. A fourth runs `keystone-service`, the
 own-namespace registration suite: the round-trip, an injected K-ORC latch that
 holds for a misconfiguration and is cleared for a transport failure, a rotation
 through a `CredentialRotation`, a collision held until `adopt`, and deletion.
-Each of the last three runs against a Keystone-only plane of its own. The four
-suites run in sequence because the shared chainsaw config sets `failFast`, so
-one invocation over the directories would let a failure in any abort the
-others. See the [CI workflow reference](../ci-cd/ci-workflow.md) for
-the job definition.
+A fifth runs `healthcheck`, which asserts that a plane reports `KeystoneReady`
+and `Ready` only once its Keystone API answers, and a sixth
+`pod-security-restricted`, which brings a managed plane to `Ready` in a
+namespace that enforces `restricted:latest`. Each of the last five runs against
+a Keystone-only plane of its own. Steps seven to ten run
+`admin-password-scoping`, `db-credential-scoping`, `multi-controlplane` and
+`deletion-orchestration`. Each of them brings up its own planes outside
+`openstack`, where the full-chain plane stays, seeds their OpenBao paths and
+onboards their database-engine roles itself, and deletes its planes before the
+next step starts. The ten suites run in sequence because the shared chainsaw
+config sets `failFast`, so one invocation over the directories would let a
+failure in any abort the others. See the
+[CI workflow reference](../ci-cd/ci-workflow.md) for the job definition.
+
+The chart-level suite `c5c3-operator-metrics` lives in
+`tests/e2e/c5c3-operator/metrics/` and runs in the `e2e-operator (c5c3)` job,
+which picks up that directory beside `tests/e2e/c5c3/`.
 
 ## Running the Tests
 
@@ -91,19 +103,22 @@ images of that release as well as those of the start release: kind-loaded, as th
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check, and a release hop from the start release to its successor |
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, de-listing freezes instead of tearing down, and a namespace assignment's role allowlist refuses and freezes the account |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, an injected terminal K-ORC error holds the account at `ServiceAccountsFailed` for a 409 and is cleared for a transport failure, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
+| [healthcheck](#healthcheck) | `cp` (ephemeral namespace) | The plane holds `KeystoneReady` at `WaitingForKeystone` until the Keystone child's API probe passes, never reports `KeystoneReady` or `Ready` ahead of it, and Keystone `/v3` answers 200 on a single attempt when the plane first reports `Ready`, with the reasons and the `lastTransitionTime` order to match |
+| [pod-security-restricted](#pod-security-restricted) | `cp` (ephemeral namespace) | A managed plane in a namespace labelled `enforce=restricted`, `enforce-version=latest` reaches `Ready=True/AllReady`: the owned MariaDB and Memcached carry the projected restricted security contexts, their pods run, and no event carries a PodSecurity violation |
 | [keystone-user](#keystone-user) | `cp` (ephemeral namespace) + `KeystoneUser` `workflow` / `outsider` + `KeystoneProject` `workflow-project` + `KeystoneRoleAssignment` `workflow-member` + `KeystoneCatalogEntry` `workflow-dns` + `KeystoneApplicationCredential` `workflow-appcred` + `MariaDBDatabase` `workflow-db` | Keystone and database orders: a user order from an assigned namespace gets its Secret beside it with nothing that reaches OpenBao there, and a Job authenticates with it; an edited or deleted Secret returns, raising `passwordGeneration` rotates and a one-minute schedule rotates once more before it is turned off; a project is provisioned, a role and a catalog entry are refused until the entry admits them, a Job scopes a token to the project and reads the entry out of the catalog, a duplicate assignment and a colliding entry are refused; an application credential is refused without the role, then created as the user and delivered, rotated on its schedule and by hand, and the superseded credential stops working after its grace period; a database order gets its Secret, a Job writes a row with it, and a forced ESO refresh delivers a new user; an unassigned namespace holds at `NamespaceNotAssigned`, withdrawing the assignment freezes every order, and deletion revokes the database order's leases and keeps or drops its schema by `deletionPolicy`, holds the assignment on the credential order and the user on the assignment, and removes everything down to the OpenBao paths |
 | [orders-target-cluster](#orders-target-cluster) | `cp` (ephemeral namespace) + the seven orders `workflow`, `workflow-project`, `workflow-member`, `workflow-dns`, `workflow-appcred`, `workflow-db`, `workflow-bus` in `orders-tenant` and `unassigned` in `orders-outsider` on the registered target `cobaltcore-target` | Orders from a namespace on a target cluster: the plane publishes Keystone, the database and the bus on NodePorts of the management node, each order on the target is delivered beside it with those addresses and nothing on the management cluster, and Jobs on the target issue a token, scope one to the project and read the catalog entry, authenticate with the application credential, write a row and open an AMQP connection; an order no entry assigns holds at `NamespaceNotAssigned`, a database order without a published address at `DatabaseNotPublished`, and the teardown follows the holds |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, a brownfield registration's round-trip, rotation and teardown, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [e2e-autoscaling](#e2e-autoscaling) | `cp-autoscaling` | The API autoscaler with metrics-server and the VPA: token load scales Keystone from one pod to its HPA maximum and back within 240 s, the budget admits an eviction at the minimum, every database-backed API fits its SQL connection cap at its maximum, and the opted-in workloads get their VerticalPodAutoscalers |
-| [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone, and the projected Barbican registration and its label-owned K-ORC CRs leave no residue |
-| [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
-| [db-credential-scoping](#db-credential-scoping) | `controlplane` | Per-CR OpenBao-backed service DB credential projection |
+| [deletion-orchestration](#deletion-orchestration) | `deletion-orch` (ephemeral namespace) | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone, and the projected Barbican registration and its label-owned K-ORC CRs leave no residue |
+| [admin-password-scoping](#admin-password-scoping) | `controlplane` (ephemeral namespace) | Per-CR OpenBao-backed admin password projection |
+| [db-credential-scoping](#db-credential-scoping) | `controlplane` (ephemeral namespace) | Per-CR OpenBao-backed service DB credential projection |
 | [dedicated-backing-services](#dedicated-backing-services) | `cp` (ephemeral namespace) | Opt-in per-service dedicated database/cache: provisioning, ownership, sizing, and collective readiness gating |
 | [sizing-profile](#sizing-profile) | `cp` (ephemeral namespace) + `SizingProfile` `sizing-<namespace>` | Sizing from a cluster-scoped `SizingProfile`: the managed backing services take the resolved sizing, a profile edit reaches them, and a deleted profile turns `SizingReady` False |
 | [messaging](#messaging) | `cp` (ephemeral namespace) + `RabbitMQVhost` `workflow` / `workflow-delete` | The shared RabbitMQ bus: provisioned from `spec.infrastructure.messaging` with no service declared, owned, sized from the `Minimal` profile, gating `InfrastructureReady` on `AllReplicasReady`, and frozen against removal; a vhost order from an assigned namespace is delivered and proven with `rabbitmqctl`, its Secret is repaired, its user rotates on the schedule with both users valid during the grace period and by hand, deletion keeps the vhost under `Retain` and removes it under `Delete`, and withdrawing the assignment freezes the order |
 | [dedicated-namespaces](#dedicated-namespaces) | `cp` (ephemeral namespace) | Per-service dedicated namespaces: Managed/External lifecycles, backing-service placement, ownership labels, per-namespace tenant stores, and the deletion sweep |
 | [multi-controlplane](#multi-controlplane) | `controlplane-a`, `controlplane-b` | Per-CR admin-credential isolation across two tenants; rotation non-interference |
+| [c5c3-operator-metrics](#c5c3-operator-metrics) | — (operator-level) | A second chart release with `monitoring.serviceMonitor.enabled` renders the ServiceMonitor, the Service it selects serves the Prometheus exposition on port `metrics` at `/metrics`, and both go away on uninstall. It runs in the `e2e-operator (c5c3)` job and needs no stack |
 | env-key-material | — (operator-level) | The c5c3-operator pod in `c5c3-system` reads no Secret into env, and its manager's process environment, read from an ephemeral container by `tests/e2e/lib/assert-operator-env-clean.sh`, holds no key material. Unlike the ControlPlane suites it needs no stack: it runs on the `e2e-operator` c5c3 leg, which loads `keystone:2026.1` as the shell of the scan |
 | [secret-store-scoping](#secret-store-scoping) | — (namespace-only) | Per-ControlPlane OpenBao identity via a namespaced `SecretStore`; OpenBao-enforced cross-tenant isolation |
 | invalid-keystoneservice-cr | multiple (rejected) | Every `KeystoneService` CEL `XValidation` and webhook rejection path pinned to a deterministic admission failure. Generated by its `_generate.py` and guarded by `make verify-invalid-cr-fixtures` |
@@ -412,6 +427,28 @@ paths any other chassis or metadata agent would share.
    Neither live nor cold migration is called: the suite has one compute, and
    both check the same admin rule the services and aggregates blocks prove.
 
+7e. **Config edit**: a merge patch sets `services.keystone.extraConfig` to
+   `[DEFAULT] instance_format = controlplane-propagation` on the live plane, the
+   inert, catalog-valid marker `config-pruning` also uses. `reconcileKeystone`
+   projects the merged `extraConfig` onto the Keystone child on every pass, so
+   within one 600-second deadline, in order: the ControlPlane's
+   `status.observedGeneration` reaches the patched generation; the child's
+   `spec.extraConfig` carries the marker; the child is `Ready=True` at its
+   generation; the pod template names a new ConfigMap whose `keystone.conf` has
+   the line; the rollout finishes; a Ready pod that mounts the new ConfigMap reads
+   the line from `/etc/keystone/keystone.conf.d/keystone.conf`; and the
+   ControlPlane is `Ready=True/AllReady`. A second merge patch sets the block to
+   `null`. Within a second 600-second deadline the child's `spec.extraConfig` is
+   empty again, the pod template names the original ConfigMap (the render is
+   content-addressed, and the prune keeps the previous ConfigMap), the rollout
+   finishes, and the ControlPlane is `Ready=True/AllReady` at the second
+   generation. The script then prints `OK: a ControlPlane extraConfig edit reached
+   the Keystone child, rolled it to <C1> and back to <C0>.`, and a missed deadline
+   names its stage and the values it last read. A run that stopped between the
+   two patches leaves the block on the never-deleted plane, so Link 7e first
+   checks that the block is empty and otherwise stops with the `kubectl patch`
+   that clears it. The image path of a ControlPlane change is Link 8's.
+
 8a. **Release patch** — the day-2 release upgrade on the live plane. The suite
    reads both releases from its fixtures, the start from `00-controlplane-cr.yaml`
    and the target from `08-patch-upgrade.yaml`, so the hop's assertions follow
@@ -473,7 +510,7 @@ nova-operator, and the chassis its server's port binds on needs the
 `openvswitch` and `geneve` kernel modules on the runner host, which the
 `e2e-controlplane` job asks for with `WITH_OVN_KERNEL_MODULES: "true"`.
 
-The suite budgets 100 minutes for the consolidated script, 5 for its diagnostic
+The suite budgets 120 minutes for the consolidated script, 5 for its diagnostic
 `catch`, and one timeout per `finally` script: 5 minutes to delete the verify
 Job, 2 to release the broker vhost, and 5 for the compute leg's own footprint.
 That last one first deletes the hypervisor-operator Job and the K-ORC fixtures,
@@ -485,8 +522,9 @@ apply and takes the `openstack.c5c3.io/chassis` label off every node, because
 none of the three is owned by the ControlPlane and a label left standing
 advertises a chassis role nothing serves. With the shared
 3-minute cleanup budget the suite's ceiling is
-`100 + 5 + 5 + 2 + 5 + 3 = 120` minutes. A green pass spends about 13 minutes
-before Link 8 and about 20 in it; the waits of Link 8 are bounded at 77. Every one
+`120 + 5 + 5 + 2 + 5 + 3 = 140` minutes. A green pass spends about 13 minutes
+before Link 7e, about 4 in it and about 20 in Link 8. The waits of Link 7e are
+bounded at 10 + 10 minutes and those of Link 8 at 77. Every one
 of those timeouts is pinned
 rather than inherited: chainsaw applies the suite's `exec` budget to each script
 operation, so an unpinned `catch` or `finally` would each carry 30 minutes of
@@ -550,7 +588,7 @@ the CPU contention of a real 4 vCPU host.
 
 Under the `ci:measure-sizing` label the `e2e-controlplane` job deploys with
 `WITH_VPA=true` and records what a VPA recommender recommends for every
-workload in `openstack` while this suite and the two after it run
+workload in `openstack` while this suite and the ones after it run
 ([Sizing measurement](../ci-cd/ci-workflow.md#sizing-measurement)). The
 recommendations for the Minimal ControlPlane of this suite and its backing
 services are the input for the Minimal profile figures
@@ -615,23 +653,48 @@ ControlPlane deletion still **completes** within a window larger than the
 bounded stall deadline (`orcTeardownDeadline`, 7m): the finalizer waits,
 then force-removes the stuck `openstack.k-orc.cloud/*` finalizers. Also
 asserts the projected Keystone, MariaDB, Memcached, and all six K-ORC CRs are
-garbage-collected and an ORC-teardown event (`ORCTeardownComplete`, or the
-Warning `ORCTeardownStalled` on the stalled path) was emitted. Before the
-teardown it checks that the projected `deletion-orch-barbican` `KeystoneService`
-and at least one K-ORC CR carrying its `c5c3.io/keystoneservice-name` label are
-standing. Once the ControlPlane is gone it asserts that the `KeystoneService`
-and every K-ORC CR carrying that label are gone, which is what the force-release
-on the Keystone-gone path produces.
+garbage-collected, the Warning `ORCTeardownStalled` was emitted, and
+`ORCTeardownComplete` was not. Before the teardown it checks that the projected
+`deletion-orch-barbican` `KeystoneService` and at least one K-ORC CR carrying its
+`c5c3.io/keystoneservice-name` label are standing. Once the ControlPlane is gone
+it asserts that the `KeystoneService` and every K-ORC CR carrying that label are
+gone, which is what the force-release on the Keystone-gone path produces.
+
+The plane runs alone in chainsaw's ephemeral namespace. The suite seeds its
+admin-password path with `write-bootstrap-secrets.sh` before the apply. Once
+`InfrastructureReady` and the MariaDB are Ready it runs
+`setup-database-tenant.sh`, which onboards the Keystone and the Barbican
+database-engine roles because Barbican shares the managed database, and only
+then waits for `Ready`.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it
+tenth. It is the tenth chainsaw step of the `e2e-controlplane` CI job,
+reporting as `chainsaw-report-deletion-orchestration`.
 
 ### admin-password-scoping
 
 Asserts that `reconcileAdminPassword` projects a per-ControlPlane,
 OpenBao-backed admin password: an owned ExternalSecret
-`controlplane-keystone-admin-credentials` whose `password` remoteRef reads the
-per-CR OpenBao key `bootstrap/{namespace}/{keystoneName}/admin`, plus the
-materialised Secret of the same name. The path is keystone-name scoped so it
-matches the keystone-operator's scheduled admin-password rotation PushSecret,
-which reads and writes the same key.
+`controlplane-keystone-admin-credentials` that reads through the per-tenant
+`SecretStore` `openbao-tenant-store` and whose `password` remoteRef reads the
+per-CR OpenBao key `bootstrap/{namespace}/controlplane-keystone/admin`, plus the
+materialised Secret of the same name. `{namespace}` is the suite's ephemeral
+namespace, where it applies the ControlPlane `controlplane`. The path is
+keystone-name scoped so it matches the keystone-operator's scheduled
+admin-password rotation PushSecret, which reads and writes the same key.
+
+The suite seeds that key itself with `write-bootstrap-secrets.sh` before the
+apply. It also onboards the plane's database-engine role with
+`setup-database-tenant.sh` once `InfrastructureReady` and the MariaDB are
+Ready: `reconcileAdminPassword` runs after `reconcileDBCredentials`, which
+waits for that role, so the admin-password ExternalSecret is projected only
+after it.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it
+seventh. It is the seventh chainsaw step of the `e2e-controlplane` CI job,
+reporting as `chainsaw-report-admin-password-scoping`.
 
 ### db-credential-scoping
 
@@ -644,6 +707,16 @@ generator via `dataFrom.sourceRef.generatorRef` (no static Data refs), a
 `keystone-db-creds` ServiceAccount, and a materialised Secret carrying an
 engine-issued username (not the static `keystone` user). The stage-(a) static
 per-CR KV seed is retired (#439).
+
+The suite applies the ControlPlane `controlplane` in its ephemeral namespace,
+so `{namespace}` is that namespace. It seeds the plane's admin-password path
+with `write-bootstrap-secrets.sh` before the apply, and it waits for
+`InfrastructureReady` and then the MariaDB before it onboards the role.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it
+eighth. It is the eighth chainsaw step of the `e2e-controlplane` CI job,
+reporting as `chainsaw-report-db-credential-scoping`.
 
 ### dedicated-backing-services
 
@@ -700,11 +773,21 @@ database and cache stating no replica count and no volume size. It asserts that:
 - patching the profile's `cache.resources` to a 192Mi limit reaches the
   Memcached within 60 s, through the watch the controller keeps on the kind;
 - deleting the profile turns `SizingReady` `False` with reason
-  `SizingProfileNotFound`.
+  `SizingProfileNotFound`;
+- the `c5c3-operator` release in `c5c3-system` exports its reconcile families
+  (second step): `tests/e2e/lib/assert-operator-metric-families.sh` reads every
+  pod of the release, finds a `c5c3_operator_reconcile_duration_seconds_count`
+  sample for `sub_reconciler="Sizing"` and the `Sizing` error the profile's
+  deletion caused, counted under `condition_type="SizingReady"`, and no error
+  labelled `condition_type="UNKNOWN"`. The families carry no per-CR label, so
+  they outlast the ControlPlane the first step deletes. The first step creates
+  the ConfigMap `sizing-profile-ran` once its presence guard passes, and the
+  second step prints a `SKIP:` line and exits 0 without it.
 
 It follows the dedicated-backing-services suite: an ephemeral namespace, a
 brownfield shared block that provisions nothing, and one guarded script step
-whose presence guard also probes `sizingprofiles.c5c3.io`. The profile is
+for the sizing assertions whose presence guard also probes
+`sizingprofiles.c5c3.io`. The profile is
 cluster-scoped, so the namespace teardown never reaps it; the script deletes the
 ControlPlane first and the profile last on every exit path.
 
@@ -864,8 +947,33 @@ and asserts admin-credential isolation (each CR's minted admin application
 credential lands on a distinct per-CR path with different material; rotating only
 tenant-a's credential leaves tenant-b unchanged) **and** dynamic DB-credential
 isolation: the two tenants draw from distinct per-tenant roles, and revoking
-tenant-a's DB leases by prefix leaves tenant-b's credential authenticating and
-tenant-b Ready (AC 4).
+tenant-a's DB leases by prefix stops tenant-a's credential from authenticating
+while tenant-b's still authenticates and tenant-b stays Ready (AC 4). The
+revoke runs last, after the rotation: it drops the database user tenant-a's
+Keystone logs in with, and the rotation needs a database write in that
+Keystone.
+
+The suite seeds both identities' admin-password paths with one
+`write-bootstrap-secrets.sh` call before the applies, and it waits for each
+plane's `InfrastructureReady` and then its MariaDB before it onboards the
+tenant. Its own `bao` calls read the root token from a file staged inside
+`openbao-0` under a name that carries the run's namespace. A file whose size
+differs from the token's length fails the staging with
+`could not stage the OpenBao root token in openbao-0`. The ServiceAccount
+token, the client token and both tenants' database passwords reach `openbao-0`
+or the probe pod on stdin. `write-bootstrap-secrets.sh` and
+`setup-database-tenant.sh` still pass the root token to `kubectl exec` as an
+argument, so the suite unsets `BAO_TOKEN` after its last call to them.
+Chainsaw does not delete `tenant-a` and `tenant-b`, because the fixtures
+create them, and the fixtures label both `c5c3.io/e2e-suite: multi-controlplane`.
+The suite refuses to run when either namespace exists already, and its finally
+block deletes the ControlPlanes and then the namespaces that carry the label,
+and prints an `OK:` or `WARN:` line for each.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it
+ninth. It is the ninth chainsaw step of the `e2e-controlplane` CI job,
+reporting as `chainsaw-report-multi-controlplane`.
 
 ### secret-store-scoping
 
@@ -1225,6 +1333,119 @@ Run it locally against a full ControlPlane stack with
 It is the third chainsaw step of the `e2e-controlplane` CI job, reporting as
 `chainsaw-report-keystone-user`.
 
+### healthcheck
+
+Asserts the wait direction of the readiness chain from the Keystone API to the
+`ControlPlane`. The c5c3-operator mirrors the Keystone child's `Ready` into
+`KeystoneReady` through `ProjectChild`, and the child's `Ready` requires
+`KeystoneAPIReady`, which the keystone-operator sets from its own `/v3` probe.
+The suite brings up the Keystone-only plane `cp` in chainsaw's ephemeral
+namespace with the presence guard, seeding and waits of
+[keystone-service](#keystone-service), and asserts that:
+
+- a watcher started before the apply, sampling the plane and then its child
+  every 2 s, sees the plane at `KeystoneReady=False/WaitingForKeystone` and
+  never at `KeystoneReady=True` before the child's `KeystoneAPIReady` first
+  reads `True`, and never sees `Ready=True` while `KeystoneReady` is not
+  `True`. A sample whose read of the child failed is skipped;
+- when the `Ready` wait first succeeds, a single `GET` of
+  `http://cp-keystone.<namespace>.svc:5000/v3` from a pod on the keystone image
+  answers 200, with no retry;
+- the snapshots of both objects taken at that moment carry
+  `KeystoneReady=True/KeystoneReady` and `Ready=True/AllReady` on the plane and
+  `KeystoneAPIReady=True/APIHealthy` and `Ready=True/AllReady` on the child;
+- their `lastTransitionTime` values order child `KeystoneAPIReady`, child
+  `Ready`, plane `KeystoneReady`, plane `Ready`. Both operators write them from
+  the clock of the same kind node, and equal values pass.
+
+The drop direction, a `Ready` plane whose API stops answering, is out of
+scope: the keystone-operator caches a healthy probe for 30 s and re-probes
+when it expires, so a timed outage check would race that cache. The checks on
+the child's `KeystoneAPIReady` stop at its first `True` sample for the same
+scope: after that, the plane follows a child drop only on its next reconcile.
+Any failed check prints the watcher's whole transcript. The OpenBao root token
+is staged in `openbao-0` under `/tmp/.bao-token-<namespace>` and removed in
+`finally`. The staging fails when the file's size differs from the token's
+length.
+The suite pins `catch` at 5m and `finally` at 15m, for a ceiling of
+30+5+15+15 = 65 minutes.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it fifth.
+It is the fifth chainsaw step of the `e2e-controlplane` CI job, reporting as
+`chainsaw-report-controlplane-healthcheck`.
+
+### pod-security-restricted
+
+Asserts that a managed `ControlPlane` reconciles under the restricted
+[Pod Security](https://kubernetes.io/docs/concepts/security/pod-security-standards/#restricted)
+profile. Directly after the presence guard, the script labels chainsaw's
+ephemeral namespace `pod-security.kubernetes.io/enforce=restricted` and
+`pod-security.kubernetes.io/enforce-version=latest` and reads both labels back.
+It then brings up the same Keystone-only plane as [healthcheck](#healthcheck)
+and asserts that:
+
+- the plane reaches `Ready=True` with reason `AllReady`;
+- `mariadb/openstack-db` carries the pod context's `runAsUser` 999 and seccomp
+  profile `RuntimeDefault`, and the container context's
+  `allowPrivilegeEscalation` false and `capabilities.drop` `[ALL]`;
+- `memcached/openstack-memcached` carries `spec.security.podSecurityContext`
+  with `runAsUser` 11211 and seccomp profile `RuntimeDefault`, and
+  `spec.security.containerSecurityContext` with `allowPrivilegeEscalation`
+  false. These are the contexts the
+  [reconciler projects](../c5c3/controlplane-reconciler.md#reconcileinfrastructure);
+- the `metadata.generation` of neither CR moves over the next 60 s, so the
+  backing operators and the c5c3-operator do not take turns rewriting the
+  contexts it projected;
+- pod `openstack-db-0` and the pods of `deployment/openstack-memcached` are
+  `Running`;
+- no event in the namespace carries `violates PodSecurity "restricted:latest"`.
+
+The suite does not require every pod to be `Running` or `Succeeded`: a
+Keystone Job attempt that failed while MariaDB was still starting leaves a
+`Failed` pod that restricted admitted. The Keystone child's own pods and Jobs
+are proven under restricted by the
+[Keystone pod-security-restricted suite](./keystone-e2e-tests.md#pod-security-restricted); this suite
+adds the c5c3-owned backing services and the c5c3-projected Keystone spec. The
+fixture's single-replica database keeps Galera out of the suite, and with it
+the one init pod start a fresh Galera cluster has refused before its init
+context is added. Labelling the ephemeral namespace keeps chainsaw's namespace
+cleanup and the per-namespace seeding unchanged. The `catch` prints the
+namespace labels and every violation event in full. The ceiling is the same
+65 minutes as healthcheck's.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it sixth.
+It is the sixth chainsaw step of the `e2e-controlplane` CI job, reporting as
+`chainsaw-report-controlplane-pod-security-restricted`.
+
+### c5c3-operator-metrics
+
+Asserts the c5c3-operator chart's ServiceMonitor on a live cluster. The suite
+lives in `tests/e2e/c5c3-operator/metrics/`, runs in `c5c3-system` in the
+`e2e-operator (c5c3)` job, and mirrors the service operators' metrics suites. It
+installs a second release, `c5c3-operator-metrics`, with
+`monitoring.serviceMonitor.enabled=true`, a 30s interval and the webhook off.
+Every object that release renders is named after it, so nothing collides with
+the primary `c5c3-operator` release. Its manager competes for the primary's
+lease `c5c3.openstack.c5c3.io`, so it stays a leader-election standby that
+reconciles nothing and still serves metrics. The suite asserts that:
+
+- ServiceMonitor `c5c3-operator-metrics` carries the release's name, instance
+  and `managed-by` labels, selects on name and instance, and names the endpoint
+  `port: metrics`, `path: /metrics`, `interval: 30s`;
+- the API server's proxy to that Service port returns a non-empty body with a
+  `rest_client_requests_total{` line within 60 s; client-go registers that
+  family in every manager, and the standby's lease calls feed it;
+- after `helm uninstall` the ServiceMonitor is gone within 60 s.
+
+The chart's `operator-library` dependency must be vendored first.
+`hack/ci-deploy-operator.sh` does that in CI; locally run
+`helm dependency build operators/c5c3/helm/c5c3-operator`. The operator's own
+`c5c3_operator_*` families are read from the primary release by
+[sizing-profile](#sizing-profile), the suite that drives a mapped
+sub-reconciler error.
+
 ### orders-target-cluster
 
 Covers the orders of a service owner whose namespace lives on a registered
@@ -1308,6 +1529,119 @@ The script's budget is `exec: 45m`, with `catch` 5m, `finally` 15m and
 `e2e-orders-multicluster` CI job, which reports it as
 `chainsaw-orders-multicluster-report`.
 
+## Scheduled Flux path run
+
+`.github/workflows/flux-path.yaml` brings up the devstack of the
+[ControlPlane quick start](../../quick-start-controlplane.md) against `main`
+every night, the way the page tells a user to. It runs
+`WITH_CONTROLPLANE=true make deploy-infra` on its default
+`CONTROLPLANE_OPERATORS=flux` path, so the operators come from the charts and
+images `main` published and K-ORC from its Flux source. Then
+`hack/ci-quick-start-controlplane.sh up` runs Steps 3 to 6 of the page with the
+page's full CR: Keystone, Horizon, Glance, Placement, Barbican, Neutron and Nova
+over a referenced OVNCentral. The run fails when the ControlPlane
+`controlplane` in `openstack` does not become `Ready`.
+
+The `e2e-controlplane` job proves the same chain on operators built from the
+checkout. Only this run installs what `main` published, so it is the one that
+sees a chart that no longer installs, an operator digest that no longer
+resolves, an expired K-ORC tag or a quick start CR the published operators
+reject.
+
+### Triggers and jobs
+
+| Trigger | When |
+| --- | --- |
+| `schedule` | Every night at 02:45 UTC, after the 01:30 start and 75-minute wall of the [performance nightly](./reconcile-performance-benchmark.md) |
+| `workflow_dispatch` | By hand, from the Actions tab or with `gh workflow run flux-path.yaml` |
+| `pull_request` | A pull request from a branch of this repository that changes the workflow, `hack/ci-quick-start-controlplane.sh` or `hack/ci-report-red-run.sh`. GitHub dispatches `workflow_dispatch` only for a workflow on the default branch, so this trigger lets such a change prove itself before it merges. A fork's pull request skips the job |
+
+The concurrency group is `flux-path-<event>-<ref>`, so a night never shares a
+group with a dispatch. GitHub replaces a pending run with the next one queued in
+its group, and in a shared group a second dispatch would cancel a night that
+waits behind the first. A newer push cancels the run of a pull request.
+
+| Job | Runner | Wall | Permissions | Steps |
+| --- | --- | --- | --- | --- |
+| `controlplane` | `self-hosted` | 90 minutes | `contents: read` | Creates the kind cluster from `hack/kind-config.yaml`, runs `setup-e2e-infra` with `WITH_CONTROLPLANE: "true"` as its only env, then `up`. On failure it writes the summary below into the job summary and into the artifact `flux-path-summary`, kept for 14 days, and dumps diagnostics with `OPERATOR: c5c3`. Its last step deletes the cluster under `always()` |
+| `report` | `ubuntu-latest` | 5 minutes | `contents: read`, `issues: write` | Runs after a scheduled `controlplane` that did not succeed. Downloads `flux-path-summary`, if the job uploaded it, and runs `hack/ci-report-red-run.sh` |
+
+The quick start asks for 16 GB of memory for the container runtime alone, which
+is why `controlplane` runs on a self-hosted runner. A green night is estimated
+at 40 to 45 minutes. The job does not log in to GHCR: a user pulls the public
+images anonymously, and the night does the same.
+
+### Stages of `up`
+
+`up` applies the page's `# controlplane-ovn.yaml` block and its first
+`# controlplane.yaml` block, so an edit to either block changes what the next
+night applies. `tests/unit/hack/ci_quick_start_controlplane_test.sh` runs `up`
+against the page on every pull request with a stubbed `kubectl`, and a
+structural edit fails it: a missing marker, or a CR of another kind, name or
+namespace.
+
+Before each stage `up` writes the stage's name to `_output/flux-path/stage`, and
+after the last one it writes `done`. It stops at the first failure with exit 1.
+A failing `kubectl apply` or `kubectl wait` prints
+`ERROR: <stage>: kubectl <arguments> failed (exit <code>)` below kubectl's own
+message.
+
+| Stage | What it does | Timeout |
+| --- | --- | --- |
+| `extract` | Copies the two blocks to `_output/flux-path/`. Fails with `ERROR: <doc> has no yaml block that starts with '<marker>'` when a block is missing, and with `ERROR: <copy>: <field> is '<value>', expected '<expected>'` unless the copies are an `OVNCentral` and the `ControlPlane` `controlplane`, both in `openstack`. On port 443 it deletes every `publicEndpoint` from the CR copy, as the CR's comments say | None |
+| `ovn` | Applies the OVNCentral and waits for `Ready` | 600 s (`OVN_TIMEOUT`) |
+| `apply` | Applies the ControlPlane | None |
+| `mariadb` | Waits for `mariadb/openstack-db` to exist with `kubectl wait --for=create`, then waits for `Ready` | 600 s for both (`MARIADB_TIMEOUT`) |
+| `onboard` | Reads the root token from Secret `openbao-init-keys` in `shared-services` and runs `deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane` with the token in `BAO_TOKEN`. Fails with `ERROR: cannot read Secret shared-services/openbao-init-keys` or `ERROR: Secret shared-services/openbao-init-keys carries no root_token` before the script runs | None |
+| `ready` | Waits for the ControlPlane's `Ready` | 1800 s (`READY_TIMEOUT`) |
+
+The `mariadb` stage waits for the MariaDB to exist first because the page's
+`kubectl wait` fails with NotFound when it runs before the c5c3-operator has
+created the MariaDB. A user typing it seconds after the apply never sees that,
+and a script does. The `ready` timeout is twice the page's 15 minutes, because
+a CI node cold-starts a service about four times slower than a workstation.
+The token reaches the onboarding script through its environment only and
+appears in no argument and no output.
+
+When a step of `controlplane` fails,
+`hack/ci-quick-start-controlplane.sh summary _output/flux-path/summary.md` writes
+a Markdown report: the stage the run stopped in (`deploy-infra` when `up` never
+started), the ControlPlane's conditions as a table, the OVNCentral's `Ready`
+condition, `kubectl get helmrelease -A` and the Flux sources in `flux-system`. A
+read that fails writes `(unavailable: <error>)` in its place. The report reads
+no Secret, because it goes into a public issue.
+
+### Tracking issue
+
+A scheduled run whose `controlplane` job did not succeed files one tracking
+issue titled `Scheduled Flux path run is red`. The `report` job runs
+`hack/ci-report-red-run.sh`, which creates the issue on the first red night and
+comments on it on every later one. It takes only an open issue that
+`github-actions[bot]` opened: the repository is public, so anyone can open an
+issue of that title, and the script ignores such an issue. The body names the
+result (a night a person cancelled reports `cancelled`), links the run, names
+the commit and carries the summary, cut at 60000 bytes because GitHub rejects a
+body over 65536 characters. A night that hit its wall uploaded no summary, and
+the body says to read the run log instead. The script reads every page of the
+open issues and adds no label. A failed listing files nothing, so a transient
+API error does not open a duplicate.
+
+A maintainer closes the issue once the cause is fixed. A green night leaves it
+open, because a lucky green would close an issue whose cause nobody fixed. A
+dispatch or a pull request run never reports.
+
+### Reproducing a night locally
+
+```bash
+WITH_CONTROLPLANE=true make deploy-infra
+hack/ci-quick-start-controlplane.sh up
+```
+
+On macOS pass `KIND_HOST_PORT=8443` to both commands; `up` then keeps the CR's
+`publicEndpoint` lines. Keep `CONTROLPLANE_NAME` at its default: deploy-infra
+seeds the admin password for that name, and `up` fails in `extract` when the
+page's CR carries another one. The header of the script lists its other
+environment variables, among them `STATE_DIR` and the three timeouts.
 
 ## File Layout
 
@@ -1315,10 +1649,10 @@ The script's budget is `exec: 45m`, with `catch` 5m, `finally` 15m and
 tests/e2e/c5c3/
 ├── admin-password-scoping/
 │   ├── chainsaw-test.yaml              Per-CR admin-password projection
-│   └── 00-controlplane-cr.yaml         Canonical ControlPlane CR
+│   └── 00-controlplane-cr.yaml         ControlPlane CR (controlplane; ephemeral namespace)
 ├── db-credential-scoping/
 │   ├── chainsaw-test.yaml              Per-CR DB-credential projection
-│   └── 00-controlplane-cr.yaml         Canonical ControlPlane CR
+│   └── 00-controlplane-cr.yaml         ControlPlane CR (controlplane; ephemeral namespace)
 ├── dedicated-backing-services/
 │   ├── chainsaw-test.yaml              Per-service dedicated database/cache opt-in
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; ephemeral namespace)
@@ -1328,7 +1662,7 @@ tests/e2e/c5c3/
 │   └── 01-keystoneservice-nova.yaml    The parked registration in the Managed Keystone namespace (@KEYSTONE_NS@/@CP_NS@ tokens)
 ├── deletion-orchestration/
 │   ├── chainsaw-test.yaml              ORC-teardown finalizer sequencing
-│   └── 00-controlplane-cr.yaml         ControlPlane CR (deletion-orch)
+│   └── 00-controlplane-cr.yaml         ControlPlane CR (deletion-orch; ephemeral namespace)
 ├── env-key-material/
 │   └── chainsaw-test.yaml              c5c3-operator pod spec and process environment free of key material
 ├── external-keystone/
@@ -1353,7 +1687,11 @@ tests/e2e/c5c3/
 │   ├── 05-neutronmetadataagent-cr.yaml Metadata agent on that chassis, gated on the generated secret
 │   ├── 06-fake-compute.yaml            nova-compute built out of the published compute contract
 │   ├── 07-hypervisor-operator-verify-job.yaml  Calls as the hypervisor operator's user
-│   └── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
+│   ├── 08-patch-upgrade.yaml           Link 8's merge patch (the target release)
+│   └── extraconfig-edit.sh             Link 7e, sourced by the step 1 script (inline, it passes the 128 KiB argument cap)
+├── healthcheck/
+│   ├── chainsaw-test.yaml              KeystoneReady and Ready wait for the Keystone API
+│   └── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; ephemeral namespace)
 ├── invalid-cr/
 │   ├── chainsaw-test.yaml              ControlPlane admission rejections
 │   ├── _generate.py                    Canonical scaffold + generator for the fixtures
@@ -1444,11 +1782,22 @@ tests/e2e/c5c3/
 │   ├── 00-tenant-a-controlplane.yaml   ControlPlane CR controlplane-a
 │   ├── 01-tenant-b-controlplane.yaml   ControlPlane CR controlplane-b
 │   └── 02-tenant-a-rotation.yaml       Rotation trigger for tenant-a only
+├── pod-security-restricted/
+│   ├── chainsaw-test.yaml              Managed ControlPlane under restricted:latest
+│   └── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; single-replica database)
 ├── secret-store-scoping/
 │   └── chainsaw-test.yaml              Per-tenant OpenBao identity + isolation
 └── sizing-profile/
     ├── chainsaw-test.yaml              SizingProfile resolution, edit and deletion
     └── 00-controlplane-cr.yaml         ControlPlane CR (cp; __PROFILE__ token)
+```
+
+The chart-level suite lives beside it:
+
+```text
+tests/e2e/c5c3-operator/
+└── metrics/
+    └── chainsaw-test.yaml              Second release's ServiceMonitor, its Service's exposition, uninstall
 ```
 
 The two-cluster orders suite lives outside `tests/e2e/`:

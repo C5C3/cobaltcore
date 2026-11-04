@@ -41,6 +41,10 @@
 #     is the explicit regression net for any future sub-reconciler that forgets
 #     the restricted securityContext.
 #
+#   - The two Jobs Steps 4 and 5 run are counted: Step 7 reads the
+#     cinder_operator_db_purge_total and cinder_operator_service_remove_total
+#     samples of cinder-pss off the cinder-operator release.
+#
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -373,3 +377,22 @@ spec:
             -o custom-columns=LAST:.lastTimestamp,OBJ:.involvedObject.kind/.involvedObject.name,MSG:.message 2>&1 || true
           echo "=== Sorted events (last 30, CR namespace) ==="
           kubectl get events -n "$NS" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Assert both manual runs are counted ────────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # The purge of Step 4 is controlled by the CronJob and the service-remove
+  # Job of Step 5 belongs to the Cinder, so the operator counts both under
+  # cinder-pss.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh cinder-system cinder-operator cinder_operator \
+            'cinder_operator_db_purge_total{cinder="cinder-pss",namespace="cinder-pss",result="succeeded"}' \
+            'cinder_operator_service_remove_total{cinder="cinder-pss",namespace="cinder-pss",result="succeeded"}'
+    catch:
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/instance=cinder-operator
+        tail: 200

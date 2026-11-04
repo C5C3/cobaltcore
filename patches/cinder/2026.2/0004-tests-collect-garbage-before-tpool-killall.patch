@@ -1,0 +1,90 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+tests: collect garbage before tpool.killall() in the test cleanup
+
+The cleanup of the base TestCase (`_common_cleanup` in
+cinder/tests/unit/test.py) calls `tpool.killall()` after every test, so
+every test that uses eventlet's native thread pool starts its 20 threads
+again in `tpool.setup()`. The Ceph backup driver tests
+(cinder/tests/unit/backup/drivers/test_backup_ceph.py) leave os-brick
+`RBDVolumeIOWrapper` objects to the garbage collector, some with an
+`eventlet.tpool.Proxy` as their image. The wrapper is an `io.RawIOBase`
+and closes itself on finalization: `close()` calls `flush()`, `flush()`
+calls `self.rbd_image.require_not_closed()`
+(os_brick/initiator/linuxrbd.py), and the proxy runs that through
+`tpool.execute()`.
+
+A cyclic collection that finalizes such a wrapper during a
+`tpool.setup()` hangs the stestr worker for good, in one of two ways:
+
+- On the thread in `setup()`, while its loop starts the pool threads:
+  `execute()` finds `_setup_already` set, queues the flush and waits for
+  the result, but `tpool_trampoline`, which delivers results, is spawned
+  only after that loop.
+- On a pool thread still in `Thread._bootstrap`: the flush waits on an
+  eventlet hub of that native thread's own, which nothing ever wakes, so
+  the thread never sets `_started` and `Thread.start()` in `setup()`
+  waits forever.
+
+gdb, py-spy and faulthandler dumps of hung workers show both stacks.
+The worker stops after about 500 tests, in the backup driver tests,
+while the other workers finish, and `test-service-images` then runs
+into its 90-minute timeout: for cinder 2026.2 in 6 of 48 runs between
+2026-10-06 and 2026-10-22 (the last in run 39784849996), for 2026.1 in
+3 of 91 runs since 2026-09-21 (run 38241162511 shows the same stalled
+worker). Run locally with four workers, the 29.0.0 suite hung in 5 of
+about 45 runs.
+
+The patch runs `gc.collect()` in the cleanup, before `tpool.killall()`,
+whenever the test started the pool. Whatever the test left to the
+garbage collector is finalized there, on the test's own thread while
+the pool and its trampoline still run, so the flush completes and no
+such wrapper is left for a later `setup()`. Tests that never start the
+pool skip the collection. With a hook that logs every eventlet hub
+switch inside a collection, all wrapper finalizations of a patched
+29.0.0 run happen inside that `gc.collect()`, and the patched suite hung
+in none of 36 runs. The collections cost time: the whole 29.0.0 suite
+took 448 s with the patch and 397 s without, on four cores, one run
+each.
+
+Closing every wrapper the Ceph tests build, directly or through the
+driver, would fix the leak at its source, but the next such leak would
+deadlock the same way.
+
+The patch changes test code only, so it changes nothing at runtime and
+tests/container-images/verify_cinder.sh needs no assertion.
+Its 2026.1 twin,
+patches/cinder/2026.1/0005-tests-collect-garbage-before-tpool-killall.patch,
+carries the same hunks, cut from 28.0.0.
+
+Applies to cinder 29.0.0 (2026.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/cinder/tests/unit/test.py b/cinder/tests/unit/test.py
+index d7f683f..7fe33ab 100644
+--- a/cinder/tests/unit/test.py
++++ b/cinder/tests/unit/test.py
+@@ -21,6 +21,7 @@ inline callbacks.
+ 
+ """
+ import copy
++import gc
+ import logging
+ import os
+ from unittest import mock
+@@ -345,6 +346,13 @@ class TestCase(testtools.TestCase):
+         if not issues.TPOOL_KILLALL_ISSUE:
+             # Ensure we have the default tpool size value and we don't carry
+             # threads from other test runs.
++            if tpool._setup_already:
++                # Finalize what this test left to the garbage collector while
++                # the pool still runs: a collected os-brick
++                # RBDVolumeIOWrapper flushes through its tpool.Proxy, and a
++                # collection inside the next tpool.setup() would wait for
++                # that flush forever.
++                gc.collect()
+             tpool.killall()
+             tpool._nthreads = 20
+ 

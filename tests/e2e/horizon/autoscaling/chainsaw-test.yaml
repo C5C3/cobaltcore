@@ -1,0 +1,241 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for HorizontalPodAutoscaler reconciliation, the Horizon
+# copy of tests/e2e/keystone/autoscaling. Verifies that the operator creates,
+# updates, and deletes HPAs based on spec.autoscaling, and that the dashboard
+# PodDisruptionBudget follows the HPA's minimum:
+#   - Initial deployment with CPU autoscaling (maxReplicas: 6, CPU: 80%);
+#     minReplicas is unset, so the budget keeps minAvailable: 1
+#   - Add memory metric (CPU: 80%, Memory: 70%)
+#   - Lower minReplicas to 1 (HPA minReplicas: 1, PDB maxUnavailable: 1)
+#   - Raise the CPU target to 150% and set a scale-down behavior (both
+#     reach the HPA)
+#   - Disable autoscaling (HPA deleted, PDB back at minAvailable: 1)
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-autoscaling
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Horizon CR with CPU autoscaling ────────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+  # ── Step 2: Assert Ready and HPA created ─────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPAReady
+    - assert:
+        resource:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: horizon
+              app.kubernetes.io/instance: horizon-autoscaling
+              app.kubernetes.io/managed-by: horizon-operator
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: horizon-autoscaling
+            minReplicas: 3
+            maxReplicas: 6
+            metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: 80
+    # minReplicas is unset, so the lower bound is the three configured
+    # replicas and the budget keeps minAvailable: 1.
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+          spec:
+            minAvailable: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-autoscaling -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-autoscaling -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== HPA and PDB status ==="
+          kubectl get hpa,pdb -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 2>&1 || true
+  # ── Step 3: Add memory metric ────────────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-add-memory-metric.yaml
+  # ── Step 4: Assert HPA updated with both metrics ─────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+          spec:
+            maxReplicas: 6
+            metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: 80
+            - type: Resource
+              resource:
+                name: memory
+                target:
+                  type: Utilization
+                  averageUtilization: 70
+  # ── Step 5: Lower the HPA minimum to one replica ─────────────────────────
+  - try:
+    - patch:
+        file: 02-patch-min-replicas-one.yaml
+  # ── Step 6: Assert the HPA minimum and the budget that follows it ────────
+  # An autoscaler that may scale down to one pod must not keep
+  # minAvailable: 1, which would refuse every eviction of that pod and
+  # stall a drain. The budget flips to maxUnavailable: 1 and server-side
+  # apply drops minAvailable.
+  - try:
+    - assert:
+        resource:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+          spec:
+            minReplicas: 1
+            maxReplicas: 6
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+            (minAvailable == null): true
+  # ── Step 7: Raise the CPU target above 100 and set a behavior ───────────
+  - try:
+    - patch:
+        file: 03-patch-behavior-target-above-100.yaml
+  # ── Step 8: Assert the target and the behavior reached the HPA ───────────
+  # The dashboard pod has no CPU limit, so a CPU target of 150% of its request is
+  # admitted, and the operator copies spec.autoscaling.behavior verbatim
+  # into the HPA's spec.behavior.
+  - try:
+    - assert:
+        resource:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+          spec:
+            minReplicas: 1
+            maxReplicas: 6
+            metrics:
+            - type: Resource
+              resource:
+                name: cpu
+                target:
+                  type: Utilization
+                  averageUtilization: 150
+            - type: Resource
+              resource:
+                name: memory
+                target:
+                  type: Utilization
+                  averageUtilization: 70
+            behavior:
+              scaleDown:
+                stabilizationWindowSeconds: 60
+                policies:
+                - type: Pods
+                  value: 1
+                  periodSeconds: 30
+  # ── Step 9: Disable autoscaling ──────────────────────────────────────────
+  - try:
+    - patch:
+        file: 04-patch-disable-autoscaling.yaml
+  # ── Step 10: Assert HPA deleted, condition updated, budget restored ──────
+  - try:
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+          status:
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Only a NotFound proves the HPA is gone; any other error is an
+          # API failure, not a deletion.
+          if OUT=$(kubectl get hpa horizon-autoscaling -n "$NAMESPACE" 2>&1); then
+            echo "FAIL: HPA should have been deleted"
+            echo "$OUT"
+            exit 1
+          fi
+          if ! grep -q NotFound <<<"$OUT"; then
+            echo "FAIL: kubectl get hpa failed without NotFound: $OUT"
+            exit 1
+          fi
+          echo "PASS: HPA correctly deleted"
+    # Without autoscaling the lower bound is the three configured replicas
+    # again, so the budget is back at minAvailable: 1.
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: horizon-autoscaling
+            namespace: openstack
+          spec:
+            minAvailable: 1
+            (maxUnavailable == null): true

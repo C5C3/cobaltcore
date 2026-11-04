@@ -81,7 +81,9 @@ func (p ProbeFlowParams) cacheHit() bool {
 // only the endpoint and condition vocabulary. All network errors requeue rather
 // than returning a hard error, except a cancelled parent context (a peer in the
 // parallel group failed), which propagates unchanged so an unrelated failure
-// cannot masquerade as "API down".
+// cannot masquerade as "API down". A success and a cache hit return a zero
+// result; the caller schedules the re-probe with ScheduleReprobe after its
+// pipeline, so the pipeline steps after the probe still run.
 func ReconcileProbe(ctx context.Context, p ProbeFlowParams) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -156,7 +158,7 @@ func ReconcileProbe(ctx context.Context, p ProbeFlowParams) (ctrl.Result, error)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		logger.V(1).Info(p.Subject+" health check passed", "status", resp.StatusCode)
-		p.Cache.Store(p.Key, p.UID, endpoint)
+		p.Cache.Store(p.Key, p.UID, endpoint, p.CacheTTL)
 		conditions.SetCondition(p.Conditions, metav1.Condition{
 			Type:               p.ConditionType,
 			Status:             metav1.ConditionTrue,
@@ -189,6 +191,37 @@ func ReconcileProbe(ctx context.Context, p ProbeFlowParams) (ctrl.Result, error)
 		Message:            message,
 	})
 	return ctrl.Result{RequeueAfter: p.RequeueAfter}, nil
+}
+
+// minReprobeAfter is the requeue ScheduleReprobe returns for an entry that has
+// already expired. A zero RequeueAfter would mean no requeue at all.
+const minReprobeAfter = time.Second
+
+// ScheduleReprobe returns the result a reconcile hands to controller-runtime.
+// A converged pass (nil error, zero result) is requeued for the moment the
+// CR's probe-cache entry expires under the TTL the probe was stored with, so
+// the next pass probes the API again.
+//
+// An error or a non-zero result passes through unchanged: the error backoff
+// or the waiting step's own requeue schedules the next pass, and a waiting
+// step keeps Ready False anyway. A pass without an entry has no probe to
+// renew and passes through too, as does every pass while cache.NoReprobe is
+// set. The requeue targets the entry's expiry rather than a flat TTL because
+// an event pass in between would otherwise push the next probe up to two
+// TTLs past the last one.
+func ScheduleReprobe(result ctrl.Result, err error, cache *ProbeCache, key types.NamespacedName) ctrl.Result {
+	if err != nil || !result.IsZero() || cache.NoReprobe {
+		return result
+	}
+	remaining, ok := cache.ExpiresIn(key)
+	switch {
+	case !ok:
+		return result
+	case remaining > 0:
+		return ctrl.Result{RequeueAfter: remaining}
+	default:
+		return ctrl.Result{RequeueAfter: minReprobeAfter}
+	}
 }
 
 // bodyExcerptLimit bounds how much of a failed probe's body reaches the

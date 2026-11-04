@@ -1,0 +1,30 @@
+{
+  "metrics": {
+    "reconcile.1.e2e_p50_s": 0.2,
+    "reconcile.1.e2e_p95_s": 0.245,
+    "reconcile.1.e2e_p99_s": 0.249,
+    "reconcile.1.sub_p50_s": 0.0075,
+    "reconcile.1.sub_p95_s": 0.0489,
+    "reconcile.1.sub_p99_s": 0.088,
+    "reconcile.3.e2e_p50_s": 0.2071,
+    "reconcile.3.e2e_p95_s": 0.2457,
+    "reconcile.3.e2e_p99_s": 0.2491,
+    "reconcile.3.sub_p50_s": 0.0076,
+    "reconcile.3.sub_p95_s": 0.0585,
+    "reconcile.3.sub_p99_s": 0.0917,
+    "token.issue.failed": 0,
+    "token.issue.p50_ms": 464,
+    "token.issue.p99_ms": 562,
+    "token.issue.samples": 404,
+    "token.validate.failed": 0,
+    "token.validate.p50_ms": 27,
+    "token.validate.p99_ms": 51,
+    "token.validate.samples": 404
+  },
+  "recorded": {
+    "commit": "0f10fe7cb81aae90d6c429aff0af7603f1b67f52",
+    "date": "2026-10-31",
+    "release": "2026.1",
+    "run": "https://github.com/C5C3/cobaltcore/actions/runs/41218452619"
+  }
+}

@@ -92,19 +92,24 @@ preflight() {
 }
 
 # cr_names prints the resource refs (keystone/<name>) of every benchmark CR
-# currently present, one per line. The numeric suffix leaves out the
+# currently present, one per line. The numeric suffixes leave out the
 # keystone-perf-token CR of hack/perf-token-baseline.sh.
 cr_names() {
-  kubectl -n "${NAMESPACE}" get keystone -o name 2>/dev/null | grep -E "/${CR_PREFIX}-[0-9]+$" || true
+  kubectl -n "${NAMESPACE}" get keystone -o name 2>/dev/null | grep -E "/${CR_PREFIX}-[0-9]+-[0-9]+$" || true
 }
 
 # gen_crs writes a manifest of $1 Keystone CRs to $2. Each CR gets a unique name
-# and a unique database name so parallel CRs never share a schema.
+# and a unique database name so parallel CRs never share a schema. Both carry
+# the count, so no count reuses the names of the one before it: the MariaDB
+# Database, User and Grant of a deleted CR outlive it (database.FinalizeResources
+# releases the finalizer before the mariadb-operator tears them down), and a CR
+# re-created under the same name runs into that teardown and may never turn
+# Ready.
 gen_crs() {
   local count="$1" out="$2" i
   for ((i = 1; i <= count; i++)); do
     printf -- '---\n'
-    perf_keystone_cr "${CR_PREFIX}-${i}" "keystone_perf_${i}"
+    perf_keystone_cr "${CR_PREFIX}-${count}-${i}" "keystone_perf_${count}_${i}"
   done >"${out}"
 }
 

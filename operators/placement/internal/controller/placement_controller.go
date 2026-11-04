@@ -400,6 +400,8 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	statusBefore := placement.Status.DeepCopy()
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, r.pipelineSteps(children, &placement))
+	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+		client.ObjectKeyFromObject(&placement))
 	return r.updateStatus(ctx, &placement, statusBefore, result, err)
 }
 

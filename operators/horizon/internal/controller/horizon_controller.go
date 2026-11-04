@@ -213,7 +213,6 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by operators/horizon/internal/controller/reconcile_deployment.go:125 (reconcileDeployment) to delete services.
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;patch;delete
-// Unexercised by the e2e suites; used by internal/common/config/config.go:517 (pruneImmutableObjects) to delete configmaps.
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;delete
 // The Django SECRET_KEY Secret is ESO-managed; the operator only reads it to
 // gate readiness and digest the key material for the rollout annotation.
@@ -222,11 +221,10 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // Unexercised by the e2e suites; used by operators/horizon/internal/controller/reconcile_deployment.go:130 (reconcileDeployment) to delete poddisruptionbudgets.
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
-// Unexercised by the e2e suites; used by internal/common/deployment/deployment.go:174 (EnsureHPA) to create and patch horizontalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:190 (ReconcileVPAs) to create and patch verticalpodautoscalers.
 // Unexercised by the e2e suites; used by internal/common/deployment/vpa_flow.go:213 (ReconcileVPAs) to delete verticalpodautoscalers.
-// Unexercised by the e2e suites; used by operators/horizon/internal/controller/horizon_controller.go:592 (SetupWithManager) to list and watch verticalpodautoscalers.
+// Unexercised by the e2e suites; used by operators/horizon/internal/controller/horizon_controller.go:590 (SetupWithManager) to list and watch verticalpodautoscalers.
 // +kubebuilder:rbac:groups=autoscaling.k8s.io,resources=verticalpodautoscalers,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // Required to create, patch and delete HTTPRoutes that expose the dashboard externally.
@@ -439,8 +437,12 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// commonreconcile.RunPipeline short-circuits on the first non-zero result
 	// or error; both the short-circuit and the fully-successful chain funnel
-	// through updateStatus, which recomputes the aggregate Ready condition.
+	// through updateStatus, which recomputes the aggregate Ready condition. A
+	// fully-successful chain is requeued for the probe-cache expiry, so the
+	// next pass probes the API again.
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
+	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+		client.ObjectKeyFromObject(&horizon))
 	return r.updateStatus(ctx, &horizon, statusBefore, result, err)
 }
 

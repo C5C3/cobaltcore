@@ -53,6 +53,19 @@ import (
 // kind. Non-K-ORC finalizers on the same object are preserved.
 const korcFinalizerPrefix = orcv1alpha1.GroupName + "/"
 
+// orcTeardownStalledAnnotation marks a ControlPlane whose teardown entered the ORC
+// stall escape. The strip behind it may not have happened. The escape stamps it
+// ahead of its first strip, and the normal release reads it. A pass behind an
+// escape that failed or held finds no K-ORC CR left and lands on that release,
+// where ORCTeardownComplete would report a clean finish for a teardown that gave
+// up on K-ORC. A strip that fails on its first CR can still leave K-ORC to finish
+// the teardown, and that release stays silent too. The escape reads it as well, so
+// a failing strip announces its Warnings once.
+//
+// KORCReady cannot carry this, because deleteRegistrationsBeforeTeardown rewrites
+// the condition on every pass and uses its reason as a latch of its own.
+const orcTeardownStalledAnnotation = "c5c3.io/orc-teardown-stalled"
+
 // orcChildObject is one K-ORC CR the ControlPlane owns and must tear down first.
 // newObj returns a zeroed object for Get/Delete.
 type orcChildObject struct {
@@ -148,6 +161,30 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 	return objs
 }
 
+// liveTerminatingControlPlane re-reads a ControlPlane the cache shows as
+// terminating. It returns nil when the cached copy no longer names a live CR:
+// the CR is gone, or the name now belongs to a re-created CR, which has no
+// deletion timestamp and whose create event queues its own pass.
+//
+// It reads into a new object because decoding into the populated cached copy
+// keeps fields the response omits, such as an emptied metadata.finalizers.
+func (r *ControlPlaneReconciler) liveTerminatingControlPlane(
+	ctx context.Context, cached *c5c3v1alpha1.ControlPlane,
+) (*c5c3v1alpha1.ControlPlane, error) {
+	key := client.ObjectKeyFromObject(cached)
+	live := &c5c3v1alpha1.ControlPlane{}
+	if err := r.apiReader().Get(ctx, key, live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("re-reading terminating ControlPlane %s: %w", key, err)
+	}
+	if live.UID != cached.UID {
+		return nil, nil
+	}
+	return live, nil
+}
+
 // reconcileDelete drives the ORC-teardown finalizer when the ControlPlane CR is
 // being deleted. It is a no-op if the finalizer is absent.
 //
@@ -190,13 +227,16 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 //  4. While managed CRs remain and the bounded orcTeardownDeadline has not
 //     elapsed, report KORCReady=False/FinalizingORC and requeue.
 //  5. Once the stall timeout elapses (K-ORC cannot make progress — most likely
-//     Keystone is already gone, so it cannot revoke), force-remove the
-//     openstack.k-orc.cloud/* finalizers, emit a Warning event, and release the
+//     Keystone is already gone, so it cannot revoke), emit a Warning event,
+//     force-remove the openstack.k-orc.cloud/* finalizers, and release the
 //     ControlPlane finalizer so deletion can complete. Every MANAGED CR released
 //     that way orphans the OpenStack resource behind it, so a second Warning names
 //     them: they are the only teardown outcome an operator has to repair by hand.
 //     The children of a projected registration still present are force-released on
-//     this path too, under the same Warning as on the normal release.
+//     this path too, under the same Warning as on the normal release. A latch on the
+//     CR keeps a later pass from reporting ORCTeardownComplete when this one fails or
+//     holds at or behind the strip, and keeps a failing strip from repeating the two
+//     Warnings (orcTeardownStalledAnnotation).
 func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer) {
 		// The remote-children finalizer outlives the ORC one on the stall path: the
@@ -337,12 +377,23 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		// remote-children one goes with it: the sweep above visited every placed
 		// namespace, on the cluster it lives on or, past the abandon window, not at
 		// all — either way nothing is left for it to hold the CR open for.
-		r.Recorder.Event(cp, "Normal", "ORCTeardownComplete",
-			"No remaining K-ORC CRs; releasing the ControlPlane finalizer")
+		//
+		// The event reports a release that happened, so it follows the update: a
+		// failed update emits nothing and the next pass retries. A process that dies
+		// between the two loses the event. No reconcile logic reads it; only the
+		// external-keystone and controlplane-deletion-korc-outage suites assert it.
 		controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
 		controllerutil.RemoveFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer)
 		if err := r.Update(ctx, cp); err != nil {
+			if apierrors.IsNotFound(err) {
+				log.FromContext(ctx).V(1).Info("ControlPlane already released; skipping the completion event")
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
+		}
+		if !metav1.HasAnnotation(cp.ObjectMeta, orcTeardownStalledAnnotation) {
+			r.Recorder.Event(cp, "Normal", "ORCTeardownComplete",
+				"No remaining K-ORC CRs; released the ControlPlane finalizer")
 		}
 		return ctrl.Result{}, nil
 	}
@@ -403,9 +454,9 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	}
 
 	// Stall timeout elapsed: the K-ORC finalizers cannot complete (most likely
-	// Keystone is already gone, so K-ORC cannot revoke). Force-remove the
-	// openstack.k-orc.cloud/* finalizers so GC can reclaim the stuck CRs, warn so
-	// the wedge is operator-visible, then release the ControlPlane finalizer.
+	// Keystone is already gone, so K-ORC cannot revoke). Warn so the wedge is
+	// operator-visible, force-remove the openstack.k-orc.cloud/* finalizers so GC
+	// can reclaim the stuck CRs, then release the ControlPlane finalizer.
 	//
 	// Classify BEFORE stripping. Releasing an Unmanaged import has zero blast radius:
 	// deleting its CR never called OpenStack in the first place. A Managed CR is the
@@ -427,22 +478,38 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	// stuck, handled below) — suppress the K-ORC Warning then, so it never
 	// alarms about an empty list.
 	if len(remaining) > 0 {
+		// Latch and warn once per deletion. A strip that keeps failing retries on the
+		// failure backoff, and each repeat would spend the event correlator's Warning
+		// budget for this object, which the Warnings behind the strip still need. The
+		// first pass names the longest list, because remaining only shrinks during a
+		// teardown. A process that dies between the latch and the Warnings loses them.
+		//
+		// Warn ahead of the strip. A strip that fails or dies part way can leave a
+		// CR-only remainder, and the passes behind it release that remainder without
+		// coming back here, so a managed CR stripped first would go unnamed. If K-ORC
+		// finishes a CR whose strip failed, these Warnings over-report, the side
+		// isManagedORCChild errs on too.
+		if !metav1.HasAnnotation(cp.ObjectMeta, orcTeardownStalledAnnotation) {
+			if err := r.latchORCTeardownStall(ctx, cp); err != nil {
+				return ctrl.Result{}, err
+			}
+			r.Recorder.Event(cp, "Warning", "ORCTeardownStalled", fmt.Sprintf(
+				"K-ORC CRs %v stayed Terminating longer than %s (K-ORC may be unable to reach Keystone to revoke); "+
+					"force-removing their K-ORC finalizers and releasing the ControlPlane",
+				names, orcTeardownDeadline,
+			))
+			if len(orphaned) > 0 {
+				r.Recorder.Event(cp, "Warning", "ORCResourcesOrphaned", fmt.Sprintf(
+					"the OpenStack resources behind the managed K-ORC CRs %v are NOT deleted: their finalizers are being "+
+						"force-removed before K-ORC can revoke the admin application credential or remove the "+
+						"catalog rows and identities it registered. Nothing in "+
+						"Kubernetes names them after that — remove them from Keystone by hand",
+					orphaned,
+				))
+			}
+		}
 		if err := r.forceRemoveKORCFinalizers(ctx, remaining); err != nil {
 			return ctrl.Result{}, err
-		}
-		r.Recorder.Event(cp, "Warning", "ORCTeardownStalled", fmt.Sprintf(
-			"K-ORC CRs %v stayed Terminating longer than %s (K-ORC may be unable to reach Keystone to revoke); "+
-				"force-removed their K-ORC finalizers and releasing the ControlPlane",
-			names, orcTeardownDeadline,
-		))
-		if len(orphaned) > 0 {
-			r.Recorder.Event(cp, "Warning", "ORCResourcesOrphaned", fmt.Sprintf(
-				"the OpenStack resources behind the managed K-ORC CRs %v were NOT deleted: their finalizers were "+
-					"force-removed before K-ORC could revoke the admin application credential or remove the "+
-					"catalog rows and identities it registered. Nothing in "+
-					"Kubernetes names them any more — remove them from Keystone by hand",
-				orphaned,
-			))
 		}
 		log.FromContext(ctx).Info("ORC teardown stalled; force-removed K-ORC finalizers",
 			"remaining", names, "orphaned", orphaned, "deadline", orcTeardownDeadline)
@@ -489,11 +556,43 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	// this ControlPlane placed on a target cluster: the namespace sweep never ran
 	// on this path, so the remote-children finalizer stays on and
 	// reconcileDeleteRemoteChildren finishes the sweep from the next pass.
+	//
+	// A ControlPlane that placed nothing carries no remote-children finalizer, so
+	// releasing the ORC one releases the CR and no later pass runs the sweep. Run
+	// it here, or the co-located Barbican's auth-delegator binding and
+	// OpenBaoTenant outlive the CR. The sweep is past its own orcTeardownDeadline
+	// by now, so it stops waiting on stuck children.
+	if !controllerutil.ContainsFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer) {
+		done, err := r.sweepNamespacesBeforeRelease(ctx, cp)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !done {
+			return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
+		}
+	}
 	controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
-	if err := r.Update(ctx, cp); err != nil {
+	if err := client.IgnoreNotFound(r.Update(ctx, cp)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer after force-remove: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// latchORCTeardownStall stamps orcTeardownStalledAnnotation on the CR. A failed
+// write returns before the escape strips anything, so a stripped K-ORC CR always
+// has its latch behind it.
+//
+// It writes a copy because the update response would replace the conditions this
+// pass has set in memory. Only the annotations and the resourceVersion come back,
+// the latter for the finalizer update that ends the escape.
+func (r *ControlPlaneReconciler) latchORCTeardownStall(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+	latched := cp.DeepCopy()
+	metav1.SetMetaDataAnnotation(&latched.ObjectMeta, orcTeardownStalledAnnotation, "true")
+	if err := client.IgnoreNotFound(r.Update(ctx, latched)); err != nil {
+		return fmt.Errorf("latching the ORC stall: %w", err)
+	}
+	cp.Annotations, cp.ResourceVersion = latched.Annotations, latched.ResourceVersion
+	return nil
 }
 
 // reconcileDeleteRemoteChildren finishes the teardown of a ControlPlane that has
@@ -520,7 +619,7 @@ func (r *ControlPlaneReconciler) reconcileDeleteRemoteChildren(
 	}
 
 	controllerutil.RemoveFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer)
-	if err := r.Update(ctx, cp); err != nil {
+	if err := client.IgnoreNotFound(r.Update(ctx, cp)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing the remote-children finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
@@ -1623,11 +1722,29 @@ func (r *ControlPlaneReconciler) deleteRegistrationsBeforeTeardown(
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true, nil
 	}
 
-	r.Recorder.Event(cp, "Warning", "ServiceRegistrationTeardownStalled", fmt.Sprintf(
-		"KeystoneService registration(s) %v stayed present longer than %s; continuing the ControlPlane teardown "+
-			"anyway. Their K-ORC CRs still hold the catalog rows and service users they registered, and once this "+
-			"ControlPlane is gone nothing can remove them — delete them from Keystone by hand",
-		remaining, registrationTeardownStallTimeout))
+	// Announce the give-up once per deletion. Every pass of the K-ORC window behind
+	// this gate lands here, and the event correlator allows one source a burst of 25
+	// events of one type per object and then one every five minutes. Repeated on each
+	// pass, this Warning spends that budget on itself, and the correlator drops the
+	// stall escape's own Warnings, the only record of what the teardown abandoned.
+	// FinalizingORC is the latch: nothing sets it before this gate has passed, and
+	// updateStatus persists it for the next pass.
+	if cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady); cond == nil || cond.Reason != "FinalizingORC" {
+		r.Recorder.Event(cp, "Warning", "ServiceRegistrationTeardownStalled", fmt.Sprintf(
+			"KeystoneService registration(s) %v stayed present longer than %s; continuing the ControlPlane teardown "+
+				"anyway. Their K-ORC CRs still hold the catalog rows and service users they registered, and once this "+
+				"ControlPlane is gone nothing can remove them — delete them from Keystone by hand",
+			remaining, registrationTeardownStallTimeout))
+	}
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeKORCReady,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: cp.Generation,
+		Reason:             "FinalizingORC",
+		Message: fmt.Sprintf(
+			"gave up on the projected KeystoneService registration(s) %v after %s; tearing down the K-ORC CRs",
+			remaining, registrationTeardownStallTimeout),
+	})
 	log.FromContext(ctx).Info("KeystoneService registration teardown stalled; continuing the ControlPlane teardown",
 		"registrations", remaining, "stallTimeout", registrationTeardownStallTimeout)
 	return ctrl.Result{}, false, nil

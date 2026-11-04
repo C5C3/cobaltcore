@@ -4,10 +4,23 @@
 
 # Chainsaw E2E test for the NetworkPolicy sub-reconciler.
 #
-# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy,
-# so this suite validates the rendered policy object (ingress port 8080,
-# auto-derived DNS/keystone/cache egress) and its lifecycle, not actual
-# traffic enforcement — same scope as the keystone network-policy suite.
+# ENFORCEMENT: the kindnetd of kind v0.32 and later (CI pins KIND_VERSION)
+# enforces NetworkPolicy. The suite asserts the rendered policy object
+# (ingress port 8080, auto-derived DNS/keystone/cache egress) and its
+# lifecycle, and probes the policy with the four pods of 03-probe-pods.yaml
+# through ../../lib/assert-networkpolicy-enforced.sh (Step 3):
+#   - the target, which carries the policy's selector labels, is dropped on
+#     sink port 9999, which no egress rule admits;
+#   - it resolves a cluster name, which the DNS rule admits;
+#   - it reaches the sink on TCP 5000 and 11211, every TCP egress port the
+#     policy admits but 53;
+#   - a client in horizon-system, the operator namespace, is dropped on target
+#     port 9999, which no ingress rule admits, and reaches TCP 8080;
+#   - a client in horizon-netpol-outside is dropped on TCP 8080 until the
+#     update patch admits its namespace (Step 4).
+# On a CNI that does not enforce NetworkPolicy the first probe fails with "was
+# never dropped". TCP 53 is not probed: the sink listens on unprivileged ports
+# only, DNS is probed by resolution, and Step 2 pins the rule.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -80,7 +93,58 @@ spec:
           kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # ── Step 3: Probe the enforced policy ──────────────────────────────────
+  # The pods of 03-probe-pods.yaml stand in for the Horizon pods (see
+  # ENFORCEMENT above). kindnet adds a new pod to its policy set a moment
+  # after the pod starts, so the first dropped probe polls until the target's
+  # connection times out. The inside client's open probe then shows that
+  # kindnet knows the clients, which start together, so the outside client's
+  # drop comes from the policy. The trailing dot keeps the resolver off the
+  # search list.
+  - try:
+    - apply:
+        file: 03-probe-pods.yaml
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready --timeout=120s -n openstack \
+            pod/horizon-netpol-probe-target pod/horizon-netpol-probe-sink
+          kubectl wait --for=condition=Ready --timeout=120s -n horizon-system pod/horizon-netpol-probe-inside
+          kubectl wait --for=condition=Ready --timeout=120s -n horizon-netpol-outside pod/horizon-netpol-probe-outside
+          TARGET="$(kubectl get pod horizon-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          SINK="$(kubectl get pod horizon-netpol-probe-sink -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ] || [ -z "${SINK}" ]; then
+            echo "ERROR: a probe pod has no pod IP (target '${TARGET}', sink '${SINK}')"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          # Egress of the pod the policy selects. The first drop proves kindnet holds it.
+          "${PROBE}" openstack horizon-netpol-probe-target dropped "${SINK}" 9999
+          "${PROBE}" openstack horizon-netpol-probe-target resolves kubernetes.default.svc.cluster.local.
+          "${PROBE}" openstack horizon-netpol-probe-target open "${SINK}" 5000 11211
+          # Ingress into it: a port no rule admits, then the API port from an admitted
+          # and from a foreign namespace.
+          "${PROBE}" horizon-system horizon-netpol-probe-inside dropped "${TARGET}" 9999
+          "${PROBE}" horizon-system horizon-netpol-probe-inside open "${TARGET}" 8080
+          "${PROBE}" horizon-netpol-outside horizon-netpol-probe-outside dropped "${TARGET}" 8080
+    catch:
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Probe pods ==="
+          kubectl get pods -A -l app.kubernetes.io/instance=horizon-netpol -o wide --show-labels 2>&1 || true
+          for ref in openstack/horizon-netpol-probe-target openstack/horizon-netpol-probe-sink \
+            horizon-system/horizon-netpol-probe-inside horizon-netpol-outside/horizon-netpol-probe-outside; do
+            echo "--- ${ref} ---"
+            kubectl logs -n "${ref%%/*}" "${ref#*/}" 2>&1 || true
+            kubectl describe pod -n "${ref%%/*}" "${ref#*/}" 2>&1 | tail -20 || true
+          done
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n openstack -l app.kubernetes.io/instance=horizon-netpol -o yaml 2>&1 || true
+          echo "=== Events (horizon-netpol-outside) ==="
+          kubectl get events -n horizon-netpol-outside 2>&1 || true
+  # ── Step 4: Add a second ingress source and assert it lands ────────────
   - try:
     - patch:
         file: 01-patch-update-ingress.yaml
@@ -94,6 +158,20 @@ spec:
           spec:
             ingress:
             - (length(from) >= `2`): true
+    # The patch admits horizon-netpol-outside, so its client, which Step 3 saw
+    # dropped, now reaches the API port. That proves the patched policy is
+    # enforced and the earlier drop came from the policy.
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          TARGET="$(kubectl get pod horizon-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ]; then
+            echo "ERROR: the probe target has no pod IP"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          "${PROBE}" horizon-netpol-outside horizon-netpol-probe-outside open "${TARGET}" 8080
     catch:
     - script:
         content: |
@@ -106,7 +184,7 @@ spec:
           kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=60 --previous 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  # ── Step 5: Disable networkPolicy and assert deletion ──────────────────
   - try:
     - patch:
         file: 02-patch-disable-networkpolicy.yaml

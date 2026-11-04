@@ -124,7 +124,7 @@ func applyESOTenantCertificateSpec(u *unstructured.Unstructured, namespace strin
 	_ = unstructured.SetNestedField(u.Object, esoTenantClientCertDuration, "spec", "duration")
 	_ = unstructured.SetNestedField(u.Object, esoTenantClientCertRenewBefore, "spec", "renewBefore")
 	_ = unstructured.SetNestedStringSlice(u.Object, []string{"client auth"}, "spec", "usages")
-	_ = unstructured.SetNestedField(u.Object, esoTenantClientCertName+"."+namespace+".svc", "spec", "commonName")
+	_ = unstructured.SetNestedField(u.Object, clientCertCommonName(esoTenantClientCertName, namespace), "spec", "commonName")
 	_ = unstructured.SetNestedMap(u.Object, map[string]interface{}{
 		"name": openBaoCAIssuerName,
 		"kind": "ClusterIssuer",

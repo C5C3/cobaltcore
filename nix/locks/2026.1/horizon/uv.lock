@@ -692,6 +692,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "horizon" },
+    { name = "oslo-log" },
     { name = "pymemcache" },
     { name = "pymysql" },
     { name = "python-memcached" },
@@ -718,6 +719,7 @@ test = [
 requires-dist = [
     { name = "cryptography" },
     { name = "horizon", git = "https://github.com/openstack/horizon?rev=b3b26bad6e3cc6727fd1d07f8b1871404d70b708" },
+    { name = "oslo-log" },
     { name = "pymemcache" },
     { name = "pymysql" },
     { name = "python-memcached" },

@@ -223,3 +223,17 @@ run that paid for the lesson; the lesson itself is the part to carry.
 - **`cleanup-e2e-tags (<svc>-operator)` is red by design** on the first
   PR of a new operator (GHCR refuses to delete the last tagged version;
   the job is `continue-on-error`).
+- **A stdin-fed exec must keep stdout and stderr open:** containerd closes
+  an exec's stdin on the first EOF of its stdout or stderr, so a remote
+  command fed by `kubectl exec -i` must not drop either stream before it
+  reads stdin. `sh -c 'umask 077; cat > "$1"'` replaces the shell with
+  `cat`, whose redirect ends stdout, and lost 137 of 10,650 tokens at
+  exit 0 with an empty file (#1580). Keep the shell alive behind the
+  redirect and test the byte count:
+  `cat > "$1"; [ "$(wc -c < "$1")" -eq "$2" ] || exit 3`. `kubectl exec`
+  passes a remote exit code through and exits 1 on its own errors: a
+  refused exec, a stream lost mid-exec, an API error. A SKIP on exit 1
+  therefore needs a read of the pod that succeeds and shows no running
+  container, and a failed read stops the suite. A follow-up `exec` proves
+  nothing, because it fails in the same outage. Every other code stops
+  the suite, such as the 3 of a lost token or the 137 of a killed pod.

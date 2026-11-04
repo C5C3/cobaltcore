@@ -52,6 +52,17 @@ spec:
         app.kubernetes.io/managed-by: nova-operator
         app.kubernetes.io/name: nova
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: metadata
+                  app.kubernetes.io/instance: nova
+                  app.kubernetes.io/name: nova
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -135,11 +146,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8775
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8775
           timeoutSeconds: 10
         name: nova-metadata
         ports:
@@ -197,14 +207,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: metadata
-            app.kubernetes.io/instance: nova
-            app.kubernetes.io/name: nova
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
           items:
@@ -261,6 +263,17 @@ spec:
         app.kubernetes.io/managed-by: nova-operator
         app.kubernetes.io/name: nova
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: metadata
+                  app.kubernetes.io/instance: nova
+                  app.kubernetes.io/name: nova
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -344,11 +357,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /
-            port: 8775
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8775
           timeoutSeconds: 10
         name: nova-metadata
         ports:
@@ -414,14 +426,6 @@ spec:
             app.kubernetes.io/name: nova
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: metadata
-            app.kubernetes.io/instance: nova
-            app.kubernetes.io/name: nova
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:

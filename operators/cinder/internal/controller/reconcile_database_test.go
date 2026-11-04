@@ -76,40 +76,50 @@ func TestCinderMaxUserConnections(t *testing.T) {
 	}{
 		{
 			name: "the default topology",
-			want: 22,
-			because: "4 surge-inclusive API pods × 2 processes × 1 thread × 2 connections, " +
-				"plus 2 each for the scheduler and the backup service, plus 2 for the Jobs",
+			want: 57,
+			because: "4 surge-inclusive API pods × 2 processes × a pool of 5, plus 5 each for " +
+				"the scheduler, its surge pod and the backup service, plus 2 for the Jobs",
 		},
 		{
 			name:              "one cinder-volume per attached backend",
 			volumeDeployments: 2,
-			want:              26,
-			because:           "each volume Deployment adds its own pair of connections",
+			want:              67,
+			because:           "each volume Deployment adds a pool of its own",
 		},
 		{
 			name:    "an HPA owns the replica count",
 			mutate:  func(c *cinderv1alpha1.Cinder) { c.Spec.Autoscaling = &cinderv1alpha1.AutoscalingSpec{MaxReplicas: 10} },
-			want:    50,
+			want:    127,
 			because: "the cap has to cover the ceiling the HPA may scale to, not today's replica count",
 		},
 		{
 			name:    "raised scheduler replicas",
 			mutate:  func(c *cinderv1alpha1.Cinder) { c.Spec.Scheduler.Deployment.Replicas = 3 },
-			want:    26,
-			because: "schedulers are peers, and each one holds its own pair",
+			want:    67,
+			because: "schedulers are peers, and each one holds a pool of its own",
 		},
 		{
 			name: "a wider uWSGI topology",
 			mutate: func(c *cinderv1alpha1.Cinder) {
 				c.Spec.API.UWSGI = &cinderv1alpha1.UWSGISpec{Processes: 4, Threads: 2}
 			},
-			want:    70,
-			because: "the API floor scales with processes × threads, which is where the cap is spent",
+			want:    113,
+			because: "the API floor scales with processes, and each thread beyond the first adds one",
+		},
+		{
+			name: "the cinder-broker-pod-kill chaos suite",
+			mutate: func(c *cinderv1alpha1.Cinder) {
+				c.Spec.API.Deployment.Replicas = 1
+			},
+			volumeDeployments: 1,
+			want:              42,
+			because: "a scheduler draining the casts of a broker outage opens a session per cast; " +
+				"at two connections per process the cap was 16, and create_volume failed with error 1226",
 		},
 		{
 			name:    "a CR that bypassed the defaulting webhook",
 			mutate:  func(c *cinderv1alpha1.Cinder) { c.Spec.API.Deployment.Replicas = 0 },
-			want:    22,
+			want:    57,
 			because: "an unset replica count resolves to the shared default, never to zero pods",
 		},
 	}

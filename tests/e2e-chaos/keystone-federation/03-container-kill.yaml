@@ -6,6 +6,12 @@
 # pod. container-kill (not pod-kill): kubelet restarts the named container
 # in place — the pod survives, restartCount increments, and the readiness
 # probe depools the pod until Apache answers again.
+#
+# The selector leaves out Job pods: every Job pod carries
+# batch.kubernetes.io/job-name, and no API pod does. The trust-flush CronJob of
+# keystone-chaos-fed runs hourly and labels its pods with the same name and
+# instance, so mode one could pick a completed trust-flush pod, which has no
+# federation-proxy container to kill.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
 metadata:
@@ -22,4 +28,7 @@ spec:
     labelSelectors:
       app.kubernetes.io/name: keystone
       app.kubernetes.io/instance: keystone-chaos-fed
+    expressionSelectors:
+    - key: batch.kubernetes.io/job-name
+      operator: DoesNotExist
   gracePeriod: 0

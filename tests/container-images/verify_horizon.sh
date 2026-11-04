@@ -33,7 +33,20 @@ test_openstack_dashboard_importable() {
   assert_eq "import openstack_dashboard exits 0" "0" "$exit_code"
 }
 
-# --- Test 2: static assets are pre-built at image-build time ---
+# --- Test 2: oslo.log's JSON formatter is importable ---
+# The horizon-operator renders oslo_log.formatters.JSONFormatter into the
+# LOGGING dictConfig for spec.logging.format json; without it Django fails
+# with "Unable to configure formatter 'json'" and uWSGI loads no app.
+test_oslo_log_json_formatter_importable() {
+  echo "Test: oslo_log.formatters.JSONFormatter imports cleanly"
+  local exit_code=0
+  docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c 'import oslo_log.formatters as f; f.JSONFormatter' > /dev/null 2>&1 || exit_code=$?
+
+  assert_eq "import oslo_log.formatters.JSONFormatter exits 0" "0" "$exit_code"
+}
+
+# --- Test 3: static assets are pre-built at image-build time ---
 test_static_assets_present() {
   echo "Test: static assets are pre-built"
 
@@ -61,7 +74,7 @@ print(sum(len(files) for _, _, files in os.walk("/var/lib/openstack/horizon-stat
   assert_eq "offline compression manifest exists" "0" "$manifest_exit"
 }
 
-# --- Test 3: runs as openstack user ---
+# --- Test 4: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
   local whoami_output exit_code=0
@@ -71,13 +84,13 @@ test_runs_as_openstack_user() {
   assert_eq "whoami outputs openstack" "openstack" "$whoami_output"
 }
 
-# --- Test 4: no build tools in final image ---
+# --- Test 5: no build tools in final image ---
 test_no_build_tools_in_final_image() {
   echo "Test: no build tools in final image"
   assert_no_build_tools
 }
 
-# --- Test 5: uwsgi is runnable (serves openstack_dashboard.wsgi at runtime) ---
+# --- Test 6: uwsgi is runnable (serves openstack_dashboard.wsgi at runtime) ---
 test_uwsgi_runnable() {
   echo "Test: uwsgi --version succeeds"
   local version exit_code=0
@@ -88,11 +101,80 @@ test_uwsgi_runnable() {
   assert_uwsgi_imports openstack_dashboard
 }
 
+# --- Test 7: the rendered pymemcache OPTIONS bound Django's cache ---
+test_django_pymemcache_bounded() {
+  echo "Test: the rendered pymemcache OPTIONS bound Django's cache and errors are misses"
+  # The horizon-operator renders CACHES["default"]["OPTIONS"] for
+  # PyMemcacheCache in defaultSettings in
+  # operators/horizon/internal/controller/reconcile_config.go (#1560): 1 s
+  # connect and read timeouts and ignore_exc. The check builds Django's
+  # PyMemcacheCache with those OPTIONS against a local server that accepts
+  # and never answers, and expects the default within 3 s, which pins the
+  # option names against the Django and pymemcache of the image. Without
+  # the OPTIONS the call blocks for as long as TCP does; a 10 s alarm ends
+  # it, so the check fails without hanging the job. Stderr is echoed on
+  # failure so the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import signal
+import socket
+import sys
+import threading
+import time
+
+import django.conf
+from django.core.cache.backends.memcached import PyMemcacheCache
+
+
+def still_blocked(signum, frame):
+    sys.exit("cache.get was still blocked after 10 s: the OPTIONS do not "
+             "bound the pymemcache client")
+
+
+signal.signal(signal.SIGALRM, still_blocked)
+signal.alarm(10)
+
+# A server that accepts connections and never answers. Every accepted
+# socket stays referenced: a closed one would answer with EOF at once.
+listener = socket.socket()
+listener.bind(("127.0.0.1", 0))
+listener.listen(8)
+accepted = []
+
+
+def accept():
+    while True:
+        accepted.append(listener.accept()[0])
+
+
+threading.Thread(target=accept, daemon=True).start()
+
+django.conf.settings.configure()
+cache = PyMemcacheCache(
+    "127.0.0.1:%d" % listener.getsockname()[1],
+    {"OPTIONS": {"connect_timeout": 1, "timeout": 1, "ignore_exc": True}},
+)
+start = time.monotonic()
+value = cache.get("k", "fallback")
+took = time.monotonic() - start
+if value != "fallback":
+    sys.exit("cache.get returned %r, expected the default" % (value,))
+if took >= 3:
+    sys.exit("cache.get took %.2f s, expected under 3 s" % took)' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "the rendered pymemcache OPTIONS bound Django's cache and errors are misses" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== horizon container verification tests ==="
 echo "Image: $IMAGE"
 echo ""
 test_openstack_dashboard_importable
+echo ""
+test_oslo_log_json_formatter_importable
 echo ""
 test_static_assets_present
 echo ""
@@ -101,6 +183,8 @@ echo ""
 test_no_build_tools_in_final_image
 echo ""
 test_uwsgi_runnable
+echo ""
+test_django_pymemcache_bounded
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

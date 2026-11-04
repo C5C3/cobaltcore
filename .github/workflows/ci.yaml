@@ -11,6 +11,16 @@ name: CI
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, labeled]
+  # The nightly chaos run (#1388): every e2e-chaos leg and the random chaos
+  # run e2e-chaos-random (#1395) against main, after build-e2e-images, and
+  # nothing else (hack/ci-resolve-changes.sh). A green night takes about 18
+  # minutes of image build and the 137-minute nova leg, so it ends around
+  # 00:40, before Performance (01:30) and the Flux path (02:45).
+  # report-nightly-chaos files a red scheduled night; a dispatch
+  # (gh workflow run ci.yaml --ref main) runs the same jobs and files nothing.
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,6 +44,12 @@ env:
   CONTROLLER_GEN_VERSION: v0.22.0
   GOFUMPT_VERSION: v0.12.0
   GOLANGCI_LINT_VERSION: v2.14.0
+  # Helm CLI of every job that installs it with azure/setup-helm. Without a
+  # version input the action installs the newest helm release when the job
+  # starts, so a helm release changes how helm-push talks to ghcr.io without a
+  # commit (hack/ci-helm-push.sh retries the one push failure known so far).
+  # Renovate bumps it without automerge: helm-push runs only after a merge.
+  HELM_VERSION: v4.3.1
 
 # A `labeled` event for a label that does not steer CI gets a group of its own,
 # so adding `bug` or `documentation` to a pull request no longer cancels the
@@ -41,8 +57,11 @@ env:
 # nothing, so it costs one ubuntu-latest runner for about twenty seconds. A
 # ci:* label (or the run-chaos alias) lands in the normal group and is meant to
 # supersede the run in flight: it asks for more jobs than that run scheduled.
+# The group names the event, so a scheduled or dispatched night never delays or
+# cancels main's push run, and a second dispatch waits for the first instead
+# of cancelling it.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}', github.ref, github.workflow) }}
+  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}-{2}', github.ref, github.workflow, github.event_name) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -72,6 +91,10 @@ jobs:
   # On tag pushes the full release pipeline must always run, so all areas and
   # all operators are forced active regardless of which files were touched. On a
   # push to main the operator matrix keeps the publish semantics it has today.
+  #
+  # A scheduled or dispatched run is the nightly chaos run: the paths filter is
+  # skipped, and the resolver ignores paths and labels and switches on
+  # e2e-chaos and build-e2e-images alone.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -83,6 +106,7 @@ jobs:
       target-cluster-chart: ${{ steps.result.outputs.target-cluster-chart }}
       e2e-infra: ${{ steps.result.outputs.e2e-infra }}
       e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}
+      e2e-chaos-random: ${{ steps.result.outputs.e2e-chaos-random }}
       e2e-prometheus: ${{ steps.result.outputs.e2e-prometheus }}
       e2e-controlplane: ${{ steps.result.outputs.e2e-controlplane }}
       e2e-controlplane-sso: ${{ steps.result.outputs.e2e-controlplane-sso }}
@@ -107,6 +131,7 @@ jobs:
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
       e2e-operator-legs: ${{ steps.e2e-operator-legs.outputs.legs }}
+      e2e-operator-upgrade-operators: ${{ steps.result.outputs.e2e-operator-upgrade-operators }}
       test-targets: ${{ steps.result.outputs.test-targets }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
       keystone-pressure-releases: ${{ steps.keystone-pressure-matrix.outputs.keystone-pressure-releases }}
@@ -115,6 +140,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
+        # A night has no change set; its outputs read as empty strings.
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         with:
           filters: |
             # ---------------------------------------------------------------
@@ -295,12 +322,18 @@ jobs:
               # placement, barbican, cinder and nova run the shared proof
               # script under tests/e2e/lib/, and their env-key-material suites
               # the environment scan beside it, so those seven filters list the
-              # directory. c5c3, ovn and neutron run the scan alone and list
-              # that one script, so an edit to the proof does not run them.
+              # directory. ovn and neutron run the scan, the metric-family
+              # check and the event budget, and list those three scripts.
+              # neutron also lists the NetworkPolicy probe its network-policy
+              # suite runs. c5c3 runs the scan and the metric-family check and
+              # lists those two scripts, so an edit to the proof runs none of
+              # the three.
               - 'tests/e2e/lib/**'
             tests_e2e_c5c3:
               - 'tests/e2e/c5c3/**'
+              - 'tests/e2e/c5c3-operator/**'
               - 'tests/e2e/lib/assert-operator-env-clean.sh'
+              - 'tests/e2e/lib/assert-operator-metric-families.sh'
             tests_e2e_horizon:
               - 'tests/e2e/horizon/**'
               - 'tests/e2e/horizon-operator/**'
@@ -321,10 +354,15 @@ jobs:
               - 'tests/e2e/ovn/**'
               - 'tests/e2e/ovn-operator/**'
               - 'tests/e2e/lib/assert-operator-env-clean.sh'
+              - 'tests/e2e/lib/assert-operator-metric-families.sh'
+              - 'tests/e2e/lib/assert-steady-state-events.sh'
             tests_e2e_neutron:
               - 'tests/e2e/neutron/**'
               - 'tests/e2e/neutron-operator/**'
               - 'tests/e2e/lib/assert-operator-env-clean.sh'
+              - 'tests/e2e/lib/assert-operator-metric-families.sh'
+              - 'tests/e2e/lib/assert-steady-state-events.sh'
+              - 'tests/e2e/lib/assert-networkpolicy-enforced.sh'
             tests_e2e_cinder:
               - 'tests/e2e/cinder/**'
               - 'tests/e2e/cinder-operator/**'
@@ -344,6 +382,12 @@ jobs:
               - 'tests/e2e/c5c3/keystone-service/**'
               - 'tests/e2e/c5c3/keystone-service-foreign-namespace/**'
               - 'tests/e2e/c5c3/keystone-user/**'
+              - 'tests/e2e/c5c3/healthcheck/**'
+              - 'tests/e2e/c5c3/pod-security-restricted/**'
+              - 'tests/e2e/c5c3/admin-password-scoping/**'
+              - 'tests/e2e/c5c3/db-credential-scoping/**'
+              - 'tests/e2e/c5c3/multi-controlplane/**'
+              - 'tests/e2e/c5c3/deletion-orchestration/**'
               # The full-chain suite applies this overlay's fixtures.yaml.
               - 'deploy/kind/hypervisor-operator-fixtures/**'
             tests_controlplane_sso:
@@ -361,6 +405,17 @@ jobs:
               - 'internal/common/deployment/vpa_flow.go'
             tests_chaos:
               - 'tests/e2e-chaos/**'
+            # The random chaos run's own files: the catalogue, the draw and
+            # the kind plane, its runner, the soak it runs under and the
+            # consistency checks it judges with. A suite header under
+            # tests/e2e-chaos/ reaches it through the unit tests alone.
+            tests_chaos_random:
+              - 'tests/chaos-random/**'
+              - 'hack/chaos-random.sh'
+              - 'hack/dizzy-soak.sh'
+              - 'hack/dizzy-soak-runner.sh'
+              - 'deploy/lab/metal-stack/dizzy-soak/**'
+              - 'tests/e2e-chaos/lib/consistency.sh'
             tests_multicluster:
               - 'tests/e2e-multicluster/**'
               - 'deploy/target-cluster/**'
@@ -384,14 +439,51 @@ jobs:
               - 'hack/keystone-pressure-ab.sh'
               - 'hack/dizzy.sh'
               - 'tests/load/keystone-pressure/**'
+            # The inputs every operator upgrade job shares: a change here runs
+            # all ten. Each operator's own suite (and the scripts only some
+            # suites call: the vhost script of cinder and nova, the CRD window
+            # check and the chaos workload harness of keystone) runs that
+            # operator's job alone.
             tests_operator_upgrade:
-              - 'tests/e2e-operator-upgrade/**'
+              - 'tests/e2e-operator-upgrade/chainsaw-config.yaml'
               - 'hack/ci-fetch-released-operator.sh'
+              - 'hack/ci-read-chart-version.sh'
+              - 'hack/ci-operator-upgrade-leg.sh'
+              - 'hack/ci-deploy-operator.sh'
+              - '.github/workflows/e2e-operator-upgrade.yaml'
+            tests_operator_upgrade_keystone:
+              - 'tests/e2e-operator-upgrade/keystone-helm-upgrade/**'
+              - 'hack/ci-operator-upgrade-crd-window.sh'
+              - 'tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**'
+              - 'tests/e2e-chaos/lib/workload.sh'
+              - 'tests/e2e-chaos/lib/workload.py'
+            tests_operator_upgrade_c5c3:
+              - 'tests/e2e-operator-upgrade/c5c3-helm-upgrade/**'
+            tests_operator_upgrade_horizon:
+              - 'tests/e2e-operator-upgrade/horizon-helm-upgrade/**'
+            tests_operator_upgrade_glance:
+              - 'tests/e2e-operator-upgrade/glance-helm-upgrade/**'
+            tests_operator_upgrade_placement:
+              - 'tests/e2e-operator-upgrade/placement-helm-upgrade/**'
+            tests_operator_upgrade_barbican:
+              - 'tests/e2e-operator-upgrade/barbican-helm-upgrade/**'
+            tests_operator_upgrade_ovn:
+              - 'tests/e2e-operator-upgrade/ovn-helm-upgrade/**'
+            tests_operator_upgrade_neutron:
+              - 'tests/e2e-operator-upgrade/neutron-helm-upgrade/**'
+            tests_operator_upgrade_cinder:
+              - 'tests/e2e-operator-upgrade/cinder-helm-upgrade/**'
+              - 'tests/e2e/cinder/broker-vhost.sh'
+            tests_operator_upgrade_nova:
+              - 'tests/e2e-operator-upgrade/nova-helm-upgrade/**'
+              - 'tests/e2e/cinder/broker-vhost.sh'
             tests_prometheus:
               - 'tests/e2e/keystone/prometheus-stack/**'
+              - 'tests/e2e/horizon/prometheus-stack/**'
               - 'deploy/kind/prometheus/**'
               - 'operators/keystone/dashboards/**'
               - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
+              - 'operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml'
             e2e_infra:
               - 'tests/e2e/infrastructure/**'
             # ---------------------------------------------------------------
@@ -545,12 +637,23 @@ jobs:
           FILTER_tests_external_keystone: ${{ steps.filter.outputs.tests_external_keystone }}
           FILTER_tests_autoscaling: ${{ steps.filter.outputs.tests_autoscaling }}
           FILTER_tests_chaos: ${{ steps.filter.outputs.tests_chaos }}
+          FILTER_tests_chaos_random: ${{ steps.filter.outputs.tests_chaos_random }}
           FILTER_tests_multicluster: ${{ steps.filter.outputs.tests_multicluster }}
           FILTER_tests_orders_multicluster: ${{ steps.filter.outputs.tests_orders_multicluster }}
           FILTER_tests_ovn_overlay: ${{ steps.filter.outputs.tests_ovn_overlay }}
           FILTER_tests_nova_libvirt: ${{ steps.filter.outputs.tests_nova_libvirt }}
           FILTER_keystone_pressure: ${{ steps.filter.outputs.keystone_pressure }}
           FILTER_tests_operator_upgrade: ${{ steps.filter.outputs.tests_operator_upgrade }}
+          FILTER_tests_operator_upgrade_keystone: ${{ steps.filter.outputs.tests_operator_upgrade_keystone }}
+          FILTER_tests_operator_upgrade_c5c3: ${{ steps.filter.outputs.tests_operator_upgrade_c5c3 }}
+          FILTER_tests_operator_upgrade_horizon: ${{ steps.filter.outputs.tests_operator_upgrade_horizon }}
+          FILTER_tests_operator_upgrade_glance: ${{ steps.filter.outputs.tests_operator_upgrade_glance }}
+          FILTER_tests_operator_upgrade_placement: ${{ steps.filter.outputs.tests_operator_upgrade_placement }}
+          FILTER_tests_operator_upgrade_barbican: ${{ steps.filter.outputs.tests_operator_upgrade_barbican }}
+          FILTER_tests_operator_upgrade_ovn: ${{ steps.filter.outputs.tests_operator_upgrade_ovn }}
+          FILTER_tests_operator_upgrade_neutron: ${{ steps.filter.outputs.tests_operator_upgrade_neutron }}
+          FILTER_tests_operator_upgrade_cinder: ${{ steps.filter.outputs.tests_operator_upgrade_cinder }}
+          FILTER_tests_operator_upgrade_nova: ${{ steps.filter.outputs.tests_operator_upgrade_nova }}
           FILTER_tests_prometheus: ${{ steps.filter.outputs.tests_prometheus }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_e2e_shared: ${{ steps.filter.outputs.e2e_shared }}
@@ -1009,6 +1112,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       - name: Install helm-unittest plugin
         # NOTE: --verify=false because helm-unittest does not publish GPG signatures for plugin releases.
         run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3 --verify=false
@@ -1259,9 +1364,13 @@ jobs:
     # maintainer can run E2E by pushing the change to a same-repo branch.
     # Reintroducing an artifact-based fallback for forks would bring back
     # the 5-minute download-artifact timeouts that GH-310 fixed.
+    #
+    # A scheduled or dispatched run builds the images of the nightly chaos
+    # run; the fork guard reads true there, since such a run has no pull
+    # request.
     if: |
       always() &&
-      github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.changes.outputs.build-e2e-images == 'true' &&
       github.event.pull_request.head.repo.fork != true &&
       !contains(needs.*.result, 'failure') &&
@@ -1274,7 +1383,9 @@ jobs:
     # run builds those images (one nix call builds them side by side), plus
     # slack. Under 60 the job was killed before the
     # Tempest images were built, and every E2E job gates on its success, so
-    # the PR would have shipped with no E2E coverage at all.
+    # the PR would have shipped with no E2E coverage at all. The ten
+    # <op>-operator-cover-image attributes build in the same nix build call
+    # and take about 6 minutes of the slack above the 105.
     timeout-minutes: 120
     permissions:
       contents: read
@@ -1312,7 +1423,10 @@ jobs:
       # nothing here and still leaves every consumer with a working reference.
       # An operator image is reused only when its revision carries every commit
       # to that operator's sources, so a :latest that main's manifest merge left
-      # behind is built here instead.
+      # behind is built here instead. When e2e-operator, e2e-chaos or tempest
+      # will run, the resolver also adds the coverage-instrumented image of
+      # every operator (<op>-operator:cover), which those three jobs deploy;
+      # main publishes none, so all ten are built.
       - name: Resolve images
         id: images
         env:
@@ -1322,6 +1436,7 @@ jobs:
           CHANGED_PROXY: ${{ needs.changes.outputs.changed-proxy }}
           CHANGED_OVN: ${{ needs.changes.outputs.changed-ovn }}
           CHANGED_LIBVIRT: ${{ needs.changes.outputs.changed-libvirt }}
+          BUILD_COVER_IMAGES: ${{ needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.tempest == 'true' }}
         run: hack/ci-resolve-e2e-images.sh
 
       # The operator, service, nova-compute, Tempest, ovn, libvirt and
@@ -1342,14 +1457,16 @@ jobs:
           BUILD_LIBVIRT: ${{ env.BUILD_LIBVIRT }}
           BUILD_PROXY: ${{ env.BUILD_PROXY }}
           BUILD_OPERATORS: ${{ env.BUILD_OPERATORS }}
+          BUILD_COVER_OPERATORS: ${{ env.BUILD_COVER_OPERATORS }}
         with:
           entrypoint: bash
           args: hack/ci-nix-build-e2e-images.sh
 
       # docker load prints "Loaded image: <name>:<release>", the tag
       # nix/lib/service-image.nix gives the image, <op>-operator:latest for
-      # an operator image; the push step below and the consumers address it
-      # under IMAGE_PREFIX.
+      # an operator image and <op>-operator:cover for its
+      # coverage-instrumented variant; the push step below and the consumers
+      # address it under IMAGE_PREFIX.
       - name: Load Nix images
         if: env.BUILD_NIX_IMAGES == 'true'
         run: |
@@ -1379,11 +1496,15 @@ jobs:
 
       # Each operator image this run built carries the layout of
       # nix/lib/static-image.nix and the four static labels alone; build-and-push
-      # publishes the same flake attribute without loading it.
+      # publishes the same flake attribute without loading it. A cover image
+      # differs only in its description.
       - name: Verify operator images
         run: |
           for op in $BUILD_OPERATORS; do
             bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:dev" "${op}"
+          done
+          for op in $BUILD_COVER_OPERATORS; do
+            bash tests/container-images/verify_operator_image.sh "${IMAGE_PREFIX}/${op}-operator:cover" "${op}" cover
           done
 
       # GH-310: Push every E2E image this run built to GHCR under a run-scoped
@@ -1432,6 +1553,9 @@ jobs:
           fi
           for op in $BUILD_OPERATORS; do
             push_image "${IMAGE_PREFIX}/${op}-operator:dev"
+          done
+          for op in $BUILD_COVER_OPERATORS; do
+            push_image "${IMAGE_PREFIX}/${op}-operator:cover"
           done
           while read -r svc release image; do
             [ -n "$svc" ] || continue
@@ -1482,6 +1606,13 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # The operators run the coverage-instrumented :cover images, which the
+    # load steps fetch with operator-variant: cover, and
+    # hack/ci-deploy-operator.sh gives each a counter volume and GOCOVERDIR.
+    # "Collect operator coverage" reads the counters back before the cluster
+    # is deleted.
+    env:
+      E2E_COVERAGE: "true"
     # e2e-operators with the nova leg split into shards 1 and 2 (see "Shard
     # the e2e-operator matrix" in the changes job). A leg without a shard is
     # named as before, e2e-operator (<operator>).
@@ -1579,6 +1710,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: ${{ steps.e2e-images.outputs.refs }}
       - name: Load images into kind
         env:
@@ -1865,6 +1997,31 @@ jobs:
           name: e2e-${{ matrix.operator }}${{ matrix.shard && format('-{0}', matrix.shard) || '' }}-junit-report
           path: _output/reports/
           retention-days: 14
+      # Scales the coverage-instrumented operators to 0 so each flushes its
+      # counters once more, copies the counters off the kind nodes and merges
+      # them into one profile per operator, with the totals in the job summary
+      # (hack/ci-collect-e2e-coverage.sh). It reports and never fails the job.
+      # A cancelled run skips the scale-down, so the step does not eat the
+      # grace window "Delete kind cluster" needs; cancelled() is allowed in an
+      # if: alone, so the env reads job.status.
+      - name: Collect operator coverage
+        id: coverage
+        if: always()
+        continue-on-error: true
+        env:
+          SCALE_DOWN: ${{ job.status != 'cancelled' }}
+        run: hack/ci-collect-e2e-coverage.sh e2e
+      # One upload per leg: every profile, each scoped to its tree by its
+      # flag in .codecov.yml, and no status gates on these flags.
+      # disable_search keeps the raw counter files out of the upload.
+      - name: Upload operator coverage
+        if: always() && steps.coverage.outputs.found == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: ${{ steps.coverage.outputs.files }}
+          flags: ${{ steps.coverage.outputs.flags }}
+          disable_search: true
+          fail_ci_if_error: false
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job
       # (see hack/ci-delete-kind-cluster.sh).
@@ -1872,14 +2029,16 @@ jobs:
         if: always()
         run: hack/ci-delete-kind-cluster.sh
 
-  # Operator helm-upgrade-in-place E2E: installs the last released
-  # keystone-operator chart+image from GHCR as the baseline, brings a Keystone
-  # CR to Ready, then `helm upgrade`s to the locally built chart+CRDs and asserts
-  # the deployed Keystone survives the operator upgrade (Ready persists,
-  # status.installedRelease unchanged, no re-bootstrap). Given the cross-release
-  # bootstrap history this is the highest-risk untested path. The suite manages
-  # the operator release itself, so it lives outside tests/e2e/ and runs in its
-  # own job rather than the per-CR e2e-operator matrix.
+  # Operator helm-upgrade-in-place E2E, one matrix job per operator whose code
+  # (go_common included, as for e2e-operator), whose suite under
+  # tests/e2e-operator-upgrade/<op>-helm-upgrade/, or whose shared upgrade
+  # input changed. Each job installs the chart and image the suite's
+  # baseline.yaml pins, brings the suite's CR to Ready, then `helm upgrade`s to
+  # the in-repo chart+CRDs and asserts the deployed CR is undisturbed by the
+  # upgrade (Ready after a new generation, status.installedRelease unchanged,
+  # workloads not re-created). The steps live in the reusable workflow
+  # e2e-operator-upgrade.yaml, which operator-upgrade.yaml also calls after
+  # every publish on main.
   e2e-operator-upgrade:
     needs: [changes, build-e2e-images]
     if: |
@@ -1889,113 +2048,31 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: self-hosted
-    timeout-minutes: 68
     permissions:
       contents: read
       packages: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # setup-helm guarantees `helm` (registry login + pull) regardless of the
-      # runner image, matching the helm-push job.
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
-      - name: Create kind cluster
-        uses: ./.github/actions/create-kind-cluster
-        with:
-          version: ${{ env.KIND_VERSION }}
-          config: hack/kind-config.yaml
-          cluster-name: ${{ env.KIND_CLUSTER }}
-      # Pull the run-scoped images from GHCR: the locally built operator (:dev,
-      # the upgrade target) and the 2026.1 service image the CR fixture uses.
-      # This step also `docker login`s GHCR, which the baseline image pull below
-      # reuses.
-      - name: Load E2E images
-        uses: ./.github/actions/load-e2e-images
-        with:
-          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
-          images: |
-            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
-            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
-      - name: Load images into kind
-        run: |
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
-          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
-      # `helm registry login` is separate from the `docker login` that
-      # load-e2e-images performs; the released chart is pulled via `helm pull`.
-      - name: Log in to GHCR for Helm
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
-      # Fetch the last released operator chart+image (the upgrade baseline) and
-      # load the released image into kind.
-      - name: Fetch released operator baseline
-        id: baseline
-        run: hack/ci-fetch-released-operator.sh
-        env:
-          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
-      # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
-      - name: Setup E2E infrastructure
-        uses: ./.github/actions/setup-e2e-infra
-      # Install the RELEASED operator (pulled chart + :latest image) as the
-      # upgrade baseline. CHART_DIR points at the untarred pulled chart so
-      # ci-deploy-operator.sh installs the released chart, not the in-repo one.
-      - name: Deploy released operator (baseline)
-        run: hack/ci-deploy-operator.sh
-        env:
-          OPERATOR: keystone
-          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
-          IMAGE_TAG: latest
-          CHART_DIR: ${{ steps.baseline.outputs.chart_dir }}
-      - name: Run operator upgrade E2E
-        env:
-          IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
-        run: |
-          mkdir -p _output/reports
-          chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml tests/e2e-operator-upgrade/
-      # Use shared diagnostic dump script.
-      - name: Dump diagnostic info
-        if: always()
-        run: hack/ci-dump-diagnostics.sh
-        env:
-          OPERATOR: keystone
-      - name: Upload JUnit report
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-operator-upgrade-junit-report
-          path: _output/reports/
-          retention-days: 14
-      # Last step of the job, so the dump above still had a cluster to read;
-      # `always()` covers the failed and timed-out runs.  Never fails the job
-      # (see hack/ci-delete-kind-cluster.sh).
-      - name: Delete kind cluster
-        if: always()
-        run: hack/ci-delete-kind-cluster.sh
+    uses: ./.github/workflows/e2e-operator-upgrade.yaml
+    with:
+      operators: ${{ needs.changes.outputs.e2e-operator-upgrade-operators }}
+      image-map: ${{ needs.build-e2e-images.outputs.image-map }}
 
   # End-to-end chaos tests using kind cluster, Chaos Mesh,
-  # and Chainsaw.  Builds the keystone operator image, deploys it with Chaos
-  # Mesh infrastructure, and runs chaos test suites (MariaDB pod kill,
-  # Memcached pod kill, OpenBao pod kill, network partition, network latency).
-  # Only runs when Go/operator code or chaos test definitions change (or when
-  # the run-chaos PR label is applied), and only after all pre-flight checks
-  # have passed or been skipped.
+  # and Chainsaw. Pulls the operator and service images of each matrix entry,
+  # deploys them with the Chaos Mesh infrastructure, and runs the entry's chaos
+  # suites. A pull request runs the job when it changes a suite under
+  # tests/e2e-chaos/ or carries the ci:chaos label (run-chaos is its alias),
+  # and only after all pre-flight checks have passed or been skipped. The
+  # nightly chaos run (#1388) runs every entry against main on a schedule or a
+  # dispatch.
   #
   # Chaos tests run only after every e2e-operator matrix leg has finished
   # without failure: a failed e2e-operator run skips e2e-chaos, a
   # path-filter-skipped one does not block it (always() + the
-  # failure/cancelled guards below). This supersedes,
-  # which had removed the dependency to run both jobs in parallel.
+  # failure/cancelled guards below).
   #
-  # run-chaos PR label trigger added for on-demand chaos
-  # validation of operator code changes.
-  #
-  # Gating is split by matrix leg (see continue-on-error below): the pod-chaos
-  # leg is blocking — an operator-restart/PDB/rotation regression fails the
-  # build — while the network-chaos and ovn legs stay non-blocking. The
-  # network leg's ip_set/xt_set/sch_netem dependency makes it prone to
-  # environment flakiness, and the ovn leg builds an OVN datapath out of the
-  # host's openvswitch/geneve modules, which puts it under the non-blocking
-  # entry rule of `### Kernel-module-dependent suites` in
-  # docs/reference/ci-cd/ci-workflow.md. On-demand pre-validation of any leg is
-  # available via the run-chaos PR label.
+  # Every leg gates (#1388): a red leg fails the job, and tempest, which needs
+  # e2e-chaos, skips on that run. A leg added to the matrix gates from its first
+  # run.
   e2e-chaos:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -2003,15 +2080,15 @@ jobs:
     # failure/cancelled guard still blocks if any upstream actually failed.
     if: |
       always() &&
-      github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
       needs.changes.outputs.e2e-chaos == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # The split into five matrix entries is kept so PodChaos, NetworkChaos, the
-    # OVN datapath suite, the Nova stack and the ControlPlane suites stay
-    # independently gated (see continue-on-error below) and so the suites run
-    # in parallel.
+    # The split into six matrix entries is kept so PodChaos, NetworkChaos, the
+    # OVN datapath suite, the Nova stack, the ControlPlane suites and the
+    # Cinder release-upgrade suites each report on their own and run in
+    # parallel.
     #
     # test_dirs lists the per-suite test directories explicitly, so a new test
     # directory must be added to the appropriate suite below when introduced.
@@ -2057,6 +2134,7 @@ jobs:
               tests/e2e-chaos/envoy-gateway-outage
               tests/e2e-chaos/envoy-proxy-pod-kill
               tests/e2e-chaos/mariadb-operator-cascading-failure
+              tests/e2e-chaos/fernet-rotation-operator-outage
           - suite: network
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
@@ -2083,23 +2161,22 @@ jobs:
           # ovn-southbound-outage kills the Southbound Pod and asserts the
           # chassis datapath keeps forwarding, so the leg needs the openvswitch
           # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
-          # below). That kernel-module dependency is what keeps the leg
-          # non-blocking. No suite here touches Keystone, so this leg deploys
-          # the ovn-operator alone and skips the keystone stack.
+          # below). No suite here touches Keystone, so this leg deploys the
+          # ovn-operator alone and skips the keystone stack.
           - suite: ovn
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/ovn-southbound-outage
-          # The six nova-stack suites bring up the heaviest stack in this job:
+          # The seven nova-stack suites bring up the heaviest stack in this job:
           # a Keystone, a Placement, an OVNCentral, a Neutron, a Glance and a
           # Nova with a fake compute behind it, and
           # neutron-metadata-agent-pod-kill adds an OVNChassis and a metadata
-          # agent on the node. They get a leg of their own instead of widening
+          # agent on the node. novacompute-drain-compute-kill runs a
+          # NovaCompute pool on the node behind an OVNChassis of its own, so
+          # it runs last, after the metadata agent suite's chassis is gone. They get a leg of their own instead of widening
           # the network leg, which carries the neutron, cinder and ovn suites.
-          # Like the ovn leg this one is non-blocking (see continue-on-error
-          # below): three of its faults are NetworkChaos partitions on the
-          # sch_netem/ip_set dependency the network leg carries, and the
-          # metadata-agent suite needs the openvswitch and geneve modules.
+          # The metadata-agent suite needs the openvswitch and geneve modules,
+          # as the ovn leg does.
           - suite: nova
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
@@ -2109,13 +2186,11 @@ jobs:
               tests/e2e-chaos/nova-keystone-outage
               tests/e2e-chaos/nova-operator-pod-kill
               tests/e2e-chaos/neutron-metadata-agent-pod-kill
-          # The suites of #1390 that bring up a ControlPlane of their own in a
-          # namespace of their own: K-ORC, the c5c3-operator and a Keystone-only
-          # plane per suite. They get an entry of their own so
+              tests/e2e-chaos/novacompute-drain-compute-kill
+          # The suites of #1390 and #1394 that bring up a ControlPlane of their
+          # own in a namespace of their own: K-ORC, the c5c3-operator and a
+          # Keystone-only plane per suite. They get an entry of their own so
           # the pod entry keeps the standalone stack its suites assume.
-          # Non-blocking (see continue-on-error below): korc-network-partition
-          # is a NetworkChaos partition on the sch_netem/ip_set dependency the
-          # network entry carries.
           - suite: controlplane
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
@@ -2124,25 +2199,41 @@ jobs:
               tests/e2e-chaos/controlplane-keystone-degraded
               tests/e2e-chaos/korc-network-partition
               tests/e2e-chaos/c5c3-operator-pod-kill
+              tests/e2e-chaos/controlplane-provisioning-mariadb-kill
+              tests/e2e-chaos/controlplane-deletion-korc-outage
+              tests/e2e-chaos/keystoneuser-rotation-keystone-outage
+          # The suites of #1394 that fault a Cinder release upgrade from
+          # 2026.1 to 2026.2: the only entry that loads a 2026.2 image. Each
+          # brings a Cinder of its own on the NFS export, one on a vhost of
+          # the shared broker and one on a RabbitmqCluster of its own.
+          # Its partitions rest on kindnet's NetworkPolicy enforcement.
+          - suite: upgrade
+            test_dirs: >-
+              tests/e2e/infrastructure/chaos-mesh-health
+              tests/e2e-chaos/cinder-upgrade-db-partition
+              tests/e2e-chaos/cinder-upgrade-broker-pod-kill
     runs-on: self-hosted
-    # 150 minutes for the nova leg, 135 for network, 120 for pod, 100 for
-    # controlplane and 45 for ovn: 550 minutes for the five, which the author
-    # of #1390 accepted on 2026-10-16 against the seven hours D6 of #1386 gave
-    # the four legs before it. Run 38903206716 (PR #1420) took 62 minutes on
-    # pod, 125 on network, 11 on ovn and 130 on nova. The pod leg gains the
-    # eight suites of #1390 that need only the standalone stack, at about 5
-    # minutes each: a kind run took 105 to 334 seconds per suite, most of it
-    # in fixed hold and observe windows. The controlplane leg brings up the
-    # keystone stack, K-ORC and the c5c3-operator, and each of its five suites
-    # a Keystone-only ControlPlane: about 15 minutes for the bring-up and 8 to
-    # 12 per suite, the 7 min 45 s the keystone-service suite took in run
-    # 38788542824 plus the fault and a teardown of up to 12 minutes. Every
-    # suite runs one after the other: tests/e2e-chaos/chainsaw-config.yaml
-    # sets parallel: 1, where the e2e-operator nova leg fits comparable suites
-    # into 90 minutes only because it runs them two at a time. The nova leg
-    # loads eighteen images and runs eight operator deploys before its first
-    # suite, and each of its six suites stands up a Keystone, an OVNCentral, a
-    # Neutron, a Placement, a Glance and a five-workload Nova.
+    # 170 minutes for the nova leg, 135 for network, 135 for pod, 120 for
+    # controlplane, 80 for upgrade and 45 for ovn: 685 minutes for the six,
+    # which the author of #1394 accepted on 2026-10-25 against the 600 that
+    # D6 of #1386 allows; the estimated run is about 575 minutes. The last
+    # full run, on PR #1444 (2026-10-17), took 110 minutes on pod, 140 on
+    # network, which hit its wall, 12 on ovn, 133 on nova and 46 on
+    # controlplane. #1394 adds a Fernet rotation suite to pod, a drain suite
+    # to nova and three ControlPlane suites to controlplane, at about 12
+    # minutes each, and the upgrade leg brings up the keystone, OVN and
+    # Cinder stacks and runs two Cinder upgrades of about 20 minutes each.
+    # The controlplane leg brings up the keystone stack, K-ORC and the
+    # c5c3-operator, and each of its suites a Keystone-only ControlPlane:
+    # about 15 minutes for the bring-up and 8 to 12 per suite, the 7 min 45 s
+    # the keystone-service suite took in run 38788542824 plus the fault and a
+    # teardown of up to 12 minutes. Every suite runs one after the other:
+    # tests/e2e-chaos/chainsaw-config.yaml sets parallel: 1, where the
+    # e2e-operator nova leg fits comparable suites into 90 minutes only
+    # because it runs them two at a time. The nova leg
+    # loads nineteen images and runs eight operator deploys before its first
+    # suite, and each of its seven suites stands up a Keystone, an OVNCentral,
+    # a Neutron, a Placement, a Glance and a five-workload Nova.
     #
     # The wall has to outlast that bring-up plus the suites that pass plus the
     # step a stalling suite times out in and the catch block after it —
@@ -2150,31 +2241,33 @@ jobs:
     # and five 8m asserts on the sibling services) and its catch another 13.
     # Under that, the job wall arrives first: chainsaw is killed outright, no
     # catch block and no step cleanup runs, the JUnit report is never written,
-    # and the leg — non-blocking per continue-on-error below — reports as a
-    # cancelled job that says nothing about which suite stalled. The per-suite
-    # times of the new suites are the estimate in these sums; read each leg's
-    # duration off the first green run with them and re-derive if one
-    # overruns.
-    timeout-minutes: ${{ matrix.suite == 'nova' && 150 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 100 || matrix.suite == 'ovn' && 45 || 120 }}
-    # Pod-chaos is blocking; network-chaos, ovn and nova stay non-blocking
-    # (their kernel-module dependency keeps them flakiness-prone). See the
-    # gating note above the job. The nova leg is the third of them because
-    # three of its suites are NetworkChaos partitions on the sch_netem and
-    # ip_set modules, the same dependency the network leg's suites have, and
-    # neutron-metadata-agent-pod-kill needs the OVN kernel modules the ovn leg
-    # needs. The controlplane leg is the fourth: korc-network-partition is a
-    # NetworkChaos partition on the same sch_netem and ip_set modules.
-    #
-    # The four non-blocking legs are named, rather than negating the blocking
-    # one: a sixth leg added to the matrix above then gates merges by default
-    # and has to be argued out of it here, instead of arriving silently
-    # non-blocking and passing green while it fails.
-    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' || matrix.suite == 'nova' || matrix.suite == 'controlplane' }}
+    # and the leg reports as a cancelled job that says nothing about which
+    # suite stalled. The per-suite times of the new suites are the estimate in
+    # these sums; read each leg's duration off the first green run with them
+    # and re-derive if one overruns. D6 of #1386 counts the runner minutes a
+    # night measures, not these walls: report-nightly-chaos files a night
+    # whose self-hosted jobs took more than 600 minutes together.
+    timeout-minutes: ${{ matrix.suite == 'nova' && 170 || matrix.suite == 'network' && 135 || matrix.suite == 'controlplane' && 120 || matrix.suite == 'upgrade' && 80 || matrix.suite == 'ovn' && 45 || 135 }}
+    # Every leg gates (#1388), so the job has no job-level error override. The
+    # NetworkChaos and OVN kernel modules load without a warning on the
+    # self-hosted runners, and no red leg on record named a module.
     permissions:
       contents: read
       packages: read
+    # The operators run the coverage-instrumented :cover images, which the
+    # load steps fetch with operator-variant: cover, and
+    # hack/ci-deploy-operator.sh gives each a counter volume and GOCOVERDIR.
+    # "Collect operator coverage" reads the counters back before the cluster
+    # is deleted.
+    env:
+      E2E_COVERAGE: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # go tool covdata merges the operator coverage counters in "Collect
+      # operator coverage".
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
       - name: Create kind cluster
         uses: ./.github/actions/create-kind-cluster
         with:
@@ -2194,6 +2287,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2026.1
@@ -2214,6 +2308,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             # placement-operator-pod-kill and placement-keystone-outage run on
             # the pod leg, placement-mariadb-outage on the network leg (see the
@@ -2234,10 +2329,10 @@ jobs:
             # operator one.
             ${{ matrix.suite == 'network' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'network' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The six nova-stack suites run on the nova leg alone. The OVN
+            # The seven nova-stack suites run on the nova leg alone. The OVN
             # pair above already covers that leg (!= 'pod'), and the keystone,
             # glance and tempest images arrive with the keystone stack on every
-            # non-ovn leg, so six refs are left to name here.
+            # non-ovn leg, so seven refs are left to name here.
             # A Nova boots no server without a Placement to claim from.
             ${{ matrix.suite == 'nova' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Placement API that operator rolls out.
@@ -2246,13 +2341,21 @@ jobs:
             ${{ matrix.suite == 'nova' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The Neutron API and the metadata agent beside it.
             ${{ matrix.suite == 'nova' && format('{0}/neutron:2026.1', env.IMAGE_PREFIX) || '' }}
-            # The operator whose CRs the six suites drive.
+            # The operator whose CRs the seven suites drive.
             ${{ matrix.suite == 'nova' && format('{0}/nova-operator:dev', env.IMAGE_PREFIX) || '' }}
             # The five Nova workloads and the fake compute beside them.
             ${{ matrix.suite == 'nova' && format('{0}/nova:2026.1', env.IMAGE_PREFIX) || '' }}
+            # The nova-compute DaemonSet of novacompute-drain-compute-kill's
+            # NovaCompute pool.
+            ${{ matrix.suite == 'nova' && format('{0}/nova-compute:2026.1', env.IMAGE_PREFIX) || '' }}
             # The controlplane leg's own operator; its Keystone children run
             # the keystone image the keystone stack above already loads.
             ${{ matrix.suite == 'controlplane' && format('{0}/c5c3-operator:dev', env.IMAGE_PREFIX) || '' }}
+            # The upgrade leg's two suites move a Cinder from 2026.1 to
+            # 2026.2, so they need the operator and both service images.
+            ${{ matrix.suite == 'upgrade' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'upgrade' && format('{0}/cinder:2026.1', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'upgrade' && format('{0}/cinder:2026.2', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
         if: matrix.suite != 'ovn'
         run: |
@@ -2295,7 +2398,7 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
-      # The nova leg's own six. None of the per-leg steps above reaches them:
+      # The nova leg's own seven. None of the per-leg steps above reaches them:
       # the placement pair is gated on the pod and network legs and the
       # neutron pair on the network one. The OVN pair this leg also needs is
       # loaded by the `!= 'pod'` step above.
@@ -2308,6 +2411,7 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1 --name ${{ env.KIND_CLUSTER }}
       # The controlplane leg's c5c3-operator. The keystone stack step above
       # covers its Keystone children and the Tempest image of the workload
       # and the admin Jobs.
@@ -2315,6 +2419,15 @@ jobs:
         if: matrix.suite == 'controlplane'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+      # The upgrade leg's Cinder pair and the 2026.2 image its patch moves to.
+      # The cinder step above is gated on the network leg, which never runs a
+      # 2026.2 image.
+      - name: Load upgrade leg images into kind
+        if: matrix.suite == 'upgrade'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
       # The chassis DaemonSets of the ovn leg's ovn-southbound-outage and of
@@ -2332,13 +2445,15 @@ jobs:
           # of them take a vhost on the shared broker; cinder-broker-outage and
           # cinder-broker-pod-kill bring a RabbitmqCluster of their own,
           # because their faults take the whole broker away and doing that to
-          # the shared one would take the rest of the leg down with it. Five
-          # of the six nova-stack suites take a vhost there too;
+          # the shared one would take the rest of the leg down with it. Six
+          # of the seven nova-stack suites take a vhost there too;
           # nova-broker-outage brings its own broker for the same reason. The
-          # NFS export stays on the network leg alone. Empty elsewhere, where deploy-infra.sh
-          # keeps its default of installing neither.
-          WITH_NFS: ${{ matrix.suite == 'network' && 'true' || '' }}
-          WITH_MESSAGING: ${{ (matrix.suite == 'network' || matrix.suite == 'nova') && 'true' || '' }}
+          # two upgrade suites attach an NFS backend too, and
+          # cinder-upgrade-db-partition takes a vhost on the shared broker;
+          # cinder-upgrade-broker-pod-kill brings its own. Empty elsewhere,
+          # where deploy-infra.sh keeps its default of installing neither.
+          WITH_NFS: ${{ (matrix.suite == 'network' || matrix.suite == 'upgrade') && 'true' || '' }}
+          WITH_MESSAGING: ${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade') && 'true' || '' }}
           # The controlplane leg prepares the ControlPlane path the way the
           # e2e-controlplane job does: the infrastructure overlay without the
           # standalone MariaDB, Memcached and shim ExternalSecrets, and the
@@ -2481,7 +2596,17 @@ jobs:
           OPERATOR: cinder
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
           NAMESPACE: cinder-system
-      # The six nova-stack suites run on the nova leg alone, so the three
+      # The upgrade leg's two Cinder suites. The name carries a suffix because
+      # tests/lib/ci_yaml.sh returns the first step of an exact name, and the
+      # network leg's step above is pinned by its own.
+      - name: Deploy cinder operator (upgrade leg)
+        if: matrix.suite == 'upgrade'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
+      # The seven nova-stack suites run on the nova leg alone, so the three
       # operators they need beyond the ovn one deploy there alone. The first two names carry a
       # "(nova leg)" suffix because tests/lib/ci_yaml.sh returns the first step
       # of an exact name and the placement and neutron steps above are pinned
@@ -2512,10 +2637,15 @@ jobs:
           OPERATOR: nova
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
           NAMESPACE: nova-system
+      # The config sets failFast: true, so on a pull request the first red
+      # suite skips the rest of its leg. A night runs every suite of the leg
+      # with --fail-fast=false, which chainsaw 0.2.15 lets override the
+      # config, so one red suite hides no other from the night's report.
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \
+            ${{ github.event_name != 'pull_request' && '--fail-fast=false' || '' }} \
             ${{ matrix.test_dirs }}
       # Use shared diagnostic dump script. It derives the operator namespace
       # from OPERATOR, and the ovn leg has no keystone-system to dump.
@@ -2557,6 +2687,11 @@ jobs:
         run: |
           OPERATOR=c5c3 OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           kubectl logs -n orc-system deployment/orc-controller-manager --tail=500 || true
+      # The upgrade leg's cinder-operator, whose log carries the phases of
+      # both upgrades.
+      - name: Dump diagnostic info (upgrade leg)
+        if: always() && matrix.suite == 'upgrade'
+        run: OPERATOR=cinder OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -2564,6 +2699,31 @@ jobs:
           name: e2e-chaos-junit-report-${{ matrix.suite }}
           path: _output/reports/
           retention-days: 14
+      # Scales the coverage-instrumented operators to 0 so each flushes its
+      # counters once more, copies the counters off the kind nodes and merges
+      # them into one profile per operator, with the totals in the job summary
+      # (hack/ci-collect-e2e-coverage.sh). It reports and never fails the job.
+      # A cancelled run skips the scale-down, so the step does not eat the
+      # grace window "Delete kind cluster" needs; cancelled() is allowed in an
+      # if: alone, so the env reads job.status.
+      - name: Collect operator coverage
+        id: coverage
+        if: always()
+        continue-on-error: true
+        env:
+          SCALE_DOWN: ${{ job.status != 'cancelled' }}
+        run: hack/ci-collect-e2e-coverage.sh chaos
+      # One upload per leg: every profile, each scoped to its tree by its
+      # flag in .codecov.yml, and no status gates on these flags.
+      # disable_search keeps the raw counter files out of the upload.
+      - name: Upload operator coverage
+        if: always() && steps.coverage.outputs.found == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: ${{ steps.coverage.outputs.files }}
+          flags: ${{ steps.coverage.outputs.flags }}
+          disable_search: true
+          fail_ci_if_error: false
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job
       # (see hack/ci-delete-kind-cluster.sh).
@@ -2571,20 +2731,283 @@ jobs:
         if: always()
         run: hack/ci-delete-kind-cluster.sh
 
-  # End-to-end Prometheus stack tests using kind cluster,
-  # kube-prometheus-stack, and Chainsaw.  Builds the keystone operator image,
-  # deploys it with the monitoring stack (WITH_PROMETHEUS=true on the shared
-  # composite action), enables the keystone-operator ServiceMonitor via the
-  # post-deploy patch baked into hack/deploy-infra.sh, and runs the
-  # prometheus-stack chainsaw suite (HelmRelease readiness, ServiceMonitor
-  # presence in openstack, Prometheus target health for keystone-operator,
-  # Grafana dashboard presence).
+  # The random chaos run (#1395): faults drawn from
+  # tests/chaos-random/catalogue.yaml, applied as one Chaos Mesh Workflow
+  # against a full ControlPlane on kind while the dizzy soak churns, and
+  # judged by hack/chaos-random.sh (docs/reference/testing/chaos-e2e-tests.md,
+  # Random runs). It runs every night, on a pull request that changes its own
+  # files (the tests_chaos_random filter) and under ci:full, and gates like
+  # every chaos leg; ci:chaos does not run it. The seed is the run id, so
+  # `CHAOS_RANDOM_ENV=ci CHAOS_RANDOM_SEED=<run id> make chaos-random-draw`
+  # replays the draw of a red night.
   #
-  # Single matrix entry on the self-hosted runner — the
-  # kube-prometheus stack is deterministic, so unlike e2e-chaos this job runs
-  # `continue-on-error: false`.  Inherits the e2e-chaos `needs:` chain so the
-  # same upstream Go gate applies and an operator code change re-runs the
-  # prometheus suite alongside e2e-chaos.
+  # The wall of 120 minutes is the author's (#1395, superseding the 90 of D6
+  # of #1386): about 50 minutes bring the plane up (image loads, the stack,
+  # the ControlPlane, as in e2e-controlplane), and the run takes the 2-minute
+  # warm-up, the 30-minute window, the 10-minute tail and its checks.
+  e2e-chaos-random:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      (github.event_name == 'pull_request' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.changes.outputs.e2e-chaos-random == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: self-hosted
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+    # One replica per operator, as in e2e-controlplane, so the plane fits the
+    # kind node beside the soak.
+    env:
+      OPERATOR_REPLICAS: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Create kind cluster
+        uses: ./.github/actions/create-kind-cluster
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster-name: ${{ env.KIND_CLUSTER }}
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
+      # The ten operators, the eight service images the projected children
+      # run at 2026.1, the OVN daemon image, and the OpenStack-client image of
+      # the seed, stuck-resources and consistency Jobs.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
+            ${{ env.IMAGE_PREFIX }}/glance-operator:dev
+            ${{ env.IMAGE_PREFIX }}/placement-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
+            ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
+            ${{ env.IMAGE_PREFIX }}/cinder-operator:dev
+            ${{ env.IMAGE_PREFIX }}/nova-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/horizon:2026.1
+            ${{ env.IMAGE_PREFIX }}/glance:2026.1
+            ${{ env.IMAGE_PREFIX }}/placement:2026.1
+            ${{ env.IMAGE_PREFIX }}/barbican:2026.1
+            ${{ env.IMAGE_PREFIX }}/neutron:2026.1
+            ${{ env.IMAGE_PREFIX }}/cinder:2026.1
+            ${{ env.IMAGE_PREFIX }}/nova:2026.1
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
+            ${{ env.IMAGE_PREFIX }}/tempest:2026.1
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/cinder:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/nova:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2026.1 --name ${{ env.KIND_CLUSTER }}
+      # The ControlPlane stack without its CR, the bus and the NFS export of
+      # Cinder, the kernel modules of the OVN chassis, Chaos Mesh, the dizzy
+      # stack the soak exports to, and metrics-server, whose resource metrics
+      # memory-growth judges.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_CONTROLPLANE: "true"
+          CONTROLPLANE_OPERATORS: external
+          WITH_CONTROLPLANE_CR: "false"
+          WITH_NFS: "true"
+          WITH_MESSAGING: "true"
+          WITH_OVN_KERNEL_MODULES: "true"
+          WITH_CHAOS_MESH: "true"
+          WITH_DIZZY: "true"
+          WITH_METRICS_SERVER: "true"
+      - name: Deploy K-ORC
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: hack/ci-deploy-korc.sh
+      # The ten operators in the order of e2e-controlplane: each CRD the
+      # c5c3-operator projects exists before it starts.
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+      - name: Deploy glance-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: glance
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
+          NAMESPACE: glance-system
+      - name: Deploy placement-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
+      - name: Deploy barbican-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
+      - name: Deploy ovn-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      - name: Deploy neutron-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
+      - name: Deploy cinder-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
+      - name: Deploy nova-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: nova
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/nova-operator
+          NAMESPACE: nova-system
+      - name: Deploy c5c3-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: c5c3
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator
+          NAMESPACE: c5c3-system
+      - name: Bring up the random chaos plane
+        timeout-minutes: 40
+        run: hack/chaos-random.sh up
+        env:
+          CHAOS_RANDOM_ENV: ci
+      - name: Run random chaos
+        timeout-minutes: 65
+        run: hack/chaos-random.sh run
+        env:
+          CHAOS_RANDOM_ENV: ci
+          CHAOS_RANDOM_SEED: ${{ github.run_id }}
+      # One pass for the c5c3-operator and the plane, then the three sections
+      # that differ for each other operator, as on the nova and network legs.
+      - name: Dump diagnostic info
+        if: always()
+        run: |
+          OPERATOR=c5c3 hack/ci-dump-diagnostics.sh
+          for op in keystone horizon glance placement barbican ovn neutron cinder nova; do
+            OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
+          done
+      # The JUnit file goes under the name report-nightly-chaos downloads, as
+      # the legs' do; the run directory holds the plan, the windows, the
+      # soak's report and the verdict.
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-chaos-junit-report-random
+          path: _output/reports/
+          retention-days: 14
+      - name: Upload the random run
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-chaos-random-report
+          path: _output/chaos-random/
+          retention-days: 14
+      # Last step of the job, so the dump above still had a cluster to read;
+      # `always()` covers the failed and timed-out runs. Never fails the job
+      # (see hack/ci-delete-kind-cluster.sh).
+      - name: Delete kind cluster
+        if: always()
+        run: hack/ci-delete-kind-cluster.sh
+
+  # Files a red nightly chaos run (#1388): one issue per failed suite, per
+  # red leg that names no suite, for a night where no leg ran, and for a
+  # night whose self-hosted jobs took longer than 720 minutes together (the
+  # budget the author of #1395 set for the random run, superseding the 600 of
+  # D6 of #1386), each through hack/ci-report-red-run.sh
+  # (hack/ci-report-nightly-chaos.sh). This GitHub-hosted job is the only one
+  # in this workflow that holds issues: write; actions: read lists the jobs
+  # of the run. A dispatch never reports, as in flux-path.yaml. A re-run
+  # comments on the same open issues and opens none.
+  report-nightly-chaos:
+    needs: [changes, build-e2e-images, e2e-chaos, e2e-chaos-random]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # A leg that hit its wall uploaded no report; the script files the leg
+      # then.
+      - name: Download the JUnit reports
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: e2e-chaos-junit-report-*
+          path: _output/nightly
+      - name: Report the night
+        run: hack/ci-report-nightly-chaos.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPORT_SHA: ${{ github.sha }}
+          REPORTS_DIR: _output/nightly
+          BUDGET_MINUTES: "720"
+
+  # End-to-end Prometheus stack tests using kind cluster,
+  # kube-prometheus-stack, and Chainsaw.  Loads the keystone-operator and
+  # horizon-operator images, brings up the monitoring stack (WITH_PROMETHEUS=true
+  # on the shared composite action), deploys both operators with their
+  # ServiceMonitors (WITH_PROMETHEUS=true on hack/ci-deploy-operator.sh), and
+  # runs two chainsaw suites: tests/e2e/keystone/prometheus-stack (HelmRelease
+  # readiness and kind posture, ServiceMonitor presence in keystone-system,
+  # Prometheus target health for keystone-operator, Grafana dashboard
+  # presence) and tests/e2e/horizon/prometheus-stack (ServiceMonitor presence
+  # in horizon-system, Prometheus target health for horizon-operator, an
+  # ingested controller_runtime_reconcile_total series).
+  #
+  # Single matrix entry on the self-hosted runner. The kube-prometheus stack
+  # is deterministic, so the job runs `continue-on-error: false`. It inherits
+  # the e2e-chaos `needs:` chain so the same upstream Go gate applies and an
+  # operator code change re-runs the prometheus suite alongside e2e-chaos.
   e2e-prometheus:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -2619,10 +3042,12 @@ jobs:
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2026.1
+            ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2026.1 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to kube-prometheus-stack — required for the prometheus suite.
       - name: Setup E2E infrastructure
@@ -2642,17 +3067,32 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
           WITH_PROMETHEUS: "true"
+      # A second live scrape target for tests/e2e/horizon/prometheus-stack.
+      # NAMESPACE matters: the script defaults to keystone-system, while the
+      # suite reads ServiceMonitor/horizon-operator in horizon-system and the
+      # horizon diagnostics pass below derives horizon-system as well. The
+      # kind Prometheus selects ServiceMonitors in every namespace
+      # (deploy/kind/prometheus/release.yaml).
+      - name: Deploy horizon-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: horizon
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/horizon-operator
+          NAMESPACE: horizon-system
+          WITH_PROMETHEUS: "true"
       - name: Run prometheus E2E tests
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml \
-            tests/e2e/keystone/prometheus-stack/
-      # Use shared diagnostic dump script.
+            tests/e2e/keystone/prometheus-stack/ tests/e2e/horizon/prometheus-stack/
+      # Use shared diagnostic dump script. The horizon pass adds the
+      # horizon-system sections the keystone pass never looks at;
+      # OPERATOR_ONLY skips the infrastructure block it already emitted.
       - name: Dump diagnostic info
         if: always()
-        run: hack/ci-dump-diagnostics.sh
-        env:
-          OPERATOR: keystone
+        run: |
+          OPERATOR=keystone hack/ci-dump-diagnostics.sh
+          OPERATOR=horizon OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -2691,19 +3131,40 @@ jobs:
   # Keystone-only plane of its own and stays separate for the same failFast
   # reason.
   #
+  # A fifth step runs the healthcheck suite, which asserts that a plane reports
+  # KeystoneReady and Ready only once its Keystone API answers, and a sixth the
+  # pod-security-restricted suite, which brings a managed plane to Ready in a
+  # namespace that enforces restricted:latest. They bring up a Keystone-only
+  # plane each and stay separate for the same reason.
+  #
+  # Steps seven to ten run the per-ControlPlane scoping and teardown suites:
+  # admin-password-scoping and db-credential-scoping (one plane's admin
+  # password and dynamic DB credential), multi-controlplane (two planes in
+  # tenant-a and tenant-b that must not read or rotate each other's
+  # credentials) and deletion-orchestration (a plane with a dedicated Barbican
+  # store deleted after its Keystone is gone). Each seeds its own OpenBao
+  # paths, onboards its own database-engine roles and removes its planes
+  # before the next step, and each runs in a step of its own for the same
+  # failFast reason.
+  #
   # A real MariaDB + Memcached + Keystone + three operators + OpenBao + ESO +
   # K-ORC + cert-manager + Envoy on one node is heavy, so this is a dedicated job
   # with an extended timeout on the larger runner (matching tempest).
   #
-  # The four suites run in sequence against one node, so their wall clocks add
+  # The ten suites run in sequence against one node, so their wall clocks add
   # rather than overlap. A suite's ceiling is NOT its exec budget alone: chainsaw
   # applies that budget to every script operation, so try, catch and finally each
-  # get one, and the cleanup runs after all three. Each of the four therefore
+  # get one, and the cleanup runs after all three. Each of the ten therefore
   # pins its catch and its finally explicitly, which puts the ceilings at
-  # 100+5+5+5+2+3 = 120m (full-chain, where the compute leg added a third
-  # finally script and the release hop lengthened the exec budget),
+  # 120+5+5+5+2+3 = 140m (full-chain, where the compute leg added a third
+  # finally script and the release hop and Link 7e lengthened the exec
+  # budget),
   # 40+5+20+15 = 80m (foreign-namespace),
-  # 70+5+20+15 = 110m (keystone-user) and 50+5+20+15 = 90m (own-namespace).
+  # 70+5+20+15 = 110m (keystone-user), 50+5+20+15 = 90m (own-namespace),
+  # 30+5+15+15 = 65m (healthcheck and pod-security-restricted each),
+  # 30+5+10+5 = 50m (admin-password-scoping), 30+5+10+5 = 50m
+  # (db-credential-scoping), 70+5+20+5 = 100m (multi-controlplane) and
+  # 55+5+5+10 = 75m (deletion-orchestration).
   # Unpinned, catch and finally would inherit the exec budget and the
   # own-namespace ceiling alone would be 165m.
   #
@@ -2735,10 +3196,30 @@ jobs:
   # 40+85+25+55+110 = 315m. Link 8 of the full-chain suite raised its exec
   # budget from 65m to 100m and its ceiling to 120m, and the bring-up grew
   # eight image loads (about 5 minutes), so the wall moved to 360m:
-  # 45+120+25+55+110 = 355m. The bring-up and the two pass terms are the
-  # estimates in that sum —
-  # confirm them against the first green run of this leg and re-derive if one
-  # overruns. The worst case holds the runner for over five hours, which
+  # 45+120+25+55+110 = 355m. Link 7e of the full-chain suite, a ControlPlane
+  # extraConfig edit and its revert, raised its exec budget from 100m to
+  # 120m and its ceiling to 140m, so the wall moved to 380m:
+  # 45+140+25+55+110 = 375m. The healthcheck and pod-security-restricted
+  # suites added a fifth and a sixth step with Keystone-only planes of their
+  # own; their passes are estimated at ~10m each (the Keystone-only
+  # foreign- and own-namespace suites took 4m20s and 6m37s in run
+  # 39853183141) and the largest stall term stays 110m, so the wall moved to
+  # 400m: 45+140+25+55+10+10+110 = 395m.
+  #
+  # Steps seven to ten moved the wall to 540m. The rule stays: the bring-up,
+  # the full-chain ceiling, the passes of the other suites but one, and the
+  # largest other ceiling. The passes are those of eight of the nine other
+  # suites, leaving out the smallest (one of the two ~10m Keystone-only
+  # passes of healthcheck and pod-security-restricted): ~55m keystone-user,
+  # ~45m multi-controlplane, ~40m deletion-orchestration, ~25m
+  # foreign-namespace, ~25m own-namespace, ~20m db-credential-scoping, ~15m
+  # admin-password-scoping and ~10m for the other Keystone-only suite, 235m
+  # in all. The keystone-user ceiling of 110m is still the largest of the
+  # nine others, so 45+140+235+110 = 530m. The estimates of the existing
+  # suites stand because their measured passes in run 39853183141 (4.3, 14.6
+  # and 6.6 minutes for foreign-namespace, keystone-user and own-namespace)
+  # sit well under them; the six newer ones are estimates until a green run
+  # measures them. The worst case holds the runner for nine hours, which
   # is the price of a stalled suite reporting as a failure rather than a
   # cancellation.
   e2e-controlplane:
@@ -2755,7 +3236,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 360
+    timeout-minutes: 540
     continue-on-error: false
     permissions:
       contents: read
@@ -3019,13 +3500,71 @@ jobs:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
       # The own-namespace registration suite runs fourth, again in its own
       # invocation for the failFast reason above, under a report name of its own
-      # so all four JUnit files survive in the uploaded artifact.
+      # so every suite's JUnit file survives in the uploaded artifact.
       - name: Run own-namespace registration E2E test
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml \
             --report-name chainsaw-report-keystone-service-own-namespace \
             tests/e2e/c5c3/keystone-service/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # The ControlPlane healthcheck suite runs fifth, in its own invocation for
+      # the failFast reason above and under a report name of its own.
+      - name: Run ControlPlane healthcheck E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-controlplane-healthcheck \
+            tests/e2e/c5c3/healthcheck/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # The ControlPlane pod-security-restricted suite runs sixth, in its own
+      # invocation for the failFast reason above and under a report name of its
+      # own.
+      - name: Run ControlPlane pod-security-restricted E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-controlplane-pod-security-restricted \
+            tests/e2e/c5c3/pod-security-restricted/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # Steps seven to ten run the per-ControlPlane scoping and teardown
+      # suites, each in its own invocation for the failFast reason above and
+      # under a report name of its own. Each brings up its own planes away from
+      # openstack, which still holds the full-chain plane, and removes them in
+      # its finally block before the next step starts.
+      - name: Run admin-password scoping E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-admin-password-scoping \
+            tests/e2e/c5c3/admin-password-scoping/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run DB-credential scoping E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-db-credential-scoping \
+            tests/e2e/c5c3/db-credential-scoping/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run multi-ControlPlane isolation E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-multi-controlplane \
+            tests/e2e/c5c3/multi-controlplane/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      - name: Run deletion-orchestration E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-deletion-orchestration \
+            tests/e2e/c5c3/deletion-orchestration/
         env:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
       # Stops the watch, takes a last snapshot and writes the report. A
@@ -4099,16 +4638,21 @@ jobs:
 
   # Multi-node OVN overlay E2E on kind. Brings up the one-control-plane,
   # two-worker cluster of hack/kind-config-multinode.yaml, deploys the
-  # ovn-operator, and runs tests/e2e-ovn-overlay/ across both workers: one
-  # logical switch port per node, a ping across the Geneve tunnel between them,
-  # and the Southbound rows that say which chassis carried it.
+  # ovn-operator, and runs the two suites of tests/e2e-ovn-overlay/ across both
+  # workers. default-spread checks where the replicas of an OVNCentral that
+  # names no spread land on workers without a zone label: northd two on each,
+  # the Northbound members on both. geneve-datapath puts one logical switch port
+  # on each node, pings across the Geneve tunnel between them, and reads the
+  # Southbound rows that say which chassis carried it.
   #
-  # continue-on-error: true because the suite needs the openvswitch and geneve
-  # kernel modules on the runner host, which puts it under the non-blocking entry
-  # rule of `### Kernel-module-dependent suites` in
-  # docs/reference/ci-cd/ci-workflow.md. A later change flips it to blocking
-  # once its pass history on main justifies the flip. The single-node chassis
-  # baseline under tests/e2e/ovn/ stays blocking inside the e2e-operator legs.
+  # continue-on-error: true because geneve-datapath needs the openvswitch and
+  # geneve kernel modules on the runner host, which puts the job under the
+  # non-blocking entry rule of `### Kernel-module-dependent suites` in
+  # docs/reference/ci-cd/ci-workflow.md. default-spread needs no kernel module,
+  # but it needs the two workers, so it runs in this job and is non-blocking
+  # with it. A later change flips the job to blocking once its pass history on
+  # main justifies the flip. The single-node chassis baseline under
+  # tests/e2e/ovn/ stays blocking inside the e2e-operator legs.
   #
   # The job runs alone on its runner: hack/kind-config-multinode.yaml and
   # hack/kind-config.yaml bind the same host ports (443 and 8428 on 127.0.0.1),
@@ -4403,7 +4947,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 120
+    timeout-minutes: 150
     continue-on-error: true
     permissions:
       contents: read
@@ -4464,18 +5008,20 @@ jobs:
           OPERATOR: keystone
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
           NAMESPACE: keystone-system
-      # Two minutes per run, and six for effective-fan: a Keystone on kind
-      # grants about 45 assignments a second, and the last of the profile's
-      # four stages makes 2000 of them before it measures. A leg takes about
-      # an hour, most of it the provisioning and teardown of effective-fan's
-      # 4000 projects on each build.
+      # Two minutes per run, and twelve for effective-fan: the last of the
+      # profile's four stages makes 2000 grants before it measures, and a
+      # Keystone on this runner grants 16 to 18 assignments a second, so a
+      # window of 180 s leaves stage 4 about a minute of draws. A leg took
+      # about 92 minutes with six; the twelve add about 12, most of a leg
+      # being the provisioning and teardown of effective-fan's 4000 projects
+      # on each build.
       - name: Run keystone pressure
         env:
           KEYSTONE_PRESSURE_RELEASE: ${{ matrix.release }}
           KEYSTONE_PRESSURE_BASE_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}-main
           KEYSTONE_PRESSURE_PATCHED_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
           KEYSTONE_PRESSURE_DURATION: 2m
-          KEYSTONE_PRESSURE_PROFILE_DURATIONS: effective-fan=6m
+          KEYSTONE_PRESSURE_PROFILE_DURATIONS: effective-fan=12m
           KEYSTONE_PRESSURE_OUTPUT: _output/keystone-pressure/${{ matrix.release }}
         run: make keystone-pressure-ab
       - name: Dump diagnostic info
@@ -4503,13 +5049,16 @@ jobs:
   # suite against them.  One leg per service: keystone, glance, barbican,
   # neutron, cinder and nova.
   # Matrix over OpenStack releases to validate each release independently.
+  # One more leg, keystone-upgrade, brings a Keystone up at the release before
+  # the newest, upgrades it in place to the newest through
+  # expand-migrate-contract, and runs the newest release's keystone suite
+  # against that database.
   #
   # Runs only after every E2E job has finished without failure: a failed
   # E2E job skips tempest, a path-filter-skipped one does not block it
-  # (always() + the failure/cancelled guards below). The e2e-chaos network
-  # leg is continue-on-error, so its result is always 'success' and merely
-  # delays tempest. The e2e-chaos pod leg is blocking, so a pod-chaos failure
-  # surfaces as a job 'failure' and blocks tempest via the guard below.
+  # (always() + the failure/cancelled guards below). Every e2e-chaos leg
+  # gates, so a red chaos leg surfaces as a job 'failure' and skips tempest
+  # via the guard below.
   tempest:
     needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
     if: |
@@ -4535,6 +5084,13 @@ jobs:
     permissions:
       contents: read
       packages: read
+    # The operators run the coverage-instrumented :cover images, which the
+    # load steps fetch with operator-variant: cover, and
+    # hack/ci-deploy-operator.sh gives each a counter volume and GOCOVERDIR.
+    # "Collect operator coverage" reads the counters back before the cluster
+    # is deleted.
+    env:
+      E2E_COVERAGE: "true"
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.changes.outputs.tempest-releases) }}
@@ -4561,9 +5117,14 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
+            # The keystone-upgrade leg deploys its Keystone at the release before
+            # matrix.release and upgrades it in place, so it also pulls that
+            # release's service image. The other legs render a blank line here.
+            ${{ matrix.service == 'keystone-upgrade' && format('{0}/keystone:{1}', env.IMAGE_PREFIX, matrix.upgrade-from) || '' }}
             ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
             # The neutron leg brings up an OVNCentral next to its Neutron, so it
             # pulls both operator images and both service images. The other legs
@@ -4593,6 +5154,14 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+      # The keystone-upgrade leg brings its Keystone up at the previous release
+      # first. kubelet only skips the registry for a tag already on the node, so
+      # without this load the node would pull the published
+      # ghcr.io/c5c3/keystone:<upgrade-from> and the leg would upgrade main's
+      # image instead of this run's.
+      - name: Load the previous release's Keystone image into kind
+        if: matrix.service == 'keystone-upgrade'
+        run: kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.upgrade-from }} --name ${{ env.KIND_CLUSTER }}
       # -- Glance ----------------------------------------------------------
       # The glance leg additionally pulls the glance-operator and the matching
       # glance service image; the keystone leg needs neither. The cinder leg
@@ -4604,6 +5173,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }}
@@ -4627,6 +5197,7 @@ jobs:
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
+          operator-variant: cover
           images: |
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
             ${{ env.IMAGE_PREFIX }}/barbican:${{ matrix.release }}
@@ -4805,12 +5376,80 @@ jobs:
           NAMESPACE: nova-system
       # Every service deploys the Keystone CR from its own config-dir (the
       # glance and barbican legs run against their own
-      # keystone-<service>-tempest identity CR).
+      # keystone-<service>-tempest identity CR). The keystone-upgrade leg
+      # deploys it at the previous release in the step below instead.
       - name: Deploy Keystone CR for Tempest
+        if: matrix.service != 'keystone-upgrade'
         run: |
           kubectl apply -f ${{ matrix.config-dir }}/00-keystone-cr.yaml
           kubectl wait keystone/${{ matrix.cr-name }} -n openstack \
             --for=condition=Ready --timeout=300s
+      # The keystone-upgrade leg applies the newest release's own fixture with
+      # spec.image.tag swapped to the previous release, so the CR name, the
+      # database and the sizing match the fresh keystone leg of the same release,
+      # and the database is written by the previous release's db-sync and
+      # bootstrap. Without an installedRelease of upgrade-from, the step below
+      # would run no upgrade and Tempest would test a fresh database.
+      - name: Deploy Keystone CR at the previous release
+        if: matrix.service == 'keystone-upgrade'
+        env:
+          CR: ${{ matrix.cr-name }}
+          UPGRADE_FROM: ${{ matrix.upgrade-from }}
+        run: |
+          yq '.spec.image.tag = strenv(UPGRADE_FROM)' ${{ matrix.config-dir }}/00-keystone-cr.yaml | kubectl apply -f -
+          kubectl wait keystone/"$CR" -n openstack --for=condition=Ready --timeout=300s
+          if ! kubectl wait keystone/"$CR" -n openstack --for=jsonpath='{.status.installedRelease}'="$UPGRADE_FROM" --timeout=60s; then
+            echo "::error::keystone/$CR reports installedRelease '$(kubectl get keystone/"$CR" -n openstack -o jsonpath='{.status.installedRelease}')', not $UPGRADE_FROM: the leg would run Tempest on a fresh database"
+            exit 1
+          fi
+      # The hop under test: expand, migrate, a rolling update of the three API
+      # replicas, contract. installedRelease moves to the target only when the
+      # contract Job has finished, so it is the first thing to wait for; the Job
+      # check then proves the database went through expand-migrate-contract and
+      # was not synced fresh. The status write that moves installedRelease also
+      # reports Ready. The operator's next pass re-runs the <cr>-db-sync and
+      # <cr>-schema-check Jobs at the new image, and Ready reads False until
+      # both finish. schema-check runs keystone-manage db_sync --check and starts
+      # only after that db-sync completed, so the step waits for it at
+      # :<release> before it waits for Ready. A schema left behind a head fails
+      # the step here, before Tempest runs.
+      - name: Upgrade Keystone to the leg's release
+        if: matrix.service == 'keystone-upgrade'
+        env:
+          CR: ${{ matrix.cr-name }}
+          RELEASE: ${{ matrix.release }}
+          HOP_TIMEOUT: "600"
+        run: |
+          kubectl patch keystone/"$CR" -n openstack --type merge -p "{\"spec\":{\"image\":{\"tag\":\"${RELEASE}\"}}}"
+          if ! kubectl wait keystone/"$CR" -n openstack --for=jsonpath='{.status.installedRelease}'="$RELEASE" --timeout="${HOP_TIMEOUT}s"; then
+            echo "::error::keystone/$CR did not reach installedRelease $RELEASE within ${HOP_TIMEOUT} s; the DatabaseReady condition in the diagnostics dump names the phase it stopped in"
+            exit 1
+          fi
+          kubectl wait job/"$CR"-db-expand job/"$CR"-db-migrate job/"$CR"-db-contract -n openstack --for=condition=complete --timeout=60s
+          # kubectl get fails while the operator swaps the completed Job for the
+          # one at the new image. The loop is bounded, and the check after it
+          # fails the step with the image it last read.
+          check_image=""
+          for _ in $(seq 1 60); do
+            check_image="$(kubectl get job "$CR"-schema-check -n openstack -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+            [[ "$check_image" == *":${RELEASE}" ]] && break
+            sleep 5
+          done
+          if [[ "$check_image" != *":${RELEASE}" ]]; then
+            echo "::error::job/$CR-schema-check runs '$check_image', not a :${RELEASE} image: the operator did not re-run db-sync and schema-check after the upgrade; the DatabaseReady condition in the diagnostics dump names the Job it stopped at"
+            exit 1
+          fi
+          if ! kubectl wait job/"$CR"-schema-check -n openstack --for=condition=complete --timeout=300s; then
+            echo "::error::job/$CR-schema-check (keystone-manage db_sync --check at :${RELEASE}) did not complete: the upgraded schema is not at head, or the check never finished; the Job logs in the diagnostics dump carry its output"
+            exit 1
+          fi
+          kubectl wait keystone/"$CR" -n openstack --for=condition=Ready --timeout=300s
+          kubectl rollout status deploy/"$CR" -n openstack --timeout=300s
+          image="$(kubectl get deploy "$CR" -n openstack -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          case "$image" in
+            *":${RELEASE}") ;;
+            *) echo "::error::deploy/$CR runs $image after the upgrade, not a :${RELEASE} image"; exit 1 ;;
+          esac
       # The glance leg bootstraps the image catalog (Keystone service +
       # endpoints via a setup Job) before its Glance + GlanceBackend CRs, which
       # depend on that catalog entry to reconcile.
@@ -5180,6 +5819,31 @@ jobs:
           for op in ${ops}; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
+      # Scales the coverage-instrumented operators to 0 so each flushes its
+      # counters once more, copies the counters off the kind nodes and merges
+      # them into one profile per operator, with the totals in the job summary
+      # (hack/ci-collect-e2e-coverage.sh). It reports and never fails the job.
+      # A cancelled run skips the scale-down, so the step does not eat the
+      # grace window "Delete kind cluster" needs; cancelled() is allowed in an
+      # if: alone, so the env reads job.status.
+      - name: Collect operator coverage
+        id: coverage
+        if: always()
+        continue-on-error: true
+        env:
+          SCALE_DOWN: ${{ job.status != 'cancelled' }}
+        run: hack/ci-collect-e2e-coverage.sh tempest
+      # One upload per leg: every profile, each scoped to its tree by its
+      # flag in .codecov.yml, and no status gates on these flags.
+      # disable_search keeps the raw counter files out of the upload.
+      - name: Upload operator coverage
+        if: always() && steps.coverage.outputs.found == 'true'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: ${{ steps.coverage.outputs.files }}
+          flags: ${{ steps.coverage.outputs.flags }}
+          disable_search: true
+          fail_ci_if_error: false
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job
       # (see hack/ci-delete-kind-cluster.sh).
@@ -5194,7 +5858,7 @@ jobs:
   # nightly cleanup-images workflow has a safety-net job that catches
   # tags that survive a cancelled run before this one fires.
   cleanup-e2e-tags:
-    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, keystone-pressure, tempest]
+    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-chaos-random, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, keystone-pressure, tempest]
     if: |
       always() &&
       needs.build-e2e-images.result == 'success'
@@ -5317,13 +5981,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The operator upgrade suites install a baseline pinned to a chart
+      # version (tests/e2e-operator-upgrade/<op>-helm-upgrade/baseline.yaml),
+      # so main tags every operator image it publishes with the version its
+      # Chart.yaml names. hack/ghcr-prune-stale-versions.py keeps a bare
+      # X.Y.Z tag forever, and once Chart.yaml moves past a version no push
+      # writes that tag again. Any other version only warns: the step writes
+      # no version, the metadata action drops a raw tag with an empty value,
+      # and the index still gets its sha and latest tags.
+      - name: Read the chart version
+        id: chart
+        env:
+          OPERATOR: ${{ matrix.operator }}
+        run: |
+          chart="operators/${OPERATOR}/helm/${OPERATOR}-operator/Chart.yaml"
+          version="$(hack/ci-read-chart-version.sh "${chart}")"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::warning::${chart} has no X.Y.Z version (got: '${version}'); the image gets no chart-version tag"
+            exit 0
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       # Generate OCI tags and index annotations via docker/metadata-action.
       # The image carries its four static labels and nothing that changes per
       # build, so the per-build metadata goes onto the index: the source,
       # url, version, created and revision annotations of the action, with the
       # title, description, licenses and vendor of the image labels in place
       # of the repository's. type=semver strips the v prefix
-      # (v0.1.0 -> 0.1.0).
+      # (v0.1.0 -> 0.1.0). The chart-version tag carries the enable rule of
+      # latest, so on main both name one digest and a v* tag push writes
+      # neither.
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
@@ -5335,6 +6022,7 @@ jobs:
             type=sha,format=long
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
+            type=raw,value=${{ steps.chart.outputs.version }},enable={{is_default_branch}}
           annotations: |
             org.opencontainers.image.title=${{ matrix.operator }}-operator
             org.opencontainers.image.description=CobaltCore ${{ matrix.operator }} operator
@@ -5392,6 +6080,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
       - name: Package and push Helm chart
@@ -5405,7 +6095,9 @@ jobs:
           else
             make helm-package OPERATOR="${OPERATOR}"
           fi
-          helm push "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
+          # ghcr.io now and then 404s the manifest helm has just uploaded when
+          # helm fetches it back to tag it; the script retries that one error.
+          hack/ci-helm-push.sh "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
 
   # Package and push the target-cluster-access chart to the GHCR OCI registry.
   # It is a job of its own rather than a step in helm-push because that job is a
@@ -5423,6 +6115,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
       - name: Package and push Helm chart
@@ -5434,7 +6128,8 @@ jobs:
           else
             make helm-package-target-cluster
           fi
-          helm push target-cluster-access-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
+          # Retries ghcr.io's 404 on the tag step, as in helm-push.
+          hack/ci-helm-push.sh target-cluster-access-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
 
   # Create GitHub release with auto-generated release notes
   # on v* tag pushes, after images and charts are published.
@@ -5451,6 +6146,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ env.HELM_VERSION }}
       # Package Helm chart tarballs to attach as release assets.
       - name: Package Helm charts
         run: |

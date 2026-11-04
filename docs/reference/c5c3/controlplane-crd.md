@@ -1813,6 +1813,11 @@ carries no label selector: the ControlPlane completes it with the pod selector
 of the component's Deployment, which each service's api package exports
 (`APIPodSelector`, and `SchedulerPodSelector`, `MetadataPodSelector`,
 `ConductorPodSelector`, `ConsoleProxyPodSelector` for the other components).
+A non-empty `spreadConstraints` list becomes the child's
+`topologySpreadConstraints` and replaces both parts of its default spread, the
+zone constraint and the hostname anti-affinity term. Every key the list names
+must sit on every node the pods may run on; see
+[What the spread needs from the cluster](../keystone/keystone-crd.md#what-the-spread-needs-from-the-cluster).
 Neither the ControlPlane nor a `SizingProfile` exposes node or pod affinity.
 
 ### Built-in profiles

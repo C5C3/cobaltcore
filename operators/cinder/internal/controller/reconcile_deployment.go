@@ -302,29 +302,33 @@ func buildCinderDeployment(cinder *cinderv1alpha1.Cinder, art configArtifacts,
 				Name:          "cinder-api",
 				ContainerPort: cinderAPIPort,
 			}},
-			// All three probes GET /healthcheck, served by the oslo healthcheck
-			// middleware without touching the database or the message bus. The startup
-			// probe carries the cold-start window: every uWSGI worker imports cinder,
-			// which under a CPU limit set on the container or on a contended node took
-			// about 60 seconds (measured on a CI node under the former 500m default
-			// CPU limit), while the liveness probe alone restarts the container 55
-			// seconds after it started. The timings are the sibling operators': 30x10s
-			// of startup budget, and an 8s timeout because a cold-starting WSGI app
-			// can hold even a plain HTTP GET past the kubelet's 1s default.
+			// The startup and readiness probes GET /healthcheck, served by the oslo
+			// healthcheck middleware without touching the database or the message
+			// bus. The startup probe carries the cold-start window: every uWSGI
+			// worker imports cinder, which under a CPU limit set on the container or
+			// on a contended node took about 60 seconds (measured on a CI node under
+			// the former 500m default CPU limit). The timings are the sibling
+			// operators': 30x10s of startup budget, and an 8s timeout because a
+			// cold-starting WSGI app can hold even a plain HTTP GET past the
+			// kubelet's 1s default.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler:     cinderHealthcheckProbeHandler(),
 				FailureThreshold: 30,
 				PeriodSeconds:    10,
 				TimeoutSeconds:   8,
 			},
+			// The liveness probe only connects. uWSGI's HTTP router accepts while
+			// every worker waits on a dependency, a database behind a partition or
+			// a broker that restarts, and a GET behind those workers restarts a
+			// healthy API. The readiness probe keeps the GET and takes a saturated
+			// pod out of the Service instead. 10s stays below the 20s period.
 			LivenessProbe: &corev1.Probe{
-				ProbeHandler:        cinderHealthcheckProbeHandler(),
+				ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(cinderAPIPort)},
+				},
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
-				// A single-worker API holds the probe's GET for the whole request in
-				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
-				// is the readiness probe's timeout, below the 20s period.
-				TimeoutSeconds: 10,
+				TimeoutSeconds:      10,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        cinderHealthcheckProbeHandler(),
@@ -357,7 +361,7 @@ func cinderUWSGICommand(cinder *cinderv1alpha1.Cinder) []string {
 	})
 }
 
-// cinderHealthcheckProbeHandler returns the shared readiness/liveness probe
+// cinderHealthcheckProbeHandler returns the shared startup/readiness probe
 // handler of the API container: an HTTP GET of /healthcheck on the API port.
 func cinderHealthcheckProbeHandler() corev1.ProbeHandler {
 	return corev1.ProbeHandler{

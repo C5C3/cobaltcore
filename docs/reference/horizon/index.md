@@ -26,8 +26,11 @@ The v1 operator resolves the onboarding decisions as follows:
   `signed_cookies` backend and Memcached only backs the Django cache
   (`CACHES`, `PyMemcacheCache`). Losing Memcached degrades cache hit-rate; it
   neither logs users out nor flips any condition. The operator therefore has
-  no database sub-reconcilers at all. DB-backed sessions are revisited only
-  if signed cookies plus Memcached prove insufficient.
+  no database sub-reconcilers at all. A Memcached that hangs or restarts only
+  lowers the hit-rate too, because the operator renders 1 s pymemcache
+  timeouts and `ignore_exc` into `CACHES["default"]["OPTIONS"]`, which turn
+  every failed cache call into a miss (#1560). DB-backed sessions are
+  revisited only if signed cookies plus Memcached prove insufficient.
 - **Cache keys: scoped per image.** The operator derives
   `CACHES["default"]["KEY_PREFIX"]` from `spec.image`: `horizon-` plus the
   first 12 hex characters of the SHA-256 of the image reference. Horizon
@@ -74,11 +77,17 @@ The v1 operator resolves the onboarding decisions as follows:
   is pinned in `upper-constraints.txt`; `overrides/<release>/constraints.txt`
   removes the pin so the source install builds the ref from
   `source-refs.yaml`.
-- **No events, no finalizer in v1.** The operator emits no custom Kubernetes
-  events (conditions carry the full state contract), and every owned resource
-  is namespace-scoped and garbage-collected via ownerReferences, so deletion
-  needs no finalizer pass. An events reference page is added when the first
-  event lands.
+- **Two Warning events, one optional finalizer.** The operator records no
+  Normal lifecycle events; conditions carry the state contract. It records two
+  Warning events: `ExtraConfigOwnedKeyOverride` when `spec.extraConfig`
+  overrides an operator-owned setting (see the
+  [extraConfig ownership guard](./horizon-crd.md#extraconfig-ownership-guard)),
+  and `RemoteChildrenAbandoned` when deletion begins while the target cluster
+  a CR named no longer resolves. A CR without `spec.targetClusterRef` carries
+  no finalizer: every owned resource is namespace-scoped and
+  garbage-collected via ownerReferences. A CR with it carries the
+  `openstack.c5c3.io/remote-children` finalizer, which sweeps the children on
+  the target cluster.
 
 ## Owned resources
 

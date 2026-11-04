@@ -18,10 +18,12 @@
 #      each input error exits 2, and the summary line carries the counts.
 #   3. workload.sh, against a stub kubectl: the pod start passes, each
 #      verb's failure paths, the budget line and the two out-of-band checks.
-#   4. The adoption: the forty-six suites that start a workload carry one
+#   4. The adoption: the fifty-two suites that start a workload carry one
 #      valid budget line, verify and stop it and time every call;
-#      deletion-stuck-finalizer and c5c3-operator-pod-kill say why they have
-#      none.
+#      deletion-stuck-finalizer, c5c3-operator-pod-kill and
+#      controlplane-deletion-korc-outage say why they have none.
+#      keystone-helm-upgrade-pod-kill under tests/e2e-operator-upgrade/ is
+#      held to the same contract.
 #   5. The wiring: every non-ovn e2e-chaos leg loads the Tempest image the
 #      pod runs on, the pod and network legs load and deploy Placement for
 #      the placement stream, and make shellcheck lints lib/*.sh and every
@@ -2069,30 +2071,38 @@ CHAOS_DIR="$PROJECT_ROOT/tests/e2e-chaos"
 ADOPTERS="api-pod-kill-pdb barbican-keystone-outage barbican-mariadb-outage \
 barbican-operator-pod-kill cert-manager-outage cinder-broker-pod-kill \
 cinder-keystone-outage cinder-mariadb-outage cinder-operator-pod-kill \
+cinder-upgrade-broker-pod-kill cinder-upgrade-db-partition \
 cinder-volume-pod-kill controlplane-keystone-degraded \
+controlplane-provisioning-mariadb-kill \
 cronjob-rotation-failure envoy-gateway-outage envoy-proxy-pod-kill eso-down \
-eso-pod-kill glance-keystone-outage glance-mariadb-outage \
-glance-operator-pod-kill horizon-dashboard-pod-kill \
-horizon-memcached-pod-kill horizon-operator-pod-kill korc-network-partition \
+eso-pod-kill fernet-rotation-operator-outage glance-keystone-outage \
+glance-mariadb-outage glance-operator-pod-kill horizon-dashboard-pod-kill \
+horizon-memcached-pod-kill horizon-operator-pod-kill \
+keystoneuser-rotation-keystone-outage korc-network-partition \
 korc-provisioning-outage mariadb-network-latency mariadb-network-partition \
 mariadb-operator-cascading-failure mariadb-pod-kill \
 memcached-network-partition memcached-pod-kill neutron-keystone-outage \
 neutron-metadata-agent-pod-kill neutron-operator-pod-kill \
 nova-keystone-outage nova-operator-pod-kill nova-placement-outage \
-openbao-pod-kill openbao-sealed openbao-tenant-policy-narrowed \
-operator-pod-crash operator-pod-kill ovn-operator-pod-kill \
-placement-keystone-outage placement-mariadb-outage \
+novacompute-drain-compute-kill openbao-pod-kill openbao-sealed \
+openbao-tenant-policy-narrowed operator-pod-crash operator-pod-kill \
+ovn-operator-pod-kill placement-keystone-outage placement-mariadb-outage \
 placement-operator-pod-kill rabbitmq-operator-cascading-failure"
 BUDGET_RE='^# Chaos budget: failures=([0-9]+) recovery=([0-9]+)s$'
 MEASURED_RE='^# Chaos budget measured: [0-9]{4}-[0-9]{2}-[0-9]{2}, [a-z]+, failures [0-9]+(/[0-9]+){0,2}, recovery [0-9]+(/[0-9]+){0,2} s$'
+# The suites outside tests/e2e-chaos/ that start a workload through
+# ../../e2e-chaos/lib/workload.sh.
+UPGRADE_DIR="$PROJECT_ROOT/tests/e2e-operator-upgrade"
+UPGRADE_ADOPTERS="keystone-helm-upgrade-pod-kill"
 
 have_yq() {
   command -v yq >/dev/null 2>&1
 }
 
-# check_adopter <suite> <file> — the contract of a suite that calls start.
+# check_adopter <suite> <file> [<lib>] — the contract of a suite that calls
+# start, with workload.sh under <lib> (default ../lib).
 check_adopter() {
-  local suite="$1" file="$2" budget measured ids
+  local suite="$1" file="$2" lib="${3:-../lib}" budget measured ids
   assert_eq "$suite: exactly one budget line" "1" "$(grep -c '^# Chaos budget:' "$file")"
   budget="$(grep -m1 '^# Chaos budget:' "$file")"
   assert_eq "$suite: the budget line reads failures=<N> recovery=<S>s" "yes" \
@@ -2112,14 +2122,14 @@ check_adopter() {
     return 0
   fi
   assert_eq "$suite: a stop in a cleanup block" "1" "$(yq 'explode(.) | [.spec.steps[].cleanup[]? | select(has("script"))
-    | select(.script.content == "../lib/workload.sh stop '"$suite"'")] | length' "$file")"
+    | select(.script.content == "'"$lib"'/workload.sh stop '"$suite"'")] | length' "$file")"
   assert_eq "$suite: a dump in a catch block" "true" "$(yq 'explode(.) | [.spec.steps[].catch[]? | select(has("script"))
-    | select(.script.content == "../lib/workload.sh dump '"$suite"'")] | length > 0' "$file")"
+    | select(.script.content == "'"$lib"'/workload.sh dump '"$suite"'")] | length > 0' "$file")"
 }
 
 # --- Test 22 --------------------------------------------------------------
 test_every_suite_adopts_the_harness_or_declines_it() {
-  echo "Test: the forty-six adopters keep the harness contract, deletion-stuck-finalizer and c5c3-operator-pod-kill decline it"
+  echo "Test: the fifty-two adopters keep the harness contract, deletion-stuck-finalizer, c5c3-operator-pod-kill and controlplane-deletion-korc-outage decline it"
   local file suite found=""
   for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
     suite="$(basename "$(dirname "$file")")"
@@ -2129,7 +2139,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     fi
   done
   # shellcheck disable=SC2086 # word splitting builds the sorted list
-  assert_eq "exactly the forty-six suites call workload.sh start" "$(echo $ADOPTERS)" \
+  assert_eq "exactly the fifty-two suites call workload.sh start" "$(echo $ADOPTERS)" \
     "$(printf '%s\n' $found | sort | xargs)"
   local finalizer="$CHAOS_DIR/deletion-stuck-finalizer/chainsaw-test.yaml"
   assert_file_contains_fixed "deletion-stuck-finalizer says why it has no workload" "$finalizer" \
@@ -2137,8 +2147,22 @@ test_every_suite_adopts_the_harness_or_declines_it() {
   assert_file_contains_fixed "c5c3-operator-pod-kill says why it has no workload" \
     "$CHAOS_DIR/c5c3-operator-pod-kill/chainsaw-test.yaml" \
     "# Chaos workload: none (the kill lands while the ControlPlane is still provisioning, before its Keystone serves a token)"
+  assert_file_contains_fixed "controlplane-deletion-korc-outage says why it has no workload" \
+    "$CHAOS_DIR/controlplane-deletion-korc-outage/chainsaw-test.yaml" \
+    "# Chaos workload: none (the ControlPlane under test is being deleted)"
   assert_eq "lib/ holds no chainsaw-test.yaml, so it is no suite" "no" \
     "$([ -e "$LIB_DIR/chainsaw-test.yaml" ] && echo yes || echo no)"
+  local found_upgrade=""
+  for file in "$UPGRADE_DIR"/*/chainsaw-test.yaml; do
+    suite="$(basename "$(dirname "$file")")"
+    if grep -q 'e2e-chaos/lib/workload\.sh start' "$file"; then
+      found_upgrade="$found_upgrade $suite"
+      check_adopter "$suite" "$file" ../../e2e-chaos/lib
+    fi
+  done
+  # shellcheck disable=SC2086 # word splitting builds the sorted list
+  assert_eq "exactly the operator-upgrade suites in UPGRADE_ADOPTERS call workload.sh start" \
+    "$UPGRADE_ADOPTERS" "$(printf '%s\n' $found_upgrade | sort | xargs)"
 
   if ! have_yq; then
     echo "  SKIP: yq not installed (two checks per adopter and the untimed-call check skipped)"
@@ -2146,7 +2170,7 @@ test_every_suite_adopts_the_harness_or_declines_it() {
     return 0
   fi
   local untimed
-  untimed="$(for file in "$CHAOS_DIR"/*/chainsaw-test.yaml; do
+  untimed="$(for file in "$CHAOS_DIR"/*/chainsaw-test.yaml "$UPGRADE_DIR"/*/chainsaw-test.yaml; do
     yq 'explode(.) | .spec.steps[] | (.try, .catch, .cleanup, .finally) | .[]? | select(has("script"))
       | .script | select(.content | test("workload\\.sh")) | select(has("timeout") | not) | .content' "$file" |
       sed "s|^|$(basename "$(dirname "$file")"): |"

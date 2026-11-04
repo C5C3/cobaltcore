@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Everything below this paragraph is a byte-for-byte copy of
+# tests/e2e/ovn/central-deletion-cleanup/00-ovncentral-cr.yaml.
+# It is copied, not referenced by path: this suite applies it under the
+# baseline operator's older CRD, so a field the e2e suite's fixture
+# adopts later must not reach it.
+
+# OVNCentral fixture for the central-deletion-cleanup E2E test.
+#
+# One Raft member per database and one northd replica: the suite is about what
+# deleting the CR takes with it, and a three-member cluster only lengthens the
+# teardown without adding a kind of owned object.
+#
+# The databases stay unpublished (externallyReachable defaults to false), so
+# this fixture claims no node port and can run beside central-basic-deployment,
+# which holds 30641..30643 and 30651..30653.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-deletion
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1

@@ -1,0 +1,268 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.logging propagation to the Django LOGGING
+# settings of the Horizon dashboard, the Horizon counterpart of
+# tests/e2e/keystone/logging. A request for a missing page makes Django's
+# django.request logger record "Not Found: <path>" at WARNING, and uWSGI
+# prints its own access line for the same request. Every request runs inside
+# the dashboard pod against http://localhost:8080 (logging-helpers.sh), and
+# every marker path ends in / so APPEND_SLASH cannot redirect it.
+#
+#   1. A CR without spec.logging reaches Ready=True.
+#   2. The default text format prints an oslo.log-shaped line,
+#      "<date> <time>.<ms> <pid> WARNING django.request [-] Not Found: <path>".
+#   3. perLoggerLevels {django.request: ERROR} rolls a new ConfigMap, and
+#      the new pod prints the access line of a missing page but no
+#      Not Found record for it.
+#   4. debug: true rolls a new ConfigMap with DEBUG = True, and a missing
+#      page answers with Django's technical 404 page.
+#   5. format: json rolls a new ConfigMap naming
+#      oslo_log.formatters.JSONFormatter; every line starting with { parses
+#      as JSON with name, levelname and message, and one is the Not Found
+#      record of the marker path.
+#   6. A perLoggerLevels value outside the enum is rejected at admission.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-logging
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+    exec: 5m
+  steps:
+  # ── Step 1: Apply the Horizon CR and assert Ready ──────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-logging
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: horizon-logging
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch: &dump
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-logging -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-logging -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 2>&1 || true
+  # ── Step 2: The default text format prints oslo.log-shaped lines ───────
+  # The pattern has no ^ anchor because --prefix puts
+  # "[pod/<name>/<container>] " in front of every line. Matching uses a
+  # here-string, not `echo "$LOGS" | grep -q`: under pipefail, grep -q
+  # closing the pipe early fails the echo of a large $LOGS with EPIPE and
+  # skips the branch despite a match (see tests/e2e/keystone/logging).
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./logging-helpers.sh
+          POD=$(dashboard_pod "$(config_cm)")
+          if [ -z "$POD" ]; then
+            echo "FAIL: no Ready dashboard pod of horizon-logging"
+            exit 1
+          fi
+          dashboard_get "$POD" /e2e-logging-default/ >/dev/null
+          PATTERN='[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3} [0-9]+ WARNING django\.request \[-\] Not Found: /e2e-logging-default/'
+          DEADLINE=$(( $(date +%s) + 60 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            LOGS=$(horizon_logs --prefix)
+            if grep -E -q "$PATTERN" <<<"$LOGS"; then
+              echo "OK: oslo.log-shaped Not Found line observed on pod=$POD"
+              grep -E "$PATTERN" <<<"$LOGS" | head -1 || true
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: no oslo.log-shaped Not Found line for /e2e-logging-default/ within 60 s"
+          tail -n 50 <<<"$LOGS"
+          exit 1
+    catch: *dump
+  # ── Step 3: perLoggerLevels silences django.request ─────────────────────
+  # The uWSGI access line proves the log stream has caught up past the
+  # request, so the absence of the Not Found record is not a race.
+  - try:
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./logging-helpers.sh
+          config_cm > /tmp/horizon-logging-cm-before
+          echo "BEFORE_CM=$(cat /tmp/horizon-logging-cm-before)"
+    - patch:
+        file: 01-patch-per-logger-quiet.yaml
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./logging-helpers.sh
+          wait_config_flip "$(cat /tmp/horizon-logging-cm-before)" '"django.request": {"level": "ERROR"}'
+          POD=$(dashboard_pod "$AFTER_CM")
+          if [ -z "$POD" ]; then
+            echo "FAIL: no Ready dashboard pod mounts $AFTER_CM"
+            exit 1
+          fi
+          dashboard_get "$POD" /e2e-logging-quiet/ >/dev/null
+          ACCESS='GET /e2e-logging-quiet/ => generated'
+          SEEN=""
+          DEADLINE=$(( $(date +%s) + 60 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            LOGS=$(horizon_logs --prefix)
+            if grep -F -q "$ACCESS" <<<"$LOGS"; then
+              SEEN=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$SEEN" ]; then
+            echo "FAIL: uWSGI access line for /e2e-logging-quiet/ never reached kubectl logs"
+            tail -n 50 <<<"$LOGS"
+            exit 1
+          fi
+          if grep -F -q 'Not Found: /e2e-logging-quiet/' <<<"$LOGS"; then
+            echo "FAIL: django.request at ERROR still logged the 404 of /e2e-logging-quiet/"
+            grep -F 'e2e-logging-quiet' <<<"$LOGS" || true
+            exit 1
+          fi
+          echo "OK: access line present, no django.request Not Found record on pod=$POD"
+    catch: *dump
+  # ── Step 4: debug: true serves Django's technical 404 page ─────────────
+  # spec.logging.debug maps to Django DEBUG and leaves the root level alone,
+  # so the evidence is the page, not a log line. Django serves the technical
+  # 404 page instead of handler404 whenever DEBUG is on.
+  - try:
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./logging-helpers.sh
+          config_cm > /tmp/horizon-logging-cm-before
+          echo "BEFORE_CM=$(cat /tmp/horizon-logging-cm-before)"
+    - patch:
+        file: 02-patch-debug-true.yaml
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./logging-helpers.sh
+          wait_config_flip "$(cat /tmp/horizon-logging-cm-before)" 'DEBUG = True'
+          POD=$(dashboard_pod "$AFTER_CM")
+          if [ -z "$POD" ]; then
+            echo "FAIL: no Ready dashboard pod mounts $AFTER_CM"
+            exit 1
+          fi
+          BODY=$(dashboard_get "$POD" /e2e-logging-debug/)
+          if ! grep -F -q '<code>DEBUG = True</code>' <<<"$BODY"; then
+            echo "FAIL: the 404 of /e2e-logging-debug/ is not Django's technical 404 page"
+            head -c 2000 <<<"$BODY"
+            exit 1
+          fi
+          echo "OK: technical 404 page served on pod=$POD"
+    catch: *dump
+  # ── Step 5: format: json prints one JSON object per record ─────────────
+  # No --prefix here, so a record starts at column 0. uWSGI access lines
+  # never start with {, so the filter keeps only formatter records.
+  - try:
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./logging-helpers.sh
+          config_cm > /tmp/horizon-logging-cm-before
+          echo "BEFORE_CM=$(cat /tmp/horizon-logging-cm-before)"
+    - patch:
+        file: 03-patch-format-json.yaml
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./logging-helpers.sh
+          wait_config_flip "$(cat /tmp/horizon-logging-cm-before)" 'oslo_log.formatters.JSONFormatter'
+          POD=$(dashboard_pod "$AFTER_CM")
+          if [ -z "$POD" ]; then
+            echo "FAIL: no Ready dashboard pod mounts $AFTER_CM"
+            exit 1
+          fi
+          dashboard_get "$POD" /e2e-logging-json/ >/dev/null
+          DEADLINE=$(( $(date +%s) + 90 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            JSON_LINES=$(grep -E '^\{' <<<"$(horizon_logs)" || true)
+            FAILED=0
+            MATCHED=0
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              if ! jq -e . >/dev/null 2>&1 <<<"$line"; then
+                echo "FAIL: not parseable JSON: $line"
+                FAILED=$((FAILED + 1))
+                continue
+              fi
+              if ! jq -e 'has("name") and has("levelname") and has("message")' >/dev/null 2>&1 <<<"$line"; then
+                echo "FAIL: missing name, levelname or message: $line"
+                FAILED=$((FAILED + 1))
+                continue
+              fi
+              if jq -e '.name == "django.request" and .message == "Not Found: /e2e-logging-json/"' >/dev/null 2>&1 <<<"$line"; then
+                MATCHED=1
+              fi
+            done <<<"$JSON_LINES"
+            if [ "$FAILED" -ne 0 ]; then
+              echo "FAIL: $FAILED line(s) starting with { broke the JSONFormatter contract"
+              exit 1
+            fi
+            if [ "$MATCHED" -eq 1 ]; then
+              echo "OK: every JSON record parses with name, levelname and message; the Not Found record of /e2e-logging-json/ is one of them"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "FAIL: no JSON record with name django.request and message 'Not Found: /e2e-logging-json/' within 90 s"
+          horizon_logs | tail -n 50
+          exit 1
+    catch: *dump
+  # ── Step 6: An invalid per-logger level is rejected at admission ───────
+  # The validating webhook reports field.Invalid at
+  # spec.logging.perLoggerLevels[django.request]; the CEL message on the
+  # shared type contains the same substring.
+  - try:
+    - apply:
+        file: 04-patch-invalid-perloggerlevel.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.logging.perLoggerLevels')): true
+            (contains($error, 'level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL')): true

@@ -1,0 +1,148 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Brownfield MariaDB Database/User/Grant pre-creation for the multi-namespace
+# E2E test.
+#
+# The three Keystones live outside `openstack`, and Database.ClusterRef /
+# Cache.ClusterRef are LocalObjectReferences, so they reach the shared
+# openstack/openstack-db and openstack/openstack-memcached in brownfield mode
+# (database.host + cache.servers), as pod-security-restricted does. These CRs
+# therefore live in `openstack`, beside openstack-db.
+#
+# One schema and one MariaDB user per namespace: keystone_mns_a with user
+# keystone-mns-a, and so on. A MariaDB User CR defaults maxUserConnections to
+# 10, and three Keystones, their Jobs and the brownfield suites that run beside
+# this one on the canonical `keystone` user exceed it together, so a keystone
+# request that needs one more connection answers 500. The three users share
+# the password of the existing openstack/keystone-db Secret, which the step 1
+# script copies into each namespace. `cleanupPolicy: Skip` keeps the users and
+# the schemas when the CRs are deleted, as in pod-security-restricted; a rerun
+# re-adopts them.
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: keystone-mns-a-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: keystone_mns_a
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: keystone-mns-b-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: keystone_mns_b
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: keystone-mns-c-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: keystone_mns_c
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: User
+metadata:
+  name: keystone-mns-a-user
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  name: keystone-mns-a
+  passwordSecretKeyRef:
+    name: keystone-db
+    key: password
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: User
+metadata:
+  name: keystone-mns-b-user
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  name: keystone-mns-b
+  passwordSecretKeyRef:
+    name: keystone-db
+    key: password
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: User
+metadata:
+  name: keystone-mns-c-user
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  name: keystone-mns-c
+  passwordSecretKeyRef:
+    name: keystone-db
+    key: password
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: keystone-mns-a-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  privileges:
+  - "ALL PRIVILEGES"
+  database: keystone_mns_a
+  table: "*"
+  username: keystone-mns-a
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: keystone-mns-b-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  privileges:
+  - "ALL PRIVILEGES"
+  database: keystone_mns_b
+  table: "*"
+  username: keystone-mns-b
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: keystone-mns-c-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  privileges:
+  - "ALL PRIVILEGES"
+  database: keystone_mns_c
+  table: "*"
+  username: keystone-mns-c

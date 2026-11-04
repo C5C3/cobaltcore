@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Everything below this paragraph is a byte-for-byte copy of
+# tests/e2e/horizon/basic-deployment/00-horizon-cr.yaml.
+# It is copied, not referenced by path: this suite applies it under the
+# baseline operator's older CRD, so a field the e2e suite's fixture
+# adopts later must not reach it.
+
+# Horizon CR fixture. Managed cache via clusterRef to openstack-memcached;
+# the SECRET_KEY comes from the ESO-synced horizon-secret-key Secret
+# (deploy/kind/infrastructure). keystoneEndpoint points at the cluster-local
+# convention URL — the login page renders without a live Keystone (Keystone
+# is only contacted on login submit).
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-basic
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/horizon
+    tag: "2026.1"
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  secretKeyRef:
+    name: horizon-secret-key
+    key: secret-key

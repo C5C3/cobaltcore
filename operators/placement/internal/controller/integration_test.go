@@ -39,6 +39,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
+	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
@@ -63,8 +65,9 @@ const (
 // controller-runtime's process-global controller-name validation across the
 // sequential managers each test spins up, so the controller opts out via
 // SkipNameValidation, exactly as keystone's, horizon's and glance's integration
-// setups do.
-func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+// setups do. Each opt is applied to the PlacementReconciler right after it is
+// built.
+func setupEnvTestWithController(t testing.TB, opts ...func(*PlacementReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupPlacementEnvTestWithController(
 		t,
@@ -92,6 +95,9 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				// The fake VerticalPodAutoscaler CRD loads into every envtest too,
 				// so the VPA latch is true as it would be at startup.
 				vpaAvailable: true,
+			}
+			for _, opt := range opts {
+				opt(r)
 			}
 			return ctrl.NewControllerManagedBy(mgr).
 				For(&placementv1alpha1.Placement{}, builder.WithPredicates(watch.CRUpdatePredicate())).
@@ -179,6 +185,36 @@ func waitForPlacementCondition(t testing.TB, ctx context.Context, c client.Clien
 	}, eventuallyTimeout, pollInterval).Should(Equal(expected),
 		fmt.Sprintf("Placement condition %s should reach %s", condType, expected))
 	return cond
+}
+
+// createPlacementPrerequisites creates what the secrets gate of
+// integrationPlacement waits on: a Ready ClusterSecretStore and the two
+// credential Secrets ESO would sync. The CR is brownfield, so no MariaDB cluster
+// and no Database/User/Grant CRs take part.
+func createPlacementPrerequisites(t testing.TB, ctx context.Context, c client.Client, ns string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	store := &esov1.ClusterSecretStore{ObjectMeta: metav1.ObjectMeta{Name: openBaoClusterStoreName}}
+	if err := c.Create(ctx, store); err != nil {
+		g.Expect(apierrors.IsAlreadyExists(err)).To(BeTrue(), "create ClusterSecretStore: %v", err)
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(store), store)).To(Succeed())
+	}
+	store.Status = esov1.SecretStoreStatus{
+		Conditions: []esov1.SecretStoreStatusCondition{
+			{Type: esov1.SecretStoreReady, Status: corev1.ConditionTrue},
+		},
+	}
+	g.Expect(c.Status().Update(ctx, store)).To(Succeed(), "mark the ClusterSecretStore Ready")
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "placement-db", Namespace: ns},
+		Data:       map[string][]byte{"username": []byte("placement"), "password": []byte("db-password")},
+	})).To(Succeed(), "create the database credentials Secret")
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "placement-service-user", Namespace: ns},
+		Data:       map[string][]byte{"password": []byte("service-password")},
+	})).To(Succeed(), "create the service-user credentials Secret")
 }
 
 // --- Tests ---
@@ -280,4 +316,57 @@ func TestIntegrationPlacement_WaitsOnMissingSecrets(t *testing.T) {
 		return cond.Reason
 	}, eventuallyTimeout, pollInterval).Should(Equal("WaitingForDBCredentials"),
 		"with the store Ready the gate should wait on the database credentials Secret")
+}
+
+// TestIntegrationPlacement_ReachesReadyAndReprobes drives a brownfield Placement
+// through the whole pipeline to Ready=True. On the settled CR it then stops the
+// API answering without writing any object and sees PlacementAPIReady and Ready
+// turn False, then True again.
+//
+// envtest runs no Job or Deployment controller, so the db-sync completion and
+// the Deployment rollout are simulated.
+func TestIntegrationPlacement_ReachesReadyAndReprobes(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, func(r *PlacementReconciler) { r.HTTPClient = doer })
+	ns := createTestNamespace(t, ctx, c)
+	createPlacementPrerequisites(t, ctx, c, ns)
+
+	g.Expect(c.Create(ctx, integrationPlacement("placement", ns))).To(Succeed(), "create Placement CR")
+	key := types.NamespacedName{Name: "placement", Namespace: ns}
+
+	waitForPlacementCondition(t, ctx, c, key, "SecretsReady", metav1.ConditionTrue)
+
+	dbSyncKey := client.ObjectKey{Namespace: ns, Name: "placement-db-sync"}
+	g.Eventually(func() error {
+		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
+	waitForPlacementCondition(t, ctx, c, key, "DatabaseReady", metav1.ConditionTrue)
+
+	deployKey := client.ObjectKey{Namespace: ns, Name: "placement"}
+	var deploy appsv1.Deployment
+	g.Eventually(func() error {
+		return c.Get(ctx, deployKey, &deploy)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "Placement Deployment should appear")
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
+		To(Succeed(), "simulate Deployment readiness")
+	waitForPlacementCondition(t, ctx, c, key, "DeploymentReady", metav1.ConditionTrue)
+	waitForPlacementCondition(t, ctx, c, key, conditionTypePlacementAPIReady, metav1.ConditionTrue)
+	waitForPlacementCondition(t, ctx, c, key, "Ready", metav1.ConditionTrue)
+
+	var ready placementv1alpha1.Placement
+	g.Expect(c.Get(ctx, key, &ready)).To(Succeed())
+	g.Expect(ready.Status.InstalledRelease).To(Equal("2026.1"),
+		"installedRelease should be promoted after the db-sync")
+	g.Expect(ready.Status.Endpoint).NotTo(BeEmpty(),
+		"the endpoint should be advertised once the workload is available")
+
+	commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+		var got placementv1alpha1.Placement
+		g.Expect(c.Get(ctx, key, &got)).To(Succeed())
+		return got.Status.Conditions
+	}, conditionTypePlacementAPIReady, pollInterval)
 }

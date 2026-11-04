@@ -371,8 +371,12 @@ another.
 One pass, in order:
 
 1. Fetches the ControlPlane. `NotFound` ends the pass with an empty result.
-2. Hands a ControlPlane that carries a deletion timestamp to `reconcileDelete`
-   (see [Owner-ref / GC model](#owner-ref-gc-model)).
+2. Re-reads a ControlPlane that carries a deletion timestamp through the
+   uncached API reader, because a pass queued behind the release still finds the
+   CR in the informer cache. `NotFound`, or another UID under the name, ends the
+   pass with an empty result. A failed read ends the pass with an error.
+   Otherwise the live copy goes to `reconcileDelete` (see
+   [Owner-ref / GC model](#owner-ref-gc-model)).
 3. Runs the duplicate guard: every ControlPlane but the oldest in a namespace is
    parked with `Ready=False/DuplicateControlPlane` and requeued after 30s, and
    none of its sub-reconcilers run (see [Multi-instance](#multi-instance)).
@@ -963,10 +967,12 @@ database and the bus. `ensureMariaDB` takes an unset `replicas` / `storageSize`
 from `spec.sizing.database` (the webhook normally stored them at admission) and
 writes `spec.resources`, `spec.nodeSelector`, `spec.tolerations` and
 `spec.priorityClassName`; an owned MariaDB is re-asserted with one `Update` when
-any of them differs (`updating owned MariaDB "<name>"` on failure), and an adopted
-one is never written. `ensureMemcached` takes an unset `replicas` from
-`spec.sizing.cache` on every pass, floors a zero count to 3, and writes or removes
-`spec.resources`; the Memcached CRD has no placement. `ensureRabbitMQ` takes an
+any of them or one of its security contexts (see Pod Security below) differs
+(`updating owned MariaDB "<name>"` on failure), and an adopted one is never
+written. `ensureMemcached` takes an unset `replicas` from `spec.sizing.cache` on
+every pass, floors a zero count to 3, and writes or removes `spec.resources`; an
+owned Memcached has its two `spec.security` contexts re-asserted in the same
+`Update`, and the Memcached CRD has no placement. `ensureRabbitMQ` takes an
 unset `replicas` from `spec.sizing.messaging`, writes `spec.resources` and
 `spec.tolerations`, and writes the node selector and priority class through
 `spec.override.statefulSet.spec.template.spec` (`containers: []` included, which
@@ -974,6 +980,44 @@ the upstream schema requires); unset resources that equal the operator's
 default count as matching, so a `Standard` bus is not rewritten on every pass.
 The shrink gate on `c5c3.io/allow-messaging-recreate` is unchanged. The teardown
 enumerates the instances with the zero sizing, since it only reads their names.
+
+**Pod Security.** Every MariaDB and Memcached the ControlPlane owns carries
+security contexts the restricted Pod Security profile admits, so a managed
+ControlPlane reaches `InfrastructureReady=True` in a namespace that enforces
+`restricted:latest`. `ensureMariaDB` writes `spec.podSecurityContext`
+(`runAsNonRoot`, uid, gid and `fsGroup` 999, seccomp `RuntimeDefault`) and
+`spec.securityContext` (`allowPrivilegeEscalation: false`, `capabilities.drop:
+[ALL]`). 999 is the mysql user the mariadb-operator falls back to when the pod
+context is unset, so an existing data volume keeps its owner. A Galera cluster
+also gets the container context at `spec.galera.agent.securityContext`. The init
+container gets it only once the mariadb-operator has defaulted
+`spec.galera.initContainer.image`: the controller defaults that image only while
+the init container is entirely zero, so an init context written on create would
+leave the init container without an image. A fresh Galera cluster in a
+restricted namespace therefore has one pod start refused for `container "init"`,
+and the next pass, 15 seconds later, adds the init context. The owned re-assert
+updates `spec.galera` in place and keeps every field the mariadb-operator
+defaulted.
+
+`ensureMemcached` writes `spec.security.podSecurityContext` (`runAsNonRoot`, uid
+and gid 11211, seccomp `RuntimeDefault`) and `spec.security.containerSecurityContext`
+(the same two container fields) and leaves every other `spec.security` key alone.
+11211 is the `memcache` user of `memcached:1.6`, the image the memcached-operator
+defaults to. That image names its user, so `runAsNonRoot` alone fails the
+kubelet's non-root check, and a cache on another image needs a different uid. An
+adopted instance is never written. On upgrade every owned instance is updated
+once and rolls: a single-replica MariaDB restarts, a Galera cluster rolls
+`ReplicasFirstPrimaryLast`, and the memcached-operator rolls the cache
+Deployment. Where OpenShift SecurityContextConstraints exist, the
+mariadb-operator builder drops both MariaDB contexts, so the projection has no
+effect on the database there. Rolling the operator back leaves
+`spec.podSecurityContext`, `spec.securityContext` and both Memcached contexts on
+the CRs, and the older operator never compares them. It does replace
+`spec.galera` wholesale on its next write of an owned MariaDB, which a sizing
+change triggers, and that drops the agent and init contexts. In a namespace that
+enforces `restricted`, the roll that write starts then has the first replaced
+Galera member refused for containers `agent` and `init`, so before rolling back,
+relax the enforce label or hold sizing changes.
 
 **The message bus stays home.** `addMessaging` is called once, at
 `childNamespace(cp)` with the declared-at path `spec.infrastructure.messaging`,
@@ -3841,8 +3885,13 @@ projected. On deletion it:
    controller tears them down through the very admin credential step 2 revokes.
    While one is still Terminating the reconciler reports `KORCReady=False` with
    reason `FinalizingServiceRegistrations` and requeues; past
-   `registrationTeardownStallTimeout` (2 minutes) it continues anyway and a
-   **Warning** `ServiceRegistrationTeardownStalled` names what was left behind.
+   `registrationTeardownStallTimeout` (2 minutes) it continues anyway, moves the
+   reason to `FinalizingORC`, and a **Warning**
+   `ServiceRegistrationTeardownStalled` names what was left behind. That Warning
+   fires once per deletion, on the pass that gives up. Repeated on every pass of
+   the K-ORC window, it would spend the burst of 25 events the client-go event
+   correlator allows per object and event type, and the correlator would then
+   drop the Warnings of the stall escape in step 8.
    That window is a budget of its own rather than a share of the K-ORC one: this
    wait blocks the sweep below entirely, so a shared deadline would let an
    unreachable Keystone spend it all here and leave the admin credential's
@@ -3999,7 +4048,9 @@ projected. On deletion it:
    proceeds on the cascade, so a wedged cluster-operator cannot make the
    ControlPlane undeletable. The escape paths below release without either wait.
    The remote-children finalizer goes in the same update, because by then every
-   placed namespace has been swept or its cluster abandoned.
+   placed namespace has been swept or its cluster abandoned. A **Normal**
+   `ORCTeardownComplete` event follows a successful update, unless the escape in
+   step 8 latched the CR. A failed update emits nothing and the next pass retries.
 7. **Releases a CR-only remainder immediately.** K-ORC re-fetches the
    resource through an *authenticated* actuator before releasing any finalizer,
    and those CRs authenticate with the admin application credential whose
@@ -4014,13 +4065,26 @@ projected. On deletion it:
 8. **Bounds the wait.** If managed ORC CRs stay Terminating past
    `orcTeardownDeadline` (the 2-minute registration window plus
    `orcTeardownStallTimeout`, 5 minutes) — typically because Keystone is already
-   gone and K-ORC cannot revoke — the reconciler force-removes the stuck
+   gone and K-ORC cannot revoke — the reconciler emits a **Warning**
+   `ORCTeardownStalled` event, force-removes the stuck
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
-   emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
-   finalizer so deletion completes rather than wedging forever. A projected
+   and releases the ControlPlane finalizer so deletion completes rather than
+   wedging forever. A projected
    registration still present here has its children force-released before that
    finalizer goes, under the same **Warning**
-   `ServiceRegistrationResourcesOrphaned` as on the normal release.
+   `ServiceRegistrationResourcesOrphaned` as on the normal release. Ahead of its
+   first force-removal the escape stamps the annotation
+   `c5c3.io/orc-teardown-stalled` on the ControlPlane and emits its Warnings. A
+   force-removal that fails part way can leave a remainder step 7 releases, so no
+   later pass returns to the escape. The force-removal or a step behind it can
+   fail or hold, and a later pass then finds no K-ORC CR left and takes the normal
+   release, which emits no `ORCTeardownComplete` for a stamped CR. The annotation
+   records that the escape ran, and the force-removal may not have happened: if
+   K-ORC finishes a CR whose force-removal failed, the Warnings over-report and no
+   completion event follows. A retry of a failed force-removal finds the annotation
+   and emits neither Warning again: the first pass named the longest list, and each
+   repeat would spend the event budget the Warnings behind the force-removal still
+   need. The annotation goes with the CR.
 9. **Names what the escape orphaned.** The escape strips the very finalizer that
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no

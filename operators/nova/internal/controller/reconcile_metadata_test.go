@@ -56,7 +56,7 @@ func TestBuildMetadataDeployment(t *testing.T) {
 	}))
 	g.Expect(container.ReadinessProbe.HTTPGet.Path).To(Equal("/"))
 	g.Expect(container.ReadinessProbe.HTTPGet.Port.IntValue()).To(Equal(8775))
-	g.Expect(container.LivenessProbe.HTTPGet.Port.IntValue()).To(Equal(8775))
+	g.Expect(container.LivenessProbe.TCPSocket.Port.IntValue()).To(Equal(8775))
 
 	g.Expect(envNames(container.Env)).To(ContainElements(
 		metadataSharedSecretEnvVarName, novaConfigDirEnvVarName, novaConfigFilesEnvVarName))

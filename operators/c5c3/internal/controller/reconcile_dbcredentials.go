@@ -68,6 +68,9 @@ const (
 	// leaves (openbao-client-tls-cert.yaml) so client-cert rotation cadences align.
 	dbCredentialClientCertDuration    = "8760h"
 	dbCredentialClientCertRenewBefore = "720h"
+	// maxCommonNameBytes is the cap cert-manager's admission webhook puts on a
+	// Certificate's spec.commonName, the X.509 ub-common-name bound of RFC 5280.
+	maxCommonNameBytes = 64
 	// engineIssuedUsernamePrefix is the prefix every username the OpenBao MariaDB
 	// database engine mints carries. The mysql-database-plugin derives usernames
 	// from its default username_template ("v-<display>-<role>-<random>-<timestamp>",
@@ -278,11 +281,30 @@ func applyDBCredentialCertificateSpec(u *unstructured.Unstructured, name, namesp
 	_ = unstructured.SetNestedField(u.Object, dbCredentialClientCertDuration, "spec", "duration")
 	_ = unstructured.SetNestedField(u.Object, dbCredentialClientCertRenewBefore, "spec", "renewBefore")
 	_ = unstructured.SetNestedStringSlice(u.Object, []string{"client auth"}, "spec", "usages")
-	_ = unstructured.SetNestedField(u.Object, name+"."+namespace+".svc", "spec", "commonName")
+	_ = unstructured.SetNestedField(u.Object, clientCertCommonName(name, namespace), "spec", "commonName")
 	_ = unstructured.SetNestedMap(u.Object, map[string]interface{}{
 		"name": openBaoCAIssuerName,
 		"kind": "ClusterIssuer",
 	}, "spec", "issuerRef")
+}
+
+// clientCertCommonName returns the commonName of the OpenBao client Certificate
+// named name in namespace: "<name>.<namespace>.svc", cut to maxCommonNameBytes
+// when it is longer. The OpenBao listener verifies only the issuing CA of a
+// client certificate (docs/reference/infrastructure/openbao-bootstrap.md), so
+// the commonName is an identifier nothing reads. Without the cut, cert-manager
+// refuses the Certificate (for Keystone's, once the ControlPlane name and the
+// namespace together pass 32 characters) and the concern behind it never
+// becomes ready. A name that fits keeps its full form, so no existing
+// Certificate is re-issued.
+func clientCertCommonName(name, namespace string) string {
+	cn := name + "." + namespace + ".svc"
+	if len(cn) <= maxCommonNameBytes {
+		return cn
+	}
+	// Kubernetes names are ASCII, so a byte cut never splits a rune. Trimming
+	// the separators keeps the cut from ending on a dangling "." or "-".
+	return strings.TrimRight(cn[:maxCommonNameBytes], ".-")
 }
 
 // dbCredentialVaultDynamicSecret builds the per-ControlPlane ESO generator that

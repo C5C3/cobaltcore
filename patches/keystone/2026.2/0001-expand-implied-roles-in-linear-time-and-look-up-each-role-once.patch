@@ -1,0 +1,377 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Expand implied roles in linear time and look up each role once
+
+
+Listing effective role assignments
+(keystone/assignment/core.py, `_list_effective_role_assignments`) pays
+twice per resulting assignment. `add_implied_roles` keeps the refs it has
+already expanded in a list and tests every new implied ref with
+`implied_ref in checked_role_refs`, a dict-equality scan of a list that
+grows to the size of the result: 4,000 member assignments that each imply
+reader take 0.22 s in the published CobaltCore 2026.1 and 2026.2 images,
+and 16,000,000 dict comparisons. `_strip_domain_roles` then calls
+`role_api.get_role` once per resulting ref to read its `domain_id`.
+Without a cache that is two SQL statements per ref, the role row and its
+options (`lazy='subquery'`); with a cache it is one role cache read per
+ref. The listing backs GET /v3/role_assignments?effective,
+GET /v3/users/{user_id}/projects and the project and domain lists of
+GET /v3/auth/projects and GET /v3/auth/domains, and `add_implied_roles`
+runs inside every token's role resolution. Upstream reported the slow
+listing as https://bugs.launchpad.net/keystone/+bug/1700852 and closed it
+by caching the result, which every role grant, project change and group
+membership change flushes; https://bugs.launchpad.net/keystone/+bug/1920979
+reports it again and is still New. CobaltCore creates role assignments
+from namespace orders, so their number grows with every tenant
+(issue #1459).
+
+`add_implied_roles` now keeps the checked refs as a set of hashable keys,
+a frozenset of a ref's items with the nested indirect dict frozen the same
+way, so the cycle check is constant time per ref: the 4,000 assignments
+take 0.017 s and make no dict comparison. The expansion order, the
+duplicates it keeps and the NotImplemented branch are unchanged.
+
+`_strip_domain_roles` calls `get_role` once per distinct role ID of the
+refs and keeps the answer for the refs that repeat it; an empty ref list
+makes no call. `get_role` reads through the role cache, which a role
+grant does not flush, and resolves an ID the way the database does: on a
+database with a case-insensitive collation an assignment may carry the
+role ID in another letter case than the role row, and each spelling is
+looked up as written, as before. A role that does not exist still raises
+RoleNotFound. A first version of this patch read the roles with one
+`list_roles_from_ids` call, which nothing caches. Token validation
+recomputes its roles through `_strip_domain_roles` whenever a role grant
+has flushed the computed assignments, and there that call made two SQL
+statements where upstream reads the role cache: under the cold-role-cache
+profile of CobaltCore's keystone-pressure job the validate p50 was 8.3 %
+(2026.1) and 12.8 % (2026.2) above the unpatched image
+(https://github.com/C5C3/cobaltcore/actions/runs/39795997952). No schema
+migration, option or new method is involved.
+
+No upstream test pins the old cost, and no existing test moves: the
+output, its order and the exceptions stay the same. The patch adds eight
+tests to `ImpliedRoleTests` in
+keystone/tests/unit/assignment/test_backends.py, run by `SqlImpliedRoles`:
+test_add_implied_roles_keeps_order_through_a_cycle,
+test_add_implied_roles_with_no_refs,
+test_add_implied_roles_without_implied_role_support,
+test_effective_listing_looks_up_each_role_once,
+test_effective_listing_propagates_role_lookup_error,
+test_strip_domain_roles_with_no_refs,
+test_strip_domain_roles_raises_for_unknown_role and
+test_strip_domain_roles_looks_up_each_role_id_once. The two tests that
+look up each role once fail on the unpatched tree.
+
+tests/container-images/verify_keystone.sh (test_implied_role_patch_applied)
+asserts against the built image, with a mocked role API, that expanding
+4,000 refs compares refs fewer times than there are refs, and that
+stripping the domain roles calls get_role once per role and never calls
+list_roles_from_ids.
+
+Applies to keystone 30.0.0 (2026.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/keystone/assignment/core.py b/keystone/assignment/core.py
+index 44084617c..078588bac 100644
+--- a/keystone/assignment/core.py
++++ b/keystone/assignment/core.py
+@@ -711,14 +711,26 @@ class Manager(manager.Manager):
+             indirect['role_id'] = prior_ref['role_id']
+             return implied_ref
+ 
++        def _ref_key(value):
++            # A hashable stand-in for a ref that compares equal exactly when
++            # the dicts do: the nested indirect dict becomes a frozenset of
++            # its items, a list a tuple. Keeping the checked refs in a set of
++            # these keys makes the cycle check constant time per ref instead
++            # of a scan of every ref checked so far.
++            if isinstance(value, dict):
++                return frozenset((k, _ref_key(v)) for k, v in value.items())
++            if isinstance(value, list):
++                return tuple(_ref_key(v) for v in value)
++            return value
++
+         try:
+             implied_roles_cache = {}
+             role_refs_to_check = list(role_refs)
+             ref_results = list(role_refs)
+-            checked_role_refs = []
++            checked_role_refs = set()
+             while role_refs_to_check:
+                 next_ref = role_refs_to_check.pop()
+-                checked_role_refs.append(next_ref)
++                checked_role_refs.add(_ref_key(next_ref))
+                 next_role_id = next_ref['role_id']
+                 if next_role_id in implied_roles_cache:
+                     implied_roles = implied_roles_cache[next_role_id]
+@@ -731,7 +743,7 @@ class Manager(manager.Manager):
+                     implied_ref = _make_implied_ref_copy(
+                         next_ref, implied_role['implied_role_id']
+                     )
+-                    if implied_ref in checked_role_refs:
++                    if _ref_key(implied_ref) in checked_role_refs:
+                         # Avoid traversing a cycle
+                         continue
+                     else:
+@@ -757,11 +769,20 @@ class Manager(manager.Manager):
+         and since that has been done before this method is called, we need to
+         remove any assignments that include a domain role.
+ 
++        Each distinct role is read once, rather than once per assignment.
++
+         """
++        role_is_global = {}
+ 
+         def _role_is_global(role_id):
+-            ref = PROVIDERS.role_api.get_role(role_id)
+-            return ref['domain_id'] is None
++            # get_role reads through the role cache, which a role grant does
++            # not flush, and resolves the ID the way the database does. A
++            # listing repeats a few role IDs over many assignments, so each
++            # one is read once.
++            if role_id not in role_is_global:
++                ref = PROVIDERS.role_api.get_role(role_id)
++                role_is_global[role_id] = ref['domain_id'] is None
++            return role_is_global[role_id]
+ 
+         filter_results = []
+         for ref in role_refs:
+diff --git a/keystone/tests/unit/assignment/test_backends.py b/keystone/tests/unit/assignment/test_backends.py
+index 5ecc27b4e..d3d65a51b 100644
+--- a/keystone/tests/unit/assignment/test_backends.py
++++ b/keystone/tests/unit/assignment/test_backends.py
+@@ -4739,6 +4739,232 @@ class ImpliedRoleTests(AssignmentTestHelperMixin):
+         }
+         self.execute_assignment_plan(test_plan)
+ 
++    def _create_user_and_projects(self, project_count):
++        domain_id = CONF.identity.default_domain_id
++        user = PROVIDERS.identity_api.create_user(
++            unit.new_user_ref(domain_id=domain_id)
++        )
++        projects = []
++        for _ in range(project_count):
++            project = unit.new_project_ref(domain_id=domain_id)
++            projects.append(
++                PROVIDERS.resource_api.create_project(project['id'], project)
++            )
++        return user, projects
++
++    def test_add_implied_roles_keeps_order_through_a_cycle(self):
++        r0, r1, r2 = (self._create_role()['id'] for _ in range(3))
++        PROVIDERS.role_api.create_implied_role(r0, r1)
++        PROVIDERS.role_api.create_implied_role(r1, r2)
++        PROVIDERS.role_api.create_implied_role(r2, r0)
++        u, p0, p1, g = (uuid.uuid4().hex for _ in range(4))
++
++        refs = PROVIDERS.assignment_api.add_implied_roles(
++            [
++                {'user_id': u, 'project_id': p0, 'role_id': r0},
++                {
++                    'user_id': u,
++                    'project_id': p1,
++                    'role_id': r1,
++                    'indirect': {'group_id': g},
++                },
++            ]
++        )
++
++        # The expansion pops the last ref first and stops at the first ref
++        # it has already expanded, so the order and the duplicates are fixed.
++        self.assertEqual(
++            [
++                {'user_id': u, 'project_id': p0, 'role_id': r0},
++                {
++                    'user_id': u,
++                    'project_id': p1,
++                    'role_id': r1,
++                    'indirect': {'group_id': g},
++                },
++                {
++                    'user_id': u,
++                    'project_id': p1,
++                    'role_id': r2,
++                    'indirect': {'group_id': g, 'role_id': r1},
++                },
++                {
++                    'user_id': u,
++                    'project_id': p1,
++                    'role_id': r0,
++                    'indirect': {'group_id': g, 'role_id': r2},
++                },
++                {
++                    'user_id': u,
++                    'project_id': p1,
++                    'role_id': r1,
++                    'indirect': {'group_id': g, 'role_id': r0},
++                },
++                {
++                    'user_id': u,
++                    'project_id': p0,
++                    'role_id': r1,
++                    'indirect': {'role_id': r0},
++                },
++                {
++                    'user_id': u,
++                    'project_id': p0,
++                    'role_id': r2,
++                    'indirect': {'role_id': r1},
++                },
++                {
++                    'user_id': u,
++                    'project_id': p0,
++                    'role_id': r0,
++                    'indirect': {'role_id': r2},
++                },
++            ],
++            refs,
++        )
++
++    def test_add_implied_roles_with_no_refs(self):
++        with mock.patch.object(
++            PROVIDERS.role_api,
++            'list_implied_roles',
++            wraps=PROVIDERS.role_api.list_implied_roles,
++        ) as list_implied_roles:
++            self.assertEqual(
++                [], PROVIDERS.assignment_api.add_implied_roles([])
++            )
++        self.assertEqual(0, list_implied_roles.call_count)
++
++    def test_add_implied_roles_without_implied_role_support(self):
++        ref = {
++            'user_id': uuid.uuid4().hex,
++            'project_id': uuid.uuid4().hex,
++            'role_id': uuid.uuid4().hex,
++        }
++        with mock.patch.object(
++            PROVIDERS.role_api,
++            'list_implied_roles',
++            side_effect=exception.NotImplemented(),
++        ):
++            self.assertEqual(
++                [ref], PROVIDERS.assignment_api.add_implied_roles([ref])
++            )
++
++    def test_effective_listing_looks_up_each_role_once(self):
++        user, projects = self._create_user_and_projects(3)
++        r0 = self._create_role()['id']
++        r1 = self._create_role()['id']
++        d0 = self._create_role(domain_id=CONF.identity.default_domain_id)['id']
++        PROVIDERS.role_api.create_implied_role(r0, r1)
++        PROVIDERS.role_api.create_implied_role(d0, r1)
++        for project in projects:
++            PROVIDERS.assignment_api.create_grant(
++                r0, user_id=user['id'], project_id=project['id']
++            )
++        PROVIDERS.assignment_api.create_grant(
++            d0, user_id=user['id'], project_id=projects[0]['id']
++        )
++
++        with mock.patch.object(
++            PROVIDERS.role_api, 'get_role', wraps=PROVIDERS.role_api.get_role
++        ) as get_role:
++            refs = PROVIDERS.assignment_api.list_role_assignments(
++                user_id=user['id'], effective=True
++            )
++
++        # Three direct r0 grants, three r1 implied by them and one r1
++        # implied by the domain-specific d0, which itself is stripped.
++        self.assertThat(refs, matchers.HasLength(7))
++        self.assertEqual(3, [ref['role_id'] for ref in refs].count(r0))
++        self.assertEqual(4, [ref['role_id'] for ref in refs].count(r1))
++        self.assertNotIn(d0, [ref['role_id'] for ref in refs])
++        # Eight refs before the stripping, three distinct roles among them.
++        self.assertEqual(
++            sorted([r0, r1, d0]),
++            sorted(call.args[0] for call in get_role.call_args_list),
++        )
++
++    def test_effective_listing_propagates_role_lookup_error(self):
++        user, projects = self._create_user_and_projects(1)
++        role_id = self._create_role()['id']
++        PROVIDERS.assignment_api.create_grant(
++            role_id, user_id=user['id'], project_id=projects[0]['id']
++        )
++
++        with mock.patch.object(
++            PROVIDERS.role_api,
++            'get_role',
++            side_effect=exception.UnexpectedError('role lookup failed'),
++        ):
++            self.assertRaises(
++                exception.UnexpectedError,
++                PROVIDERS.assignment_api.list_role_assignments,
++                user_id=user['id'],
++                effective=True,
++            )
++
++    def test_strip_domain_roles_with_no_refs(self):
++        with mock.patch.object(PROVIDERS.role_api, 'get_role') as get_role:
++            self.assertEqual(
++                [], PROVIDERS.assignment_api._strip_domain_roles([])
++            )
++        get_role.assert_not_called()
++
++    def test_strip_domain_roles_raises_for_unknown_role(self):
++        self.assertRaises(
++            exception.RoleNotFound,
++            PROVIDERS.assignment_api._strip_domain_roles,
++            [
++                {
++                    'user_id': uuid.uuid4().hex,
++                    'project_id': uuid.uuid4().hex,
++                    'role_id': uuid.uuid4().hex,
++                }
++            ],
++        )
++
++    def test_strip_domain_roles_looks_up_each_role_id_once(self):
++        # Each distinct role ID is read once, as the assignment spells it: on
++        # a database with a case-insensitive collation get_role resolves
++        # another spelling of a stored ID the way the database does.
++        global_id = uuid.uuid4().hex
++        domain_role_id = uuid.uuid4().hex
++        roles = {
++            global_id: {'id': global_id, 'domain_id': None},
++            global_id.upper(): {'id': global_id, 'domain_id': None},
++            domain_role_id: {
++                'id': domain_role_id,
++                'domain_id': CONF.identity.default_domain_id,
++            },
++        }
++        refs = [
++            {
++                'user_id': uuid.uuid4().hex,
++                'project_id': uuid.uuid4().hex,
++                'role_id': role_id,
++            }
++            for role_id in (
++                global_id,
++                domain_role_id,
++                global_id,
++                global_id.upper(),
++                domain_role_id,
++            )
++        ]
++        with mock.patch.object(
++            PROVIDERS.role_api, 'get_role', side_effect=roles.__getitem__
++        ) as get_role:
++            self.assertEqual(
++                [refs[0], refs[2], refs[3]],
++                PROVIDERS.assignment_api._strip_domain_roles(refs),
++            )
++        self.assertEqual(
++            [
++                mock.call(global_id),
++                mock.call(domain_role_id),
++                mock.call(global_id.upper()),
++            ],
++            get_role.call_args_list,
++        )
++
+ 
+ class SystemAssignmentTests(AssignmentTestHelperMixin):
+     def test_create_system_grant_for_user(self):

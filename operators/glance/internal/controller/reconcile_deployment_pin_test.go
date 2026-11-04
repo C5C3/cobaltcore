@@ -48,6 +48,16 @@ spec:
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-glance
+                  app.kubernetes.io/name: glance
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -96,11 +106,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -160,13 +169,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-glance
-            app.kubernetes.io/name: glance
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
           name: test-glance-config-abc
@@ -210,6 +212,16 @@ spec:
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-glance
+                  app.kubernetes.io/name: glance
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -258,11 +270,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -387,13 +398,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-glance
-            app.kubernetes.io/name: glance
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
           name: test-glance-config-abc
@@ -440,6 +444,16 @@ spec:
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-glance
+                  app.kubernetes.io/name: glance
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -488,11 +502,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -555,13 +568,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-glance
-            app.kubernetes.io/name: glance
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
           name: test-glance-config-abc
@@ -623,6 +629,16 @@ spec:
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-glance
+                  app.kubernetes.io/name: glance
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -671,11 +687,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -734,13 +749,6 @@ spec:
             app.kubernetes.io/name: glance
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-glance
-            app.kubernetes.io/name: glance
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
@@ -785,6 +793,16 @@ spec:
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: test-glance
+                  app.kubernetes.io/name: glance
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -833,11 +851,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 9292
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 9292
           timeoutSeconds: 10
         name: glance-api
         ports:
@@ -896,13 +913,6 @@ spec:
             app.kubernetes.io/name: glance
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/instance: test-glance
-            app.kubernetes.io/name: glance
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:

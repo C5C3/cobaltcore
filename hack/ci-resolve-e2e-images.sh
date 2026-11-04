@@ -51,6 +51,11 @@
 #                         inputs it is built from changed
 #   CHANGED_LIBVIRT     — "true" when the libvirt image sources or the flake
 #                         inputs it is built from changed
+#   BUILD_COVER_IMAGES  — "true" to also build the coverage-instrumented image
+#                         of every operator, keyed <IMAGE_PREFIX>/<op>-operator:cover,
+#                         whether or not its sources changed; any other value
+#                         builds none. main never publishes it, so it is always
+#                         built
 #   IMAGE_INSPECT_CMD   — Registry inspect command, default
 #                         "docker buildx imagetools inspect". The unit test
 #                         points it at a stub
@@ -59,6 +64,10 @@
 #
 # Written to GITHUB_ENV for the build and push steps to loop over:
 #   BUILD_OPERATORS        — one operator name per line
+#   BUILD_COVER_OPERATORS  — one operator name per line whose
+#                            <op>-operator-cover-image is built; every
+#                            operator under BUILD_COVER_IMAGES=true, none
+#                            otherwise
 #   BUILD_SERVICE_IMAGES   — one "<service> <release> [<image>]" line per
 #                            image; the third field names a derived image
 #                            built from the service's lock, and a line
@@ -68,7 +77,7 @@
 #   BUILD_OVN              — true or false
 #   OVN_VERSION            — the pinned OVN version, the tag of the ovn image
 #   BUILD_LIBVIRT          — true or false
-#   BUILD_NIX_IMAGES       — true when an operator image, a
+#   BUILD_NIX_IMAGES       — true when an operator image, a cover image, a
 #                            BUILD_SERVICE_IMAGES line, a Tempest image, the
 #                            federation proxy, the ovn image or the libvirt
 #                            image is built; Nix builds all of them from the
@@ -138,6 +147,10 @@ fi
 changed_libvirt=false
 if [[ "${CHANGED_LIBVIRT:-}" == "true" ]]; then
   changed_libvirt=true
+fi
+build_cover_images=false
+if [[ "${BUILD_COVER_IMAGES:-}" == "true" ]]; then
+  build_cover_images=true
 fi
 
 # A pin the resolver cannot read ends the step with its ::error:: line.
@@ -333,6 +346,7 @@ add_entry() {
 }
 
 build_operators=()
+build_cover_operators=()
 build_service_images=()
 build_tempest_releases=()
 build_proxy=false
@@ -350,6 +364,15 @@ for operator in "${operators[@]}"; do
     build_operators+=("${operator}")
   fi
 done
+
+# The coverage-instrumented operator images the e2e, chaos and Tempest legs
+# deploy. main publishes none, so each is built under the run-scoped tag.
+if [[ "${build_cover_images}" == "true" ]]; then
+  for operator in "${operators[@]}"; do
+    add_entry "${IMAGE_PREFIX}/${operator}-operator:cover" "" true
+    build_cover_operators+=("${operator}")
+  done
+fi
 
 for operator in "${operators[@]}"; do
   built=false
@@ -417,8 +440,8 @@ fi
 # 4. Emit
 # ---------------------------------------------------------------------------
 build_nix_images=false
-if [[ ${#build_operators[@]} -gt 0 || ${#build_service_images[@]} -gt 0 ||
-  ${#build_tempest_releases[@]} -gt 0 || "${build_proxy}" == "true" || "${build_ovn}" == "true" ||
+if [[ ${#build_operators[@]} -gt 0 || ${#build_cover_operators[@]} -gt 0 ||
+  ${#build_service_images[@]} -gt 0 || ${#build_tempest_releases[@]} -gt 0 || "${build_proxy}" == "true" || "${build_ovn}" == "true" ||
   "${build_libvirt}" == "true" ]]; then
   build_nix_images=true
 fi
@@ -438,6 +461,7 @@ emit_block() {
 }
 
 emit_block BUILD_OPERATORS "${build_operators[@]}"
+emit_block BUILD_COVER_OPERATORS "${build_cover_operators[@]}"
 emit_block BUILD_SERVICE_IMAGES "${build_service_images[@]}"
 emit_block BUILD_TEMPEST_RELEASES "${build_tempest_releases[@]}"
 {

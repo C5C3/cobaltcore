@@ -4,11 +4,25 @@
 
 # Chainsaw E2E test for the NetworkPolicy sub-reconciler.
 #
-# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy, so
-# this suite validates the rendered policy object (ingress on the Cinder API
-# port 8776, auto-derived DNS/database/cache/messaging/export egress) and its
-# lifecycle, not actual traffic enforcement. That is the same scope as the
-# keystone/horizon/glance/placement/neutron network-policy suites.
+# ENFORCEMENT: the kindnetd of kind v0.32 and later (CI pins KIND_VERSION)
+# enforces NetworkPolicy. The suite asserts the rendered policy object
+# (ingress on the Cinder API port 8776, auto-derived
+# DNS/database/cache/messaging/export egress) and its lifecycle, and probes
+# the policy with the four pods of 04-probe-pods.yaml through
+# ../../lib/assert-networkpolicy-enforced.sh (Step 3):
+#   - the target, which carries the policy's selector labels, is dropped on
+#     sink port 9999, which no egress rule admits, and on 5000: this CR sets
+#     no spec.keystoneEndpoint, so it gets no Keystone rule (see below);
+#   - it resolves a cluster name, which the DNS rule admits;
+#   - it reaches the sink on TCP 2049, 3306, 5672 and 11211, every TCP egress
+#     port the policy admits but 53;
+#   - a client in cinder-system, the operator namespace, is dropped on target
+#     port 9999, which no ingress rule admits, and reaches TCP 8776;
+#   - a client in cinder-netpol-outside is dropped on TCP 8776 until the
+#     update patch admits its namespace (Step 4).
+# On a CNI that does not enforce NetworkPolicy the first probe fails with "was
+# never dropped". TCP 53 is not probed: the sink listens on unprivileged ports
+# only, DNS is probed by resolution, and Step 2 pins the rule.
 #
 # The auto-derived egress order is deterministic:
 #   - DNS       UDP+TCP 53
@@ -126,7 +140,58 @@ spec:
         tail: 200
     - events:
         namespace: openstack
-  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # ── Step 3: Probe the enforced policy ──────────────────────────────────
+  # The pods of 04-probe-pods.yaml stand in for the Cinder pods (see
+  # ENFORCEMENT above). kindnet adds a new pod to its policy set a moment
+  # after the pod starts, so the first dropped probe polls until the target's
+  # connection times out. The inside client's open probe then shows that
+  # kindnet knows the clients, which start together, so the outside client's
+  # drop comes from the policy. The trailing dot keeps the resolver off the
+  # search list.
+  - try:
+    - apply:
+        file: 04-probe-pods.yaml
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready --timeout=120s -n openstack \
+            pod/cinder-netpol-probe-target pod/cinder-netpol-probe-sink
+          kubectl wait --for=condition=Ready --timeout=120s -n cinder-system pod/cinder-netpol-probe-inside
+          kubectl wait --for=condition=Ready --timeout=120s -n cinder-netpol-outside pod/cinder-netpol-probe-outside
+          TARGET="$(kubectl get pod cinder-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          SINK="$(kubectl get pod cinder-netpol-probe-sink -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ] || [ -z "${SINK}" ]; then
+            echo "ERROR: a probe pod has no pod IP (target '${TARGET}', sink '${SINK}')"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          # Egress of the pod the policy selects. The first drop proves kindnet holds it.
+          "${PROBE}" openstack cinder-netpol-probe-target dropped "${SINK}" 5000 9999
+          "${PROBE}" openstack cinder-netpol-probe-target resolves kubernetes.default.svc.cluster.local.
+          "${PROBE}" openstack cinder-netpol-probe-target open "${SINK}" 2049 3306 5672 11211
+          # Ingress into it: a port no rule admits, then the API port from an admitted
+          # and from a foreign namespace.
+          "${PROBE}" cinder-system cinder-netpol-probe-inside dropped "${TARGET}" 9999
+          "${PROBE}" cinder-system cinder-netpol-probe-inside open "${TARGET}" 8776
+          "${PROBE}" cinder-netpol-outside cinder-netpol-probe-outside dropped "${TARGET}" 8776
+    catch:
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Probe pods ==="
+          kubectl get pods -A -l app.kubernetes.io/instance=cinder-netpol -o wide --show-labels 2>&1 || true
+          for ref in openstack/cinder-netpol-probe-target openstack/cinder-netpol-probe-sink \
+            cinder-system/cinder-netpol-probe-inside cinder-netpol-outside/cinder-netpol-probe-outside; do
+            echo "--- ${ref} ---"
+            kubectl logs -n "${ref%%/*}" "${ref#*/}" 2>&1 || true
+            kubectl describe pod -n "${ref%%/*}" "${ref#*/}" 2>&1 | tail -20 || true
+          done
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n openstack -l app.kubernetes.io/instance=cinder-netpol -o yaml 2>&1 || true
+          echo "=== Events (cinder-netpol-outside) ==="
+          kubectl get events -n cinder-netpol-outside 2>&1 || true
+  # ── Step 4: Add a second ingress source and assert it lands ────────────
   # Peer arithmetic: the operator appends one peer per declared ingress source
   # plus one for its own Namespace (so the operator's health check reaches the
   # API). One source therefore renders 2 peers and the patched two sources
@@ -145,6 +210,20 @@ spec:
           spec:
             ingress:
             - (length(from) >= `3`): true
+    # The patch admits cinder-netpol-outside, so its client, which Step 3 saw
+    # dropped, now reaches the API port. That proves the patched policy is
+    # enforced and the earlier drop came from the policy.
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          TARGET="$(kubectl get pod cinder-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ]; then
+            echo "ERROR: the probe target has no pod IP"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          "${PROBE}" cinder-netpol-outside cinder-netpol-probe-outside open "${TARGET}" 8776
     catch:
     - get:
         apiVersion: cinder.openstack.c5c3.io/v1alpha1
@@ -161,7 +240,7 @@ spec:
         tail: 200
     - events:
         namespace: openstack
-  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  # ── Step 5: Disable networkPolicy and assert deletion ──────────────────
   - try:
     - patch:
         file: 03-patch-disable-networkpolicy.yaml

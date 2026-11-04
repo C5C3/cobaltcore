@@ -669,6 +669,18 @@ func completedJob(name string, hash string) *batchv1.Job {
 	}
 }
 
+// completedSyncClient returns a fake client holding owner and the completed
+// db-sync and schema-check Jobs of keystoneJobSet, at their current hashes.
+func completedSyncClient(s *runtime.Scheme, owner client.Object) client.Client {
+	p := keystoneJobSet()
+	return fake.NewClientBuilder().WithScheme(s).
+		WithObjects(
+			owner,
+			completedJob("keystone-db-sync", job.PodSpecHash(&SyncJob(p).Spec.Template)),
+			completedJob("keystone-schema-check", job.PodSpecHash(&SchemaCheckJob(p).Spec.Template)),
+		).Build()
+}
+
 func failedJob(name string, hash string) *batchv1.Job {
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
@@ -731,15 +743,7 @@ func TestReconcileSyncJobs_success(t *testing.T) {
 	var calls []string
 	rec := record.NewFakeRecorder(10)
 	installed := ""
-	p := keystoneJobSet()
-	syncHash := job.PodSpecHash(&SyncJob(p).Spec.Template)
-	checkHash := job.PodSpecHash(&SchemaCheckJob(p).Spec.Template)
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(
-			owner,
-			completedJob("keystone-db-sync", syncHash),
-			completedJob("keystone-schema-check", checkHash),
-		).Build()
+	c := completedSyncClient(s, owner)
 
 	res, err := ReconcileSyncJobs(context.Background(), syncParams(c, s, owner, &conds, rec, &installed, &calls))
 	g.Expect(err).NotTo(HaveOccurred())
@@ -750,6 +754,55 @@ func TestReconcileSyncJobs_success(t *testing.T) {
 	// InstalledRelease is promoted to the image tag on success.
 	g.Expect(installed).To(Equal("2026.1"))
 	g.Expect(rec.Events).To(Receive(ContainSubstring(ReasonDatabaseSynced)))
+}
+
+// TestReconcileSyncJobs_steadyPassEmitsNoEvent pins the quiet steady state: a
+// second pass over completed Jobs keeps DatabaseReady True/DatabaseSynced and
+// emits no event, so a Ready CR does not grow an event per reconcile.
+func TestReconcileSyncJobs_steadyPassEmitsNoEvent(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var calls []string
+	rec := record.NewFakeRecorder(10)
+	c := completedSyncClient(s, owner)
+
+	_, err := ReconcileSyncJobs(context.Background(), syncParams(c, s, owner, &conds, rec, nil, &calls))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(rec.Events).To(Receive(ContainSubstring(ReasonDatabaseSynced)))
+
+	res, err := ReconcileSyncJobs(context.Background(), syncParams(c, s, owner, &conds, rec, nil, &calls))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(ReasonDatabaseSynced))
+	g.Expect(rec.Events).NotTo(Receive())
+}
+
+// TestReconcileSyncJobs_recoveryEmitsDatabaseSynced pins that a real transition
+// keeps its event: a condition left False/DBSyncInProgress by an earlier pass
+// turns True/DatabaseSynced with one Normal event.
+func TestReconcileSyncJobs_recoveryEmitsDatabaseSynced(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	conds := []metav1.Condition{{
+		Type:   "DatabaseReady",
+		Status: metav1.ConditionFalse,
+		Reason: ReasonDBSyncInProgress,
+	}}
+	var calls []string
+	rec := record.NewFakeRecorder(10)
+	c := completedSyncClient(s, owner)
+
+	_, err := ReconcileSyncJobs(context.Background(), syncParams(c, s, owner, &conds, rec, nil, &calls))
+	g.Expect(err).NotTo(HaveOccurred())
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(rec.Events).To(Receive(ContainSubstring("Normal " + ReasonDatabaseSynced)))
+	g.Expect(rec.Events).NotTo(Receive())
 }
 
 func TestReconcileSyncJobs_dbSyncFailed(t *testing.T) {

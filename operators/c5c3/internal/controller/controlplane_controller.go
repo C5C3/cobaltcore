@@ -179,7 +179,10 @@ type ControlPlaneReconciler struct {
 	// start an unfiltered CLUSTER-WIDE informer for each of them: every Role and
 	// RoleBinding in the cluster held in memory, in an operator the chart caps
 	// at 128Mi, to track at most three objects per ControlPlane whose names the
-	// reconciler already derives. A nil value falls back to Client, so a
+	// reconciler already derives. The teardown reads through it for another
+	// reason: a pass queued behind the release still finds a terminating
+	// ControlPlane, a kind the operator does watch, in the informer cache
+	// (liveTerminatingControlPlane). A nil value falls back to Client, so a
 	// programmatically constructed reconciler (unit tests, envtest fixtures)
 	// keeps working unchanged.
 	APIReader client.Reader
@@ -549,9 +552,24 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// before the duplicate guard so a Terminating ControlPlane that carries the
 	// finalizer always releases it (reconcileDelete is a no-op when the finalizer
 	// is absent), instead of being parked and wedged.
+	//
+	// A pass queued behind the release still finds the CR in the informer cache,
+	// so the teardown re-reads it uncached first and stops when it is gone. It
+	// continues on the live copy because a placed plane outlives the stall escape
+	// behind the remote-children finalizer: the stale copy still carries the ORC
+	// finalizer and would run the normal release again.
 	if !cp.DeletionTimestamp.IsZero() {
-		if result, err := r.reconcileDelete(ctx, &cp); !result.IsZero() || err != nil {
-			return r.updateStatus(ctx, &cp, statusBefore, result, err)
+		live, err := r.liveTerminatingControlPlane(ctx, &cp)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if live == nil {
+			log.FromContext(ctx).V(1).Info("ControlPlane already released; ignoring a stale cached copy")
+			return ctrl.Result{}, nil
+		}
+		statusBefore = live.Status.DeepCopy()
+		if result, err := r.reconcileDelete(ctx, live); !result.IsZero() || err != nil {
+			return r.updateStatus(ctx, live, statusBefore, result, err)
 		}
 		return ctrl.Result{}, nil
 	}

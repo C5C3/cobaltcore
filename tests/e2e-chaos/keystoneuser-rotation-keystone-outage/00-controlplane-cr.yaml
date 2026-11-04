@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture of keystoneuser-rotation-keystone-outage: the
+# KeystoneUser order plane of tests/e2e/c5c3/keystone-user/00-controlplane-cr.yaml
+# under the suite's own name. The CR carries no metadata.namespace: the suite
+# applies it into its namespace chaos-ku-rot, and the webhook admits one
+# ControlPlane per namespace. A Keystone-only managed plane, sized Minimal.
+#
+# The namespace assignment is the only consent a KeystoneUser order reads.
+# @NS@ is replaced with the suite's namespace, so the order's namespace is
+# chaos-ku-rot-tenant, which the suite creates before the plane:
+# NamespaceAssignmentsReady is part of the plane's Ready.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-ku-rot
+spec:
+  openStackRelease: "2026.1"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+  services:
+    keystone: {}
+  sizing:
+    profile: Minimal
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven
+  namespaceAssignments:
+  - namespace: "@NS@-tenant"

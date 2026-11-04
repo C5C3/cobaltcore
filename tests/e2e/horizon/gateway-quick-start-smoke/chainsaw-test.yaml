@@ -13,9 +13,12 @@
 #   → the `https-horizon` HTTPS listener on `openstack/openstack-gw`
 #   (self-signed cert `horizon-nip-io-tls`, SNI `horizon.127-0-0-1.nip.io`)
 #   → HTTPRoute managed by the Horizon Operator → Service → Horizon pod.
-# This is the ONLY suite that exercises the second Gateway listener the kind
-# overlay adds for the dashboard (deploy/kind/base/openstack-gateway.yaml);
-# the keystone smoke only proves the `keystone.127-0-0-1.nip.io` listener.
+# Two suites attach to the second Gateway listener the kind overlay adds for
+# the dashboard (deploy/kind/base/openstack-gateway.yaml): this one and
+# ../gateway-quick-start, whose route matches `/`. The smoke route attaches
+# on `/auth`, which still matches `/auth/login/`, so the two routes never
+# overlap entirely (see 01-smoke-horizon-cr.yaml). The keystone smoke only
+# proves the `keystone.127-0-0-1.nip.io` listener.
 #
 # Suite location: lives under `tests/e2e/horizon/` (not
 # `tests/e2e/infrastructure/`) so the operator-installed `e2e-operator` matrix

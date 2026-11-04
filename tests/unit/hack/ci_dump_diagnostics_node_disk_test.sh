@@ -66,6 +66,10 @@ case "$1" in
         echo 'Error from server (NotFound): deployments.apps "orc-controller-manager" not found' >&2
         exit 1
         ;;
+      pod)
+        echo 'Error from server (NotFound): pods "openbao-0" not found' >&2
+        exit 1
+        ;;
     esac
     ;;
   api-resources)

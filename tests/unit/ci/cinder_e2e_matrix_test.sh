@@ -296,16 +296,17 @@ test_chaos_network_leg_runs_the_cinder_suites() {
   # All three suites attach an NFS backend, cinder-nfs-outage scales that
   # export away and back, and two of them take a vhost on the shared broker,
   # so this leg needs the same two opt-ins the e2e-operator cinder leg does.
-  # deploy-infra.sh installs neither by default. The broker line is shared with
-  # the nova leg, whose suites take vhosts of their own, so the whole
-  # expression is read here: an arm dropped from it leaves this leg's two
-  # brokered suites waiting out their timeouts.
+  # deploy-infra.sh installs neither by default. Both lines are shared with
+  # the upgrade leg, whose two Cinder suites attach an NFS backend and take a
+  # vhost or a broker of their own, and the broker line with the nova leg, so
+  # the whole expression is read here: an arm dropped from it leaves this
+  # leg's two brokered suites waiting out their timeouts.
   local setup
   setup=$(job_step e2e-chaos "Setup E2E infrastructure")
   assert_contains "the chaos leg opts into the NFS stack" "$setup" \
-    "WITH_NFS: \${{ matrix.suite == 'network' && 'true' || '' }}"
+    "WITH_NFS: \${{ (matrix.suite == 'network' || matrix.suite == 'upgrade') && 'true' || '' }}"
   assert_contains "and into the shared broker" "$setup" \
-    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova') && 'true' || '' }}"
+    "WITH_MESSAGING: \${{ (matrix.suite == 'network' || matrix.suite == 'nova' || matrix.suite == 'upgrade') && 'true' || '' }}"
 
   local deploy
   deploy=$(job_step e2e-chaos "Deploy cinder operator")

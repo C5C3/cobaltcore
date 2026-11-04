@@ -19,6 +19,11 @@
 #   - hack/deploy-infra.sh un-suspends kustomization/k-orc on the
 #     CONTROLPLANE_OPERATORS=flux path, so the base-level suspend does not
 #     strand the Flux-driven ControlPlane deploy.
+#   - main() lifts it before its first HelmRelease wait on the flux path and
+#     on no other path. The c5c3-operator has no dependsOn edge to K-ORC and
+#     crash-loops until the K-ORC CRDs exist; lifted minutes after the pod
+#     started, the kubelet's back-off outlasted the 120 s admission probe
+#     (#1568). Lifted on the external path, the conflict above comes back.
 # Usage: bash tests/unit/deploy/kind_base_korc_suspend_test.sh
 
 set -euo pipefail
@@ -159,11 +164,95 @@ test_deploy_infra_unsuspends_korc_on_flux_path() {
   assert_eq "a kubectl patch sets kustomization/k-orc spec.suspend false" "1" "$matched"
 }
 
+# run_main_to_first_helmrelease_wait <dir> [VAR=value...]
+# Runs the real main() on stubs of the cluster tools up to its first
+# wait_for_helmreleases: Flux installs the operators from Step 3 on, so what
+# main() has not lifted by then lands after they started. <dir>/trace gets
+# every stubbed call in order, then the marker FIRST-HELMRELEASE-WAIT. Fails
+# when main() ends without reaching the wait.
+run_main_to_first_helmrelease_wait() {
+  local dir="$1"
+  shift
+  mkdir -p "$dir/bin"
+
+  local tool
+  for tool in kubectl kind helm flux docker curl sleep; do
+    cat >"$dir/bin/$tool" <<STUB
+#!/bin/bash
+printf '%s\n' "$tool \$*" >>"$dir/trace"
+STUB
+    chmod +x "$dir/bin/$tool"
+  done
+  # hack/refresh-operator-image-digests.sh resolves digests with these two.
+  # Failing, it reaches no registry and main() logs a warning and goes on.
+  echo 'exit 1' >>"$dir/bin/docker"
+  echo 'exit 1' >>"$dir/bin/curl"
+
+  (
+    export PATH="$dir/bin:$PATH" SKIP_KIND_CREATE=true HELMRELEASE_TIMEOUT=1
+    local override
+    for override in "$@"; do
+      export "${override?}"
+    done
+    # shellcheck source=hack/deploy-infra.sh
+    source "$DEPLOY_INFRA_SH"
+    preflight_checks() { :; }
+    cap_node_nofile() { :; }
+    check_relocated_infrastructure() { :; }
+    wait_for_fluxinstance() { :; }
+    install_gateway_api_crds() { :; }
+    install_envoy_gateway_crds() { :; }
+    reconcile_helmrepository_sources() { :; }
+    wait_for_helmreleases() {
+      echo 'FIRST-HELMRELEASE-WAIT' >>"$dir/trace"
+      exit 0
+    }
+    main
+  ) >"$dir/main.log" 2>&1 || true
+
+  grep -qx 'FIRST-HELMRELEASE-WAIT' "$dir/trace"
+}
+
+# korc_lifts_before_wait <trace>
+# Counts the patches that lift the Kustomization before the wait's marker.
+korc_lifts_before_wait() {
+  sed '/^FIRST-HELMRELEASE-WAIT$/q' "$1" |
+    grep -cE '^kubectl patch kustomization[ /]k-orc .*"suspend":false' || true
+}
+
+# --- Tests 5-7: main() lifts k-orc before the first HelmRelease wait, on the ---
+#               flux path only
+test_main_lifts_korc_before_the_first_helmrelease_wait() {
+  local name="$1" want="$2"
+  shift 2
+  echo "Test: main() on the $name path lifts kustomization/k-orc $want time(s) before its first HelmRelease wait"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  if ! run_main_to_first_helmrelease_wait "$tmp" "$@"; then
+    echo "  FAIL: main() ended before its first HelmRelease wait:"
+    tail -5 "$tmp/main.log"
+    FAIL=$((FAIL + 1))
+    rm -rf "$tmp"
+    return
+  fi
+
+  assert_eq "kustomization/k-orc lifts before the first HelmRelease wait" \
+    "$want" "$(korc_lifts_before_wait "$tmp/trace")"
+  rm -rf "$tmp"
+}
+
 # --- Run ---
 test_kind_base_declares_korc_suspend_patch
 test_kind_base_renders_korc_suspended
 test_production_overlay_renders_korc_active
 test_deploy_infra_unsuspends_korc_on_flux_path
+test_main_lifts_korc_before_the_first_helmrelease_wait flux 1 \
+  WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=flux
+test_main_lifts_korc_before_the_first_helmrelease_wait external 0 \
+  WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external
+test_main_lifts_korc_before_the_first_helmrelease_wait default 0 \
+  WITH_CONTROLPLANE=false
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

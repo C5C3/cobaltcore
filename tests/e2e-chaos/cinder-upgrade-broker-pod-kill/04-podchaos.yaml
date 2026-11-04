@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos that kills the broker pod of this suite while the upgrade sits in
+# RollingUpdate.
+#
+# action pod-kill with gracePeriod 0: the broker pod carries the RabbitMQ
+# Cluster Operator's default terminationGracePeriodSeconds of 604800 s, so a
+# graceful delete would run its preStop drain instead of losing the broker.
+# mode all covers every broker pod: the fixture runs one. The selector is the
+# name label the cluster-operator puts on the pods of this RabbitmqCluster
+# alone, so the kind-only shared-rabbitmq and every other broker stay
+# untouched.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-cinder-upg-bus
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: cinder-upg-bus-rabbitmq
+  gracePeriod: 0

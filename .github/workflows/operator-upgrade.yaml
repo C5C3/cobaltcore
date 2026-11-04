@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+---
+# Operator upgrade suites against what main published. After every successful
+# CI or Build Images push run on main, this workflow runs the helm upgrade suite
+# of each operator whose image that commit published: the suite upgrades from
+# the pinned baseline to exactly that image and that commit's chart. An
+# operator whose pin is still the version main publishes is left out, because
+# that commit's publish moved the pinned tag onto the commit itself
+# (hack/ci-operator-upgrade-main-matrix.sh).
+#
+# It is a workflow of its own, triggered by workflow_run, because main's CI runs
+# share one concurrency group that never cancels (ci.yaml), about ten a day at
+# 7 to 8 minutes each; an upgrade job inside them would delay every publish.
+# Its own group cancels the run in flight instead, so at most one runs at a
+# time and a newer completion supersedes an older one. Build Images is a trigger
+# too, because a push that changes a service or the OVN image publishes it
+# there, often after CI has finished; until then
+# hack/ci-operator-upgrade-main-matrix.sh leaves out the suites that need it.
+name: Operator Upgrade
+
+"on":
+  workflow_run:
+    workflows: [CI, Build Images]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: read
+
+# The group is chosen before any job's `if`, and every completion on main
+# starts a run. Only a run whose resolve job will work joins the shared group,
+# so a failed run, a pull-request run or a fork's run never cancels the run in
+# flight; any other run gets a group of its own, the idiom of ci.yaml's no-op
+# label group. The condition is the one of the resolve job.
+concurrency:
+  group: >-
+    ${{ (github.event.workflow_run.event == 'push' &&
+    github.event.workflow_run.conclusion == 'success' &&
+    github.event.workflow_run.head_repository.full_name == github.repository) &&
+    'operator-upgrade-main' || format('operator-upgrade-skip-{0}', github.run_id) }}
+  cancel-in-progress: true
+
+jobs:
+  # workflow_run fires for pull-request runs too, and a fork's branch may be
+  # named main, so only a successful push run of this repository counts.
+  resolve:
+    if: |
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      operators: ${{ steps.matrix.outputs.operators }}
+      has-operators: ${{ steps.matrix.outputs.has-operators }}
+      image-map: ${{ steps.matrix.outputs.image-map }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: ./.github/actions/registry-login
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Resolve the published operators
+        id: matrix
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: hack/ci-operator-upgrade-main-matrix.sh
+
+  upgrade:
+    needs: [resolve]
+    if: needs.resolve.outputs.has-operators == 'true'
+    uses: ./.github/workflows/e2e-operator-upgrade.yaml
+    with:
+      operators: ${{ needs.resolve.outputs.operators }}
+      image-map: ${{ needs.resolve.outputs.image-map }}
+      ref: ${{ github.event.workflow_run.head_sha }}

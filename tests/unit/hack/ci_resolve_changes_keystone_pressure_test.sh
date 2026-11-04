@@ -226,8 +226,8 @@ test_the_job_reads_the_signal() {
     'KEYSTONE_PRESSURE_PATCHED_IMAGE: ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}'
   # Shorter, and the last stages of effective-fan get no window for their
   # grants and record nothing.
-  assert_contains "effective-fan gets the six minutes its stages need" "$run" \
-    'KEYSTONE_PRESSURE_PROFILE_DURATIONS: effective-fan=6m'
+  assert_contains "effective-fan gets the twelve minutes its stages need" "$run" \
+    'KEYSTONE_PRESSURE_PROFILE_DURATIONS: effective-fan=12m'
   assert_contains "the leg names its release" "$run" \
     'KEYSTONE_PRESSURE_RELEASE: ${{ matrix.release }}'
   assert_contains "the results land where the upload looks" "$run" \

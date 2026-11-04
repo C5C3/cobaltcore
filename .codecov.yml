@@ -16,20 +16,73 @@ ignore:
 
 coverage:
   status:
-    # Project-level check: overall coverage must not decrease.
+    # Project-level check: overall coverage must not decrease. It counts the
+    # unit and integration flags alone; the e2e, chaos and Tempest flags
+    # report without gating.
     project:
       default:
         target: auto
         threshold: 1%
-    # Patch-level check: new/changed lines in a PR must meet this target.
+        flags:
+          - unit-common
+          - unit-keystone
+          - unit-c5c3
+          - unit-horizon
+          - unit-glance
+          - unit-placement
+          - unit-barbican
+          - unit-ovn
+          - unit-neutron
+          - unit-cinder
+          - unit-nova
+          - integration-common
+          - integration-keystone
+          - integration-c5c3
+          - integration-horizon
+          - integration-glance
+          - integration-placement
+          - integration-barbican
+          - integration-ovn
+          - integration-neutron
+          - integration-cinder
+          - integration-nova
+    # Patch-level check: new/changed lines in a PR must meet this target, on
+    # the same flags.
     patch:
       default:
         target: 90%
+        flags:
+          - unit-common
+          - unit-keystone
+          - unit-c5c3
+          - unit-horizon
+          - unit-glance
+          - unit-placement
+          - unit-barbican
+          - unit-ovn
+          - unit-neutron
+          - unit-cinder
+          - unit-nova
+          - integration-common
+          - integration-keystone
+          - integration-c5c3
+          - integration-horizon
+          - integration-glance
+          - integration-placement
+          - integration-barbican
+          - integration-ovn
+          - integration-neutron
+          - integration-cinder
+          - integration-nova
 
-# Flag management links CI-uploaded flags (unit-<operator>,
-# integration-<operator>) to coverage tracking rules. Carryforward ensures
-# missing flags (e.g., when only one operator is changed) do not reduce
-# the reported coverage.
+# Flag management links CI-uploaded flags to coverage tracking rules. There
+# are five prefixes, each with one flag per operator and one for
+# internal/common: unit- and integration- from the test and test-integration
+# jobs, which the statuses gate on, and e2e-, chaos- and tempest- from the
+# e2e-operator, e2e-chaos and tempest jobs, which only report. Each flag's
+# paths scope its upload to its own tree. Carryforward ensures missing flags
+# (e.g., when only one operator is changed) do not reduce the reported
+# coverage.
 flag_management:
   default_rules:
     carryforward: true
@@ -122,9 +175,142 @@ flag_management:
       paths:
         - operators/nova/
       carryforward: true
+    - name: e2e-common
+      paths:
+        - internal/common/
+      carryforward: true
+    - name: e2e-keystone
+      paths:
+        - operators/keystone/
+      carryforward: true
+    - name: e2e-c5c3
+      paths:
+        - operators/c5c3/
+      carryforward: true
+    - name: e2e-horizon
+      paths:
+        - operators/horizon/
+      carryforward: true
+    - name: e2e-glance
+      paths:
+        - operators/glance/
+      carryforward: true
+    - name: e2e-placement
+      paths:
+        - operators/placement/
+      carryforward: true
+    - name: e2e-barbican
+      paths:
+        - operators/barbican/
+      carryforward: true
+    - name: e2e-ovn
+      paths:
+        - operators/ovn/
+      carryforward: true
+    - name: e2e-neutron
+      paths:
+        - operators/neutron/
+      carryforward: true
+    - name: e2e-cinder
+      paths:
+        - operators/cinder/
+      carryforward: true
+    - name: e2e-nova
+      paths:
+        - operators/nova/
+      carryforward: true
+    - name: chaos-common
+      paths:
+        - internal/common/
+      carryforward: true
+    - name: chaos-keystone
+      paths:
+        - operators/keystone/
+      carryforward: true
+    - name: chaos-c5c3
+      paths:
+        - operators/c5c3/
+      carryforward: true
+    - name: chaos-horizon
+      paths:
+        - operators/horizon/
+      carryforward: true
+    - name: chaos-glance
+      paths:
+        - operators/glance/
+      carryforward: true
+    - name: chaos-placement
+      paths:
+        - operators/placement/
+      carryforward: true
+    - name: chaos-barbican
+      paths:
+        - operators/barbican/
+      carryforward: true
+    - name: chaos-ovn
+      paths:
+        - operators/ovn/
+      carryforward: true
+    - name: chaos-neutron
+      paths:
+        - operators/neutron/
+      carryforward: true
+    - name: chaos-cinder
+      paths:
+        - operators/cinder/
+      carryforward: true
+    - name: chaos-nova
+      paths:
+        - operators/nova/
+      carryforward: true
+    - name: tempest-common
+      paths:
+        - internal/common/
+      carryforward: true
+    - name: tempest-keystone
+      paths:
+        - operators/keystone/
+      carryforward: true
+    - name: tempest-c5c3
+      paths:
+        - operators/c5c3/
+      carryforward: true
+    - name: tempest-horizon
+      paths:
+        - operators/horizon/
+      carryforward: true
+    - name: tempest-glance
+      paths:
+        - operators/glance/
+      carryforward: true
+    - name: tempest-placement
+      paths:
+        - operators/placement/
+      carryforward: true
+    - name: tempest-barbican
+      paths:
+        - operators/barbican/
+      carryforward: true
+    - name: tempest-ovn
+      paths:
+        - operators/ovn/
+      carryforward: true
+    - name: tempest-neutron
+      paths:
+        - operators/neutron/
+      carryforward: true
+    - name: tempest-cinder
+      paths:
+        - operators/cinder/
+      carryforward: true
+    - name: tempest-nova
+      paths:
+        - operators/nova/
+      carryforward: true
 
 # Component-level thresholds: each component is tracked independently on the
-# Codecov dashboard, with its own target percentage.
+# Codecov dashboard, with its own target percentage. flag_regexes keeps each
+# component's status on the unit and integration flags.
 component_management:
   default_rules:
     statuses:
@@ -137,6 +323,9 @@ component_management:
       name: common
       paths:
         - internal/common/**
+      flag_regexes:
+        - "^unit-"
+        - "^integration-"
       statuses:
         - type: project
           target: 80%
@@ -147,6 +336,9 @@ component_management:
       name: controllers
       paths:
         - operators/*/internal/controller/**
+      flag_regexes:
+        - "^unit-"
+        - "^integration-"
       statuses:
         - type: project
           target: 70%
@@ -157,6 +349,9 @@ component_management:
       name: webhooks
       paths:
         - operators/*/api/**
+      flag_regexes:
+        - "^unit-"
+        - "^integration-"
       statuses:
         - type: project
           target: 90%

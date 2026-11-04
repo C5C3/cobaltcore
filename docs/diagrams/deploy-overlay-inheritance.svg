@@ -23,7 +23,8 @@
 <text x="1243" y="170.36" font-size="26" font-weight="700" fill="#2B3440">deploy/lab/metal-stack/base</text>
 <text x="1243" y="204.2" font-size="20" font-weight="400" fill="#55606E">labels and annotates every Namespace</text>
 <text x="1243" y="230.2" font-size="20" font-weight="400" fill="#55606E">removes the storage class of OpenBao</text>
-<text x="1243" y="256.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 3</text>
+<text x="1243" y="256.2" font-size="20" font-weight="400" fill="#55606E">patches the Gateway: one listener on *.nip.io</text>
+<text x="1243" y="282.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 3</text>
 <rect x="80" y="345" width="514" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="99" y="384.36" font-size="26" font-weight="700" fill="#2B3440">deploy/flux-system/infrastructure</text>
 <text x="99" y="418.2" font-size="20" font-weight="400" fill="#55606E">issuers, CAs, certificates, MariaDB, Memcached,</text>
@@ -40,7 +41,9 @@
 <rect x="1224" y="345" width="544" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="1243" y="384.36" font-size="26" font-weight="700" fill="#2B3440">deploy/lab/metal-stack/infrastructure</text>
 <text x="1243" y="418.2" font-size="20" font-weight="400" fill="#55606E">removes the storage class of MariaDB and Garage</text>
-<text x="1243" y="444.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 5</text>
+<text x="1243" y="444.2" font-size="20" font-weight="400" fill="#55606E">adds a LoadBalancer EnvoyProxy and the lab CA</text>
+<text x="1243" y="470.2" font-size="20" font-weight="400" fill="#55606E">drops the kind EnvoyProxy and certificates</text>
+<text x="1243" y="496.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 5</text>
 <rect x="80" y="559" width="514" height="148" rx="13" fill="none" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
 <text x="99" y="598.36" font-size="26" font-weight="700" fill="#2B3440">deploy/examples/sizing-overlay</text>
 <text x="99" y="632.2" font-size="20" font-weight="400" fill="#55606E">a template to copy, with base and infrastructure/</text>

@@ -47,6 +47,8 @@ PULL_ERROR='Error from server (BadRequest): container "manager" in pod "orc-cont
 #   - `logs -n orc-system deploy/orc-controller-manager …` → <logs_mode>
 #     "ok" prints STUBBED-KORC-LOGS, "empty" prints nothing, "error" prints
 #     the ImagePullBackOff error on stderr and exits 1
+#   - `get pod openbao-0 -n shared-services` → exits 1 with kubectl's NotFound
+#     on stderr (no OpenBao on this cluster)
 #   - `get ns chaos-mesh` and `get --raw` → exit 1; the other infrastructure
 #     verbs and `api-resources` → exit 0 silently
 # Any other invocation prints `[kubectl-stub] unexpected invocation: …` on
@@ -67,6 +69,11 @@ case "\$1" in
           fi
           exit ${deploy_exit}
         fi
+        ;;
+      pod)
+        # The OpenBao guard reads it; this cluster runs no OpenBao.
+        echo 'Error from server (NotFound): pods "openbao-0" not found' >&2
+        exit 1
         ;;
       ns)
         if [ "\$3" = "chaos-mesh" ]; then

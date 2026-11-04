@@ -191,6 +191,11 @@ versions (the `re-evaluate-on:` comments name them), and list the new
 directories in
 [Tempest Test Infrastructure](../reference/testing/tempest-test-infrastructure.md).
 
+The `keystone-upgrade` leg needs no edit. The generator reads its pair from
+the last two `releases/*/` directories and reuses the newest
+`tests/tempest/keystone-<slug>/`, so the new release moves it to the upgrade
+from `<prev>` to `<version>`.
+
 ## Per-release e2e variants
 
 Every service with a `tests/e2e/<svc>/basic-deployment/` suite needs a
@@ -330,7 +335,7 @@ each gains the new release by hand:
   the number of images the nova e2e job loads and the number of nova Tempest
   jobs.
 - **Prose.** Run
-  `grep -rnE -i '(both|two|three|four) (releases|tags)|either release|neither release|(twelve|eighteen|twenty-four|12|18|24) (Tempest )?legs' README.md docs --include='*.md'`
+  `grep -rnE -i '(both|two|three|four) (releases|tags)|either release|neither release|(twelve|thirteen|eighteen|nineteen|twenty-four|12|13|18|19|24) (Tempest )?legs' README.md docs --include='*.md'`
   and read every hit, then grep for `<prev> and <version>` with the real
   versions substituted. When a release changes the count words, add the new
   ones to the pattern. The 2026.2 run rewrote `README.md` and these pages:
@@ -389,8 +394,12 @@ are the record of the last retirement.
    it; the tempest client image of every e2e fixture Job; every pin under
    `tests/e2e*/` (the `invalid-*` corpora through their `_generate.py` and
    `make verify-invalid-cr-fixtures`); the placed-services pins and their
-   preloads; the `e2e-operator-upgrade` baseline CR; and the metadata-agent
-   memory phases. Re-pin the plain `basic-deployment` suites, and carry the
+   preloads; the release pins of the ten operator upgrade suites under
+   `tests/e2e-operator-upgrade/<op>-helm-upgrade/` (the copied fixtures and
+   their `installedRelease` asserts) and `RELEASE` in
+   `hack/ci-operator-upgrade-leg.sh`, which
+   `tests/unit/hack/ci_operator_upgrade_leg_test.sh` holds in lockstep; and the
+   metadata-agent memory phases. Re-pin the plain `basic-deployment` suites, and carry the
    release-specific assertions of the new default's `basic-deployment-<slug>`
    variants over before deleting those variants (decision D5 of #1321), with
    nova's `shard_two` entry and the shard list in
@@ -434,7 +443,8 @@ are the record of the last retirement.
    branch, write the baseline from its artifact with `hack/perf-baseline.py
    write-baseline --release <new-oldest>` (see
    [Re-baselining](../reference/testing/reconcile-performance-benchmark.md#re-baselining)),
-   and commit it in this pull request. The code import of
+   and commit it in this pull request; `tests/unit/ci/performance_workflow_test.sh`
+   fails until then. The code import of
    `tests/tempest/glance-2026-1/02-glance-cr.yaml` in
    [Filter web-download Image Imports](../guides/glance/filter-web-download-imports.md)
    moves when `2026.1` is the release being removed; the surviving twin needs

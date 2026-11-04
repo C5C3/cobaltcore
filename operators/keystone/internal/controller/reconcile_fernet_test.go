@@ -261,6 +261,8 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 		Data: map[string][]byte{"0": []byte("key")},
 	}
 
+	// The pre-created CronJob carries no concurrency policy, as the CronJob of
+	// an older operator did.
 	oldCronJob := &batchv1.CronJob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-keystone-fernet-rotate",
@@ -307,6 +309,8 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 		Name:      "test-keystone-fernet-rotate",
 	}, &cronJob)).To(Succeed())
 	g.Expect(cronJob.Spec.Schedule).To(Equal("0 */6 * * *"))
+	g.Expect(cronJob.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent),
+		"a CronJob created without a policy must gain Forbid on the next reconcile")
 }
 
 func TestReconcileFernetKeys_GeneratedKeysAreValid(t *testing.T) {
@@ -649,8 +653,8 @@ func TestReconcileFernetKeys_ConditionMessages(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
-// TestFernetRotationCronJob_SecurityContext verifies that both containers in the
-// Fernet rotation CronJob have a restricted SecurityContext.
+// TestFernetRotationCronJob_SecurityContext verifies that the container in the
+// Fernet rotation CronJob has a restricted SecurityContext.
 func TestFernetRotationCronJob_SecurityContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
@@ -658,9 +662,6 @@ func TestFernetRotationCronJob_SecurityContext(t *testing.T) {
 	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
-
-	// Verify init container "copy-keys" SecurityContext (through).
-	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
 
 	// Verify main container "fernet-rotate" SecurityContext (through).
 	expectRestrictedSecurityContext(g, findContainerByName(podSpec.Containers, "fernet-rotate"))
@@ -715,12 +716,9 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	// Verify ServiceAccount.
 	g.Expect(podSpec.ServiceAccountName).To(Equal("test-keystone-fernet-rotate"))
 
-	// Verify init container copies keys from read-only Secret to writable emptyDir.
-	g.Expect(podSpec.InitContainers).To(HaveLen(1))
-	initContainer := podSpec.InitContainers[0]
-	g.Expect(initContainer.Name).To(Equal("copy-keys"))
-	g.Expect(initContainer.Image).To(Equal("ghcr.io/c5c3/keystone:2026.1"))
-	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))
+	// No init container: the rotate script copies the keys from the read-only
+	// Secret into the writable emptyDir itself.
+	g.Expect(podSpec.InitContainers).To(BeEmpty())
 
 	// Verify main container uses shell script for rotation + K8s API push.
 	container := podSpec.Containers[0]
@@ -744,9 +742,10 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.LocalObjectReference.Name).To(Equal("test-keystone-db-connection"))
 	g.Expect(container.Env[3].ValueFrom.SecretKeyRef.Key).To(Equal(database.ConnectionSecretKey))
 
-	// Verify volume mounts on main container: fernet-keys + credential-keys (read-only) + config + scripts.
-	g.Expect(container.VolumeMounts).To(HaveLen(4))
-	var fernetMount, credMount, cfgMount, scriptsMount corev1.VolumeMount
+	// Verify volume mounts on main container: fernet-keys + credential-keys (read-only) + config + scripts
+	// + fernet-keys-src (read-only) + rotation-state.
+	g.Expect(container.VolumeMounts).To(HaveLen(6))
+	var fernetMount, credMount, cfgMount, scriptsMount, srcMount, stateMount corev1.VolumeMount
 	for _, vm := range container.VolumeMounts {
 		switch vm.Name {
 		case "fernet-keys":
@@ -757,6 +756,10 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 			cfgMount = vm
 		case "scripts":
 			scriptsMount = vm
+		case "fernet-keys-src":
+			srcMount = vm
+		case "rotation-state":
+			stateMount = vm
 		}
 	}
 	g.Expect(fernetMount.MountPath).To(Equal("/etc/keystone/fernet-keys"))
@@ -766,10 +769,15 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 	g.Expect(cfgMount.ReadOnly).To(BeTrue())
 	g.Expect(scriptsMount.MountPath).To(Equal("/scripts"))
 	g.Expect(scriptsMount.ReadOnly).To(BeTrue())
+	g.Expect(srcMount.MountPath).To(Equal("/fernet-keys-src"))
+	g.Expect(srcMount.ReadOnly).To(BeTrue())
+	g.Expect(stateMount.MountPath).To(Equal("/rotation-state"))
+	g.Expect(stateMount.ReadOnly).To(BeFalse())
 
-	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), scripts (ConfigMap).
-	g.Expect(podSpec.Volumes).To(HaveLen(5))
-	var srcVol, workVol, credVol, cfgVol, scriptsVol corev1.Volume
+	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), scripts (ConfigMap),
+	// rotation-state (emptyDir).
+	g.Expect(podSpec.Volumes).To(HaveLen(6))
+	var srcVol, workVol, credVol, cfgVol, scriptsVol, stateVol corev1.Volume
 	for _, v := range podSpec.Volumes {
 		switch v.Name {
 		case "fernet-keys-src":
@@ -782,8 +790,11 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 			cfgVol = v
 		case "scripts":
 			scriptsVol = v
+		case "rotation-state":
+			stateVol = v
 		}
 	}
+	g.Expect(stateVol.EmptyDir).NotTo(BeNil())
 	g.Expect(srcVol.Secret).NotTo(BeNil())
 	g.Expect(srcVol.Secret.SecretName).To(Equal("test-keystone-fernet-keys"))
 	g.Expect(workVol.EmptyDir).NotTo(BeNil())
@@ -808,7 +819,7 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 // directory passes upstream Keystone's "key_repository is world readable"
 // check. All other PodSecurityContext fields must
 // remain nil — Pod-level FSGroup is orthogonal to the container-level
-// PSS-Restricted SecurityContext on the rotate/init containers.
+// PSS-Restricted SecurityContext on the rotate container.
 func TestFernetRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
@@ -822,7 +833,7 @@ func TestFernetRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 
 	// do not set any other Pod-level SecurityContext field. Pod-level
 	// RunAs* / Seccomp / SELinux / AppArmor would conflict with or override
-	// the container-level SecurityContext on init/rotate containers.
+	// the container-level SecurityContext on the rotate container.
 	g.Expect(psc.RunAsUser).To(BeNil(), "RunAsUser must stay container-level")
 	g.Expect(psc.RunAsGroup).To(BeNil(), "RunAsGroup must stay container-level")
 	g.Expect(psc.RunAsNonRoot).To(BeNil(), "RunAsNonRoot must stay container-level")
@@ -838,7 +849,7 @@ func TestFernetRotationCronJob_PodSecurityContextSetsFSGroup(t *testing.T) {
 // TestFernetRotationCronJob_KeySecretVolumesSetDefaultMode0400 verifies that
 // the read-only Secret-backed key volumes mounted into the rotation Pod use
 // file mode 0o400 (owner read-only): `fernet-keys-src` (the production keys
-// the init container copies into the writable emptyDir) and `credential-keys`
+// the rotate script copies into the writable emptyDir) and `credential-keys`
 // (mounted read-only purely so the directory exists for keystone-manage)
 // The writable `fernet-keys` emptyDir, the
 // `config` ConfigMap, and the `scripts` ConfigMap are out of scope and must
@@ -883,43 +894,14 @@ func TestFernetRotationCronJob_KeySecretVolumesSetDefaultMode0400(t *testing.T) 
 	g.Expect(*scriptsVol.ConfigMap.DefaultMode).To(Equal(int32(0o555)), "scope guard: scripts DefaultMode must remain 0o555")
 }
 
-// TestFernetRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadableMode
-// verifies that the `copy-keys` init container materialises the rotation
-// working set with mode 0o400. A plain `cp` would inherit the kubelet's mount
-// mode for the destination emptyDir (typically 0o755) and re-introduce the
-// world-readable directory that fixes. Using `install -m 0400` (or
-// equivalent `cp` + explicit `chmod 0400`) keeps the writable copy in lockstep
-// with the read-only source mode.
-func TestFernetRotationCronJob_CopyKeysInitContainerPreservesNonWorldReadableMode(t *testing.T) {
-	g := NewGomegaWithT(t)
-	ks := fernetTestKeystone()
-
-	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
-
-	initContainer := findContainerByName(cronJob.Spec.JobTemplate.Spec.Template.Spec.InitContainers, "copy-keys")
-	g.Expect(initContainer).NotTo(BeNil(), "copy-keys init container must exist")
-	g.Expect(initContainer.Command).NotTo(BeEmpty(), "copy-keys init container must have a Command")
-
-	// Inspect the shell -c argv tail (the actual copy command). The init
-	// container is invoked as ["sh", "-c", "<cmd>"], so the command lives at
-	// index 2.
-	g.Expect(len(initContainer.Command)).To(BeNumerically(">=", 3), "copy-keys Command must be sh -c <cmd>")
-	cmd := initContainer.Command[2]
-
-	// Either `install -m 0400 ...` or `cp ... && chmod 0400 ...` is acceptable.
-	// Both ensure the writable copy of the keys lands at mode 0o400 so the
-	// rotation Pod's view of /etc/keystone/fernet-keys is not world-readable.
-	g.Expect(cmd).To(ContainSubstring("0400"), "copy-keys command must reference mode 0400")
-	mentionsInstallOrChmod := strings.Contains(cmd, "install") || strings.Contains(cmd, "chmod")
-	g.Expect(mentionsInstallOrChmod).To(BeTrue(), "copy-keys command must use `install -m 0400` or `chmod 0400` to preserve the non-world-readable mode")
-}
-
 // TestFernetRotationCronJob_RotateContainerVolumeMountsUnchanged is an active
-// regression guard: only changes Pod-level FSGroup, Secret volume
-// DefaultMode, and the init container's copy command. The fernet-rotate
+// regression guard: only changes Pod-level FSGroup and Secret volume
+// DefaultMode. The fernet-rotate
 // container's VolumeMounts (including the read-only credential-keys mount and
 // the read-only config/scripts mounts) must stay byte-for-byte identical to
-// what reconcile_fernet.go declares today.
+// what reconcile_fernet.go declares today. The list includes the read-only
+// fernet-keys-src mount and the writable rotation-state mount that a
+// restarted container needs to retry without rotating again.
 func TestFernetRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := fernetTestKeystone()
@@ -934,12 +916,14 @@ func TestFernetRotationCronJob_RotateContainerVolumeMountsUnchanged(t *testing.T
 		corev1.VolumeMount{Name: "credential-keys", MountPath: "/etc/keystone/credential-keys", ReadOnly: true},
 		corev1.VolumeMount{Name: "config", MountPath: "/etc/keystone/keystone.conf.d/", ReadOnly: true},
 		corev1.VolumeMount{Name: "scripts", MountPath: "/scripts", ReadOnly: true},
+		corev1.VolumeMount{Name: "fernet-keys-src", MountPath: "/fernet-keys-src", ReadOnly: true},
+		corev1.VolumeMount{Name: "rotation-state", MountPath: "/rotation-state"},
 	), "scope guard: fernet-rotate container VolumeMounts must not be modified")
 }
 
 // TestFernetRotationCronJob_RotationContainerSecurityContextUnchanged is an
 // active regression guard: must NOT touch container-level
-// SecurityContext on the rotate or init containers — those are fully owned by
+// SecurityContext on the rotate container — those are fully owned by
 // Pod-level FSGroup and container-level RunAs*/Seccomp/Capabilities
 // are independent fields.
 func TestFernetRotationCronJob_RotationContainerSecurityContextUnchanged(t *testing.T) {
@@ -949,7 +933,6 @@ func TestFernetRotationCronJob_RotationContainerSecurityContextUnchanged(t *test
 	cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
 	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
 
-	expectRestrictedSecurityContext(g, findContainerByName(podSpec.InitContainers, "copy-keys"))
 	expectRestrictedSecurityContext(g, findContainerByName(podSpec.Containers, "fernet-rotate"))
 }
 
@@ -1094,6 +1077,32 @@ func TestFernetRotationCronJob_SuspendTrue(t *testing.T) {
 	g.Expect(*cronJob.Spec.Suspend).To(BeTrue())
 	g.Expect(cronJob.Spec.Schedule).To(Equal(ks.Spec.Fernet.RotationSchedule),
 		"toggling suspend must not change the rotation schedule")
+}
+
+// TestFernetRotationCronJob_ConcurrencyPolicyForbid verifies that the
+// rotation CronJob forbids overlapping scheduled runs, and bounds each run so
+// a stuck one cannot hold the only slot, whether or not
+// spec.fernet.suspend is set.
+func TestFernetRotationCronJob_ConcurrencyPolicyForbid(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		suspend bool
+	}{
+		{name: "not suspended", suspend: false},
+		{name: "suspended", suspend: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ks := fernetTestKeystone()
+			ks.Spec.Fernet.Suspend = tc.suspend
+
+			cronJob := fernetRotationCronJob(ks, "test-keystone-config-abc123", "test-keystone-fernet-rotate-script-abc123", "")
+
+			g.Expect(cronJob.Spec.ConcurrencyPolicy).To(Equal(batchv1.ForbidConcurrent))
+			g.Expect(cronJob.Spec.JobTemplate.Spec.ActiveDeadlineSeconds).To(HaveValue(Equal(int64(3600))),
+				"a Job that never finishes must fail, or Forbid skips every later rotation")
+		})
+	}
 }
 
 // findRuleForResource returns the first PolicyRule whose ResourceNames matches

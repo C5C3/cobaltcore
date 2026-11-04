@@ -42,7 +42,7 @@ The keystone operator is the reference consumer for most packages listed (for
 | `internal/common/rotation` | Split-compute-write credential rotation: `EnsureStagingSecret`, `CommitStaged`/`CommitSpec`, `EnsureRBAC`, `CompletedAt`/`ObserveAge`, `BuildCronJob`/`CronJobParams` |
 | `internal/common/tls` | `EnsureCertificate` for cert-manager Certificate objects |
 | `internal/common/release` | OpenStack release parsing and upgrade/downgrade classification |
-| `internal/common/healthcheck` | `HTTPDoer` seam, probe-error classifier, TTL probe cache, the shared timing constants, and the `ReconcileProbe` flow |
+| `internal/common/healthcheck` | `HTTPDoer` seam, probe-error classifier, TTL probe cache, the shared timing constants, the `ReconcileProbe` flow, and `ScheduleReprobe`, which a new operator's `Reconcile` calls between `RunPipeline` and `updateStatus` so a Ready CR re-probes its API when the probe-cache entry expires |
 | `internal/common/job` | `RunJob`/`RunJobWithRerunKey`/`EnsureCronJob`/`DeleteCronJob`, the `BuildMigrationJob` skeleton, and the at-most-once `RecordJobTerminalState` recorder |
 | `internal/common/config` | oslo INI rendering + immutable-ConfigMap lifecycle, the extraConfig overlay (`MergeDefaults`) with owned-key health tracking, the option-catalog machinery (`ParseOptionCatalog`, `MustParseEmbeddedCatalogs`), and `CheckNoControlChars`/`IsControlCharError` (the typed `ControlCharError` guard renderers run on assembled sections); see the design decisions below for non-INI services |
 | `internal/common/keystoneauth` | `[keystone_authtoken]` section rendering without the password (`Section`) plus the `OS_KEYSTONE_AUTHTOKEN__PASSWORD` env-var injection (`PasswordEnvVar`) |
@@ -129,8 +129,11 @@ bottom when scaffolding `operators/<op>/`:
   retention coverage from the directory you already created. The
   service-parity audit asserts the generator emits `<op>-operator` and
   `<op>`.
-- **`.codecov.yml`** — add the per-operator `unit-<op>`/`integration-<op>`
-  flag blocks; the components section auto-scales via `operators/*` globs.
+- **`.codecov.yml`** — add the five per-operator flag blocks, `unit-<op>`,
+  `integration-<op>`, `e2e-<op>`, `chaos-<op>` and `tempest-<op>`, and the
+  `unit-<op>` and `integration-<op>` names to the `flags` of the project and
+  patch statuses. The `e2e-`, `chaos-` and `tempest-` flags only report; the
+  components section auto-scales via `operators/*` globs.
 - **Dashboards** — ship `operators/<op>/dashboards/<op>-operator.json` with a
   `dashboard_test.go` asserting the JSON parses and every metric a panel
   references is registered by the operator. Only the keystone dashboard is

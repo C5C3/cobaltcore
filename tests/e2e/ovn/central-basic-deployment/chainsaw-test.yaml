@@ -12,8 +12,10 @@
 #     cluster) and behind one NodePort Service per member
 #   - member 0 of each database requests the 70m/256Mi floor and runs
 #     Burstable, since the CR leaves resources unset
-#   - each database's members carry the two soft (ScheduleAnyway) spread
-#     constraints, which leave all three schedulable on the one kind node
+#   - each database's members carry the zone constraint and the hostname
+#     term, both soft (a ScheduleAnyway constraint and a preferred pod
+#     anti-affinity term), which leave all three schedulable on the one kind
+#     node
 #   - PodDisruptionBudgets ovn-basic-nb and ovn-basic-sb allow one voluntary
 #     disruption at a time (maxUnavailable: 1) and, with three healthy
 #     members, report disruptionsAllowed: 1
@@ -24,8 +26,12 @@
 #   - both Raft clusters really formed: each member's built-in _Server database
 #     reports the schema as clustered and connected, and exactly one of the
 #     three reports itself the leader
+#   - the ovn-operator release exports its reconcile families, with no error
+#     under an unmapped condition type
+#   - a Ready, unchanged ovn-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
-# The last point is what separates this suite from the envtest coverage under
+# The Raft check is what separates this suite from the envtest coverage under
 # operators/ovn/internal/controller/: a StatefulSet with three ready pods says
 # nothing about whether ovsdb-server negotiated a Raft cluster over TLS.
 #
@@ -126,12 +132,13 @@ spec:
             # (openbao-operator-tenant-limits) adds at admission. Today that
             # is a default request and no limit.
             #
-            # The two spread constraints are soft, so the three members still
-            # run Ready on the one kind node.
+            # The zone constraint and the hostname term are soft, so the three
+            # members still run Ready on the one kind node.
             template:
               spec:
                 (length(containers[?name == 'ovsdb'].resources.limits) == `0`): true
-                (length(topologySpreadConstraints[?whenUnsatisfiable == 'ScheduleAnyway']) == `2`): true
+                (length(topologySpreadConstraints[?whenUnsatisfiable == 'ScheduleAnyway']) == `1`): true
+                (length(affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[?podAffinityTerm.topologyKey == 'kubernetes.io/hostname']) == `1`): true
           status:
             readyReplicas: 3
     - assert:
@@ -147,7 +154,8 @@ spec:
             template:
               spec:
                 (length(containers[?name == 'ovsdb'].resources.limits) == `0`): true
-                (length(topologySpreadConstraints[?whenUnsatisfiable == 'ScheduleAnyway']) == `2`): true
+                (length(topologySpreadConstraints[?whenUnsatisfiable == 'ScheduleAnyway']) == `1`): true
+                (length(affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution[?podAffinityTerm.topologyKey == 'kubernetes.io/hostname']) == `1`): true
           status:
             readyReplicas: 3
     # One voluntary disruption at a time keeps quorum through a drain: with
@@ -578,3 +586,35 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # No backup has run yet, so the reconcile families are all this suite
+  # reads.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh ovn-system ovn-operator ovn_operator
+    catch:
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/instance=ovn-operator
+        tail: 200
+  # ── Step 8: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the OVNCentral from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack ovncentrals.ovn.openstack.c5c3.io ovn-basic
+    catch:
+    - podLogs:
+        namespace: ovn-system
+        selector: app.kubernetes.io/instance=ovn-operator
+        tail: 200

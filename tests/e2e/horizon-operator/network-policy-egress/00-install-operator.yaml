@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Helm values override for the horizon-operator network-policy-egress E2E
+# test. Consumed via `helm install -f` in chainsaw-test.yaml.
+#
+# networkPolicy.kubeApiServer is not set here. Step 1 of chainsaw-test.yaml
+# passes the addresses and the port of EndpointSlice default/kubernetes with
+# --set: kindnet judges egress after the Service DNAT, so the 10.96.0.1
+# Service VIP never matches, and the control-plane node address it resolves
+# to changes with every kind cluster.
+#
+# webhook.enabled=false avoids conflicting with the admission webhook already
+# registered by the primary horizon-operator deployment that hack/ci-deploy-
+# operator.sh installs as part of the CI E2E bootstrap (same rationale as
+# tests/e2e/horizon/namespace-scoped-rbac/).
+#
+# controller.defaultImagePullPolicy=IfNotPresent matches the primary
+# deployment: should this release win the leader election, the workloads keep
+# running the service images CI loaded into kind under the published tag.
+image:
+  repository: ghcr.io/c5c3/horizon-operator
+  tag: dev
+  pullPolicy: Never
+replicas: 1
+controller:
+  defaultImagePullPolicy: IfNotPresent
+webhook:
+  enabled: false
+networkPolicy:
+  enabled: true

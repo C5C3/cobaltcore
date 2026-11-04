@@ -1,6 +1,6 @@
 module github.com/c5c3/cobaltcore/operators/neutron
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/c5c3/cobaltcore/internal/common v0.0.0

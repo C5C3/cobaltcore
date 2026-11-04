@@ -3,23 +3,32 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The ControlPlane of the ControlPlane Quick Start (docs/quick-start-controlplane.md,
-# Step 4): the data of the first `# controlplane.yaml` block, plus the
-# spec.services.cinder of the page's optional `# block-storage.yaml` fragment
-# with the lab's Ceph backends in place of its NFS ones, plus two keys the lab
-# adds: spec.services.neutron.extraConfig and
-# spec.services.nova.hypervisorOperator. The comments above those two keys,
-# above the Cinder backends and above spec.sizing give the reasons.
-# tests/unit/deploy/metal_stack_controlplane_test.sh fails when this file,
-# minus cinder and the two keys, and the first block drift apart, and when
-# cinder without its backends and the fragment without its own do.
+# Step 4): the data of the first `# controlplane.yaml` block without its
+# publicEndpoint fields, plus the spec.services.cinder of the page's optional
+# `# block-storage.yaml` fragment with the lab's Ceph backends in place of its
+# NFS ones, plus three keys the lab adds: spec.services.neutron.extraConfig,
+# spec.services.nova.consoleProxy and spec.services.nova.hypervisorOperator.
+# The comments above those three keys, above the Cinder backends and above
+# spec.sizing give the reasons. tests/unit/deploy/metal_stack_controlplane_test.sh
+# fails when this file, minus cinder and the three keys, and the first block
+# without its publicEndpoint fields drift apart, and when cinder without its
+# backends and the fragment without its own do.
 #
 # The file is not named controlplane.yaml: .gitignore ignores that basename in
 # every directory.
 #
-# Every endpoint below is a *.127-0-0-1.nip.io hostname on the openstack-gw
-# Gateway, reached from a workstation through
-# `kubectl -n envoy-gateway-system port-forward <envoy service> 8443:443`,
-# hence the :8443 on every publicEndpoint.
+# Every gateway hostname below ends in 127-0-0-1.nip.io, which is a template:
+# Part 1, Step 4 of docs/quick-start-metal-stack.md applies the render with
+# that suffix replaced by the Gateway's, <a-b-c-d>.nip.io for the address of
+# its LoadBalancer Service, which nip.io resolves to that address. The suffix
+# is the first DNS name of the Certificate openstack/openstack-gw-tls, minus
+# its `*.`. Under EXTERNAL_LOADBALANCER=false the suffix stays
+# 127-0-0-1.nip.io, the end of a port-forward on local port 443.
+#
+# No service sets publicEndpoint: the Gateway answers on 443, and the operator
+# derives https://<hostname> (https://<hostname>/v3 for Keystone) from the
+# hostname, the URL the catalog then advertises. The kind quick start sets them
+# for its host port 8443.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -33,23 +42,18 @@ spec:
     messaging: {}
   services:
     keystone:
-      # The port-forward's local port. Without it the operator derives
-      # https://keystone.127-0-0-1.nip.io/v3 (port 443) from the gateway
-      # hostname.
-      publicEndpoint: https://keystone.127-0-0-1.nip.io:8443/v3
       gateway:
         parentRef:
           name: openstack-gw
         hostname: keystone.127-0-0-1.nip.io
         path: /
     horizon:
-      # The openstack-gw listener for horizon.127-0-0-1.nip.io.
+      # The dashboard, at https://horizon.<suffix>.
       gateway:
         parentRef:
           name: openstack-gw
         hostname: horizon.127-0-0-1.nip.io
     glance:
-      publicEndpoint: https://glance.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
           name: openstack-gw
@@ -68,7 +72,6 @@ spec:
             credentialsSecretRef:
               name: garage-s3-credentials
     placement:
-      publicEndpoint: https://placement.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
           name: openstack-gw
@@ -78,13 +81,11 @@ spec:
       # KV mount, and its AppRole are derived by convention, so the block is empty.
       secretStore:
         dedicated: {}
-      publicEndpoint: https://barbican.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
           name: openstack-gw
         hostname: barbican.127-0-0-1.nip.io
     neutron:
-      publicEndpoint: https://neutron.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
           name: openstack-gw
@@ -111,9 +112,6 @@ spec:
         DEFAULT:
           global_physnet_mtu: "1460"
     cinder:
-      publicEndpoint: https://cinder.127-0-0-1.nip.io:8443
-      # The openstack-gw listener for cinder.127-0-0-1.nip.io, which the lab's
-      # infrastructure overlay takes over from the kind overlay.
       gateway:
         parentRef:
           name: openstack-gw
@@ -177,13 +175,27 @@ spec:
             name: ceph-client-cinder-backup
     nova:
       # Both compute catalog rows append /v2.1 to this endpoint.
-      publicEndpoint: https://nova.127-0-0-1.nip.io:8443
-      # The metadata API, the scheduler, the conductor and the console proxy
-      # run one replica each and stay in-cluster.
+      # The metadata API, the scheduler and the conductor run one replica each
+      # and stay in-cluster.
       gateway:
         parentRef:
           name: openstack-gw
         hostname: nova.127-0-0-1.nip.io
+      # Lab setting. Publishes the noVNC console proxy, which Horizon's console
+      # tab and `openstack console url show` send a browser to. It takes a
+      # hostname of its own (docs/guides/nova/expose-the-console-proxy.md); the
+      # operator renders [vnc] novncproxy_base_url as
+      # https://nova-console.<suffix>/vnc_lite.html, without a port, so the
+      # console works only where the Gateway answers on 443. The compute
+      # contract carries the URL, and the NovaCompute pods of Part 2 read it
+      # at start, after this CR is applied. The proxy dials the VNC server of
+      # each hypervisor on the node's address ([vnc] server_listen is $my_ip
+      # on the NovaCompute), which no Service of the lab publishes.
+      consoleProxy:
+        gateway:
+          parentRef:
+            name: openstack-gw
+          hostname: nova-console.127-0-0-1.nip.io
       # Lab setting. Provisions the Keystone user hypervisor-operator (project
       # service-hypervisor-operator, role admin) and writes the Secret
       # controlplane-nova-hypervisor-operator-auth into openstack

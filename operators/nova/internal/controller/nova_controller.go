@@ -412,6 +412,8 @@ func (r *NovaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument,
 		r.pipelineSteps(children, &nova, &pipelineState{}))
+	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+		client.ObjectKeyFromObject(&nova))
 	return r.updateStatus(ctx, &nova, statusBefore, result, err)
 }
 

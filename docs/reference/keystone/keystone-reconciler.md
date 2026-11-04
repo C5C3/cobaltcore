@@ -329,7 +329,9 @@ One pass, in order:
    `openstack.c5c3.io/remote-children` while `spec.targetClusterRef` is set. A
    pass that installs one ends with a requeue after 1s.
 5. Runs the pipeline through `RunPipeline`, the rows below. The first entry
-   that returns a requeue or an error ends the pass.
+   that returns a requeue or an error ends the pass. A pass that every entry
+   completes is requeued for the moment the probe-cache entry expires
+   (`healthcheck.ScheduleReprobe`, see [`reconcileHealthCheck`](#reconcilehealthcheck)).
 6. Calls `updateStatus()` on every exit path of steps 3 and 5: it recomputes
    the aggregate `Ready`, stamps `status.observedGeneration`, and skips the
    write when nothing changed.
@@ -385,6 +387,8 @@ funnels every exit path through `updateStatus` by construction:
 
 ```go
 result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
+result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+    client.ObjectKeyFromObject(&keystone))
 return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 ```
 
@@ -1517,9 +1521,41 @@ validation answers HTTP 500.
 | --- | --- |
 | Name | `{name}-db-sync` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
-| Command | `keystone-manage db_sync` |
+| Command | `/bin/sh -eu -c`: `scripts/db_sync_reset.py`, then `keystone-manage db_sync` |
 | BackoffLimit | 4 |
-| RestartPolicy | OnFailure |
+| RestartPolicy | Never |
+
+**Interrupted first sync:** MariaDB commits every DDL statement implicitly, so a
+connection lost inside a migration leaves the revision's tables behind without
+their `alembic_version` row. A plain `keystone-manage db_sync` would start that
+revision again and fail with MySQL error 1050 on every attempt. Each db-sync
+attempt therefore first runs the `scripts/db_sync_reset.py` pre-step. It waits
+while the database refuses connections, then drops every base table of the
+schema when four things hold: no `migrate_version` table exists, the image's
+`EXPAND_HEAD` and `CONTRACT_HEAD` are readable, the recorded revisions differ
+from them, and no table holds a row other than the `<<keystone.domain.root>>`
+project. With the heads unreadable, only a schema that records no revision
+qualifies; one that records a revision is left untouched with the log line
+`db-sync-reset: image heads unreadable and the schema records <revs>, left untouched`.
+The Job log then carries
+`db-sync-reset: dropped <N> tables an interrupted first db_sync left (recorded revisions: <revs or none>): <tables>`,
+and the `db_sync` of the same attempt rebuilds the schema. A schema that holds
+rows stays untouched and `db_sync` runs on it as before. An interrupted schema
+with rows, or with revisions next to unreadable heads, therefore keeps the Job
+at `DatabaseReady=False/DBSyncFailed` until a human repairs it.
+
+The pre-step's statements wait at most 30 seconds for a metadata lock, such as
+the one an open transaction of another session holds on a table it read. A
+statement that times out logs
+`db-sync-reset: a statement waited 30 s for a metadata lock another session holds, checking the schema again in 5 s`,
+and the pre-step decides again from a fresh read, without bound, until the
+other session lets go.
+
+The command is part of the Job's pod template, which `job.RunJob` hashes. An
+operator version that renders a different command re-runs each completed
+db-sync Job once. On a complete schema that run logs
+`schema is at the image heads`, `db_sync` changes nothing, and `DatabaseReady`
+reads `False/DBSyncInProgress` until the Job completes.
 
 **Condition Contract:**
 
@@ -1609,14 +1645,17 @@ and disaster recovery backup to OpenBao.
 | Pod labels | `commonLabels(keystone)` + `app.kubernetes.io/component=fernet-rotation` |
 | Schedule | `spec.fernet.rotationSchedule` |
 | Suspend | `spec.fernet.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
+| Concurrency policy | `Forbid`: a scheduled run never starts while an earlier scheduled run is active; a manual Job (`kubectl create job --from=cronjob/...`) is not governed |
+| Active deadline | `activeDeadlineSeconds: 3600` on each Job: a Job still active after an hour fails, so a stuck run cannot block later scheduled runs under `Forbid` |
+| Retry | `restartPolicy: OnFailure` restarts the rotate container in place after a failed PATCH; the script restores the saved key set and repeats only the PATCH, or starts over when the production keys changed since it rotated |
 | ServiceAccount | `{name}-fernet-rotate` |
-| Init container | Copies keys from `fernet-keys-src` (Secret) to `fernet-keys` (emptyDir) |
 | Command | `/scripts/fernet_rotate.sh` |
-| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source, `defaultMode: 0400`) |
-| Volume `fernet-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) |
+| Volume `fernet-keys-src` | Secret `{name}-fernet-keys` (read-only source, `defaultMode: 0400`); mounted read-only at `/fernet-keys-src` in the rotate container |
+| Volume `fernet-keys` | emptyDir (writable working copy; the rotate script writes files with `install -m 0400`) |
 | Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config, `defaultMode: 0400`) |
 | Volume `config` | ConfigMap `{configMapName}` |
 | Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) |
+| Volume `rotation-state` | emptyDir at `/rotation-state` in the rotate container; holds the rotated key set and the digest of the production keys it came from across container restarts |
 | Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
 | Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
 
@@ -1672,11 +1711,14 @@ steps below.
 
 ![Staged rotation of Fernet keys in six numbered steps. The CronJob mounts the production Secret read-only, runs keystone-manage fernet_rotate on a copy and patches the result onto a staging Secret, the only Secret its Role may write. The keystone-operator validates the staged keys, replaces the data of the production Secret and deletes the staging Secret. A rejected payload raises the event RotationRejected, the staging data is cleared and the production Secret stays as it was. The kubelet projects the new keys into the running Keystone pods without a rollout, and a PushSecret copies them to OpenBao as a backup. Credential keys follow the same path with credential_rotate and credential_migrate.](../../diagrams/secrets-rotation-keys.svg)
 
-1. The kubelet mounts `{name}-fernet-keys` into the Job pod and an init
-   container copies it to an `emptyDir`.
+1. The kubelet mounts `{name}-fernet-keys` into the Job pod and the rotate
+   script copies it to an `emptyDir`.
 2. The Job runs `keystone-manage fernet_rotate` on the copy and sends one PATCH
    with the new `data` and the annotation
-   `cobaltcore.c5c3.io/rotation-completed-at`.
+   `cobaltcore.c5c3.io/rotation-completed-at`. A failed PATCH restarts the
+   container in the same pod; the retry restores the key set saved in the
+   `rotation-state` emptyDir and sends the PATCH again without rotating. When
+   the production keys changed in the meantime, the retry rotates them instead.
 3. The Secret watch wakes the operator, which checks key count, key format and
    uniqueness.
 4. A valid payload replaces the `data` of the production Secret in one
@@ -1704,6 +1746,7 @@ strategic-merge PATCH. Format: `datetime.datetime.now(datetime.timezone.utc).iso
 — an RFC3339 UTC timestamp such as `2026-04-18T12:34:56Z`. The operator
 treats the annotation as the **single-shot commit marker**: it never rewrites
 the production Secret unless the annotation is present and parses cleanly.
+A retried PATCH carries the same `data` and a new timestamp.
 
 **Operator validation rules.** Before copying staged data to production,
 `applyRotationOutput` calls `validateRotationOutput` (see
@@ -1808,21 +1851,27 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Pod labels | `commonLabels(keystone)` + `app.kubernetes.io/component=credential-rotation` |
 | Schedule | `spec.credentialKeys.rotationSchedule` |
 | Suspend | `spec.credentialKeys.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
+| Concurrency policy | `Forbid`: a scheduled run never starts while an earlier scheduled run is active; a manual Job (`kubectl create job --from=cronjob/...`) is not governed |
+| Active deadline | `activeDeadlineSeconds: 3600` on each Job: a Job still active after an hour fails, so a stuck run cannot block later scheduled runs under `Forbid` |
+| Retry | `restartPolicy: OnFailure` restarts the rotate container in place after a failed PATCH; the script restores the saved key set and repeats only the second `credential_migrate` and the PATCH, or starts over when the production keys changed since it rotated |
 | ServiceAccount | `{name}-credential-rotate` |
-| Init container | Copies keys from `credential-keys-src` (Secret) to `credential-keys` (emptyDir) |
 | Command | `/scripts/credential_rotate.sh` |
-| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source, `defaultMode: 0400`) |
-| Volume `credential-keys` | emptyDir (writable working copy; init container writes files with `install -m 0400`) |
+| Volume `credential-keys-src` | Secret `{name}-credential-keys` (read-only source, `defaultMode: 0400`); mounted read-only at `/credential-keys-src` in the rotate container |
+| Volume `credential-keys` | emptyDir (writable working copy; the rotate script writes files with `install -m 0400`) |
 | Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config, `defaultMode: 0400`) |
 | Volume `config` | ConfigMap `{configMapName}` |
 | Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) |
+| Volume `rotation-state` | emptyDir at `/rotation-state` in the rotate container; holds the rotated key set and the digest of the production keys it came from across container restarts |
 | Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
 | Rationale | Mirrors upstream Keystone's `keystone.common.fernet_utils._check_key_repository`, which logs a `WARNING` when the key directory or any key file is world-readable (`stat.S_IROTH`); pinning `defaultMode: 0400` plus `fsGroup: 42424` keeps the projected files group-readable to UID 42424 only and silences the warning |
 
-> **Note:** The `credential_rotate.sh` script runs both `credential_rotate` and
-> `credential_migrate`. The migrate step re-encrypts existing credentials in the
-> database with the new primary key, which is critical to prevent data loss when
-> old keys are eventually purged.
+> **Note:** The `credential_rotate.sh` script runs `credential_migrate`,
+> `credential_rotate` and `credential_migrate` again. `credential_rotate`
+> refuses while any credential is encrypted with a key other than the primary,
+> so the first migration puts such credentials under the production primary
+> key; with nothing to re-encrypt it writes nothing. The second migration
+> re-encrypts existing credentials in the database with the new primary key,
+> which is critical to prevent data loss when old keys are eventually purged.
 
 **PushSecret:**
 
@@ -1865,8 +1914,9 @@ the production `{name}-credential-keys` Secret.
 
 The [figure and its steps](#key-rotation-rbac-split) under
 `reconcileFernetKeys` apply with `credential` in every name. Step 2 runs
-`keystone-manage credential_migrate` against the database after
-`credential_rotate`.
+`keystone-manage credential_migrate`, `credential_rotate` and
+`credential_migrate` again: the first migration lets `credential_rotate` run,
+and the second re-encrypts the database under the new primary key.
 
 **Staging Secret naming.** Per `credentialStagingSecretName`, the staging
 Secret is `{keystone.Name}-credential-keys-rotation`. It is created and
@@ -1877,12 +1927,15 @@ owned by the operator via `ensureCredentialStagingSecret`:
 - Owner reference: the Keystone CR (garbage-collected with the CR).
 
 **Completion annotation contract.** `credential_rotate.sh` runs
-`keystone-manage credential_rotate` and then `keystone-manage credential_migrate`
-(in that order — migrate re-encrypts existing stored credentials with the new
-primary key) before emitting a single atomic PATCH that sets both `data`
-and the `cobaltcore.c5c3.io/rotation-completed-at` annotation (RFC3339 UTC, `Z`
-suffix). As with Fernet, the annotation is the single-shot commit marker;
-absence or malformed format blocks the operator's apply path.
+`keystone-manage credential_migrate`, `credential_rotate` and
+`credential_migrate` in that order. The first migration puts credentials left
+under another key under the production primary, because `credential_rotate`
+refuses otherwise; the second re-encrypts existing stored credentials with the
+new primary key. The script then emits a single atomic PATCH that sets both
+`data` and the `cobaltcore.c5c3.io/rotation-completed-at` annotation (RFC3339
+UTC, `Z` suffix). As with Fernet, the annotation is the single-shot commit
+marker; absence or malformed format blocks the operator's apply path. A
+retried PATCH carries the same `data` and a new timestamp.
 
 **Operator validation rules.** Identical to Fernet, with one parameter
 difference — `maxKeys=normalizedCredentialMaxActiveKeys(keystone)+1`:
@@ -1904,7 +1957,7 @@ database is re-encrypted with the new primary by the time the operator
 commits the Secret swap — no data loss when old keys age out.
 
 > **Key-rollover window.** There
-> is a ~60s window between `credential_migrate` completion and the kubelet
+> is a ~60s window between the second `credential_migrate` and the kubelet
 > refreshing the in-place Secret projection. During that window,
 > running Keystone pods still have the old credential keyset mounted —
 > database rows are already encrypted under the new primary, but the pods
@@ -2228,10 +2281,10 @@ The exec-form probes fork a shell plus a Python interpreter, which alone can
 consume the kubelet's 1-second default timeout — every exec probe therefore
 carries an explicit `timeoutSeconds` sitting above its inner connect/fetch
 timeout and below its own period. The liveness probe carries 10 seconds in
-both variants, the liveness timeout of every API front end: a single-worker
-uWSGI holds an HTTP check for the whole request in flight, and the kubelet's
-1-second default would restart a busy API. A TCP connect does not wait on the
-worker, so keystone takes the value to stay in line with the other front ends.
+both variants, the liveness timeout of every API front end. Every other uWSGI
+front end connects in its liveness probe too, because an HTTP check waits
+behind busy workers and restarted a healthy nova-api that waited on its
+dependencies.
 The liveness and readiness probes are intentionally separated. The liveness
 probe only verifies uWSGI is accepting connections, without exercising the
 database code path, so the kubelet does not kill pods during transient
@@ -2713,7 +2766,17 @@ at a fixed interval (`RequeueHealthCheck = 10s`).
 | `False` | `ConnectionFailed` | `"connection failed: {error}"` | 10s |
 | `False` | `HealthCheckFailed` | `"health check failed: {error}"` | 10s |
 | `False` | `APIUnhealthy` | `"Keystone API returned HTTP {status}"`, with `": {body}"` appended when the response carries a body | 10s |
-| `True` | `APIHealthy` | `"Keystone API is responding at {endpoint}"` | — |
+| `True` | `APIHealthy` | `"Keystone API is responding at {endpoint}"` | until the probe-cache entry expires (at most 30s) |
+
+**Re-probe:** A success and a cache hit return no requeue of their own. After the
+pipeline, `Reconcile` passes the result through `healthcheck.ScheduleReprobe`,
+which requeues a converged pass for the moment the Keystone's probe-cache entry
+expires, never sooner than 1s. That pass misses the cache and probes again. An
+API that stops answering therefore turns `KeystoneAPIReady` and `Ready` False
+within 40s (`HealthCheckCacheTTL` plus `HealthCheckTimeout`) plus one pass after
+the last good probe, whether or not an event arrives. The cost is one full
+reconcile per Ready Keystone every 30s. An error and a waiting step's requeue pass
+through unchanged.
 
 **Non-2xx body:** A failed probe appends a single-line excerpt of the response
 body, capped at 256 bytes, when the body is non-empty. A probe that ran through
@@ -2727,6 +2790,7 @@ status code alone does not say which of the two clusters is unhealthy.
 | --- | --- | --- |
 | `RequeueHealthCheck` | `10s` | Interval for requeuing on health check failure |
 | `HealthCheckTimeout` | `10s` | Bounded timeout for the HTTP health check request |
+| `HealthCheckCacheTTL` | `30s` | How long a successful probe is reused, and when a converged pass requeues to probe again |
 
 **Response body handling:** The HTTP response body is always closed via `defer
 resp.Body.Close()`, even on non-2xx responses. Go's `net/http` returns a non-nil

@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OVN central of the random chaos plane on kind (#1395), a copy of
+# tests/e2e/c5c3/full-controlplane-keystone/03-ovncentral-cr.yaml with every
+# controlplane-keystone name turned into controlplane. The ControlPlane's
+# services.neutron references it and never owns it; hack/chaos-random.sh up
+# applies it first.
+---
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: controlplane-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+  southbound:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+  northd:
+    deployment:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 50m
+  backup:
+    suspend: true

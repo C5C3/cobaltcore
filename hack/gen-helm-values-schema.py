@@ -361,6 +361,31 @@ EXTRA_ENV = {
     "default": [],
 }
 
+EXTRA_VOLUMES = {
+    "type": "array",
+    "description": "Extra pod volumes, each a Kubernetes Volume, appended verbatim after the webhook certificate volume",
+    "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}},
+    },
+    "default": [],
+}
+
+EXTRA_VOLUME_MOUNTS = {
+    "type": "array",
+    "description": "Extra volume mounts for the manager container, each a Kubernetes VolumeMount, appended verbatim after the webhook certificate mount",
+    "items": {
+        "type": "object",
+        "required": ["name", "mountPath"],
+        "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "mountPath": {"type": "string", "minLength": 1},
+        },
+    },
+    "default": [],
+}
+
 NAME_OVERRIDE = {
     "type": "string",
     "description": "Override the chart name used in resource names",
@@ -640,6 +665,8 @@ def build_schema(chart):
         "serviceAccount": SERVICE_ACCOUNT,
         "extraArgs": EXTRA_ARGS,
         "extraEnv": EXTRA_ENV,
+        "extraVolumes": EXTRA_VOLUMES,
+        "extraVolumeMounts": EXTRA_VOLUME_MOUNTS,
     }
     all_of = [RBAC_WEBHOOK_RULE, WEBHOOK_STANDALONE_RULE]
 

@@ -19,7 +19,10 @@
 #     hack/perf-token-baseline.sh, which shares the name prefix, is neither
 #     waited for nor deleted;
 #   - the nightly's CR_COUNTS="1 3" writes the six quantiles of both counts
-#     into one file, and the second count waits for and deletes all three CRs.
+#     into one file, and the second count waits for and deletes all three CRs;
+#   - no CR name and no database comes back in a later count, because the
+#     MariaDB User and Grant of a deleted CR outlive it and a re-created CR of
+#     the same name runs into their teardown.
 #
 # The fixture's end-to-end histogram has 5 reconciles in (0.005, 0.01] and 5
 # in (0.01, 0.025]; the sub-reconciler histogram has the same counts in both
@@ -47,8 +50,8 @@ STUB_BIN="$TMP_DIR/bin"
 mkdir -p "$STUB_BIN"
 
 # The stub kubectl keeps its state in $STUB_DIR: calls (one line per call),
-# applied.yaml (the last manifest applied) and applied (set while its CRs
-# exist).
+# applied.yaml (the last manifest applied), applied-all.yaml (every manifest
+# applied) and applied (set while its CRs exist).
 cat >"$STUB_BIN/kubectl" <<'SH'
 #!/bin/bash
 echo "$*" >>"$STUB_DIR/calls"
@@ -59,7 +62,10 @@ case "$args" in
   *" apply -f "*)
     prev=""
     for a in "$@"; do
-      if [ "$prev" = "-f" ]; then cp "$a" "$STUB_DIR/applied.yaml"; fi
+      if [ "$prev" = "-f" ]; then
+        cp "$a" "$STUB_DIR/applied.yaml"
+        cat "$a" >>"$STUB_DIR/applied-all.yaml"
+      fi
       prev="$a"
     done
     touch "$STUB_DIR/applied"
@@ -68,7 +74,7 @@ case "$args" in
     # The CR of hack/perf-token-baseline.sh shares the keystone-perf- prefix.
     echo "keystone.keystone.openstack.c5c3.io/keystone-perf-token"
     if [ -f "$STUB_DIR/applied" ]; then
-      sed -n 's|^  name: \(keystone-perf-[0-9]*\)$|keystone.keystone.openstack.c5c3.io/\1|p' "$STUB_DIR/applied.yaml"
+      sed -n 's|^  name: \(keystone-perf-[0-9]*-[0-9]*\)$|keystone.keystone.openstack.c5c3.io/\1|p' "$STUB_DIR/applied.yaml"
     fi
     ;;
   *" wait "*) exit 0 ;;
@@ -241,7 +247,7 @@ test_the_cr_is_deleted_after_the_scrapes() {
   local calls
   calls="$(cat "$TMP_DIR/state/calls")"
   assert_contains "the CR is deleted with --wait" "$calls" \
-    "-n openstack delete keystone.keystone.openstack.c5c3.io/keystone-perf-1 --wait=true --timeout=600s"
+    "-n openstack delete keystone.keystone.openstack.c5c3.io/keystone-perf-1-1 --wait=true --timeout=600s"
   assert_not_contains "the token measurement's CR is neither waited for nor deleted" "$calls" \
     "keystone.keystone.openstack.c5c3.io/keystone-perf-token"
   local last_curl first_delete
@@ -275,9 +281,27 @@ test_result_json_merges_two_counts() {
   local calls
   calls="$(cat "$TMP_DIR/state/calls")"
   assert_contains "the three CRs of the second count are waited for" "$calls" \
-    "wait --for=condition=Ready --timeout=600s keystone.keystone.openstack.c5c3.io/keystone-perf-1 keystone.keystone.openstack.c5c3.io/keystone-perf-2 keystone.keystone.openstack.c5c3.io/keystone-perf-3"
+    "wait --for=condition=Ready --timeout=600s keystone.keystone.openstack.c5c3.io/keystone-perf-3-1 keystone.keystone.openstack.c5c3.io/keystone-perf-3-2 keystone.keystone.openstack.c5c3.io/keystone-perf-3-3"
   assert_contains "and deleted" "$calls" \
-    "delete keystone.keystone.openstack.c5c3.io/keystone-perf-1 keystone.keystone.openstack.c5c3.io/keystone-perf-2 keystone.keystone.openstack.c5c3.io/keystone-perf-3 --wait=true"
+    "delete keystone.keystone.openstack.c5c3.io/keystone-perf-3-1 keystone.keystone.openstack.c5c3.io/keystone-perf-3-2 keystone.keystone.openstack.c5c3.io/keystone-perf-3-3 --wait=true"
+}
+
+test_no_name_comes_back_in_a_later_count() {
+  echo "Test: no CR name and no database comes back in a later count"
+
+  bench CR_COUNTS="1 3"
+  local manifest="$TMP_DIR/state/applied-all.yaml"
+  if [ ! -f "$manifest" ]; then
+    echo "  FAIL: no manifest was applied"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  assert_eq "four CRs were applied over both counts" "4" \
+    "$(grep -c '^  name: keystone-perf-' "$manifest")"
+  assert_eq "no CR name is applied twice" "" \
+    "$(grep '^  name: keystone-perf-' "$manifest" | sort | uniq -d)"
+  assert_eq "no database is applied twice" "" \
+    "$(grep '^    database: keystone_perf_' "$manifest" | sort | uniq -d)"
 }
 
 test_report_without_result_json_is_unchanged
@@ -287,6 +311,7 @@ test_a_comma_decimal_locale_keeps_decimal_points
 test_the_cr_sets_replicas_under_spec_deployment
 test_the_cr_is_deleted_after_the_scrapes
 test_result_json_merges_two_counts
+test_no_name_comes_back_in_a_later_count
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

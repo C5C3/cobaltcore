@@ -10,6 +10,8 @@
 #
 # Installs CRDs, waits for establishment, and deploys the operator via Helm
 # with the specified container image into NAMESPACE (default: keystone-system).
+# With HELM_UPGRADE=true it upgrades an existing release instead, after the
+# same CRD apply and with the same --set list.
 #
 # Required env vars:
 #   OPERATOR    — Operator name (e.g. keystone)
@@ -19,7 +21,21 @@
 #   IMAGE_TAG          — Image tag (default: dev)
 #   NAMESPACE          — Release Namespace for the operator (default:
 #                        keystone-system). The Namespace is created on demand
-#                        via `helm install --create-namespace`.
+#                        via `helm install --create-namespace`; an upgrade
+#                        (HELM_UPGRADE=true) expects the release's Namespace
+#                        to exist.
+#   HELM_UPGRADE       — "true" runs `helm upgrade` on the existing
+#                        ${OPERATOR}-operator release instead of `helm
+#                        install`, after the same server-side CRD apply and
+#                        with the same --set list (barbican grants included),
+#                        so an upgrade re-passes the values the install
+#                        passed. Empty or "false" (the default) installs.
+#                        Any other value fails before anything is applied. An
+#                        upgrade of a release that does not exist fails with
+#                        Helm's "has no deployed releases". The operator
+#                        upgrade suites under tests/e2e-operator-upgrade/ use
+#                        it, except keystone's, whose step 3 runs its own
+#                        `helm upgrade` with its own --set list.
 #   WITH_PROMETHEUS    — When "true", enables the chart's gated ServiceMonitor
 #                        template via --set monitoring.serviceMonitor.enabled=true
 #                        (default: false). Used by the e2e-prometheus CI job
@@ -74,6 +90,21 @@
 #                        CHART_DIR baseline older than the value) gets no
 #                        --set, because its additionalProperties:false values
 #                        schema rejects the unknown key.
+#   E2E_COVERAGE       — "true" to collect the Go coverage counters of a
+#                        coverage-instrumented operator image (default:
+#                        false; empty means false, any other value fails
+#                        before anything is applied). The helper creates
+#                        COVERAGE_NODE_DIR/OPERATOR with mode 1777 on every
+#                        node of the kind cluster and passes extraVolumes,
+#                        extraVolumeMounts and extraEnv: a hostPath volume of
+#                        that directory, mounted at /coverage, and
+#                        GOCOVERDIR=/coverage. It needs a chart whose
+#                        values.schema.json names extraVolumes
+#                        (operator-library 0.12.0 or later) and fails on any
+#                        other. hack/ci-collect-e2e-coverage.sh reads the
+#                        counters back.
+#   KIND_CLUSTER       — The kind cluster whose nodes get the counter
+#                        directory (default: cobaltcore).
 #
 # Reusable operator deployment script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -103,6 +134,12 @@ if [[ -n "${OPERATOR_REPLICAS}" ]] && [[ ! "${OPERATOR_REPLICAS}" =~ ^[1-9][0-9]
   echo "::error::OPERATOR_REPLICAS='${OPERATOR_REPLICAS}' is not a positive integer"
   exit 1
 fi
+HELM_UPGRADE="${HELM_UPGRADE:-false}"
+# Checked before anything is applied, like the count above.
+if [[ "${HELM_UPGRADE}" != "true" ]] && [[ "${HELM_UPGRADE}" != "false" ]]; then
+  echo "::error::HELM_UPGRADE must be true or false (got: '${HELM_UPGRADE}')"
+  exit 1
+fi
 DEFAULT_IMAGE_PULL_POLICY="${DEFAULT_IMAGE_PULL_POLICY:-IfNotPresent}"
 case "${DEFAULT_IMAGE_PULL_POLICY}" in
   Always | IfNotPresent | Never) ;;
@@ -111,6 +148,16 @@ case "${DEFAULT_IMAGE_PULL_POLICY}" in
     exit 1
     ;;
 esac
+E2E_COVERAGE="${E2E_COVERAGE:-false}"
+case "${E2E_COVERAGE}" in
+  true | false) ;;
+  *)
+    echo "::error::E2E_COVERAGE='${E2E_COVERAGE}' is not true or false"
+    exit 1
+    ;;
+esac
+COVERAGE_NODE_DIR=/var/lib/cobaltcore-coverage
+KIND_CLUSTER="${KIND_CLUSTER:-cobaltcore}"
 # dedicated release Namespace for the operator. The Keystone workload
 # CRs themselves are still reconciled in the `openstack` Namespace.
 NAMESPACE="${NAMESPACE:-keystone-system}"
@@ -120,6 +167,35 @@ NAMESPACE="${NAMESPACE:-keystone-system}"
 # below are stable regardless of how the caller passes it.
 CHART_PATH="${CHART_DIR:-operators/${OPERATOR}/helm/${OPERATOR}-operator}"
 CHART_PATH="${CHART_PATH%/}"
+
+# ---------------------------------------------------------------------------
+# 0. Coverage counter directory (E2E_COVERAGE=true)
+# ---------------------------------------------------------------------------
+# The counters go to a hostPath on the node rather than an emptyDir, because a
+# chaos pod-kill deletes the pod and its emptyDir with it. The kubelet would
+# create a missing hostPath directory owned by root, which the manager (uid
+# 65532) cannot write, so each node gets the directory with mode 1777 first.
+# A chart without extraVolumes fails here: skipping the volume would leave a
+# leg that reports no coverage and says nothing.
+coverage_dir="${COVERAGE_NODE_DIR}/${OPERATOR}"
+if [[ "${E2E_COVERAGE}" == "true" ]]; then
+  if ! grep -qs extraVolumes "${CHART_PATH}/values.schema.json"; then
+    echo "::error::E2E_COVERAGE=true needs a chart with extraVolumes (operator-library 0.12.0 or later); ${CHART_PATH} has none"
+    exit 1
+  fi
+  nodes=$(kind get nodes --name "${KIND_CLUSTER}" 2>/dev/null || true)
+  if [[ -z "${nodes}" ]]; then
+    echo "::error::E2E_COVERAGE=true but kind cluster ${KIND_CLUSTER} has no nodes"
+    exit 1
+  fi
+  for node in ${nodes}; do
+    # shellcheck disable=SC2016 # $1 expands in the node's shell.
+    if ! docker exec "${node}" sh -c 'mkdir -p "$1" && chmod 1777 "$1"' _ "${coverage_dir}"; then
+      echo "::error::cannot create ${coverage_dir} on node ${node}"
+      exit 1
+    fi
+  done
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Install CRDs (idempotent — kubectl apply succeeds if already present)
@@ -170,6 +246,7 @@ fi
 echo "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to enable ServiceMonitor)"
 echo "Metadata allow CIDRs: ${FEDERATION_METADATA_ALLOW_CIDRS:-<none>} (set FEDERATION_METADATA_ALLOW_CIDRS to allow in-cluster IdP discovery)"
 echo "Operator replicas   : ${OPERATOR_REPLICAS:-<chart default>} (set OPERATOR_REPLICAS to override the chart's replicas)"
+echo "Helm upgrade        : ${HELM_UPGRADE} (set HELM_UPGRADE=true to upgrade the existing release)"
 # A released chart that predates controller.defaultImagePullPolicy rejects the
 # key, so the value is passed only where the chart's schema names it.
 chart_pull_policy=""
@@ -177,6 +254,7 @@ if grep -qs defaultImagePullPolicy "${CHART_PATH}/values.schema.json"; then
   chart_pull_policy="${DEFAULT_IMAGE_PULL_POLICY}"
 fi
 echo "Image pull policy   : ${chart_pull_policy:-<chart has no such value>} (set DEFAULT_IMAGE_PULL_POLICY to override the operator default)"
+echo "E2E coverage        : ${E2E_COVERAGE} (set E2E_COVERAGE=true to collect operator coverage)"
 helm_args=(
   --set "image.repository=${IMAGE_REPO}"
   --set "image.tag=${IMAGE_TAG}"
@@ -190,6 +268,15 @@ if [[ -n "${OPERATOR_REPLICAS}" ]]; then
 fi
 if [[ -n "${chart_pull_policy}" ]]; then
   helm_args+=(--set "controller.defaultImagePullPolicy=${chart_pull_policy}")
+fi
+# type Directory fails the pod at start when the node directory is missing,
+# instead of dropping the counters.
+if [[ "${E2E_COVERAGE}" == "true" ]]; then
+  helm_args+=(
+    --set-json "extraVolumes=[{\"name\":\"coverage\",\"hostPath\":{\"path\":\"${coverage_dir}\",\"type\":\"Directory\"}}]"
+    --set-json 'extraVolumeMounts=[{"name":"coverage","mountPath":"/coverage"}]'
+    --set-json 'extraEnv=[{"name":"GOCOVERDIR","value":"/coverage"}]'
+  )
 fi
 # When set, allowlist those CIDRs on the operator's federation-metadata SSRF
 # dial guard (chart value federation.metadataAllowCidrs) so it may fetch an
@@ -232,12 +319,22 @@ if [[ "${OPERATOR}" == "barbican" ]] && [[ -n "${BARBICAN_SECRET_STORE_GRANTS}" 
   done
 fi
 
-helm install "${OPERATOR}-operator" \
-  "${CHART_PATH}/" \
-  --namespace "${NAMESPACE}" \
-  --create-namespace \
-  "${helm_args[@]}" \
-  --wait --timeout 120s
+# An upgrade takes the same arguments as the install apart from
+# --create-namespace: the release, and with it its Namespace, already exists.
+if [[ "${HELM_UPGRADE}" == "true" ]]; then
+  helm upgrade "${OPERATOR}-operator" \
+    "${CHART_PATH}/" \
+    --namespace "${NAMESPACE}" \
+    "${helm_args[@]}" \
+    --wait --timeout 120s
+else
+  helm install "${OPERATOR}-operator" \
+    "${CHART_PATH}/" \
+    --namespace "${NAMESPACE}" \
+    --create-namespace \
+    "${helm_args[@]}" \
+    --wait --timeout 120s
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Wait for admission webhook to accept traffic

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos killing the plane's MariaDB while the Keystone's db-sync Job runs.
+# The plane's database is the MariaDB CR openstack-db in the suite's
+# namespace, a single instance under the Minimal profile, whose pods the
+# mariadb-operator labels app.kubernetes.io/name: mariadb. mode: all with
+# gracePeriod: 0 kills it without a clean shutdown, so the db-sync connection
+# breaks in the middle of the schema migration; the StatefulSet starts the pod
+# again on its volume. @NS@ is replaced with the suite's namespace, so the
+# selector matches this plane's MariaDB and no other.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-cp-mariadb
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - "@NS@"
+    labelSelectors:
+      app.kubernetes.io/name: mariadb
+  gracePeriod: 0

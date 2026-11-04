@@ -247,6 +247,10 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			// latch false, a VPA on the target cluster can only come from the
 			// target's own probe.
 			r.vpaAvailable = false
+			// The re-probe stays off: the drift subtests below prove the remote
+			// watch legs, and a requeue at the probe-cache expiry would repair
+			// their drift with no watch involved.
+			r.healthProbeCache.NoReprobe = true
 			reconciler = r
 			return nil
 		},
@@ -778,10 +782,11 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		// would repair the drift on a timer with no watch involved. At Ready
 		// every sub-reconciler returns a zero result, so the pipeline asks for
 		// no requeue at all: the fernet and credential rotation cadences live in
-		// CronJobs on the target cluster, and the health probe serves from its
-		// TTL cache and returns zero too. Nothing wakes this CR inside the
-		// budget below except an event. Take the remote child leg away and this
-		// subtest sits out the full budget and fails.
+		// CronJobs on the target cluster, the health probe serves from its TTL
+		// cache and returns zero too, and RegisterController turned the re-probe
+		// at the cache expiry off. Nothing wakes this CR inside the budget below
+		// except an event. Take the remote child leg away and this subtest sits
+		// out the full budget and fails.
 		multiclusterEnsureNamespace(t, ctx, mgmtClient, driftNamespace)
 		multiclusterEnsureNamespace(t, ctx, targetClient, driftNamespace)
 		createPrerequisites(t, ctx, targetClient, driftNamespace)

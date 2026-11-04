@@ -1,0 +1,843 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The fault catalogue of the random chaos runs (#1395): one entry per distinct
+# fault of the chaos suites, keyed by fault. tests/chaos-random/draw.py draws
+# from it and renders the drawn entries as one Chaos Mesh Workflow, which
+# hack/chaos-random.sh applies under dizzy load (see the section Random runs
+# of docs/reference/testing/chaos-e2e-tests.md).
+#
+# Every entry holds:
+#   name          ^[a-z0-9]([-a-z0-9]{0,40}[a-z0-9])?$, unique
+#   kind          PodChaos or NetworkChaos
+#   environments  where the runner may draw it: ci, lab or both
+#   duration      the template deadline, how long the fault holds: 30s for a
+#                 pod-kill, 120s for a pod-failure, partition or delay
+#   recovery      the bound after the lift within which the plane recovers:
+#                 the # Chaos budget: recovery of the suites that name the
+#                 entry, the largest of them, and 60s at least; an entry of a
+#                 lab fault takes the bound of that fault's gate
+#   source        only on an entry no suite names: the lab fault it stands for
+#   spec          the Chaos Mesh spec without duration
+#
+# @CP@ and @NS@ stand for the ControlPlane's name and namespace. A projected
+# child is named <cp>-<service>, so its pods carry the instance label
+# @CP@-<service>; the shared infrastructure and the platform carry the same
+# labels on kind and on the lab. hack/chaos-random.sh preflight proves that
+# every entry of the environment selects a pod.
+#
+# Every suite header under tests/e2e-chaos/ names the entries of its faults in
+# `# Chaos random: <entry>` lines, or carries one
+# `# Chaos random: none (<reason>)` line. No NetworkChaos selects a hostNetwork
+# workload (libvirt, novacompute, ovnchassis, neutronmetadataagent,
+# migration-port-reservation). tests/unit/ci/chaos_random_catalogue_test.sh
+# checks all of it.
+
+# --- The operators ---------------------------------------------------------
+- name: keystone-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [keystone-system]
+      labelSelectors:
+        app.kubernetes.io/name: keystone-operator
+- name: keystone-operator-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: [keystone-system]
+      labelSelectors:
+        app.kubernetes.io/name: keystone-operator
+- name: horizon-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [horizon-system]
+      labelSelectors:
+        app.kubernetes.io/name: horizon-operator
+- name: glance-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [glance-system]
+      labelSelectors:
+        app.kubernetes.io/name: glance-operator
+- name: placement-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [placement-system]
+      labelSelectors:
+        app.kubernetes.io/name: placement-operator
+- name: barbican-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [barbican-system]
+      labelSelectors:
+        app.kubernetes.io/name: barbican-operator
+- name: neutron-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [neutron-system]
+      labelSelectors:
+        app.kubernetes.io/name: neutron-operator
+- name: ovn-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [ovn-system]
+      labelSelectors:
+        app.kubernetes.io/name: ovn-operator
+- name: cinder-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [cinder-system]
+      labelSelectors:
+        app.kubernetes.io/name: cinder-operator
+- name: nova-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [nova-system]
+      labelSelectors:
+        app.kubernetes.io/name: nova-operator
+- name: c5c3-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: [c5c3-system]
+      labelSelectors:
+        app.kubernetes.io/name: c5c3-operator
+
+# --- Keystone --------------------------------------------------------------
+- name: keystone-api-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: keystone
+        app.kubernetes.io/instance: "@CP@-keystone"
+        app.kubernetes.io/component: api
+- name: keystone-api-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 180s
+  spec:
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: keystone
+        app.kubernetes.io/instance: "@CP@-keystone"
+        app.kubernetes.io/component: api
+
+# --- MariaDB ---------------------------------------------------------------
+- name: mariadb-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+- name: mariadb-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 70s
+  spec:
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+- name: mariadb-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 70s
+  spec:
+    action: pod-kill
+    mode: all
+    selector:
+      namespaces: [mariadb-system]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb-operator
+- name: keystone-mariadb-delay
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: delay
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: keystone
+        app.kubernetes.io/instance: "@CP@-keystone"
+        app.kubernetes.io/component: api
+    direction: to
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: mariadb
+          app.kubernetes.io/instance: openstack-db
+    delay:
+      latency: 300ms
+- name: keystone-mariadb-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: keystone
+          app.kubernetes.io/instance: "@CP@-keystone"
+          app.kubernetes.io/component: api
+- name: glance-mariadb-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 90s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: glance
+          app.kubernetes.io/instance: "@CP@-glance"
+          app.kubernetes.io/component: api
+- name: placement-mariadb-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 90s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: placement
+          app.kubernetes.io/instance: "@CP@-placement"
+          app.kubernetes.io/component: api
+- name: barbican-mariadb-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 90s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: barbican
+          app.kubernetes.io/instance: "@CP@-barbican"
+          app.kubernetes.io/component: api
+- name: neutron-mariadb-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: neutron
+          app.kubernetes.io/instance: "@CP@-neutron"
+          app.kubernetes.io/component: api
+- name: cinder-mariadb-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 90s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: cinder
+          app.kubernetes.io/instance: "@CP@-cinder"
+          app.kubernetes.io/component: api
+- name: nova-mariadb-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: mariadb
+        app.kubernetes.io/instance: openstack-db
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: nova
+          app.kubernetes.io/instance: "@CP@-nova"
+          app.kubernetes.io/component: api
+
+# --- Memcached -------------------------------------------------------------
+- name: memcached-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: memcached
+        app.kubernetes.io/instance: openstack-memcached
+- name: keystone-memcached-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: memcached
+        app.kubernetes.io/instance: openstack-memcached
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: keystone
+          app.kubernetes.io/instance: "@CP@-keystone"
+          app.kubernetes.io/component: api
+
+# --- RabbitMQ: the broker by its component label, which the cluster operator
+# --- sets on every RabbitmqCluster's pods, the kind broker shared-rabbitmq and
+# --- the lab's projected one alike.
+- name: rabbitmq-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 210s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/component: rabbitmq
+- name: rabbitmq-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/component: rabbitmq
+- name: rabbitmq-operator-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: all
+    selector:
+      namespaces: [rabbitmq-system]
+      labelSelectors:
+        app.kubernetes.io/name: rabbitmq-cluster-operator
+- name: neutron-rabbitmq-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/component: rabbitmq
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: neutron
+          app.kubernetes.io/instance: "@CP@-neutron"
+        expressionSelectors:
+          - key: batch.kubernetes.io/job-name
+            operator: DoesNotExist
+- name: cinder-rabbitmq-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/component: rabbitmq
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: cinder
+          app.kubernetes.io/instance: "@CP@-cinder"
+        expressionSelectors:
+          - key: batch.kubernetes.io/job-name
+            operator: DoesNotExist
+- name: nova-rabbitmq-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/component: rabbitmq
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: nova
+          app.kubernetes.io/instance: "@CP@-nova"
+        expressionSelectors:
+          - key: batch.kubernetes.io/job-name
+            operator: DoesNotExist
+
+# --- Backends --------------------------------------------------------------
+- name: glance-garage-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: [shared-services]
+      labelSelectors:
+        garage.rajsingh.info/cluster: garage
+        garage.rajsingh.info/tier: storage
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: glance
+          app.kubernetes.io/instance: "@CP@-glance"
+        expressionSelectors:
+          - key: batch.kubernetes.io/job-name
+            operator: DoesNotExist
+- name: barbican-openbao-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: openbao
+        openbao.org/cluster: "@CP@-barbican-bao"
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: barbican
+          app.kubernetes.io/instance: "@CP@-barbican"
+          app.kubernetes.io/component: api
+- name: nova-placement-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: placement
+        app.kubernetes.io/instance: "@CP@-placement"
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: ["@NS@"]
+        labelSelectors:
+          app.kubernetes.io/name: nova
+          app.kubernetes.io/instance: "@CP@-nova"
+          app.kubernetes.io/component: scheduler
+
+# --- Service pods ----------------------------------------------------------
+- name: cinder-volume-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 210s
+  spec:
+    action: pod-kill
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: cinder
+        app.kubernetes.io/instance: "@CP@-cinder"
+        app.kubernetes.io/component: volume-nfs1
+- name: horizon-dashboard-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: horizon
+        app.kubernetes.io/instance: "@CP@-horizon"
+        app.kubernetes.io/component: api
+- name: neutron-metadata-agent-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: neutronmetadataagent
+- name: ovn-southbound-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: ovncentral
+        app.kubernetes.io/instance: "@CP@-ovn"
+        app.kubernetes.io/component: sb
+
+# --- The platform ----------------------------------------------------------
+- name: cert-manager-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: [cert-manager]
+      labelSelectors:
+        app.kubernetes.io/name: cert-manager
+        app.kubernetes.io/component: controller
+- name: envoy-gateway-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: [envoy-gateway-system]
+      labelSelectors:
+        control-plane: envoy-gateway
+- name: eso-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: all
+    selector:
+      namespaces: [external-secrets]
+      labelSelectors:
+        app.kubernetes.io/name: external-secrets
+- name: envoy-proxy-pod-kill
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: all
+    selector:
+      namespaces: [envoy-gateway-system]
+      labelSelectors:
+        gateway.envoyproxy.io/owning-gateway-name: openstack-gw
+- name: korc-pod-failure
+  kind: PodChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: pod-failure
+    mode: all
+    selector:
+      namespaces: [orc-system]
+      labelSelectors:
+        control-plane: controller-manager
+- name: korc-keystone-partition
+  kind: NetworkChaos
+  environments: [ci, lab]
+  duration: 120s
+  recovery: 60s
+  spec:
+    action: partition
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: keystone
+        app.kubernetes.io/instance: "@CP@-keystone"
+        app.kubernetes.io/component: api
+    direction: both
+    target:
+      mode: all
+      selector:
+        namespaces: [orc-system]
+        labelSelectors:
+          control-plane: controller-manager
+
+# --- Compute: the fake compute of the kind plane, and the lab's hypervisor
+# --- pods of the fault runs F1 to F4.
+- name: nova-fake-compute-pod-kill
+  kind: PodChaos
+  environments: [ci]
+  duration: 30s
+  recovery: 60s
+  spec:
+    action: pod-kill
+    mode: all
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: nova-fake-compute
+        app.kubernetes.io/instance: "@CP@-nova"
+- name: nova-compute-pod-kill
+  kind: PodChaos
+  environments: [lab]
+  duration: 30s
+  recovery: 600s
+  source: lab F2
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: novacompute
+        app.kubernetes.io/component: nova-compute
+- name: libvirt-pod-kill
+  kind: PodChaos
+  environments: [lab]
+  duration: 30s
+  recovery: 600s
+  source: lab F1
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: libvirt
+- name: ovn-controller-pod-kill
+  kind: PodChaos
+  environments: [lab]
+  duration: 30s
+  recovery: 600s
+  source: lab F3
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: ovnchassis
+        app.kubernetes.io/component: ovn-controller
+- name: nfs-server-pod-kill
+  kind: PodChaos
+  environments: [lab]
+  duration: 30s
+  recovery: 900s
+  source: lab F4
+  spec:
+    action: pod-kill
+    mode: one
+    selector:
+      namespaces: ["@NS@"]
+      labelSelectors:
+        app.kubernetes.io/name: nfs-server

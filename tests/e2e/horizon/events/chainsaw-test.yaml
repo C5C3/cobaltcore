@@ -1,0 +1,184 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the events the Horizon operator records on a CR whose
+# children stay on the local cluster: one Warning, ExtraConfigOwnedKeyOverride,
+# from the extraConfig ownership guard (internal/common/config/ownership.go).
+# The guard records it when ExtraConfigHealthy turns False or its message
+# changes, never on the reconcile poll. Both overrides below carry the values
+# the operator renders, so local_settings.py, the ConfigMap and the Deployment
+# stay unchanged and only the guard reacts.
+#
+#   1. Without extraConfig: Ready=True, ExtraConfigHealthy=True, no event.
+#   2. Override WEBROOT: ExtraConfigHealthy=False with the key in its message,
+#      Ready stays True (the condition is not part of Ready), and one Warning
+#      event carries that message.
+#   3. Override STATIC_ROOT as well: the message lists both keys, sorted and
+#      joined by "; ", and a second Warning event carries it.
+#   4. With the overrides in place the CR stays quiet for 120 s
+#      (../../lib/assert-steady-state-events.sh).
+#   5. Clear extraConfig: ExtraConfigHealthy=True again, and the events are
+#      the two Warnings of steps 2 and 3 and nothing else, each at count 1:
+#      the correlator records a repeat as a higher count on the same Event.
+#
+# RemoteChildrenAbandoned, the other Warning, needs a target cluster that
+# stays unresolvable past the abandon window, which the e2e-multicluster
+# stack owns.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-events
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+    exec: 5m
+  steps:
+  # ── Step 1: No override, no event ──────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-horizon-cr.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-events
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (conditions[?type == 'ExtraConfigHealthy']):
+            - status: "True"
+              reason: NoOwnedKeysOverridden
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./events-helpers.sh
+          EVENTS=$(override_events)
+          if [ -n "$EVENTS" ]; then
+            echo "FAIL: ExtraConfigOwnedKeyOverride events before any override:"
+            echo "$EVENTS"
+            exit 1
+          fi
+          echo "OK: no ExtraConfigOwnedKeyOverride event before any override"
+    catch: &dump
+    - script:
+        content: |
+          echo "=== Horizon CR status ==="
+          kubectl get horizon horizon-events -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Dashboard pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=horizon-events -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 2>&1 || true
+  # ── Step 2: Override WEBROOT ───────────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-override-webroot.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-events
+            namespace: openstack
+          status:
+            (conditions[?type == 'ExtraConfigHealthy']):
+            - status: "False"
+              reason: OwnedKeysOverridden
+              message: "spec.extraConfig overrides operator-owned keys: WEBROOT"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 90s
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./events-helpers.sh
+          wait_override_event 'spec.extraConfig overrides operator-owned keys: WEBROOT'
+    catch: *dump
+  # ── Step 3: Override STATIC_ROOT as well ───────────────────────────────
+  - try:
+    - patch:
+        file: 02-patch-override-static-root.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-events
+            namespace: openstack
+          status:
+            (conditions[?type == 'ExtraConfigHealthy']):
+            - status: "False"
+              reason: OwnedKeysOverridden
+              message: "spec.extraConfig overrides operator-owned keys: STATIC_ROOT; WEBROOT"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 90s
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./events-helpers.sh
+          wait_override_event 'spec.extraConfig overrides operator-owned keys: STATIC_ROOT; WEBROOT'
+    catch: *dump
+  # ── Step 4: The override in place records no further event ─────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # The guard records an event only when the overridden-key set changes, so
+  # an event in the window is a defect of the operator or of this suite.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack horizons.horizon.openstack.c5c3.io horizon-events
+    catch: *dump
+  # ── Step 5: Clear the overrides ────────────────────────────────────────
+  - try:
+    - patch:
+        file: 03-patch-clear-overrides.yaml
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: horizon-events
+            namespace: openstack
+          status:
+            (conditions[?type == 'ExtraConfigHealthy']):
+            - status: "True"
+              reason: NoOwnedKeysOverridden
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          . ./events-helpers.sh
+          EXPECTED="$(printf 'Warning\t1\t%s\n' \
+            'spec.extraConfig overrides operator-owned keys: STATIC_ROOT; WEBROOT' \
+            'spec.extraConfig overrides operator-owned keys: WEBROOT' | LC_ALL=C sort)"
+          GOT="$(override_events | LC_ALL=C sort)"
+          if [ "$GOT" != "$EXPECTED" ]; then
+            echo "FAIL: the ExtraConfigOwnedKeyOverride events are not the two of steps 2 and 3, recorded once each"
+            echo "--- expected ---"
+            echo "$EXPECTED"
+            echo "--- got ---"
+            echo "$GOT"
+            exit 1
+          fi
+          echo "OK: exactly the two Warning events of steps 2 and 3, count 1 each"
+    catch: *dump

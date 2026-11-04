@@ -37,6 +37,13 @@
 # back to True before the assert can observe the degraded state — which is
 # exactly how the previous revision failed. 600s sits above the 8m detect
 # window (see chainsaw-test.yaml) with margin.
+#
+# The target leaves out Job pods: every Job pod carries
+# batch.kubernetes.io/job-name, and no API pod does. The trust-flush CronJob of
+# every Keystone in the namespace runs hourly and labels its pods
+# app.kubernetes.io/name=keystone. Chaos Mesh cannot inject into a completed
+# pod ("pod not running"), so with such a pod in the target AllInjected never
+# turns True once any Keystone's CronJob has run.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
@@ -58,4 +65,7 @@ spec:
         - openstack
       labelSelectors:
         app.kubernetes.io/name: keystone
+      expressionSelectors:
+        - key: batch.kubernetes.io/job-name
+          operator: DoesNotExist
   duration: "600s"

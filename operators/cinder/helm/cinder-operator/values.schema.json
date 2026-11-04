@@ -359,6 +359,45 @@
       },
       "default": []
     },
+    "extraVolumes": {
+      "type": "array",
+      "description": "Extra pod volumes, each a Kubernetes Volume, appended verbatim after the webhook certificate volume",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "default": []
+    },
+    "extraVolumeMounts": {
+      "type": "array",
+      "description": "Extra volume mounts for the manager container, each a Kubernetes VolumeMount, appended verbatim after the webhook certificate mount",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "mountPath"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mountPath": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "default": []
+    },
     "networkPolicy": {
       "type": "object",
       "description": "NetworkPolicy for operator pod egress/ingress restriction. Opt-in via enabled=true.",

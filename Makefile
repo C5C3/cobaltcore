@@ -469,6 +469,20 @@ gen-helm-schema:
 verify-helm-schema:
 	python3 hack/gen-helm-values-schema.py --check
 
+.PHONY: gen-chaos-matrix
+# gen-chaos-matrix regenerates the component x role matrix and the suite table
+# of docs/reference/testing/chaos-e2e-tests.md from the `# Chaos matrix:`,
+# `# Chaos scenario:` and `# Chaos budget:` lines of the chaos suite headers.
+# Run it after a header change.
+gen-chaos-matrix:
+	hack/gen-chaos-matrix.sh
+
+.PHONY: verify-chaos-matrix
+# verify-chaos-matrix fails if the generated tables of the chaos page have
+# drifted from the suite headers.
+verify-chaos-matrix:
+	hack/gen-chaos-matrix.sh --check
+
 .PHONY: verify-helm-released-values
 # verify-helm-released-values renders every operator chart with the values.yaml
 # of its released chart (the highest tag under oci://ghcr.io/c5c3/charts) and
@@ -719,10 +733,13 @@ e2e-chaos:
 # This Makefile target also satisfies the CI-to-Makefile parity expected
 # by .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
 # developers can reproduce the e2e-prometheus CI job locally without reading YAML.
+# Like the CI job, it needs both operators deployed with
+# WITH_PROMETHEUS=true hack/ci-deploy-operator.sh: keystone into its default
+# keystone-system, horizon with NAMESPACE=horizon-system.
 e2e-prometheus:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@kubectl get ns monitoring >/dev/null 2>&1 || { echo 'kube-prometheus-stack is not installed; run `WITH_PROMETHEUS=true make deploy-infra` first' >&2; exit 1; }
-	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/prometheus-stack/ tests/e2e/horizon/prometheus-stack/
 
 .PHONY: e2e-controlplane
 # e2e-controlplane runs the full ControlPlane -> Keystone chain Chainsaw suite
@@ -740,7 +757,7 @@ e2e-prometheus:
 # E2E_REQUIRE_CONTROLPLANE_STACK=true to make the suite's presence guard fail
 # loudly (as the CI job does) rather than SKIP.
 #
-# The four suites run as separate invocations, as they do in CI: the shared
+# The ten suites run as separate invocations, as they do in CI: the shared
 # chainsaw config sets failFast, so a red registration suite would otherwise
 # abort the full-chain suite, and running them in sequence also keeps their
 # identity planes from converging on one node at the same time.
@@ -751,6 +768,12 @@ e2e-controlplane:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-keystone-service tests/e2e/c5c3/keystone-service-foreign-namespace/
 	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-keystone-user tests/e2e/c5c3/keystone-user/
 	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-keystone-service-own-namespace tests/e2e/c5c3/keystone-service/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-controlplane-healthcheck tests/e2e/c5c3/healthcheck/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-controlplane-pod-security-restricted tests/e2e/c5c3/pod-security-restricted/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-admin-password-scoping tests/e2e/c5c3/admin-password-scoping/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-db-credential-scoping tests/e2e/c5c3/db-credential-scoping/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-multi-controlplane tests/e2e/c5c3/multi-controlplane/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-deletion-orchestration tests/e2e/c5c3/deletion-orchestration/
 
 .PHONY: e2e-external-keystone
 # e2e-external-keystone runs the External-mode ControlPlane suite against a plain
@@ -825,14 +848,21 @@ e2e-autoscaling:
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e-autoscaling/
 
 .PHONY: e2e-operator-upgrade
-# e2e-operator-upgrade runs the keystone-operator helm-upgrade-in-place suite:
-# it fetches the last released chart+image from GHCR, installs it as the
-# baseline, then `helm upgrade`s to the locally built chart+CRDs and asserts the
-# deployed Keystone survives (Ready persists, installedRelease unchanged, no
-# re-bootstrap). Because the suite manages the operator release itself, it lives
+# e2e-operator-upgrade runs one operator's helm-upgrade-in-place suite,
+# tests/e2e-operator-upgrade/<op>-helm-upgrade/ for OPERATOR (default
+# keystone): it fetches the chart and image the suite's baseline.yaml pins from
+# GHCR, installs them as the baseline, and the suite then upgrades the release
+# to the in-repo chart+CRDs and asserts the deployed CR is undisturbed by the
+# upgrade (each suite's header lists what it asserts). Because the suite
+# manages the operator release itself, it lives
 # OUTSIDE tests/e2e/ and must run against a cluster with the infra stack
-# deployed but NO keystone-operator release yet (this target installs the
-# baseline). The two preflights are kept separate so a kubectl/cluster
+# deployed but NO <op>-operator release yet (this target installs the
+# baseline). The infra opt-ins, the sibling operators and the sibling CRDs the
+# operator's suite needs are the caller's job, as the reusable workflow
+# .github/workflows/e2e-operator-upgrade.yaml prepares them: the table in
+# hack/ci-operator-upgrade-leg.sh lists them per operator. The suite upgrades
+# to ghcr.io/c5c3/<op>-operator:dev, so that image must be loaded into kind
+# first. The two preflights are kept separate so a kubectl/cluster
 # reachability failure is not conflated with a pre-existing-operator failure —
 # see review pattern
 # .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
@@ -841,16 +871,26 @@ e2e-autoscaling:
 # developers can reproduce the e2e-operator-upgrade CI job locally. Requires
 # `helm registry login ghcr.io` for the baseline chart/image pull; KIND_CLUSTER
 # (default cobaltcore) selects the kind cluster to load the baseline image into.
+UPGRADE_OPERATOR = $(or $(OPERATOR),keystone)
+# The fetch script writes the image tag and the chart directory it fetched
+# here, as it writes them to GITHUB_OUTPUT in CI, and the deploy reads them back.
+UPGRADE_FETCHED = _output/operator-upgrade/$(UPGRADE_OPERATOR).fetched
+UPGRADE_GRANTS = BARBICAN_SECRET_STORE_GRANTS=openstack=openbao-instance-provisioner
 e2e-operator-upgrade:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
-	@if helm status keystone-operator -n keystone-system >/dev/null 2>&1; then \
-		echo 'a keystone-operator release already exists in keystone-system; this suite installs the released operator itself and must run against a cluster without a pre-deployed keystone-operator (teardown the release or use a fresh kind cluster)' >&2; \
+	@if helm status $(UPGRADE_OPERATOR)-operator -n $(UPGRADE_OPERATOR)-system >/dev/null 2>&1; then \
+		echo 'a $(UPGRADE_OPERATOR)-operator release already exists in $(UPGRADE_OPERATOR)-system; this suite installs the released operator itself and must run against a cluster without a pre-deployed $(UPGRADE_OPERATOR)-operator (teardown the release or use a fresh kind cluster)' >&2; \
 		exit 1; \
 	fi
-	hack/ci-fetch-released-operator.sh
-	OPERATOR=keystone IMAGE_REPO=ghcr.io/c5c3/keystone-operator IMAGE_TAG=latest \
-		CHART_DIR=_output/operator-upgrade/keystone-operator hack/ci-deploy-operator.sh
-	chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml tests/e2e-operator-upgrade/
+	@rm -f $(UPGRADE_FETCHED)
+	GITHUB_OUTPUT=$(CURDIR)/$(UPGRADE_FETCHED) OPERATOR=$(UPGRADE_OPERATOR) hack/ci-fetch-released-operator.sh
+	OPERATOR=$(UPGRADE_OPERATOR) IMAGE_REPO=ghcr.io/c5c3/$(UPGRADE_OPERATOR)-operator \
+		IMAGE_TAG="$$(sed -n 's/^image_tag=//p' $(UPGRADE_FETCHED))" \
+		CHART_DIR="$$(sed -n 's/^chart_dir=//p' $(UPGRADE_FETCHED))" NAMESPACE=$(UPGRADE_OPERATOR)-system \
+		$(UPGRADE_GRANTS) hack/ci-deploy-operator.sh
+	@mkdir -p _output/reports
+	$(UPGRADE_GRANTS) chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml \
+		tests/e2e-operator-upgrade/$(UPGRADE_OPERATOR)-helm-upgrade/
 
 .PHONY: e2e-multicluster
 # e2e-multicluster runs the placed-services suite across two kind clusters: the
@@ -916,14 +956,21 @@ e2e-orders-multicluster:
 	chainsaw test --config tests/e2e-orders-multicluster/chainsaw-config.yaml tests/e2e-orders-multicluster/
 
 .PHONY: e2e-ovn-overlay
-# e2e-ovn-overlay runs the Geneve datapath suite across the two workers of a
-# multi-node kind cluster (hack/kind-config-multinode.yaml): it programs one
-# logical switch port per worker, pings from a network namespace on the first
-# to the port on the second, and asserts the Southbound database bound the port
-# and registered two Geneve tunnel endpoints. The suite lives OUTSIDE tests/e2e/
-# because every suite there runs against the single-node hack/kind-config.yaml
-# cluster that `make e2e` sweeps, where both ports would land on one node and no
-# packet would ever enter a tunnel.
+# e2e-ovn-overlay runs the two suites under tests/e2e-ovn-overlay/ across the
+# two workers of a multi-node kind cluster (hack/kind-config-multinode.yaml),
+# default-spread first:
+#   - default-spread loads the first worker with a ballast Pod, applies an
+#     OVNCentral that names no spread, and checks where the pods land: the
+#     four northd replicas two on each worker, the three Northbound members on
+#     both. It is the check that the default spread works on nodes without a
+#     topology.kubernetes.io/zone label.
+#   - geneve-datapath programs one logical switch port per worker, pings from
+#     a network namespace on the first to the port on the second, and asserts
+#     the Southbound database bound the port and registered two Geneve tunnel
+#     endpoints.
+# The suites live OUTSIDE tests/e2e/ because every suite there runs against the
+# single-node hack/kind-config.yaml cluster that `make e2e` sweeps, where every
+# pod lands on one node and no packet would ever enter a tunnel.
 #
 # The two preflights are kept separate so a kubectl/cluster reachability failure
 # is not conflated with a single-node cluster. See review pattern
@@ -932,10 +979,12 @@ e2e-orders-multicluster:
 # .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
 # developers can reproduce the e2e-ovn-overlay CI job locally.
 #
-# The suite labels and unlabels the workers itself, so the only thing it asks of
-# the cluster is that two schedulable nodes exist and the ovn-operator is
-# deployed (`OPERATOR=ovn IMAGE_REPO=ghcr.io/c5c3/ovn-operator NAMESPACE=ovn-system
-# hack/ci-deploy-operator.sh`). The chassis pods need the openvswitch and geneve
+# geneve-datapath labels and unlabels the workers itself. What the suites ask of
+# the cluster is that the ovn-operator is deployed (`OPERATOR=ovn
+# IMAGE_REPO=ghcr.io/c5c3/ovn-operator NAMESPACE=ovn-system
+# hack/ci-deploy-operator.sh`) and that two schedulable nodes exist. default-spread
+# wants exactly two, neither with a topology.kubernetes.io/zone label, and its
+# first step fails otherwise. The chassis pods need the openvswitch and geneve
 # modules on the host, which `WITH_OVN_KERNEL_MODULES=true` loads at deploy time.
 e2e-ovn-overlay:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
@@ -1003,9 +1052,10 @@ deploy-infra:
 # small profile by default) against the quick-start ControlPlane, exporting
 # metrics to the dizzy VictoriaMetrics; watch them at
 # https://dizzy.127-0-0-1.nip.io. On the metal-stack lab
-# (EXTERNAL_CLUSTER=true), open the Gateway port-forward on 8443 and
+# (EXTERNAL_CLUSTER=true), open
 # `kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428`
-# first; Grafana is then at https://dizzy.127-0-0-1.nip.io:8443.
+# first; Keystone and Grafana answer on the Gateway's public hostnames,
+# https://dizzy.<suffix> for the suffix the deploy's Access: line prints.
 #
 # Variables:
 #   DIZZY_SCENARIO      alternate scenario file.
@@ -1014,8 +1064,9 @@ deploy-infra:
 #                       so Renovate has exactly one string to bump.
 #   DIZZY_SECRET        ControlPlane admin Secret name override.
 #   DIZZY_CP_NAMESPACE  ControlPlane admin Secret namespace override.
-#   EXTERNAL_CLUSTER    true: reach Keystone and VictoriaMetrics through those
-#                       two port-forwards, without docker.
+#   EXTERNAL_CLUSTER    true: reach Keystone on the Gateway's public hostname
+#                       and VictoriaMetrics through that port-forward, without
+#                       docker.
 #
 # The three preflights are kept separate so the failure modes stay
 # distinguishable — the kubectl/cluster-reachability failure is not conflated
@@ -1036,9 +1087,10 @@ dizzy-keystone dizzy-glance: dizzy-%:
 # labels, e.g. DIZZY_PRESSURE_LABEL=base and DIZZY_PRESSURE_LABEL=patched, and
 # compare the two with dizzy-keystone-compare. The run exports to the dizzy
 # VictoriaMetrics when the dizzy stack is installed and needs it otherwise
-# not. On the metal-stack lab (EXTERNAL_CLUSTER=true) it goes through the
-# Gateway port-forward, whose latency is larger than some of the deltas the
-# profiles look for; keystone-pressure-ab measures inside the cluster. See
+# not. On the metal-stack lab (EXTERNAL_CLUSTER=true) it goes from the
+# workstation to the Gateway's public address, whose latency is larger than
+# some of the deltas the profiles look for; keystone-pressure-ab measures
+# inside the cluster. See
 # docs/reference/testing/keystone-pressure-testing.md.
 #
 # Variables:
@@ -1112,8 +1164,34 @@ keystone-pressure-ab:
 #   DIZZY_SOAK_SAMPLE_INTERVAL  seconds between samples (default 60).
 #   DIZZY_SOAK_MAX_ERROR_RATE   error-rate threshold in percent (default none).
 #   DIZZY_SOAK_MAX_P95_SECONDS  p95 latency threshold (default none).
+#   DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT  operator heap growth bound in percent (default 10).
+#   DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB      operator heap growth bound in MiB (default 16).
+#   DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH     operator goroutine growth bound (default 10).
+#   DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT         container memory growth bound in percent (default 10).
+#   DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB             container memory growth bound in MiB (default 16).
 dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report: dizzy-soak-%:
 	hack/dizzy-soak.sh $*
+
+.PHONY: chaos-random-draw chaos-random-up chaos-random-run chaos-random-report
+# chaos-random-draw, -up, -run and -report drive the random chaos runs of
+# #1395: a seeded draw from tests/chaos-random/catalogue.yaml, applied as one
+# Chaos Mesh Workflow while the dizzy soak churns, then judged. draw prints a
+# seed's plan without a cluster; up (ci) brings up the kind plane of
+# tests/chaos-random/kind/; run writes _output/chaos-random/<run>/ and the
+# JUnit file; report prints the newest run's report.md. See
+# docs/reference/testing/chaos-e2e-tests.md#random-runs.
+#
+# Variables:
+#   CHAOS_RANDOM_ENV           ci or lab (required).
+#   CHAOS_RANDOM_SEED          the draw's seed (default: the epoch seconds).
+#   CHAOS_RANDOM_WINDOW        the span of the faults (default 30m on ci, 6h on lab).
+#   CHAOS_RANDOM_TAIL          the churn after the window (default 10m).
+#   CHAOS_RANDOM_WARMUP        the churn before the first fault (default 120s).
+#   CHAOS_RANDOM_CP_NAME       the ControlPlane (default controlplane).
+#   CHAOS_RANDOM_CP_NAMESPACE  its namespace (default openstack).
+#   DIZZY_*                    the soak's settings (make dizzy-soak-start).
+chaos-random-draw chaos-random-up chaos-random-run chaos-random-report: chaos-random-%:
+	hack/chaos-random.sh $*
 
 .PHONY: lab-failover-preflight lab-failover-up lab-failover-run lab-failover-down
 # lab-failover-preflight, -up, -run and -down drive the failover suites of
@@ -1133,6 +1211,24 @@ dizzy-soak-start dizzy-soak-status dizzy-soak-stop dizzy-soak-report: dizzy-soak
 #   LAB_FAILOVER_SCENARIOS        suites of run, space-separated (default all eleven).
 lab-failover-preflight lab-failover-up lab-failover-run lab-failover-down: lab-failover-%:
 	hack/lab-failover.sh $*
+
+.PHONY: lab-chaos-preflight lab-chaos-proving lab-chaos-faults lab-chaos-random lab-chaos-cleanup lab-chaos-teardown-check lab-chaos-record
+# lab-chaos-preflight, -proving, -faults, -random, -cleanup, -teardown-check
+# and -record drive the chaos sessions of the metal-stack lab (#1395): the
+# proving run of Chaos Mesh, the fault runs F1 to F5 under the probe servers
+# lab-chaos-0 and lab-chaos-1, the random chaos run under the six-hour dizzy
+# soak, and record.md of the session under _output/lab-chaos/<run>/.
+# preflight only reads; every other subcommand but record needs the go-ahead
+# on the shared lab, and teardown-check ends the session. See
+# docs/reference/infrastructure/infrastructure-manifests.md#lab-chaos-runner.
+#
+# Variables:
+#   LAB_CHAOS_CONTEXT          kube context of the lab (required but by record).
+#   LAB_CHAOS_GO_AHEAD         the lab's shoot name (required but by preflight and record).
+#   LAB_CHAOS_RUN              run id (default: kept in _output/lab-chaos/current).
+#   LAB_CHAOS_RANDOM_DURATION  window of the random run (default 6h).
+lab-chaos-preflight lab-chaos-proving lab-chaos-faults lab-chaos-random lab-chaos-cleanup lab-chaos-teardown-check lab-chaos-record: lab-chaos-%:
+	hack/lab-chaos.sh $*
 
 .PHONY: refresh-operator-digests
 # refresh-operator-digests re-resolves the digest behind the self-built

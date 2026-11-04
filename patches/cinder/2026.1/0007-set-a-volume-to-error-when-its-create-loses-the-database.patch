@@ -1,0 +1,162 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Set a volume to error when its create loses the database
+
+The manager's create flow starts with `ExtractVolumeRefTask`, which refreshes
+the volume from the database. When the database is gone at that moment, the
+task fails and its revert returns at once: a failed task of its own is taken
+for a volume that was deleted, and `set_error` is False in this flow. No later
+task ran, so nothing ends the create. The volume stays in `creating`, no user
+can delete it, and only the next start of cinder-volume cleans it up. A later
+task that fails during the same outage gets no further:
+`OnFailureRescheduleTask` calls `common.error_out`, whose one save fails too
+and is logged away.
+
+Random chaos found this on a local replay of seed 41258545774 with the patch
+of nova 0001 in place (issues #1581, #1582 and #1583 report the same three
+red checks): s08-mariadb-pod-kill hit a volume between the API's commit and
+cinder-volume's refresh. dizzy's teardown failed on the volume with a 400 and
+exited 1, and the stuck-resources Job found it in `creating`.
+
+`ExtractVolumeRefTask.revert` now sets the volume to error when its own
+failure is a `DBConnectionError`, and `error_out` saves the status with
+retries whose waits add up to 254 seconds, which outlasts a database failover.
+A `VolumeNotFound` still reverts to nothing, because that volume is gone.
+
+Tests: no upstream test pins either path. The patch adds
+VolumeCreateLostDatabaseTestCase to
+cinder/tests/unit/volume/flows/test_create_volume_flow.py; two of its three
+tests fail without the patch.
+
+Proof: tests/container-images/verify_cinder.sh asserts in the built image that
+the revert of a lost database sets the volume to error.
+
+Applies to cinder 28.0.0 (2026.1).
+
+Upstream status: not yet proposed.
+
+diff --git a/cinder/tests/unit/volume/flows/test_create_volume_flow.py b/cinder/tests/unit/volume/flows/test_create_volume_flow.py
+index 194f08f..acda833 100644
+--- a/cinder/tests/unit/volume/flows/test_create_volume_flow.py
++++ b/cinder/tests/unit/volume/flows/test_create_volume_flow.py
+@@ -21,7 +21,9 @@ import uuid
+ from castellan.common import exception as castellan_exc
+ from castellan.tests.unit.key_manager import mock_key_manager
+ import ddt
++from oslo_db import exception as db_exc
+ from oslo_utils import imageutils
++from taskflow.types import failure as ft
+ 
+ from cinder import context
+ from cinder import exception
+@@ -36,9 +38,41 @@ from cinder.tests.unit import test
+ from cinder.tests.unit import utils
+ from cinder.tests.unit.volume.flows import fake_volume_api
+ from cinder.volume.flows.api import create_volume
++from cinder.volume.flows import common as flow_common
+ from cinder.volume.flows.manager import create_volume as create_volume_manager
+ 
+ 
++class VolumeCreateLostDatabaseTestCase(test.TestCase):
++
++    @mock.patch.object(create_volume_manager.common, 'error_out')
++    def test_revert_sets_error_on_a_lost_database(self, mock_error_out):
++        task = create_volume_manager.ExtractVolumeRefTask(
++            mock.sentinel.db, 'host', set_error=False)
++        result = ft.Failure.from_exception(
++            db_exc.DBConnectionError(Exception('gone')))
++        volume = mock.MagicMock()
++        task.revert(mock.sentinel.context, volume, result)
++        mock_error_out.assert_called_once_with(volume, mock.ANY)
++
++    @mock.patch.object(create_volume_manager.common, 'error_out')
++    def test_revert_keeps_a_volume_that_is_gone(self, mock_error_out):
++        task = create_volume_manager.ExtractVolumeRefTask(
++            mock.sentinel.db, 'host', set_error=False)
++        result = ft.Failure.from_exception(
++            exception.VolumeNotFound(volume_id=fakes.VOLUME_ID))
++        task.revert(mock.sentinel.context, mock.sentinel.volume, result)
++        mock_error_out.assert_not_called()
++
++    @mock.patch('tenacity.nap.sleep')
++    def test_error_out_waits_for_the_database(self, _mock_sleep):
++        volume = mock.MagicMock()
++        volume.save.side_effect = [
++            db_exc.DBConnectionError(Exception('gone')), None]
++        flow_common.error_out(volume)
++        self.assertEqual('error', volume.status)
++        self.assertEqual(2, volume.save.call_count)
++
++
+ @ddt.ddt
+ class CreateVolumeFlowTestCase(test.TestCase):
+ 
+diff --git a/cinder/volume/flows/common.py b/cinder/volume/flows/common.py
+index 10e60df..b8f4cc2 100644
+--- a/cinder/volume/flows/common.py
++++ b/cinder/volume/flows/common.py
+@@ -18,9 +18,11 @@
+ 
+ from typing import Callable
+ 
++from oslo_db import exception as db_exc
+ from oslo_log import log as logging
+ 
+ from cinder import exception
++from cinder import utils
+ 
+ LOG = logging.getLogger(__name__)
+ 
+@@ -74,6 +76,15 @@ def _clean_reason(reason):
+         return reason[0:REASON_LENGTH] + '...'
+ 
+ 
++# NOTE: The waits add up to 254 seconds, which outlasts a database failover. A
++# status that never lands leaves the resource in its transient state, where it
++# cannot be deleted until the service restarts.
++@utils.retry(db_exc.DBConnectionError, interval=2, retries=8, backoff_rate=2)
++def _save_status(resource, status):
++    resource.status = status
++    resource.save()
++
++
+ def error_out(resource, reason=None, status='error'):
+     """Sets status to error for any persistent OVO."""
+     reason = _clean_reason(reason)
+@@ -82,8 +93,7 @@ def error_out(resource, reason=None, status='error'):
+                   '%(reason)s', {'object_type': resource.obj_name(),
+                                  'object_id': resource.id,
+                                  'reason': reason})
+-        resource.status = status
+-        resource.save()
++        _save_status(resource, status)
+     except Exception:
+         # Don't let this cause further exceptions.
+         LOG.exception("Failed setting %(object_type)s %(object_id)s to "
+diff --git a/cinder/volume/flows/manager/create_volume.py b/cinder/volume/flows/manager/create_volume.py
+index b951e63..b9a953d 100644
+--- a/cinder/volume/flows/manager/create_volume.py
++++ b/cinder/volume/flows/manager/create_volume.py
+@@ -19,6 +19,7 @@ from castellan import key_manager
+ import os_brick.initiator.connectors
+ from oslo_concurrency import processutils
+ from oslo_config import cfg
++from oslo_db import exception as db_exc
+ from oslo_log import log as logging
+ from oslo_utils import excutils
+ from oslo_utils import fileutils
+@@ -243,7 +244,12 @@ class ExtractVolumeRefTask(flow_utils.CinderTask):
+         return volume
+ 
+     def revert(self, context, volume, result, **kwargs):
+-        if isinstance(result, ft.Failure) or not self.set_error:
++        # NOTE: A lost database is the one failure of this task that leaves a
++        # volume behind: no later task ran, so nothing else ends the create.
++        lost_db = (isinstance(result, ft.Failure) and
++                   result.check(db_exc.DBConnectionError))
++        if not lost_db and (isinstance(result, ft.Failure) or
++                            not self.set_error):
+             return
+ 
+         reason = _('Volume create failed while extracting volume ref.')

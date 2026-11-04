@@ -59,6 +59,12 @@
 # string and hack/deploy-infra.sh's `${WITH_MESSAGING:-false}` default keeps the
 # broker out of the install.
 #
+# WITH_DIZZY is threaded the same way so the e2e-chaos-random job can install
+# the dizzy stack (VictoriaMetrics and Grafana in `dizzy`) its soak exports to.
+# When the calling job leaves WITH_DIZZY unset, `${{ env.WITH_DIZZY }}` resolves
+# to an empty string and hack/deploy-infra.sh's `${WITH_DIZZY:-false}` default
+# keeps the stack out of the install.
+#
 # WITH_CONTROLPLANE, CONTROLPLANE_OPERATORS, CONTROLPLANE_NAME, and
 # WITH_CONTROLPLANE_CR are threaded the same way so the e2e-controlplane job can
 # provision the shared infra for the c5c3 ControlPlane chain and provide the
@@ -113,6 +119,8 @@ runs:
         WITH_VPA: ${{ env.WITH_VPA }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_MESSAGING: ${{ env.WITH_MESSAGING }}
+        # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        WITH_DIZZY: ${{ env.WITH_DIZZY }}
         # ControlPlane opt-in flags — empty when caller does not set them;
         # deploy-infra.sh defaults keep the ControlPlane stack out of the install.
         WITH_CONTROLPLANE: ${{ env.WITH_CONTROLPLANE }}

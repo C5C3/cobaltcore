@@ -51,6 +51,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
@@ -80,10 +81,11 @@ const (
 // --- Shared Helpers ---
 
 // setupEnvTestWithController wraps testutil.SetupKeystoneEnvTestWithController with
-// the v1alpha1 scheme, webhook, and controller registration callbacks.
-func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+// the v1alpha1 scheme, webhook, and controller registration callbacks. Each opt
+// is applied to the KeystoneReconciler right after it is built.
+func setupEnvTestWithController(t testing.TB, opts ...func(*KeystoneReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
-	c, ctx, cancel, _ := setupEnvTestWithControllerAndIdentity(t)
+	c, ctx, cancel, _ := setupEnvTestWithControllerAndIdentity(t, opts...)
 	return c, ctx, cancel
 }
 
@@ -92,7 +94,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 // field indexes, and the cross-wake watches. It additionally returns the fake
 // identity server the KeystoneIdentityBackendReconciler is bound to so tests
 // can seed/inspect domains.
-func setupEnvTestWithControllerAndIdentity(t testing.TB) (client.Client, context.Context, context.CancelFunc, *identityfake.Server) {
+func setupEnvTestWithControllerAndIdentity(t testing.TB, opts ...func(*KeystoneReconciler)) (client.Client, context.Context, context.CancelFunc, *identityfake.Server) {
 	t.Helper()
 
 	identityServer := identityfake.NewServer(integrationAdminPassword)
@@ -123,6 +125,9 @@ func setupEnvTestWithControllerAndIdentity(t testing.TB) (client.Client, context
 				// The fake VerticalPodAutoscaler CRD loads into every envtest
 				// too, so the VPA latch is true as it would be at startup.
 				vpaAvailable: true,
+			}
+			for _, opt := range opts {
+				opt(r)
 			}
 			// Register the Keystone field indexer so secretToKeystoneMapper's
 			// MatchingFields lookup works in integration tests, mirroring what
@@ -905,22 +910,8 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	g.Expect(podSpec.ServiceAccountName).To(Equal(fmt.Sprintf("%s-fernet-rotate", ks.Name)),
 		"CronJob should use the fernet-rotate ServiceAccount")
 
-	// Verify init container: copy-keys.
-	g.Expect(podSpec.InitContainers).To(HaveLen(1), "CronJob should have exactly one init container")
-	initContainer := podSpec.InitContainers[0]
-	g.Expect(initContainer.Name).To(Equal("copy-keys"))
-	g.Expect(initContainer.Image).To(Equal(expectedImage), "init container image should match spec")
-	g.Expect(initContainer.Command).To(Equal([]string{"sh", "-c", "install -m 0400 /fernet-keys-src/* /etc/keystone/fernet-keys/"}))
-
-	// Verify init container volume mounts.
-	g.Expect(initContainer.VolumeMounts).To(HaveLen(2))
-	initMounts := map[string]corev1.VolumeMount{}
-	for _, vm := range initContainer.VolumeMounts {
-		initMounts[vm.Name] = vm
-	}
-	g.Expect(initMounts["fernet-keys-src"].MountPath).To(Equal("/fernet-keys-src"))
-	g.Expect(initMounts["fernet-keys-src"].ReadOnly).To(BeTrue(), "fernet-keys-src should be read-only")
-	g.Expect(initMounts["fernet-keys"].MountPath).To(Equal("/etc/keystone/fernet-keys"))
+	// No init container: the rotate script copies the keys itself.
+	g.Expect(podSpec.InitContainers).To(BeEmpty(), "CronJob should have no init container")
 
 	// Verify main container: fernet-rotate.
 	g.Expect(podSpec.Containers).To(HaveLen(1), "CronJob should have exactly one main container")
@@ -949,7 +940,7 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 		"OS_fernet_tokens__max_active_keys should match spec.fernet.maxActiveKeys")
 
 	// Verify main container volume mounts.
-	g.Expect(mainContainer.VolumeMounts).To(HaveLen(4))
+	g.Expect(mainContainer.VolumeMounts).To(HaveLen(6))
 	g.Expect(mainContainer.VolumeMounts[0].Name).To(Equal("fernet-keys"))
 	g.Expect(mainContainer.VolumeMounts[0].MountPath).To(Equal("/etc/keystone/fernet-keys"))
 	g.Expect(mainContainer.VolumeMounts[1].Name).To(Equal("credential-keys"))
@@ -961,13 +952,23 @@ func TestIntegration_CronJobDetailedSpec(t *testing.T) {
 	g.Expect(mainContainer.VolumeMounts[3].Name).To(Equal("scripts"))
 	g.Expect(mainContainer.VolumeMounts[3].MountPath).To(Equal("/scripts"))
 	g.Expect(mainContainer.VolumeMounts[3].ReadOnly).To(BeTrue())
+	g.Expect(mainContainer.VolumeMounts[4].Name).To(Equal("fernet-keys-src"))
+	g.Expect(mainContainer.VolumeMounts[4].MountPath).To(Equal("/fernet-keys-src"))
+	g.Expect(mainContainer.VolumeMounts[4].ReadOnly).To(BeTrue())
+	g.Expect(mainContainer.VolumeMounts[5].Name).To(Equal("rotation-state"))
+	g.Expect(mainContainer.VolumeMounts[5].MountPath).To(Equal("/rotation-state"))
+	g.Expect(mainContainer.VolumeMounts[5].ReadOnly).To(BeFalse())
 
-	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), and scripts (ConfigMap).
+	// Verify volumes: fernet-keys-src (Secret), fernet-keys (emptyDir), credential-keys (Secret), config (ConfigMap), scripts (ConfigMap),
+	// and rotation-state (emptyDir).
 	volMap := map[string]corev1.Volume{}
 	for _, v := range podSpec.Volumes {
 		volMap[v.Name] = v
 	}
-	g.Expect(volMap).To(HaveLen(5))
+	g.Expect(volMap).To(HaveLen(6))
+
+	g.Expect(volMap).To(HaveKey("rotation-state"))
+	g.Expect(volMap["rotation-state"].EmptyDir).NotTo(BeNil(), "rotation-state volume should be an emptyDir")
 
 	g.Expect(volMap).To(HaveKey("fernet-keys-src"))
 	g.Expect(volMap["fernet-keys-src"].Secret).NotTo(BeNil(), "fernet-keys-src volume should be a Secret")
@@ -1519,7 +1520,9 @@ func TestIntegration_VPA_StatusPatchDoesNotWakeTheStep(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	// With the re-probe off, nothing requeues the Ready CR, so the VPA samples
+	// below count only the passes a VPA event starts.
+	c, ctx, _ := setupEnvTestWithController(t, func(r *KeystoneReconciler) { r.healthProbeCache.NoReprobe = true })
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-vpa-status-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())
@@ -1574,6 +1577,31 @@ func TestIntegration_VPA_StatusPatchDoesNotWakeTheStep(t *testing.T) {
 	}, eventuallyTimeout, pollInterval).Should(Equal(vpav1.UpdateModeOff), "the next pass reverts the drift")
 }
 
+// A Ready Keystone whose API stops answering turns KeystoneAPIReady and Ready
+// False although no object changes, and True again once the API answers.
+func TestIntegration_WedgedAPIDetectedWithoutEvent(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, func(r *KeystoneReconciler) { r.HTTPClient = doer })
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-wedged-api-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	createPrerequisites(t, ctx, c, ns.Name)
+
+	ks := integrationBrownfieldKeystone("test-keystone", ns.Name)
+	g.Expect(c.Create(ctx, ks)).To(Succeed())
+	driveFullReconciliation(t, ctx, c, ks.Name, ns.Name)
+	key := client.ObjectKeyFromObject(ks)
+
+	commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+		var got keystonev1alpha1.Keystone
+		g.Expect(c.Get(ctx, key, &got)).To(Succeed())
+		return got.Status.Conditions
+	}, conditionTypeKeystoneAPIReady, pollInterval)
+}
+
 // --- Task/4.1: Fresh deployment — InstalledRelease tracking ---
 
 func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
@@ -1615,9 +1643,8 @@ func TestIntegration_FreshDeployment_InstalledReleaseTracking(t *testing.T) {
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: "test-keystone-db-sync"}, dbSyncJob)).
 		To(Succeed(), "standard db-sync Job should exist")
 	container := dbSyncJob.Spec.Template.Spec.Containers[0]
-	g.Expect(container.Command).To(Equal([]string{
-		"keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "db_sync",
-	}), "db-sync command should be standard db_sync without --expand/--migrate/--contract")
+	g.Expect(container.Command).To(Equal([]string{"/bin/sh", "-eu", "-c", dbSyncScript}),
+		"db-sync command should run the reset pre-step, then db_sync without --expand/--migrate/--contract")
 	g.Expect(container.Image).To(Equal(
 		fmt.Sprintf("%s:%s", ks.Spec.Image.Repository, ks.Spec.Image.Tag),
 	),
@@ -3342,7 +3369,9 @@ func TestIntegration_RecreateDerivedSecretWhenDeleted(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	// With the re-probe off, nothing requeues the Ready CR, so only the Secret
+	// watch can recreate the deleted Secret.
+	c, ctx, _ := setupEnvTestWithController(t, func(r *KeystoneReconciler) { r.healthProbeCache.NoReprobe = true })
 
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cc0080-recreate-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed())

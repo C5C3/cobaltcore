@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
@@ -63,7 +64,8 @@ func (healthyHTTPClient) Do(*http.Request) (*http.Response, error) {
 
 // setupEnvTestWithController wraps testutil.SetupHorizonEnvTestWithController
 // with the v1alpha1 scheme, webhook, and controller registration callbacks.
-func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+// Each opt is applied to the HorizonReconciler right after it is built.
+func setupEnvTestWithController(t testing.TB, opts ...func(*HorizonReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupHorizonEnvTestWithController(
 		t,
@@ -85,6 +87,9 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 				// The fake VerticalPodAutoscaler CRD loads into every envtest too,
 				// so the VPA latch is true as it would be at startup.
 				vpaAvailable: true,
+			}
+			for _, opt := range opts {
+				opt(r)
 			}
 			// Register the Horizon field indexer so secretToHorizonMapper's
 			// MatchingFields lookup works in integration tests, mirroring
@@ -291,6 +296,29 @@ func TestIntegrationHorizon_FullChainToReady(t *testing.T) {
 	g.Expect(rendered).NotTo(ContainSubstring("initial-django-secret"))
 }
 
+// TestIntegrationHorizon_WedgedAPIDetectedWithoutEvent proves that a Ready
+// Horizon whose dashboard stops answering turns HorizonAPIReady and Ready False
+// although no object changes, and True again once the dashboard answers.
+func TestIntegrationHorizon_WedgedAPIDetectedWithoutEvent(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, func(r *HorizonReconciler) { r.HTTPClient = doer })
+	ns := createTestNamespace(t, ctx, c)
+	createPrerequisites(t, ctx, c, ns)
+
+	g.Expect(c.Create(ctx, integrationHorizon("horizon-wedged", ns))).To(Succeed(), "create Horizon CR")
+	driveToReady(t, ctx, c, "horizon-wedged", ns)
+	key := types.NamespacedName{Name: "horizon-wedged", Namespace: ns}
+
+	commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+		var got horizonv1alpha1.Horizon
+		g.Expect(c.Get(ctx, key, &got)).To(Succeed())
+		return got.Status.Conditions
+	}, conditionTypeHorizonAPIReady, pollInterval)
+}
+
 // TestIntegrationHorizon_SecretRotationRollsDeployment proves that rotating
 // the SECRET_KEY at the source flips the pod-template hash annotation so the
 // Deployment rolls (the key is env-var-consumed and needs a pod restart).
@@ -298,7 +326,9 @@ func TestIntegrationHorizon_SecretRotationRollsDeployment(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	// With the re-probe off, nothing requeues the Ready CR, so only the Secret
+	// watch can carry the rotation below into the Deployment.
+	c, ctx, _ := setupEnvTestWithController(t, func(r *HorizonReconciler) { r.healthProbeCache.NoReprobe = true })
 	ns := createTestNamespace(t, ctx, c)
 	createPrerequisites(t, ctx, c, ns)
 

@@ -14,6 +14,7 @@
 package computeapitest
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -71,6 +72,11 @@ type failure struct {
 	status             int
 }
 
+// lostAnswer is the next request that matches, served without its answer.
+type lostAnswer struct {
+	method, pathPrefix string
+}
+
 // Fake is an in-memory Keystone and Nova. The zero value is not usable; call
 // New.
 type Fake struct {
@@ -89,6 +95,7 @@ type Fake struct {
 	downCells  map[string]bool
 	unmapped   map[string]bool
 	failures   []failure
+	lost       []lostAnswer
 	calls      []Call
 	nextSvc    int
 	nextAgg    int
@@ -105,10 +112,15 @@ func New() *Fake {
 	}
 }
 
-// Do serves req in process.
+// Do serves req in process. A request LoseNextAnswer names is served, and
+// the caller gets context.DeadlineExceeded instead of the answer.
 func (f *Fake) Do(req *http.Request) (*http.Response, error) {
+	lost := f.takeLostAnswer(req)
 	rec := httptest.NewRecorder()
 	f.ServeHTTP(rec, req)
+	if lost {
+		return nil, context.DeadlineExceeded
+	}
 	return rec.Result(), nil
 }
 
@@ -204,6 +216,15 @@ func (f *Fake) FailNext(method, pathPrefix string, status int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failures = append(f.failures, failure{method: method, pathPrefix: pathPrefix, status: status})
+}
+
+// LoseNextAnswer makes the next request whose method matches and whose path
+// starts with pathPrefix take effect while Do returns context.DeadlineExceeded,
+// as when Nova answers after the client's timeout.
+func (f *Fake) LoseNextAnswer(method, pathPrefix string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lost = append(f.lost, lostAnswer{method: method, pathPrefix: pathPrefix})
 }
 
 // Calls returns every request received so far, in order.
@@ -313,6 +334,18 @@ func (f *Fake) takeFailure(r *http.Request) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+func (f *Fake) takeLostAnswer(r *http.Request) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, l := range f.lost {
+		if l.method == r.Method && strings.HasPrefix(r.URL.Path, l.pathPrefix) {
+			f.lost = slices.Delete(f.lost, i, i+1)
+			return true
+		}
+	}
+	return false
 }
 
 func (f *Fake) serveToken(w http.ResponseWriter) {

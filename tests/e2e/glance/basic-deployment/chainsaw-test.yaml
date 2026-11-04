@@ -17,6 +17,11 @@
 #   - The attached default S3 backend reaches Ready=True
 #   - The Glance API answers /healthcheck over HTTP (200) — the oslo healthcheck
 #     middleware proves the WSGI app serves requests
+#   - The glance-operator release exports its reconcile families and the
+#     db_sync and db_purge counters and duration counts of glance-basic,
+#     the latter from the manual purge run of Step 7
+#   - A Ready, unchanged glance-basic gains no event on the CR in a 120 s
+#     window, the steady state an operator must keep quiet
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -333,3 +338,39 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 8: Assert the operator's metric families ──────────────────────
+  # The header of ../../lib/assert-operator-metric-families.sh lists the
+  # checks it runs against the cluster-wide release.
+  # The manual run of Step 7 is controlled by the CronJob, so the operator
+  # records it as a db_purge run.
+  - try:
+    - script:
+        shell: bash
+        timeout: 120s
+        content: |
+          ../../lib/assert-operator-metric-families.sh glance-system glance-operator glance_operator \
+            'glance_operator_db_sync_total{glance="glance-basic",namespace="openstack",result="succeeded"}' \
+            'glance_operator_db_sync_duration_seconds_count{glance="glance-basic",namespace="openstack"}' \
+            'glance_operator_db_purge_total{glance="glance-basic",namespace="openstack",result="succeeded"}' \
+            'glance_operator_db_purge_duration_seconds_count{glance="glance-basic",namespace="openstack"}'
+    catch:
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/instance=glance-operator
+        tail: 200
+  # ── Step 9: Assert the steady state emits no event ─────────────────────
+  # The header of ../../lib/assert-steady-state-events.sh lists its checks.
+  # Nothing changes the Glance from here on, so an event on it in the
+  # window is a defect of the operator or of this suite, to be fixed at its
+  # cause rather than by a larger budget or a shorter window.
+  - try:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../../lib/assert-steady-state-events.sh openstack glances.glance.openstack.c5c3.io glance-basic
+    catch:
+    - podLogs:
+        namespace: glance-system
+        selector: app.kubernetes.io/instance=glance-operator
+        tail: 200

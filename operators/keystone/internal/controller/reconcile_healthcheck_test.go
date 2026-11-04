@@ -497,7 +497,7 @@ func TestReconcileHealthCheck_ParentContextCancelled_PropagatesWithoutFlipping(t
 
 	// Seed a cache entry, then age it past the TTL so this pass actually
 	// re-probes (a fresh entry would serve from cache and never hit the network).
-	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, internalAPIURL(ks))
+	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, internalAPIURL(ks), healthcheck.HealthCheckCacheTTL)
 	key := client.ObjectKeyFromObject(ks)
 	clk = clk.Add(healthcheck.HealthCheckCacheTTL + time.Second)
 
@@ -653,7 +653,7 @@ func TestReconcileHealthCheck_ConditionNotTrue_ReProbes(t *testing.T) {
 
 	// Seed a fresh, matching cache entry but leave the condition unset so the
 	// hit criterion "condition already True" fails.
-	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, internalAPIURL(ks))
+	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, internalAPIURL(ks), healthcheck.HealthCheckCacheTTL)
 
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -675,7 +675,7 @@ func TestReconcileHealthCheck_EndpointChange_ReProbes(t *testing.T) {
 
 	// Seed a fresh entry for a stale endpoint; the reconcile targets
 	// internalAPIURL, so the endpoints differ and the entry must be a miss.
-	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, "http://stale.endpoint/v3")
+	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, "http://stale.endpoint/v3", healthcheck.HealthCheckCacheTTL)
 
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -839,7 +839,7 @@ func TestReconcileHealthCheck_UIDChange_ReProbes(t *testing.T) {
 	ks := newTestKeystoneForHealthCheck("http://ignored/v3", 1)
 	ks.UID = "uid-old"
 	healthyReadyCondition(ks)
-	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, internalAPIURL(ks))
+	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, internalAPIURL(ks), healthcheck.HealthCheckCacheTTL)
 
 	// A CR recreated under the same name/namespace carries a new UID.
 	ks.UID = "uid-new"

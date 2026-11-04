@@ -26,6 +26,7 @@ name: Build Images
       - tests/lib/ceph_bindings.sh
       - tests/lib/build_tools.sh
       - tests/lib/static_image.sh
+      - tests/lib/pymemcache.sh
       - .github/workflows/build-images.yaml
       - flake.nix
       - flake.lock
@@ -88,6 +89,7 @@ name: Build Images
       - tests/lib/ceph_bindings.sh
       - tests/lib/build_tools.sh
       - tests/lib/static_image.sh
+      - tests/lib/pymemcache.sh
       - .github/workflows/build-images.yaml
       - flake.nix
       - flake.lock
@@ -157,6 +159,7 @@ jobs:
               - 'patches/keystone/**'
               - 'operators/keystone/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_keystone.sh'
+              - 'tests/lib/pymemcache.sh'
             svc_horizon:
               - 'images/horizon/**'
               - 'nix/locks/*/horizon/**'
@@ -198,6 +201,7 @@ jobs:
               - 'patches/nova/**'
               - 'operators/nova/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_nova.sh'
+              - 'tests/lib/pymemcache.sh'
               # The compute image is built from nova's lock, patches and
               # constraints and rides the nova service name.
               - 'images/nova-compute/**'

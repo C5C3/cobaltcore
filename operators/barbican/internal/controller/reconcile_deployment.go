@@ -291,32 +291,34 @@ func buildBarbicanDeployment(
 				Name:          "barbican-api",
 				ContainerPort: barbicanAPIPort,
 			}},
-			// Startup, readiness AND liveness hit the healthcheck app, which the
-			// paste composite routes outside the authtoken pipeline, so the probes
-			// need no token and touch no database. The startup probe carries the
+			// Startup and readiness hit the healthcheck app, which the paste
+			// composite routes outside the authtoken pipeline, so the probes need
+			// no token and touch no database. The startup probe carries the
 			// cold-start window: every uWSGI worker imports the whole app, which
 			// under a CPU limit set on the container or on a contended node
-			// stretches past the liveness budget once
-			// spec.apiServer.uwsgi.processes rises above the default (observed
-			// 66-91s at processes=4 under the former 500m default CPU limit,
-			// against the ~55s the liveness probe allows). Same numbers as
-			// keystone's startup probe: 30x10s of budget, and an 8s timeout
-			// because a cold-starting WSGI app can hold even a plain HTTP GET past
-			// the kubelet's 1s default.
+			// stretches once spec.apiServer.uwsgi.processes rises above the
+			// default (observed 66-91s at processes=4 under the former 500m
+			// default CPU limit). Same numbers as keystone's startup probe: 30x10s
+			// of budget, and an 8s timeout because a cold-starting WSGI app can
+			// hold even a plain HTTP GET past the kubelet's 1s default.
 			StartupProbe: &corev1.Probe{
 				ProbeHandler:     barbicanHealthcheckProbeHandler(),
 				FailureThreshold: 30,
 				PeriodSeconds:    10,
 				TimeoutSeconds:   8,
 			},
+			// The liveness probe only connects. uWSGI's HTTP router accepts while
+			// every worker waits on a dependency, a database behind a partition or
+			// a broker that restarts, and a GET behind those workers restarts a
+			// healthy API. The readiness probe keeps the GET and takes a saturated
+			// pod out of the Service instead. 10s stays below the 20s period.
 			LivenessProbe: &corev1.Probe{
-				ProbeHandler:        barbicanHealthcheckProbeHandler(),
+				ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(barbicanAPIPort)},
+				},
 				InitialDelaySeconds: 15,
 				PeriodSeconds:       20,
-				// A single-worker API holds the probe's GET for the whole request in
-				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
-				// is the readiness probe's timeout, below the 20s period.
-				TimeoutSeconds: 10,
+				TimeoutSeconds:      10,
 			},
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        barbicanHealthcheckProbeHandler(),
@@ -432,8 +434,8 @@ func barbicanPodAnnotations(dsnDigest, authtokenDigest, secretIDDigest string) m
 	return annotations
 }
 
-// barbicanHealthcheckProbeHandler returns the shared startup/readiness/liveness
-// probe handler: an HTTP GET of the healthcheck app on the API port.
+// barbicanHealthcheckProbeHandler returns the shared startup/readiness probe
+// handler: an HTTP GET of the healthcheck app on the API port.
 func barbicanHealthcheckProbeHandler() corev1.ProbeHandler {
 	return corev1.ProbeHandler{
 		HTTPGet: &corev1.HTTPGetAction{

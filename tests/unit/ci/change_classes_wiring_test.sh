@@ -255,13 +255,14 @@ codecov_flag_block() {
 }
 
 test_codecov_flags_cover_every_target() {
-  echo "Test: .codecov.yml declares a unit and an integration flag per test target"
+  echo "Test: .codecov.yml declares a unit, integration, e2e, chaos and tempest flag per test target"
 
   # The test and test-integration jobs upload coverage under a flag named after
-  # the matrix target. Each declared flag scopes that coverage to the target's
-  # tree and carries it forward across pull requests that skip the target, so
-  # a target added to the matrices without both blocks uploads under a flag
-  # .codecov.yml does not describe, and nothing fails.
+  # the matrix target, and the e2e-operator, e2e-chaos and tempest jobs under
+  # <family>-<operator> and <family>-common. Each declared flag scopes that
+  # coverage to the target's tree and carries it forward across pull requests
+  # that skip the target, so a target added without all five blocks uploads
+  # under a flag .codecov.yml does not describe, and nothing fails.
   local name prefix flag block tree
   for name in common $(resolve_env_operators ALL_OPERATORS "$CI_YAML"); do
     if [ "$name" = "common" ]; then
@@ -269,7 +270,7 @@ test_codecov_flags_cover_every_target() {
     else
       tree="- operators/${name}/"
     fi
-    for prefix in unit integration; do
+    for prefix in unit integration e2e chaos tempest; do
       flag="${prefix}-${name}"
       block=$(codecov_flag_block "$flag")
       assert_not_empty "the ${flag} flag is declared" "$block"
@@ -282,6 +283,94 @@ test_codecov_flags_cover_every_target() {
     "$CI_YAML" 'flags: unit-${{ matrix.target }}'
   assert_file_contains_fixed "the integration job uploads under its target's flag" \
     "$CI_YAML" 'flags: integration-${{ matrix.target }}'
+}
+
+test_codecov_statuses_count_unit_and_integration_only() {
+  echo "Test: the Codecov statuses count the unit and integration flags alone"
+
+  # The e2e, chaos and Tempest flags report without gating: a leg that did not
+  # run, or a suite that reaches less code than before, must not turn a status
+  # red. An unscoped status counts every flag, so each status lists its flags.
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+  local codecov="$PROJECT_ROOT/.codecov.yml" expected name status listed
+  expected=$(for name in common $(resolve_env_operators ALL_OPERATORS "$CI_YAML"); do
+    echo "unit-${name}"
+    echo "integration-${name}"
+  done | LC_ALL=C sort)
+  assert_eq "there are 22 unit and integration flags" "22" "$(grep -c . <<<"$expected")"
+  for status in project patch; do
+    listed=$(yq ".coverage.status.${status}.default.flags[]" "$codecov" | LC_ALL=C sort)
+    assert_eq "the ${status} status lists the unit and integration flags" "$expected" "$listed"
+    assert_eq "the ${status} status names no e2e, chaos or tempest flag" "" \
+      "$(grep -E '^(e2e|chaos|tempest)-' <<<"$listed" || true)"
+  done
+
+  assert_eq "there are three components" "3" \
+    "$(yq '.component_management.individual_components | length' "$codecov")"
+  assert_eq "every component counts the unit and integration flags alone" \
+    "common ^unit-,^integration-
+controllers ^unit-,^integration-
+webhooks ^unit-,^integration-" \
+    "$(yq '.component_management.individual_components[] | .component_id + " " + ((.flag_regexes // []) | join(","))' "$codecov")"
+}
+
+# Echo the body of the step <name> of the ci.yaml job <job>: the lines after
+# its `      - name: <name>` line up to the next step or comment.
+job_step_body() {
+  job_block "$1" | awk -v key="      - name: $2" '
+    $0 == key { in_block = 1; next }
+    in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
+}
+
+test_coverage_legs_collect_and_upload_before_teardown() {
+  echo "Test: e2e-operator, e2e-chaos and tempest collect and upload their operator coverage before teardown"
+
+  # The collector needs the cluster, so it runs before "Delete kind cluster",
+  # which stays last. Each job names its own family, and the upload sends the
+  # profiles the collector names under their flags and nothing it finds.
+  local pair job family block collect upload
+  for pair in e2e-operator:e2e e2e-chaos:chaos tempest:tempest; do
+    job="${pair%%:*}"
+    family="${pair#*:}"
+    block=$(job_block "$job")
+    assert_contains "$job sets up Go for go tool covdata" "$block" \
+      "uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7"
+    assert_contains "$job takes the Go version from go.work" "$block" "go-version-file: go.work"
+    assert_eq "the last three steps of $job collect, upload and delete the cluster" \
+      "      - name: Collect operator coverage
+      - name: Upload operator coverage
+      - name: Delete kind cluster" \
+      "$(grep -E '^      - ' <<<"$block" | tail -n 3)"
+
+    collect=$(job_step_body "$job" "Collect operator coverage")
+    assert_contains "$job: the collect step has the id the upload reads" "$collect" "id: coverage"
+    assert_contains "$job: the collect step runs after a failure too" "$collect" "if: always()"
+    assert_contains "$job: the collect step never fails the job" "$collect" "continue-on-error: true"
+    assert_contains "$job: a cancelled run skips the scale-down" "$collect" \
+      "SCALE_DOWN: \${{ job.status != 'cancelled' }}"
+    assert_contains "$job: the collect step names the ${family} family" "$collect" \
+      "run: hack/ci-collect-e2e-coverage.sh ${family}"
+
+    upload=$(job_step_body "$job" "Upload operator coverage")
+    assert_contains "$job: the upload runs when the collector found a profile" "$upload" \
+      "if: always() && steps.coverage.outputs.found == 'true'"
+    assert_contains "$job: the upload uses the pinned Codecov action" "$upload" \
+      "uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7"
+    assert_contains "$job: the upload sends the collector's files" "$upload" \
+      'files: ${{ steps.coverage.outputs.files }}'
+    assert_contains "$job: the upload names the collector's flags" "$upload" \
+      'flags: ${{ steps.coverage.outputs.flags }}'
+    assert_contains "$job: the upload searches for nothing else" "$upload" "disable_search: true"
+    assert_contains "$job: a failed upload never fails the job" "$upload" "fail_ci_if_error: false"
+  done
+  assert_eq "no other job runs the collector" "3" \
+    "$(grep -c '^        run: hack/ci-collect-e2e-coverage.sh ' "$CI_YAML")"
 }
 
 test_every_job_gates_on_its_own_flag() {
@@ -354,8 +443,13 @@ test_concurrency_isolates_a_noop_label_event() {
     "$group" "github.event.label.name != 'run-chaos'"
   assert_contains "everything else gets a group of its own" \
     "$group" "format('noop-{0}', github.run_id)"
-  assert_contains "the normal group is unchanged" \
-    "$group" "format('{0}-{1}', github.ref, github.workflow)"
+  # A night in main's push group would delay main's publish or be cancelled by
+  # the next push, so the normal group names the event.
+  assert_contains "the normal group is per ref, workflow and event" \
+    "$group" "|| format('{0}-{1}-{2}', github.ref, github.workflow, github.event_name) }}"
+  assert_eq "only a pull request cancels the run in flight" \
+    "  cancel-in-progress: \${{ github.event_name == 'pull_request' }}" \
+    "$(grep -A2 '^concurrency:$' "$CI_YAML" | grep 'cancel-in-progress:')"
 }
 
 test_tempest_matrix_is_narrowed_by_service() {
@@ -438,6 +532,8 @@ test_service_operators_match_the_release_configs
 test_service_operators_catch_a_missing_operator
 test_all_operators_names_every_operator_module
 test_codecov_flags_cover_every_target
+test_codecov_statuses_count_unit_and_integration_only
+test_coverage_legs_collect_and_upload_before_teardown
 test_every_job_gates_on_its_own_flag
 test_label_handling_lives_in_the_resolver
 test_always_on_gates_skip_a_noop_run

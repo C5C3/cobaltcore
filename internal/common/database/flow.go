@@ -300,7 +300,9 @@ func (p SyncFlowParams) recordTerminal(jobSuffix string, observed *batchv1.Job) 
 // condition. It is the shared steady-state body of every database-backed
 // operator's reconcileDatabase; the operator supplies the built Job set and the
 // condition vocabulary. A permanently-failed db-sync/schema-check Job returns a
-// hard error (exponential backoff); an in-progress Job requeues.
+// hard error (exponential backoff); an in-progress Job requeues. The Normal
+// DatabaseSynced event is emitted only when the condition turns
+// True/DatabaseSynced, not on a pass that finds it so already.
 func ReconcileSyncJobs(ctx context.Context, p SyncFlowParams) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -373,6 +375,11 @@ func ReconcileSyncJobs(ctx context.Context, p SyncFlowParams) (ctrl.Result, erro
 		*p.InstalledRelease = p.ImageTag
 	}
 
+	// The event marks the transition into DatabaseSynced. A Ready CR passes
+	// here on every watch event of its inputs, and an event per pass would
+	// grow its count for as long as the CR exists.
+	prev := conditions.GetCondition(*p.Conditions, p.ConditionType)
+	synced := prev != nil && prev.Status == metav1.ConditionTrue && prev.Reason == ReasonDatabaseSynced
 	conditions.SetCondition(p.Conditions, metav1.Condition{
 		Type:               p.ConditionType,
 		Status:             metav1.ConditionTrue,
@@ -380,7 +387,7 @@ func ReconcileSyncJobs(ctx context.Context, p SyncFlowParams) (ctrl.Result, erro
 		Reason:             ReasonDatabaseSynced,
 		Message:            "Database schema is up to date (revision verified)",
 	})
-	if p.Recorder != nil {
+	if p.Recorder != nil && !synced {
 		p.Recorder.Event(p.Owner, corev1.EventTypeNormal, ReasonDatabaseSynced, "Database schema is up to date")
 	}
 	return ctrl.Result{}, nil

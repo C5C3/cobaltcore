@@ -305,7 +305,7 @@ defaults they resolve to.
 | 15s | `RequeueSecretPolling` | The secret-store and credential gates, both derived DB-connection steps, the transport-URL step, and an unresolvable target cluster |
 | 30s | `RequeueDatabaseWait` | The MariaDB gate of both blocks, the db-sync wait, the config wait, and the finalizer's cleanup wait |
 | 30s | `RequeueUpgradeWait` | The expand, migrate and contract phase Jobs |
-| 10s / 30s TTL | health-check retry, probe cache | A failed probe of the API root retries; a passing one is reused within the TTL |
+| 10s / 30s TTL | health-check retry, probe cache | A failed probe of the API root retries; a passing one is reused within the TTL, and a converged pass requeues when that entry expires |
 
 ## Watches and indexes
 
@@ -505,7 +505,11 @@ It then walks the nodes: `Pending` and
 `Active` follow the registration, and a registered `Pending` node turns `Active`
 only once its host is mapped, while an `Active` node is not checked again.
 `Draining` disables an enabled service once
-and counts the servers on the host, and `Releasing` waits until no pod of the
+and counts the servers on the host. Nova stores a disable before its RPC call
+to the compute host and answers only after that call, which can outlast the
+client's 10-second request timeout, so a failed disable is read back from the
+service list: one that Nova lists with the pool's reason counts, and the pass
+raises its `ComputeServiceDisabled` event. `Releasing` waits until no pod of the
 pool runs on the node and then deletes the service, or drops the entry with no
 call under a handover or when the service is already gone. The pods are listed
 once per pass: on the node for a single `Releasing` node, and for the whole

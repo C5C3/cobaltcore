@@ -41,8 +41,10 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commontestutil "github.com/c5c3/cobaltcore/internal/common/testutil"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
@@ -115,8 +117,11 @@ const (
 // setup is the single registration site for the Neutron field indexes.
 //
 // The health-check stub is what keeps the probe from firing slow HTTP GETs at a
-// Service DNS name nothing answers; envtest runs no kubelet.
-func registerNeutronControllers(mgr ctrl.Manager, mcMgr mcmanager.Manager, resolver commonmulticluster.ClusterResolver) error {
+// Service DNS name nothing answers; envtest runs no kubelet. Each of
+// reconcilerOpts is applied to the NeutronReconciler right after it is built.
+func registerNeutronControllers(mgr ctrl.Manager, mcMgr mcmanager.Manager, resolver commonmulticluster.ClusterResolver,
+	reconcilerOpts ...func(*NeutronReconciler),
+) error {
 	opts := bootstrap.TypedControllerOptions[mcreconcile.Request](1)
 	opts.SkipNameValidation = ptr.To(true)
 
@@ -126,6 +131,9 @@ func registerNeutronControllers(mgr ctrl.Manager, mcMgr mcmanager.Manager, resol
 		Recorder:   mgr.GetEventRecorderFor("neutron-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 		HTTPClient: &stubDoer{status: http.StatusOK},
 		Resolver:   resolver,
+	}
+	for _, opt := range reconcilerOpts {
+		opt(neutron)
 	}
 	if err := neutron.setupWithOptions(mcMgr, opts); err != nil {
 		return err
@@ -161,8 +169,9 @@ func registerNeutronWebhooks(mgr ctrl.Manager) error {
 // gatewayAPIAvailable is not set by hand: the fake HTTPRoute CRD the helper
 // installs is what the setup-time RESTMapper probe answers from, so the
 // HTTPRoute watch and the gateway step run exactly as they do against a cluster
-// that has Gateway API.
-func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, context.CancelFunc) {
+// that has Gateway API. Each opt is applied to the NeutronReconciler right after
+// it is built.
+func setupEnvTestWithController(t testing.TB, opts ...func(*NeutronReconciler)) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 	return testutil.SetupNeutronEnvTestWithController(t,
 		neutronv1alpha1.AddToScheme,
@@ -172,7 +181,7 @@ func setupEnvTestWithController(t testing.TB) (client.Client, context.Context, c
 			if err != nil {
 				return err
 			}
-			return registerNeutronControllers(mgr, mcMgr, nil)
+			return registerNeutronControllers(mgr, mcMgr, nil, opts...)
 		},
 	)
 }
@@ -544,14 +553,17 @@ func hasTCPEgressPort(policy *networkingv1.NetworkPolicy, want int) bool {
 // TestIntegrationNeutron_ReachesReady walks the whole Neutron pipeline against a
 // live API server: the messaging gate, the OVN endpoints resolved from a central
 // in another namespace, the rendered config, the schema migration, the API and
-// worker Deployments, and the post-deployment parallel group. It then moves one
-// of the published OVN addresses under the settled CR, which nothing but the
-// OVNCentral watch can carry into a re-rendered config.
+// worker Deployments, and the post-deployment parallel group. On the settled CR
+// it stops the API answering without writing any object and sees NeutronAPIReady
+// and Ready turn False, then True again. It then moves one of the published OVN
+// addresses under the settled CR, which nothing but the OVNCentral watch can
+// carry into a re-rendered config before the next re-probe pass.
 func TestIntegrationNeutron_ReachesReady(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
-	c, ctx, _ := setupEnvTestWithController(t)
+	doer := commontestutil.NewSwitchableDoer(http.StatusOK)
+	c, ctx, _ := setupEnvTestWithController(t, func(r *NeutronReconciler) { r.HTTPClient = doer })
 	ns := createTestNamespace(t, ctx, c)
 	// The OVN control plane lives in a namespace of its own, so this Neutron
 	// resolves it across a namespace boundary, which is what the cross-namespace
@@ -668,10 +680,18 @@ func TestIntegrationNeutron_ReachesReady(t *testing.T) {
 	g.Expect(hasTCPEgressPort(policy, 5671)).To(BeTrue(),
 		"the messaging egress rule should open the transport URL's port over TCP")
 
+	commontestutil.ExpectReprobeTracksAPI(t, doer, func(g Gomega) []metav1.Condition {
+		var got neutronv1alpha1.Neutron
+		g.Expect(c.Get(ctx, neutronKey, &got)).To(Succeed())
+		return got.Status.Conditions
+	}, conditionTypeNeutronAPIReady, pollInterval)
+
 	// THE ACCEPTANCE RULE OF WHAT FOLLOWS: the Neutron CR is never written again.
 	// The only write is a status field on an OVNCentral in another namespace, and
-	// the operator has to get from there to a re-rendered config on its own. Take
-	// the OVNCentral watch away and this sits out the budget below and fails.
+	// the operator has to get from there to a re-rendered config on its own. The
+	// recovery above has just stored a fresh probe, so the next re-probe pass is
+	// HealthCheckCacheTTL away, and the budget below ends halfway there. Take the
+	// OVNCentral watch away and this sits out the budget below and fails.
 	republishCentral(t, ctx, c, integrationCentralName, ovnNS, integrationRepublishedAddress)
 
 	// The re-render reaches the schema migration first: the db-sync Job mounts the
@@ -685,7 +705,7 @@ func TestIntegrationNeutron_ReachesReady(t *testing.T) {
 		rerenderedName = mountedConfigMapName(&job.Spec.Template.Spec)
 		ig.Expect(rerenderedName).NotTo(Equal(configMapName),
 			"a moved database address must render a new immutable ConfigMap")
-	}, eventuallyLongTimeout, pollInterval).Should(Succeed(),
+	}, healthcheck.HealthCheckCacheTTL/2, pollInterval).Should(Succeed(),
 		"the new Northbound address should reach a re-rendered config through the OVNCentral watch")
 
 	rendered := &corev1.ConfigMap{}

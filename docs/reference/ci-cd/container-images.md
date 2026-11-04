@@ -57,6 +57,34 @@ differences aspect by aspect.
 
 ![The image build workflow on its two paths. On every run, nix-flake-check runs nix flake check, the Nix lint and the checks of the flake, nix-lock-check runs hack/nix-lock.sh --check to compare the locks and the image pins with their inputs, and generate-matrix works out the services, releases and platforms. build-service-images waits for all three, test-service-images for nix-lock-check and generate-matrix. On a pull request, build-service-images builds each service image with nix build for linux/amd64 only, scans its store paths with vulnix and uploads the report as an artifact, loads the image into the local Docker daemon, scans it with Grype without a report upload, runs tests/container-images/verify_{service}.sh and checks the option catalog of the services that have one. test-service-images runs the upstream unit tests as the Nix build .#{service}-{release_}-test-run and its check. The run ends there, and no service image is pushed. On a push to main or stable/**, or on a manual run, build-service-images builds for amd64 and arm64, each on its own runner, scans the store paths with vulnix, pushes by digest with skopeo and exports the digest as one artifact per platform. merge-service-images creates and pushes the manifest with the tags of the Tag Schema, generates a CycloneDX SBOM, scans the SBOM with Grype and uploads the report to the Security tab, attests the SBOM and the build provenance, and signs the image with cosign. verify-service-images pulls the image from ghcr.io and runs the verify script and the option catalog check once merge-service-images and test-service-images have passed. ghcr.io holds {service} alone, pushed on a push. No base image exists: a build reads nothing from ghcr.io, and the Cachix cache cobaltcore serves store paths when it is reachable. A manual run, workflow_dispatch, takes the push path; the workflow has no tag trigger.](../../diagrams/ci-image-publish.svg)
 
+**Library patch:** every service image, nova-compute and tempest included,
+carries `nix/lib/patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch`, which
+`nix/lib/python-env.nix` applies to the dogpile.cache 1.5.0 of every lock
+([Nix Image Build](./nix-image-build.md#python-environments-and-locks)).
+dogpile.cache's `PyMemcacheBackend` drops the `socket_timeout` that oslo.cache
+passes it, so without the patch a cache call against a Memcached that stops
+answering blocks for as long as TCP does: one Keystone read took 213 s under a
+120 s partition (#1560). With the patch, `[cache] socket_timeout` (default
+1.0 s) bounds every cache call of Keystone and of nova-api, nova-metadata and
+nova-conductor, and every pymemcache error is a cache miss. A failed `set` or
+`delete` is dropped the same way: an invalidation a worker issues while it
+cannot reach Memcached does not reach the other workers, and they serve the old
+entry until it expires. A `socket_timeout` of `0` turns the cache off, because
+every call then misses at once. `[cache] enable_retry_client` retries no network
+error: the client returns a miss before the retrying wrapper sees an exception.
+With
+`distributed_lock` in `[cache] backend_argument`, pymemcache errors raise as
+they do upstream, bounded by the timeouts: dogpile's `MemcachedLock` loops until
+`add()` succeeds, and a miss there would hold every cache fill until Memcached
+answers again.
+`test_pymemcache_backend_bounded` in `verify_keystone.sh` and `verify_nova.sh`
+checks both timeouts, `ignore_exc` and the misses in the built image. Horizon
+uses pymemcache through Django instead of dogpile.cache, and the
+horizon-operator renders the same bound as cache `OPTIONS`;
+`test_django_pymemcache_bounded` in `verify_horizon.sh` checks those option
+names against the image's Django. Upstream status: not reported; #1562 tracks
+the patch.
+
 ### keystone
 
 **Location:** `images/keystone/image.nix`, built from the lock
@@ -91,6 +119,63 @@ bash tests/container-images/verify_keystone.sh keystone:2026.1
 [Labels and reproducibility](./nix-image-build.md#labels-and-reproducibility);
 `org.opencontainers.image.version` is the keystone ref of the lock.
 
+**Source patch:**
+`patches/keystone/2026.2/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch`
+and its 2026.1 twin
+`patches/keystone/2026.1/0001-expand-implied-roles-in-linear-time-and-look-up-each-role-once.patch`
+remove the two costs of listing effective role assignments in
+`keystone/assignment/core.py` (issue #1459). `add_implied_roles` checks
+every implied ref against a list of the refs it has already expanded, so
+its time grows with the square of the result: 0.22 s for 4,000 member
+assignments that each imply reader, in the published images of both
+releases. `_strip_domain_roles` then calls `get_role` once per resulting
+assignment, which is two SQL statements each when no cache answers. The
+listing backs `GET /v3/role_assignments?effective`,
+`GET /v3/users/{user_id}/projects`, `GET /v3/auth/projects` and
+`GET /v3/auth/domains`, and `add_implied_roles` also runs in every token's
+role resolution. Keystone caches the computed assignments until the next
+role grant, project change or group membership change flushes them, and
+CobaltCore creates role assignments from namespace orders (#1329), so
+their number grows with every tenant. The patches keep the checked refs as
+a set of hashable keys, which takes the 4,000 assignments to 0.017 s with
+the same output in the same order, and call `get_role` once per distinct
+role ID of a listing, where upstream calls it once per assignment.
+`get_role` reads through the role cache, which a role grant does not flush,
+and resolves an ID the way MariaDB does, without regard to letter case; a
+role that does not exist still raises `RoleNotFound`. A first version read
+the roles with one `list_roles_from_ids` call, which no cache answers, so a
+validation that recomputes its roles made two SQL statements where upstream
+reads the role cache; under the `cold-role-cache` profile of the
+`keystone-pressure` job its validate p50 was 8 to 13 % above `main`'s in
+both releases. No existing upstream test moves; the patches add eight tests
+to `ImpliedRoleTests` in `keystone/tests/unit/assignment/test_backends.py`
+for the expansion order through a cycle, the empty inputs, the
+`NotImplemented` and lookup-error paths, the lookups of an effective
+listing, the unknown role and the lookup once per spelled role ID.
+`test_implied_role_patch_applied` in `tests/container-images/verify_keystone.sh`
+counts the ref comparisons and role lookups in the built image. The patches
+need no operator configuration and reach the image as the
+[glance](#glance) section describes. Upstream status: not yet proposed.
+They retire once a keystone tag carries the change, which
+`.claude/skills/add-image-patch/scripts/check-image-patches.sh --apply`
+reports as reverse-applying.
+
+`patches/keystone/2026.1/0002-fix-clock-race-in-totp-previous-windows-tests.patch`
+and its 2026.2 twin are test-only. Three tests of `TestAuthTOTP` in
+`keystone/tests/unit/test_v3_auth.py` build a passcode for a time derived from
+the current time and only then stop the clock with `TimeFixture()`, which reads
+the current time again. The TOTP plugin accepts the window of the stopped clock
+and `[totp] included_previous_windows` windows before it, so a 30-second window
+boundary between the two reads makes the passcode one window too old. The test
+then fails with "Bad response: 401 UNAUTHORIZED (not 201)", as
+`test_with_passcode_in_previous_windows_default` did once in
+`test-service-images (keystone, 2026.1)` on 2026-10-24. The two previous-windows
+tests now stop the clock at the instant they derived the passcode's time from,
+and `test_with_passcode_no_previous_windows` stops it before it builds the
+passcode; the assertions are unchanged. The patch changes nothing at runtime.
+Upstream status: proposed as
+[openstack/keystone change 1012064](https://review.opendev.org/c/openstack/keystone/+/1012064).
+
 ### horizon
 
 **Location:** `images/horizon/image.nix`, built from the lock
@@ -115,6 +200,16 @@ image are horizon's own:
   mounts the rendered Django settings ConfigMap. The image creates
   `/etc/openstack-dashboard/`, owned by root; the link dangles until the
   ConfigMap is mounted
+
+The venv holds horizon with the one `pip_packages` entry of
+`releases/<release>/extra-packages.yaml`: `oslo.log`, pinned in
+`upper-constraints.txt`. The horizon-operator names
+`oslo_log.formatters.JSONFormatter` in the rendered `LOGGING` settings when
+`spec.logging.format` is `json`. Horizon 27.0.0 (2026.2) dropped
+`python-neutronclient` and with it the only package that installed
+`oslo.log`, so both releases declare it. `test_oslo_log_json_formatter_importable`
+in `tests/container-images/verify_horizon.sh` imports the formatter in the
+built image.
 
 **Runtime packages:** none beyond the venv; the pymemcache session-cache client
 and uwsgi come from the base pins of `nix/base-requirements.txt`.
@@ -597,6 +692,26 @@ proposed; master replaced both tests when the backup service moved to native
 threads (`c07c49c586`). Cinder 29.0.0 carries that commit, so 2026.2 needs no
 twin.
 
+`patches/cinder/2026.2/0004-tests-collect-garbage-before-tpool-killall.patch`
+and its 2026.1 twin
+`patches/cinder/2026.1/0005-tests-collect-garbage-before-tpool-killall.patch`
+(the same hunks, cut from 28.0.0) are test-only as well. The base `TestCase`
+cleanup calls `tpool.killall()` after every test, so each test that uses the
+pool starts its threads again in `tpool.setup()`. When a garbage collection
+finalizes one of the leaked `RBDVolumeIOWrapper` objects during that setup,
+the wrapper's flush runs through `tpool.execute()` before the pool can answer
+it: on the thread in `setup()` the reply reader is not spawned yet, and on a
+pool thread that is still starting, the flush waits on an eventlet hub of its
+own. The stestr worker hangs, and `test-service-images (cinder, 2026.2)` ran
+into its 90-minute timeout in 6 of 48 runs between 2026-10-06 and 2026-10-22
+(2026.1: 3 of 91 since 2026-09-21). The patches run `gc.collect()` in the
+cleanup before `tpool.killall()` whenever the test started the pool, so such
+wrappers are finalized on the test's own thread while the pool still answers.
+The suite takes about 13 % longer (448 s against 397 s on four cores), and the
+patches change nothing at runtime. For 2026.1, `0003` stays, because the
+cleanup does not collect the garbage of tests that never start the pool.
+Upstream status: not yet proposed for 28.0.0 or 29.0.0.
+
 `patches/cinder/2026.1/0004-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch`
 and its 2026.2 twin
 `patches/cinder/2026.2/0003-scheduler-fall-back-to-the-service-registry-for-backup-hosts.patch`
@@ -631,6 +746,50 @@ name, the driver case and the empty registry.
 built image with mocks: an empty report set resolves to the registered
 service, and a report wins without consulting the registry. Upstream status:
 not yet proposed.
+
+`patches/cinder/2026.2/0005-service-stop-the-coordinator-after-the-rpc-servers-drained.patch`
+and its 2026.1 twin
+`patches/cinder/2026.1/0006-service-stop-the-coordinator-after-the-rpc-servers-drained.patch`
+(the same hunks, cut from 28.0.0) keep the coordinator of a cinder-volume or
+cinder-backup until the RPC handlers it dispatched have finished.
+`Service.stop()` in `cinder/service.py` stops the RPC servers and then
+`coordination.COORDINATOR`, one call after the other, while the handlers the
+servers dispatched before run on until `Service.wait()` returns from
+`rpcserver.wait()`. A handler that takes a coordination lock in that window
+fails with `LockCreationFailed: Coordinator uninitialized.`: a create through
+`NfsDriver.create_volume` leaves its volume in `error`, a delete through
+`NfsDriver.delete_volume` in `error_deleting`, which the API refuses to delete
+again and no startup cleanup revisits. Every graceful stop of a cinder-volume
+opens the window, the Recreate rollout of an upgrade among them: CI run
+40409391608 left a volume of `cinder-upgrade-broker-pod-kill` undeletable that
+way, and a local rerun caught a create failing 4.4 s after the SIGTERM of the
+2026.1 cinder-volume. The patch moves `COORDINATOR.stop()` into
+`Service.wait()`, after the three `rpcserver.wait()` calls. No upstream test
+pins where the coordinator stops, so the patch adds
+`test_service_stop_keeps_coordinator_until_rpcserver_drained` to
+`ServiceTestCase` in `cinder/tests/unit/test_service.py`.
+`tests/container-images/verify_cinder.sh` drives `stop()` and `wait()` against
+the built image with a mocked RPC server and coordinator and asserts the
+order. Upstream status: not yet proposed.
+
+`patches/cinder/2026.1/0007-set-a-volume-to-error-when-its-create-loses-the-database.patch`
+and its 2026.2 twin
+`patches/cinder/2026.2/0006-set-a-volume-to-error-when-its-create-loses-the-database.patch`
+keep a volume out of `creating` when the database goes away during its create.
+The manager's flow starts with `ExtractVolumeRefTask`, which refreshes the
+volume. When that fails on the lost database, its revert returns at once, no
+later task ran, and the volume stays in `creating`, where no user can delete
+it, until cinder-volume restarts. A later task gets no further:
+`common.error_out` saves the status once and logs the failure. The patch sets
+the volume to `error` when the task's failure is a `DBConnectionError`, and
+`error_out` saves with retries whose waits add up to 254 seconds. A
+`VolumeNotFound` still reverts to nothing. Random chaos found this: a
+`mariadb-pod-kill` hit a volume between the API's commit and cinder-volume's
+refresh, and dizzy's teardown failed on it. No upstream test pins either path,
+so the patch adds `VolumeCreateLostDatabaseTestCase` to
+`cinder/tests/unit/volume/flows/test_create_volume_flow.py`.
+`tests/container-images/verify_cinder.sh` drives the revert against the built
+image. Upstream status: not yet proposed.
 
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
@@ -872,6 +1031,24 @@ default `$state_path/instances` a compute expects to exist. The nova-operator
 mounts an `emptyDir` over `/var/lib/nova`, so the two directories in the image
 are what a plain `docker run` gets.
 
+**Source patch:**
+`patches/nova/2026.1/0001-do-not-leave-deleting-behind-when-a-server-delete-fails.patch`
+and its 2026.2 twin keep a server deletable after a delete failed. Upstream's
+`API._delete` saves the task state `deleting` first. With the compute service
+reported down it deletes locally, and when a call to Neutron, Cinder or
+Placement fails, the user gets the error and the server keeps that task state.
+Once the service reports again, every later delete answers 204 and does
+nothing until nova-compute restarts. `_init_instance` has the same gap for the
+deletion it restarts at service start. The patch clears the task state in both
+places, so the next delete reaches the compute service. Nightly random chaos
+found the defect (issues #1575, #1581, #1582 and #1583): a MariaDB outage is
+enough, because nova-compute misses its service reports while the database is
+down and the Neutron call fails in the same outage.
+`test_init_instance_stuck_in_deleting_raises_exception` moved with the patch,
+`test_delete_failed_local_delete_clears_task_state` is new, and
+`verify_nova.sh` drives a failing local delete in the built image. Upstream
+status: not yet proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -899,7 +1076,7 @@ runs counted 16,803 tests at 33.0.0, with 63 skips and 2 expected failures, and
 environment-dependent failure.
 
 **Image contract check:** `tests/container-images/verify_nova.sh` is the hard
-gate. Its 14 tests cover `nova-manage --version` and `nova-status --help`, the
+gate. Its 16 tests cover `nova-manage --version` and `nova-status --help`, the
 importability of `nova` and of `nova.virt.fake`, `os_vif`, `os_brick`,
 `websockify`, `oslo_privsep` and `oslo_limit`, together with the
 `ModuleNotFoundError` an `import libvirt` has to raise. Then come the three
@@ -928,18 +1105,20 @@ and owned by 42424 along with their parent, and an x509 keypair: the test
 calls `generate_winrm_x509_cert` from `nova/crypto.py`, which runs
 `openssl req` and `openssl pkcs12` the way nova-api does for
 `POST /os-keypairs` with `"type": "x509"`, and expects a PEM certificate.
+The last test checks that `[cache] socket_timeout` bounds the pymemcache client
+of the [library patch](#service-images).
 The WSGI check inspects the two modules instead of importing them: an import
 runs `wsgi_app.init_application` at module level and dies with
 `ConfigFilesNotFoundError` in a bare image. So it pairs
 `importlib.util.find_spec` for each module path with an `ast.parse` of the
 module source, and rejects a module whose only module-level binding of
 `application` is the `None` sentinel.
-Both release images pass all 62 assertions.
-Pointed at a cinder image the script exits 1 with 40 of them failing. The 22
+Both release images pass all 63 assertions.
+Pointed at a cinder image the script exits 1 with 40 of them failing. The 23
 that pass are the non-root, build-tool, uwsgi and sudo checks, the absence of
 libvirt, the non-empty output of `nova-manage` and `nova-status` (an error
-message there), and six assertions of the probe test that hold without the
-probe.
+message there), six assertions of the probe test that hold without the
+probe, and the pymemcache bound, which the cinder image carries too.
 
 **Build and verify:**
 

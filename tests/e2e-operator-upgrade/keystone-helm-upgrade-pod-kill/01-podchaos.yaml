@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos killing every keystone-operator pod while the helm upgrade rolls
+# the operator: the selector of ../../e2e-chaos/operator-pod-kill/01-podchaos.yaml.
+# mode: all takes the old pods and the new :dev pods the rollout has started
+# at the moment of the apply, and gracePeriod: 0 kills them without the
+# manager's graceful shutdown, so the Deployment controller creates every
+# replacement and a new leader starts from the objects alone. The selector
+# matches the operator's pods in keystone-system and nothing else.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-operator-mid-upgrade
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - keystone-system
+    labelSelectors:
+      app.kubernetes.io/name: keystone-operator
+  gracePeriod: 0

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch adding an override of the operator-owned STATIC_ROOT, again with the
+# value the operator renders. The overridden-key set changes, so the guard
+# records a second event.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-events
+  namespace: openstack
+spec:
+  extraConfig:
+    WEBROOT: "/"
+    STATIC_ROOT: /var/lib/openstack/horizon-static

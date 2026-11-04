@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The message bus whose pod this suite kills in the middle of a release
+# upgrade: a copy of ../cinder-broker-pod-kill/00-rabbitmqcluster.yaml under
+# the name cinder-upg-bus-rabbitmq.
+#
+# A broker of its own rather than a vhost on the kind-only shared-rabbitmq:
+# the fault takes the whole broker away, and doing that to the shared one
+# would take every other suite of the leg down with it.
+#
+# One replica. The RabbitMQ Cluster Operator's image and persistence defaults
+# stay, so the broker comes back on its own volume. Its resource default does
+# not: 1 CPU and 2Gi per pod leave the next pod of the single kind node
+# Pending on "Insufficient cpu".
+#
+# The cluster-operator labels the broker's pods app.kubernetes.io/name=<cluster
+# name> and names the single server pod <cluster>-server-0, which
+# 04-podchaos.yaml, the kill step and the teardown use.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: cinder-upg-bus-rabbitmq
+  namespace: openstack
+spec:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi

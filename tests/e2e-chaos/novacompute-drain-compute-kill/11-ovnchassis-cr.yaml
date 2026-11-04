@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A copy of the fixture of ../../e2e/nova/compute-node-pool/ under the
+# nova-drain prefix, for novacompute-drain-compute-kill.
+#
+# The OVN chassis on the one kind node. The nova-compute pod of
+# nova-drain-pool waits in its wait-for-chassis init container until this
+# chassis has written its system-id into the node's Open vSwitch database,
+# which is the gate the NovaCompute DaemonSet carries.
+#
+# The selector matches the label step 1 puts on the node. No bridge mappings and
+# no gateway: there is no provider network on a kind node to map. spec.image is
+# left unset so the operator resolves the OVN image the control plane runs.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: nova-drain-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: nova-drain-ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"

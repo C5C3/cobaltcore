@@ -7,7 +7,8 @@ Consuming charts render it with a one-line template that passes the root context
 
 All settings (image, replicas, resources, nodeSelector, tolerations,
 priorityClassName, webhook, leaderElection, metrics, rbac.namespaceScoped,
-logging, extraArgs, extraEnv) are read from the consuming chart's .Values.
+logging, extraArgs, extraEnv, extraVolumes, extraVolumeMounts) are read from
+the consuming chart's .Values.
 What only the chart knows — an operator-specific flag derived
 from its own values, an environment variable — comes through the
 "operator-library.chart.args" and "operator-library.chart.env" hooks (see
@@ -144,11 +145,16 @@ spec:
               port: 8081
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if .Values.webhook.enabled }}
+          {{- if or .Values.webhook.enabled .Values.extraVolumeMounts }}
           volumeMounts:
+            {{- if .Values.webhook.enabled }}
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
               readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -158,10 +164,15 @@ spec:
             readOnlyRootFilesystem: true
             seccompProfile:
               type: RuntimeDefault
-      {{- if .Values.webhook.enabled }}
+      {{- if or .Values.webhook.enabled .Values.extraVolumes }}
       volumes:
+        {{- if .Values.webhook.enabled }}
         - name: webhook-certs
           secret:
             secretName: {{ include "operator-library.fullname" . }}-webhook-cert
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
 {{- end }}

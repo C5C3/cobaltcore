@@ -129,16 +129,8 @@ func buildMetadataDeployment(nova *novav1alpha1.Nova, art configArtifacts,
 				Name:          "nova-metadata",
 				ContainerPort: novaMetadataPort,
 			}},
-			StartupProbe: novaUWSGIStartupProbe(novaMetadataPort),
-			LivenessProbe: &corev1.Probe{
-				ProbeHandler:        novaUWSGIProbeHandler(novaMetadataPort),
-				InitialDelaySeconds: 15,
-				PeriodSeconds:       20,
-				// A single-worker API holds the probe's GET for the whole request in
-				// flight, so the kubelet's 1s default restarts a busy API (#1294). 10s
-				// is the readiness probe's timeout, below the 20s period.
-				TimeoutSeconds: 10,
-			},
+			StartupProbe:  novaUWSGIStartupProbe(novaMetadataPort),
+			LivenessProbe: novaUWSGILivenessProbe(novaMetadataPort),
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        novaUWSGIProbeHandler(novaMetadataPort),
 				InitialDelaySeconds: 10,

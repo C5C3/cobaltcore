@@ -615,7 +615,9 @@ version document, which the API answers without a token and without touching the
 database, so a 2xx there means the WSGI application is serving. The probe target
 is always the in-cluster Service URL, independent of `spec.gateway`. A successful
 probe is cached for 30 seconds per CR, keyed on the CR's UID and the endpoint, so
-a steady-state pass fires no synchronous GET. A placed `Neutron` is probed
+a steady-state pass fires no synchronous GET. A converged pass is requeued for the
+moment that entry expires (`healthcheck.ScheduleReprobe`), so the API is probed at
+least every 30 seconds without an event. A placed `Neutron` is probed
 through the target API server's service proxy, because its Service URL resolves
 on that cluster and nowhere else.
 
@@ -628,7 +630,7 @@ on that cluster and nowhere else.
 | `False` | `ConnectionFailed` | "connection failed: \<error\>" | `RequeueHealthCheck` |
 | `False` | `HealthCheckFailed` | "health check failed: \<error\>" | `RequeueHealthCheck` |
 | `False` | `APIUnhealthy` | "Neutron API returned HTTP \<code\>", plus an excerpt of the body when there is one | `RequeueHealthCheck` |
-| `True` | `APIHealthy` | "Neutron API is responding at \<url\>" | none |
+| `True` | `APIHealthy` | "Neutron API is responding at \<url\>" | until the probe-cache entry expires (at most 30s) |
 
 **Error handling:** Every network error requeues without an error return, so a
 restarting API paces the retry on the 10 s interval. A cancelled parent context
@@ -895,7 +897,7 @@ status subresource the apply strips out.
 | --- | --- | --- |
 | `RequeueSecretPolling` (`internal/common/reconcile/intervals.go`) | 15s | The secret-store and credential gates on both kinds, the derived DSN and transport-URL waits, every polling arm of the two OVN steps and of the chassis step, and the target-cluster hold on both controllers |
 | `RequeueDeploymentPolling` (`internal/common/reconcile/intervals.go`) | 10s | Deployment and DaemonSet readiness polling: the API Deployment, the two workers, the metadata-agent DaemonSet, and the wait for a Gateway to accept the route |
-| `RequeueHealthCheck` (`internal/common/healthcheck/healthcheck.go`) | 10s | Every not-ready outcome of the API probe. The probe itself is bounded by a 10s timeout, and a success is reused for 30s from the shared cache |
+| `RequeueHealthCheck` (`internal/common/healthcheck/healthcheck.go`) | 10s | Every not-ready outcome of the API probe. The probe itself is bounded by a 10s timeout, and a success is reused for 30s from the shared cache; a converged pass requeues when that cache entry expires |
 | `RequeueDatabaseWait` (`requeue_intervals.go`) | 30s | The MariaDB cluster and CR gates, the `WaitingForConfig` gate, the db-sync Job wait, the tag-side image check, and the finalizer hold while the MariaDB CRs tear down |
 | `RequeueUpgradeWait` (`requeue_intervals.go`) | 30s | The expand, migrate and contract Job waits |
 | `RequeueNextPass` (`internal/common/reconcile/intervals.go`) | 1s | The single pass after a finalizer was added, and the pass that flips the upgrade phase from `RollingUpdate` to `Contracting` |

@@ -417,28 +417,28 @@ With `list` removed, `get` no longer follows it: `generators.external-secrets.io
 | Kind | Verbs | Outcome | Marker or call site |
 | --- | --- | --- | --- |
 | `configmaps` | `delete` | kept | `internal/common/config/config.go:517` (`pruneImmutableObjects`) |
-| `configmaps` | `update`, `patch` | removed | `operators/horizon/internal/controller/horizon_controller.go:217` |
+| `configmaps` | `update`, `patch` | removed | `operators/horizon/internal/controller/horizon_controller.go:216` |
 | `services` | `delete` | kept | `operators/horizon/internal/controller/reconcile_deployment.go:125` (`reconcileDeployment`) |
 | `services` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:215` |
 | `events` | `patch` | kept | `internal/common/config/ownership.go:154` (`RecordExtraConfigHealth`) |
 | `apps/deployments` | `delete` | kept | `internal/common/deployment/deployment.go:53` (`EnsureDeployment`) |
 | `apps/deployments` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:213` |
 | `autoscaling/horizontalpodautoscalers` | `create`, `patch` | kept | `internal/common/deployment/deployment.go:174` (`EnsureHPA`) |
-| `autoscaling/horizontalpodautoscalers` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:226` |
+| `autoscaling/horizontalpodautoscalers` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:224` |
 | `autoscaling.k8s.io/verticalpodautoscalers` | `create`, `patch` | kept | `internal/common/deployment/vpa_flow.go:190` (`ReconcileVPAs`) |
 | `autoscaling.k8s.io/verticalpodautoscalers` | `delete` | kept | `internal/common/deployment/vpa_flow.go:213` (`ReconcileVPAs`) |
-| `autoscaling.k8s.io/verticalpodautoscalers` | `list`, `watch` | kept | `operators/horizon/internal/controller/horizon_controller.go:592` (`SetupWithManager`) |
-| `autoscaling.k8s.io/verticalpodautoscalers` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:230` |
+| `autoscaling.k8s.io/verticalpodautoscalers` | `list`, `watch` | kept | `operators/horizon/internal/controller/horizon_controller.go:590` (`SetupWithManager`) |
+| `autoscaling.k8s.io/verticalpodautoscalers` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:228` |
 | `external-secrets.io/externalsecrets` | `list`, `watch` | kept | `internal/common/secrets/secrets.go:68` (`WaitForExternalSecret`) |
-| `gateway.networking.k8s.io/httproutes` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:233` |
+| `gateway.networking.k8s.io/httproutes` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:231` |
 | `horizon.openstack.c5c3.io/horizons` | `create`, `patch`, `delete` | removed | `operators/horizon/internal/controller/horizon_controller.go:208` |
 | `horizon.openstack.c5c3.io/horizons` | `update` | kept | `internal/common/reconcile/finalizer.go:25` (`EnsureFinalizer`) |
 | `horizon.openstack.c5c3.io/horizons/finalizers` | `update` | kept | `internal/common/apply/apply.go:53` (`EnsureObject`) |
 | `horizon.openstack.c5c3.io/horizons/status` | `patch` | removed | `operators/horizon/internal/controller/horizon_controller.go:209` |
-| `networking.k8s.io/networkpolicies` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:231` |
+| `networking.k8s.io/networkpolicies` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:229` |
 | `policy/poddisruptionbudgets` | `delete` | kept | `operators/horizon/internal/controller/reconcile_deployment.go:130` (`reconcileDeployment`) |
-| `policy/poddisruptionbudgets` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:224` |
-| `scheduling.k8s.io/priorityclasses` | `list`, `watch` | removed | `operators/horizon/internal/controller/horizon_controller.go:250` |
+| `policy/poddisruptionbudgets` | `update` | removed | `operators/horizon/internal/controller/horizon_controller.go:223` |
+| `scheduling.k8s.io/priorityclasses` | `list`, `watch` | removed | `operators/horizon/internal/controller/horizon_controller.go:248` |
 | `coordination.k8s.io/leases` | `list`, `watch`, `patch`, `delete` | removed | `hack/gen-helm-rbac-rules.py` (`LEADER_ELECTION_RULE`) |
 
 With `list` removed, `get` no longer follows it: `scheduling.k8s.io/priorityclasses` keeps `get` for `internal/common/validation/validation.go:312` (`PriorityClassExists`).

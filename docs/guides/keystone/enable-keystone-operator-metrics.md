@@ -16,72 +16,22 @@ For the authoritative metric catalogue (names, labels, buckets), see
 For the controller-side instrumentation contract, see
 [Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
 
-::: tip On kind
-If you are running the standalone kind environment, the prometheus-operator CRDs,
-Prometheus, Grafana, and the bundled `Keystone Operator` dashboard are
-already wrapped behind a single opt-in flag — none of the manual steps
-below are required:
-
-```bash
-WITH_PROMETHEUS=true make deploy-infra
-```
-
-`make deploy-infra` will install `kube-prometheus-stack` from the kind
-overlay (`deploy/kind/prometheus/`), patch the keystone-operator
-HelmRelease to flip `monitoring.serviceMonitor.enabled=true`, and wait
-for the scrape targets to come up. See
-[Deploy Keystone Locally — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui)
-for the port-forward, default credentials, and the Prometheus targets
-sanity-check.
-
-The remainder of this guide is the **canonical non-kind path** —
-production overlays (`deploy/flux-system/`) omit the
-stack so production clusters can wire their own Prometheus, and the
-sections below cover that wiring end-to-end.
-:::
-
----
-
 ## Prerequisites
 
 ::: info Devstack
 This guide is written against the **[Deploy Keystone Locally](../../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
-KIND_HOST_PORT=8443 WITH_PROMETHEUS=true make deploy-infra
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=false WITH_CONTROLPLANE_CR=false WITH_PROMETHEUS=true make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step, so the keystone-operator
-is running with kube-prometheus-stack scraping it. (On kind the `WITH_PROMETHEUS`
-opt-in above wires the manual steps below automatically — see the tip above.)
+and a Keystone CR are running.
 :::
 
-- A cluster with the `keystone-operator` Helm release installed and the
-  operator Pod healthy (`Ready` condition `True`).
-- **prometheus-operator CRDs installed.** The chart does *not* install
-  `monitoring.coreos.com/v1` CRDs; attempting to render the
-  ServiceMonitor without them results in a `no matches for kind
-  "ServiceMonitor"` error from `kubectl apply`. Install via the upstream
-  bundle or the `prometheus-operator-crds` chart:
-
-  ```bash
-  kubectl apply --server-side -f \
-    https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml
-  ```
-
-- A running Prometheus instance whose `serviceMonitorSelector` matches
-  the operator chart's release labels (the default
-  `kube-prometheus-stack` selector of
-  `release: <prometheus-release-name>` will **not** pick up the
-  operator ServiceMonitor unless you either add that label or widen the
-  selector). Check the Prometheus CR:
-
-  ```bash
-  kubectl get prometheus -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.serviceMonitorSelector}{"\n"}{end}'
-  ```
-
-- A running Grafana instance with network access to the Prometheus
-  data source above.
+For a non-kind installation, use your own Prometheus and Grafana instances.
+The production overlays (`deploy/flux-system/`) omit kube-prometheus-stack.
+Step 1 describes the CRD and selector requirements for that setup.
 
 ---
 
@@ -89,19 +39,69 @@ opt-in above wires the manual steps below automatically — see the tip above.)
 
 ### 1. Enable the ServiceMonitor via Helm
 
-Set `monitoring.serviceMonitor.enabled=true` (the interval defaults to
-`30s`; override only if your retention budget requires a different
-cadence):
+On the standalone Keystone devstack, `WITH_PROMETHEUS=true` installs Prometheus,
+Grafana, and the bundled `Keystone Operator` dashboard, and sets
+`monitoring.serviceMonitor.enabled=true` on the keystone-operator
+HelmRelease. Once that release reconciles, the ServiceMonitor is already
+enabled; skip the enable commands and confirm the object below.
+If the HelmRelease is suspended, the value is stored but no ServiceMonitor
+is rendered until the release is resumed or the chart is installed separately
+with that value.
+
+::: details Connecting an existing Prometheus (non-kind)
+The operator chart does not install the prometheus-operator CRDs.
+Install them before enabling the ServiceMonitor, using your cluster's
+prometheus-operator CRD bundle or the `prometheus-operator-crds` chart.
+For the ServiceMonitor CRD alone:
 
 ```bash
-helm upgrade --install keystone-operator \
-  oci://ghcr.io/c5c3/charts/keystone-operator \
-  --namespace keystone-system \
-  --set monitoring.serviceMonitor.enabled=true \
-  --set monitoring.serviceMonitor.interval=30s
+kubectl apply --server-side -f \
+  https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/main/example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml
 ```
 
-Or equivalently in a values file:
+Without that CRD, enabling the ServiceMonitor fails with
+`no matches for kind "ServiceMonitor"`.
+
+The Prometheus CR's `serviceMonitorNamespaceSelector` must include
+`keystone-system`, and its `serviceMonitorSelector` must match the
+ServiceMonitor's labels. A selector of `release: <prometheus-release-name>`
+does not match the operator chart's labels. Adjust the selector or manage
+an additional matching label on the ServiceMonitor. Check both selectors:
+
+```bash
+kubectl get prometheus -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.spec.serviceMonitorSelector}{"\t"}{.spec.serviceMonitorNamespaceSelector}{"\n"}{end}'
+```
+
+Grafana needs a Prometheus data source with network access to that instance.
+:::
+
+The standalone walkthrough manages the operator through a Flux `HelmRelease`.
+If monitoring is not enabled, patch that resource; Flux's helm-controller
+reverts out-of-band Helm changes on its next reconcile:
+
+```bash
+kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
+  -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":true}}}}}'
+
+kubectl wait helmrelease/keystone-operator -n keystone-system \
+  --for=condition=Ready --timeout=5m
+```
+
+The scrape interval defaults to `30s`. To change it, set
+`spec.values.monitoring.serviceMonitor.interval` on the HelmRelease.
+
+::: details Helm-managed installations (non-Flux)
+If you installed the operator directly with Helm, enable monitoring while
+preserving the release's other values:
+
+```bash
+helm upgrade keystone-operator \
+  oci://ghcr.io/c5c3/charts/keystone-operator \
+  --namespace keystone-system --reuse-values \
+  --set monitoring.serviceMonitor.enabled=true
+```
+
+Or merge this into your existing values file:
 
 ```yaml
 # values.yaml
@@ -110,6 +110,10 @@ monitoring:
     enabled: true
     interval: 30s
 ```
+
+Do not run a raw `helm upgrade` against an actively Flux-managed release.
+Use the HelmRelease patch above instead.
+:::
 
 Confirm the ServiceMonitor object was created:
 
@@ -126,6 +130,31 @@ keystone-operator   3s
 ```
 
 ### 2. Import the reference Grafana dashboard
+
+On the standalone Keystone devstack, open Grafana by keeping this command running
+in a separate terminal:
+
+```bash
+kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+```
+
+Open <http://localhost:3000>. Retrieve the login credentials from the
+chart-managed Secret in another terminal:
+
+```bash
+kubectl -n monitoring get secret kube-prometheus-stack-grafana \
+  -o jsonpath='{.data.admin-user}' | base64 -d; echo
+kubectl -n monitoring get secret kube-prometheus-stack-grafana \
+  -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+
+Use those credentials only for the local devstack. For a non-kind Grafana,
+use its configured URL and credentials. See
+[Deploy Keystone Locally, Grafana UI](../../quick-start-extended.md#step-4c-grafana-ui)
+for the local stack's access and target checks.
+
+On the devstack, select **Dashboards → Keystone Operator**: the dashboard is
+already provisioned. If you use your own Grafana, import it as follows.
 
 The repository ships a reference dashboard in
 [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/dashboards/keystone-operator.json)
@@ -199,6 +228,11 @@ scraping the operator Pod directly. Port-forward the metrics port
 ```bash
 kubectl -n keystone-system port-forward \
   deployment/keystone-operator 8080:8080
+```
+
+Keep the port-forward running and scrape from another terminal:
+
+```bash
 curl -s http://localhost:8080/metrics \
   | grep -E '^# (TYPE|HELP) keystone_operator_'
 ```
@@ -213,7 +247,9 @@ example:
 ```
 
 If the Pod serves metrics but Prometheus does not scrape them, the
-mismatch is in the `serviceMonitorSelector` (see Prerequisites).
+mismatch is likely in the `serviceMonitorSelector` (see Step 1).
+Also check `serviceMonitorNamespaceSelector`, the ServiceMonitor's Service
+selector, and network access from Prometheus to the metrics port.
 
 ---
 
@@ -236,7 +272,7 @@ Operators with stricter cluster policies must take extra steps:
   east-west traffic by default need an explicit ingress
   NetworkPolicy permitting the Prometheus Pod's selector to reach the
   operator on port `8080`. The operator chart ships this as
-  `networkPolicy.allowMetricsFrom` — see
+  `networkPolicy.allowMetricsFrom`; see
   [Enable the Keystone Operator NetworkPolicy](./enable-keystone-operator-networkpolicy.md).
   Without it the ServiceMonitor renders successfully but every scrape
   times out and the target reports `Down`.
@@ -246,19 +282,19 @@ Operators with stricter cluster policies must take extra steps:
   `:8080` endpoint, OR exempt the operator Pod from strict-mTLS
   enforcement for the metrics port.
 - **Required TLS / authn at the controller-runtime level.** Changing the
-  *port* is a chart value (`metrics.port`), but changing the *scheme* is not:
+  port is a chart value (`metrics.port`), but changing the scheme is not:
   if the threat model demands the operator itself serve metrics over HTTPS or
   enforce a token-based AuthN, switch the `metricsserver.Options` in
   `internal/common/bootstrap/manager.go` to the controller-runtime
   `SecureServing` configuration and bind a cert/key pair (for example by
   mounting a cert-manager-issued Secret on the operator Deployment). The chart
-  does not ship this configuration — it is a stack-wide bootstrap change rather
+  does not ship this configuration. It is a stack-wide bootstrap change rather
   than a per-operator override.
 
 The metrics endpoint exposes **no credentials, secrets,
-or per-tenant payloads** — only Prometheus collector samples described
+or per-tenant payloads**. It serves Prometheus collector samples described
 in the
-[reference catalogue](../../reference/keystone-operator-metrics.md) — so
+[reference catalogue](../../reference/keystone-operator-metrics.md), so
 the default plain-HTTP exposure is appropriate for cluster-internal
 scraping. The hardening guidance above applies only when external
 policy demands a stricter posture.
@@ -267,7 +303,18 @@ policy demands a stricter posture.
 
 ## Disabling
 
-To disable the ServiceMonitor without uninstalling the operator:
+For the Flux-managed devstack, disable the ServiceMonitor without uninstalling
+the operator by patching its HelmRelease:
+
+```bash
+kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
+  -p '{"spec":{"values":{"monitoring":{"serviceMonitor":{"enabled":false}}}}}'
+
+kubectl wait helmrelease/keystone-operator -n keystone-system \
+  --for=condition=Ready --timeout=5m
+```
+
+For a directly Helm-managed installation instead:
 
 ```bash
 helm upgrade keystone-operator \
@@ -277,17 +324,17 @@ helm upgrade keystone-operator \
   --set monitoring.serviceMonitor.enabled=false
 ```
 
-The operator continues to serve `/metrics` on port `8080` — only the
+The operator continues to serve `/metrics` on port `8080`. Only the
 ServiceMonitor (and therefore the Prometheus scrape) is removed.
 
 ---
 
 ## See also
 
-- [Keystone Operator Prometheus Metrics](../../reference/keystone-operator-metrics.md) — authoritative metric catalogue.
-- [Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation) — how sub-reconcilers are instrumented.
-- [Observability & Diagnostics](../observability.md) — conditions, events, and logs.
-- [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.
+- [Keystone Operator Prometheus Metrics](../../reference/keystone-operator-metrics.md): authoritative metric catalogue.
+- [Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation): how sub-reconcilers are instrumented.
+- [Observability & Diagnostics](../observability.md): conditions, events, and logs.
+- [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/dashboards/keystone-operator.json): reference Grafana dashboard.
 
 ## Tested by
 

@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos killing the nova-compute pod of nova-drain-pool while its node
+# drains. The selector is the pod selector of the pool's DaemonSet
+# nova-drain-pool-nova-compute (reconcile_novacompute_daemonset.go), so it
+# matches the pods of this pool and no other compute. mode: all covers the one
+# pod on the one kind node, and gracePeriod: 0 kills it without nova-compute's
+# graceful stop, so the new process starts from Nova's records alone. The
+# DaemonSet keeps a term for every Draining node in its node affinity, so it
+# starts the new pod on the drained node although the node no longer carries
+# the pool label.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-nova-compute
+  namespace: openstack
+spec:
+  action: pod-kill
+  mode: all
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: novacompute
+      app.kubernetes.io/instance: nova-drain-pool
+      app.kubernetes.io/component: nova-compute
+  gracePeriod: 0

@@ -24,21 +24,6 @@ For the controller-side contract (which sub-reconciler drives which
 condition), see
 [Horizon Reconciler Architecture](../../reference/horizon/horizon-reconciler.md).
 
-::: tip On kind
-If you are running the kind ControlPlane Quick Start, the prometheus-operator
-CRDs, Prometheus, and Grafana are already wrapped behind opt-in flags:
-
-```bash
-KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make deploy-infra
-```
-
-`WITH_PROMETHEUS=true` also flips the horizon-operator `ServiceMonitor` for
-you at bring-up (`deploy-infra` patches the horizon-operator HelmRelease), so
-on a fresh kind devstack none of the manual steps below are required. Step 1
-is the path for a devstack that is **already running** without
-`WITH_PROMETHEUS`, or for non-kind clusters that run their own Prometheus.
-:::
-
 ## Prerequisites
 
 ::: info Devstack
@@ -52,16 +37,24 @@ Follow that tutorial through to its final **Verify** step, so the horizon-operat
 (namespace `horizon-system`) is running with kube-prometheus-stack scraping it.
 :::
 
-1. A running `horizon-operator` Helm release (namespace `horizon-system`).
-2. The prometheus-operator CRDs (`servicemonitors.monitoring.coreos.com`)
-   installed, and a Prometheus whose `serviceMonitorSelector` covers the
-   operator namespace.
+For a non-kind installation, install the prometheus-operator CRDs and configure
+Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
+`serviceMonitorNamespaceSelector` to include `horizon-system`.
 
 ## Step 1 — Enable the ServiceMonitor
 
+On the ControlPlane devstack, `WITH_PROMETHEUS=true` installs Prometheus and
+Grafana and sets `monitoring.serviceMonitor.enabled=true` on the
+horizon-operator HelmRelease. `WITH_CONTROLPLANE=true` resumes that release,
+so the ServiceMonitor is already enabled. Skip the patch below and confirm
+the object. Use the patch for an existing installation without monitoring.
+If the HelmRelease is suspended, the value is stored but no ServiceMonitor
+is rendered until it is resumed or the chart is installed separately with
+that value.
+
 On the tutorial devstacks the `horizon-operator` release is owned by Flux (a
-`HelmRelease`), so set the chart value by patching that HelmRelease rather than
-running a raw `helm upgrade` — Flux's helm-controller reverts any out-of-band
+`HelmRelease`), so set the chart value by patching that HelmRelease.
+Flux's helm-controller reverts any out-of-band
 Helm revision on its next reconcile:
 
 ```bash
@@ -80,7 +73,7 @@ kubectl -n horizon-system get servicemonitor \
 ```
 
 The chart renders a `ServiceMonitor` scraping the operator's metrics Service
-on the `https`-less metrics port with the shared operator-library labels.
+on the `metrics` port over HTTP with the shared operator-library labels.
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), set the
@@ -99,16 +92,30 @@ reconcile. Use the HelmRelease patch above instead.
 
 ## Step 2 — Import the Grafana dashboard
 
+On the devstack, follow the
+[Grafana access instructions](../keystone/enable-keystone-operator-metrics.md#_2-import-the-reference-grafana-dashboard)
+to port-forward the Service, open <http://localhost:3000>, and retrieve the
+login credentials. For an existing Grafana, use its configured URL and
+credentials.
+
 The reference dashboard ships in-repo at
 `operators/horizon/dashboards/horizon-operator.json` (uid
 `horizon-operator`): per-sub-reconciler duration quantiles, error rate per
 condition type, and the controller-runtime end-to-end reconcile histogram.
 Import it via the Grafana UI or provision it from a ConfigMap.
 
-## Step 3 — Verify the target
+## Step 3: Verify the target {#step-3-—-verify-the-target}
+
+Keep the port-forward running in a separate terminal:
 
 ```bash
-kubectl -n <prometheus-namespace> port-forward svc/prometheus-operated 9090 &
+kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
+```
+
+For an existing Prometheus, replace `monitoring` with its namespace.
+In another terminal, query the targets:
+
+```bash
 curl -s 'http://localhost:9090/api/v1/targets' \
   | jq '.data.activeTargets[] | select(.labels.namespace == "horizon-system") | .health'
 ```
@@ -128,12 +135,19 @@ Horizon CR since the scrape began.
 The chart's ServiceMonitor render-and-remove lifecycle is asserted on the CI
 e2e kind cluster by the chainsaw suite below (install with
 `monitoring.serviceMonitor.enabled=true`, assert the `ServiceMonitor` shape,
-uninstall, assert removal). The end-to-end scrape path — a live Prometheus
-that discovers the ServiceMonitor and marks the target Up — is the
-`WITH_PROMETHEUS=true` kind bring-up shown in the tip above, not this suite:
-the e2e cluster ships only the prometheus-operator CRDs, not a Prometheus
-instance.
+uninstall, assert removal). That cluster has only the prometheus-operator
+CRDs installed.
 
 ```bash
 chainsaw test --test-dir tests/e2e/horizon-operator/metrics
+```
+
+The end-to-end scrape path runs in the `e2e-prometheus` CI job, which deploys
+the horizon-operator with its ServiceMonitor into `horizon-system` next to a
+live kube-prometheus-stack. Its suite asserts that the ServiceMonitor exists,
+that every `horizon-operator` target is up, and that Prometheus ingested a
+`controller_runtime_reconcile_total` series of that job:
+
+```bash
+chainsaw test --test-dir tests/e2e/horizon/prometheus-stack
 ```

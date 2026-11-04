@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch switching to the JSON formatter. Chainsaw merge-patches with this
+# manifest, so debug goes back to false and perLoggerLevels: null drops the
+# django.request override of the previous patch.
+apiVersion: horizon.openstack.c5c3.io/v1alpha1
+kind: Horizon
+metadata:
+  name: horizon-logging
+  namespace: openstack
+spec:
+  logging:
+    format: json
+    debug: false
+    perLoggerLevels: null

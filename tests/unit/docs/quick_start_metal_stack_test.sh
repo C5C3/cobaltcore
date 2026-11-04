@@ -9,7 +9,7 @@
 #   2. docs/.vitepress/config.ts lists the page after the ControlPlane quick
 #      start, in the Getting Started group
 #   3. the seven `## ` sections occur once each and in order, Part 3 between
-#      Part 2 and the Teardown, and the twenty-two `### Step` headings carry
+#      Part 2 and the Teardown, and the twenty-three `### Step` headings carry
 #      their explicit anchors
 #   4. every directory the page applies holds a kustomization.yaml, every
 #      deploy/, hack/ or tests/ file it names exists and each such script is
@@ -269,9 +269,9 @@ test_sections() {
     FAIL=$((FAIL + 1))
   fi
 
-  echo "Test: the twenty-two step headings carry their anchors"
+  echo "Test: the twenty-three step headings carry their anchors"
   local want got
-  want="1:cp-clone 2:cp-probe 3:cp-deploy 4:cp-apply 5:cp-tenant 6:cp-access 7:cp-verify 1:hv-nodes 2:hv-fixtures 3:hv-apply 4:hv-onboarding 5:hv-boot 6:hv-console 7:hv-volume 8:hv-migrate 9:hv-evict 10:hv-backup 11:hv-rotate 1:nfs-apply 2:nfs-volume 3:nfs-migrate 4:nfs-backup"
+  want="1:cp-clone 2:cp-probe 3:cp-deploy 4:cp-apply 5:cp-tenant 6:cp-access 7:cp-verify 8:cp-horizon 1:hv-nodes 2:hv-fixtures 3:hv-apply 4:hv-onboarding 5:hv-boot 6:hv-console 7:hv-volume 8:hv-migrate 9:hv-evict 10:hv-backup 11:hv-rotate 1:nfs-apply 2:nfs-volume 3:nfs-migrate 4:nfs-backup"
   got="$(headings '###' | cut -d: -f2- | grep '^### Step ' |
     sed -E 's/^### Step ([0-9]+):.*\{#([a-z-]+)\}[[:space:]]*$/\1:\2/' | tr '\n' ' ' | sed 's/ $//' || true)"
   assert_eq "step numbers and anchors" "$want" "$got"
@@ -796,7 +796,7 @@ test_rotation_and_part_3_order() {
   assert_not_empty "Part 3 holds Step 1" "$step"
   assert_once_in_order "the checks, the apply and the waits" "$step" \
     'kubectl -n openstack rollout status deployment/nfs-server' \
-    'kubectl apply -k deploy/lab/metal-stack/controlplane-nfs' \
+    'kubectl kustomize deploy/lab/metal-stack/controlplane-nfs' \
     'kubectl wait --for=create cinderbackend/nfs1' \
     '--for=jsonpath='"'"'{.spec.template.spec.volumes[?(@.name=="share-nfs1")].csi.driver}'"'"'=nfs.csi.k8s.io' \
     'kubectl -n openstack rollout status deploy/controlplane-cinder-backup'
@@ -809,7 +809,8 @@ test_rotation_and_part_3_order() {
     "$(printf '%s\n' \
       'kubectl -n openstack rollout status deployment/nfs-server --timeout=60s &&' \
       '  kubectl get csidriver nfs.csi.k8s.io &&' \
-      '  kubectl apply -k deploy/lab/metal-stack/controlplane-nfs')" \
+      '  kubectl kustomize deploy/lab/metal-stack/controlplane-nfs |' \
+      '  sed "s/127-0-0-1\.nip\.io/${PUBLIC_SUFFIX}/g" | kubectl apply -f -')" \
     "$block"
   assert_not_empty "Part 3 defines host=" "$(grep -E '^host=' <<<"$body" || true)"
   assert_not_empty "Part 3 defines domain=" "$(grep -E '^domain=' <<<"$body" || true)"

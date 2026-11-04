@@ -19,8 +19,9 @@
 #     action. The scheduler and volume readiness probes watch the broker socket
 #     (operators/cinder/internal/controller/reconcile_scheduler.go), so the two
 #     conditions follow the reconnect
-#   - the API container stays at restartCount 0: its readiness and liveness
-#     probes GET /healthcheck, which never touches the bus
+#   - the API container stays at restartCount 0: its readiness probe GETs
+#     /healthcheck, which never touches the bus, and its liveness probe only
+#     connects
 #
 # The difference from ../cinder-broker-outage/ is the way the broker goes. A
 # killed broker closes its connections, so oslo.messaging sees the loss at once
@@ -32,9 +33,17 @@
 #
 # Workload, on the network leg: the noauth volume stream of ../lib/workload.sh
 # against cinder-broker-kill. A create that reaches the API while the broker is
-# gone has its cast to the scheduler lost or delayed, so the volume does not
-# reach available within the stream's 120 s and the cycle fails. The budget is
-# an estimate of that window: no run has measured it yet.
+# gone has its cast to the scheduler delayed, so the volume does not reach
+# available within the stream's 120 s and the cycle fails. The scheduler drains
+# the queued casts once it reconnects, each create on a database session of its
+# own. A create it drops leaves its volume in creating, which Cinder refuses to
+# delete, and the consistency check fails the suite on it: on run 39054868167
+# the drain ran into the SQL user's connection cap (MySQL error 1226), which
+# cinderMaxUserConnections now sizes for a full pool per process. The budget
+# is an estimate of that window: no run has measured it yet.
+# Chaos matrix: cinder broker pod-kill
+# Chaos matrix: rabbitmq self pod-kill
+# Chaos random: rabbitmq-pod-kill
 # Chaos budget: failures=20 recovery=210s
 # Chaos budget measured: 2026-10-15, estimate, failures 10, recovery 180 s
 apiVersion: chainsaw.kyverno.io/v1alpha1

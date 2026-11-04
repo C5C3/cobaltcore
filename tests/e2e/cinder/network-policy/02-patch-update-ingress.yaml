@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Patch: add a second ingress source (monitoring namespace).
+# Patch: add a second ingress source, the namespace of the outside probe
+# client (cinder-netpol-outside).
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: Cinder
 metadata:
@@ -16,4 +17,4 @@ spec:
           kubernetes.io/metadata.name: openstack
     - namespaceSelector:
         matchLabels:
-          kubernetes.io/metadata.name: monitoring
+          kubernetes.io/metadata.name: cinder-netpol-outside

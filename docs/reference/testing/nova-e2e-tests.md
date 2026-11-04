@@ -267,9 +267,9 @@ a labelled namespace of its own.
 | [basic-deployment-2026-2](#basic-deployment-2026-2) | `nova-basic-2026-2` | The same assertions against the 2026.2 image, with the API container image pinned, so a difference between 2026.1 and 2026.2 fails here |
 | [scale](#scale) | `nova-scale` | `spec.api.deployment.replicas` 3 → 5 → 1 with the PodDisruptionBudget policy flipping, the other four Deployments left at the counts their own spec fields give them |
 | [healthcheck](#healthcheck) | `nova-health` | `NovaAPIReady=True/APIHealthy` and the cluster-local `status.endpoint` |
-| [namespace-scoped-rbac](#namespace-scoped-rbac) | `nova-ns-scoped` | A nova-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a successful reconcile |
+| [namespace-scoped-rbac](#namespace-scoped-rbac) | `nova-ns-scoped` | A nova-operator release with `rbac.namespaceScoped=true` and `webhook.enabled=false` in `openstack`: Role and RoleBinding, no ClusterRole, the CR Ready, and the release's own pod unrestarted, started in namespace-scoped mode, free of forbidden watches and counting a run of its `HealthCheck` step |
 | [httproute](#httproute) | `nova-route` | The three gateway blocks: routes for the API on 8774, the metadata API on 8775 and the console proxy on 6080, `HTTPRouteNotAccepted` then `HTTPRouteAccepted`, deleted with the spec blocks |
-| [network-policy](#network-policy) | `nova-netpol` | Two rendered NetworkPolicies: one covering every pod of the CR with the auto-derived egress order, one carrying the console proxy's display range, updated and deleted |
+| [network-policy](#network-policy) | `nova-netpol` | Two rendered NetworkPolicies: one covering every pod of the CR with the auto-derived egress order, one carrying the console proxy's display range, updated and deleted; probe pods then find TCP 5900 and 9999 dropped from the target and open from a console proxy stand-in, the target's egress ports and the three API ports open, and a foreign namespace dropped until the update admits it |
 | [deletion-cleanup](#deletion-cleanup) | `nova-cleanup` | Finalizer cleanup of every owned child and of the eight MariaDB CRs, the two cell0 objects included |
 | [pod-security-restricted](#pod-security-restricted) | `nova-pss` | Every Pod the reconciler projects admits under `pod-security.kubernetes.io/enforce=restricted`, on brownfield database wiring and with zero `FailedCreate` violations |
 | [gateway-quick-start-smoke](#gateway-quick-start-smoke) | `nova-smoke` | The three external URLs the quick start names answer 200 through `openstack-gw` |
@@ -311,6 +311,8 @@ the `openstack` client.
 | 6 | Start the fake-driver compute | `apply` + `assert` | `11-fake-compute.yaml`, applied only now because it mounts the compute-contract Secret; `nova-basic-fake-compute` reaches `availableReplicas: 1` |
 | 7 | Wait for the scheduler to map the compute into cell1 | `script` (10m) | Polls `nova-manage cell_v2 list_hosts` in the conductor for `fake-1`, 84 times 5 s apart, then greps `Discovered 1 new hosts` out of the scheduler log |
 | 8 | Boot, resize and delete a server | `script` + `assert` | `12-verify-job.yaml`, waited 10m; the log is read once and `NOVA-VERIFY-OK` grepped out of it; `succeeded: 1` |
+| 9 | Assert the operator's metric families | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `nova-operator` release: a reconcile is counted, no error carries `condition_type="UNKNOWN"`, and the `nova_operator_db_sync_total{result="succeeded"}` and `nova_operator_db_sync_duration_seconds_count` samples of `nova-basic` are exported |
+| 10 | Assert the steady state emits no event | `script` (4m) | `tests/e2e/lib/assert-steady-state-events.sh`: no event on `nova-basic` appears or raises its count in 120 seconds, and the CR stays Ready at the same generation |
 
 The two config scripts in step 5 resolve the content-hashed ConfigMap through
 the API Deployment's `config` volume and match
@@ -423,8 +425,8 @@ sibling services.
 `rbac.namespaceScoped=true` and `webhook.enabled=false`, reconciles a Nova in
 its own namespace. Once the CR is Ready, the suite reads that release's pod: it
 never restarted, it logged the namespace-scoped startup line for `openstack` and
-no forbidden `Failed to watch` line, and its metrics endpoint counts a
-successful reconcile of the `nova` controller.
+no forbidden `Failed to watch` line, and its metrics endpoint counts a run of
+the `nova` controller's `HealthCheck` step.
 
 **Steps:**
 
@@ -434,7 +436,7 @@ successful reconcile of the `nova` controller.
 | 2 | Assert Role and RoleBinding exist (not ClusterRole) | `assert` + `script` | Role and RoleBinding `nova-operator-ns-scoped` in `openstack`, and no ClusterRole of that name |
 | 3 | Give the suite its vhost, then apply the CR | `script` (2m) + `apply` | `broker-vhost.sh create nova-ns-scoped nova-ns-scoped-messaging openstack`, then the metadata Secret and `nova-ns-scoped` on the `openbao-tenant-store` SecretStore at one API replica |
 | 4 | Assert successful reconciliation | `assert` (10m) | `Ready=True/AllReady` |
-| 5 | Prove the namespace-scoped operator reconciled the Nova | `script` (2m) | `tests/e2e/lib/assert-namespace-scoped-operator.sh`: one pod, no restart, the only Nova in `openstack`, the startup line, no forbidden `Failed to watch` line, a `controller_runtime_reconcile_total` success count of at least 1 within 60 s |
+| 5 | Prove the namespace-scoped operator reconciled the Nova | `script` (2m) | `tests/e2e/lib/assert-namespace-scoped-operator.sh`: one pod, no restart, the only Nova in `openstack`, the startup line, no forbidden `Failed to watch` line, a `controller_runtime_reconcile_total` success count or a `HealthCheck` count of `nova_operator_reconcile_duration_seconds` of at least 1 within 60 s |
 | 6 | Cleanup Helm release | `script` | `helm uninstall nova-operator-ns-scoped` |
 
 **Fixtures:** `00-metadata-secret.yaml`, `01-nova-cr.yaml`
@@ -487,9 +489,14 @@ arrives.
 **Purpose:** The NetworkPolicy sub-reconciler renders two policies. The main one
 carries no component key in its selector, so it covers every pod of the CR; the
 second belongs to the console proxy alone, which dials the VNC server of
-whichever hypervisor an instance runs on. The default CI CNI (kindnet) does not
-enforce NetworkPolicy, so the suite validates the rendered objects and their
-lifecycle rather than traffic.
+whichever hypervisor an instance runs on. The kindnetd of kind v0.32 and later,
+which CI pins through `KIND_VERSION`, enforces NetworkPolicy, and step 3 probes
+both policies from five pods through
+`tests/e2e/lib/assert-networkpolicy-enforced.sh`. The probe target has no
+component label, so only the main policy selects it, and its TCP 5900 is
+dropped: the display range belongs to the console proxy's policy. A fifth pod
+carries the console proxy's selector labels, so both policies select it, and it
+reaches TCP 5900 and 9999 through that range.
 
 **Steps:**
 
@@ -497,11 +504,13 @@ lifecycle rather than traffic.
 | --- | --- | --- | --- |
 | 1 | Give the suite its vhost, then apply the CR | `script` (2m) + `apply` | `broker-vhost.sh create nova-netpol nova-netpol-messaging openstack`, then the metadata Secret and `nova-netpol` |
 | 2 | Assert both policies carry the expected rules | `assert` (10m) | `NetworkPolicyReady=True/NetworkPolicyReady`; the main policy with ingress on 8774, 8775 and 6080 and the auto-derived egress order DNS, api-database 3306, database 3306, cache 11211, Keystone 5000, the siblings 8778/9292/9696 and messaging 5672, plus a check that its selector carries no `app.kubernetes.io/component` key; the console policy egress on TCP 5900 through 65535 |
-| 3 | Add a second ingress source and assert it lands | `patch` + `assert` | The operator appends one peer per declared source plus one for its own Namespace, so `length(spec.ingress[0].from) >= 3` is what separates the patched policy from the unchanged one |
-| 4 | Disable networkPolicy and assert both are deleted | `patch` + `assert` | `NetworkPolicyReady=True/NetworkPolicyNotRequired` and `error` assertions on both policies |
+| 3 | Probe the enforced policy | `apply` + `script` (8m) | `04-probe-pods.yaml` creates the namespace `nova-netpol-outside` and five probe pods. `assert-networkpolicy-enforced.sh` finds the target, which carries the main policy's selector labels, dropped on sink ports 5900 and 9999, resolving a cluster name and reaching the sink on 3306, 5000, 5672, 8778, 9292, 9696 and 11211; a pod with the console proxy's selector labels reaching the sink on 5900 and 9999; a `nova-system` client dropped on 9999 and reaching 8774, 8775 and 6080; a `nova-netpol-outside` client dropped on all three |
+| 4 | Add a second ingress source and assert it lands | `patch` + `assert` + `script` (2m) | The operator appends one peer per declared source plus one for its own Namespace, so `length(spec.ingress[0].from) >= 3` is what separates the patched policy from the unchanged one. The patch adds `nova-netpol-outside`, whose client then reaches 8774, 8775 and 6080 |
+| 5 | Disable networkPolicy and assert both are deleted | `patch` + `assert` | `NetworkPolicyReady=True/NetworkPolicyNotRequired` and `error` assertions on both policies |
 
 **Fixtures:** `00-metadata-secret.yaml`, `01-nova-cr.yaml`,
-`02-patch-update-ingress.yaml`, `03-patch-disable-networkpolicy.yaml`
+`02-patch-update-ingress.yaml`, `03-patch-disable-networkpolicy.yaml`,
+`04-probe-pods.yaml`
 
 ---
 
@@ -642,6 +651,7 @@ row behind in the live table.
 | 8 | Boot and delete a server | `script` + `assert` | `12-verify-job.yaml` to `NOVA-VERIFY-OK`; the delete leaves the rows the next step waits on |
 | 9 | Wait for a run that saw the delete, then read the tables | `script` (5m) | Stamps the time, polls up to 3 minutes for an archive Job created after it that succeeded, then reads `shadow_instances` and the soft-deleted rows left in `instances` with the `mariadb` client in `openstack-db-0`: at least one shadow row and zero left behind |
 | 10 | The operator reports the schedule and no failed run | `assert` + `script` (2m) | `DBArchiveReady=True/DBArchiveScheduled` and no `DBArchiveJobFailed` event on the CR, which the condition alone would not catch after a failed run followed by a successful one |
+| 11 | Assert the archive runs are counted | `script` (120s) | `tests/e2e/lib/assert-operator-metric-families.sh` against the `nova-operator` release, with the `nova_operator_db_archive_total{result="succeeded"}` sample of `nova-archive` |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-catalog-setup-job.yaml`,
 `02-messaging-secret.yaml`, `03-ovncentral-cr.yaml`, `04-neutron-cr.yaml`,
@@ -1202,7 +1212,8 @@ tests/e2e/nova/
 │   ├── 00-metadata-secret.yaml        The metadata shared secret
 │   ├── 01-nova-cr.yaml                Nova CR nova-netpol
 │   ├── 02-patch-update-ingress.yaml   Patch adding a second ingress source
-│   └── 03-patch-disable-networkpolicy.yaml Patch removing spec.networkPolicy
+│   ├── 03-patch-disable-networkpolicy.yaml Patch removing spec.networkPolicy
+│   └── 04-probe-pods.yaml             Probe pods: target, sink, inside and outside clients, console stand-in
 ├── pod-security-restricted/
 │   ├── chainsaw-test.yaml             Reconciliation under the restricted PSS profile
 │   ├── 00-namespace.yaml              Labelled namespace nova-pss and its two ExternalSecrets

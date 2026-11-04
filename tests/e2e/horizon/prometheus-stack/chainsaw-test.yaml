@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a live horizon-operator scrape target in the
+# kube-prometheus-stack kind-only opt-in addon (WITH_PROMETHEUS=true). The
+# e2e-prometheus job deploys the horizon-operator into horizon-system with
+# its ServiceMonitor beside the keystone-operator and runs this suite next to
+# tests/e2e/keystone/prometheus-stack, which owns the stack's own posture
+# (HelmRelease Ready, kind values, Grafana dashboard). This suite asserts
+# only the horizon-operator path:
+#
+#   Step 1 — ServiceMonitor/horizon-operator exists in horizon-system, so
+#            hack/ci-deploy-operator.sh's WITH_PROMETHEUS=true plumbing
+#            enabled the chart's monitoring.serviceMonitor.enabled value.
+#   Step 2 — Prometheus scrapes the horizon-operator job: at least one
+#            active target carries labels.job == "horizon-operator", and
+#            every such target has health == "up".
+#   Step 3 — Prometheus ingested the operator's metrics: an instant query
+#            for controller_runtime_reconcile_total{job="horizon-operator"}
+#            returns at least one series. controller-runtime sets that
+#            counter to zero when the leader starts its controller, so the
+#            series exists without a Horizon CR.
+#
+# Scope gating, as in tests/e2e/keystone/prometheus-stack:
+#   1. The label `overlay: kind` lets non-kind runs pass
+#      `--selector 'overlay!=kind'`.
+#   2. Every step's script starts with the presence guard: without
+#      HelmRelease kube-prometheus-stack in monitoring it prints a SKIP line
+#      and exits 0. That is what the e2e-operator (horizon) job sees, which
+#      runs every suite under tests/e2e/horizon/ without the stack.
+#
+# The in-cluster probe pods carry names of their own: the keystone suite
+# force-deletes prom-targets-probe and prom-targets-dump in monitoring
+# before it uses them, and both suites run at once in e2e-prometheus.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: horizon-prometheus-stack
+  labels:
+    # Overlay gate, see header.
+    overlay: kind
+spec:
+  # Each step script carries its own timeout (60s, 7m, 2m); exec is the
+  # default for the catch scripts, which set none.
+  timeouts:
+    exec: 12m
+  steps:
+  # ── Step 1 — ServiceMonitor/horizon-operator exists ─────────────────────
+  - name: servicemonitor-exists
+    try:
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
+            exit 0
+          fi
+          # hack/ci-deploy-operator.sh installs the release
+          # horizon-operator into horizon-system, and the Flux HelmRelease
+          # there is suspended by deploy/kind/base/kustomization.yaml, so
+          # only the helm-installed ServiceMonitor renders.
+          kubectl get servicemonitor horizon-operator -n horizon-system >/dev/null
+          echo "OK: ServiceMonitor/horizon-operator exists in horizon-system"
+    catch:
+    - script:
+        content: |
+          echo "=== ServiceMonitors (all namespaces) ==="
+          kubectl get servicemonitor -A -o wide 2>&1 || true
+          echo "=== horizon-operator release ==="
+          helm status horizon-operator -n horizon-system 2>&1 || true
+          kubectl get pods -n horizon-system -o wide 2>&1 || true
+
+  # ── Step 2 — Prometheus is scraping horizon-operator (targets up) ───────
+  - name: prometheus-target-up
+    try:
+    - script:
+        # Worst-case loop: 24 × (5s curl timeout + 10s sleep) = 360s, plus
+        # about 30s pod start-up on a cold kind node, so the FAIL line
+        # reaches the log before chainsaw kills the script.
+        timeout: 7m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
+            exit 0
+          fi
+          # `kubectl run --rm` on Restart=Never can leak the pod when the
+          # script exits non-zero, so delete a leftover first.
+          kubectl delete pod horizon-prom-targets-probe -n monitoring \
+            --ignore-not-found=true --grace-period=0 --force >/dev/null 2>&1 || true
+          kubectl run horizon-prom-targets-probe -n monitoring \
+            --image=docker.io/nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b \
+            --restart=Never \
+            --rm -i \
+            --command -- sh -c '
+              set -eu
+              for i in $(seq 1 24); do
+                resp=$(curl -fsS -m 5 \
+                  "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/targets?state=active" \
+                  2>/dev/null || echo "")
+                if [ -n "$resp" ]; then
+                  health=$(printf "%s" "$resp" | jq -r \
+                    "[.data.activeTargets[] | select(.labels.job==\"horizon-operator\") | .health] | if length == 0 then \"missing\" elif all(. == \"up\") then \"up\" else join(\",\") end")
+                  if [ "$health" = "up" ]; then
+                    echo "OK: every horizon-operator target is up after ${i} attempt(s)"
+                    exit 0
+                  fi
+                  echo "attempt ${i}/24: horizon-operator target health=${health}"
+                else
+                  echo "attempt ${i}/24: Prometheus /api/v1/targets unreachable"
+                fi
+                sleep 10
+              done
+              echo "FAIL: horizon-operator target never reached health=up within 24 attempts (~360s)"
+              exit 1
+            '
+          echo "OK: Prometheus is scraping horizon-operator"
+    catch: &targets-dump
+    - script:
+        content: |
+          echo "=== Prometheus active targets of job horizon-operator ==="
+          kubectl delete pod horizon-prom-targets-dump -n monitoring \
+            --ignore-not-found=true --grace-period=0 --force >/dev/null 2>&1 || true
+          kubectl run horizon-prom-targets-dump -n monitoring \
+            --image=docker.io/nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b \
+            --restart=Never \
+            --rm -i \
+            --command -- sh -c '
+              curl -fsS -m 5 \
+                "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/targets?state=active" \
+                | jq "[.data.activeTargets[] | select(.labels.job == \"horizon-operator\")]"
+            ' 2>&1 || true
+          echo "=== Prometheus pod status ==="
+          kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus -o wide 2>&1 || true
+          echo "=== horizon-operator pods ==="
+          kubectl get pods -n horizon-system -o wide 2>&1 || true
+
+  # ── Step 3 — Prometheus ingested controller_runtime_reconcile_total ─────
+  - name: reconcile-metric-ingested
+    try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get helmrelease kube-prometheus-stack -n monitoring >/dev/null 2>&1; then
+            echo "SKIP: kube-prometheus-stack HelmRelease not present (WITH_PROMETHEUS=false)."
+            exit 0
+          fi
+          kubectl delete pod horizon-prom-query-probe -n monitoring \
+            --ignore-not-found=true --grace-period=0 --force >/dev/null 2>&1 || true
+          kubectl run horizon-prom-query-probe -n monitoring \
+            --image=docker.io/nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b \
+            --restart=Never \
+            --rm -i \
+            --command -- sh -c '
+              set -eu
+              resp=$(curl -fsS -m 5 -G \
+                --data-urlencode "query=controller_runtime_reconcile_total{job=\"horizon-operator\"}" \
+                "http://kube-prometheus-stack-prometheus.monitoring.svc:9090/api/v1/query")
+              count=$(printf "%s" "$resp" | jq ".data.result | length")
+              if [ "$count" -lt 1 ]; then
+                echo "FAIL: controller_runtime_reconcile_total{job=\"horizon-operator\"} returned no series"
+                printf "%s\n" "$resp"
+                exit 1
+              fi
+              echo "OK: controller_runtime_reconcile_total{job=\"horizon-operator\"} has ${count} series"
+            '
+          echo "OK: Prometheus ingested the horizon-operator metrics"
+    catch: *targets-dump

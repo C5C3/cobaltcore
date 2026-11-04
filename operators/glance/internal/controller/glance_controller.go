@@ -620,6 +620,8 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
+	result = healthcheck.ScheduleReprobe(result, err, &r.healthProbeCache,
+		client.ObjectKeyFromObject(&glance))
 	return r.updateStatus(ctx, &glance, statusBefore, result, err)
 }
 

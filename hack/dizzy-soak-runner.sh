@@ -10,20 +10,27 @@
 # It names the run after its UTC start and works in /reports/<run>/ on the
 # claim dizzy-soak-reports. It starts `dizzy <service> chaos` in the
 # background and samples the platform beside it: the containers of every pod
-# of the platform's namespaces and their usage, every
-# DIZZY_SOAK_SAMPLE_INTERVAL seconds, and the conditions of the ControlPlanes
-# and the CobaltCore service kinds at the start and at the end. A TERM or INT
-# goes to dizzy once; dizzy then tears its resources down and prints its leak
-# check, and the runner waits for it. Then it renders dizzy's report, derives
-# the platform tables, decides the verdict and writes report.md. It exits 0 on
-# PASS and 1 on FAIL, so the Job ends Complete or Failed by verdict.
+# of the platform's namespaces and their usage, and the Go runtime of every
+# operator pod from its /metrics endpoint, every DIZZY_SOAK_SAMPLE_INTERVAL
+# seconds, and the conditions of the ControlPlanes and the CobaltCore service
+# kinds at the start and at the end. A TERM or INT goes to dizzy once; dizzy
+# then tears its resources down and prints its leak check, and the runner
+# waits for it. Then it renders dizzy's report, derives the platform tables,
+# decides the verdict and writes report.md. It exits 0 on PASS and 1 on FAIL,
+# so the Job ends Complete or Failed by verdict.
 #
 # Its settings come from the ConfigMap dizzy-soak-config: DIZZY_SOAK_SERVICE,
 # DIZZY_SOAK_DURATION, DIZZY_ARGS, DIZZY_VERSION, DIZZY_SOAK_NAMESPACES,
-# DIZZY_SOAK_SAMPLE_INTERVAL, DIZZY_SOAK_MAX_ERROR_RATE and
-# DIZZY_SOAK_MAX_P95_SECONDS. It parses under bash 3.2 and aggregates in jq
-# and POSIX awk, because tests/unit/hack/dizzy_soak_runner_test.sh sources it
-# under the stock macOS bash too.
+# DIZZY_SOAK_SAMPLE_INTERVAL, DIZZY_SOAK_MAX_ERROR_RATE,
+# DIZZY_SOAK_MAX_P95_SECONDS, DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT,
+# DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB,
+# DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH,
+# DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT, DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB and
+# DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES.
+# It parses under bash 3.2 and
+# aggregates in jq and POSIX awk, because
+# tests/unit/hack/dizzy_soak_runner_test.sh sources it under the stock macOS
+# bash too.
 
 # No set -e: a read that fails ends in platform/errors.log or in the detail
 # of a check, never in a report that is not written.
@@ -68,6 +75,21 @@ ovnchassis.ovn.openstack.c5c3.io"
 # run-tagged resources (mix, nova, neutron, cinder), run-tagged images
 # (glance) and run-named resources (keystone).
 LEAK_CHECK_CLEAN_RE='^leak check: no run-(tagged|named) (resources|images) remain$'
+# The chart names, the label app.kubernetes.io/name, of the operator pods.
+OPERATOR_NAMES="keystone-operator horizon-operator glance-operator placement-operator barbican-operator ovn-operator neutron-operator cinder-operator nova-operator c5c3-operator"
+# The samples an operator pod needs before operator-leak judges it.
+MIN_OPERATOR_SAMPLES=20
+# The seconds one scrape of an operator pod may take, curl's --max-time.
+OPERATOR_SCRAPE_TIMEOUT=10
+# The seconds of it the connection may take, curl's --connect-timeout.
+OPERATOR_CONNECT_TIMEOUT=3
+# The memory samples a container needs before memory-growth judges it.
+MIN_MEMORY_SAMPLES=20
+# The pods no-restarts, operator-leak and memory-growth leave out, one
+# <namespace>/<pod> per line. A soak judges every pod; hack/chaos-random.sh
+# sets it after sourcing the runner, to the targets of its faults, when it
+# judges a soak's tables again.
+EXEMPT_PODS=""
 
 # ---------------------------------------------------------------------------
 # Settings, from the ConfigMap dizzy-soak-config.
@@ -80,6 +102,18 @@ DIZZY_SOAK_NAMESPACES="${DIZZY_SOAK_NAMESPACES:-}"
 DIZZY_SOAK_SAMPLE_INTERVAL="${DIZZY_SOAK_SAMPLE_INTERVAL:-60}"
 DIZZY_SOAK_MAX_ERROR_RATE="${DIZZY_SOAK_MAX_ERROR_RATE:-}"
 DIZZY_SOAK_MAX_P95_SECONDS="${DIZZY_SOAK_MAX_P95_SECONDS:-}"
+DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT:-10}"
+DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB:-16}"
+DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH:-10}"
+DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT:-10}"
+DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB:-16}"
+# The namespaces memory-growth does not judge, space-separated; empty judges
+# every namespace. flux-system by default: its source-controller refreshes
+# every source each hour and its helm-controller reconciles every HelmRelease
+# each half hour, and the working set of both jumps for a few minutes each
+# time (source-controller from 54 to 255 MiB on a kind cluster). A refresh in
+# the last tenth reads as growth.
+DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES="${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES-flux-system}"
 
 # ---------------------------------------------------------------------------
 # The state of the run.
@@ -91,6 +125,7 @@ DIZZY_RC=""
 TEE_PID=""
 DIZZY_FIFO=""
 SAMPLER_PID=""
+OPERATOR_PODS=""
 WAIT_RC=""
 STOP_REQUESTED=""
 TERM_SENT=""
@@ -138,9 +173,13 @@ words_json() {
 # time, owner kind, container, restartCount, last terminated reason and its
 # finishedAt, with - for an absent value. A read that succeeds appends its
 # timestamp to platform/pod-samples.log, also when it lists no container.
+# It sets OPERATOR_PODS to one line per Running operator pod with a pod IP
+# and a container port named metrics: timestamp, namespace, pod, creation
+# time, pod IP and that port, and appends them to platform/operator-pods.tsv.
 # ---------------------------------------------------------------------------
 sample_pods() {
-  local ts out err lines
+  local ts out err lines operators
+  OPERATOR_PODS=""
   ts="$(now)"
   err="$(mktemp)"
   if ! out="$(kubectl get pods -A -o json 2>"${err}")"; then
@@ -163,8 +202,27 @@ sample_pods() {
     record_error pods "cannot parse the pod list: ${lines}"
     return 1
   fi
+  if ! operators="$(printf '%s' "${out}" | jq -r --arg ts "${ts}" \
+      --argjson listed "$(words_json "${DIZZY_SOAK_NAMESPACES}")" \
+      --argjson excluded "$(words_json "${EXCLUDED_NAMESPACES}")" \
+      --argjson operators "$(words_json "${OPERATOR_NAMES}")" \
+      "$(namespace_filter)"'
+      .items[] | select(keep)
+      | select(.status.phase == "Running" and (.status.podIP // "") != ""
+          and ((.metadata.labels["app.kubernetes.io/name"] // "") | IN($operators[])))
+      | ([.spec.containers[]?.ports[]? | select(.name == "metrics") | .containerPort] | first) as $port
+      | select($port != null)
+      | [$ts, .metadata.namespace, .metadata.name, .metadata.creationTimestamp, .status.podIP, ($port | tostring)]
+      | @tsv' 2>&1)"; then
+    record_error pods "cannot parse the pod list: ${operators}"
+    return 1
+  fi
   if [[ -n "${lines}" ]]; then
     printf '%s\n' "${lines}" >>platform/containers.tsv
+  fi
+  if [[ -n "${operators}" ]]; then
+    OPERATOR_PODS="${operators}"
+    printf '%s\n' "${operators}" >>platform/operator-pods.tsv
   fi
   printf '%s\n' "${ts}" >>platform/pod-samples.log
 }
@@ -236,6 +294,63 @@ sample_usage() {
 }
 
 # ---------------------------------------------------------------------------
+# sample_operators — Fetch http://<pod IP>:<port>/metrics of every operator
+# pod of OPERATOR_PODS with curl and append one line per pod to
+# platform/operators.tsv: timestamp, namespace, pod, go_goroutines,
+# go_memstats_heap_inuse_bytes and process_resident_memory_bytes as whole
+# numbers, and the leader: 1 when the sum of leader_election_master_status
+# is above 0, 0 when it is 0, - without the gauge. A failed fetch, or a body
+# in which one of the three series is absent or not a number, is logged to
+# platform/errors.log and its line left out. A stop of the sampler,
+# platform/.sampler-stop, ends the scrape after the pod at hand; main's
+# final sample scrapes every pod.
+# ---------------------------------------------------------------------------
+sample_operators() {
+  local ts ns pod ip port host body msg rc row
+  [[ -n "${OPERATOR_PODS}" ]] || return 0
+  ts="$(now)"
+  while IFS=$'\t' read -r _ ns pod _ ip port; do
+    host="${ip}"
+    if [[ "${ip}" == *:* ]]; then
+      host="[${ip}]"
+    fi
+    body="$(mktemp "${TMPDIR:-/tmp}/dizzy-soak-metrics.XXXXXX")"
+    msg="$(curl -sS --fail --connect-timeout "${OPERATOR_CONNECT_TIMEOUT}" --max-time "${OPERATOR_SCRAPE_TIMEOUT}" \
+      -o "${body}" "http://${host}:${port}/metrics" 2>&1)"
+    rc=$?
+    if ((rc != 0)); then
+      record_error operators "${ns}/${pod}: ${msg:-curl exited ${rc}}"
+    elif row="$(awk -v ts="${ts}" -v ns="${ns}" -v pod="${pod}" '
+        $1 == "go_goroutines" || $1 == "go_memstats_heap_inuse_bytes" || $1 == "process_resident_memory_bytes" { v[$1] = $2 }
+        index($1, "leader_election_master_status{") == 1 { leader += $2; seen = 1 }
+        END {
+          split("go_goroutines go_memstats_heap_inuse_bytes process_resident_memory_bytes", names, " ")
+          for (i = 1; i <= 3; i++) {
+            if (!(names[i] in v) || v[names[i]] !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/) {
+              missing = missing (missing == "" ? "" : " ") names[i]
+            }
+          }
+          if (missing != "") {
+            print "metrics missing or not a number: " missing
+            exit 1
+          }
+          printf "%s\t%s\t%s\t%.0f\t%.0f\t%.0f\t%s\n", ts, ns, pod, v[names[1]], v[names[2]], v[names[3]],
+            (seen ? (leader > 0 ? 1 : 0) : "-")
+        }' "${body}")"; then
+      printf '%s\n' "${row}" >>platform/operators.tsv
+    else
+      record_error operators "${ns}/${pod}: ${row}"
+    fi
+    rm -f "${body}"
+    # A metrics port that drops packets would otherwise hold the report back
+    # by a timeout per pod.
+    if [[ -e platform/.sampler-stop ]]; then
+      break
+    fi
+  done <<<"${OPERATOR_PODS}"
+}
+
+# ---------------------------------------------------------------------------
 # sampler_loop — Sample until platform/.sampler-stop exists. It sleeps in
 # one-second slices, so a stop takes effect within a second of the sample.
 # ---------------------------------------------------------------------------
@@ -244,6 +359,7 @@ sampler_loop() {
   while [[ ! -e platform/.sampler-stop ]]; do
     sample_pods
     sample_usage
+    sample_operators
     waited=0
     while ((waited < DIZZY_SOAK_SAMPLE_INTERVAL)) && [[ ! -e platform/.sampler-stop ]]; do
       sleep 1
@@ -358,6 +474,163 @@ derive_usage_summary() {
       ' platform/usage.tsv platform/usage.tsv | sort
     fi
   } >platform/usage-summary.tsv
+}
+
+# ---------------------------------------------------------------------------
+# derive_operators_summary — platform/operators-summary.tsv from
+# platform/operator-pods.tsv and platform/operators.tsv: per operator pod
+# listed during the run its sample count, its leader state (first>last when
+# it changed), the goroutines and the heap in MiB as the means of its first
+# and of its last tenth of samples and the growth between them, the heap
+# growth in percent, the RSS mean of its last tenth in MiB, and whether
+# operator-leak judges it. A pod is not judged when it is in EXEMPT_PODS, when
+# it has no sample, when its scrapes failed (listed in more than
+# MIN_OPERATOR_SAMPLES pod samples, no sample in more than one of them and in
+# more than a tenth; the one allows for the sampler's last scrape, which a
+# stop may cut short, and a pod listed fewer times has too few samples to judge
+# after one miss), when it was created during the run, has fewer than
+# MIN_OPERATOR_SAMPLES samples, or changed its leadership. operator-leak fails
+# a pod with no sample or failed scrapes; a fault's target is neither, since a
+# killed pod's series ends at the fault and its last tenth is a few samples
+# that say nothing about growth.
+# ---------------------------------------------------------------------------
+derive_operators_summary() {
+  {
+    printf 'namespace\tpod\tsamples\tleader\tgoroutines_first\tgoroutines_last\tgoroutines_growth\theap_first_mib\theap_last_mib\theap_growth_mib\theap_growth_percent\trss_last_mib\tjudged\n'
+    if [[ -s platform/operator-pods.tsv ]]; then
+      EXEMPT="${EXEMPT_PODS}" awk -F '\t' -v start="${RUN_START}" -v min="${MIN_OPERATOR_SAMPLES}" -v pods=platform/operator-pods.tsv '
+        function tenth(k, t) { t = int(n[k] / 10); return t < 1 ? 1 : t }
+        BEGIN {
+          split(ENVIRON["EXEMPT"], e, "\n")
+          for (i in e) if (e[i] != "") exempt[e[i]] = 1
+          while ((getline line <pods) > 0) {
+            split(line, f, "\t")
+            k = f[2] SUBSEP f[3]
+            if (!(k in created)) created[k] = f[4]
+            listed[k]++
+          }
+          close(pods)
+        }
+        NR == FNR { n[$2 SUBSEP $3]++; next }
+        {
+          k = $2 SUBSEP $3
+          i = ++seen[k]
+          if (i == 1) leader_first[k] = $7
+          leader_last[k] = $7
+          if (i <= tenth(k)) { goroutines_first[k] += $4; heap_first[k] += $5 }
+          if (i > n[k] - tenth(k)) { goroutines_last[k] += $4; heap_last[k] += $5; rss_last[k] += $6 }
+        }
+        END {
+          for (k in created) {
+            split(k, p, SUBSEP)
+            misses = (k in n) ? listed[k] - n[k] : listed[k]
+            if ((p[1] "/" p[2]) in exempt) judged = "fault target"
+            else if (!(k in n)) judged = "no samples"
+            else if (listed[k] > min && misses > 1 && misses * 10 > listed[k]) judged = "scrapes failed"
+            else if (created[k] >= start) judged = "created during the run"
+            else if (n[k] < min) judged = "fewer than " min " samples"
+            else if (leader_first[k] != leader_last[k]) judged = "leadership changed"
+            else judged = "yes"
+            if (!(k in n)) {
+              printf "%s\t%s\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t%s\n", p[1], p[2], judged
+              continue
+            }
+            t = tenth(k)
+            gf = goroutines_first[k] / t
+            gl = goroutines_last[k] / t
+            hf = heap_first[k] / t / 1048576
+            hl = heap_last[k] / t / 1048576
+            leader = leader_first[k] == leader_last[k] ? leader_first[k] : leader_first[k] ">" leader_last[k]
+            percent = hf > 0 ? sprintf("%.1f", (hl - hf) / hf * 100) : "-"
+            printf "%s\t%s\t%d\t%s\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%s\t%.1f\t%s\n", p[1], p[2], n[k], leader,
+              gf, gl, gl - gf, hf, hl, hl - hf, percent, rss_last[k] / t / 1048576, judged
+          }
+        }
+      ' platform/operators.tsv platform/operators.tsv | sort
+    fi
+  } >platform/operators-summary.tsv
+}
+
+# ---------------------------------------------------------------------------
+# derive_memory_growth — platform/memory-growth.tsv from platform/usage.tsv:
+# per container its sample count, its memory in MiB as the mean of the
+# samples around the run's midpoint (index ceil(0.45 n) to floor(0.55 n),
+# the sample at round(n/2) when that range is empty) and the mean of its
+# last tenth (at least one sample), the growth between the two in MiB and in
+# percent (- at a midpoint mean of 0), and whether memory-growth judges it.
+# The second half leaves out the warm-up a long run's caches fill in. A
+# container is judged only when its pod is not in EXEMPT_PODS, its namespace
+# is not in DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES, it has
+# MIN_MEMORY_SAMPLES samples, its pod has one UID in every pod sample of
+# platform/containers.tsv, was created before the run and its restart count
+# in platform/restarts.tsv is 0; otherwise the column names the first reason
+# that holds. awk reads the samples twice, counting first.
+# ---------------------------------------------------------------------------
+derive_memory_growth() {
+  {
+    printf 'namespace\tpod\tcontainer\tsamples\tmid_mib\tlast_mib\tgrowth_mib\tgrowth_percent\tjudged\n'
+    if [[ -s platform/usage.tsv ]]; then
+      EXEMPT="${EXEMPT_PODS}" awk -F '\t' -v start="${RUN_START}" -v min="${MIN_MEMORY_SAMPLES}" \
+        -v skip="${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES}" \
+        -v containers=platform/containers.tsv -v restarts=platform/restarts.tsv -v samples=platform/pod-samples.log '
+        function mean(sum, count) { return count > 0 ? sum / count / 1048576 : 0 }
+        BEGIN {
+          split(ENVIRON["EXEMPT"], e, "\n")
+          for (i in e) if (e[i] != "") exempt[e[i]] = 1
+          split(skip, s, " ")
+          for (i in s) if (s[i] != "") skipped[s[i]] = 1
+          # Distinct times: two samples within one second share a timestamp.
+          while ((getline line <samples) > 0) if (line != "" && !(line in sample_time)) { sample_time[line] = 1; pod_samples++ }
+          close(samples)
+          while ((getline line <containers) > 0) {
+            split(line, f, "\t")
+            id = f[2] "/" f[3]
+            if (!((id SUBSEP f[4]) in uid_seen)) { uid_seen[id SUBSEP f[4]] = 1; uids[id]++ }
+            if (!((id SUBSEP f[1]) in sample_seen)) { sample_seen[id SUBSEP f[1]] = 1; appearances[id]++ }
+            if (!(id in created) || f[5] < created[id]) created[id] = f[5]
+          }
+          close(containers)
+          while ((getline line <restarts) > 0) {
+            split(line, f, "\t")
+            if (f[1] != "namespace") restarted[f[1] "/" f[2] "/" f[3]] += f[6]
+          }
+          close(restarts)
+        }
+        NR == FNR { n[$2 "/" $3 "/" $4]++; next }
+        {
+          k = $2 "/" $3 "/" $4
+          i = ++seen[k]
+          # Integer bounds: 0.45 * n in floating point can land above a whole
+          # number it equals.
+          lo = int((45 * n[k] + 99) / 100)
+          hi = int(55 * n[k] / 100)
+          if (lo > hi) { lo = int(n[k] / 2 + 0.5); hi = lo }
+          if (i >= lo && i <= hi) { mid_sum[k] += $6; mid_count[k]++ }
+          t = int(n[k] / 10)
+          if (t < 1) t = 1
+          if (i > n[k] - t) { last_sum[k] += $6; last_count[k]++ }
+        }
+        END {
+          for (k in n) {
+            split(k, p, "/")
+            pod = p[1] "/" p[2]
+            if (pod in exempt) judged = "exempt"
+            else if (p[1] in skipped) judged = "namespace skipped"
+            else if (n[k] < min) judged = "fewer than " min " samples"
+            else if (!(pod in uids)) judged = "no pod sample"
+            else if (uids[pod] > 1 || appearances[pod] < pod_samples) judged = "pod replaced during the run"
+            else if (created[pod] >= start) judged = "created during the run"
+            else if (restarted[k] > 0) judged = "restarted"
+            else judged = "yes"
+            mid = mean(mid_sum[k], mid_count[k])
+            last = mean(last_sum[k], last_count[k])
+            percent = mid > 0 ? sprintf("%.1f", (last - mid) / mid * 100) : "-"
+            printf "%s\t%s\t%s\t%d\t%.1f\t%.1f\t%.1f\t%s\t%s\n", p[1], p[2], p[3], n[k], mid, last, last - mid, percent, judged
+          }
+        }
+      ' platform/usage.tsv platform/usage.tsv | sort
+    fi
+  } >platform/memory-growth.tsv
 }
 
 # ---------------------------------------------------------------------------
@@ -489,22 +762,161 @@ check_controlplane_ready() {
 }
 
 # check_no_restarts — At least one pod sample succeeded, and no container
-# restarted or was OOM-killed during the run.
+# of a pod outside EXEMPT_PODS restarted or was OOM-killed during the run.
 check_no_restarts() {
-  local containers restarts ooms
+  local containers restarts ooms skipped suffix=""
   if [[ ! -s platform/pod-samples.log ]]; then
     check no-restarts false "pod state could not be read: $(grep ' pods: ' platform/errors.log 2>/dev/null | tail -n 1)"
     return
   fi
-  read -r containers restarts ooms <<<"$(awk -F '\t' 'NR > 1 { n++; r += $6; o += $7 }
-    END { print n + 0, r + 0, o + 0 }' platform/restarts.tsv)"
-  if [[ "${containers}" == "0" ]]; then
-    check no-restarts true "0 containers observed"
-  elif [[ "${restarts}" == "0" && "${ooms}" == "0" ]]; then
-    check no-restarts true "${containers} containers observed, 0 restarts, 0 OOM kills"
-  else
-    check no-restarts false "${restarts} restart(s) and ${ooms} OOM kill(s) in ${containers} containers observed"
+  read -r containers restarts ooms skipped <<<"$(EXEMPT="${EXEMPT_PODS}" awk -F '\t' '
+    BEGIN { split(ENVIRON["EXEMPT"], e, "\n"); for (i in e) if (e[i] != "") exempt[e[i]] = 1 }
+    NR > 1 && ($1 "/" $2) in exempt { if (!(($1 "/" $2) in seen)) { seen[$1 "/" $2] = 1; s++ } next }
+    NR > 1 { n++; r += $6; o += $7 }
+    END { print n + 0, r + 0, o + 0, s + 0 }' platform/restarts.tsv)"
+  if [[ "${skipped}" != "0" ]]; then
+    suffix="; ${skipped} exempt pod(s) skipped"
   fi
+  if [[ "${containers}" == "0" ]]; then
+    check no-restarts true "0 containers observed${suffix}"
+  elif [[ "${restarts}" == "0" && "${ooms}" == "0" ]]; then
+    check no-restarts true "${containers} containers observed, 0 restarts, 0 OOM kills${suffix}"
+  else
+    check no-restarts false "${restarts} restart(s) and ${ooms} OOM kill(s) in ${containers} containers observed${suffix}"
+  fi
+}
+
+# check_memory_growth — At least one sample of the metrics API succeeded, at
+# least one container of platform/memory-growth.tsv is judged, and no judged
+# container grew by more than DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB and by more
+# than DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT at once. It compares the values
+# as the table prints them, so a growth at a bound passes. Either bound
+# alone is no defect: a small container's percent and a large one's MiB grow
+# with ordinary churn. The detail names how many containers of exempt pods
+# and of DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES it skipped.
+check_memory_growth() {
+  if [[ ! -s platform/usage.tsv ]]; then
+    check memory-growth false "memory samples could not be read: $(grep ' usage: ' platform/errors.log 2>/dev/null | tail -n 1)"
+    return
+  fi
+  awk -F '\t' -v mib_bound="${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB}" -v percent_bound="${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT}" \
+    -v skip="${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES}" '
+    NR == 1 { next }
+    {
+      m++
+      id = $1 "/" $2 "/" $3
+      if ($9 == "exempt") { skipped++; next }
+      if ($9 == "namespace skipped") { ns_skipped++; next }
+      if ($9 != "yes") {
+        if (!($9 in reasons)) order[++nreasons] = $9
+        reasons[$9]++
+        next
+      }
+      judged++
+      if (judged == 1 || $7 + 0 > largest + 0) { largest = $7; largest_percent = $8; largest_id = id }
+      if ($7 + 0 > mib_bound + 0 && $8 != "-" && $8 + 0 > percent_bound + 0) {
+        failures = failures (failures == "" ? "" : "; ") id ": " $5 " to " $6 " MiB (+" $7 " MiB, " $8 " %)"
+      }
+    }
+    END {
+      suffix = skipped > 0 ? "; " skipped " container(s) of exempt pods skipped" : ""
+      if (ns_skipped > 0) {
+        n = split(skip, s, " ")
+        for (i = 1; i <= n; i++) if (s[i] != "") names = names (names == "" ? "" : ", ") s[i]
+        suffix = suffix "; " ns_skipped " container(s) of " names " skipped"
+      }
+      if (failures != "") {
+        printf "false\t%s%s\n", failures, suffix
+        exit
+      }
+      if (judged == 0) {
+        for (i = 1; i <= nreasons; i++) list = list (i == 1 ? "" : ", ") order[i] " (" reasons[order[i]] ")"
+        if (skipped > 0) list = list (list == "" ? "" : ", ") "exempt (" skipped ")"
+        if (ns_skipped > 0) list = list (list == "" ? "" : ", ") "namespace skipped (" ns_skipped ")"
+        printf "false\tno container could be judged; the reasons: %s\n", list
+        exit
+      }
+      printf "true\t%d of %d containers judged; largest growth %s MiB (%s %%, %s)%s\n", judged, m, largest, largest_percent, largest_id, suffix
+    }
+  ' platform/memory-growth.tsv | {
+    IFS=$'\t' read -r pass detail
+    check memory-growth "${pass}" "${detail}"
+  }
+}
+
+# check_operator_leak — At least one operator pod was listed, no pod of
+# platform/operators-summary.tsv has no samples or failed scrapes, and each
+# one the summary judges kept its goroutine growth within
+# DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH and did not grow its heap by more
+# than DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB and by more than
+# DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT at once. Either heap bound alone
+# is no defect: the in-use heap of a reconciling operator swings by a few MiB
+# between garbage collections, and on a short run a tenth is four samples. It
+# compares the values as the summary prints them. A pod without samples or
+# with failed scrapes names the last scrape error errors.log holds for it.
+check_operator_leak() {
+  if [[ ! -s platform/pod-samples.log ]]; then
+    check operator-leak false "operator pods could not be listed: $(grep ' pods: ' platform/errors.log 2>/dev/null | tail -n 1)"
+    return
+  fi
+  if [[ ! -s platform/operator-pods.tsv ]]; then
+    check operator-leak false "no operator pod found in the sampled namespaces"
+    return
+  fi
+  awk -F '\t' -v heap_bound="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" \
+    -v heap_mib_bound="${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB}" -v goroutine_bound="${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" -v errors=platform/errors.log '
+    # last_error(id) — The text after "operators: <id>: " in the last line
+    # of errors.log that holds it, or none.
+    function last_error(id, needle, i) {
+      needle = "operators: " id ": "
+      for (i = lines; i >= 1; i--) {
+        if (index(error_line[i], needle) > 0) return substr(error_line[i], index(error_line[i], needle) + length(needle))
+      }
+      return "none"
+    }
+    BEGIN {
+      while ((getline line <errors) > 0) error_line[++lines] = line
+      close(errors)
+    }
+    NR == 1 { next }
+    {
+      n++
+      id = $1 "/" $2
+      if ($13 == "no samples") {
+        failures = failures (failures == "" ? "" : "; ") id ": no metrics sample; last error: " last_error(id)
+        next
+      }
+      if ($13 == "scrapes failed") {
+        failures = failures (failures == "" ? "" : "; ") id ": scrapes failed, " $3 " metrics samples; last error: " last_error(id)
+        next
+      }
+      if ($13 != "yes") {
+        skipped = skipped (skipped == "" ? "" : ", ") id " (" $13 ")"
+        next
+      }
+      judged++
+      if (judged == 1 || ($11 != "-" && (largest_heap == "-" || $11 + 0 > largest_heap + 0))) { largest_heap = $11; largest_heap_id = id }
+      if (judged == 1 || $7 + 0 > largest_goroutines + 0) { largest_goroutines = $7; largest_goroutines_id = id }
+      if (($11 != "-" && $11 + 0 > heap_bound + 0 && $10 + 0 > heap_mib_bound + 0) || $7 + 0 > goroutine_bound + 0) {
+        failures = failures (failures == "" ? "" : "; ") id ": heap growth " $11 " % (" $8 " to " $9 " MiB), goroutine growth " $7 " (" $5 " to " $6 ")"
+      }
+    }
+    END {
+      if (failures != "") {
+        printf "false\t%s\n", failures
+        exit
+      }
+      detail = sprintf("%d of %d operator pods judged", judged, n)
+      if (judged > 0) {
+        detail = detail "; largest heap growth " largest_heap " % (" largest_heap_id "); largest goroutine growth " largest_goroutines " (" largest_goroutines_id ")"
+      }
+      if (skipped != "") detail = detail "; not judged: " skipped
+      printf "true\t%s\n", detail
+    }
+  ' platform/operators-summary.tsv | {
+    IFS=$'\t' read -r pass detail
+    check operator-leak "${pass}" "${detail}"
+  }
 }
 
 # check_error_rate — The share of failed operations of dizzy's report, in
@@ -557,6 +969,8 @@ write_verdict() {
     check_leak
     check_controlplane_ready
     check_no_restarts
+    check_operator_leak
+    check_memory_growth
     check_error_rate
     check_p95
   } | jq -s '{verdict: (if all(.[]; .pass) then "PASS" else "FAIL" end), checks: .}' >verdict.json
@@ -575,10 +989,11 @@ tsv_table() {
 # write_report_md — report.md: the verdict and its checks, the run's
 # parameters and times, dizzy's report, the leak check, the restarts and OOM
 # kills, the pods created during the run, the memory growth and CPU tables,
+# the memory growth over the second half, the operator goroutines and heap,
 # the conditions, and the count of lines in platform/errors.log.
 # ---------------------------------------------------------------------------
 write_report_md() {
-  local header shown created
+  local header shown created judged
   {
     printf '# dizzy soak %s\n\n' "${RUN_NAME}"
     printf 'Verdict: **%s**\n\n' "$(jq -r '.verdict' verdict.json)"
@@ -629,6 +1044,25 @@ write_report_md() {
       printf '\nThe 15 containers with the highest mean CPU:\n\n'
       { printf '%s\n' "${header}"; awk 'NR > 1' platform/usage-summary.tsv | sort -t "$(printf '\t')" -k5,5nr; } |
         tsv_table 15
+    fi
+
+    printf '\n## Memory growth (second half)\n\n'
+    judged="$(awk -F '\t' 'NR > 1 && $9 == "yes"' platform/memory-growth.tsv 2>/dev/null)"
+    if [[ ! -s platform/usage.tsv ]]; then
+      printf 'Memory growth: unavailable. No sample of the metrics API succeeded; see platform/errors.log.\n'
+    elif [[ -z "${judged}" ]]; then
+      printf 'No container was judged; platform/memory-growth.tsv names the reason for each.\n'
+    else
+      printf 'The 15 judged containers with the largest growth from the mean around the midpoint to the mean of the last tenth:\n\n'
+      { head -n 1 platform/memory-growth.tsv; printf '%s\n' "${judged}" | sort -t "$(printf '\t')" -k7,7nr; } |
+        tsv_table 15
+    fi
+
+    printf '\n## Operator goroutines and heap\n\n'
+    if [[ "$(wc -l <platform/operators-summary.tsv | tr -d ' ')" -gt 1 ]]; then
+      tsv_table <platform/operators-summary.tsv
+    else
+      printf 'No operator pod was listed in the sampled namespaces.\n'
     fi
 
     printf '\n## Conditions\n\n'
@@ -746,11 +1180,19 @@ write_meta() {
   jq -n --arg run "${RUN_NAME}" --arg start "${RUN_START}" --arg service "${DIZZY_SOAK_SERVICE}" \
     --arg duration "${DIZZY_SOAK_DURATION}" --arg version "${DIZZY_VERSION}" --arg args "${DIZZY_ARGS}" \
     --argjson namespaces "${namespaces}" --arg interval "${DIZZY_SOAK_SAMPLE_INTERVAL}" \
-    --arg rate "${DIZZY_SOAK_MAX_ERROR_RATE}" --arg p95 "${DIZZY_SOAK_MAX_P95_SECONDS}" '
+    --arg rate "${DIZZY_SOAK_MAX_ERROR_RATE}" --arg p95 "${DIZZY_SOAK_MAX_P95_SECONDS}" \
+    --arg heap "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_PERCENT}" --arg heap_mib "${DIZZY_SOAK_MAX_OPERATOR_HEAP_GROWTH_MIB}" \
+    --arg goroutines "${DIZZY_SOAK_MAX_OPERATOR_GOROUTINE_GROWTH}" \
+    --arg memory_percent "${DIZZY_SOAK_MAX_MEMORY_GROWTH_PERCENT}" --arg memory_mib "${DIZZY_SOAK_MAX_MEMORY_GROWTH_MIB}" \
+    --argjson memory_skip "$(words_json "${DIZZY_SOAK_MEMORY_GROWTH_SKIP_NAMESPACES}")" '
     def number: if . == "" then null else tonumber end;
     {run: $run, startTime: $start, service: $service, duration: $duration, dizzyVersion: $version,
      dizzyArgs: $args, namespaces: $namespaces, sampleIntervalSeconds: ($interval | tonumber),
-     maxErrorRatePercent: ($rate | number), maxP95Seconds: ($p95 | number)}' >meta.json
+     maxErrorRatePercent: ($rate | number), maxP95Seconds: ($p95 | number),
+     maxOperatorHeapGrowthPercent: ($heap | tonumber), maxOperatorHeapGrowthMiB: ($heap_mib | tonumber),
+     maxOperatorGoroutineGrowth: ($goroutines | tonumber),
+     maxMemoryGrowthPercent: ($memory_percent | tonumber), maxMemoryGrowthMiB: ($memory_mib | tonumber),
+     memoryGrowthSkipNamespaces: $memory_skip}' >meta.json
 }
 
 # check_free_space — Refuse to start with less than MIN_FREE_KIB free on
@@ -787,6 +1229,8 @@ main() {
   log "Soak run ${RUN_NAME}: dizzy ${DIZZY_VERSION} ${DIZZY_SOAK_SERVICE} chaos for ${DIZZY_SOAK_DURATION} (0 runs until stopped), report in ${REPORTS_DIR}/${RUN_NAME}."
   : >platform/containers.tsv
   : >platform/usage.tsv
+  : >platform/operator-pods.tsv
+  : >platform/operators.tsv
   : >platform/errors.log
   cp "${SCENARIO_FILE}" scenario.yaml
   write_meta
@@ -815,6 +1259,7 @@ main() {
   rm -f platform/.sampler-stop
   sample_pods
   sample_usage
+  sample_operators
   read_conditions platform/conditions-end.json
   jq --arg end "$(now)" --argjson rc "${DIZZY_RC:-null}" '. + {endTime: $end, dizzyExitCode: $rc}' \
     meta.json >meta.json.new && mv meta.json.new meta.json
@@ -822,6 +1267,8 @@ main() {
   render_dizzy_reports
   derive_restarts
   derive_usage_summary
+  derive_operators_summary
+  derive_memory_growth
   derive_conditions
   write_verdict
   write_report_md

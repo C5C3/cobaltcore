@@ -677,6 +677,23 @@ tests:
       - failedTemplate:
           errorPattern: "/priorityClassName.*maxLength"
 
+  - it: should reject an extraVolumeMounts entry without mountPath
+    set:
+      extraVolumeMounts:
+        - name: extra-ca
+    asserts:
+      - failedTemplate:
+          errorPattern: "/extraVolumeMounts/0.*mountPath"
+
+  - it: should reject an extraVolumes entry without name
+    set:
+      extraVolumes:
+        - configMap:
+            name: extra-ca
+    asserts:
+      - failedTemplate:
+          errorPattern: "/extraVolumes/0.*name"
+
   - it: should accept valid placement values
     set:
       priorityClassName: cobaltcore-platform

@@ -39,3 +39,11 @@ spec:
     adminPasswordSecretRef:
       name: keystone-admin
     region: RegionOne
+  # Disable dogpile.cache for this fixture, for the reason the fernet-rotation
+  # fixture gives: parallel Keystone CRs share `openstack-memcached`, so a
+  # concurrent instance's cached `admin@default` lookup can answer the admin
+  # authentication of step 6 with a 401. With the cache off, step 6 also reads
+  # its credential from the database, not from a cached row.
+  extraConfig:
+    cache:
+      enabled: "false"

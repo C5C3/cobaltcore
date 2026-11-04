@@ -9,8 +9,12 @@
 # operator upgrade-in-place is the highest-risk untested path. This suite
 # installs the last released chart+image from GHCR (baseline install performed
 # by the job before chainsaw runs), brings a managed-mode Keystone to Ready,
-# then `helm upgrade`s to the locally built chart + CRDs and asserts the
-# deployed Keystone survives the operator upgrade:
+# applies the locally built CRDs and checks the Keystone while the released
+# operator still serves it (the CRD window, see
+# hack/ci-operator-upgrade-crd-window.sh: every stored spec value kept, an
+# unchanged update and a dry-run create admitted, a new generation reconciled
+# to Ready by the released controller), then `helm upgrade`s to the locally
+# built chart and asserts the deployed Keystone survives the operator upgrade:
 #   - Ready stays True (AllReady),
 #   - status.installedRelease is unchanged (still 2026.1 — it tracks the
 #     Keystone service image tag, not the operator version),
@@ -72,7 +76,7 @@ spec:
             exit 1
           fi
           echo "Baseline bootstrap Job UID: ${BOOT_UID}"
-          # Stash the API Service backend count too: Step 5 asserts it never
+          # Stash the API Service backend count too: Step 6 asserts it never
           # drops while the new operator narrows the Service selector. The
           # pipeline is guarded so a failed kubectl or jq leaves ENDPOINTS
           # empty and reaches the diagnostic below instead of aborting the
@@ -91,10 +95,52 @@ spec:
             --from-literal=bootstrap-uid="${BOOT_UID}" \
             --from-literal=endpoints="${ENDPOINTS}" \
             --dry-run=client -o yaml | kubectl apply -f -
-  # ── Step 3: helm upgrade to the locally built chart + CRDs ─────────────
+  # ── Step 3: New CRDs under the RELEASED operator (the CRD window) ──────
+  # An upgrade applies the new CRDs before it rolls the operator: Helm never
+  # upgrades crds/, and Flux's `crds: CreateReplace` replaces them first. For
+  # as long as the rollout takes, the released controller and webhooks serve
+  # this Keystone under a schema they were not built for. The script applies
+  # the in-repo CRDs server-side and, while the released operator still runs,
+  # checks that the CR keeps every stored spec value, that an unchanged update
+  # and a dry-run create of its spec are admitted, and that the released
+  # controller reconciles a new generation to Ready. The probe patch sets
+  # spec.fernet.suspend, which only suspends the fernet rotation CronJob and
+  # restarts no pod; the assert proves the controller acted on that
+  # generation, not only on the status.
+  - name: assert-crd-window
+    try:
+    - script:
+        shell: bash
+        # 4m: up to 60s for Established plus the 120s probe.
+        timeout: 240s
+        content: |
+          set -euo pipefail
+          REPO_ROOT="$(cd ../../.. && pwd)"
+          OPERATOR=keystone \
+          CRS=keystones.keystone.openstack.c5c3.io/keystone-op-upgrade \
+          PROBE_PATCH='{"spec":{"fernet":{"suspend":true}}}' \
+            "${REPO_ROOT}/hack/ci-operator-upgrade-crd-window.sh"
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: keystone-op-upgrade-fernet-rotate
+            namespace: openstack
+          spec:
+            suspend: true
+    catch:
+    - script:
+        content: |
+          kubectl get keystone keystone-op-upgrade -n openstack -o yaml 2>&1 || true
+          echo "keystones CRD generation: $(kubectl get crd keystones.keystone.openstack.c5c3.io -o jsonpath='{.metadata.generation}' 2>&1 || true)"
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 --previous 2>&1 || true
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: helm upgrade to the locally built chart ────────────────────
   # Chainsaw runs scripts with the test directory as CWD, so ../../.. is the
-  # repo root. Helm does not upgrade CRDs (crds/ is install-only), so apply
-  # the new CRDs explicitly first.
+  # repo root. Step 3 applied the new CRDs already, and Helm never upgrades
+  # crds/ (it is install-only), so this step only rolls the operator.
   - name: helm-upgrade-operator
     try:
     - script:
@@ -105,8 +151,6 @@ spec:
           REPO_ROOT="$(cd ../../.. && pwd)"
           CHART="${REPO_ROOT}/operators/keystone/helm/keystone-operator"
           IMAGE_REPO="${IMAGE_PREFIX:-ghcr.io/c5c3}/keystone-operator"
-          echo "Applying new CRDs from ${CHART}/crds/ ..."
-          kubectl apply -f "${CHART}/crds/"
           echo "Vendoring chart dependencies ..."
           helm dependency build --skip-refresh "${CHART}"
           echo "helm upgrade keystone-operator -> ${IMAGE_REPO}:dev ..."
@@ -126,7 +170,7 @@ spec:
           kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 --previous 2>&1 || true
           helm history keystone-operator -n keystone-system 2>&1 || true
           kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 4: Assert the operator Deployment actually rolled ─────────────
+  # ── Step 5: Assert the operator Deployment actually rolled ─────────────
   # Spec-only assertions are not proof — verify the rollout completed
   # (updatedReplicas == replicas) and the manager container runs the :dev image.
   - name: assert-operator-rolled
@@ -151,7 +195,7 @@ spec:
             exit 1
           fi
           echo "OK: rollout complete (updatedReplicas=${UPD} == replicas=${REP})"
-  # ── Step 5: Assert the API Service keeps its backends across the upgrade ─
+  # ── Step 6: Assert the API Service keeps its backends across the upgrade ─
   # The new operator narrows the API Service selector to
   # app.kubernetes.io/component=api, a label the pods running under the
   # released operator do not carry. Applying that narrowing before the
@@ -161,7 +205,7 @@ spec:
   # observedGeneration are all derived from Deployment status and stay green
   # through that outage, so sample the EndpointSlices directly, from the moment
   # the new operator takes over until the narrowing actually lands. Runs before
-  # the Step-6 replica patch so the baseline count still describes the CR.
+  # the Step-7 replica patch so the baseline count still describes the CR.
   - name: assert-endpoints-survive-upgrade
     try:
     - script:
@@ -230,15 +274,15 @@ spec:
             -l kubernetes.io/service-name=keystone-op-upgrade -o yaml 2>&1 || true
           kubectl get pods -n openstack -o wide 2>&1 || true
           kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
-  # ── Step 6: Force one full reconcile by the NEW operator ───────────────
+  # ── Step 7: Force one full reconcile by the NEW operator ───────────────
   # Patch a real spec field (spec.deployment.replicas 1 → 2) so
   # metadata.generation advances. An annotation poke would NOT bump generation
   # (with the /status subresource the apiserver increments generation only on
-  # .spec changes), which is exactly what would make the Step-7
+  # .spec changes), which is exactly what would make the Step-8
   # observedGeneration check tautological: observedGeneration == generation was
   # already true from the released operator's last status write and would stay
   # true whether or not the NEW operator ever reconciled. Bumping generation is
-  # what lets Step 7 prove the NEW operator drove a post-upgrade reconcile to
+  # what lets Step 8 prove the NEW operator drove a post-upgrade reconcile to
   # completion. Same field and pattern as tests/e2e/keystone/semantic-invariants.
   - name: poke-reconcile
     try:
@@ -276,7 +320,7 @@ spec:
             echo "FAIL: spec patch did not advance metadata.generation (${GEN_BEFORE} -> ${GEN_AFTER})"
             exit 1
           fi
-  # ── Step 7: Assert Ready persists and no re-bootstrap happened ─────────
+  # ── Step 8: Assert Ready persists and no re-bootstrap happened ─────────
   - name: assert-after-upgrade
     try:
     - assert:
@@ -299,7 +343,7 @@ spec:
         timeout: 3m
         content: |
           set -euo pipefail
-          # Poll until status.observedGeneration catches up to the (Step-6
+          # Poll until status.observedGeneration catches up to the (Step-7
           # bumped) metadata.generation — this is what proves the NEW operator
           # drove a post-upgrade reconcile to completion. The declarative
           # Ready=True assert above cannot prove it on its own: Ready was already

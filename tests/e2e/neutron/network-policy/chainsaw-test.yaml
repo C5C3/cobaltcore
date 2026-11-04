@@ -4,11 +4,24 @@
 
 # Chainsaw E2E test for the NetworkPolicy sub-reconciler.
 #
-# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy,
-# so this suite validates the rendered policy object (ingress on the Neutron
-# API port 9696, auto-derived DNS/database/keystone/cache/OVN/messaging egress)
-# and its lifecycle, not actual traffic enforcement — the same scope as the
-# keystone/horizon/glance/placement network-policy suites.
+# ENFORCEMENT: the kindnetd of kind v0.32 and later (CI pins KIND_VERSION)
+# enforces NetworkPolicy. The suite asserts the rendered policy object
+# (ingress on the Neutron API port 9696, auto-derived
+# DNS/database/keystone/cache/OVN/messaging egress) and its lifecycle, and
+# probes the policy with the four pods of 05-probe-pods.yaml through
+# ../../lib/assert-networkpolicy-enforced.sh (Step 3):
+#   - the target, which carries the policy's selector labels, is dropped on
+#     sink port 9999, which no egress rule admits;
+#   - it resolves a cluster name, which the DNS rule admits;
+#   - it reaches the sink on TCP 3306, 5000, 5672, 6641, 6642 and 11211, every
+#     TCP egress port the policy admits but 53;
+#   - a client in neutron-system, the operator namespace, is dropped on target
+#     port 9999, which no ingress rule admits, and reaches TCP 9696;
+#   - a client in neutron-netpol-outside is dropped on TCP 9696 until the
+#     update patch admits its namespace (Step 4).
+# On a CNI that does not enforce NetworkPolicy the first probe fails with "was
+# never dropped". TCP 53 is not probed: the sink listens on unprivileged ports
+# only, DNS is probed by resolution, and Step 2 pins the rule.
 #
 # The auto-derived egress order is deterministic (DNS, database, keystone,
 # cache, OVN, messaging):
@@ -125,7 +138,58 @@ spec:
           kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # ── Step 3: Probe the enforced policy ───────────────────────────────────
+  # The pods of 05-probe-pods.yaml stand in for the Neutron pods (see
+  # ENFORCEMENT above). kindnet adds a new pod to its policy set a moment
+  # after the pod starts, so the first dropped probe polls until the target's
+  # connection times out. The inside client's open probe then shows that
+  # kindnet knows the clients, which start together, so the outside client's
+  # drop comes from the policy. The trailing dot keeps the resolver off the
+  # search list.
+  - try:
+    - apply:
+        file: 05-probe-pods.yaml
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready --timeout=120s -n openstack \
+            pod/neutron-netpol-probe-target pod/neutron-netpol-probe-sink
+          kubectl wait --for=condition=Ready --timeout=120s -n neutron-system pod/neutron-netpol-probe-inside
+          kubectl wait --for=condition=Ready --timeout=120s -n neutron-netpol-outside pod/neutron-netpol-probe-outside
+          TARGET="$(kubectl get pod neutron-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          SINK="$(kubectl get pod neutron-netpol-probe-sink -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ] || [ -z "${SINK}" ]; then
+            echo "ERROR: a probe pod has no pod IP (target '${TARGET}', sink '${SINK}')"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          # Egress of the pod the policy selects. The first drop proves kindnet holds it.
+          "${PROBE}" openstack neutron-netpol-probe-target dropped "${SINK}" 9999
+          "${PROBE}" openstack neutron-netpol-probe-target resolves kubernetes.default.svc.cluster.local.
+          "${PROBE}" openstack neutron-netpol-probe-target open "${SINK}" 3306 5000 5672 6641 6642 11211
+          # Ingress into it: a port no rule admits, then the API port from an admitted
+          # and from a foreign namespace.
+          "${PROBE}" neutron-system neutron-netpol-probe-inside dropped "${TARGET}" 9999
+          "${PROBE}" neutron-system neutron-netpol-probe-inside open "${TARGET}" 9696
+          "${PROBE}" neutron-netpol-outside neutron-netpol-probe-outside dropped "${TARGET}" 9696
+    catch:
+    - script:
+        timeout: 2m
+        content: |
+          echo "=== Probe pods ==="
+          kubectl get pods -A -l app.kubernetes.io/instance=neutron-netpol -o wide --show-labels 2>&1 || true
+          for ref in openstack/neutron-netpol-probe-target openstack/neutron-netpol-probe-sink \
+            neutron-system/neutron-netpol-probe-inside neutron-netpol-outside/neutron-netpol-probe-outside; do
+            echo "--- ${ref} ---"
+            kubectl logs -n "${ref%%/*}" "${ref#*/}" 2>&1 || true
+            kubectl describe pod -n "${ref%%/*}" "${ref#*/}" 2>&1 | tail -20 || true
+          done
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n openstack -l app.kubernetes.io/instance=neutron-netpol -o yaml 2>&1 || true
+          echo "=== Events (neutron-netpol-outside) ==="
+          kubectl get events -n neutron-netpol-outside 2>&1 || true
+  # ── Step 4: Add a second ingress source and assert it lands ────────────
   # Peer arithmetic: the operator appends one peer per declared ingress source
   # plus one for its own Namespace (so the operator's health check reaches the
   # API). One source therefore renders 2 peers and the patched two sources
@@ -144,6 +208,20 @@ spec:
           spec:
             ingress:
             - (length(from) >= `3`): true
+    # The patch admits neutron-netpol-outside, so its client, which Step 3 saw
+    # dropped, now reaches the API port. That proves the patched policy is
+    # enforced and the earlier drop came from the policy.
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          TARGET="$(kubectl get pod neutron-netpol-probe-target -n openstack -o jsonpath='{.status.podIP}')"
+          if [ -z "${TARGET}" ]; then
+            echo "ERROR: the probe target has no pod IP"
+            exit 1
+          fi
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          "${PROBE}" neutron-netpol-outside neutron-netpol-probe-outside open "${TARGET}" 9696
     catch:
     - script:
         content: |
@@ -156,7 +234,7 @@ spec:
           kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  # ── Step 5: Disable networkPolicy and assert deletion ──────────────────
   - try:
     - patch:
         file: 04-patch-disable-networkpolicy.yaml

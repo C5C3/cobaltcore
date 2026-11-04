@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS backend the cinder-upg-bus CR serves. Without a backend the
+# Cinder never reaches Ready, and the volume stream needs a volume service on
+# the bus. The export is the kind-only NFS server (deploy/kind/nfs/).
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: upg-bus-nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-upg-bus
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

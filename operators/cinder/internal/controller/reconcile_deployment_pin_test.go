@@ -48,6 +48,17 @@ spec:
         app.kubernetes.io/managed-by: cinder-operator
         app.kubernetes.io/name: cinder
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+                  app.kubernetes.io/instance: cinder
+                  app.kubernetes.io/name: cinder
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -107,11 +118,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8776
           timeoutSeconds: 10
         name: cinder-api
         ports:
@@ -168,14 +178,6 @@ spec:
             app.kubernetes.io/name: cinder
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: api
-            app.kubernetes.io/instance: cinder
-            app.kubernetes.io/name: cinder
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
@@ -224,6 +226,17 @@ spec:
         app.kubernetes.io/managed-by: cinder-operator
         app.kubernetes.io/name: cinder
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+                  app.kubernetes.io/instance: cinder
+                  app.kubernetes.io/name: cinder
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -283,11 +296,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8776
           timeoutSeconds: 10
         name: cinder-api
         ports:
@@ -345,14 +357,6 @@ spec:
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
         whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: api
-            app.kubernetes.io/instance: cinder
-            app.kubernetes.io/name: cinder
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
-        whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:
           items:
@@ -397,6 +401,17 @@ spec:
         app.kubernetes.io/managed-by: cinder-operator
         app.kubernetes.io/name: cinder
     spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+                  app.kubernetes.io/instance: cinder
+                  app.kubernetes.io/name: cinder
+              topologyKey: kubernetes.io/hostname
+            weight: 100
       containers:
       - command:
         - uwsgi
@@ -456,11 +471,10 @@ spec:
               - -c
               - sleep 5
         livenessProbe:
-          httpGet:
-            path: /healthcheck
-            port: 8776
           initialDelaySeconds: 15
           periodSeconds: 20
+          tcpSocket:
+            port: 8776
           timeoutSeconds: 10
         name: cinder-api
         ports:
@@ -523,14 +537,6 @@ spec:
             app.kubernetes.io/name: cinder
         maxSkew: 1
         topologyKey: topology.kubernetes.io/zone
-        whenUnsatisfiable: ScheduleAnyway
-      - labelSelector:
-          matchLabels:
-            app.kubernetes.io/component: api
-            app.kubernetes.io/instance: cinder
-            app.kubernetes.io/name: cinder
-        maxSkew: 1
-        topologyKey: kubernetes.io/hostname
         whenUnsatisfiable: ScheduleAnyway
       volumes:
       - configMap:

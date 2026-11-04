@@ -36,6 +36,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Harness
@@ -69,10 +71,11 @@ expect_all() {
 }
 
 # The jobs a cheap change must never schedule.
-EXPENSIVE="e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-orders-multicluster keystone-pressure tempest"
+EXPENSIVE="e2e-chaos e2e-chaos-random e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone e2e-autoscaling e2e-multicluster e2e-orders-multicluster keystone-pressure tempest"
 
 SENTINEL_TARGETS='{"target":["__none__"]}'
 SENTINEL_OPERATORS='{"operator":["__none__"]}'
+ALL_OPERATOR_MATRIX='{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
 
 # ---------------------------------------------------------------------------
 # Per-operator and shared Go
@@ -87,8 +90,11 @@ test_operator_change() {
   expect changed-services '[]'
   expect build-e2e-images true
   expect tempest-services '[]'
+  # Every operator's upgrade suite follows that operator's code.
+  expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators '{"operator":["glance"]}'
   # shellcheck disable=SC2086 # deliberate: expand the job list
-  expect_all false $EXPENSIVE e2e-infra e2e-operator-upgrade actionlint noop
+  expect_all false $EXPENSIVE e2e-infra actionlint noop
 }
 
 test_c5c3_change_runs_the_controlplane_jobs() {
@@ -106,12 +112,13 @@ test_keystone_change_runs_the_upgrade_suite() {
   scenario "a keystone operator change" refs/heads/main FILTER_keystone=true
   expect e2e-operators '{"operator":["keystone"]}'
   expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators '{"operator":["keystone"]}'
   expect_all false e2e-controlplane tempest e2e-chaos
 }
 
 test_shared_go_change() {
   # Every operator's code is affected, so every unit, envtest and e2e leg runs
-  # and the upgrade suite with them. The ControlPlane trio, chaos, multicluster,
+  # and every upgrade suite with them. The ControlPlane trio, chaos, multicluster,
   # prometheus and tempest stay off: they are the most expensive jobs in the
   # pipeline and ci:full is how you ask for them.
   scenario "a shared Go change" refs/heads/main FILTER_go_common=true
@@ -120,6 +127,7 @@ test_shared_go_change() {
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]'
   expect changed-services '[]'
   expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators "$ALL_OPERATOR_MATRIX"
   expect e2e-infra false
   # shellcheck disable=SC2086 # deliberate: expand the job list
   expect_all false $EXPENSIVE
@@ -129,13 +137,15 @@ test_nova_chart_egress_change_runs_the_tests_that_read_it() {
   # The keystone and placement unit tests check the nova chart's Keystone and
   # Placement egress rules against their own Service ports and pod labels, so
   # an edit to that hook runs their test legs. Their e2e legs, image builds and
-  # the upgrade suite stay off: the hook ships in the nova chart.
+  # upgrade suites stay off: the hook ships in the nova chart, so only nova's
+  # upgrade suite runs.
   scenario "a nova chart egress hook change" refs/heads/main FILTER_nova=true FILTER_nova_chart_egress=true
   expect go true
   expect test-targets '{"target":["keystone","placement","nova"]}'
   expect e2e-operators '{"operator":["nova"]}'
   expect changed-operators '["nova"]'
-  expect e2e-operator-upgrade false
+  expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators '{"operator":["nova"]}'
 }
 
 # ---------------------------------------------------------------------------
@@ -228,8 +238,19 @@ test_special_suites_run_only_their_own_job() {
   expect e2e-prometheus true
   expect_all false e2e-chaos e2e-controlplane tempest
 
-  scenario "an operator-upgrade suite edit" refs/heads/main FILTER_tests_operator_upgrade=true
+  # tests_operator_upgrade lists the inputs every upgrade suite shares, so it
+  # runs all ten; one operator's suite runs that operator's alone.
+  scenario "a shared operator-upgrade input edit" refs/heads/main FILTER_tests_operator_upgrade=true
   expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators "$ALL_OPERATOR_MATRIX"
+  expect has-e2e-operators false
+  expect_all false e2e-chaos e2e-controlplane tempest
+
+  scenario "one operator's upgrade suite edit" refs/heads/main FILTER_tests_operator_upgrade_cinder=true
+  expect e2e-operator-upgrade true
+  expect e2e-operator-upgrade-operators '{"operator":["cinder"]}'
+  expect build-e2e-images true
+  expect has-e2e-operators false
   expect_all false e2e-chaos e2e-controlplane tempest
 
   scenario "a ControlPlane SSO suite edit" refs/heads/main FILTER_tests_controlplane_sso=true
@@ -290,6 +311,7 @@ test_makefile_change() {
   expect e2e-operators '{"operator":["keystone"]}'
   expect changed-operators '["keystone"]'
   expect e2e-operator-upgrade false
+  expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
 }
 
 test_docs_only_change() {
@@ -298,6 +320,8 @@ test_docs_only_change() {
   expect go false
   expect has-e2e-operators false
   expect e2e-operators "$SENTINEL_OPERATORS"
+  expect e2e-operator-upgrade false
+  expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
   expect build-e2e-images false
   expect e2e-infra false
   expect noop false
@@ -369,6 +393,7 @@ test_ci_full_runs_everything() {
   expect noop false
   expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
   expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
+  expect e2e-operator-upgrade-operators "$ALL_OPERATOR_MATRIX"
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]'
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder","nova"]'
   expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
@@ -386,6 +411,42 @@ test_ci_tempest_follows_the_touched_service() {
   expect tempest true
   expect tempest-services '["keystone"]'
   expect build-e2e-images true
+}
+
+test_random_chaos_runs_on_its_own_files() {
+  # The tests_chaos_random filter is the random run's own files; a change to
+  # one schedules the run and the image build it loads, and nothing else.
+  local block
+  block="$(filter_block tests_chaos_random)"
+  assert_contains "tests_chaos_random lists tests/chaos-random/**, so the catalogue counts" "$block" "- 'tests/chaos-random/**'"
+  assert_contains "and the runner" "$block" "- 'hack/chaos-random.sh'"
+  assert_contains "and the soak it runs under" "$block" "- 'hack/dizzy-soak-runner.sh'"
+  assert_contains "and the consistency checks" "$block" "- 'tests/e2e-chaos/lib/consistency.sh'"
+  assert_not_contains "but not the chaos suites" "$block" "tests/e2e-chaos/**"
+  assert_file_contains_fixed "the resolver step gets the filter" "$CI_YAML" \
+    'FILTER_tests_chaos_random: ${{ steps.filter.outputs.tests_chaos_random }}'
+
+  scenario "a change to tests/chaos-random/catalogue.yaml" refs/heads/main FILTER_tests_chaos_random=true
+  expect_all true e2e-chaos-random build-e2e-images
+  expect_all false e2e-chaos e2e-controlplane tempest go has-e2e-operators noop
+
+  scenario "a change under tests/e2e-chaos/ alone" refs/heads/main FILTER_tests_chaos=true
+  expect e2e-chaos true
+  expect e2e-chaos-random false
+
+  scenario "ci:full" refs/heads/main FILTER_docs=true PR_LABELS='["ci:full"]'
+  expect e2e-chaos-random true
+
+  scenario "ci:chaos" refs/heads/main FILTER_docs=true PR_LABELS='["ci:chaos"]'
+  expect e2e-chaos true
+  expect e2e-chaos-random false
+  scenario "run-chaos" refs/heads/main FILTER_docs=true PR_LABELS='["run-chaos"]'
+  expect e2e-chaos-random false
+
+  scenario "a labeled no-op with the random run's files changed" refs/heads/main \
+    FILTER_tests_chaos_random=true EVENT_ACTION=labeled EVENT_LABEL=bug
+  expect noop true
+  expect e2e-chaos-random false
 }
 
 test_ci_chaos_and_its_alias() {
@@ -483,6 +544,8 @@ test_non_ci_label_resolves_to_nothing() {
   expect e2e-autoscaling false
   expect test-targets "$SENTINEL_TARGETS"
   expect e2e-operators "$SENTINEL_OPERATORS"
+  expect e2e-operator-upgrade false
+  expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
   expect changed-operators '[]'
   expect tempest false
 }
@@ -525,6 +588,7 @@ test_tag_push_forces_everything() {
     e2e-operator-upgrade has-e2e-operators
   expect noop false
   expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}'
+  expect e2e-operator-upgrade-operators "$ALL_OPERATOR_MATRIX"
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]'
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder","nova"]'
   expect tempest-services '["keystone","glance","barbican","neutron","cinder","nova"]'
@@ -557,6 +621,52 @@ test_push_keeps_the_publish_matrix() {
 }
 
 # ---------------------------------------------------------------------------
+# The nightly chaos run
+# ---------------------------------------------------------------------------
+
+# expect_night — the outputs of a scheduled or dispatched run: the chaos legs,
+# the random chaos run and the image build they load, nothing else.
+expect_night() {
+  expect_all true e2e-chaos e2e-chaos-random build-e2e-images
+  expect noop false
+  expect_all false go docs helm target-cluster-chart e2e-infra e2e-prometheus \
+    e2e-controlplane e2e-controlplane-sso e2e-external-keystone \
+    e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-ovn-overlay \
+    e2e-nova-libvirt e2e-operator-upgrade tempest keystone-pressure \
+    measure-sizing actionlint changed-tempest changed-proxy changed-ovn \
+    changed-libvirt has-e2e-operators
+  expect_all '[]' changed-operators changed-services tempest-services
+  expect test-targets "$SENTINEL_TARGETS"
+  expect_all "$SENTINEL_OPERATORS" e2e-operators e2e-operator-upgrade-operators
+}
+
+test_schedule_runs_only_the_chaos_legs() {
+  scenario "a scheduled run with no filter and no labels" refs/heads/main \
+    EVENT_NAME=schedule
+  expect_night
+
+  scenario "a dispatched run" refs/heads/main EVENT_NAME=workflow_dispatch
+  expect_night
+}
+
+test_the_night_ignores_paths_and_labels() {
+  # On a night the paths-filter step is skipped, and nothing a filter or a
+  # label says may widen the run.
+  scenario "a scheduled run with filters and ci:full" refs/heads/main \
+    EVENT_NAME=schedule FILTER_go_common=true FILTER_tests_chaos=true \
+    PR_LABELS='["ci:full"]'
+  expect_night
+
+  scenario "a dispatched run on a v* tag" refs/tags/v1.2.3 \
+    EVENT_NAME=workflow_dispatch
+  expect_night
+
+  scenario "a scheduled run with a labeled action" refs/heads/main \
+    EVENT_NAME=schedule EVENT_ACTION=labeled EVENT_LABEL=bug
+  expect_night
+}
+
+# ---------------------------------------------------------------------------
 # Shadow paths
 # ---------------------------------------------------------------------------
 
@@ -568,6 +678,7 @@ test_no_filters_at_all() {
     build-e2e-images has-e2e-operators noop
   expect test-targets "$SENTINEL_TARGETS"
   expect e2e-operators "$SENTINEL_OPERATORS"
+  expect e2e-operator-upgrade-operators "$SENTINEL_OPERATORS"
   expect changed-operators '[]'
   expect changed-services '[]'
   expect tempest-services '[]'
@@ -605,13 +716,14 @@ test_outputs_are_complete() {
   # job silently resolves it to the empty string and skips forever.
   scenario "the emitted output set" refs/heads/main FILTER_glance=true
   local expected key
-  expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos
+  expected="noop go docs helm target-cluster-chart e2e-infra e2e-chaos e2e-chaos-random
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
     e2e-autoscaling e2e-multicluster e2e-orders-multicluster e2e-operator-upgrade tempest measure-sizing
     keystone-pressure
     actionlint changed-tempest
     changed-proxy changed-ovn changed-libvirt build-e2e-images has-e2e-operators changed-operators
-    changed-services tempest-services test-targets e2e-operators"
+    changed-services tempest-services test-targets e2e-operators
+    e2e-operator-upgrade-operators"
   for key in $expected; do
     assert_not_empty "the resolver emits $key" \
       "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
@@ -623,6 +735,14 @@ test_outputs_are_complete() {
     EVENT_ACTION=labeled EVENT_LABEL=bug
   for key in $expected; do
     assert_not_empty "the no-op path emits $key" \
+      "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
+  done
+
+  # And on the night.
+  scenario "the emitted output set on a scheduled run" refs/heads/main \
+    EVENT_NAME=schedule
+  for key in $expected; do
+    assert_not_empty "the scheduled path emits $key" \
       "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
   done
 }
@@ -654,6 +774,7 @@ test_tempest_legs_follow_the_operators_they_deploy
 test_shared_tempest_change_covers_every_service
 test_ci_full_runs_everything
 test_ci_tempest_follows_the_touched_service
+test_random_chaos_runs_on_its_own_files
 test_ci_chaos_and_its_alias
 test_ci_controlplane_and_multicluster
 test_ci_pressure_runs_the_pressure_job
@@ -663,6 +784,8 @@ test_non_ci_label_resolves_to_nothing
 test_ci_label_event_is_not_a_noop
 test_tag_push_forces_everything
 test_push_keeps_the_publish_matrix
+test_schedule_runs_only_the_chaos_legs
+test_the_night_ignores_paths_and_labels
 test_no_filters_at_all
 test_malformed_labels_mean_no_labels
 test_missing_required_inputs_fail_loudly

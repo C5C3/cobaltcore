@@ -4,10 +4,12 @@
 
 # Chainsaw E2E test for spec.topologySpreadConstraints.
 # Validates that:
-#   - A Keystone CR without explicit TSC gets 2 default constraints
-#     (zone-spread + hostname-spread, MaxSkew=1, ScheduleAnyway)
-#   - Patching with custom TSC performs verbatim pass-through
-#   - Patching with an empty slice disables all constraints
+#   - A Keystone CR without explicit TSC gets the default spread: one zone
+#     constraint (MaxSkew=1, ScheduleAnyway) and one preferred pod
+#     anti-affinity term on kubernetes.io/hostname (weight 100)
+#   - Patching with custom TSC performs verbatim pass-through and drops the
+#     default term, leaving no affinity
+#   - Patching with an empty slice leaves neither constraints nor affinity
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -22,7 +24,7 @@ spec:
   - try:
     - apply:
         file: 00-keystone-cr.yaml
-  # ── Step 2: Assert Ready and Deployment has 2 default constraints ────────
+  # ── Step 2: Assert Ready and Deployment has the default spread ──────────
   - try:
     - assert:
         resource:
@@ -45,6 +47,10 @@ spec:
           spec:
             template:
               spec:
+                # The zone constraint is the only constraint; the node spread
+                # is the preferred anti-affinity term, which the scheduler
+                # scores on nodes without a zone label too.
+                (length(topologySpreadConstraints) == `1`): true
                 topologySpreadConstraints:
                 - maxSkew: 1
                   topologyKey: topology.kubernetes.io/zone
@@ -53,13 +59,17 @@ spec:
                     matchLabels:
                       app.kubernetes.io/name: keystone
                       app.kubernetes.io/instance: keystone-tsc
-                - maxSkew: 1
-                  topologyKey: kubernetes.io/hostname
-                  whenUnsatisfiable: ScheduleAnyway
-                  labelSelector:
-                    matchLabels:
-                      app.kubernetes.io/name: keystone
-                      app.kubernetes.io/instance: keystone-tsc
+                (length(affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution) == `1`): true
+                affinity:
+                  podAntiAffinity:
+                    preferredDuringSchedulingIgnoredDuringExecution:
+                    - weight: 100
+                      podAffinityTerm:
+                        topologyKey: kubernetes.io/hostname
+                        labelSelector:
+                          matchLabels:
+                            app.kubernetes.io/name: keystone
+                            app.kubernetes.io/instance: keystone-tsc
     catch:
     - script:
         content: |
@@ -82,18 +92,23 @@ spec:
           echo "=== Deployment TSC ==="
           kubectl get deployment keystone-tsc -n $NAMESPACE -o jsonpath='{.spec.template.spec.topologySpreadConstraints}' 2>&1 || true
           echo ""
+          echo "=== Deployment affinity ==="
+          kubectl get deployment keystone-tsc -n $NAMESPACE -o jsonpath='{.spec.template.spec.affinity}' 2>&1 || true
+          echo ""
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 3: Patch with custom TSC ────────────────────────────────────────
   - try:
     - patch:
         file: 01-patch-custom-tsc.yaml
-  # ── Step 4: Assert Deployment has custom TSC verbatim ────────────────────
+  # ── Step 4: Assert Deployment has custom TSC verbatim and no affinity ───
   # Note: We only assert the spec here, not rollout completion. The custom TSC
   # uses `DoNotSchedule` with `topology.kubernetes.io/zone`, a label the single-
   # node kind cluster does not carry — the rollout would stall. The test's goal
   # is verbatim pass-through of the TSC into the Deployment spec, which the
-  # controller performs regardless of scheduling outcome.
+  # controller performs regardless of scheduling outcome. A custom list also
+  # switches off the default hostname term, and the CR sets no affinity, so
+  # the pod template carries none.
   - try:
     - assert:
         resource:
@@ -105,6 +120,7 @@ spec:
           spec:
             template:
               spec:
+                (affinity == null): true
                 topologySpreadConstraints:
                 - maxSkew: 2
                   topologyKey: topology.kubernetes.io/zone
@@ -133,25 +149,29 @@ spec:
   - try:
     - patch:
         file: 02-patch-empty-tsc.yaml
-  # ── Step 6: Assert Deployment has no TSC ─────────────────────────────────
+  # ── Step 6: Assert Deployment has neither TSC nor affinity ───────────────
   - try:
     - script:
         shell: bash
         content: |
           set -euo pipefail
           # Wait for controller to reconcile the empty TSC patch (poll every 5s, timeout 120s).
+          # An empty list switches off the default hostname term too, and the
+          # CR sets no affinity, so the pod template must carry none.
           TIMEOUT=120
           ELAPSED=0
           while [ $ELAPSED -lt $TIMEOUT ]; do
             TSC=$(kubectl get deployment keystone-tsc -n openstack -o jsonpath='{.spec.template.spec.topologySpreadConstraints}')
-            if [ "$TSC" = "" ] || [ "$TSC" = "null" ] || [ "$TSC" = "[]" ]; then
-              echo "PASS: No topology spread constraints on Deployment"
+            AFFINITY=$(kubectl get deployment keystone-tsc -n openstack -o jsonpath='{.spec.template.spec.affinity}')
+            if { [ "$TSC" = "" ] || [ "$TSC" = "null" ] || [ "$TSC" = "[]" ]; } &&
+               { [ "$AFFINITY" = "" ] || [ "$AFFINITY" = "null" ]; }; then
+              echo "PASS: No topology spread constraints and no affinity on Deployment"
               exit 0
             fi
             sleep 5
             ELAPSED=$((ELAPSED + 5))
           done
-          echo "FAIL: Expected no TSC within ${TIMEOUT}s, got: $TSC"
+          echo "FAIL: Expected no TSC and no affinity within ${TIMEOUT}s, got TSC: $TSC, affinity: $AFFINITY"
           exit 1
     catch:
     - command:

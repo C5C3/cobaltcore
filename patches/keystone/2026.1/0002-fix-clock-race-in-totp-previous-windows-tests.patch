@@ -1,0 +1,109 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Fix clock race in TOTP previous windows tests
+
+test_with_passcode_in_previous_windows_default and _extended
+(keystone/tests/unit/test_v3_auth.py) derive the time of the passcode
+from the current time and then stop the clock with TimeFixture(),
+which reads the current time again. The TOTP auth plugin
+(keystone/auth/plugins/totp.py) accepts the window of the stopped clock
+and the included_previous_windows windows before it. If a 30 second
+TOTP window boundary passes between the two reads, the passcode is one
+window older than the test intends, and the plugin answers 401.
+test_with_passcode_no_previous_windows generates its passcode before it
+stops the clock and has the same race. test-service-images (keystone,
+2026.1) failed this way in
+test_with_passcode_in_previous_windows_default on PR #1546 (run
+40139432029): "Bad response: 401 UNAUTHORIZED (not 201)".
+
+The two previous windows tests now read the current time once and stop
+the clock at it, so the window of the passcode and the windows the
+plugin accepts derive from the same instant.
+test_with_passcode_no_previous_windows stops the clock before it
+generates the passcode, as the other TOTP tests do. The assertions are
+unchanged. With the wall clock forced past a window boundary between
+the two reads, all three tests fail on 29.0.0 with that 401 and pass
+with the patch.
+
+The patch changes test code only, so it changes nothing at runtime and
+tests/container-images/verify_keystone.sh needs no assertion. It leaves
+out the release note of the upstream change. Its 2026.2 twin,
+patches/keystone/2026.2/0002-fix-clock-race-in-totp-previous-windows-tests.patch,
+carries the same hunks, cut from 30.0.0.
+
+Applies to keystone 29.0.0 (2026.1).
+
+Upstream status: proposed as
+https://review.opendev.org/c/openstack/keystone/+/1012064.
+
+diff --git a/keystone/tests/unit/test_v3_auth.py b/keystone/tests/unit/test_v3_auth.py
+index e6762b2..4874f28 100644
+--- a/keystone/tests/unit/test_v3_auth.py
++++ b/keystone/tests/unit/test_v3_auth.py
+@@ -6026,15 +6026,15 @@ class TestAuthTOTP(test_v3.RestfulTestCase):
+         creds = self._make_credentials('totp')
+         secret = creds[-1]['blob']
+ 
+-        auth_data = self._make_auth_data_by_id(
+-            totp._generate_totp_passcodes(secret)[0]
+-        )
+-
+         # Stop the clock otherwise there is a chance of auth failure due to
+         # getting a different TOTP between the call here and the call in the
+         # auth plugin.
+         self.useFixture(fixture.TimeFixture())
+ 
++        auth_data = self._make_auth_data_by_id(
++            totp._generate_totp_passcodes(secret)[0]
++        )
++
+         self.v3_create_token(auth_data, expected_status=http.client.CREATED)
+ 
+     def test_with_passcode_in_previous_windows_default(self):
+@@ -6042,16 +6042,17 @@ class TestAuthTOTP(test_v3.RestfulTestCase):
+         creds = self._make_credentials('totp')
+         secret = creds[-1]['blob']
+ 
+-        past = timeutils.utcnow() - datetime.timedelta(seconds=30)
++        now = timeutils.utcnow()
++        past = now - datetime.timedelta(seconds=30)
+         with freezegun.freeze_time(past):
+             auth_data = self._make_auth_data_by_id(
+                 totp._generate_totp_passcodes(secret)[0]
+             )
+ 
+-        # Stop the clock otherwise there is a chance of auth failure due to
+-        # getting a different TOTP between the call here and the call in the
+-        # auth plugin.
+-        self.useFixture(fixture.TimeFixture())
++        # Stop the clock at the time ``past`` was derived from, otherwise
++        # there is a chance of auth failure due to getting a different TOTP
++        # window between the call here and the call in the auth plugin.
++        self.useFixture(fixture.TimeFixture(now))
+ 
+         self.v3_create_token(auth_data, expected_status=http.client.CREATED)
+ 
+@@ -6060,16 +6061,17 @@ class TestAuthTOTP(test_v3.RestfulTestCase):
+         creds = self._make_credentials('totp')
+         secret = creds[-1]['blob']
+ 
+-        past = timeutils.utcnow() - datetime.timedelta(minutes=2)
++        now = timeutils.utcnow()
++        past = now - datetime.timedelta(minutes=2)
+         self.useFixture(fixture.TimeFixture(past))
+         auth_data = self._make_auth_data_by_id(
+             totp._generate_totp_passcodes(secret)[0]
+         )
+ 
+-        # Stop the clock otherwise there is a chance of auth failure due to
+-        # getting a different TOTP between the call here and the call in the
+-        # auth plugin.
+-        self.useFixture(fixture.TimeFixture())
++        # Stop the clock at the time ``past`` was derived from, otherwise
++        # there is a chance of auth failure due to getting a different TOTP
++        # window between the call here and the call in the auth plugin.
++        self.useFixture(fixture.TimeFixture(now))
+ 
+         self.v3_create_token(auth_data, expected_status=http.client.CREATED)
+ 

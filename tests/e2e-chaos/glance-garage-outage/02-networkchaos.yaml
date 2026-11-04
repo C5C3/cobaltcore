@@ -36,6 +36,13 @@
 # assertion (step 4) is still probing, which can flip a failing PUT back to
 # success mid-assert and mask the fault — exactly the trap the mariadb suite
 # documents. 600s sits above the 5m assert window with margin.
+#
+# The target leaves out Job pods: every Job pod carries
+# batch.kubernetes.io/job-name, and no workload pod does. The db-purge CronJob
+# of this Glance runs at 00:01 and labels its pods with the same name and
+# instance as glance-api. Chaos Mesh cannot inject into a completed pod ("pod
+# not running"), so with that pod in the target AllInjected never turns True
+# once the CronJob has run.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: NetworkChaos
 metadata:
@@ -59,4 +66,7 @@ spec:
       labelSelectors:
         app.kubernetes.io/name: glance
         app.kubernetes.io/instance: glance-garage-chaos
+      expressionSelectors:
+        - key: batch.kubernetes.io/job-name
+          operator: DoesNotExist
   duration: "600s"

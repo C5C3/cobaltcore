@@ -1061,6 +1061,15 @@ test_changes_job_gates_matrix_jobs() {
     "$pr_paths" "tests/lib/static_image.sh"
   assert_contains "the push trigger names the static-image helper" \
     "$push_paths" "tests/lib/static_image.sh"
+  assert_contains "the pull-request trigger names the pymemcache helper" \
+    "$pr_paths" "tests/lib/pymemcache.sh"
+  assert_contains "the push trigger names the pymemcache helper" \
+    "$push_paths" "tests/lib/pymemcache.sh"
+  local svc
+  for svc in keystone nova; do
+    assert_contains "the svc_${svc} filter covers the pymemcache helper" \
+      "$(path_filters | yq_raw ".svc_${svc}[]" - || true)" "tests/lib/pymemcache.sh"
+  done
   assert_contains "the base filter rebuilds every image whose verify script sources the build-tools helper" \
     "$(path_filters | yq_raw '.base[]' - || true)" \
     "tests/lib/build_tools.sh"

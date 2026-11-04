@@ -2,15 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw configuration for the operator helm-upgrade-in-place E2E suite.
+# Chainsaw configuration for the per-operator helm upgrade suites
+# (tests/e2e-operator-upgrade/<op>-helm-upgrade/).
 #
-# This suite lives OUTSIDE tests/e2e/ on purpose: it manages the operator Helm
-# release itself (installs the last released chart, then `helm upgrade`s to the
-# locally built chart+CRDs). It must NOT be swept up by `make e2e` or the
-# per-CR `e2e-operator` job, both of which assume a single pre-deployed
-# operator and reconcile only Keystone CRs.
+# These suites live OUTSIDE tests/e2e/ on purpose: each manages its operator's
+# Helm release itself (the job installs the pinned baseline chart, and the
+# suite `helm upgrade`s it to the in-repo chart+CRDs). They must NOT be swept
+# up by `make e2e` or the per-CR `e2e-operator` job, both of which assume a
+# single pre-deployed operator.
 #
-# Serial (parallel: 1): the suite mutates the cluster-wide operator Deployment
+# Serial (parallel: 1): a suite mutates the cluster-wide operator Deployment
 # and CRDs, so concurrent tests would race over the operator release.
 #
 # apiVersion: v1alpha2 Configuration is the correct pairing with v1alpha1 Test

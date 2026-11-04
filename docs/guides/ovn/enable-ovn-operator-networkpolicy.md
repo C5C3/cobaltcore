@@ -39,21 +39,8 @@ Step 7, so the ovn-operator is running (namespace `ovn-system`) alongside the
 `controlplane-ovn` central it reconciles.
 :::
 
-1. **A CNI that enforces `networking.k8s.io/v1` NetworkPolicy (required for
-   real enforcement).** Confirm with your platform team (Calico, Cilium, and
-   Antrea enforce).
-
-   ::: warning The devstack enforces this policy
-   The ControlPlane Quick Start kind devstack runs kind's default `kindnet`
-   CNI. On kind v0.32 and later, kindnet enforces NetworkPolicy and evaluates a
-   connection to a Service after the Service DNAT, so a `kubeApiServer` rule
-   that misses the API server's endpoint address cuts the operator off on the
-   devstack too. Step 2 below confirms the policy's **shape** and that the
-   operator still reconciles under it. It sends no traffic outside the
-   allow-list, so it does **not** prove that such traffic is dropped.
-   :::
-2. A running `ovn-operator` Helm release (namespace `ovn-system`).
-3. The `OVNCentral` `controlplane-ovn`, which the quick start applies in its
+1. A running `ovn-operator` Helm release (namespace `ovn-system`).
+2. The `OVNCentral` `controlplane-ovn`, which the quick start applies in its
    Step 3. Without it the Step 2 verification has nothing to roll.
 
 ## Step 1 — Enable the policy
@@ -124,7 +111,7 @@ narrows it further to the Prometheus pods.
 
 On the kind devstack this verifies the policy's **shape** and that the operator
 still reconciles under the enforced policy. It sends no traffic outside the
-allow-list (see the prerequisite above).
+allow-list.
 
 Restart the operator first. NetworkPolicy enforcement is stateful: a connection
 opened before the policy existed stays open, so a wrong `kubeApiServer` rule
@@ -268,14 +255,20 @@ operator reverts to unrestricted pod networking without a pod restart.
 
 ## Tested by
 
-Every operator chart carries an equivalent chart-level NetworkPolicy template,
-included from the shared operator-library. The keystone chart's copy is
-exercised end-to-end on the CI e2e kind cluster by the chainsaw suite below; the
-ovn chart ships no NetworkPolicy unit test of its own, and the rendered policy
-every chart gets is pinned by the library's own helm-unittest,
+Every operator chart includes the chart-level NetworkPolicy template from the
+shared operator-library. The OVN chart ships no NetworkPolicy unit test of its
+own. The library's helm-unittest checks the rendered shared policy in
 `operators/shared/helm/operator-library-testbed/tests/networkpolicy_test.yaml`
 (default-off posture, rule shape, both fail-closed guards, and the absence of an
-ingress rule for the health-probe port).
+ingress rule for the health-probe port). These tests cover rendering only; they
+do not exercise packet enforcement.
+
+The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
+provides runtime enforcement coverage for the Keystone chart using the shared
+template. It does not install the OVN chart or test OVN operator connectivity
+at runtime. There is no OVN operator `network-policy-egress` suite.
+With the linked suite's prerequisites satisfied, run its Keystone-only example
+from the repository root:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress

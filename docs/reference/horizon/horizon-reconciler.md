@@ -25,7 +25,7 @@ describes that pattern in full. The table lists what each step does.
 | Step | What it does | Condition |
 | --- | --- | --- |
 | Secrets | Gates on the secret store the Horizon selected via `spec.secretStoreRef` (a `ClusterSecretStore`, default `openbao-cluster-store`, or a namespaced `SecretStore` resolved in the Horizon's own namespace — via `secrets.GateStoreReady`) and the ESO-synced `SECRET_KEY` Secret; digests the key material for the rollout annotation | `SecretsReady` |
-| Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES` with an image-scoped `KEY_PREFIX`, `OPENSTACK_KEYSTONE_URL`, `OPENSTACK_ENDPOINT_TYPE = "internalURL"`, `LOGGING`, offline-compression settings, the `WEBSSO_*` / `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` blocks, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
+| Config | Renders `local_settings.py` (signed-cookie sessions, `CACHES` with an image-scoped `KEY_PREFIX` and, for `PyMemcacheCache`, 1 s pymemcache timeouts with `ignore_exc` in `OPTIONS`, `OPENSTACK_KEYSTONE_URL`, `OPENSTACK_ENDPOINT_TYPE = "internalURL"`, `LOGGING`, offline-compression settings, the `WEBSSO_*` / `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` blocks, merged `extraConfig`) into an immutable content-addressed ConfigMap | `ConfigReady` |
 | Deployment | Ensures the uWSGI Deployment (login-page readiness/startup probes, `HORIZON_SECRET_KEY` env var, secret-key-hash pod annotation), the Service (port 8080), and the PDB; sets `status.endpoint` | `DeploymentReady` |
 | (prune) | Uninstrumented retention sweep of historical config ConfigMaps (retain 3 + current); failures flip `ConfigReady` |  |
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition | `HTTPRouteReady` |
@@ -62,7 +62,7 @@ longer resolves. The message carries the resolver's error, the CR requeues after
 | --- | --- |
 | 10s | Deployment readiness polling, HTTPRoute acceptance, health-check retry |
 | 15s | ESO secret gate polling |
-| 30s TTL | Health-probe cache (a passing login-page probe is reused within the TTL) |
+| 30s TTL | Health-probe cache (a passing login-page probe is reused within the TTL); a converged pass requeues when the entry expires, so the dashboard is probed again |
 
 ## Rotation and deletion
 

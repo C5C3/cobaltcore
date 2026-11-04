@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the ControlPlane healthcheck E2E test.
+#
+# A Keystone-only managed plane: the suite watches how the plane's KeystoneReady
+# and Ready follow the Keystone child's API probe, so it needs one projected
+# service and nothing else. The Minimal sizing profile sizes the backing
+# services (single replica, small volume) so the plane schedules on one node
+# beside the full-chain suite's stack.
+#
+# The CR carries NO metadata.namespace. Chainsaw runs the suite in its own
+# ephemeral namespace and the test applies this CR into it: the webhook admits
+# one ControlPlane per namespace, and the canonical
+# openstack/controlplane-keystone belongs to the full-chain suite.
+#
+# Two things this fixture does NOT set:
+#   - spec.services.keystone.gateway: the openstack-gw Gateway lives in the
+#     openstack namespace and allows routes from its own namespace only. The
+#     suite probes /v3 through the in-cluster Service instead.
+#   - spec.secretStoreRef: the shared openbao-cluster-store is allow-listed to
+#     openstack and shared-services, so an ephemeral namespace must stay on the
+#     operator-provisioned per-tenant store.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2026.1"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+  services:
+    keystone: {}
+  sizing:
+    profile: Minimal
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven

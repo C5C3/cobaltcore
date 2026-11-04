@@ -9,7 +9,7 @@
 #
 #   EXTERNAL_CLUSTER=true WITH_DIZZY=true make deploy-infra
 #
-# It takes the kind dizzy overlay as its base and differs from it in two
+# It takes the kind dizzy overlay as its base and differs from it in three
 # places:
 #   - The Namespace dizzy carries the label
 #     apiserver-proxy.networking.gardener.cloud/inject: disable, the lab's
@@ -21,13 +21,16 @@
 #     NodePort 30428, which only hack/kind-config.yaml maps to a host port;
 #     nothing reaches a NodePort of the lab from outside. The patch deletes
 #     the kind nodePort (a null value deletes the key).
+#   - The HTTPRoute dizzy-grafana names no listener: the lab's Gateway has
+#     the one listener https on *.nip.io in place of the kind base's
+#     https-dizzy. hack/deploy-infra.sh sets its hostname to
+#     dizzy.<a-b-c-d>.nip.io, the Gateway's suffix, in Step 5.
 #
 # What stays as on kind: both HelmRepositories and both chart ranges, the two
 # opentelemetry.* arguments and retentionPeriod 30d of VictoriaMetrics, the
 # Grafana release (anonymous Viewer, the provisioned datasource and
-# dashboards, no volume, since a redeploy restores everything it holds), the
-# HTTPRoute dizzy-grafana on the listener https-dizzy, and the dashboard
-# ConfigMap. Its dashboards come from deploy/kind/dizzy/dashboards/, which
+# dashboards, no volume, since a redeploy restores everything it holds), and
+# the dashboard ConfigMap. Its dashboards come from deploy/kind/dizzy/dashboards/, which
 # hack/dizzy.sh stage-dashboards fills before Step 3 applies this directory;
 # without them the render fails, as on kind.
 #
@@ -39,9 +42,9 @@
 # 10Gi holds the 30 days of retention many times over: a soak exports five
 # metric families every 15 seconds.
 #
-# Access, through two port-forwards from the workstation: the Gateway's on
-# local port 8443, which serves Grafana at https://dizzy.127-0-0-1.nip.io:8443
-# beside Keystone, and
+# Access: Grafana answers at https://dizzy.<a-b-c-d>.nip.io on the Gateway's
+# public address, beside Keystone, and VictoriaMetrics through a port-forward
+# from the workstation,
 #
 #   kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428
 #
@@ -57,9 +60,12 @@
 # the HTTPRoute and the ConfigMap.
 #
 # POSTURE: Grafana answers anonymous Viewers, and VictoriaMetrics accepts
-# writes and reads without authentication. Both sit on ClusterIP Services that
-# every pod of the cluster reaches and nothing outside it. The lab is one
-# tenant's cluster.
+# writes and reads without authentication. VictoriaMetrics sits on a ClusterIP
+# Service that every pod of the cluster reaches and nothing outside it. Grafana
+# is reached through the Gateway too, from every source the Gateway admits:
+# any, unless PUBLIC_SOURCE_RANGES of hack/deploy-infra.sh narrows it. Its
+# Viewers read the soak's metrics and change nothing. The lab is one tenant's
+# cluster.
 #
 # The kind overlay sits outside this directory. A directory reference is
 # allowed under kustomize's default LoadRestrictionsRootOnly check, so
@@ -105,3 +111,17 @@ patches:
             service:
               type: ClusterIP
               nodePort: null
+
+  # The lab's Gateway has one listener, https on *.nip.io
+  # (../base/kustomization.yaml), and no https-dizzy. Without a section name
+  # the route attaches to every listener that admits it. hack/deploy-infra.sh
+  # moves its hostname onto the Gateway's suffix in Step 5.
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+      name: dizzy-grafana
+      namespace: dizzy
+    patch: |
+      - op: remove
+        path: /spec/parentRefs/0/sectionName

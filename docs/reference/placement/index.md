@@ -32,17 +32,18 @@ The v1 operator resolves the onboarding decisions as follows:
   placement's `_get_config_files` never reads `sys.argv`, so a value passed
   there would reach nothing. See
   [Container Images](../ci-cd/container-images.md#placement).
-- **Probes target `GET /`.** Startup, readiness and liveness all GET `/`, the
+- **Probes target `GET /`.** Startup and readiness GET `/`, the
   version-discovery document, which placement answers without a token and
   without opening the database. The startup probe allows 300 seconds (30 probes
   10 seconds apart, each with an 8-second timeout) before the liveness probe
   takes over. A cold start therefore does not restart the container, even when
   a CPU limit set on the container or a contended node slows the imports or the
   boot-time sync of traits and resource classes against the database runs
-  long. The liveness probe then allows 10 seconds per check, the readiness
-  probe's timeout, so one slow request on a single-worker API does not restart
-  the container. The oslo healthcheck middleware Glance probes at
-  `/healthcheck` has nowhere to be wired here: placement
+  long. The liveness probe only connects to the API port, with 10 seconds per
+  check. uWSGI accepts the connection while every worker is busy, so requests
+  that wait on the database do not restart the container; the readiness GET
+  takes the pod out of the Service instead. The oslo healthcheck middleware
+  Glance probes at `/healthcheck` has nowhere to be wired here: placement
   composes its middleware stack in code and reads no paste pipeline, so the
   operator renders no `api-paste.ini` and the CRD carries no `middleware` field.
 - **No upgrade phase machine.** The CR has no `upgradePhase` status field. A
