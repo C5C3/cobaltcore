@@ -641,7 +641,10 @@ chaos objects: the first `AllInjected=True` of a template goes to
 `windows.tsv`, each container record to `targets.tsv`, and a template no
 longer listed gets its lift. It then deletes the Workflow, waits for the churn
 end and up to 600 seconds more for the soak's Job, fetches the soak's report
-into `soak/`, judges, removes `spec.ovnDBSync` again when it set it, and writes
+into `soak/`, judges, and keeps the log of every container in the
+ControlPlane's namespace, with the previous instance of a restarted one, as
+`logs/<pod>.<container>.log.gz`. A pod a fault deleted is gone with its log.
+It then removes `spec.ovnDBSync` again when it set it, and writes
 `random-verdict.json`, `report.md` and `_output/reports/chaos-random-junit.xml`.
 It exits 0 on PASS and 1 on FAIL. A `TERM` or `INT` deletes the Workflow first,
 so the faults lift, then stops the soak.

@@ -54,8 +54,12 @@
 #      the MariaDB was Ready; a MariaDB that does not get Ready and an
 #      init-output without a root token stop up before the onboarding; every
 #      file of tests/chaos-random/kind/ the script names is tracked by git.
+#  10. The pod logs: one gzipped file per container of the ControlPlane's
+#      namespace with kubelet's timestamps, init containers included, and a
+#      .previous file for a restarted container; a pod listing kubectl refuses
+#      is a warning and the run goes on.
 #
-# Steps 5 to 9 source the script in a subshell (its BASH_SOURCE guard keeps
+# Steps 5 to 10 source the script in a subshell (its BASH_SOURCE guard keeps
 # cr_main from running) with a kubectl stub first on PATH, and replace the
 # clock, the sleeps and the checks a test does not cover by plain functions.
 #
@@ -318,6 +322,10 @@ case "$args" in
   "get workflownodes.chaos-mesh.org "*) node="$(echo "$args" | awk '{ print $3 }')"; printf '%s' "${node%-*}" ;;
   "get job dizzy-soak "*) cat "$dir/soak-job.json" 2>/dev/null || true ;;
   "get pods -A -o json") cat "$dir/pods.json" ;;
+  "get pods -n "*" -o json")
+    if [ -n "${KUBECTL_PODS_RC:-}" ]; then echo "Error from server (Forbidden): pods is forbidden" >&2; exit 1; fi
+    cat "$dir/ns-pods.json" 2>/dev/null || echo '{"items":[]}' ;;
+  "logs -n "*) echo "log of $args" ;;
   "get namespaces -o json") cat "$dir/namespaces.json" ;;
   "get nodes "*) printf '%s' kind-control-plane ;;
   "get podchaos,networkchaos,workflownodes.chaos-mesh.org "*) cat "$dir/left.txt" ;;
@@ -939,6 +947,42 @@ test_run_and_up() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 10: the pod logs
+# ---------------------------------------------------------------------------
+test_pod_logs() {
+  echo "Test: run keeps the log of every container in the ControlPlane's namespace"
+
+  local tmp="$TMP_DIR/logs" out rc
+  new_case "$tmp"
+  mkdir -p "$tmp/run"
+  cat >"$tmp/ns-pods.json" <<'JSON'
+{"items": [
+  {"metadata": {"name": "controlplane-nova-api-0"},
+   "status": {"initContainerStatuses": [{"name": "wait-db", "restartCount": 0}],
+              "containerStatuses": [{"name": "api", "restartCount": 2}]}},
+  {"metadata": {"name": "nova-fake-compute-0"},
+   "status": {"containerStatuses": [{"name": "compute", "restartCount": 0}]}}
+]}
+JSON
+  out="$( (in_cr "$tmp" CHAOS_RANDOM_ENV=ci; CR_DIR="$tmp/run"; cr_collect_pod_logs) 2>&1)"
+  assert_eq "one file per container, init containers included, and a previous one for a restart" \
+    "controlplane-nova-api-0.api.log.gz controlplane-nova-api-0.api.previous.log.gz controlplane-nova-api-0.wait-db.log.gz nova-fake-compute-0.compute.log.gz" \
+    "$(cd "$tmp/run/logs" && LC_ALL=C ls | paste -sd ' ' -)"
+  assert_eq "the previous file holds the earlier instance with kubelet's timestamps" \
+    "log of logs -n openstack controlplane-nova-api-0 -c api --previous --timestamps" \
+    "$(gzip -dc "$tmp/run/logs/controlplane-nova-api-0.api.previous.log.gz")"
+  assert_contains "the run counts the containers" "$out" "kept the logs of 3 container(s) of openstack under $tmp/run/logs"
+
+  new_case "$tmp"
+  mkdir -p "$tmp/run"
+  rc=0
+  out="$( (in_cr "$tmp" CHAOS_RANDOM_ENV=ci KUBECTL_PODS_RC=1; CR_DIR="$tmp/run"; cr_collect_pod_logs) 2>&1)" || rc=$?
+  assert_eq "a refused pod listing does not fail the run" "0" "$rc"
+  assert_contains "it is a warning with kubectl's message" "$out" \
+    "WARNING: cannot list the pods of openstack for their logs: Error from server (Forbidden): pods is forbidden"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 if ! command -v yq >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
@@ -957,6 +1001,7 @@ test_quiet_tail
 test_stuck_checks
 test_rejudge_and_junit
 test_run_and_up
+test_pod_logs
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

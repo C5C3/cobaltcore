@@ -37,8 +37,10 @@
 # writes plan.json, workflow.json, windows.tsv (one line per chaos template
 # that read AllInjected: injected at, template, entry, lifted at), targets.tsv
 # (template and <namespace>/<pod> of every container record), soak/ (the
-# soak's report), memory-growth.tsv, random-verdict.json, report.md, and
-# _output/reports/chaos-random-junit.xml. It exits 0 on PASS and 1 on FAIL.
+# soak's report), memory-growth.tsv, logs/ (the gzipped log of every
+# container in the ControlPlane's namespace), random-verdict.json, report.md,
+# and _output/reports/chaos-random-junit.xml. It exits 0 on PASS and 1 on
+# FAIL.
 #
 # docs/reference/testing/chaos-e2e-tests.md (Random runs) describes the run.
 
@@ -1033,6 +1035,35 @@ cr_check_stuck_objects() {
   fi
 }
 
+# cr_collect_pod_logs — The log of every container of every pod in the
+# ControlPlane's namespace, and of the previous instance of a restarted one,
+# as ${CR_DIR}/logs/<pod>.<container>[.previous].log.gz with kubelet's
+# timestamps. CI's diagnostics dump keeps about 30 lines a pod, while the
+# cause of a red run sits in the service logs of the whole run (#1599). A pod
+# deleted during the run, such as the target of a pod kill, is gone with its
+# log. A failed read is a warning, never a failed run.
+cr_collect_pod_logs() {
+  local ns="$CHAOS_RANDOM_CP_NAMESPACE" dir="${CR_DIR}/logs" pods pod container restarts n=0
+  mkdir -p "$dir"
+  if ! pods="$(kubectl get pods -n "$ns" -o json 2>&1)"; then
+    cr_log "WARNING: cannot list the pods of ${ns} for their logs: $(cr_first_line "$pods")"
+    return 0
+  fi
+  while IFS=$'\t' read -r pod container restarts; do
+    [[ -n "$pod" ]] || continue
+    kubectl logs -n "$ns" "$pod" -c "$container" --timestamps 2>/dev/null |
+      gzip -c >"${dir}/${pod}.${container}.log.gz" || true
+    if [[ "$restarts" -gt 0 ]]; then
+      kubectl logs -n "$ns" "$pod" -c "$container" --previous --timestamps 2>/dev/null |
+        gzip -c >"${dir}/${pod}.${container}.previous.log.gz" || true
+    fi
+    n=$((n + 1))
+  done < <(jq -r '.items[] | .metadata.name as $pod
+    | ((.status.initContainerStatuses // []) + (.status.containerStatuses // []))[]
+    | [$pod, .name, (.restartCount // 0)] | @tsv' <<<"$pods" 2>/dev/null || true)
+  cr_log "kept the logs of ${n} container(s) of ${ns} under ${dir}"
+}
+
 # ---------------------------------------------------------------------------
 # run: the outputs
 # ---------------------------------------------------------------------------
@@ -1270,6 +1301,7 @@ cr_cmd_run() {
   cr_check_consistency
   cr_check_stuck_resources
   cr_check_stuck_objects
+  cr_collect_pod_logs
 
   # 10. spec.ovnDBSync as it was.
   cr_restore_db_sync

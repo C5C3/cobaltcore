@@ -1500,7 +1500,9 @@ of #1395 set in place of the 90 minutes of D6 of #1386: the plane takes about
 The seed is the run id, so `CHAOS_RANDOM_ENV=ci CHAOS_RANDOM_SEED=<run id> make chaos-random-draw`
 prints the plan of a red night without a cluster. `e2e-chaos-random-report`
 holds `plan.json`, `windows.tsv`, `targets.tsv`, the soak's report under
-`soak/`, `random-verdict.json` and `report.md`.
+`soak/`, the gzipped logs of the plane's pods under `logs/`,
+`random-verdict.json` and `report.md`. The job's diagnostics dump keeps about
+30 lines a pod, so `logs/` is where a red night's API and service errors are.
 
 ### report-nightly-chaos
 
