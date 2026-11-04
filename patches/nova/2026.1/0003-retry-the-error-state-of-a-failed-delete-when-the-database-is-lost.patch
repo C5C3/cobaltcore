@@ -1,0 +1,340 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Retry the error state of a failed delete when the database is lost
+
+`ComputeManager.terminate_instance` (nova/compute/manager.py) sets a server
+to ERROR when `_delete_instance` fails with anything but InstanceNotFound:
+`_set_instance_obj_error_state` writes vm_state ERROR once and leaves the
+task state alone. The `reverts_task_state` decorator then writes
+task_state None, also once. On nova-compute both writes are RPC calls to
+nova-conductor, which answers a lost database with an
+`oslo_messaging.RemoteError` of exc_type DBConnectionError. When the delete
+fails while the database is gone, both writes fail and the server keeps the
+task state deleting. `API._delete` (nova/compute/api.py) ignores a delete in
+that state: every later DELETE answers 204 and does nothing until
+nova-compute restarts. Patch 0001 covers only the API's `_local_delete` and
+the deletion that `_init_instance` resumes at service start.
+
+A local replay of the random chaos run on #1598 (seed 41807396659) hit
+this. Server 68d7e41f-4c07-451e-a7fe-95c6762a2fea was deleted at 16:56:50,
+and s07-mariadb-pod-failure started at 16:56:55. `_delete_instance` failed
+on nova-compute at 16:58:17 because Neutron was unreachable, and both
+cleanup writes failed through nova-conductor: "Setting instance vm_state to
+ERROR" at 16:58:17, then "Failed to revert task state for instance. Error:
+Remote error: DBConnectionError" at 16:58:21. dizzy's teardown timed out on
+the server and exited 1.
+
+Passing `clean_task_state=True` alone would not help, because it is one more
+write in the same outage. The error write now clears the task state as well
+and goes through `compute_utils.call_with_db_retries`. It retries a
+RemoteError of exc_type DBConnectionError with waits that add up to 254
+seconds, the bound of `call_cinder_with_retries` from patch 0002 and of
+cinder patches 0007 and 0008, which outlasts a database failover. Every
+other error, MessagingTimeout included, gets one attempt as before. Once the
+write succeeds, the server is ERROR with no task state, its instance fault
+records the error `_delete_instance` raised, and the next DELETE reaches
+nova-compute again. In the replay that error is itself a DBConnectionError:
+`_try_deallocate_network` writes the ERROR state on its own, without a
+retry, and that failure replaced Neutron's. When the 254 seconds run out,
+the last RemoteError replaces the delete's error and the server keeps
+deleting, as it does without the patch.
+
+During an outage a failed delete holds its instance lock and one RPC
+executor worker of nova-compute for the 254 seconds of waits plus its 19
+writes through nova-conductor. terminate_instance is an RPC cast, so its
+caller does not wait. But once failed deletes on one host fill the pool
+(executor_thread_pool_size, 64 by default), every other RPC to that
+nova-compute queues behind them, and the caller of an RPC call among them
+can time out after rpc_response_timeout. The waits therefore stop growing
+at 16 seconds, 19 attempts in all: once the database is back, the next
+attempt follows within 16 seconds and frees the worker. With the waits of
+`call_cinder_with_retries`, which grow to 128 seconds, a write that failed
+just before the database came back would wait up to 128 more seconds.
+
+`reverts_task_state` stays as it is. It wraps 33 other methods, whose task
+states the API answers with a 409 and which still let a server be deleted,
+and six of them are RPC calls whose callers would wait out
+rpc_response_timeout.
+
+Tests: CallWithDBRetriesTestCase (nova/tests/unit/compute/test_utils.py)
+covers the helper. The new
+test_terminate_instance_retries_error_state_after_lost_database fails
+without the patch. It records the state each write persists, so it also
+fails without `clean_task_state=True`.
+test_terminate_instance_error_state_gives_up_after_lost_database pins an
+outage longer than the retries: the database's error reaches the caller
+and the instance fault. test_terminate_instance_error_state_instance_gone
+pins the InstanceNotFound path, which the patch keeps. The upstream tests
+of a failed delete in nova/tests/unit/compute/test_compute.py,
+test_run_terminate_deallocate_net_failure_sets_error_state,
+test_instance_termination_exception_sets_error, test_quotas_failed_delete
+and the terminate_instance entry of test_state_revert, assert ERROR or a
+cleared task state, which still holds, and pass unchanged. No upstream test
+pins the arguments of this `_set_instance_obj_error_state` call.
+
+Proof: tests/container-images/verify_nova.sh asserts in the built image that
+a delete whose first error write meets a lost database ends in ERROR with no
+task state and raises the delete's own error.
+
+Applies to nova 33.0.0 (2026.1).
+
+Upstream status: not yet proposed.
+
+diff --git a/nova/compute/manager.py b/nova/compute/manager.py
+index c010451..1c0e76c 100644
+--- a/nova/compute/manager.py
++++ b/nova/compute/manager.py
+@@ -3573,7 +3573,13 @@ class ComputeManager(manager.Manager):
+                 with excutils.save_and_reraise_exception():
+                     LOG.exception('Setting instance vm_state to ERROR',
+                                   instance=instance)
+-                    self._set_instance_obj_error_state(instance)
++                    # NOTE: The API ignores every later delete while the
++                    # task state is deleting, and this write is the one that
++                    # ends it. nova-conductor fails it while its database is
++                    # gone, so wait for the database to come back.
++                    compute_utils.call_with_db_retries(
++                        self._set_instance_obj_error_state, instance,
++                        clean_task_state=True)
+ 
+         do_terminate_instance(instance, bdms)
+ 
+diff --git a/nova/compute/utils.py b/nova/compute/utils.py
+index 2e97742..2b3817b 100644
+--- a/nova/compute/utils.py
++++ b/nova/compute/utils.py
+@@ -24,6 +24,7 @@ import traceback
+ 
+ from cinderclient import exceptions as cinder_exception
+ from oslo_log import log
++import oslo_messaging as messaging
+ from oslo_serialization import jsonutils
+ from oslo_utils import excutils
+ import psutil
+@@ -1668,6 +1669,46 @@ def call_cinder_with_retries(call, *args, **kwargs):
+     return call(*args, **kwargs)
+ 
+ 
++def _is_lost_database(exc):
++    """True when nova-conductor could not reach its database.
++
++    Logs a warning for every such error, so each attempt of
++    call_with_db_retries that meets a lost database shows in the log.
++    """
++    if (isinstance(exc, messaging.RemoteError) and
++            exc.exc_type == 'DBConnectionError'):
++        LOG.warning('Database unreachable through nova-conductor: %s',
++                    exc.value)
++        return True
++    return False
++
++
++# NOTE: The waits add up to 254 seconds, the bound of call_cinder_with_retries,
++# which outlasts a database failover. The caller is
++# ComputeManager.terminate_instance, whose write of the ERROR state after a
++# failed delete is the one that ends the task state deleting: the API ignores
++# every later delete while the server keeps it. Each wait holds the instance
++# lock and one RPC worker of nova-compute, so the waits stop growing at 16
++# seconds: once the database is back, the next attempt follows within 16
++# seconds.
++@retrying.retry(retry_on_exception=_is_lost_database,
++                wait_exponential_multiplier=1000,
++                wait_exponential_max=16000,
++                stop_max_attempt_number=19)
++def call_with_db_retries(call, *args, **kwargs):
++    """Call a method that writes through nova-conductor, waiting out a lost
++    database.
++
++    A lost database is retried for up to 254 seconds; every other error goes
++    to the caller on the first attempt.
++
++    :param call: the method to call
++    :param args: its positional arguments
++    :param kwargs: its keyword arguments
++    """
++    return call(*args, **kwargs)
++
++
+ def check_attach_and_reserve_volume(context, volume_api, volume, instance,
+                                     bdm, supports_multiattach=False,
+                                     validate_az=True):
+diff --git a/nova/tests/unit/compute/test_compute_mgr.py b/nova/tests/unit/compute/test_compute_mgr.py
+index 709c49d..11dff26 100644
+--- a/nova/tests/unit/compute/test_compute_mgr.py
++++ b/nova/tests/unit/compute/test_compute_mgr.py
+@@ -8119,6 +8119,86 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase,
+         mock_destroy.assert_called_once_with(
+             elevated, instance, nw_info, mock_get_bdi.return_value)
+ 
++    @mock.patch('retrying.time.sleep')
++    @mock.patch('nova.compute.utils.add_instance_fault_from_exc')
++    @mock.patch('nova.objects.Instance.save')
++    @mock.patch.object(manager.ComputeManager, '_delete_instance',
++                       side_effect=test.TestingException)
++    def test_terminate_instance_retries_error_state_after_lost_database(
++            self, mock_delete_instance, mock_save, mock_fault, mock_sleep):
++        # Tests that a failed delete sets ERROR and clears the task state
++        # although nova-conductor lost its database on the first write.
++        instance = fake_instance.fake_instance_obj(
++            self.context, vm_state=vm_states.ACTIVE,
++            task_state=task_states.DELETING)
++        saved = []
++
++        def fake_save(*args, **kwargs):
++            saved.append((instance.vm_state, instance.task_state))
++            if len(saved) in (1, 3):
++                # The first error write and the revert of
++                # reverts_task_state meet a lost database.
++                raise messaging.RemoteError('DBConnectionError', 'gone', '')
++
++        mock_save.side_effect = fake_save
++        self.assertRaises(
++            test.TestingException, self.compute.terminate_instance,
++            self.context, instance, objects.BlockDeviceMappingList())
++        # The failed error write, its retry and the failed revert of
++        # reverts_task_state. The retry persists ERROR with no task state on
++        # its own, so the failed revert does not leave the server deleting.
++        self.assertEqual([(vm_states.ERROR, None)] * 3, saved)
++        # The fault keeps the error of the delete, not the database's.
++        mock_fault.assert_called_once()
++        self.assertIsInstance(mock_fault.call_args.args[2],
++                              test.TestingException)
++
++    @mock.patch('retrying.time.sleep')
++    @mock.patch('nova.compute.utils.add_instance_fault_from_exc')
++    @mock.patch('nova.objects.Instance.save')
++    @mock.patch.object(manager.ComputeManager, '_delete_instance',
++                       side_effect=test.TestingException)
++    def test_terminate_instance_error_state_gives_up_after_lost_database(
++            self, mock_delete_instance, mock_save, mock_fault, mock_sleep):
++        # Tests that a database lost for longer than the retries hands its
++        # error to the caller and to the instance fault in place of the
++        # error of the delete.
++        instance = fake_instance.fake_instance_obj(
++            self.context, vm_state=vm_states.ACTIVE,
++            task_state=task_states.DELETING)
++        mock_save.side_effect = messaging.RemoteError(
++            'DBConnectionError', 'gone', '')
++        self.assertRaises(
++            messaging.RemoteError, self.compute.terminate_instance,
++            self.context, instance, objects.BlockDeviceMappingList())
++        # Nineteen error writes, then the single revert of reverts_task_state.
++        self.assertEqual(20, mock_save.call_count)
++        mock_fault.assert_called_once()
++        self.assertIsInstance(mock_fault.call_args.args[2],
++                              messaging.RemoteError)
++
++    @mock.patch('retrying.time.sleep')
++    @mock.patch('nova.compute.utils.add_instance_fault_from_exc')
++    @mock.patch('nova.objects.Instance.save')
++    @mock.patch.object(manager.ComputeManager, '_delete_instance',
++                       side_effect=test.TestingException)
++    def test_terminate_instance_error_state_instance_gone(
++            self, mock_delete_instance, mock_save, mock_fault, mock_sleep):
++        # Tests that a server deleted from under a failed delete is not
++        # retried: the error write and the revert each swallow the
++        # InstanceNotFound once.
++        instance = fake_instance.fake_instance_obj(
++            self.context, vm_state=vm_states.ACTIVE,
++            task_state=task_states.DELETING)
++        mock_save.side_effect = exception.InstanceNotFound(
++            instance_id=instance.uuid)
++        self.assertRaises(
++            test.TestingException, self.compute.terminate_instance,
++            self.context, instance, objects.BlockDeviceMappingList())
++        self.assertEqual(2, mock_save.call_count)
++        self.assertEqual(
++            [], [c for c in mock_sleep.call_args_list if c.args[0]])
++
+     @mock.patch('nova.compute.utils.notify_about_instance_action')
+     @mock.patch.object(nova.compute.manager.ComputeManager,
+                        '_notify_about_instance_usage')
+diff --git a/nova/tests/unit/compute/test_utils.py b/nova/tests/unit/compute/test_utils.py
+index 59553f9..c8de21b 100644
+--- a/nova/tests/unit/compute/test_utils.py
++++ b/nova/tests/unit/compute/test_utils.py
+@@ -24,6 +24,7 @@ import string
+ from unittest import mock
+ 
+ from cinderclient import exceptions as cinder_exception
++import oslo_messaging as messaging
+ from oslo_serialization import jsonutils
+ from oslo_utils.fixture import uuidsentinel as uuids
+ from oslo_utils import uuidutils
+@@ -1860,3 +1861,75 @@ class CallCinderWithRetriesTestCase(test.NoDBTestCase):
+         self.volume_api.attachment_delete.assert_called_once_with(
+             self.context, uuids.attachment_id)
+         self.assertEqual([], self._waits(mock_sleep))
++
++
++@mock.patch('retrying.time.sleep')
++class CallWithDBRetriesTestCase(test.NoDBTestCase):
++    def setUp(self):
++        super().setUp()
++        self.call = mock.Mock(return_value=mock.sentinel.result)
++
++    @staticmethod
++    def _waits(mock_sleep):
++        # The patch replaces time.sleep, which other code calls with 0.
++        return [c.args[0] for c in mock_sleep.call_args_list if c.args[0]]
++
++    @staticmethod
++    def _lost_database():
++        return messaging.RemoteError('DBConnectionError', 'gone', '')
++
++    def _call(self):
++        return compute_utils.call_with_db_retries(
++            self.call, mock.sentinel.instance, clean_task_state=True)
++
++    def test_call_with_db_retries(self, mock_sleep):
++        self.assertEqual(mock.sentinel.result, self._call())
++        self.call.assert_called_once_with(
++            mock.sentinel.instance, clean_task_state=True)
++        self.assertEqual([], self._waits(mock_sleep))
++
++    @mock.patch.object(compute_utils.LOG, 'warning')
++    def test_call_with_db_retries_waits_for_the_database(
++            self, mock_warning, mock_sleep):
++        self.call.side_effect = [
++            self._lost_database(), self._lost_database(),
++            self._lost_database(), None]
++        self._call()
++        self.assertEqual(4, self.call.call_count)
++        self.assertEqual([2.0, 4.0, 8.0], self._waits(mock_sleep))
++        self.assertEqual(
++            [mock.call('Database unreachable through nova-conductor: %s',
++                       'gone')] * 3,
++            mock_warning.call_args_list)
++
++    def test_call_with_db_retries_gives_up(self, mock_sleep):
++        self.call.side_effect = self._lost_database()
++        self.assertRaises(messaging.RemoteError, self._call)
++        self.assertEqual(19, self.call.call_count)
++        # 254 seconds in all, and no wait longer than 16 seconds.
++        self.assertEqual([2.0, 4.0, 8.0] + [16.0] * 15,
++                         self._waits(mock_sleep))
++
++    def test_call_with_db_retries_does_not_retry_other_remote_errors(
++            self, mock_sleep):
++        self.call.side_effect = messaging.RemoteError('ValueError', 'no', '')
++        self.assertRaises(messaging.RemoteError, self._call)
++        self.call.assert_called_once_with(
++            mock.sentinel.instance, clean_task_state=True)
++        self.assertEqual([], self._waits(mock_sleep))
++
++    def test_call_with_db_retries_does_not_retry_a_timeout(self, mock_sleep):
++        self.call.side_effect = messaging.MessagingTimeout()
++        self.assertRaises(messaging.MessagingTimeout, self._call)
++        self.call.assert_called_once_with(
++            mock.sentinel.instance, clean_task_state=True)
++        self.assertEqual([], self._waits(mock_sleep))
++
++    def test_call_with_db_retries_does_not_retry_a_local_error(
++            self, mock_sleep):
++        self.call.side_effect = exception.InstanceNotFound(
++            instance_id=uuids.instance)
++        self.assertRaises(exception.InstanceNotFound, self._call)
++        self.call.assert_called_once_with(
++            mock.sentinel.instance, clean_task_state=True)
++        self.assertEqual([], self._waits(mock_sleep))

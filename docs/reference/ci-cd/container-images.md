@@ -1100,6 +1100,40 @@ and detach tests pass unchanged. The patch adds
 drives the three cleanups in the built image. Upstream status: not yet
 proposed.
 
+**Source patch:**
+`patches/nova/2026.1/0003-retry-the-error-state-of-a-failed-delete-when-the-database-is-lost.patch`
+and its 2026.2 twin keep a server deletable after its delete failed on
+nova-compute during a database outage. When `_delete_instance` fails,
+upstream's `ComputeManager.terminate_instance` writes the ERROR state once,
+and the `reverts_task_state` decorator clears the task state once. Both writes
+go through nova-conductor, which answers a lost database with a `RemoteError`
+of type `DBConnectionError`. In an outage both writes fail and the server
+keeps the task state `deleting`. Every later delete then answers 204 and does
+nothing until nova-compute restarts. Patch 0001 covers only the API's local
+delete and the deletion that nova-compute resumes at service start. The patch
+makes the ERROR write clear the task state as well and runs it through
+`compute_utils.call_with_db_retries`. That helper retries a lost database with
+waits that add up to 254 seconds, the bound of `call_cinder_with_retries` from
+patch 0002, and passes every other error to the caller on the first attempt.
+Each wait holds one RPC worker of nova-compute, so no wait is longer than 16
+seconds, and the next attempt follows within 16 seconds once the database is
+back.
+Only this write of a failed delete is retried. Once it succeeds, the server is
+ERROR with no task state, its fault records the error of the delete, and the
+next delete reaches nova-compute again. A local replay of the random chaos run
+on #1598 (seed 41807396659) found the defect: `mariadb-pod-failure` started
+five seconds after a server delete, the delete's Neutron call failed in the
+outage, and both writes failed with it. The patch adds
+`CallWithDBRetriesTestCase`,
+`test_terminate_instance_retries_error_state_after_lost_database`,
+`test_terminate_instance_error_state_gives_up_after_lost_database` and
+`test_terminate_instance_error_state_instance_gone`.
+`test_run_terminate_deallocate_net_failure_sets_error_state`,
+`test_instance_termination_exception_sets_error`, `test_quotas_failed_delete`
+and `test_state_revert` pass unchanged, and `verify_nova.sh` drives a failed
+delete through a lost database in the built image. Upstream status: not yet
+proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
