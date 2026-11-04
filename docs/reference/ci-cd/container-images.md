@@ -1049,6 +1049,37 @@ down and the Neutron call fails in the same outage.
 `verify_nova.sh` drives a failing local delete in the built image. Upstream
 status: not yet proposed.
 
+**Source patch:**
+`patches/nova/2026.1/0002-clean-up-after-a-failed-volume-attach-or-detach.patch`
+and its 2026.2 twin keep a volume usable after an attach or a detach failed
+during a Cinder outage. The conductor creates the Cinder attachment, which
+reserves the volume, and casts the attach to the compute service. When the
+attach fails there, upstream's `ComputeManager._attach_volume` deletes the
+attachment and then destroys the block device mapping. The delete retries a
+500 or 504 five times without a wait and a connection failure not at all, so
+while Cinder is without its database the attachment stays and the mapping
+goes. No detach and no server delete finds it, and the volume stays
+`reserved` or `attaching`, which Cinder refuses to delete. The conductor
+destroys the mapping without deleting the attachment when the cast or the
+instance action fails after Cinder created it. A detach has the opposite gap:
+the API sets the volume to `detaching`, and when the compute service's first
+Cinder call fails, nothing rolls that back, so every later detach answers 400
+until the server is deleted. The patch deletes the attachment in both attach
+rollbacks and rolls a failed detach back to `in-use` through
+`compute_utils.call_cinder_with_retries`, which retries a 5xx or a connection
+failure with waits that add up to 254 seconds, the bound of cinder patch
+0007. Nightly random chaos found the attach gap (issues #1599, #1600 and
+#1602): `cinder-mariadb-partition` cut the Cinder API from its database
+while an attach was in flight. A local replay of that fault under attach and
+detach load reproduced both gaps on the published image. The upstream attach
+and detach tests pass unchanged. The patch adds
+`CallCinderWithRetriesTestCase`,
+`test_attach_volume_raises_new_flow_retries_attachment_delete`,
+`test_detach_volume_rolls_back_detaching` and
+`test_attach_volume_cast_fails_deletes_attachment`, and `verify_nova.sh`
+drives the three cleanups in the built image. Upstream status: not yet
+proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)

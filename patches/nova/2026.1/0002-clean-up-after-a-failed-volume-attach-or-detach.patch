@@ -1,0 +1,411 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Clean up after a failed volume attach or detach
+
+A volume attach creates its Cinder attachment in the conductor
+(`ComputeTaskManager.attach_volume`, nova/conductor/manager.py), which
+reserves the volume, and casts the attach to the compute service. When the
+attach fails there, `ComputeManager._attach_volume`
+(nova/compute/manager.py) deletes the attachment and then destroys the block
+device mapping. `nova.volume.cinder.API.attachment_delete` retries a 500 or
+504 five times without a wait and a connection failure not at all. When
+Cinder is without its database for longer, the attachment stays and the
+mapping goes: no detach and no server delete finds an attachment that no
+mapping refers to, and the volume stays reserved or attaching, which Cinder
+refuses to delete. The conductor's own rollback destroys the mapping
+without deleting the attachment when recording the instance action or the
+cast to the compute service fails after Cinder created it.
+
+A detach has the opposite gap. The API sets the volume to detaching and
+casts the detach. When the compute service's first call to Cinder fails,
+`ComputeManager.detach_volume` gives up and nothing rolls the status back:
+`roll_detaching` runs only when the hypervisor refuses the detach. Cinder
+refuses a detach of a detaching volume, so the volume stays attached and
+detaching until its server is deleted.
+
+Nightly chaos found the attach gap on the random leg (issues #1599, #1600
+and #1602, seed 41758059024): `cinder-mariadb-partition` cut the Cinder API
+from its database for 120 seconds while an attach was in flight. Nova
+answered the attach, the volume never got in-use, every later detach
+answered 404, and dizzy's teardown failed on the delete with a 400 and
+exited 1. The stuck-resources Job found the volume reserved. A local
+replay of that fault under attach and detach load reproduced both gaps on
+the published image: "Delete attachment failed" after a failed attach left
+a volume attaching with no mapping, and detaches that failed on their
+first Cinder call left their volumes detaching: 7 of 8 volumes after
+eleven 120-second partitions. With the patch the same load left all 8
+available or in-use.
+
+Both attach rollbacks now delete the attachment, and a failed detach rolls
+the detaching status back, through `compute_utils.call_cinder_with_retries`.
+It retries a 5xx or a connection failure with waits that add up to 254
+seconds, the bound of cinder patch 0007, which outlasts a database
+failover. The conductor deletes the attachment before it destroys the
+mapping. A 404 of the delete is ignored as before; `roll_detaching` leaves
+a volume that is no longer detaching alone, so a detach that got further
+before it failed is not undone. The compute service holds the instance lock
+during the retries, so another operation on the same server waits for
+them: a slow rollback during an outage is the price of a volume that stays
+usable. The attach to a shelved offloaded server in the API has the same
+shape as the conductor's and is left alone, because an API worker should
+not wait minutes.
+
+Tests: test_attach_volume_raises_new_flow,
+test_attach_volume_ignore_VolumeAttachmentNotFound,
+test_attach_volume_attachment_create_fails and
+test_detach_volume_api_raises pass unchanged. The patch adds
+CallCinderWithRetriesTestCase (nova/tests/unit/compute/test_utils.py),
+test_attach_volume_raises_new_flow_retries_attachment_delete,
+test_detach_volume_rolls_back_detaching and
+test_attach_volume_cast_fails_deletes_attachment; the last three fail
+without the patch.
+
+Proof: tests/container-images/verify_nova.sh asserts in the built image that
+both attach rollbacks delete the attachment, the compute's after a failed
+first delete, and that a failed detach rolls the volume back.
+
+Applies to nova 33.0.0 (2026.1).
+
+Upstream status: not yet proposed.
+
+diff --git a/nova/compute/manager.py b/nova/compute/manager.py
+index ce6b98d..d01ff41 100644
+--- a/nova/compute/manager.py
++++ b/nova/compute/manager.py
+@@ -8287,10 +8287,13 @@ class ComputeManager(manager.Manager):
+                     # Try to delete the attachment to make the volume
+                     # available again. Note that DriverVolumeBlockDevice
+                     # may have already deleted the attachment so ignore
+-                    # VolumeAttachmentNotFound.
++                    # VolumeAttachmentNotFound. The BDM is destroyed after
++                    # this, so a transient failure of Cinder is retried: an
++                    # attachment left behind keeps the volume reserved.
+                     try:
+-                        self.volume_api.attachment_delete(
+-                            context, bdm['attachment_id'])
++                        compute_utils.call_cinder_with_retries(
++                            self.volume_api.attachment_delete, context,
++                            bdm['attachment_id'])
+                     except exception.VolumeAttachmentNotFound as exc:
+                         LOG.debug('Ignoring VolumeAttachmentNotFound: %s',
+                                   exc, instance=instance)
+@@ -8418,8 +8421,26 @@ class ComputeManager(manager.Manager):
+         def do_detach_volume(context, volume_id, instance, attachment_id):
+             bdm = objects.BlockDeviceMapping.get_by_volume_and_instance(
+                     context, volume_id, instance.uuid)
+-            self._detach_volume(context, bdm, instance,
+-                                attachment_id=attachment_id)
++            try:
++                self._detach_volume(context, bdm, instance,
++                                    attachment_id=attachment_id)
++            except Exception:
++                with excutils.save_and_reraise_exception():
++                    # NOTE: The API set the volume to detaching before it
++                    # cast this request. A detach that fails before it
++                    # reached Cinder, as one does while Cinder is without
++                    # its database, would leave it there: Cinder refuses a
++                    # detach of a detaching volume, so only a delete of the
++                    # server would clean it up. Roll it back to in-use,
++                    # which leaves a volume no longer detaching alone.
++                    try:
++                        compute_utils.call_cinder_with_retries(
++                            self.volume_api.roll_detaching, context,
++                            volume_id)
++                    except Exception:
++                        LOG.exception('Failed to roll back the detaching '
++                                      'status of volume %s', volume_id,
++                                      instance=instance)
+ 
+         do_detach_volume(context, volume_id, instance, attachment_id)
+ 
+diff --git a/nova/compute/utils.py b/nova/compute/utils.py
+index a1f20be..2e97742 100644
+--- a/nova/compute/utils.py
++++ b/nova/compute/utils.py
+@@ -22,10 +22,12 @@ import math
+ import socket
+ import traceback
+ 
++from cinderclient import exceptions as cinder_exception
+ from oslo_log import log
+ from oslo_serialization import jsonutils
+ from oslo_utils import excutils
+ import psutil
++import retrying
+ 
+ from nova.accelerator import cyborg
+ from nova import block_device
+@@ -1635,6 +1637,37 @@ def delete_arqs_if_needed(context, instance, arq_uuids=None):
+         cyclient.delete_arqs_by_uuid(arq_uuids)
+ 
+ 
++def _is_transient_cinder_failure(exc):
++    """True for a failure of Cinder that a later attempt can outlast."""
++    if isinstance(exc, exception.CinderConnectionFailed):
++        return True
++    return (isinstance(exc, cinder_exception.ClientException) and
++            getattr(exc, 'code', None) in (500, 502, 503, 504))
++
++
++# NOTE: The waits add up to 254 seconds, which outlasts a database failover of
++# Cinder. The callers clean up after a failed attach or detach: the attachment
++# of a failed attach, which no block device mapping refers to any more, and the
++# detaching status of a failed detach. A call that gives up leaves the volume
++# reserved, attaching or detaching, where Cinder refuses to delete it and Nova
++# to detach it.
++@retrying.retry(retry_on_exception=_is_transient_cinder_failure,
++                wait_exponential_multiplier=1000,
++                wait_exponential_max=128000,
++                stop_max_attempt_number=8)
++def call_cinder_with_retries(call, *args, **kwargs):
++    """Call a cinder API method, waiting out a transient failure of Cinder.
++
++    A 5xx or a connection failure is retried; every other error, such as
++    VolumeAttachmentNotFound, goes to the caller.
++
++    :param call: the method of nova.volume.cinder.API to call
++    :param args: its positional arguments
++    :param kwargs: its keyword arguments
++    """
++    return call(*args, **kwargs)
++
++
+ def check_attach_and_reserve_volume(context, volume_api, volume, instance,
+                                     bdm, supports_multiattach=False,
+                                     validate_az=True):
+diff --git a/nova/conductor/manager.py b/nova/conductor/manager.py
+index b7e834e..5b1992f 100644
+--- a/nova/conductor/manager.py
++++ b/nova/conductor/manager.py
+@@ -2296,6 +2296,18 @@ class ComputeTaskManager:
+             self.compute_rpcapi.attach_volume(context, instance, volume_bdm)
+         except Exception:
+             with excutils.save_and_reraise_exception():
+-                volume_bdm.destroy()
++                # NOTE: When the failure came after Cinder created the
++                # attachment, the attachment reserves the volume. Destroying
++                # the BDM alone would leave nothing that deletes it.
++                try:
++                    attachment_id = volume_bdm.get('attachment_id', None)
++                    if attachment_id:
++                        compute_utils.call_cinder_with_retries(
++                            self.volume_api.attachment_delete, context,
++                            attachment_id)
++                except exception.VolumeAttachmentNotFound:
++                    pass
++                finally:
++                    volume_bdm.destroy()
+ 
+         return volume_bdm.device_name
+diff --git a/nova/tests/unit/compute/test_compute.py b/nova/tests/unit/compute/test_compute.py
+index 18c4f33..2b5c6f4 100644
+--- a/nova/tests/unit/compute/test_compute.py
++++ b/nova/tests/unit/compute/test_compute.py
+@@ -507,6 +507,44 @@ class ComputeVolumeTestCase(BaseTestCase):
+                           exception=expected_exception),
+             ])
+ 
++    @mock.patch('retrying.time.sleep')
++    @mock.patch('nova.context.RequestContext.elevated')
++    @mock.patch('nova.compute.utils.notify_about_volume_attach_detach')
++    def test_attach_volume_raises_new_flow_retries_attachment_delete(
++            self, mock_notify, mock_elevate, mock_sleep):
++        """Tests that a failed attach deletes its attachment although Cinder
++        fails the first delete, before the BDM that refers to it goes.
++        """
++        mock_elevate.return_value = self.context
++
++        attachment_id = uuids.attachment_id
++        fake_bdm = objects.BlockDeviceMapping(**self.fake_volume)
++        fake_bdm.attachment_id = attachment_id
++        instance = self._create_fake_instance_obj()
++
++        with test.nested(
++            mock.patch.object(driver_block_device.DriverVolumeBlockDevice,
++                              'attach',
++                              side_effect=test.TestingException()),
++            mock.patch.object(cinder.API, 'attachment_delete',
++                              side_effect=[
++                                  cinder_exception.ClientException(500),
++                                  None]),
++            mock.patch.object(objects.BlockDeviceMapping,
++                              'destroy')
++        ) as (mock_attach, mock_attachment_delete, mock_destroy):
++            self.assertRaises(
++                    test.TestingException, self.compute.attach_volume,
++                    self.context, instance, fake_bdm)
++            self.assertEqual(
++                [mock.call(self.context, attachment_id)] * 2,
++                mock_attachment_delete.call_args_list)
++            # Other code yields with sleep(0); the wait of the retry is 2 s.
++            self.assertEqual(
++                [mock.call(2.0)],
++                [c for c in mock_sleep.call_args_list if c.args[0]])
++            mock_destroy.assert_called_once_with()
++
+     @mock.patch.object(compute_manager.LOG, 'debug')
+     @mock.patch.object(compute_utils, 'EventReporter')
+     @mock.patch('nova.context.RequestContext.elevated')
+@@ -582,6 +620,40 @@ class ComputeVolumeTestCase(BaseTestCase):
+                 self.context, 'compute_detach_volume', CONF.host,
+                 instance.uuid, graceful_exit=False)
+ 
++    @mock.patch('retrying.time.sleep')
++    @mock.patch.object(compute_utils, 'EventReporter')
++    def test_detach_volume_rolls_back_detaching(self, mock_event, mock_sleep):
++        """Tests that a detach that fails before it reached Cinder rolls the
++        volume back from detaching, waiting for Cinder to come back.
++        """
++        fake_bdm = objects.BlockDeviceMapping(**self.fake_volume)
++        instance = self._create_fake_instance_obj()
++        unreachable = exception.CinderConnectionFailed(reason='gone')
++
++        with test.nested(
++            mock.patch.object(self.compute.volume_api, 'get',
++                              side_effect=unreachable),
++            mock.patch.object(self.compute.volume_api, 'roll_detaching',
++                              side_effect=[unreachable, None]),
++            mock.patch.object(objects.BlockDeviceMapping,
++                              'get_by_volume_and_instance',
++                              return_value=fake_bdm),
++            mock.patch.object(fake_bdm, 'destroy')
++        ) as (mock_get_volume, mock_roll_detaching, mock_get, mock_destroy):
++            self.assertRaises(
++                    exception.CinderConnectionFailed,
++                    self.compute.detach_volume,
++                    self.context, uuids.volume_id, instance,
++                    uuids.attachment_id)
++            self.assertEqual(
++                [mock.call(self.context, uuids.volume_id)] * 2,
++                mock_roll_detaching.call_args_list)
++            # Other code yields with sleep(0); the wait of the retry is 2 s.
++            self.assertEqual(
++                [mock.call(2.0)],
++                [c for c in mock_sleep.call_args_list if c.args[0]])
++            mock_destroy.assert_not_called()
++
+     @mock.patch.object(compute_utils, 'EventReporter')
+     def test_detach_volume_bdm_destroyed(self, mock_event):
+         # Assert that the BDM is destroyed given a successful call to detach
+diff --git a/nova/tests/unit/compute/test_utils.py b/nova/tests/unit/compute/test_utils.py
+index 6e10399..59553f9 100644
+--- a/nova/tests/unit/compute/test_utils.py
++++ b/nova/tests/unit/compute/test_utils.py
+@@ -23,6 +23,7 @@ import socket
+ import string
+ from unittest import mock
+ 
++from cinderclient import exceptions as cinder_exception
+ from oslo_serialization import jsonutils
+ from oslo_utils.fixture import uuidsentinel as uuids
+ from oslo_utils import uuidutils
+@@ -1800,3 +1801,62 @@ class CheckAttachAndReserverVolumeTestCase(test.NoDBTestCase):
+                           compute_utils.check_attach_and_reserve_volume,
+                           self.context, mock_volume_api, volume, instance, bdm,
+                           supports_multiattach=False)
++
++
++@mock.patch('retrying.time.sleep')
++class CallCinderWithRetriesTestCase(test.NoDBTestCase):
++    def setUp(self):
++        super().setUp()
++        self.context = context.get_admin_context()
++        self.volume_api = mock.MagicMock(spec=cinder.API)
++
++    @staticmethod
++    def _waits(mock_sleep):
++        # The patch replaces time.sleep, which other code calls with 0.
++        return [c.args[0] for c in mock_sleep.call_args_list if c.args[0]]
++
++    def _delete(self):
++        compute_utils.call_cinder_with_retries(
++            self.volume_api.attachment_delete, self.context,
++            uuids.attachment_id)
++
++    def test_call_cinder_with_retries(self, mock_sleep):
++        self._delete()
++        self.volume_api.attachment_delete.assert_called_once_with(
++            self.context, uuids.attachment_id)
++        self.assertEqual([], self._waits(mock_sleep))
++
++    def test_call_cinder_with_retries_waits_for_cinder(self, mock_sleep):
++        self.volume_api.attachment_delete.side_effect = [
++            cinder_exception.ClientException(500),
++            exception.CinderConnectionFailed(reason='gone'),
++            cinder_exception.ClientException(503),
++            None]
++        self._delete()
++        self.assertEqual(4, self.volume_api.attachment_delete.call_count)
++        self.assertEqual([2.0, 4.0, 8.0], self._waits(mock_sleep))
++
++    def test_call_cinder_with_retries_gives_up(self, mock_sleep):
++        self.volume_api.attachment_delete.side_effect = (
++            cinder_exception.ClientException(500))
++        self.assertRaises(cinder_exception.ClientException, self._delete)
++        self.assertEqual(8, self.volume_api.attachment_delete.call_count)
++        self.assertEqual(254, sum(self._waits(mock_sleep)))
++
++    def test_call_cinder_with_retries_not_found(self, mock_sleep):
++        self.volume_api.attachment_delete.side_effect = (
++            exception.VolumeAttachmentNotFound(
++                attachment_id=uuids.attachment_id))
++        self.assertRaises(exception.VolumeAttachmentNotFound, self._delete)
++        self.volume_api.attachment_delete.assert_called_once_with(
++            self.context, uuids.attachment_id)
++        self.assertEqual([], self._waits(mock_sleep))
++
++    def test_call_cinder_with_retries_does_not_retry_a_rejection(
++            self, mock_sleep):
++        self.volume_api.attachment_delete.side_effect = (
++            exception.InvalidInput(reason='no'))
++        self.assertRaises(exception.InvalidInput, self._delete)
++        self.volume_api.attachment_delete.assert_called_once_with(
++            self.context, uuids.attachment_id)
++        self.assertEqual([], self._waits(mock_sleep))
+diff --git a/nova/tests/unit/conductor/test_conductor.py b/nova/tests/unit/conductor/test_conductor.py
+index 0653d69..2e69067 100644
+--- a/nova/tests/unit/conductor/test_conductor.py
++++ b/nova/tests/unit/conductor/test_conductor.py
+@@ -4717,6 +4717,41 @@ class ConductorTaskTestCase(_BaseTaskTestCase, test_compute.BaseTestCase):
+             self.assertEqual(0, mock_attach.call_count)
+             fake_bdm.destroy.assert_called_once_with()
+ 
++    @mock.patch.object(objects.InstanceAction, 'action_start')
++    @mock.patch.object(compute_rpcapi.ComputeAPI, 'reserve_block_device_name')
++    @mock.patch.object(objects.BlockDeviceMappingList, 'get_by_volume')
++    @mock.patch.object(compute_rpcapi.ComputeAPI, 'attach_volume')
++    def test_attach_volume_cast_fails_deletes_attachment(
++        self, mock_attach, mock_get_by_volume, mock_reserve,
++        mock_action_start
++    ):
++        mock_get_by_volume.side_effect = exc.VolumeBDMNotFound(
++            volume_id='fake-volume-id')
++        instance = fake_instance.fake_instance_obj(self.context,
++                                                   vm_state=vm_states.ACTIVE)
++        volume = fake_volume.fake_volume(1, 'test-vol', 'test-vol',
++                                         None, None, None, None, None)
++        bdm = objects.BlockDeviceMapping(
++            self.context, id=1, volume_id=volume['id'],
++            instance_uuid=instance.uuid, attachment_id=None)
++        mock_reserve.return_value = bdm
++        mock_attach.side_effect = messaging.MessageDeliveryFailure()
++
++        with test.nested(
++            mock.patch.object(self.conductor, 'volume_api',
++                              mock.MagicMock(spec=cinder.API)),
++            mock.patch.object(bdm, 'save'),
++            mock.patch.object(bdm, 'destroy'),
++        ) as (mock_v_api, mock_save, mock_destroy):
++            mock_v_api.attachment_create.return_value = {
++                'id': uuids.attachment_id}
++            self.assertRaises(messaging.MessageDeliveryFailure,
++                              self.conductor.attach_volume,
++                              self.context, instance, volume, None, None, None)
++            mock_v_api.attachment_delete.assert_called_once_with(
++                self.context, uuids.attachment_id)
++            mock_destroy.assert_called_once_with()
++
+     @mock.patch.object(compute_rpcapi.ComputeAPI, 'reserve_block_device_name')
+     @mock.patch.object(
+         objects.BlockDeviceMapping, 'get_by_volume_and_instance')

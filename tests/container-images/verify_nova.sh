@@ -585,6 +585,82 @@ with mock.patch("nova.objects.BlockDeviceMappingList.get_by_instance_uuid"), \
   assert_eq "a failed local delete clears the task state" "None" "${output##*$'\n'}"
 }
 
+# --- Test 17: a failed attach or detach cleans up after itself ---
+test_failed_attach_and_detach_clean_up() {
+  echo "Test: a failed volume attach deletes its attachment, a failed detach rolls back"
+  # patches/nova/<release>/0002-clean-up-after-a-failed-volume-attach-or-detach.patch.
+  # Cinder answers the first call of each cleanup with a 500 or a refused
+  # connection, as it does without its database: the compute's attach
+  # rollback, the conductor's after a failed cast, and the compute's detach
+  # that failed on its first Cinder call. Without the patch the compute gives
+  # up after one delete, the conductor never deletes, and nothing rolls the
+  # detaching status back, so the volume stays reserved, attaching or
+  # detaching.
+  local output="" exit_code=0
+  output=$(docker run --rm "$IMAGE" /var/lib/openstack/bin/python -c \
+    'from unittest import mock
+
+from cinderclient import exceptions as cinder_exception
+from nova.compute import manager
+from nova.conductor import manager as conductor_manager
+from nova import exception
+from nova import objects
+
+objects.register_all()
+compute_volume_api = mock.Mock()
+compute_volume_api.attachment_delete.side_effect = [
+    cinder_exception.ClientException(500), None]
+compute_volume_api.roll_detaching.side_effect = [
+    exception.CinderConnectionFailed(reason="refused"), None]
+compute = manager.ComputeManager.__new__(manager.ComputeManager)
+compute.volume_api = compute_volume_api
+compute.driver = mock.Mock()
+compute.host = "h"
+compute._notify_about_instance_usage = mock.Mock()
+compute._detach_volume = mock.Mock(side_effect=RuntimeError("detach failed"))
+bdm = mock.MagicMock(volume_id="v")
+bdm.__getitem__.side_effect = {"attachment_id": "a", "mount_device": "/dev/vdb"}.__getitem__
+bdm.attach.side_effect = RuntimeError("attach failed")
+
+conductor_volume_api = mock.Mock()
+conductor_volume_api.attachment_create.return_value = {"id": "a"}
+conductor = conductor_manager.ComputeTaskManager.__new__(
+    conductor_manager.ComputeTaskManager)
+conductor.volume_api = conductor_volume_api
+conductor.compute_rpcapi = mock.Mock()
+conductor.compute_rpcapi.attach_volume.side_effect = RuntimeError("cast failed")
+volume_bdm = objects.BlockDeviceMapping(id=1, volume_id="v", instance_uuid="u",
+                                        attachment_id=None, device_name="/dev/vdb")
+conductor._create_volume_bdm = mock.Mock(return_value=volume_bdm)
+volume = {"id": "v", "multiattach": False}
+detach = manager.ComputeManager.detach_volume
+while hasattr(detach, "__wrapped__"):
+    detach = detach.__wrapped__
+with mock.patch("time.sleep"), \
+        mock.patch("nova.compute.utils.notify_about_volume_attach_detach"), \
+        mock.patch("nova.objects.InstanceAction.action_start"), \
+        mock.patch("nova.objects.BlockDeviceMapping.get_by_volume_and_instance"), \
+        mock.patch.object(volume_bdm, "save"), \
+        mock.patch.object(volume_bdm, "destroy"):
+    for call in (lambda: compute._attach_volume(mock.MagicMock(), mock.MagicMock(), bdm),
+                 lambda: conductor_manager.ComputeTaskManager.attach_volume.__wrapped__(
+                     conductor, mock.MagicMock(), mock.MagicMock(uuid="u"), volume,
+                     None, None, None),
+                 lambda: detach(compute, mock.MagicMock(), "v",
+                                mock.MagicMock(uuid="u"), "a")):
+        try:
+            call()
+        except RuntimeError:
+            pass
+print(compute_volume_api.attachment_delete.call_count,
+      conductor_volume_api.attachment_delete.call_count,
+      compute_volume_api.roll_detaching.call_count)' 2>&1) || exit_code=$?
+  assert_eq "the driven attaches and the detach exit 0" "0" "$exit_code"
+  # Two deletes and two rollbacks in the compute, the first of each failed;
+  # one delete in the conductor.
+  assert_eq "a failed attach deletes its attachment, a failed detach rolls back" "2 1 2" "${output##*$'\n'}"
+}
+
 # --- Run all tests ---
 echo "=== nova container verification tests ==="
 echo "Image: $IMAGE"
@@ -620,6 +696,8 @@ echo ""
 test_pymemcache_backend_bounded
 echo ""
 test_failed_local_delete_clears_task_state
+echo ""
+test_failed_attach_and_detach_clean_up
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
