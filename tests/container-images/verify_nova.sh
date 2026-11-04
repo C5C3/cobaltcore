@@ -25,6 +25,16 @@ source "$SCRIPT_DIR/../lib/pymemcache.sh"
 # shellcheck source=tests/lib/uwsgi.sh
 source "$SCRIPT_DIR/../lib/uwsgi.sh"
 
+# Runs a Python snippet in the image with its stderr merged into its stdout
+# inside the container. docker run copies the two streams separately and
+# keeps no order between them, so a warning written before a check's result
+# can arrive after it. The checks that read their result from the last line
+# run through this.
+run_python_in_image() {
+  docker run --rm "$IMAGE" sh -c 'exec "$@" 2>&1' sh \
+    /var/lib/openstack/bin/python -c "$1"
+}
+
 # --- Test 1: nova-manage console script runs ---
 test_nova_manage_version() {
   echo "Test: nova-manage --version succeeds"
@@ -661,6 +671,44 @@ print(compute_volume_api.attachment_delete.call_count,
   assert_eq "a failed attach deletes its attachment, a failed detach rolls back" "2 1 2" "${output##*$'\n'}"
 }
 
+# --- Test 18: a failed delete outlasts a lost database ---
+test_failed_delete_survives_a_lost_database() {
+  echo "Test: a failed delete sets ERROR and clears the task state after a lost database"
+  # patches/nova/<release>/0003-retry-the-error-state-of-a-failed-delete-when-the-database-is-lost.patch.
+  # The delete fails on the compute, and nova-conductor answers the first
+  # write of the ERROR state with a lost database. Without the patch the
+  # RemoteError replaces the delete's error and the server keeps deleting:
+  # the published image prints "RemoteError error deleting 1".
+  local output="" exit_code=0
+  output=$(run_python_in_image \
+    'from unittest import mock
+
+import oslo_messaging
+from nova.compute import manager
+from nova import objects
+
+objects.register_all()
+compute = manager.ComputeManager.__new__(manager.ComputeManager)
+compute._delete_instance = mock.Mock(side_effect=RuntimeError("delete failed"))
+instance = objects.Instance(uuid="0b7a4d55-3c1e-4f0e-9a8b-5d2c6e1f7a90",
+                            vm_state="active", task_state="deleting")
+terminate = manager.ComputeManager.terminate_instance
+while hasattr(terminate, "__wrapped__"):
+    terminate = terminate.__wrapped__
+with mock.patch("time.sleep"), \
+        mock.patch.object(objects.Instance, "save", side_effect=[
+            oslo_messaging.RemoteError("DBConnectionError", "gone", ""),
+            None]) as save:
+    try:
+        terminate(compute, mock.MagicMock(), instance, [])
+    except Exception as exc:
+        print(type(exc).__name__, instance.vm_state, instance.task_state,
+              save.call_count)' 2>&1) || exit_code=$?
+  assert_eq "the driven delete exits 0" "0" "$exit_code"
+  # The delete's own error goes out after the failed write and its retry.
+  assert_eq "a failed delete outlasts a lost database" "RuntimeError error None 2" "${output##*$'\n'}"
+}
+
 # --- Run all tests ---
 echo "=== nova container verification tests ==="
 echo "Image: $IMAGE"
@@ -698,6 +746,8 @@ echo ""
 test_failed_local_delete_clears_task_state
 echo ""
 test_failed_attach_and_detach_clean_up
+echo ""
+test_failed_delete_survives_a_lost_database
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
