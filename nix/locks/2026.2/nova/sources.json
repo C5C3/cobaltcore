@@ -4,6 +4,7 @@
   "hash": "sha256-UFFf7zhAKVH8lQvb1OIEgByV16AV0+rmX0VJVelblno=",
   "project": "nova",
   "patches": [
-    "patches/nova/2026.2/0001-do-not-leave-deleting-behind-when-a-server-delete-fails.patch"
+    "patches/nova/2026.2/0001-do-not-leave-deleting-behind-when-a-server-delete-fails.patch",
+    "patches/nova/2026.2/0002-clean-up-after-a-failed-volume-attach-or-detach.patch"
   ]
 }
