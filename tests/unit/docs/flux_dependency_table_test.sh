@@ -101,9 +101,9 @@ check_flux_dependencies() {
   local files=()
 
   if [[ -d "$dir" ]]; then
-    for f in "$dir"/*.yaml; do
-      [[ -f "$f" ]] && files+=("$f")
-    done
+    while IFS= read -r -d '' f; do
+      files+=("$f")
+    done < <(find "$dir" -type f -name '*.yaml' ! -name kustomization.yaml -print0)
   fi
   if [[ ${#files[@]} -gt 0 ]]; then
     records="$(awk "$RELEASES_AWK" "${files[@]}")"
