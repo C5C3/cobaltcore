@@ -532,7 +532,7 @@ client Secret it produces carries no `ca.crt`. `TLSReady` then holds reason
 `CertificateError` and the message
 `issuer <kind>/<name> issued no ca.crt; spec.tls.issuerRef must name a CA issuer`.
 The devstack ships the `ClusterIssuer` `openstack-ovn-ca-issuer` from
-`deploy/flux-system/infrastructure/ovn-ca-issuer.yaml`, a CA issuer whose root is
+`deploy/flux-system/infrastructure/tls/ovn-ca-issuer.yaml`, a CA issuer whose root is
 a self-signed CA Certificate in the `cert-manager` namespace. The field is
 described under [`OVNTLSSpec`](./ovn/ovn-central-crd.md#ovntlsspec).
 

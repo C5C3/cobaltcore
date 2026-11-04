@@ -20,7 +20,7 @@ source "${SCRIPT_DIR}/common.sh"
 BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 # The ServiceAccount the c5c3-operator pod runs as, and its namespace: the
 # c5c3-operator auth role is bound to exactly that identity. The defaults match
-# deploy/flux-system/releases/c5c3-operator.yaml.
+# deploy/flux-system/releases/c5c3-operator/helmrelease.yaml.
 C5C3_OPERATOR_SERVICE_ACCOUNT="${C5C3_OPERATOR_SERVICE_ACCOUNT:-c5c3-operator}"
 C5C3_OPERATOR_NAMESPACE="${C5C3_OPERATOR_NAMESPACE:-c5c3-system}"
 

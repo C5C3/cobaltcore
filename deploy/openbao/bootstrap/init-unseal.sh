@@ -18,7 +18,7 @@ source "${SCRIPT_DIR}/common.sh"
 # ---------------------------------------------------------------------------
 KEY_SHARES=5
 KEY_THRESHOLD=3
-PODS=("openbao-0" "openbao-1" "openbao-2")
+read -r -a PODS <<< "${OPENBAO_PODS:-openbao-0 openbao-1 openbao-2}"
 SECRET_NAME="openbao-init-keys"
 
 # ---------------------------------------------------------------------------

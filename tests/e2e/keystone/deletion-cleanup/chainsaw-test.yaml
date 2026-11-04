@@ -251,7 +251,7 @@ spec:
   # regression.
   #
   # Namespace note: the OpenBao server runs in shared-services (see
-  # deploy/flux-system/releases/openbao.yaml:14 and
+  # deploy/flux-system/releases/openbao/helmrelease.yaml:14 and
   # deploy/openbao/bootstrap/common.sh:17). The task spec reference to
   # "namespace openbao" is stale — shared-services is the authoritative
   # target used by the HelmRelease and bootstrap scripts.

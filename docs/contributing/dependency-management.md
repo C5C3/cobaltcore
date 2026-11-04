@@ -163,7 +163,7 @@ It tracks seventeen third-party charts and one image:
 | `garage-operator` | `deploy/flux-system/releases/garage-operator.yaml` | `widen` | no |
 | `mariadb-operator` | `deploy/flux-system/releases/mariadb-operator.yaml` | `widen`, group `mariadb-operator chart` | no |
 | `mariadb-operator-crds` | `deploy/flux-system/releases/mariadb-operator-crds.yaml` | `widen`, group `mariadb-operator chart` | no |
-| `openbao` | `deploy/flux-system/releases/openbao.yaml` | `widen` | no |
+| `openbao` | `deploy/flux-system/releases/openbao/helmrelease.yaml` | `widen` | no |
 | `prometheus-operator-crds` | `deploy/flux-system/releases/prometheus-operator-crds.yaml` | `widen`, group `prometheus-operator charts` | no |
 | `chaos-mesh` | `deploy/kind/chaos-mesh/release.yaml` | `widen` | no |
 | `grafana` | `deploy/kind/dizzy/release-grafana.yaml` | `widen` | no |

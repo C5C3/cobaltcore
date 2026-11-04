@@ -1001,7 +1001,7 @@ backing-service row its `Minimal` figure.
 The run of 2026-10-05 measured on shoot `newforge` from commit `d34fde24`
 (`d34fde24334c2809ba2225654c206af9f217eee9`), on Kubernetes v1.35.6, with the
 operators from the charts published from `main`
-(`deploy/flux-system/releases/c5c3-operator.yaml`). The shoot has three
+(`deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`). The shoot has three
 workers, whose `== cpu` line of the node probe reads
 `Intel(R) Xeon(R) D-2141I CPU @ 2.20GHz`. Below, a node is named by the last
 part of its name, `shoot--df33f0b4c1--newforge-group-0-85bcf-<suffix>`. At

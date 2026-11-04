@@ -50,7 +50,7 @@ import (
 // (serverCertIssuerRef + clientCertIssuerRef) so the Keystone client cert and
 // the MariaDB server/client certs share a root of trust.
 // The matching ClusterIssuer is declared in
-// deploy/flux-system/infrastructure/db-ca-issuer.yaml.
+// deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml.
 const dbCAIssuerName = "openstack-db-ca-issuer"
 
 // reconcileDatabaseTLS provisions (or, for the disabled/brownfield paths,

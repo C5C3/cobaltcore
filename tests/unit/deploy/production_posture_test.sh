@@ -24,7 +24,7 @@
 # resources; the overlay renders the full bundle).
 #
 # enforces OpenBao mTLS by editing
-# deploy/flux-system/releases/openbao.yaml in place:
+# deploy/flux-system/releases/openbao/helmrelease.yaml in place:
 #   - the HA raft listener requires & verifies client certs
 #     (tls_client_ca_file + tls_require_and_verify_client_cert = true);
 #   - all three retry_join stanzas carry leader_client_cert_file +
@@ -104,7 +104,7 @@ test_production_overlay_unchanged() {
   )
   local groups_specs=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/cert-manager.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml :(exclude)deploy/flux-system/releases/garage-operator.yaml :(exclude)deploy/flux-system/releases/keystone-operator.yaml :(exclude)deploy/flux-system/releases/horizon-operator.yaml :(exclude)deploy/flux-system/releases/glance-operator.yaml :(exclude)deploy/flux-system/releases/placement-operator.yaml :(exclude)deploy/flux-system/releases/openbao-operator.yaml :(exclude)deploy/flux-system/releases/barbican-operator.yaml :(exclude)deploy/flux-system/releases/ovn-operator.yaml :(exclude)deploy/flux-system/releases/neutron-operator.yaml :(exclude)deploy/flux-system/releases/cinder-operator.yaml :(exclude)deploy/flux-system/releases/nova-operator.yaml :(exclude)deploy/flux-system/releases/rabbitmq-cluster-operator.yaml :(exclude)deploy/flux-system/releases/messaging-topology-operator.yaml"
+    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/openbao/kustomization.yaml :(exclude)deploy/flux-system/releases/c5c3-operator/kustomization.yaml :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao/helmrelease.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/cert-manager.yaml :(exclude)deploy/flux-system/releases/c5c3-operator/helmrelease.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml :(exclude)deploy/flux-system/releases/garage-operator.yaml :(exclude)deploy/flux-system/releases/keystone-operator.yaml :(exclude)deploy/flux-system/releases/horizon-operator.yaml :(exclude)deploy/flux-system/releases/glance-operator.yaml :(exclude)deploy/flux-system/releases/placement-operator.yaml :(exclude)deploy/flux-system/releases/openbao-operator.yaml :(exclude)deploy/flux-system/releases/barbican-operator.yaml :(exclude)deploy/flux-system/releases/ovn-operator.yaml :(exclude)deploy/flux-system/releases/neutron-operator.yaml :(exclude)deploy/flux-system/releases/cinder-operator.yaml :(exclude)deploy/flux-system/releases/nova-operator.yaml :(exclude)deploy/flux-system/releases/rabbitmq-cluster-operator.yaml :(exclude)deploy/flux-system/releases/messaging-topology-operator.yaml"
   )
 
   local diff_output=""
