@@ -656,6 +656,58 @@ if volume.status != "error" or volume.save.call_count != 2:
   assert_eq "a lost database sets the volume to error" "0" "$exit_code"
 }
 
+test_lost_database_worker_patch_applied() {
+  echo "Test: the worker entry of an RPC call survives a lost database"
+  # Proves both build paths applied
+  # patches/cinder/<release>/000N-retry-the-worker-entry-when-the-database-is-lost.patch.
+  # set_workers claims the worker entry before the scheduler's or the volume
+  # manager's create_volume runs. An unpatched image fails that claim on the
+  # first lost database read, so the call never runs and the volume stays in
+  # creating. The patched image reads again and creates the entry. The module's
+  # own db handle is mocked (cinder.db on 2026.1, cinder.db.api on 2026.2), the
+  # waits too, and stderr is echoed on failure so the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+
+from oslo_db import exception as db_exc
+
+from cinder import exception
+from cinder import objects
+objects.register_all()
+from cinder.objects import cleanable
+
+
+class Resource(cleanable.CinderCleanableObject):
+    def __init__(self, **kwargs):
+        super().__init__()
+        for name, value in kwargs.items():
+            setattr(self, name, value)
+
+    @staticmethod
+    def _is_cleanable(status, obj_version):
+        return True
+
+
+resource = Resource(_context=mock.sentinel.context, status="creating",
+                    id="volume-1")
+lost = db_exc.DBConnectionError(Exception("gone"))
+with mock.patch.object(cleanable.db, "worker_get",
+                       side_effect=[lost, exception.WorkerNotFound]) as get, \
+        mock.patch.object(cleanable.db, "worker_create") as create, \
+        mock.patch("tenacity.nap.sleep"):
+    resource.set_worker()
+if get.call_count != 2 or create.call_count != 1:
+    sys.exit("worker_get ran %d times and worker_create %d, want 2 and 1"
+             % (get.call_count, create.call_count))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "a lost database read is retried before the worker entry" "0" "$exit_code"
+}
+
 # --- Test 12: runs as openstack user ---
 test_runs_as_openstack_user() {
   echo "Test: container runs as openstack user"
@@ -819,6 +871,8 @@ echo ""
 test_coordinator_shutdown_patch_applied
 echo ""
 test_lost_database_create_patch_applied
+echo ""
+test_lost_database_worker_patch_applied
 echo ""
 test_runs_as_openstack_user
 echo ""
