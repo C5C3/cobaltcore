@@ -100,4 +100,13 @@
 <polygon points="520,559 512.8,544 527.2,544" fill="#3A4452"/>
 <text x="40" y="1118.2" font-size="20" font-weight="400" fill="#55606E">An arrow runs from a directory to the overlay that lists it under resources. The overlay renders what its base renders and then patches it.</text>
 <text x="40" y="1144.2" font-size="20" font-weight="400" fill="#55606E">Step n is a step of make deploy-infra. EXTERNAL_CLUSTER=true applies the lab column in place of the kind column, and EXTERNAL_OVERLAY names another root.</text>
+<text x="99" y="769" font-size="26" font-weight="700" fill="#2B3440">Staged Flux deployment</text>
+<text x="99" y="810" font-size="20" font-weight="400" fill="#55606E">deploy/gitops/bases</text>
+<text x="99" y="840" font-size="20" font-weight="400" fill="#55606E">operators, tls, openbao, secrets,</text>
+<text x="99" y="866" font-size="20" font-weight="400" fill="#55606E">controlplane-operator</text>
+<text x="99" y="910" font-size="20" font-weight="400" fill="#55606E">Release bases under flux-system/releases</text>
+<text x="99" y="936" font-size="20" font-weight="400" fill="#55606E">c5c3-operator and openbao</text>
+<text x="99" y="970" font-size="20" font-weight="400" fill="#55606E">TLS base under flux-system/infrastructure/tls</text>
+<text x="99" y="1010" font-size="20" font-weight="400" fill="#55606E">OpenBao ConfigMaps under deploy/openbao</text>
+<text x="99" y="1036" font-size="20" font-weight="400" fill="#55606E">bootstrap and policies</text>
 </svg>

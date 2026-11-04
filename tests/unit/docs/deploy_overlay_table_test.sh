@@ -47,7 +47,7 @@ FIGURE="deploy-overlay-inheritance"
 RESOURCES_AWK='
 /^resources:/ { list = 1; next }
 list && /^[A-Za-z]/ { list = 0 }
-list && /^  - / { entry = substr($0, 5); sub(/[ \t\r]+$/, "", entry); print entry }
+list && /^(  )?- / { entry = $0; sub(/^(  )?- /, "", entry); sub(/[ \t\r]+$/, "", entry); print entry }
 '
 
 # "TABLE" once the header row is found, then one line per row: directory,
