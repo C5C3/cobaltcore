@@ -4034,7 +4034,7 @@ main() {
   # waits for the admission path the Phase 2 applies take. An upgrade runs
   # no hook, so the probe stays as the script's own gate and uses the
   # manifest Phase 2 applies first.
-  wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/flux-system/infrastructure/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"
+  wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"
 
   # Phase 2: Apply TLS prerequisites that OpenBao and MariaDB need to start.
   # The openbao-tls Certificate creates the Secret mounted by the OpenBao
@@ -4053,10 +4053,10 @@ main() {
   #   - openbao-ca-issuer must exist before openbao-tls-cert.yaml (which
   #     references it via issuerRef).
   log "Phase 2: Applying TLS prerequisites (ClusterIssuer + OpenBao CA + OpenBao TLS Certificate + DB CA Issuer)..."
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/cluster-issuer.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/openbao-ca-issuer.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/openbao-tls-cert.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/db-ca-issuer.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/cluster-issuer.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/openbao-tls-cert.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml"
 
   # Phase 3: Wait for remaining HelmReleases now that OpenBao can mount its TLS secret.
   # envoy-gateway is kind-only (deploy/kind/base/envoy-gateway.yaml) and provides

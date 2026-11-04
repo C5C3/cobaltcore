@@ -968,7 +968,7 @@ reads the exact key specified — the MariaDB CRD uses a standard
 
 ## OpenBao HelmRelease
 
-**File:** `deploy/flux-system/releases/openbao.yaml`
+**File:** `deploy/flux-system/releases/openbao/helmrelease.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1010,9 +1010,9 @@ headless service DNS names (`openbao-0.openbao-internal`, `openbao-1.openbao-int
 
 The TLS certificate is issued by the `openbao-ca-issuer` (a CA-type ClusterIssuer)
 via a cert-manager Certificate resource at
-`deploy/flux-system/infrastructure/openbao-tls-cert.yaml`. The CA keypair itself
+`deploy/flux-system/infrastructure/tls/openbao-tls-cert.yaml`. The CA keypair itself
 is bootstrapped by `selfsigned-cluster-issuer` in
-`deploy/flux-system/infrastructure/openbao-ca-issuer.yaml` — a SelfSigned issuer
+`deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml` — a SelfSigned issuer
 cannot sign leaves for a separate trust chain, so the openbao trust domain owns
 its own CA (mirrors the `openstack-db-ca` precedent).
 
@@ -1022,7 +1022,7 @@ The figure shows the OpenBao trust domain beside the other three.
 
 **Client certificates.** Two additional `cert-manager.io/v1` Certificates
 issue *client*-auth keypairs from the same `openbao-ca-issuer`, both
-declared in `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml`:
+declared in `deploy/flux-system/infrastructure/tls/openbao-client-tls-cert.yaml`:
 
 | Certificate | Secret | Consumer | Mount / Reference |
 | --- | --- | --- | --- |
@@ -1195,15 +1195,15 @@ kubectl exec -n shared-services openbao-0 -- \
 
 If the first command unexpectedly returns `http_code=200`, the listener is not
 enforcing client-cert auth — re-check
-`deploy/flux-system/releases/openbao.yaml` for `tls_client_ca_file` and
+`deploy/flux-system/releases/openbao/helmrelease.yaml` for `tls_client_ca_file` and
 `tls_require_and_verify_client_cert = true`, and that the HelmRelease has
 reconciled (`kubectl get helmrelease openbao -n shared-services`).
 
 ## Related Resources
 
 - [Infrastructure Manifests](./infrastructure-manifests.md) — FluxCD base deployment
-- `deploy/flux-system/releases/openbao.yaml` — OpenBao HelmRelease
-- `deploy/flux-system/infrastructure/openbao-tls-cert.yaml` — server TLS Certificate
-- `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml` — client TLS Certificates
+- `deploy/flux-system/releases/openbao/helmrelease.yaml` — OpenBao HelmRelease
+- `deploy/flux-system/infrastructure/tls/openbao-tls-cert.yaml` — server TLS Certificate
+- `deploy/flux-system/infrastructure/tls/openbao-client-tls-cert.yaml` — client TLS Certificates
 - `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration (now uses client-cert mTLS); the only resource the production ESO kustomization renders
 - `deploy/kind/infrastructure/` — kind-overlay-only ExternalSecret shims (`keystone-admin`, `mariadb-root-password`, `keystone-db`)

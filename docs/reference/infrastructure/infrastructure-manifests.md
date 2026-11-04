@@ -656,7 +656,7 @@ entry never automerges: every bump of this operator is a human decision.
 
 ### OpenBao
 
-**File:** `deploy/flux-system/releases/openbao.yaml`
+**File:** `deploy/flux-system/releases/openbao/helmrelease.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -699,8 +699,8 @@ Kubernetes-token auth method (`auth.kubernetes`) is unchanged and runs
 | `injector.enabled` | `false` | Disable the Vault/Bao agent injector |
 
 **Client certificates.** The two client `Certificate` resources are
-declared in `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml`
-and registered in `deploy/flux-system/infrastructure/kustomization.yaml`
+declared in `deploy/flux-system/infrastructure/tls/openbao-client-tls-cert.yaml`
+and registered in `deploy/flux-system/infrastructure/tls/kustomization.yaml`
 immediately after `openbao-tls-cert.yaml`, so cert-manager reconciles them
 *before* the OpenBao StatefulSet and `ClusterSecretStore` consume them
 (first-apply ordering, see also "Apply ordering" notes below):
@@ -712,7 +712,7 @@ immediately after `openbao-tls-cert.yaml`, so cert-manager reconciles them
 
 Both client certs are issued from the same `openbao-ca-issuer` as
 `openbao-tls` (a CA-type ClusterIssuer defined in
-`deploy/flux-system/infrastructure/openbao-ca-issuer.yaml` and itself
+`deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml` and itself
 bootstrapped by `selfsigned-cluster-issuer`). Sharing one CA is what makes the
 listener's `tls_client_ca_file = /openbao/tls/ca.crt` validate every presented
 client cert — a SelfSigned issuer would mint each Certificate as its own root
@@ -993,7 +993,7 @@ guard the YAML shape the managers anchor on.
 
 ### c5c3-operator
 
-**File:** `deploy/flux-system/releases/c5c3-operator.yaml`
+**File:** `deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1078,7 +1078,7 @@ after the corresponding operator HelmReleases install their Helm charts.
 
 ### Self-Signed ClusterIssuer
 
-**File:** `deploy/flux-system/infrastructure/cluster-issuer.yaml`
+**File:** `deploy/flux-system/infrastructure/tls/cluster-issuer.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1101,7 +1101,7 @@ each server accepts every client certificate of its own CA.
 
 ### OpenStack DB CA Issuer
 
-**File:** `deploy/flux-system/infrastructure/db-ca-issuer.yaml`
+**File:** `deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml`
 
 Provisions the dedicated cert-manager CA that anchors the OpenStack database trust
 domain. The file declares two resources:
@@ -1138,7 +1138,7 @@ For the end-to-end TLS path the issuer participates in, see the
 
 ### OVN CA Issuer
 
-**File:** `deploy/flux-system/infrastructure/ovn-ca-issuer.yaml`
+**File:** `deploy/flux-system/infrastructure/tls/ovn-ca-issuer.yaml`
 
 Provisions the cert-manager CA that anchors the OVN database trust domain. The file
 declares two resources:
@@ -1867,7 +1867,7 @@ One row per entry of `deploy/flux-system/kustomization.yaml` and
 | `releases/mariadb-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `https://mariadb-operator.github.io/mariadb-operator` (`sources/mariadb-operator.yaml`) |
 | `releases/external-secrets.yaml` | HelmRelease | `spec.values` | The chart's values reference at `https://charts.external-secrets.io` (`sources/external-secrets.yaml`) |
 | `releases/memcached-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/c5c3/charts` (`sources/c5c3-charts.yaml`) |
-| `releases/openbao.yaml` | HelmRelease | `spec.values`; the shipped release already sets `server.resources` | The chart's values reference at `https://openbao.github.io/openbao-helm` (`sources/openbao.yaml`) |
+| `releases/openbao/helmrelease.yaml` | HelmRelease | `spec.values`; the shipped release already sets `server.resources` | The chart's values reference at `https://openbao.github.io/openbao-helm` (`sources/openbao.yaml`) |
 | `releases/garage-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/rajsinghtech/charts` (`sources/garage-operator.yaml`) |
 | `releases/openbao-operator.yaml` | HelmRelease | `spec.values` | The chart's values reference at `oci://ghcr.io/dc-tec/charts/openbao-operator` (`sources/openbao-operator.yaml`) |
 | `releases/keystone-operator.yaml`, `horizon-operator.yaml`, `glance-operator.yaml`, `placement-operator.yaml`, `barbican-operator.yaml`, `ovn-operator.yaml`, `neutron-operator.yaml`, `cinder-operator.yaml`, `nova-operator.yaml`, `c5c3-operator.yaml` | HelmRelease | `spec.values`, and `spec.chart.spec.version` with the placement keys ([merge rule 3](#merge-rules)) | [`replicas`, `resources`, `nodeSelector`, `tolerations`, `priorityClassName`](../backend/helm-values-schema.md#nodeselector-tolerations-and-priorityclassname) |
@@ -1939,11 +1939,11 @@ The manifest structure is designed for straightforward extension. Adding a new o
 
 1. **Add a source file** in `sources/` (e.g., `sources/openbao.yaml`) — or reuse an
    existing HelmRepository if the chart is in a shared registry
-2. **Add a release file** in `releases/` (e.g., `releases/openbao.yaml`) with the
+2. **Add a release file** in `releases/` (e.g., `releases/openbao/helmrelease.yaml`) with the
    HelmRelease CR, `dependsOn` for cert-manager, and the standard install/upgrade settings
 3. **Add both paths** to the `resources` list in `kustomization.yaml`
 4. **Add the release's target namespace** to `namespaces.yaml` (e.g., `shared-services`,
-   where `releases/openbao.yaml` puts the OpenBao HelmRelease) so the namespace exists
+   where `releases/openbao/helmrelease.yaml` puts the OpenBao HelmRelease) so the namespace exists
    before `kubectl apply -k` creates the namespaced HelmRelease CR
 
 The [garage-operator](#garage-operator) is the worked example of an **OCI-type
@@ -3922,7 +3922,7 @@ broker and single-member Raft clusters, so none of these faults has run
 before. Per D2 of [#1386](https://github.com/c5c3/cobaltcore/issues/1386) the
 runs are lab-only: no CI job, nightly or gate runs them. They test the operators
 the lab installs from the charts published from `main`
-(`deploy/flux-system/releases/c5c3-operator.yaml`); the suites and the script
+(`deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`); the suites and the script
 come from the branch that runs them.
 
 Each suite is a Chainsaw test that drives the workload and consistency harness
@@ -4784,7 +4784,7 @@ objects, so every block names `minReplicas`, `null` where the case has none.
 | V6 | `InPlaceOrRecreate`, the same VPA, patched | 1 | `100m` | the same UID and restart count, and `100m` as the spec's and the running request |
 
 V5 and V6 apply the VPA by hand. The lab installs the operators from the
-charts published from `main` (`deploy/flux-system/releases/c5c3-operator.yaml`),
+charts published from `main` (`deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`),
 and a release older than the mode refuses it in a ControlPlane block, so the
 two cases do not depend on the release the lab runs. The VPA
 `lab-placement-inplace` is the one `BuildVPA` renders for the mode, under a

@@ -13,7 +13,7 @@
 # `nova-console.127-0-0-1.nip.io`, routed by SNI) terminating TLS with
 # self-signed certificates issued by the existing
 # `selfsigned-cluster-issuer` ClusterIssuer (the same issuer OpenBao
-# uses; see `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
+# uses; see `deploy/flux-system/infrastructure/tls/cluster-issuer.yaml`).
 #
 # The Gateway lives in the `openstack` namespace alongside the Keystone
 # CR on purpose: same-namespace `parentRef` resolution does not need a

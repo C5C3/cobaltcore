@@ -11,10 +11,10 @@
 #
 # To add a new operator (e.g., OpenBao):
 #   1. Add a new source file in sources/ (e.g., sources/openbao.yaml)
-#   2. Add a new release file in releases/ (e.g., releases/openbao.yaml)
+#   2. Add a new release file in releases/ (e.g., releases/openbao/helmrelease.yaml)
 #   3. Add both paths to the resources list below
 #   4. Add the release's target namespace to namespaces.yaml (e.g., shared-services,
-#      where releases/openbao.yaml puts the OpenBao HelmRelease)
+#      where releases/openbao/helmrelease.yaml puts the OpenBao HelmRelease)
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -59,7 +59,7 @@ resources:
   - releases/mariadb-operator.yaml
   - releases/external-secrets.yaml
   - releases/memcached-operator.yaml
-  - releases/openbao.yaml
+  - releases/openbao/helmrelease.yaml
   - releases/keystone-operator.yaml
   - releases/horizon-operator.yaml
   - releases/glance-operator.yaml
@@ -70,7 +70,7 @@ resources:
   - releases/cinder-operator.yaml
   - releases/nova-operator.yaml
   - releases/k-orc.yaml
-  - releases/c5c3-operator.yaml
+  - releases/c5c3-operator/helmrelease.yaml
   # Garage object store operator (S3 backend for the CI/e2e stack).
   - releases/garage-operator.yaml
   # OpenBao instance operator (per-service OpenBao instances; Barbican

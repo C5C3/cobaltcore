@@ -62,7 +62,7 @@ const (
 	openBaoDefaultServer          = "https://openbao.shared-services.svc:8200"
 	openBaoDefaultKubernetesMount = "kubernetes/management"
 	// openBaoCAIssuerName is the cluster-scoped cert-manager CA issuer that signs
-	// the per-ControlPlane client certificate (deploy/flux-system/infrastructure/openbao-ca-issuer.yaml).
+	// the per-ControlPlane client certificate (deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml).
 	openBaoCAIssuerName = "openbao-ca-issuer"
 	// dbCredentialClientCertDuration / renewBefore mirror the shared openbao TLS
 	// leaves (openbao-client-tls-cert.yaml) so client-cert rotation cadences align.

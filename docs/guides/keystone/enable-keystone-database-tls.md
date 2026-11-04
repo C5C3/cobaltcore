@@ -56,7 +56,7 @@ figure. `{name}` is `controlplane-keystone` here.
    ```
 
 2. **`openstack-db-ca-issuer` ClusterIssuer Ready.** The dedicated DB CA is
-   declared in `deploy/flux-system/infrastructure/db-ca-issuer.yaml`.
+   declared in `deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml`.
    `hack/deploy-infra.sh` applies it in Phase 2. Verify:
 
    ```bash

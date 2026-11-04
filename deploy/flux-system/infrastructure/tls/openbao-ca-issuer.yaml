@@ -15,7 +15,7 @@
 # DECISION: dedicated CA over selfsigned-cluster-issuer — The OpenBao
 # listener config sets `tls_client_ca_file = /openbao/tls/ca.crt` and
 # `tls_require_and_verify_client_cert = true` (deploy/flux-system/
-# releases/openbao.yaml). With cert-manager's SelfSigned issuer every
+# releases/openbao/helmrelease.yaml). With cert-manager's SelfSigned issuer every
 # Certificate is its own root, so server-cert.ca.crt does not validate
 # leaves issued for the clients — the e2e symptom was readiness probes
 # rejected with `remote error: tls: unknown certificate authority` and

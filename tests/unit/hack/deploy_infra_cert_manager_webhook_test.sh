@@ -240,7 +240,7 @@ test_main_probes_webhook_between_phase_1_and_2() {
   assert_file_contains "WEBHOOK_TIMEOUT defaults to 120s" \
     "$DEPLOY_INFRA_SH" 'WEBHOOK_TIMEOUT="${WEBHOOK_TIMEOUT:-120}"'
   assert_file_contains "the probe uses the ClusterIssuer manifest Phase 2 applies first" \
-    "$DEPLOY_INFRA_SH" 'wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/flux-system/infrastructure/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"'
+    "$DEPLOY_INFRA_SH" 'wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"'
 
   local phase1_line probe_line phase2_line
   phase1_line="$(grep -n 'log "Phase 1: Waiting for cert-manager' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"

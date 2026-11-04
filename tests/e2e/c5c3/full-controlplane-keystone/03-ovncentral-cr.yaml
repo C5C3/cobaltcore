@@ -24,7 +24,7 @@
 # own default.
 #
 # The issuer is the cluster-scoped one the kind overlay ships
-# (deploy/flux-system/infrastructure/ovn-ca-issuer.yaml). OVN authenticates every
+# (deploy/flux-system/infrastructure/tls/ovn-ca-issuer.yaml). OVN authenticates every
 # connection, so both databases and the client identity the Neutron pods mount
 # are issued from the same CA.
 apiVersion: ovn.openstack.c5c3.io/v1alpha1
