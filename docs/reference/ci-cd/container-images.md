@@ -791,6 +791,26 @@ so the patch adds `VolumeCreateLostDatabaseTestCase` to
 `tests/container-images/verify_cinder.sh` drives the revert against the built
 image. Upstream status: not yet proposed.
 
+`patches/cinder/2026.1/0008-retry-the-worker-entry-when-the-database-is-lost.patch`
+and its 2026.2 twin
+`patches/cinder/2026.2/0007-retry-the-worker-entry-when-the-database-is-lost.patch`
+keep an RPC call from being dropped when the database is gone as it arrives.
+`set_workers` claims the resource's row in the workers table before
+`create_volume` of the scheduler or of the volume manager runs. Upstream lets
+the `DBConnectionError` of that read escape: the method never runs, the message
+is consumed, no flow exists whose revert could end the create, and the volume
+stays in `creating` until a cleanup of the workers table. The patch above does
+not reach this path, because its retried `error_out` belongs to the flow. The
+patch retries `set_worker` on a `DBConnectionError` with the same 254-second
+budget; until an attempt succeeds, no worker is set, so each attempt reads the
+row again. Random chaos found this: a create sent during a RabbitMQ pod failure
+blocked in the API's cast, and the late cast reached the scheduler during the
+MariaDB pod failure that followed. No upstream test pins a lost database in
+`set_worker`, so the patch adds three tests to
+`cinder/tests/unit/objects/test_cleanable.py`.
+`tests/container-images/verify_cinder.sh` drives `set_worker` against the built
+image. Upstream status: not yet proposed.
+
 **Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
 probe of the cinder-scheduler, cinder-volume and cinder-backup processes
 (decision D2 of issue #979). None of the three serves an HTTP port, so
