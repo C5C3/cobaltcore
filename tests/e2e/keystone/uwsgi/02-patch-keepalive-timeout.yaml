@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to re-enable keep-alive with an idle timeout of 5 seconds.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-uwsgi
+  namespace: openstack
+spec:
+  uwsgi:
+    httpKeepAlive: true
+    httpKeepAliveTimeout: 5
