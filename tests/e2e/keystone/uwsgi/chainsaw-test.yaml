@@ -7,6 +7,9 @@
 #   - A Keystone CR without explicit spec.uwsgi gets default uWSGI command
 #     (processes=2, threads=1, --http-keepalive) propagated to the Deployment
 #   - Patching spec.uwsgi updates the Deployment container command
+#   - Setting spec.uwsgi.httpKeepAliveTimeout renders --http-keepalive=<n>, the
+#     pods start with it, and an idle keep-alive connection closes after n
+#     seconds
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -147,5 +150,132 @@ spec:
         - openstack
         - -o
         - yaml
+    - events:
+        namespace: openstack
+  # ── Step 5: Patch spec.uwsgi with a keep-alive idle timeout ────────────
+  - try:
+    - patch:
+        file: 02-patch-keepalive-timeout.yaml
+  # ── Step 6: Assert the command carries --http-keepalive=5 and rolls out ─
+  # The command assert waits for the operator to project the new template
+  # first: `rollout status` alone reports the old generation as rolled out
+  # until the reconcile lands. A status assert on updatedReplicas and
+  # availableReplicas is no substitute, because it can pass on the previous
+  # rollout's numbers. uWSGI exits on an option it does not accept, so a
+  # rejected flag leaves the surge pod crash-looping and `rollout status`
+  # failing. The merge patch keeps step 3's process and thread counts.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-uwsgi
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: keystone
+                  command:
+                  - uwsgi
+                  - "--http"
+                  - ":5000"
+                  - "--http-keepalive=5"
+                  - "--log-master"
+                  - "--log-format"
+                  - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
+                  - "--wsgi-file"
+                  - "/var/lib/openstack/bin/keystone-wsgi-public"
+                  - "--master"
+                  - "--lazy-apps"
+                  - "--need-app"
+                  - "--processes"
+                  - "3"
+                  - "--threads"
+                  - "3"
+                  - "--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"
+    - script:
+        timeout: 6m
+        content: |
+          kubectl rollout status deployment/keystone-uwsgi -n openstack --timeout=5m
+    catch:
+    - podLogs:
+        selector: app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-uwsgi,app.kubernetes.io/component=api
+        namespace: openstack
+        tail: 50
+    - command:
+        entrypoint: kubectl
+        args:
+        - get
+        - deployments
+        - -n
+        - openstack
+        - -o
+        - yaml
+    - events:
+        namespace: openstack
+  # ── Step 7: Assert an idle keep-alive connection closes after about 5 s ─
+  # A pod that starts with the flag shows that uWSGI accepts it, not that the
+  # router arms the idle timer: uWSGI reads --http-keepalive=1 as keep-alive
+  # without one, and the bare flag leaves an idle connection open until the
+  # router's 60-second socket timeout. The probe runs inside a new API pod
+  # against localhost (the keystone image ships python3 and no curl), sends one
+  # request on a keep-alive connection, reads the whole response, and times how
+  # long the router keeps the idle connection open. A close right after the
+  # response means keep-alive is off; no close within 30 s means no idle timer.
+  - try:
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -euo pipefail
+          # Skip terminating pods: the step 4 pods keep their labels for up to
+          # terminationGracePeriodSeconds and serve without keep-alive.
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-uwsgi,app.kubernetes.io/component=api \
+            -o json | jq -r '[.items[] | select(.metadata.deletionTimestamp == null and .status.phase == "Running")][0].metadata.name // empty')
+          if [ -z "$POD" ]; then
+            echo "FAIL: no running API pod of keystone-uwsgi found"
+            exit 1
+          fi
+          kubectl exec -n openstack "$POD" -c keystone -- python3 -c '
+          import socket, time
+          s = socket.create_connection(("127.0.0.1", 5000), timeout=30)
+          s.sendall(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n")
+          buf = b""
+          while b"\r\n\r\n" not in buf:
+              chunk = s.recv(4096)
+              if not chunk:
+                  raise SystemExit("FAIL: connection closed before the response headers")
+              buf += chunk
+          head, body = buf.split(b"\r\n\r\n", 1)
+          lengths = [int(line.split(b":", 1)[1]) for line in head.split(b"\r\n") if line.lower().startswith(b"content-length:")]
+          if not lengths:
+              raise SystemExit("FAIL: GET / answered without Content-Length, so the router closes the connection: %r" % head)
+          while len(body) < lengths[0]:
+              chunk = s.recv(4096)
+              if not chunk:
+                  raise SystemExit("FAIL: connection closed inside the response body")
+              body += chunk
+          start = time.monotonic()
+          try:
+              rest = s.recv(1)
+          except ConnectionResetError:
+              rest = b""
+          except socket.timeout:
+              raise SystemExit("FAIL: idle keep-alive connection still open after 30 s, so no idle timer is armed")
+          idle = time.monotonic() - start
+          if rest:
+              raise SystemExit("FAIL: unexpected bytes after the response: %r" % rest)
+          if not 4 <= idle <= 10:
+              raise SystemExit("FAIL: idle keep-alive connection closed after %.1f s, expected about 5 s" % idle)
+          print("OK: idle keep-alive connection closed after %.1f s" % idle)
+          '
+    catch:
+    - podLogs:
+        selector: app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-uwsgi,app.kubernetes.io/component=api
+        namespace: openstack
+        tail: 50
     - events:
         namespace: openstack
