@@ -94,13 +94,13 @@ There is one launch mode. Placement never shipped an eventlet server, so
 release render byte-identical config files.
 
 The container command is `uwsgi --http :8778`, followed by `--http-keepalive`
-(and `--http-keepalive-timeout <n>` when `httpKeepAliveTimeout` is set),
+(`--http-keepalive=<n>` when `httpKeepAliveTimeout` is set),
 `--log-master`, `--log-format` with the request-line format the sibling operators
 share, `--wsgi-file /var/lib/openstack/bin/placement-api`, `--master`,
 `--lazy-apps`, `--need-app`, `--processes`, `--threads`, and `--harakiri <n>`
 when `harakiri` is set. Keep-alive is on by default and an explicit
-`httpKeepAlive: false` drops both flags; `--harakiri` appears only when the field
-is set.
+`httpKeepAlive: false` drops the keep-alive token; `--harakiri` appears only when
+the field is set.
 
 The WSGI entry file is written by the operator's Placement image, because 15.0.0
 (2026.1) declares no WSGI script and 16.0.0 (2026.2) declares only

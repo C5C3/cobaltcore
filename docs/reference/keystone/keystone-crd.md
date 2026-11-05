@@ -315,7 +315,7 @@ validating webhook is unavailable.
 | `spec.uwsgi.processes` | Minimum: 1 | — |
 | `spec.uwsgi.threads` | Minimum: 1 | — |
 | `spec.uwsgi.harakiri` | Minimum: 1 | — |
-| `spec.uwsgi.httpKeepAliveTimeout` | Minimum: 1 | — |
+| `spec.uwsgi.httpKeepAliveTimeout` | Minimum: 2 | — |
 | `spec.deployment.terminationGracePeriodSeconds` | Minimum: 10 | — |
 | `spec.deployment.preStopSleepSeconds` | Minimum: 0 | — |
 | `spec.gateway.hostname` | MinLength: 1 | (empty string rejected by API server) |
@@ -565,7 +565,7 @@ from the spec.
 | `threads` | `int32` | No | `1` | Number of threads per uWSGI worker process. Minimum: 1. Maps to `--threads` in the container command. |
 | `httpKeepAlive` | `*bool` | No | `true` | Enables the `--http-keepalive` flag on the uWSGI process. When `false`, the flag is omitted. A nil-preserving pointer: unset means the documented default (`true`) is restored by the webhook. See [HTTPKeepAlive defaulting](#httpkeepalive-defaulting). |
 | `harakiri` | `*int32` | No | `nil` (flag omitted) | Caps the per-request worker lifetime (seconds) via `--harakiri`. Minimum: `1`. The webhook additionally enforces `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds` so the worst-case per-request kill fits inside the shutdown drain window. See [Graceful-termination fields](#graceful-termination-fields). |
-| `httpKeepAliveTimeout` | `*int32` | No | `nil` (flag omitted) | Idle timeout (seconds) for keep-alive connections via `--http-keepalive-timeout`. Minimum: `1`. Emitted only when `httpKeepAlive=true` (the webhook rejects a non-nil timeout combined with `httpKeepAlive=false`). Recommended to set `≤ preStopSleepSeconds` so idle sockets close before SIGTERM reaches uWSGI. See [Graceful-termination fields](#graceful-termination-fields). |
+| `httpKeepAliveTimeout` | `*int32` | No | `nil` (bare `--http-keepalive`) | Idle time (seconds) a keep-alive connection may stay open between requests, rendered as `--http-keepalive=<n>`. Minimum: `2`. Values below 2 are rejected on create and when an update changes the field, since uWSGI reads 1 as no idle timer and 0 as keep-alive off. An update that keeps a 1 stored under the earlier minimum is admitted with a warning, and the bare `--http-keepalive` is rendered for it. Rendered only when `httpKeepAlive=true` (the webhook rejects a non-nil timeout combined with `httpKeepAlive=false`). Recommended to set `≤ preStopSleepSeconds` so idle sockets close before SIGTERM reaches uWSGI. See [Graceful-termination fields](#graceful-termination-fields). |
 
 ### Deployment Command Mapping
 
@@ -577,7 +577,7 @@ of configuration:
 | --- | --- |
 | `uwsgi` | Binary name (always first) |
 | `--http :5000` | Fixed — Keystone API listen port |
-| `--http-keepalive` | Included when `httpKeepAlive` is `true` (or default); omitted when `false` |
+| `--http-keepalive` or `--http-keepalive=<n>` | Bare `--http-keepalive` when `httpKeepAlive` is `true` (or default) and no timeout is set; `--http-keepalive=<n>` when `httpKeepAliveTimeout` is set; omitted when `httpKeepAlive` is `false` |
 | `--wsgi-file /var/lib/openstack/bin/keystone-wsgi-public` | Fixed — Keystone WSGI entry point |
 | `--master` | Fixed — enables uWSGI master process |
 | `--lazy-apps` | Fixed — loads apps in each worker after fork |
@@ -644,7 +644,7 @@ and defaulting behavior.
 | `spec.deployment.preStopSleepSeconds`                | `*int64`                          | `5`                                          | `0`     | Sleep duration of the preStop hook (`/bin/sh -c 'sleep <n>'`). Covers the EndpointSlice / kube-proxy propagation window.           |
 | `spec.deployment.strategy`                           | `*appsv1.DeploymentStrategy`      | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | —       | Deployment rollout strategy. Default guarantees surge-before-remove so capacity never dips below `spec.deployment.replicas`.                  |
 | `spec.uwsgi.harakiri`                     | `*int32`                          | unset (flag omitted)                         | `1`     | Per-request worker kill bound (`--harakiri <n>`). Prevents a single stuck request from holding a worker past the shutdown envelope. |
-| `spec.uwsgi.httpKeepAliveTimeout`         | `*int32`                          | unset (flag omitted)                         | `1`     | Idle keep-alive socket timeout (`--http-keepalive-timeout <n>`). Only emitted when `httpKeepAlive=true`.                           |
+| `spec.uwsgi.httpKeepAliveTimeout`         | `*int32`                          | unset (bare `--http-keepalive`)              | `2`     | Idle time between two requests on a keep-alive socket (`--http-keepalive=<n>`). Only rendered when `httpKeepAlive=true`.           |
 
 ### Interaction Rules Enforced by the Webhook
 
@@ -682,7 +682,7 @@ older CRs continue to reconcile without the fields set:
 | `spec.deployment.strategy`                      | `RollingUpdate` with `maxUnavailable=0`, `maxSurge=1`       |
 | `spec.deployment.resources`                     | Per-resource defaults, see [Resource defaults](#resource-defaults) |
 | `spec.uwsgi.harakiri`                | `--harakiri` flag is omitted                                |
-| `spec.uwsgi.httpKeepAliveTimeout`    | `--http-keepalive-timeout` flag is omitted                  |
+| `spec.uwsgi.httpKeepAliveTimeout`    | The bare `--http-keepalive` is rendered, with no idle timer; an idle connection stays open until the router's 60-second socket timeout |
 
 These fallbacks live in `internal/controller/reconcile_deployment.go`
 (`terminationGracePeriodSeconds`, `preStopSleepCommand`, `deploymentStrategy`,
@@ -1827,8 +1827,8 @@ single `apierrors.NewInvalid` error. It does **not** short-circuit on the first 
 | uWSGI processes minimum | `spec.uwsgi.processes` | `field.Invalid` | `processes < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | uWSGI threads minimum | `spec.uwsgi.threads` | `field.Invalid` | `threads < 1` when `spec.uwsgi` is non-nil. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
 | uWSGI harakiri minimum | `spec.uwsgi.harakiri` | `field.Invalid` | `harakiri < 1` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=1` marker. |
-| uWSGI keep-alive timeout minimum | `spec.uwsgi.httpKeepAliveTimeout` | `field.Invalid` | `httpKeepAliveTimeout < 1` when set. A zero value is rejected because uWSGI interprets it as unbounded, defeating the graceful-termination contract. |
-| uWSGI keep-alive timeout without keep-alive | `spec.uwsgi.httpKeepAliveTimeout` | `field.Invalid` | `httpKeepAliveTimeout` is set while `httpKeepAlive=false`. The `--http-keepalive-timeout` flag is only emitted when keep-alive is enabled, so the combination is rejected to avoid silently dropping user intent. |
+| uWSGI keep-alive timeout minimum | `spec.uwsgi.httpKeepAliveTimeout` | `field.Invalid` | `httpKeepAliveTimeout < 2` on create or when an update changes the value (`httpKeepAliveTimeout must be at least 2`). Defense-in-depth alongside the `+kubebuilder:validation:Minimum=2` marker. uWSGI reads 1 as keep-alive without an idle timer and 0 as keep-alive off, so neither bounds the idle time. An update that keeps a value below 2, stored under the earlier minimum of 1, is admitted with the warning `spec.uwsgi.httpKeepAliveTimeout 1 is below 2, the lowest value that bounds the idle time; the unchanged value is admitted, but the operator renders the bare --http-keepalive for it, which sets no idle timer. Set spec.uwsgi.httpKeepAliveTimeout to 2 or more, or remove it.` The API server ratchets the marker the same way. |
+| uWSGI keep-alive timeout without keep-alive | `spec.uwsgi.httpKeepAliveTimeout` | `field.Invalid` | `httpKeepAliveTimeout` is set while `httpKeepAlive=false`. The idle timeout is only rendered when keep-alive is enabled, so the combination is rejected to avoid silently dropping user intent. |
 | TerminationGracePeriodSeconds minimum | `spec.deployment.terminationGracePeriodSeconds` | `field.Invalid` | `terminationGracePeriodSeconds < 10` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=10` marker. |
 | PreStopSleepSeconds minimum | `spec.deployment.preStopSleepSeconds` | `field.Invalid` | `preStopSleepSeconds < 0` when set. Defense-in-depth alongside the `+kubebuilder:validation:Minimum=0` marker. |
 | PreStopSleep ≥ grace period | `spec.deployment.preStopSleepSeconds` | `field.Invalid` | Resolved `preStopSleepSeconds >= terminationGracePeriodSeconds` (nil pointers resolve to defaults 5/30). Guarantees a non-zero drain window between the end of the preStop sleep and SIGKILL. |
@@ -2022,6 +2022,7 @@ is pinned by a Chainsaw step.
 | `vertical-autoscaling-min-replicas-zero-rejected` | `37-vertical-autoscaling-min-replicas-zero.yaml` | `minReplicas` Minimum=1 | Error containing "spec.deployment.verticalAutoscaling.minReplicas" and "should be greater than or equal to 1" |
 | `image-pull-policy-unsupported-rejected` | `38-image-pull-policy-unsupported.yaml` | ImageSpec.PullPolicy Enum (schema-only) | Error containing "spec.image.pullPolicy" and "Unsupported value" |
 | `image-tag-below-floor-rejected` | `39-image-tag-below-floor.yaml` | Release floor (webhook-only) | Error containing "image.tag" and "must be 2026.1 or later" |
+| `uwsgi-keepalive-timeout-below-minimum-rejected` | `40-uwsgi-keepalive-timeout-below-minimum.yaml` | `httpKeepAliveTimeout` Minimum=2 | Error containing "spec.uwsgi.httpKeepAliveTimeout" and "should be greater than or equal to 2" |
 
 Steps `14`-`17` reuse the `immutable-fields` name from `13-immutable-base.yaml`,
 so each is applied as an UPDATE of the base CR and is rejected by the
@@ -2108,6 +2109,9 @@ deployed and reconciling.
 | Step 2 (`step-2-assert-default-uwsgi-args`) | Assert Deployment command contains default uWSGI args | Container command includes `--processes 2 --threads 1 --http-keepalive` |
 | Step 3 | Patch CR with `spec.uwsgi: {processes: 3, threads: 3, httpKeepAlive: false}` | Patch applied |
 | Step 4 (`step-4-assert-custom-uwsgi-args`) | Assert Deployment command updated with custom values | Container command includes `--processes 3 --threads 3`; `--http-keepalive` is absent |
+| Step 5 | Patch CR with `spec.uwsgi: {httpKeepAlive: true, httpKeepAliveTimeout: 5}` | Patch applied |
+| Step 6 | Assert Deployment command carries the idle timeout, then wait for the rollout | Container command includes `--http-keepalive=5`; `kubectl rollout status` completes, so the pods start with the flag |
+| Step 7 | Time an idle keep-alive connection inside a new API pod | After one `GET /` on `127.0.0.1:5000`, the router closes the idle connection after 4 to 10 seconds: not at once (keep-alive off) and not after 30 s (no idle timer) |
 
 ---
 

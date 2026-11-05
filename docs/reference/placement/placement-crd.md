@@ -78,9 +78,9 @@ database user's `max_user_connections`; see
 ### UWSGISpec
 
 A cross-field CEL rule mirrors the webhook: `httpKeepAliveTimeout` may only be
-set when `httpKeepAlive` is true, since the `--http-keepalive-timeout` flag is
-otherwise never emitted. A nil `httpKeepAlive` counts as unset and resolves to
-the default `true`, so only an explicit `false` conflicts with a set timeout.
+set when `httpKeepAlive` is true, since the idle timeout is otherwise never
+rendered. A nil `httpKeepAlive` counts as unset and resolves to the default
+`true`, so only an explicit `false` conflicts with a set timeout.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -88,7 +88,7 @@ the default `true`, so only an explicit `false` conflicts with a set timeout.
 | `threads` | `int32` (Minimum=1) | no | `1` | Threads per worker (`--threads`) |
 | `httpKeepAlive` | `*bool` | no | `true` | Enables `--http-keepalive`. A nil-preserving pointer: nil restores the default, an explicit `false` is honored verbatim and drops the flag |
 | `harakiri` | `*int32` (Minimum=1) | no | — | Per-request worker lifetime cap (`--harakiri`, seconds). Omitted from the command when nil, with no hidden default. The webhook requires `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds`, so the worst-case per-request kill fits inside the drain window |
-| `httpKeepAliveTimeout` | `*int32` (Minimum=1) | no | — | Idle timeout of keep-alive connections (`--http-keepalive-timeout`, seconds). Omitted when nil; zero is rejected to avoid the unbounded interpretation |
+| `httpKeepAliveTimeout` | `*int32` (Minimum=2) | no | — | Idle time (seconds) a keep-alive connection may stay open between requests, rendered as `--http-keepalive=<n>`. Omitted when nil, which leaves the bare `--http-keepalive`. Values below 2 are rejected on create and on change, since uWSGI reads 1 as no idle timer and 0 as keep-alive off. A 1 stored under the earlier minimum stays admitted while an update leaves it unchanged, and the bare `--http-keepalive` is rendered for it |
 
 The three hardcoded defaults live in `placement_webhook.go`
 (`DefaultUWSGIProcesses`, `DefaultUWSGIThreads`, `DefaultUWSGIHTTPKeepAlive`) and

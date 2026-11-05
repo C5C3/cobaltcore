@@ -79,8 +79,7 @@ the database user's `max_user_connections`; see
 ### UWSGISpec
 
 A cross-field CEL rule mirrors the webhook: `httpKeepAliveTimeout` may only be
-set when `httpKeepAlive` is true (otherwise the `--http-keepalive-timeout` flag
-is never emitted).
+set when `httpKeepAlive` is true (otherwise the idle timeout is never rendered).
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -88,7 +87,7 @@ is never emitted).
 | `threads` | `int32` (Minimum=1) | no | `1` | Threads per worker (`--threads`) |
 | `httpKeepAlive` | `*bool` | no | `true` | Enables `--http-keepalive`. A nil-preserving pointer: nil restores the default, an explicit `false` is honored verbatim |
 | `harakiri` | `*int32` (Minimum=1) | no | — | Per-request worker lifetime cap (`--harakiri`, seconds). Omitted entirely when nil (no hidden default). The webhook requires `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds` |
-| `httpKeepAliveTimeout` | `*int32` (Minimum=1) | no | — | Idle timeout of keep-alive connections (`--http-keepalive-timeout`, seconds). Omitted when nil; zero is rejected to avoid the unbounded interpretation |
+| `httpKeepAliveTimeout` | `*int32` (Minimum=2) | no | — | Idle time (seconds) a keep-alive connection may stay open between requests, rendered as `--http-keepalive=<n>`. Omitted when nil, which leaves the bare `--http-keepalive`. Values below 2 are rejected on create and on change, since uWSGI reads 1 as no idle timer and 0 as keep-alive off. A 1 stored under the earlier minimum stays admitted while an update leaves it unchanged, and the bare `--http-keepalive` is rendered for it |
 
 ### ImportFilteringSpec
 

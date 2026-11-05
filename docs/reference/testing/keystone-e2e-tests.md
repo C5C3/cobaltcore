@@ -150,7 +150,7 @@ Deployment rollout, bootstrap Job).
 | trust-flush-default | `keystone-trust-flush-default` | Default-on posture: omitted `spec.trustFlush` materializes the hourly CronJob |
 | upgrade-abort | `keystone-upgrade-abort` | In-flight upgrade abort by reverting the image tag; the upgrade wedges in `Expanding` because its target is pulled from an unresolvable `registry.invalid` repository, whichever releases exist, and recovers cleanly |
 | upgrade-flow | `keystone-upgrade-flow` | Expand-migrate-contract phase progression with `installedRelease`/`targetRelease` bookkeeping, skip-level rejection (`UpgradePathInvalid`) and downgrade rejection after the completed upgrade (`DowngradeNotSupported`, image kept) |
-| uwsgi | `keystone-uwsgi` | `spec.uwsgi` defaulting and propagation into the uWSGI command line |
+| uwsgi | `keystone-uwsgi` | `spec.uwsgi` defaulting and propagation into the uWSGI command line, including `--http-keepalive=<n>` on pods that must become available and close an idle keep-alive connection after n seconds |
 | [vertical-autoscaling](#vertical-autoscaling) | `keystone-vertical` | `spec.deployment.verticalAutoscaling` on a cluster without the VerticalPodAutoscaler: `VPAReady=False/VPANotInstalled` naming `autoscaling.k8s.io` while the Deployment and the API converge and `Ready` stays `False`; removing the opt-in returns `VPAReady=True/VPANotRequired` and `Ready=True` |
 
 ---
@@ -1500,7 +1500,8 @@ tests/e2e/keystone/
 ├── uwsgi/
 │   ├── chainsaw-test.yaml              uWSGI command propagation
 │   ├── 00-keystone-cr.yaml             Keystone CR without explicit uWSGI
-│   └── 01-patch-custom-uwsgi.yaml      Patch with custom uWSGI settings
+│   ├── 01-patch-custom-uwsgi.yaml      Patch with custom uWSGI settings
+│   └── 02-patch-keepalive-timeout.yaml Patch with httpKeepAliveTimeout 5
 └── vertical-autoscaling/
     ├── chainsaw-test.yaml              VPAReady on a cluster without the VPA
     ├── 00-keystone-cr.yaml             Keystone CR opting into a VPA
