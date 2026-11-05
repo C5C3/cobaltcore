@@ -1544,7 +1544,7 @@ func TestValidateCreate_RunsAllValidations(t *testing.T) {
 	}
 	// +/// Break uWSGI —
 	// processes/threads below minimum, harakiri exceeds the drain window, and
-	// httpKeepAliveTimeout is set while httpKeepAlive is false (which also breaches 's minimum=1 check since the value is 0). This ensures
+	// httpKeepAliveTimeout is set while httpKeepAlive is false (which also breaches the minimum=2 check since the value is 0). This ensures
 	// the aggregate test catches regressions in every new uWSGI hook,
 	// guarding against the-style omission flagged in review #1.
 	breakingHarakiri := int32(50)
@@ -2843,6 +2843,62 @@ func TestValidateUpdate_FinalizerRemovalOnADeletingCRSkipsValidation(t *testing.
 		"a spec edit on a deleting CR is validated like any other")
 }
 
+// TestValidateUpdate_HTTPKeepAliveTimeoutBelowMinimum pins the ratchet on the
+// keep-alive timeout minimum. A Keystone stored with httpKeepAliveTimeout 1
+// before the minimum rose to 2 stays editable: an update that keeps the value is
+// admitted with one warning, so a scale, an image bump or the ControlPlane's
+// apply of the child goes through. An update that sets a value below 2 is
+// rejected.
+func TestValidateUpdate_HTTPKeepAliveTimeoutBelowMinimum(t *testing.T) {
+	w := &KeystoneWebhook{}
+	uwsgiWithTimeout := func(timeout *int32) *UWSGISpec {
+		return &UWSGISpec{
+			Processes:            2,
+			Threads:              1,
+			HTTPKeepAlive:        ptr.To(true),
+			HTTPKeepAliveTimeout: timeout,
+		}
+	}
+
+	t.Run("unchanged value below the minimum warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldObj := validKeystone()
+		oldObj.Spec.UWSGI = uwsgiWithTimeout(ptr.To(int32(1)))
+		newObj := oldObj.DeepCopy()
+		newObj.Spec.Deployment.Replicas = 5
+
+		warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveExactElements(SatisfyAll(
+			ContainSubstring("spec.uwsgi.httpKeepAliveTimeout 1 is below 2"),
+			ContainSubstring("renders the bare --http-keepalive"),
+		)))
+	})
+
+	for _, tc := range []struct {
+		name       string
+		oldTimeout *int32
+	}{
+		{name: "change from unset to 1 rejected", oldTimeout: nil},
+		{name: "change from 5 to 1 rejected", oldTimeout: ptr.To(int32(5))},
+		{name: "change from 0 to 1 rejected", oldTimeout: ptr.To(int32(0))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			oldObj := validKeystone()
+			oldObj.Spec.UWSGI = uwsgiWithTimeout(tc.oldTimeout)
+			newObj := oldObj.DeepCopy()
+			newObj.Spec.UWSGI.HTTPKeepAliveTimeout = ptr.To(int32(1))
+
+			warnings, err := w.ValidateUpdate(context.Background(), oldObj, newObj)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.uwsgi.httpKeepAliveTimeout"))
+			g.Expect(err.Error()).To(ContainSubstring("httpKeepAliveTimeout must be at least 2"))
+			g.Expect(warnings).To(BeEmpty())
+		})
+	}
+}
+
 func TestValidate_EmptyJobsAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{Client: newFakeClient().Build()}
@@ -3130,7 +3186,7 @@ func TestValidate_UWSGIKeepAliveTimeoutBelowMinRejected(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	timeout := int32(0)
+	timeout := int32(1)
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:            2,
 		Threads:              1,
@@ -3140,15 +3196,15 @@ func TestValidate_UWSGIKeepAliveTimeoutBelowMinRejected(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), k)
 	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("httpKeepAliveTimeout"))
-	g.Expect(err.Error()).To(ContainSubstring("at least 1"))
+	g.Expect(err.Error()).To(ContainSubstring("spec.uwsgi.httpKeepAliveTimeout"))
+	g.Expect(err.Error()).To(ContainSubstring("httpKeepAliveTimeout must be at least 2"))
 }
 
 func TestValidate_UWSGIKeepAliveTimeoutAtMinAccepted(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &KeystoneWebhook{}
 	k := validKeystone()
-	timeout := int32(1)
+	timeout := int32(2)
 	k.Spec.UWSGI = &UWSGISpec{
 		Processes:            2,
 		Threads:              1,

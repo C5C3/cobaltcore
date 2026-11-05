@@ -222,6 +222,8 @@ func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (ad
 	catalogWarnings, createErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
 	floorErrs, _ := validation.OpenStackReleaseFloor(field.NewPath("spec", "image", "tag"), "", obj.Spec.Image.Tag)
 	createErrs = append(createErrs, floorErrs...)
+	keepAliveErrs, _ := validateHTTPKeepAliveTimeoutMinimum(nil, obj.Spec.UWSGI)
+	createErrs = append(createErrs, keepAliveErrs...)
 	return append(warnCleartextTrustedDashboards(obj), catalogWarnings...), w.validate(ctx, obj, createErrs)
 }
 
@@ -240,6 +242,9 @@ func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (ad
 // change to a release below release.MinimumSupported is rejected, and an
 // unchanged tag below it is admitted with a warning, so an unrelated edit never
 // wedges the CR.
+//
+// spec.uwsgi.httpKeepAliveTimeout follows the same rule for its minimum of 2:
+// see validateHTTPKeepAliveTimeoutMinimum.
 //
 // An update to a CR that is being deleted and leaves its spec alone is admitted
 // without validation. That is the finalizer removal reconcileDelete issues, and
@@ -273,8 +278,45 @@ func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Ke
 	floorErrs, floorWarnings := validation.OpenStackReleaseFloor(
 		field.NewPath("spec", "image", "tag"), oldObj.Spec.Image.Tag, newObj.Spec.Image.Tag)
 	updateErrs = append(updateErrs, floorErrs...)
+	keepAliveErrs, keepAliveWarnings := validateHTTPKeepAliveTimeoutMinimum(oldObj.Spec.UWSGI, newObj.Spec.UWSGI)
+	updateErrs = append(updateErrs, keepAliveErrs...)
 	warnings := append(warnCleartextTrustedDashboards(newObj), catalogWarnings...)
-	return append(warnings, floorWarnings...), w.validate(ctx, newObj, updateErrs)
+	warnings = append(warnings, floorWarnings...)
+	return append(warnings, keepAliveWarnings...), w.validate(ctx, newObj, updateErrs)
+}
+
+// validateHTTPKeepAliveTimeoutMinimum is the defense-in-depth twin of the
+// +kubebuilder:validation:Minimum=2 marker on spec.uwsgi.httpKeepAliveTimeout.
+// uWSGI reads --http-keepalive=1 as keep-alive without an idle timer and
+// --http-keepalive=0 as keep-alive off, so neither bounds the idle time the
+// graceful-termination contract relies on. A nil uwsgi block, an unset timeout,
+// or one at or above commonv1.MinUWSGIHTTPKeepAliveTimeout yields neither an
+// error nor a warning. A lower value is one field.Invalid error on create
+// (oldUWSGI is nil) and whenever the update changes it. An update that keeps it
+// is admitted with one warning, the way the API server ratchets the marker, so
+// an unrelated edit never wedges a Keystone stored under the earlier minimum
+// of 1. The command builder renders the bare --http-keepalive for that value.
+func validateHTTPKeepAliveTimeoutMinimum(oldUWSGI, newUWSGI *UWSGISpec) (field.ErrorList, admission.Warnings) {
+	if newUWSGI == nil || newUWSGI.HTTPKeepAliveTimeout == nil ||
+		*newUWSGI.HTTPKeepAliveTimeout >= commonv1.MinUWSGIHTTPKeepAliveTimeout {
+		return nil, nil
+	}
+	fldPath := field.NewPath("spec", "uwsgi", "httpKeepAliveTimeout")
+	timeout := *newUWSGI.HTTPKeepAliveTimeout
+	minimum := commonv1.MinUWSGIHTTPKeepAliveTimeout
+	if oldUWSGI == nil || oldUWSGI.HTTPKeepAliveTimeout == nil || *oldUWSGI.HTTPKeepAliveTimeout != timeout {
+		return field.ErrorList{field.Invalid(
+			fldPath,
+			timeout,
+			fmt.Sprintf("httpKeepAliveTimeout must be at least %d", minimum),
+		)}, nil
+	}
+	return nil, admission.Warnings{fmt.Sprintf(
+		"%s %d is below %d, the lowest value that bounds the idle time; "+
+			"the unchanged value is admitted, but the operator renders the bare --http-keepalive for it, "+
+			"which sets no idle timer. Set %s to %d or more, or remove it.",
+		fldPath.String(), timeout, minimum, fldPath.String(), minimum,
+	)}
 }
 
 // validate runs all validation rules against the Keystone spec.
@@ -562,17 +604,10 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 				"harakiri must be at least 1",
 			))
 		}
-		// Defense-in-depth httpKeepAliveTimeout range check
-		// alongside the +kubebuilder:validation:Minimum=1 marker. A zero value
-		// would otherwise be interpreted by uWSGI as "unbounded timeout", which
-		// defeats the graceful-termination contract.
-		if k.Spec.UWSGI.HTTPKeepAliveTimeout != nil && *k.Spec.UWSGI.HTTPKeepAliveTimeout < 1 {
-			allErrs = append(allErrs, field.Invalid(
-				uwsgiPath.Child("httpKeepAliveTimeout"),
-				*k.Spec.UWSGI.HTTPKeepAliveTimeout,
-				"httpKeepAliveTimeout must be at least 1",
-			))
-		}
+		// The httpKeepAliveTimeout minimum is checked in ValidateCreate and
+		// ValidateUpdate (validateHTTPKeepAliveTimeoutMinimum), since an update
+		// must keep a value stored under the earlier minimum.
+		//
 		// httpKeepAliveTimeout is only meaningful when
 		// httpKeepAlive is true — otherwise the idle timeout is never
 		// rendered. Reject the nonsensical combination early so users

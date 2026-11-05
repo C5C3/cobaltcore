@@ -103,16 +103,18 @@ spec:
                         type: boolean
                       httpKeepAliveTimeout:
                         description: |-
-                          HTTPKeepAliveTimeout bounds the idle timeout (seconds) of keep-alive
-                          connections via the uWSGI --http-keepalive-timeout flag.
-                          A bounded timeout forces clients to reconnect through the Service so
-                          they never reuse a socket to a removed pod. When nil, the flag is
-                          omitted from the uWSGI command. Zero is rejected to avoid the
-                          unbounded-timeout interpretation. A value at or below
+                          HTTPKeepAliveTimeout bounds the idle time (seconds) a keep-alive
+                          connection may stay open between two requests. It is rendered as the
+                          value of the uWSGI keep-alive flag, --http-keepalive=<n>. A bounded
+                          timeout forces clients to reconnect through the Service so they never
+                          reuse a socket to a removed pod. When nil, the bare --http-keepalive is
+                          rendered and an idle connection stays open until the router's 60-second
+                          socket timeout. The minimum is 2 because uWSGI reads 1 as keep-alive
+                          without an idle timer and 0 as keep-alive off. A value at or below
                           preStopSleepSeconds is recommended so idle sockets have closed before
                           SIGTERM reaches uWSGI.
                         format: int32
-                        minimum: 1
+                        minimum: 2
                         type: integer
                       processes:
                         default: 2
