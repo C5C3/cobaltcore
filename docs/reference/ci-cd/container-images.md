@@ -1134,6 +1134,32 @@ and `test_state_revert` pass unchanged, and `verify_nova.sh` drives a failed
 delete through a lost database in the built image. Upstream status: not yet
 proposed.
 
+**Source patch:**
+`patches/nova/2026.1/0004-wait-for-keystone-and-placement-while-nova-compute-starts.patch`
+and its 2026.2 twin keep nova-compute running when it starts while Keystone or
+Placement does not answer. Upstream's `ComputeManager.__init__` creates its
+Placement client at start, and the client's version discovery takes a token
+from Keystone and asks Placement for its versions. A refused or dropped
+connection, a 5xx from Keystone or a Placement that does not answer ends the
+process, and the kubelet restarts the container. The patch creates the client
+through `compute_utils.call_until_placement_answers`, which retries those
+errors with waits of 2, 4 and 8 seconds, then 16 seconds, and logs a warning
+for each failed attempt. Like the wait for nova-conductor that runs just
+before it, the wait has no bound. It holds no lock and no RPC worker, and a
+bound would only hand the start to the kubelet's back-off. A 401, a missing
+endpoint, a TLS error and every other configuration error still end the start
+on the first attempt. Only nova-compute creates the client at start, and the
+other services create the shared client on first use. The e2e-chaos-random job
+of pull request #1607 found the defect: it drew `nova-fake-compute-pod-kill`
+and `mariadb-pod-kill` into one step, the new nova-compute asked Keystone for
+a token while Keystone could not reach its database, and the restart failed
+the `no-restarts` check. The patch adds `CallUntilPlacementAnswersTestCase`,
+`test_init_waits_for_keystone_and_placement` and
+`test_init_fails_on_rejected_placement_credentials`. No upstream test pins the
+old construction, and `verify_nova.sh` starts a `ComputeManager`
+through a refused Keystone and a Placement without versions in the built
+image. Upstream status: not yet proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
