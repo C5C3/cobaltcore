@@ -709,6 +709,48 @@ with mock.patch("time.sleep"), \
   assert_eq "a failed delete outlasts a lost database" "RuntimeError error None 2" "${output##*$'\n'}"
 }
 
+# --- Test 19: nova-compute waits for Keystone and Placement at start ---
+test_start_waits_for_keystone_and_placement() {
+  echo "Test: ComputeManager() waits out a refused Keystone and a Placement without versions"
+  # patches/nova/<release>/0004-wait-for-keystone-and-placement-while-nova-compute-starts.patch.
+  # The first creation of the Placement client meets a refused Keystone, the
+  # second a Placement that answers no version, and the third succeeds.
+  # Without the patch the first error ends the construction, as it ends
+  # nova-compute: the published image prints "ConnectFailure 1".
+  local output="" exit_code=0
+  output=$(run_python_in_image \
+    'from unittest import mock
+
+from keystoneauth1 import exceptions as ks_exc
+from openstack import exceptions as sdk_exc
+import nova.conf
+from nova.compute import manager
+from nova import objects
+from nova import rpc
+
+objects.register_all()
+nova.conf.CONF([], project="nova")
+nova.conf.CONF.set_override("compute_driver", "fake.FakeDriver")
+client = mock.Mock(name="client")
+with mock.patch("time.sleep"), \
+        mock.patch.object(rpc, "get_client"), \
+        mock.patch.object(rpc, "get_notifier"), \
+        mock.patch.object(rpc, "get_versioned_notifier"), \
+        mock.patch("nova.scheduler.client.report.SchedulerReportClient",
+                   side_effect=[ks_exc.ConnectFailure("refused"),
+                                sdk_exc.NotSupported("no versions"),
+                                client]) as create:
+    try:
+        compute = manager.ComputeManager()
+        print(compute.reportclient is client,
+              compute.rt.reportclient is client, create.call_count)
+    except Exception as exc:
+        print(type(exc).__name__, create.call_count)' 2>&1) || exit_code=$?
+  assert_eq "the driven start exits 0" "0" "$exit_code"
+  # The manager and its resource tracker share the client of the third attempt.
+  assert_eq "nova-compute waits for Keystone and Placement" "True True 3" "${output##*$'\n'}"
+}
+
 # --- Run all tests ---
 echo "=== nova container verification tests ==="
 echo "Image: $IMAGE"
@@ -748,6 +790,8 @@ echo ""
 test_failed_attach_and_detach_clean_up
 echo ""
 test_failed_delete_survives_a_lost_database
+echo ""
+test_start_waits_for_keystone_and_placement
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
