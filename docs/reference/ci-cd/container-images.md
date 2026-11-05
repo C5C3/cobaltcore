@@ -176,6 +176,40 @@ passcode; the assertions are unchanged. The patch changes nothing at runtime.
 Upstream status: proposed as
 [openstack/keystone change 1012064](https://review.opendev.org/c/openstack/keystone/+/1012064).
 
+**Source patch:**
+`patches/keystone/2026.1/0003-answer-unexpected-errors-instead-of-dropping-the-connection.patch`
+and its 2026.2 twin
+`patches/keystone/2026.2/0003-answer-unexpected-errors-instead-of-dropping-the-connection.patch`
+make the Flask application answer every exception a view raises (issue #1610).
+Upstream `keystone/server/flask/application.py` sets `PROPAGATE_EXCEPTIONS=True`
+and registers error handlers only for keystone's own exceptions and `TypeError`.
+While the database is unreachable, `POST /v3/auth/tokens` raises oslo.db's
+`DBConnectionError`, which leaves the application and reaches uWSGI, and uWSGI
+writes no response. The bare `--http-keepalive` of the keystone-operator's
+command then holds an HTTP/1.1 client until the router's 60-second socket
+timeout. In the e2e-chaos-random run of #1607
+([run 41903435759](https://github.com/C5C3/cobaltcore/actions/runs/41903435759))
+Keystone logged `POST /v3/auth/tokens => generated 0 bytes ... (HTTP/1.1 500)`,
+and a starting nova-compute saw the connection closed 60 seconds later; nova
+patch 0004 (#1609) keeps nova-compute running through that. The patches register a
+handler for `Exception` that answers `DBConnectionError` with `503 Service
+Unavailable` and every other unexpected exception with a JSON 500 that carries a
+generic message. Werkzeug's own HTTP errors, such as an unrouted path's 404, keep
+the answer werkzeug renders. Token validation already answers a JSON 500
+through `middleware_exceptions` in `auth_context.py`; the patches make it answer
+a lost database with 503 as well, so one outage has one status, the one
+keystoneauth retries when a caller sets `status_code_retries`. The 503 is
+`exception.ServiceUnavailable`, which keystone
+30.0.0 defines (upstream commit 0e2166742f) and the 2026.1 patch backports
+unchanged. No existing upstream test moves; the patches add four tests of
+`TestKeystoneFlaskUnexpectedErrors` in
+`keystone/tests/unit/server/test_keystone_flask.py` and two tests of
+`AuthContextMiddlewareTest` in `keystone/tests/unit/test_middleware.py`.
+`test_lost_database_patch_applied` in `tests/container-images/verify_keystone.sh`
+runs the operator's uWSGI command against a database address that refuses
+connections and asserts the 503 within ten seconds. The patches need no
+operator configuration. Upstream status: not yet proposed.
+
 ### horizon
 
 **Location:** `images/horizon/image.nix`, built from the lock
