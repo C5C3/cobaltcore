@@ -56,6 +56,12 @@
 #                   version document and no /healthcheck, so that is what the
 #                   poll asks for. Used by the neutron leg (tempest.api.network
 #                   and neutron_tempest_plugin.api against a real Neutron).
+#                   A tempest.conf that carries ${NEUTRON_PUBLIC_NETWORK_ID}
+#                   (the neutron legs) makes the script resolve the one external
+#                   network through this 9696 forward, with a docker run of
+#                   TEMPEST_IMAGE, and render its id in place of the
+#                   placeholder. Such a leg needs NEUTRON_K8S_NAME; without it
+#                   the script exits 1 before any docker call.
 #   CINDER_K8S_NAME — K8s Service name of a Cinder API to port-forward on
 #                   8776 (default: empty). The cinder counterpart of
 #                   GLANCE_K8S_NAME: same forward, /healthcheck poll and
@@ -150,6 +156,10 @@ OPTIONAL_TARGETS=(
   "NovaConsole:NOVA_CONSOLE_K8S_NAME:6080:/vnc_lite.html"
   "Placement:PLACEMENT_K8S_NAME:8778:/"
 )
+# The id section 3a resolves for ${NEUTRON_PUBLIC_NETWORK_ID}. It is set by the
+# lookup alone, never read from the environment, and stays empty on every leg
+# whose tempest.conf does not carry the placeholder.
+PUBLIC_NETWORK_ID=""
 
 # ---------------------------------------------------------------------------
 # 1. Prepare output directories
@@ -236,6 +246,92 @@ for target in "${OPTIONAL_TARGETS[@]}"; do
   fi
 done
 
+# Point the catalog's service DNS names at the forwarded ports inside the
+# container. The keystone names are always present; the glance, barbican,
+# neutron, cinder, nova and placement names are added only when the matching
+# target is configured so their image, key-manager, network, block-storage,
+# compute and placement endpoints resolve to the forwarded 9292, 9311, 9696,
+# 8776, 8774 and 8778. The console proxy name is added the same way, for the
+# novncproxy_base_url the compute API hands out on 6080. That one is in no
+# catalog.
+ADD_HOST_ARGS=(
+  --add-host "${CATALOG_SVC}:127.0.0.1"
+  --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1"
+)
+for target in "${OPTIONAL_TARGETS[@]}"; do
+  IFS=: read -r name var port path <<<"${target}"
+  [[ -n "${!var}" ]] || continue
+  ADD_HOST_ARGS+=(--add-host "${!var}.${NAMESPACE}.svc.cluster.local:127.0.0.1")
+  ADD_HOST_ARGS+=(--add-host "${!var}.${NAMESPACE}.svc:127.0.0.1")
+done
+
+# ---------------------------------------------------------------------------
+# 3a. Resolve the external network
+# ---------------------------------------------------------------------------
+# A tempest.conf that carries ${NEUTRON_PUBLIC_NETWORK_ID} (the neutron legs)
+# gets the id of the flat external network its 05-external-network-job.yaml
+# created. Neutron assigns network ids itself and rejects one a client picks,
+# so the template cannot pin the id the way the nova legs pin their image ids.
+# The lookup asks for the one external network rather than for a name, so the
+# name lives in the Job alone. It runs before any suite starts, while that
+# network is the only external one: the suites create and delete their own
+# later.
+#
+# The tempest image's openstack CLI runs on the host network, where the 5000
+# and 9696 forwards listen, with the add-hosts above so the catalog's network
+# endpoint resolves to the 9696 forward. The password reaches the container
+# through its environment and never appears on the docker command line. Stderr
+# goes to a log of its own, which the results artifact keeps, so a Python
+# warning cannot land among the ids. Every other leg skips this section and
+# makes no docker call here.
+PUBLIC_NETWORK_LOG="${OUTPUT_DIR}/public-network-lookup.log"
+UUID_RE='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+if grep -qF "\${NEUTRON_PUBLIC_NETWORK_ID}" "${CONFIG_DIR}/tempest.conf"; then
+  if [[ -z "${NEUTRON_K8S_NAME}" ]]; then
+    echo "::error::${CONFIG_DIR}/tempest.conf names \${NEUTRON_PUBLIC_NETWORK_ID}, but NEUTRON_K8S_NAME is empty; the external network is looked up through the Neutron port-forward"
+    exit 1
+  fi
+
+  LOOKUP_RC=0
+  LOOKUP_OUT=$(OS_PASSWORD="${ADMIN_PASSWORD}" docker run --rm \
+    --network host \
+    --cap-drop=ALL \
+    --security-opt no-new-privileges:true \
+    "${ADD_HOST_ARGS[@]}" \
+    -e OS_AUTH_URL=http://localhost:5000/v3 \
+    -e OS_IDENTITY_API_VERSION=3 \
+    -e OS_USERNAME=admin \
+    -e OS_USER_DOMAIN_NAME=Default \
+    -e OS_PROJECT_NAME=admin \
+    -e OS_PROJECT_DOMAIN_NAME=Default \
+    -e OS_REGION_NAME=RegionOne \
+    -e OS_PASSWORD \
+    "${TEMPEST_IMAGE}" \
+    openstack network list --external --format value -c ID \
+    2>"${PUBLIC_NETWORK_LOG}") || LOOKUP_RC=$?
+  if [[ "${LOOKUP_RC}" -ne 0 ]]; then
+    echo "::error::Looking up the external network failed (exit ${LOOKUP_RC}); see ${PUBLIC_NETWORK_LOG}"
+    tail -n 1 "${PUBLIC_NETWORK_LOG}"
+    exit 1
+  fi
+
+  mapfile -t PUBLIC_NETWORK_IDS < <(grep . <<<"${LOOKUP_OUT}")
+  if [[ ${#PUBLIC_NETWORK_IDS[@]} -eq 0 ]]; then
+    echo "::error::No external network exists; the neutron leg's 05-external-network-job.yaml creates one before this step"
+    exit 1
+  fi
+  if [[ ${#PUBLIC_NETWORK_IDS[@]} -gt 1 ]]; then
+    echo "::error::Expected one external network, found ${#PUBLIC_NETWORK_IDS[@]}: ${PUBLIC_NETWORK_IDS[*]}"
+    exit 1
+  fi
+  if [[ ! "${PUBLIC_NETWORK_IDS[0]}" =~ ${UUID_RE} ]]; then
+    echo "::error::The external network lookup returned '${PUBLIC_NETWORK_IDS[0]}', not a network id"
+    exit 1
+  fi
+  PUBLIC_NETWORK_ID="${PUBLIC_NETWORK_IDS[0]}"
+  echo "External network for Tempest: ${PUBLIC_NETWORK_ID}"
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Generate Tempest config from template
 # ---------------------------------------------------------------------------
@@ -250,6 +346,7 @@ ADMIN_PASSWORD_ESCAPED=$(printf '%s\n' "${ADMIN_PASSWORD}" \
 sed -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc\\.cluster\\.local:5000|localhost:5000|" \
     -e "s|${SERVICE_K8S_NAME}\\.${NAMESPACE}\\.svc:5000|localhost:5000|" \
     -e "s|\${KEYSTONE_ADMIN_PASSWORD}|${ADMIN_PASSWORD_ESCAPED}|" \
+    -e "s|\${NEUTRON_PUBLIC_NETWORK_ID}|${PUBLIC_NETWORK_ID}|" \
     "${CONFIG_DIR}/tempest.conf" > "${OUTPUT_DIR}/config/tempest.conf"
 
 [[ -f "${CONFIG_DIR}/exclude-tests.txt" ]] && cp "${CONFIG_DIR}/exclude-tests.txt" "${OUTPUT_DIR}/config/"
@@ -314,25 +411,6 @@ fi
 # Resolve workspace root for volume mounts. In GitHub Actions this is
 # GITHUB_WORKSPACE; locally fall back to the git repo root.
 WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
-
-# Point the catalog's service DNS names at the forwarded ports inside the
-# container. The keystone names are always present; the glance, barbican,
-# neutron, cinder, nova and placement names are added only when the matching
-# target is configured so their image, key-manager, network, block-storage,
-# compute and placement endpoints resolve to the forwarded 9292, 9311, 9696,
-# 8776, 8774 and 8778. The console proxy name is added the same way, for the
-# novncproxy_base_url the compute API hands out on 6080. That one is in no
-# catalog.
-ADD_HOST_ARGS=(
-  --add-host "${CATALOG_SVC}:127.0.0.1"
-  --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1"
-)
-for target in "${OPTIONAL_TARGETS[@]}"; do
-  IFS=: read -r name var port path <<<"${target}"
-  [[ -n "${!var}" ]] || continue
-  ADD_HOST_ARGS+=(--add-host "${!var}.${NAMESPACE}.svc.cluster.local:127.0.0.1")
-  ADD_HOST_ARGS+=(--add-host "${!var}.${NAMESPACE}.svc:127.0.0.1")
-done
 
 TEMPEST_RC=0
 docker run --rm \
