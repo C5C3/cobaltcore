@@ -5,6 +5,7 @@
 package deployment
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -34,6 +35,18 @@ func valueAfter(cmd []string, flag string) string {
 	return cmd[i+1]
 }
 
+// keepAliveTokens returns every token with the prefix --http-keepalive: the bare
+// flag, the --http-keepalive=<n> form, and any stray flag that shares the prefix.
+func keepAliveTokens(cmd []string) []string {
+	var tokens []string
+	for _, arg := range cmd {
+		if strings.HasPrefix(arg, "--http-keepalive") {
+			tokens = append(tokens, arg)
+		}
+	}
+	return tokens
+}
+
 // A CR without a uwsgi block must still get the documented command: the shared
 // defaults, keep-alive on with no timeout, and no harakiri cap at all (the
 // builder injects no hidden default for the optional flags).
@@ -44,8 +57,7 @@ func TestBuildUWSGICommand_NilSpecDefaults(t *testing.T) {
 
 	g.Expect(valueAfter(cmd, "--processes")).To(gomega.Equal("2"))
 	g.Expect(valueAfter(cmd, "--threads")).To(gomega.Equal("1"))
-	g.Expect(cmd).To(gomega.ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(gomega.ContainElement("--http-keepalive-timeout"))
+	g.Expect(keepAliveTokens(cmd)).To(gomega.Equal([]string{"--http-keepalive"}))
 	g.Expect(cmd).NotTo(gomega.ContainElement("--harakiri"))
 }
 
@@ -68,7 +80,8 @@ func TestBuildUWSGICommand_ExplicitKnobsHonored(t *testing.T) {
 
 	g.Expect(valueAfter(cmd, "--processes")).To(gomega.Equal("4"))
 	g.Expect(valueAfter(cmd, "--threads")).To(gomega.Equal("8"))
-	g.Expect(valueAfter(cmd, "--http-keepalive-timeout")).To(gomega.Equal("15"))
+	g.Expect(keepAliveTokens(cmd)).To(gomega.Equal([]string{"--http-keepalive=15"}))
+	g.Expect(indexOf(cmd, "--log-master")).To(gomega.Equal(indexOf(cmd, "--http-keepalive=15") + 1))
 	g.Expect(valueAfter(cmd, "--harakiri")).To(gomega.Equal("30"))
 
 	// A spec that leaves the nil-preserving keep-alive pointer unset keeps the
@@ -79,9 +92,18 @@ func TestBuildUWSGICommand_ExplicitKnobsHonored(t *testing.T) {
 		WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
 	})
 
-	g.Expect(cmd).To(gomega.ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(gomega.ContainElement("--http-keepalive-timeout"))
+	g.Expect(keepAliveTokens(cmd)).To(gomega.Equal([]string{"--http-keepalive"}))
 	g.Expect(valueAfter(cmd, "--processes")).To(gomega.Equal("4"))
+
+	// The unset keep-alive pointer resolves true, so a timeout without it still
+	// renders as the value of the keep-alive flag.
+	cmd = BuildUWSGICommand(UWSGICommandParams{
+		UWSGI:        &commonv1.UWSGISpec{Processes: 4, Threads: 8, HTTPKeepAliveTimeout: ptr.To(int32(15))},
+		Bind:         ":5000",
+		WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+	})
+
+	g.Expect(keepAliveTokens(cmd)).To(gomega.Equal([]string{"--http-keepalive=15"}))
 }
 
 // A spec that reached the builder without the CRD defaults — an adopting
@@ -112,30 +134,54 @@ func TestBuildUWSGICommand_ZeroCountsFallBackToDefaults(t *testing.T) {
 	g.Expect(valueAfter(cmd, "--threads")).To(gomega.Equal("1"))
 }
 
-// The optional caps get the same zero guard as the counts: a spec that reached
-// the builder past the Minimum=1 markers must not render
-// "--http-keepalive-timeout 0" (the unbounded idle timeout the field docs
-// reject) or "--harakiri 0" (no per-request kill at all). Only keystone's
-// webhook re-checks these two, so glance and placement reach the builder with
+// A timeout that reached the builder past the Minimum=2 marker renders the bare
+// flag: uWSGI reads --http-keepalive=1 as the bare flag, =0 as keep-alive off,
+// and exits on a negative value. Only keystone's webhook re-checks this bound,
+// so the other operators reach the builder with the CRD schema as their only
+// guard.
+func TestBuildUWSGICommand_KeepAliveTimeoutLowerBound(t *testing.T) {
+	cases := []struct {
+		name    string
+		timeout int32
+		want    []string
+	}{
+		{name: "two is the lowest bound", timeout: 2, want: []string{"--http-keepalive=2"}},
+		{name: "one", timeout: 1, want: []string{"--http-keepalive"}},
+		{name: "zero", timeout: 0, want: []string{"--http-keepalive"}},
+		{name: "negative", timeout: -1, want: []string{"--http-keepalive"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			cmd := BuildUWSGICommand(UWSGICommandParams{
+				UWSGI:        &commonv1.UWSGISpec{HTTPKeepAliveTimeout: ptr.To(tc.timeout)},
+				Bind:         ":5000",
+				WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+			})
+
+			g.Expect(keepAliveTokens(cmd)).To(gomega.Equal(tc.want))
+		})
+	}
+}
+
+// Harakiri gets the same zero guard as the counts: "--harakiri 0" would mean no
+// per-request kill at all, so a zero cap drops the flag. Only keystone's webhook
+// re-checks the Minimum=1 marker, so the other operators reach the builder with
 // the CRD schema as their only guard.
-func TestBuildUWSGICommand_ZeroCapsDropTheirFlags(t *testing.T) {
+func TestBuildUWSGICommand_ZeroHarakiriDropsFlag(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	cmd := BuildUWSGICommand(UWSGICommandParams{
-		UWSGI: &commonv1.UWSGISpec{
-			HTTPKeepAliveTimeout: ptr.To(int32(0)),
-			Harakiri:             ptr.To(int32(0)),
-		},
+		UWSGI:        &commonv1.UWSGISpec{Harakiri: ptr.To(int32(0))},
 		Bind:         ":5000",
 		WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
 	})
 
-	g.Expect(cmd).To(gomega.ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(gomega.ContainElement("--http-keepalive-timeout"))
 	g.Expect(cmd).NotTo(gomega.ContainElement("--harakiri"))
 
-	// A negative cap is dropped on the same arm, and the two caps are guarded
-	// independently: a positive harakiri alongside a rejected timeout still lands.
+	// The harakiri guard is independent of the keep-alive timeout guard: a
+	// positive harakiri alongside a timeout below 2 still lands.
 	cmd = BuildUWSGICommand(UWSGICommandParams{
 		UWSGI: &commonv1.UWSGISpec{
 			HTTPKeepAliveTimeout: ptr.To(int32(-1)),
@@ -145,14 +191,14 @@ func TestBuildUWSGICommand_ZeroCapsDropTheirFlags(t *testing.T) {
 		WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
 	})
 
-	g.Expect(cmd).NotTo(gomega.ContainElement("--http-keepalive-timeout"))
+	g.Expect(keepAliveTokens(cmd)).To(gomega.Equal([]string{"--http-keepalive"}))
 	g.Expect(valueAfter(cmd, "--harakiri")).To(gomega.Equal("30"))
 }
 
 // A CR that bypassed the admission webhook can carry a timeout with keep-alive
-// disabled. The timeout has no meaning without its parent feature, so both
-// flags are dropped, while the request logging stays on.
-func TestBuildUWSGICommand_KeepAliveFalseDropsBothFlags(t *testing.T) {
+// disabled. The timeout has no meaning without its parent feature, so no
+// keep-alive token is rendered, while the request logging stays on.
+func TestBuildUWSGICommand_KeepAliveFalseDropsKeepAliveToken(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	cmd := BuildUWSGICommand(UWSGICommandParams{
@@ -166,8 +212,7 @@ func TestBuildUWSGICommand_KeepAliveFalseDropsBothFlags(t *testing.T) {
 		WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
 	})
 
-	g.Expect(cmd).NotTo(gomega.ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(gomega.ContainElement("--http-keepalive-timeout"))
+	g.Expect(keepAliveTokens(cmd)).To(gomega.BeEmpty())
 	g.Expect(cmd).To(gomega.ContainElement("--log-master"))
 	g.Expect(valueAfter(cmd, "--log-format")).To(gomega.Equal(UWSGILogFormat))
 }

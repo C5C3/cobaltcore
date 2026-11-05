@@ -85,8 +85,8 @@ func EffectiveUWSGIConcurrency(spec *commonv1.UWSGISpec) (processes, threads int
 //     supplies Processes and Threads verbatim — falling back to the same two
 //     defaults for a count left at or below zero — and keeps the keep-alive
 //     default only while its nil-preserving HTTPKeepAlive pointer is unset;
-//   - the keep-alive block --http-keepalive plus --http-keepalive-timeout, the
-//     latter only when the spec bounds the idle timeout with a positive value;
+//   - the keep-alive token: the bare --http-keepalive, or --http-keepalive=<n>
+//     when the spec bounds the idle timeout with a value above 1;
 //   - the request logging --log-master and --log-format UWSGILogFormat, emitted
 //     in every configuration so request lines reach stderr even with keep-alive
 //     disabled;
@@ -102,18 +102,18 @@ func EffectiveUWSGIConcurrency(spec *commonv1.UWSGISpec) (processes, threads int
 // otherwise --wsgi-file p.WSGIFilePath. Neither flag is emitted with an empty
 // value, so params that set neither field render neither flag.
 //
-// Both keep-alive flags are dropped when keep-alive resolves false, even with
-// HTTPKeepAliveTimeout set: the timeout has no meaning without its parent
-// feature. The webhook rejects that combination at admission, so only a CR that
-// bypassed the webhook reaches this path.
+// The timeout is dropped with its parent flag when keep-alive resolves false,
+// even with HTTPKeepAliveTimeout set: the timeout has no meaning without its
+// parent feature. The webhook rejects that combination at admission, so only a
+// CR that bypassed the webhook reaches this path.
 //
-// The two optional caps are likewise dropped at or below zero — the same
-// defense in depth the process and thread counts get, for the same reason: a
-// value the API contract already forbids must not reach the container. Neither
-// bounds anything at zero, so emitting it would be strictly worse than omitting
-// the flag: "--http-keepalive-timeout 0" is the unbounded idle timeout the
-// UWSGISpec field docs reject outright, and "--harakiri 0" disables the
-// per-request kill the operator asked for.
+// The timeout is likewise dropped at or below 1, and --harakiri at or below
+// zero. This is the same defense in depth the process and thread counts get,
+// for the same reason: a value the API contract already forbids must not reach
+// the container. uWSGI reads --http-keepalive=0 as keep-alive off and
+// --http-keepalive=1 as keep-alive without an idle timer, so neither bounds
+// anything, and "--harakiri 0" disables the per-request kill the operator asked
+// for.
 //
 // BuildUWSGICommand is a total function over valid params: it performs no I/O
 // and has no error paths.
@@ -135,13 +135,17 @@ func BuildUWSGICommand(p UWSGICommandParams) []string {
 	}
 	cmd = append(cmd, p.ArgsAfterHTTP...)
 	if httpKeepAlive {
-		cmd = append(cmd, "--http-keepalive")
-		// The > 0 arm is the same defense in depth the counts get above: the
-		// Minimum=1 marker rejects zero at admission, and only keystone's webhook
-		// re-checks it, so a spec that bypassed both must not turn into the
-		// unbounded idle timeout.
-		if p.UWSGI != nil && p.UWSGI.HTTPKeepAliveTimeout != nil && *p.UWSGI.HTTPKeepAliveTimeout > 0 {
-			cmd = append(cmd, "--http-keepalive-timeout", strconv.Itoa(int(*p.UWSGI.HTTPKeepAliveTimeout)))
+		// The idle timeout is the value of the keep-alive flag itself; uWSGI binds
+		// the optional value only in the attached form. The > 1 arm is the same
+		// defense in depth the counts get above: the Minimum=2 marker rejects lower
+		// values at admission, and only keystone's webhook re-checks it. A spec
+		// that bypassed both renders the bare flag, because =1 is the bare flag's
+		// own meaning, =0 would turn keep-alive off, and a negative value would
+		// make uWSGI exit.
+		if p.UWSGI != nil && p.UWSGI.HTTPKeepAliveTimeout != nil && *p.UWSGI.HTTPKeepAliveTimeout > 1 {
+			cmd = append(cmd, "--http-keepalive="+strconv.Itoa(int(*p.UWSGI.HTTPKeepAliveTimeout)))
+		} else {
+			cmd = append(cmd, "--http-keepalive")
 		}
 	}
 	// Unconditional: makes uWSGI master logging always-on so request lines reach
@@ -169,8 +173,8 @@ func BuildUWSGICommand(p UWSGICommandParams) []string {
 		"--threads", strconv.Itoa(int(threads)),
 	)
 	cmd = append(cmd, p.TrailingArgs...)
-	// Same > 0 guard as the keep-alive timeout: a zero cap is no cap, so the flag
-	// is dropped rather than emitted as "--harakiri 0".
+	// A zero cap is no cap, so the flag is dropped rather than emitted as
+	// "--harakiri 0".
 	if p.UWSGI != nil && p.UWSGI.Harakiri != nil && *p.UWSGI.Harakiri > 0 {
 		cmd = append(cmd, "--harakiri", strconv.Itoa(int(*p.UWSGI.Harakiri)))
 	}

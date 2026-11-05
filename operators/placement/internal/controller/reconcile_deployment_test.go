@@ -88,9 +88,9 @@ func TestPlacementUWSGICommand_NilAPIServerUsesDefaults(t *testing.T) {
 	g.Expect(procs).To(Equal("2"))
 	threads, _ := argAfter(cmd, "--threads")
 	g.Expect(threads).To(Equal("1"))
-	// httpKeepAlive defaults to true, harakiri and keepalive-timeout omitted.
+	// httpKeepAlive defaults to true, harakiri and the idle timeout omitted.
 	g.Expect(cmd).To(ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive=")))
 	g.Expect(cmd).NotTo(ContainElement("--harakiri"))
 	// Request logging is unconditional so log lines reach stderr in every
 	// configuration.
@@ -133,19 +133,18 @@ func TestPlacementUWSGICommand_CustomKnobsHonored(t *testing.T) {
 	g.Expect(procs).To(Equal("4"))
 	threads, _ := argAfter(cmd, "--threads")
 	g.Expect(threads).To(Equal("8"))
-	timeout, ok := argAfter(cmd, "--http-keepalive-timeout")
-	g.Expect(ok).To(BeTrue())
-	g.Expect(timeout).To(Equal("30"))
+	g.Expect(cmd).To(ContainElement("--http-keepalive=30"))
+	g.Expect(cmd).NotTo(ContainElement("--http-keepalive"))
 	harakiri, ok := argAfter(cmd, "--harakiri")
 	g.Expect(ok).To(BeTrue())
 	g.Expect(harakiri).To(Equal("45"))
 	g.Expect(cmd).NotTo(ContainElement("--pyargv"))
 }
 
-// TestPlacementUWSGICommand_KeepAliveDisabledDropsTimeout pins that the timeout
-// flag disappears with its parent feature: --http-keepalive-timeout has no
-// meaning without --http-keepalive, and the webhook rejects the combination at
-// admission.
+// TestPlacementUWSGICommand_KeepAliveDisabledDropsTimeout pins that the
+// keep-alive token, idle timeout included, disappears with its parent feature:
+// the timeout has no meaning without keep-alive, and the webhook rejects the
+// combination at admission.
 func TestPlacementUWSGICommand_KeepAliveDisabledDropsTimeout(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -159,8 +158,7 @@ func TestPlacementUWSGICommand_KeepAliveDisabledDropsTimeout(t *testing.T) {
 	}
 	cmd := placementUWSGICommand(apiServer)
 
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive")))
 	// The spec's worker knobs are honored verbatim (the webhook does the
 	// defaulting).
 	procs, _ := argAfter(cmd, "--processes")

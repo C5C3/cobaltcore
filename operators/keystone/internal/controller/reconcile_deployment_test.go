@@ -1944,8 +1944,8 @@ func TestUwsgiCommand_HarakiriNilOmitted(t *testing.T) {
 }
 
 // TestUwsgiCommand_KeepAliveTimeoutSet verifies that a non-nil
-// UWSGISpec.HTTPKeepAliveTimeout combined with HTTPKeepAlive=true appends
-// "--http-keepalive-timeout <n>" to the command.
+// UWSGISpec.HTTPKeepAliveTimeout combined with HTTPKeepAlive=true renders the
+// single token "--http-keepalive=<n>" in place of the bare flag.
 func TestUwsgiCommand_KeepAliveTimeoutSet(t *testing.T) {
 	g := NewGomegaWithT(t)
 	timeout := int32(4)
@@ -1957,13 +1957,14 @@ func TestUwsgiCommand_KeepAliveTimeoutSet(t *testing.T) {
 		HTTPKeepAliveTimeout: &timeout,
 	}, false)
 
-	idx := indexOf(cmd, "--http-keepalive-timeout")
-	g.Expect(idx).NotTo(Equal(-1))
-	g.Expect(cmd[idx+1]).To(Equal("4"))
+	g.Expect(cmd).To(ContainElement("--http-keepalive=4"))
+	// Neither the bare flag nor any other token with the keep-alive prefix.
+	g.Expect(cmd).NotTo(ContainElement(SatisfyAll(HavePrefix("--http-keepalive"), Not(Equal("--http-keepalive=4")))))
 }
 
 // TestUwsgiCommand_KeepAliveTimeoutNilOmitted verifies that when
-// UWSGISpec.HTTPKeepAliveTimeout is nil, the flag is not emitted.
+// UWSGISpec.HTTPKeepAliveTimeout is nil, only the bare --http-keepalive is
+// emitted.
 func TestUwsgiCommand_KeepAliveTimeoutNilOmitted(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1973,13 +1974,14 @@ func TestUwsgiCommand_KeepAliveTimeoutNilOmitted(t *testing.T) {
 		HTTPKeepAlive: ptr.To(true),
 	}, false)
 
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+	g.Expect(cmd).To(ContainElement("--http-keepalive"))
+	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive=")))
 }
 
 // TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled verifies that
-// HTTPKeepAliveTimeout is silently ignored when HTTPKeepAlive=false — the flag
-// is meaningless without the parent feature, and the webhook forbids this
-// combination, so the command builder just omits it defensively.
+// HTTPKeepAliveTimeout is silently ignored when HTTPKeepAlive=false — the
+// timeout is meaningless without the parent feature, and the webhook forbids
+// this combination, so the command builder renders no keep-alive token at all.
 func TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled(t *testing.T) {
 	g := NewGomegaWithT(t)
 	timeout := int32(4)
@@ -1991,13 +1993,12 @@ func TestUwsgiCommand_KeepAliveTimeoutIgnoredWhenKeepAliveDisabled(t *testing.T)
 		HTTPKeepAliveTimeout: &timeout,
 	}, false)
 
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive")))
 }
 
 // TestUwsgiCommand_IncludesLogMasterAndLogFormat verifies that uwsgiCommand
 // always emits --log-master and --log-format <literal> between the
-// --http-keepalive[-timeout] block and the --wsgi-file line, regardless of
+// keep-alive token and the --wsgi-file line, regardless of
 // HTTPKeepAlive/HTTPKeepAliveTimeout state. requires uWSGI master
 // logging to be unconditionally on so request lines reach stderr in every
 // configuration.
@@ -2055,24 +2056,22 @@ func TestUwsgiCommand_IncludesLogMasterAndLogFormat(t *testing.T) {
 			g.Expect(cmd[logFormatIdx+1]).To(Equal(expectedFormat),
 				"--log-format value must be the exact literal format string")
 
-			// Insertion point: after --http-keepalive[-timeout] block (when
-			// present) and before --wsgi-file.
+			// Insertion point: after the keep-alive token (when present) and
+			// before --wsgi-file.
 			g.Expect(logMasterIdx).To(BeNumerically("<", wsgiFileIdx),
 				"--log-master must precede --wsgi-file")
 			g.Expect(logFormatIdx).To(BeNumerically("<", wsgiFileIdx),
 				"--log-format must precede --wsgi-file")
 
 			if tc.spec.HTTPKeepAlive == nil || *tc.spec.HTTPKeepAlive {
-				keepAliveIdx := indexOf(cmd, "--http-keepalive")
-				g.Expect(keepAliveIdx).NotTo(Equal(-1))
-				g.Expect(logMasterIdx).To(BeNumerically(">", keepAliveIdx),
-					"--log-master must follow --http-keepalive")
+				keepAliveToken := "--http-keepalive"
 				if tc.spec.HTTPKeepAliveTimeout != nil {
-					timeoutIdx := indexOf(cmd, "--http-keepalive-timeout")
-					g.Expect(timeoutIdx).NotTo(Equal(-1))
-					g.Expect(logMasterIdx).To(BeNumerically(">", timeoutIdx),
-						"--log-master must follow --http-keepalive-timeout pair")
+					keepAliveToken = fmt.Sprintf("--http-keepalive=%d", *tc.spec.HTTPKeepAliveTimeout)
 				}
+				keepAliveIdx := indexOf(cmd, keepAliveToken)
+				g.Expect(keepAliveIdx).NotTo(Equal(-1), "keep-alive token %q must be present", keepAliveToken)
+				g.Expect(logMasterIdx).To(BeNumerically(">", keepAliveIdx),
+					"--log-master must follow the keep-alive token")
 			}
 		})
 	}

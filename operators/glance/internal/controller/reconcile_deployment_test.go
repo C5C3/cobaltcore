@@ -119,9 +119,9 @@ func TestGlanceLaunchCommand_UWSGIOnEveryRelease(t *testing.T) {
 			g.Expect(procs).To(Equal("2"))
 			threads, _ := argAfter(cmd, "--threads")
 			g.Expect(threads).To(Equal("1"))
-			// httpKeepAlive defaults to true, harakiri and keepalive-timeout omitted.
+			// httpKeepAlive defaults to true, harakiri and the idle timeout omitted.
 			g.Expect(cmd).To(ContainElement("--http-keepalive"))
-			g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+			g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive=")))
 			g.Expect(cmd).NotTo(ContainElement("--harakiri"))
 		})
 	}
@@ -145,9 +145,8 @@ func TestGlanceUWSGICommand_CustomKnobsHonored(t *testing.T) {
 	g.Expect(procs).To(Equal("4"))
 	threads, _ := argAfter(cmd, "--threads")
 	g.Expect(threads).To(Equal("8"))
-	timeout, ok := argAfter(cmd, "--http-keepalive-timeout")
-	g.Expect(ok).To(BeTrue())
-	g.Expect(timeout).To(Equal("30"))
+	g.Expect(cmd).To(ContainElement("--http-keepalive=30"))
+	g.Expect(cmd).NotTo(ContainElement("--http-keepalive"))
 	harakiri, ok := argAfter(cmd, "--harakiri")
 	g.Expect(ok).To(BeTrue())
 	g.Expect(harakiri).To(Equal("45"))
@@ -167,9 +166,9 @@ func TestGlanceUWSGICommand_KeepAliveDisabledDropsTimeout(t *testing.T) {
 	}
 	cmd := glanceUWSGICommand(apiServer)
 
-	// With keep-alive disabled, neither the flag nor its timeout are emitted.
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive"))
-	g.Expect(cmd).NotTo(ContainElement("--http-keepalive-timeout"))
+	// With keep-alive disabled, no keep-alive token is emitted, so the timeout
+	// goes with it.
+	g.Expect(cmd).NotTo(ContainElement(HavePrefix("--http-keepalive")))
 	// The spec's worker knobs are honored verbatim (webhook does the defaulting).
 	procs, _ := argAfter(cmd, "--processes")
 	g.Expect(procs).To(Equal("2"))

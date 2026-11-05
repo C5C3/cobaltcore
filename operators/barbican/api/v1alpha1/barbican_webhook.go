@@ -447,10 +447,10 @@ func (w *BarbicanWebhook) validate(ctx context.Context, b *Barbican, extra field
 			}
 		}
 		// httpKeepAliveTimeout is only meaningful when httpKeepAlive is true —
-		// otherwise the --http-keepalive-timeout flag is never emitted. A nil
-		// HTTPKeepAlive pointer means "unset", which resolves to the default true, so
-		// only an EXPLICIT false conflicts with a set timeout. This mirrors the
-		// XValidation rule on UWSGISpec.
+		// otherwise the idle timeout is never rendered. A nil HTTPKeepAlive pointer
+		// means "unset", which resolves to the default true, so only an EXPLICIT
+		// false conflicts with a set timeout. This mirrors the XValidation rule on
+		// UWSGISpec.
 		if u.HTTPKeepAliveTimeout != nil && u.HTTPKeepAlive != nil && !*u.HTTPKeepAlive {
 			allErrs = append(allErrs, field.Invalid(
 				uwsgiPath.Child("httpKeepAliveTimeout"),

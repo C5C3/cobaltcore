@@ -574,8 +574,8 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 			))
 		}
 		// httpKeepAliveTimeout is only meaningful when
-		// httpKeepAlive is true — otherwise the --http-keepalive-timeout flag
-		// is never emitted. Reject the nonsensical combination early so users
+		// httpKeepAlive is true — otherwise the idle timeout is never
+		// rendered. Reject the nonsensical combination early so users
 		// do not silently lose the timeout they configured. A nil HTTPKeepAlive
 		// pointer means "unset", which the reconciler treats as the default true,
 		// so only an EXPLICIT false conflicts with a set timeout.
