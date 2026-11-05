@@ -21,8 +21,8 @@ A downstream patch changes the upstream source **before** it is installed
 into the service image. It is the last resort: a fix in the operator, a
 config option, or a newer upstream tag is always preferable, because every
 patch has to be carried through every Renovate tag bump until upstream ships
-it. The repository carries twenty-nine today (cinder 0001–0008 for 2026.1
-and 0001–0007 for 2026.2, glance 0001, keystone 0001–0002 and
+it. The repository carries thirty-one today (cinder 0001–0008 for 2026.1
+and 0001–0007 for 2026.2, glance 0001, keystone 0001–0003 and
 nova 0001–0004 per release);
 `check-image-patches.sh` lists them.
 
