@@ -16,5 +16,16 @@
 # Re-check every group on each plugin bump and drop the patterns upstream has
 # fixed.
 #
-# No exclusions yet. The first CI run records which tests the environment
-# cannot serve, and those land here with their tracked-by/re-evaluate-on pair.
+# Issue #1614 recorded the group below from the extension lists of the pinned
+# neutron tags. Further groups land here the same way.
+
+# tracked-by: https://github.com/C5C3/cobaltcore/issues/1614
+# re-evaluate-on: [network-feature-enabled] api_extensions on this leg names
+#                 the served aliases instead of all
+# Classes gated on the dvr extension. ML2/OVN does not serve it (the
+# extension list 05-external-network-job.yaml prints has no dvr), but
+# api_extensions = all tells tempest every extension is there, so these
+# classes run and Neutron rejects the distributed attribute with 400.
+tempest\.api\.network\.test_routers_negative\.DvrRoutersNegativeTest\.
+neutron_tempest_plugin\.api\.test_routers\.DvrRouters
+neutron_tempest_plugin\.api\.test_routers_negative\.DvrRoutersNegative

@@ -8,16 +8,24 @@
 # Blank lines are ignored. Patterns are matched against test IDs.
 # Only network tests are included: no other service is deployed on this leg.
 #
-# The router, floating-IP and provider-network suites stay out until the
-# devstack has an external provider network (D6). What remains is the
-# authenticated CRUD the OVN mechanism driver writes into the Northbound
-# database: networks, subnets, ports, security groups and subnet pools.
+# The leg has a flat external network (05-external-network-job.yaml), so the
+# router, floating-IP and external-network suites run next to the CRUD of
+# networks, subnets, ports, security groups and subnet pools. All of them stay
+# at the API: Neutron writes the matching logical switch ports, logical router
+# ports and NAT rows into the OVN Northbound database. The reachability
+# (scenario) suites stay out: there is no gateway chassis with an uplink and no
+# guest.
 
 # Core Tempest network API tests
 tempest.api.network.test_networks
 tempest.api.network.test_ports
 tempest.api.network.test_security_groups
 tempest.api.network.test_subnetpools_extensions
+tempest.api.network.test_routers
+tempest.api.network.test_floating_ips
+tempest.api.network.admin.test_routers
+tempest.api.network.admin.test_floating_ips_admin_actions
+tempest.api.network.admin.test_external_network
 
 # Neutron-specific plugin tests
 neutron_tempest_plugin.api.test_networks
@@ -26,3 +34,7 @@ neutron_tempest_plugin.api.test_ports
 neutron_tempest_plugin.api.test_security_groups
 neutron_tempest_plugin.api.test_subnetpools
 neutron_tempest_plugin.api.test_extensions
+neutron_tempest_plugin.api.test_routers
+neutron_tempest_plugin.api.test_floating_ips
+neutron_tempest_plugin.api.admin.test_external_network_extension
+neutron_tempest_plugin.api.admin.test_floating_ips_admin_actions

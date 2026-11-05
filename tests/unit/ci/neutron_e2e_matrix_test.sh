@@ -14,11 +14,12 @@
 # lints and unit-tests nothing. The Scenario-5 skip and the ovn-operator deploy
 # are the two places where the neutron leg departs from the shared shape:
 # dropping either turns a green pipeline red for a reason that has nothing to
-# do with the change under test. The last two tests cover jobs the
-# e2e-operators matrix never produces: the e2e-chaos network leg, whose
-# test_dirs are enumerated by hand because chainsaw's regex filters are no-ops,
-# and the tempest neutron legs, which run the neutron-tempest-plugin against a
-# Neutron the job has to bring up itself.
+# do with the change under test. The last tests cover jobs the e2e-operators
+# matrix never produces: the e2e-chaos network leg, whose test_dirs are
+# enumerated by hand because chainsaw's regex filters are no-ops, and the
+# tempest neutron legs, which run the neutron-tempest-plugin against a Neutron
+# the job has to bring up itself, together with the flat external network the
+# router and floating-IP suites need.
 #
 # Usage: bash tests/unit/ci/neutron_e2e_matrix_test.sh
 
@@ -27,6 +28,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+BASE_PATH="$PATH"
 
 PASS=0
 FAIL=0
@@ -390,12 +392,13 @@ test_tempest_neutron_leg_is_wired() {
   assert_contains "the leg pulls the OVN daemon image at the resolved pin" "$load" \
     "matrix.service == 'neutron' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION)"
 
-  # The catalog Job runs in-cluster, so the tempest image has to be on the node.
+  # The catalog and external-network Jobs run in-cluster, so the tempest image
+  # has to be on the node.
   local kind_load
   kind_load=$(job_step tempest "Load neutron images into kind")
   assert_contains "the load runs on the neutron leg alone" "$kind_load" \
     "if: matrix.service == 'neutron'"
-  assert_contains "the tempest image reaches the node for the catalog Job" \
+  assert_contains "the tempest image reaches the node for both Jobs" \
     "$kind_load" \
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/tempest:\${{ matrix.release }}"
 
@@ -453,6 +456,23 @@ test_tempest_neutron_leg_is_wired() {
   assert_contains "the db-sync fits inside the wait" "$neutron_cr" \
     "--timeout=600s"
 
+  # The router, floating-IP and external-network suites need the network this
+  # Job creates, and the run step resolves its id: without the step, the run
+  # stops on "No external network exists".
+  local external
+  external=$(job_step tempest "Create the external network for Tempest")
+  assert_not_empty "the external-network step exists" "$external"
+  assert_contains "it runs on the neutron leg alone" "$external" \
+    "if: matrix.service == 'neutron'"
+  assert_contains "the external-network Job is applied" "$external" \
+    "05-external-network-job.yaml"
+  assert_contains "the leg waits for it to complete" "$external" \
+    "kubectl wait --for=condition=complete job/neutron-tempest-external-network"
+  assert_contains "the wait has its own 300s budget" "$external" \
+    "--timeout=300s"
+  assert_contains "the step prints the Job's log" "$external" \
+    "kubectl logs job/neutron-tempest-external-network"
+
   local run_step
   run_step=$(job_step tempest "Run Tempest API tests")
   assert_contains "the runner learns the Neutron Service name" "$run_step" \
@@ -468,6 +488,192 @@ test_tempest_neutron_leg_is_wired() {
   assert_eq "the operator deploys run before the catalog bootstrap" "yes" \
     "$([ -n "$neutron_at" ] && [ -n "$catalog_at" ] &&
        [ "$neutron_at" -lt "$catalog_at" ] && echo yes || echo no)"
+
+  # The Job creates the network through the Neutron API, so the Neutron has to
+  # be Ready first, and the run step looks the network up before any suite.
+  local cr_at external_at run_at
+  cr_at=$(printf '%s\n' "$job" | grep -nF "name: Deploy Neutron CR for Tempest" | head -1 | cut -d: -f1)
+  external_at=$(printf '%s\n' "$job" | grep -nF "name: Create the external network for Tempest" | head -1 | cut -d: -f1)
+  run_at=$(printf '%s\n' "$job" | grep -nF "name: Run Tempest API tests" | head -1 | cut -d: -f1)
+  assert_eq "the external network is created after the Neutron is Ready and before Tempest runs" "yes" \
+    "$([ -n "$cr_at" ] && [ -n "$external_at" ] && [ -n "$run_at" ] &&
+       [ "$cr_at" -lt "$external_at" ] && [ "$external_at" -lt "$run_at" ] &&
+       echo yes || echo no)"
+}
+
+# make_external_network_stubs <dir>
+# Writes the openstack stub the external-network Job resolves off PATH. It
+# records every argv in $STUB_OS_LOG and answers the two list guards from
+# $STUB_HAS_NETWORK and $STUB_HAS_SUBNET (yes, no or fail), so one script run
+# is one state of a cluster the Job meets: nothing created yet, a pod retried
+# after the network create, a Job applied again after both creates, or a list
+# call that fails the way a Neutron 503 does.
+make_external_network_stubs() {
+  local dir="$1"
+
+  cat >"$dir/openstack" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >>"$STUB_OS_LOG"
+case "$1 $2" in
+  "network list") state="$STUB_HAS_NETWORK" name=tempest-public ;;
+  "subnet list") state="$STUB_HAS_SUBNET" name=tempest-public-subnet ;;
+  *) exit 0 ;;
+esac
+case "$state" in
+  yes) echo "$name" ;;
+  fail) echo "Service Unavailable (HTTP 503)" >&2; exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$dir/openstack"
+}
+
+# run_external_network_script <dir> <job-fixture> <has-network> <has-subnet>
+# Extracts the shell script the external-network Job runs and runs it with the
+# stub in <dir> first on PATH. Each call starts from an empty log at
+# <dir>/openstack.log. Returns the script's exit code and prints nothing.
+run_external_network_script() {
+  local dir="$1" fixture="$2" has_network="$3" has_subnet="$4"
+  : >"$dir/openstack.log"
+  yq -r '.spec.template.spec.containers[0].args[0]' "$fixture" >"$dir/external.sh"
+  (
+    PATH="$dir:$BASE_PATH"
+    STUB_OS_LOG="$dir/openstack.log"
+    STUB_HAS_NETWORK="$has_network"
+    STUB_HAS_SUBNET="$has_subnet"
+    export PATH STUB_OS_LOG STUB_HAS_NETWORK STUB_HAS_SUBNET
+    bash "$dir/external.sh"
+  ) >/dev/null 2>&1
+}
+
+test_tempest_neutron_leg_has_an_external_network() {
+  echo "Test: each tempest neutron leg creates a flat external network and points Tempest at it"
+
+  # The router, floating-IP and external-network suites need a public network.
+  # Three files carry it on each leg: the Job creates it, tempest.conf names
+  # it through the placeholder hack/ci-run-tempest.sh resolves, and
+  # exclude-tests.txt leaves out the classes of the dvr extension the network
+  # list shows missing. A shared network would fail
+  # test_external_network_visibility, which checks subnet visibility against
+  # the shared flag.
+  local dirs=() dir
+  for dir in "$PROJECT_ROOT"/tests/tempest/neutron-*/; do
+    dirs+=("$dir")
+  done
+  assert_gte "both releases carry a neutron leg" "${#dirs[@]}" 2
+
+  local name job dvr_pattern
+  for dir in "${dirs[@]}"; do
+    name=$(basename "$dir")
+    job="${dir}05-external-network-job.yaml"
+    if [ ! -f "$job" ]; then
+      echo "  FAIL: $name has no 05-external-network-job.yaml"
+      FAIL=$((FAIL + 1))
+      continue
+    fi
+    assert_file_contains_fixed "$name names the Job the ci.yaml step waits on" \
+      "$job" "name: neutron-tempest-external-network"
+    assert_file_contains_fixed "$name creates an external network" "$job" \
+      "--external"
+    assert_file_contains_fixed "$name makes it a flat provider network" "$job" \
+      "--provider-network-type flat"
+    assert_not_contains "$name does not share it" "$(cat "$job")" "--share"
+    assert_not_contains "$name does not make it the default external network" \
+      "$(cat "$job")" "--default"
+    assert_file_contains_fixed "$name points public_network_id at the resolved id" \
+      "${dir}tempest.conf" 'public_network_id = ${NEUTRON_PUBLIC_NETWORK_ID}'
+    assert_file_contains "$name allocates floating IPs" \
+      "${dir}tempest.conf" "^floating_ips = true$"
+    for dvr_pattern in \
+      'tempest\.api\.network\.test_routers_negative\.DvrRoutersNegativeTest\.' \
+      'neutron_tempest_plugin\.api\.test_routers\.DvrRouters' \
+      'neutron_tempest_plugin\.api\.test_routers_negative\.DvrRoutersNegative'; do
+      assert_file_contains_fixed "$name excludes $dvr_pattern" \
+        "${dir}exclude-tests.txt" "$dvr_pattern"
+    done
+    assert_file_contains_fixed "$name carries the DVR exclusion of #1614" \
+      "${dir}exclude-tests.txt" \
+      "tracked-by: https://github.com/C5C3/cobaltcore/issues/1614"
+  done
+
+  # The two guards are what make a retried pod converge: the network create
+  # and the subnet create each run only when their own list comes back
+  # without the name, and a list that fails stops the pod rather than reading
+  # as absent. Proven by running the script against a stubbed client.
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local tmp log code keystone release
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_external_network_stubs "$tmp"
+
+  for dir in "${dirs[@]}"; do
+    name=$(basename "$dir")
+    job="${dir}05-external-network-job.yaml"
+    [ -f "$job" ] || continue
+
+    # The Job's two release literals. A Job copied into a new release
+    # directory with the old ones authenticates against a Keystone that does
+    # not exist, or pulls another release's tempest image instead of the one
+    # the step loaded into kind.
+    keystone=$(yq -r '.metadata.name' "${dir}00-keystone-cr.yaml")
+    release=${name#neutron-}
+    release=${release/-/.}
+    assert_eq "$name: the Job authenticates against the leg's Keystone" \
+      "http://${keystone}.openstack.svc.cluster.local:5000/v3" \
+      "$(yq -r '.spec.template.spec.containers[0].env[] | select(.name == "OS_AUTH_URL") | .value' "$job")"
+    assert_eq "$name: the Job runs the leg's tempest image" \
+      "ghcr.io/c5c3/tempest:${release}" \
+      "$(yq -r '.spec.template.spec.containers[0].image' "$job")"
+
+    run_external_network_script "$tmp" "$job" no no
+    code=$?
+    log=$(cat "$tmp/openstack.log")
+    assert_eq "$name: a first run exits 0" "0" "$code"
+    assert_eq "$name: it creates the flat external network on physnet1 once" "1" \
+      "$(grep -cF "network create --external --provider-network-type flat --provider-physical-network physnet1 tempest-public" <<<"$log")"
+    assert_eq "$name: and its subnet once" "1" \
+      "$(grep -cF "subnet create --network tempest-public --subnet-range 203.0.113.0/24 --gateway 203.0.113.1 --no-dhcp tempest-public-subnet" <<<"$log")"
+    assert_not_contains "$name: the network is not shared" "$log" "--share"
+    assert_not_contains "$name: the network is not the default" "$log" "--default"
+
+    run_external_network_script "$tmp" "$job" yes no
+    code=$?
+    log=$(cat "$tmp/openstack.log")
+    assert_eq "$name: a pod retried after the network create exits 0" "0" "$code"
+    assert_not_contains "$name: it creates no second network" "$log" \
+      "network create"
+    assert_eq "$name: it creates the missing subnet" "1" \
+      "$(grep -c "subnet create" <<<"$log")"
+
+    run_external_network_script "$tmp" "$job" yes yes
+    code=$?
+    log=$(cat "$tmp/openstack.log")
+    assert_eq "$name: a Job applied again exits 0" "0" "$code"
+    assert_not_contains "$name: it creates nothing" "$log" " create "
+
+    # A second network named tempest-public breaks every later subnet list on
+    # "More than one Network exists", and the lookup in hack/ci-run-tempest.sh
+    # stops on two external networks.
+    run_external_network_script "$tmp" "$job" fail no
+    code=$?
+    log=$(cat "$tmp/openstack.log")
+    assert_nonzero_exit "$name: a pod whose network list fails exits non-zero" "$code"
+    assert_not_contains "$name: it creates no network on a failed list" "$log" \
+      "network create"
+    assert_not_contains "$name: nor a subnet" "$log" "subnet create"
+
+    run_external_network_script "$tmp" "$job" yes fail
+    code=$?
+    log=$(cat "$tmp/openstack.log")
+    assert_nonzero_exit "$name: a pod whose subnet list fails exits non-zero" "$code"
+    assert_not_contains "$name: it creates no subnet on a failed list" "$log" \
+      "subnet create"
+  done
 }
 
 # Each of the three CR names the tempest neutron leg waits on is generated, and
@@ -545,6 +751,7 @@ test_a_keystone_only_change_produces_no_neutron_leg
 test_build_e2e_images_builds_the_neutron_images
 test_chaos_network_leg_runs_the_neutron_suites
 test_tempest_neutron_leg_is_wired
+test_tempest_neutron_leg_has_an_external_network
 test_matrix_cr_names_match_the_tempest_fixtures
 
 echo ""

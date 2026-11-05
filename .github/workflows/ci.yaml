@@ -5269,7 +5269,7 @@ jobs:
       # OVN daemon image the OVNCentral rolls out is loaded next to the two
       # operator images and the neutron service image. The tempest image is
       # kind-loaded here for the same reason as on the glance and barbican legs:
-      # the catalog-setup Job runs it in-cluster.
+      # the catalog-setup and external-network Jobs run it in-cluster.
       - name: Load neutron images into kind
         if: matrix.service == 'neutron'
         run: |
@@ -5583,6 +5583,20 @@ jobs:
           kubectl apply -f ${{ matrix.config-dir }}/04-neutron-cr.yaml
           kubectl wait neutron/${{ matrix.neutron-cr-name }} -n openstack \
             --for=condition=Ready --timeout=600s
+      # The router, floating-IP and external-network suites need a public
+      # network, so a Job creates the flat external network tempest-public and
+      # its subnet once the Neutron is Ready; the run step resolves its id into
+      # tempest.conf. The tempest image the Job runs is already on the node
+      # (Load neutron images into kind). Its log, printed here, carries the
+      # network's flags and the extension aliases the DVR exclusion in
+      # exclude-tests.txt rests on.
+      - name: Create the external network for Tempest
+        if: matrix.service == 'neutron'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/05-external-network-job.yaml
+          kubectl wait --for=condition=complete job/neutron-tempest-external-network -n openstack \
+            --timeout=300s
+          kubectl logs job/neutron-tempest-external-network -n openstack
       # The cinder leg bootstraps the block-storage catalog (the Cinder and
       # Glance services plus their endpoints via a setup Job) before its CRs:
       # the Cinder reconciler authenticates against that catalog entry, and the
