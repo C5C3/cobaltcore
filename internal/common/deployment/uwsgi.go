@@ -136,13 +136,14 @@ func BuildUWSGICommand(p UWSGICommandParams) []string {
 	cmd = append(cmd, p.ArgsAfterHTTP...)
 	if httpKeepAlive {
 		// The idle timeout is the value of the keep-alive flag itself; uWSGI binds
-		// the optional value only in the attached form. The > 1 arm is the same
-		// defense in depth the counts get above: the Minimum=2 marker rejects lower
-		// values at admission, and only keystone's webhook re-checks it. A spec
-		// that bypassed both renders the bare flag, because =1 is the bare flag's
-		// own meaning, =0 would turn keep-alive off, and a negative value would
-		// make uWSGI exit.
-		if p.UWSGI != nil && p.UWSGI.HTTPKeepAliveTimeout != nil && *p.UWSGI.HTTPKeepAliveTimeout > 1 {
+		// the optional value only in the attached form. A value below
+		// MinUWSGIHTTPKeepAliveTimeout renders the bare flag, the same defense in
+		// depth the counts get above: =1 is the bare flag's own meaning, =0 would
+		// turn keep-alive off, and a negative value would make uWSGI exit. Such a
+		// value comes from a spec stored under the earlier Minimum=1, which the API
+		// server keeps on an update that leaves the field unchanged, or from one
+		// that bypassed admission.
+		if p.UWSGI != nil && p.UWSGI.HTTPKeepAliveTimeout != nil && *p.UWSGI.HTTPKeepAliveTimeout >= commonv1.MinUWSGIHTTPKeepAliveTimeout {
 			cmd = append(cmd, "--http-keepalive="+strconv.Itoa(int(*p.UWSGI.HTTPKeepAliveTimeout)))
 		} else {
 			cmd = append(cmd, "--http-keepalive")

@@ -11,7 +11,7 @@ import "k8s.io/utils/ptr"
 // existing CRs without it continue to work with hardcoded defaults in the
 // reconciler. The cross-field CEL rule mirrors the validating webhooks:
 // httpKeepAliveTimeout is only meaningful when httpKeepAlive is true, otherwise
-// the --http-keepalive-timeout flag is never emitted.
+// the keep-alive idle timeout is never rendered.
 // +kubebuilder:validation:XValidation:rule="!has(self.httpKeepAliveTimeout) || !has(self.httpKeepAlive) || self.httpKeepAlive",message="httpKeepAliveTimeout may only be set when httpKeepAlive is true"
 type UWSGISpec struct {
 	// Processes is the number of uWSGI worker processes.
@@ -45,16 +45,18 @@ type UWSGISpec struct {
 	// +kubebuilder:validation:Minimum=1
 	Harakiri *int32 `json:"harakiri,omitempty"`
 
-	// HTTPKeepAliveTimeout bounds the idle timeout (seconds) of keep-alive
-	// connections via the uWSGI --http-keepalive-timeout flag.
-	// A bounded timeout forces clients to reconnect through the Service so
-	// they never reuse a socket to a removed pod. When nil, the flag is
-	// omitted from the uWSGI command. Zero is rejected to avoid the
-	// unbounded-timeout interpretation. A value at or below
+	// HTTPKeepAliveTimeout bounds the idle time (seconds) a keep-alive
+	// connection may stay open between two requests. It is rendered as the
+	// value of the uWSGI keep-alive flag, --http-keepalive=<n>. A bounded
+	// timeout forces clients to reconnect through the Service so they never
+	// reuse a socket to a removed pod. When nil, the bare --http-keepalive is
+	// rendered and an idle connection stays open until the router's 60-second
+	// socket timeout. The minimum is 2 because uWSGI reads 1 as keep-alive
+	// without an idle timer and 0 as keep-alive off. A value at or below
 	// preStopSleepSeconds is recommended so idle sockets have closed before
 	// SIGTERM reaches uWSGI.
 	// +optional
-	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Minimum=2
 	HTTPKeepAliveTimeout *int32 `json:"httpKeepAliveTimeout,omitempty"`
 }
 
@@ -99,3 +101,10 @@ const (
 	// the owning operator's uwsgi spec leaves httpKeepAlive nil (unset).
 	DefaultUWSGIHTTPKeepAlive = true
 )
+
+// MinUWSGIHTTPKeepAliveTimeout is the lowest httpKeepAliveTimeout that bounds
+// the idle time: uWSGI reads --http-keepalive=1 as keep-alive without an idle
+// timer and --http-keepalive=0 as keep-alive off. The keystone webhook and the
+// shared command builder read it; the +kubebuilder:validation:Minimum=2 marker
+// on UWSGISpec.HTTPKeepAliveTimeout keeps the same literal in sync separately.
+const MinUWSGIHTTPKeepAliveTimeout int32 = 2
