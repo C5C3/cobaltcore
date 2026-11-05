@@ -5,11 +5,11 @@
 # Validation-marker wave: Keystone CR that sets spec.uwsgi.httpKeepAliveTimeout
 # while spec.uwsgi.httpKeepAlive is false. The cross-field CEL XValidation
 # rule on UWSGISpec (and the validating webhook) reject the combination
-# because the --http-keepalive-timeout flag is never emitted without
-# keep-alive. Admission must reject this CR with an $error referencing the
-# substring "httpKeepAliveTimeout". This raw-YAML fixture is the primary
-# coverage for the rule: a typed Go client drops httpKeepAlive: false via
-# omitempty before the schema default re-adds it.
+# because the idle timeout is never rendered without keep-alive. Admission
+# must reject this CR with an $error referencing the substring
+# "httpKeepAliveTimeout". This raw-YAML fixture is the primary coverage for
+# the rule: a typed Go client drops httpKeepAlive: false via omitempty before
+# the schema default re-adds it.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone
 metadata:
