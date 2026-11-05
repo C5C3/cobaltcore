@@ -88,8 +88,9 @@ chunked transfer encoding, and the limit raises uWSGI's 1 MB cap on one request
 chunk to 16 MiB: glanceclient uploads a body of unknown size in 1 MiB chunks,
 which the default rejects with `OSError: unable to receive chunked part` and a
 500, so cinder's upload-to-image and nova's snapshot upload fail under the
-default. Keep-alive (`--http-keepalive`, and `--http-keepalive-timeout` when
-set) and `--harakiri` are emitted from the `spec.apiServer.uwsgi` fields. uWSGI
+default. Keep-alive (`--http-keepalive`, or `--http-keepalive=<n>` when
+`httpKeepAliveTimeout` is set) and `--harakiri` are emitted from the
+`spec.apiServer.uwsgi` fields. uWSGI
 loads the WSGI app through `--wsgi-file
 /var/lib/openstack/bin/glance-wsgi-api` (the image-shipped shim) and passes both
 oslo.config `--config-dir` roots, the immutable config ConfigMap
