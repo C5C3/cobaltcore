@@ -1,0 +1,97 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Creates the flat external network tempest-public and its subnet. The router,
+# floating-IP and external-network suites need a public network to set router
+# gateways on and to allocate floating IPs from (issue #1614).
+# hack/ci-run-tempest.sh looks up the network's id and renders it as
+# [network] public_network_id, because Neutron assigns network ids itself.
+#
+# The physical network is physnet1, the name
+# tests/e2e/neutron/provider-network-smoke/02-ovnchassis-cr.yaml uses. The leg
+# runs no chassis, so nothing maps it: the suites drive the API, and OVN
+# reports router ports up without a chassis. The network is neither shared nor
+# the default external network. NetworksTest.test_external_network_visibility
+# checks subnet visibility against the shared flag, and the plugin's
+# test_wildcard_policy_delete_blocked_on_default_ext marks a network default
+# itself. The subnet is 203.0.113.0/24 (RFC 5737), outside the kind node, pod
+# and service ranges and outside project_network_cidr. Its pool holds about
+# 250 addresses, enough for the floating IPs and router gateways two stestr
+# workers hold at once.
+#
+# It runs after the Neutron is Ready and authenticates as the bootstrap admin
+# (keystone-admin Secret). The network and the subnet each have their own guard,
+# so a pod retried between the two creates converges.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: neutron-tempest-external-network
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-neutron-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Both creates are guarded by a name-list grep, as in the
+              # catalog-setup Job: `openstack <resource> show` of a missing
+              # resource can exit 0 on this image, so a show-guard would skip
+              # the create; listing + an exact-match grep is unambiguous.
+              # Each list is an assignment of its own, so set -e stops the pod
+              # on a failed list. Inside the if condition a failed list reads
+              # as "absent", and a retried pod would create a second
+              # tempest-public, which Neutron accepts.
+              networks=$(openstack network list --external --format value -c Name)
+              if ! grep -qx tempest-public <<<"${networks}"; then
+                openstack network create --external --provider-network-type flat --provider-physical-network physnet1 tempest-public
+              fi
+
+              subnets=$(openstack subnet list --network tempest-public --format value -c Name)
+              if ! grep -qx tempest-public-subnet <<<"${subnets}"; then
+                openstack subnet create --network tempest-public --subnet-range 203.0.113.0/24 --gateway 203.0.113.1 --no-dhcp tempest-public-subnet
+              fi
+
+              echo "OK: external network tempest-public with subnet tempest-public-subnet"
+              openstack network show tempest-public --format value -c id -c router:external -c shared -c provider:network_type -c provider:physical_network
+              # The extension aliases this Neutron serves. exclude-tests.txt
+              # leaves out the classes of an extension that is missing here.
+              openstack extension list --network --format value -c Alias | sort
