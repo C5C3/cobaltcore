@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.uwsgi.httpKeepAliveTimeout of 1 violates the Minimum=2 marker on the
+# shared UWSGISpec: uWSGI reads --http-keepalive=1 as keep-alive without an
+# idle timer, so the value bounds nothing. httpKeepAlive stays unset, so the
+# CEL pairing rule holds and the Minimum is the only failing rule. The schema
+# answers first with "should be greater than or equal to 2"; the keystone
+# webhook twin ("must be at least 2") is defense in depth.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: invalid-uwsgi-keepalive-timeout-minimum
+spec:
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    host: db.example.com
+    port: 3306
+    database: keystone
+    secretRef:
+      name: keystone-db
+  cache:
+    backend: dogpile.cache.pymemcache
+    servers:
+    - "mc:11211"
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  uwsgi:
+    httpKeepAliveTimeout: 1

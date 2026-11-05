@@ -505,3 +505,14 @@ spec:
             ($error != null): true
             (contains($error, 'image.tag')): true
             (contains($error, 'must be 2026.1 or later')): true
+  # spec.uwsgi.httpKeepAliveTimeout: 1 must be rejected by the Minimum=2 marker
+  # (uWSGI reads 1 as keep-alive without an idle timer); the keystone webhook
+  # twin is defense in depth.
+  - try:
+    - apply:
+        file: 40-uwsgi-keepalive-timeout-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.uwsgi.httpKeepAliveTimeout')): true
+            (contains($error, 'should be greater than or equal to 2')): true

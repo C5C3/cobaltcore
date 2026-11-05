@@ -599,11 +599,11 @@ FIXTURES: list[Fixture] = [
 # Validation-marker wave: Keystone CR that sets spec.uwsgi.httpKeepAliveTimeout
 # while spec.uwsgi.httpKeepAlive is false. The cross-field CEL XValidation
 # rule on UWSGISpec (and the validating webhook) reject the combination
-# because the --http-keepalive-timeout flag is never emitted without
-# keep-alive. Admission must reject this CR with an $error referencing the
-# substring "httpKeepAliveTimeout". This raw-YAML fixture is the primary
-# coverage for the rule: a typed Go client drops httpKeepAlive: false via
-# omitempty before the schema default re-adds it.""",
+# because the idle timeout is never rendered without keep-alive. Admission
+# must reject this CR with an $error referencing the substring
+# "httpKeepAliveTimeout". This raw-YAML fixture is the primary coverage for
+# the rule: a typed Go client drops httpKeepAlive: false via omitempty before
+# the schema default re-adds it.""",
     ),
     Fixture(
         filename="18-prestop-not-less-than-grace.yaml",
@@ -950,6 +950,21 @@ FIXTURES: list[Fixture] = [
 # operator version supports. The CRD tag pattern admits it and the validating
 # webhook rejects it (validation.OpenStackReleaseFloor) with "image.tag" and
 # "2026.1 or later".""",
+    ),
+    Fixture(
+        filename="40-uwsgi-keepalive-timeout-below-minimum.yaml",
+        name="invalid-uwsgi-keepalive-timeout-minimum",
+        trailing="""\
+  uwsgi:
+    httpKeepAliveTimeout: 1
+""",
+        comment="""\
+# spec.uwsgi.httpKeepAliveTimeout of 1 violates the Minimum=2 marker on the
+# shared UWSGISpec: uWSGI reads --http-keepalive=1 as keep-alive without an
+# idle timer, so the value bounds nothing. httpKeepAlive stays unset, so the
+# CEL pairing rule holds and the Minimum is the only failing rule. The schema
+# answers first with "should be greater than or equal to 2"; the keystone
+# webhook twin ("must be at least 2") is defense in depth.""",
     ),
 ]
 
