@@ -160,6 +160,126 @@ test_pymemcache_backend_bounded() {
   assert_pymemcache_backend_bounded
 }
 
+# --- Test 7: a lost database answers 503 instead of no response ---
+test_lost_database_patch_applied() {
+  echo "Test: a token request answers 503 at once while the database is unreachable"
+  # Proves the image build applied
+  # patches/keystone/<release>/0003-answer-unexpected-errors-instead-of-dropping-the-connection.patch
+  # (#1610). Upstream lets the DBConnectionError of POST /v3/auth/tokens
+  # escape to uWSGI, which writes no response, and the --http-keepalive of
+  # the keystone-operator's command then holds an HTTP/1.1 client until the
+  # router's 60-second socket timeout. The test runs the operator's default
+  # uWSGI command (reconcile_deployment_pin_test.go) against a database
+  # address that refuses connections. [database] max_retries = 0 makes the
+  # first request fail at once, as every request of a running Keystone does
+  # once its database goes away; with the operator's -1, oslo.db retries the
+  # first connect of a new engine instead. The fernet and credential keys
+  # let the worker load. Against an unpatched image the client's 10-second
+  # timeout expires and the output names TimeoutError.
+  local script output exit_code=0
+  script=$(
+    cat <<'EOF'
+mkdir -p /etc/keystone/keystone.conf.d
+cat > /etc/keystone/keystone.conf.d/keystone.conf <<'CONF'
+[database]
+connection = mysql+pymysql://keystone:unused@127.0.0.1:9/keystone
+max_retries = 0
+
+[cache]
+enabled = false
+CONF
+for setup in fernet_setup credential_setup; do
+  keystone-manage --config-dir /etc/keystone/keystone.conf.d/ "$setup" \
+    --keystone-user "$(id -u)" --keystone-group "$(id -g)" >> /tmp/manage.log 2>&1 ||
+    { cat /tmp/manage.log; exit 1; }
+done
+uwsgi --http :5000 --http-keepalive --log-master \
+  --log-format '%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))' \
+  --wsgi-file /var/lib/openstack/bin/keystone-wsgi-public --master --lazy-apps --need-app \
+  --processes 2 --threads 1 --pyargv=--config-dir=/etc/keystone/keystone.conf.d/ \
+  > /tmp/uwsgi.log 2>&1 &
+/var/lib/openstack/bin/python - <<'PY' || { tail -n 20 /tmp/uwsgi.log; exit 1; }
+import http.client
+import json
+import sys
+import time
+import uuid
+
+deadline = time.monotonic() + 60
+while True:
+    conn = http.client.HTTPConnection("127.0.0.1", 5000, timeout=5)
+    try:
+        conn.request("GET", "/v3")
+        if conn.getresponse().status == 200:
+            break
+    except (OSError, http.client.HTTPException):
+        pass
+    finally:
+        conn.close()
+    if time.monotonic() > deadline:
+        sys.exit("GET /v3 did not answer 200 within 60 s")
+    time.sleep(1)
+
+auth = {"auth": {
+    "identity": {"methods": ["password"], "password": {"user": {
+        "name": "admin", "password": "unused", "domain": {"id": "default"}}}},
+    "scope": {"project": {"name": "admin", "domain": {"id": "default"}}},
+}}
+# HTTP/1.1 without "Connection: close": the keep-alive connection that
+# upstream leaves without an answer for 60 seconds.
+conn = http.client.HTTPConnection("127.0.0.1", 5000, timeout=10)
+try:
+    conn.request("POST", "/v3/auth/tokens", json.dumps(auth),
+                 {"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    body = resp.read().decode()
+except (OSError, http.client.HTTPException) as exc:
+    sys.exit("POST /v3/auth/tokens: %s: %s" % (type(exc).__name__, exc))
+try:
+    code = json.loads(body)["error"]["code"]
+except (ValueError, KeyError, TypeError):
+    code = None
+if (resp.status != 503 or code != 503 or "127.0.0.1" in body
+        or "DBConnectionError" in body):
+    sys.exit("POST /v3/auth/tokens answered %d: %s" % (resp.status, body[:200]))
+
+# werkzeug's own 404 keeps its answer, on the same connection.
+try:
+    conn.request("GET", "/v3/%s" % uuid.uuid4().hex)
+    resp = conn.getresponse()
+    resp.read()
+except (OSError, http.client.HTTPException) as exc:
+    sys.exit("GET /v3/<unrouted>: %s: %s" % (type(exc).__name__, exc))
+if resp.status != 404:
+    sys.exit("GET /v3/<unrouted> answered %d, expected 404" % resp.status)
+PY
+# The master logs a request after the response is sent.
+answered=no
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if grep -Eq 'POST /v3/auth/tokens => generated [1-9][0-9]* bytes in [0-9]+ msecs \(HTTP/1\.1 503\)' \
+    /tmp/uwsgi.log; then
+    answered=yes
+    break
+  fi
+  sleep 1
+done
+if [ "$answered" != yes ]; then
+  echo "uWSGI logged no answered 503 for POST /v3/auth/tokens"
+  tail -n 20 /tmp/uwsgi.log
+  exit 1
+fi
+if grep 'Unhandled error' /tmp/uwsgi.log; then
+  exit 1
+fi
+EOF
+  )
+  output=$(docker run --rm --tmpfs /etc/keystone:uid=42424,gid=42424,mode=0755 \
+    "$IMAGE" sh -c "$script" 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+
+  assert_eq "a lost database answers 503 within the client timeout" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== keystone container verification tests ==="
 echo "Image: $IMAGE"
@@ -175,6 +295,8 @@ echo ""
 test_implied_role_patch_applied
 echo ""
 test_pymemcache_backend_bounded
+echo ""
+test_lost_database_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

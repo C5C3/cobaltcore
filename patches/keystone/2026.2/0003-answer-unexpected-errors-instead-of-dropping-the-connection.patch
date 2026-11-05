@@ -1,0 +1,282 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Answer unexpected errors instead of dropping the connection
+
+keystone/server/flask/application.py sets PROPAGATE_EXCEPTIONS=True and
+registers error handlers only for the exceptions of
+keystone.exception.KEYSTONE_API_EXCEPTIONS and for TypeError. Any other
+exception a view raises leaves the Flask application, passes every
+middleware and reaches the WSGI server, and uWSGI writes no response
+for it. On a keep-alive connection of uWSGI's HTTP router
+(--http-keepalive, as the keystone-operator renders it) the client then
+waits for the router's 60 second socket timeout and sees the connection
+closed. The token issue path hits this while the database is
+unreachable: POST /v3/auth/tokens reads it through keystone/auth/core.py
+and the resource SQL backend, oslo.db raises DBConnectionError,
+Flask-RESTful 0.3.10's error_router re-raises it into Flask's
+handle_user_exception, and Flask finds no handler. In the
+e2e-chaos-random run 41903435759 of CobaltCore, Keystone logged
+"Unhandled error: oslo_db.exception.DBConnectionError" and
+"POST /v3/auth/tokens => generated 0 bytes in 79 msecs (HTTP/1.1 500)"
+after openstack-db-0 was killed, and a starting nova-compute got
+"Remote end closed connection without response" 60 seconds later.
+Token validation does not escape: middleware_exceptions in
+keystone/server/flask/request_processing/middleware/auth_context.py
+wraps AuthContextMiddleware.process_request and answers a JSON 500.
+
+The application now registers _handle_unknown_keystone_exception for
+Exception as well. Flask picks the most specific registered class, so
+keystone's own exceptions keep _handle_keystone_exception and TypeError
+keeps its 400. The handler returns werkzeug's HTTP errors (an unrouted
+path's 404) unchanged, answers DBConnectionError with
+exception.ServiceUnavailable (503) and every other exception with
+exception.UnexpectedError, a JSON 500 whose message names the
+exception only when insecure_debug is set. middleware_exceptions
+answers DBConnectionError with ServiceUnavailable as well, so a lost
+database answers 503 on the issue and the validation path alike;
+keystoneauth retries a 503 when a caller sets status_code_retries.
+Every other oslo.db error (DBDeadlock, DBError) keeps the 500.
+_handle_keystone_exception logs the 503 and the 500 with LOG.exception
+inside the except block Flask calls it from, so the DBConnectionError
+traceback stays in the log.
+
+PROPAGATE_EXCEPTIONS stays True. Setting it to False would make
+Flask-RESTful 0.3.10 answer every non-HTTP exception on keystone's
+routes with {"message": "Internal Server Error"} before a registered
+handler runs, keystone's own API errors (400, 401, 404, 409) included.
+With a handler for Exception the setting only governs an exception
+raised inside a handler.
+
+Keystone 30.0.0 already defines exception.ServiceUnavailable (upstream
+commit 0e2166742f, "feat: Register ec2credential as a marker auth
+method", which raises it when the ec2credential auth method is not
+enabled). The patch raises that class and defines none.
+
+No upstream test asserts that an exception escapes the application or
+that middleware_exceptions answers 500 for a database error, so no
+existing test moves. test_unrouted_path_is_not_jsonified_404 removes
+the test application's 404 handler, so its unrouted 404 now reaches the
+Exception handler; the test stays unchanged and pins the pass-through.
+The patch adds TestKeystoneFlaskUnexpectedErrors to
+keystone/tests/unit/server/test_keystone_flask.py, whose four tests
+make authenticate_for_token raise: DBConnectionError answers 503,
+DBDeadlock and RuntimeError answer a JSON 500 without the exception's
+text, and TypeError still answers 400. It adds two tests to
+AuthContextMiddlewareTest in keystone/tests/unit/test_middleware.py
+whose fetch_token raises: DBConnectionError answers 503, RuntimeError
+500. Without the code hunks test_lost_database_answers_503,
+test_other_database_error_answers_500,
+test_unexpected_error_answers_json_500 and
+test_lost_database_during_validation_answers_503 fail.
+
+test_lost_database_patch_applied in
+tests/container-images/verify_keystone.sh runs the built image under
+the keystone-operator's uWSGI command against a database address that
+refuses connections and asserts that POST /v3/auth/tokens answers 503
+within ten seconds.
+The 2026.1 twin,
+patches/keystone/2026.1/0003-answer-unexpected-errors-instead-of-dropping-the-connection.patch,
+carries the same hunks and backports the class.
+
+Applies to keystone 30.0.0 (2026.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/keystone/server/flask/application.py b/keystone/server/flask/application.py
+index ba8ca8360..cffa33a26 100644
+--- a/keystone/server/flask/application.py
++++ b/keystone/server/flask/application.py
+@@ -14,9 +14,11 @@ import functools
+ import sys
+ 
+ import flask
++from oslo_db import exception as db_exception
+ import oslo_i18n
+ from oslo_log import log
+ from oslo_middleware import healthcheck
++from werkzeug import exceptions as werkzeug_exceptions
+ from werkzeug.middleware import dispatcher
+ 
+ from keystone.api import auth
+@@ -174,10 +176,19 @@ def _handle_keystone_exception(error):
+ 
+ 
+ def _handle_unknown_keystone_exception(error):
++    # The handler is registered for Exception, so werkzeug's own HTTP errors
++    # (an unrouted path's 404) reach it too; they keep the response werkzeug
++    # renders.
++    if isinstance(error, werkzeug_exceptions.HTTPException):
++        return error
+     # translate a python exception to something we can properly render as
+     # an API error.
+     if isinstance(error, TypeError):
+         new_exc = exception.ValidationError(error)
++    elif isinstance(error, db_exception.DBConnectionError):
++        # The database is unreachable: answer 503, which keystoneauth
++        # retries when a caller sets status_code_retries, instead of a 500.
++        new_exc = exception.ServiceUnavailable()
+     else:
+         new_exc = exception.UnexpectedError(error)
+     return _handle_keystone_exception(new_exc)
+@@ -206,6 +217,11 @@ def application_factory(name='public'):
+     # specifically TypeError. It will render as a 400 error, but presented in
+     # a "web-ified" manner
+     app.register_error_handler(TypeError, _handle_unknown_keystone_exception)
++    # Any other exception renders as a 500 error, or a 503 error when the
++    # database is unreachable; werkzeug's own HTTP errors (404, 405) keep
++    # their answer. Without a handler an exception escapes to the WSGI
++    # server, which sends no response at all.
++    app.register_error_handler(Exception, _handle_unknown_keystone_exception)
+ 
+     # Add core before request functions
+     app.before_request(req_logging.log_request_info)
+diff --git a/keystone/server/flask/request_processing/middleware/auth_context.py b/keystone/server/flask/request_processing/middleware/auth_context.py
+index adf8504eb..ffec5fca2 100644
+--- a/keystone/server/flask/request_processing/middleware/auth_context.py
++++ b/keystone/server/flask/request_processing/middleware/auth_context.py
+@@ -17,6 +17,7 @@ import re
+ import wsgiref.util
+ 
+ from keystonemiddleware import auth_token
++from oslo_db import exception as db_exception
+ import oslo_i18n
+ from oslo_log import log
+ from oslo_serialization import jsonutils
+@@ -103,6 +104,15 @@ def middleware_exceptions(method):
+                 request=request,
+                 user_locale=best_match_language(request),
+             )
++        except db_exception.DBConnectionError as e:
++            # The database is unreachable: answer 503, as the token issue
++            # path does, instead of a 500.
++            LOG.exception(e)
++            return render_exception(
++                exception.ServiceUnavailable(),
++                request=request,
++                user_locale=best_match_language(request),
++            )
+         except Exception as e:
+             LOG.exception(e)
+             return render_exception(
+diff --git a/keystone/tests/unit/server/test_keystone_flask.py b/keystone/tests/unit/server/test_keystone_flask.py
+index 2d4158f27..fa48d5526 100644
+--- a/keystone/tests/unit/server/test_keystone_flask.py
++++ b/keystone/tests/unit/server/test_keystone_flask.py
+@@ -17,6 +17,7 @@ import uuid
+ import fixtures
+ import flask
+ import flask_restful
++from oslo_db import exception as db_exception
+ from oslo_policy import policy
+ from oslo_serialization import jsonutils
+ from testtools import matchers
+@@ -803,3 +804,60 @@ class TestKeystoneFlaskUnrouted404(rest.RestfulTestCase):
+             self.assertIn('text/html', resp.headers['Content-Type'])
+             # Ensure the more generic flask/werkzeug 404 response is emitted
+             self.assertTrue(b'404 Not Found' in resp.data)
++
++
++class TestKeystoneFlaskUnexpectedErrors(rest.RestfulTestCase):
++    """An exception a view raises answers JSON instead of escaping."""
++
++    def _post_token(self, error, expected_status_code):
++        self.useFixture(
++            fixtures.MockPatch(
++                'keystone.api._shared.authentication.authenticate_for_token',
++                side_effect=error,
++            )
++        )
++        auth_json = {
++            'auth': {
++                'identity': {
++                    'methods': ['password'],
++                    'password': {
++                        'user': {
++                            'name': uuid.uuid4().hex,
++                            'password': uuid.uuid4().hex,
++                            'domain': {'id': CONF.identity.default_domain_id},
++                        }
++                    },
++                },
++                'scope': {'project': {'id': uuid.uuid4().hex}},
++            }
++        }
++        return self.test_client().post(
++            '/v3/auth/tokens',
++            json=auth_json,
++            expected_status_code=expected_status_code,
++        )
++
++    def test_lost_database_answers_503(self):
++        resp = self._post_token(
++            db_exception.DBConnectionError(), expected_status_code=503
++        )
++        self.assertEqual(503, resp.json['error']['code'])
++        self.assertEqual('Service Unavailable', resp.json['error']['title'])
++
++    def test_other_database_error_answers_500(self):
++        resp = self._post_token(
++            db_exception.DBDeadlock(), expected_status_code=500
++        )
++        self.assertEqual(500, resp.json['error']['code'])
++        self.assertEqual('Internal Server Error', resp.json['error']['title'])
++
++    def test_unexpected_error_answers_json_500(self):
++        self.config_fixture.config(insecure_debug=False)
++        marker = uuid.uuid4().hex
++        resp = self._post_token(RuntimeError(marker), expected_status_code=500)
++        self.assertEqual(500, resp.json['error']['code'])
++        self.assertNotIn(marker, resp.get_data(as_text=True))
++
++    def test_type_error_still_answers_400(self):
++        resp = self._post_token(TypeError('x'), expected_status_code=400)
++        self.assertEqual(400, resp.json['error']['code'])
+diff --git a/keystone/tests/unit/test_middleware.py b/keystone/tests/unit/test_middleware.py
+index 53529e284..4031d3044 100644
+--- a/keystone/tests/unit/test_middleware.py
++++ b/keystone/tests/unit/test_middleware.py
+@@ -20,6 +20,7 @@ from unittest import mock
+ import uuid
+ 
+ import fixtures
++from oslo_db import exception as db_exception
+ import webtest
+ 
+ from keystone.auth import core as auth_core
+@@ -784,3 +785,35 @@ class AuthContextMiddlewareTest(
+                 path='/v3/projects', method='get', headers=headers
+             )
+             token_mock.assert_called_once()
++
++    def test_lost_database_during_validation_answers_503(self):
++        self.useFixture(
++            fixtures.MockPatchObject(
++                auth_context.AuthContextMiddleware,
++                'fetch_token',
++                side_effect=db_exception.DBConnectionError(),
++            )
++        )
++        headers = {authorization.AUTH_TOKEN_HEADER: uuid.uuid4().hex}
++        resp = self._do_middleware_response(
++            headers=headers, status=http.client.SERVICE_UNAVAILABLE
++        )
++        self.assertEqual(
++            http.client.SERVICE_UNAVAILABLE, resp.json['error']['code']
++        )
++
++    def test_unexpected_error_during_validation_answers_500(self):
++        self.useFixture(
++            fixtures.MockPatchObject(
++                auth_context.AuthContextMiddleware,
++                'fetch_token',
++                side_effect=RuntimeError('x'),
++            )
++        )
++        headers = {authorization.AUTH_TOKEN_HEADER: uuid.uuid4().hex}
++        resp = self._do_middleware_response(
++            headers=headers, status=http.client.INTERNAL_SERVER_ERROR
++        )
++        self.assertEqual(
++            http.client.INTERNAL_SERVER_ERROR, resp.json['error']['code']
++        )
