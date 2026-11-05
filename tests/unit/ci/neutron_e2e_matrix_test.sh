@@ -594,6 +594,12 @@ test_tempest_neutron_leg_has_an_external_network() {
     assert_file_contains_fixed "$name carries the DVR exclusion of #1614" \
       "${dir}exclude-tests.txt" \
       "tracked-by: https://github.com/C5C3/cobaltcore/issues/1614"
+    # The plugin's router classes keep every router until the class ends, and
+    # the default of ten per project runs out mid-class. The serial retry
+    # passes such a test alone, so a dropped override shows up as flakes, not
+    # as a red leg.
+    assert_file_contains_fixed "$name raises the router quota of the suite's projects" \
+      "${dir}04-neutron-cr.yaml" 'quota_router: "100"'
   done
 
   # The two guards are what make a retried pod converge: the network create

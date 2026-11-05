@@ -64,6 +64,15 @@ spec:
     centralRef:
       name: ovn-neutron-tempest-2026-1
   keystoneEndpoint: http://keystone-neutron-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+  # Neutron allows ten routers per project by default, and the dynamic-credential
+  # projects of the suite take the default. The plugin's router classes keep
+  # every router they create until the class tears down: RoutersTest has 18
+  # router creates across its tests and ExternalGWMultihomingRoutersTest 20.
+  # With the default, a class that ran enough of them first failed its next
+  # create with OverQuota on router (a local 2026.2 run for issue #1614).
+  extraConfig:
+    quotas:
+      quota_router: "100"
   serviceUser:
     username: admin
     projectName: admin

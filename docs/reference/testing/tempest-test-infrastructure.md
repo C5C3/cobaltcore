@@ -219,7 +219,10 @@ and `admin.test_external_network*` of core Tempest, and `test_routers`,
 `test_floating_ips`, `admin.test_external_network_extension` and
 `admin.test_floating_ips_admin_actions` of the plugin. No OVN chassis runs
 there. `ovn-northd` reports a router port up without one, so router
-interfaces and gateways reach ACTIVE.
+interfaces and gateways reach ACTIVE. The plugin's router classes keep every
+router they create until the class ends, and Neutron allows ten routers per
+project by default, so `04-neutron-cr.yaml` raises `[quotas] quota_router` to
+100 through `spec.extraConfig`.
 
 `exclude-tests.txt` leaves out the classes gated on the `dvr` extension, which
 ML2/OVN does not serve. `api_extensions = all` tells Tempest every extension is
