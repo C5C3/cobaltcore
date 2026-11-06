@@ -21,8 +21,8 @@
 #     it, and the overrides reach it the same way
 #   - the script is executable, parses, and make shellcheck lints it
 #   - an edit to the script runs the e2e-operator jobs of the eight service
-#     operators, through tests/e2e/lib/** for seven of them and by name for
-#     neutron, and neither the c5c3 nor the ovn job
+#     operators and of ovn, through tests/e2e/lib/** for seven of them and by
+#     name for neutron and ovn, and not the c5c3 job
 #   - each of the eight service network-policy suites applies the fixture of
 #     the table below and calls the probe with its pods and ports: the
 #     target's first drop before any other probe, the outside drop after the
@@ -58,6 +58,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_yaml.sh
 source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
+# shellcheck source=tests/lib/ci_resolve.sh
+source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 
 SCRIPT="$PROJECT_ROOT/tests/e2e/lib/assert-networkpolicy-enforced.sh"
 USAGE="usage: assert-networkpolicy-enforced.sh <namespace> <pod> <expect> <host> [<port>...]"
@@ -432,22 +434,38 @@ test_the_script_parses_and_is_linted() {
 
 # --- Test 8: the path filters ---
 test_the_filters_name_the_probe() {
-  echo "Test: an edit to the probe runs the leg of every service operator and no other"
+  echo "Test: an edit to the probe runs the leg of every operator but c5c3"
 
-  local op block
+  local op block filters=()
   for op in keystone horizon glance placement barbican cinder nova; do
     block="$(filter_block "tests_e2e_$op")"
     assert_contains "tests_e2e_$op lists the shared directory" "$block" "'tests/e2e/lib/**'"
   done
-  assert_contains "tests_e2e_neutron names the probe" "$(filter_block tests_e2e_neutron)" \
-    "'tests/e2e/lib/assert-networkpolicy-enforced.sh'"
-  # c5c3 and ovn run no network-policy suite.
-  for op in c5c3 ovn; do
+  # The network-policy-egress suites of neutron and ovn run the probe, which
+  # their filters name beside the other shared scripts they run.
+  for op in neutron ovn; do
     block="$(filter_block "tests_e2e_$op")"
-    assert_not_empty "tests_e2e_$op exists" "$block"
-    assert_not_contains "tests_e2e_$op leaves the probe out" "$block" "assert-networkpolicy-enforced.sh"
+    assert_contains "tests_e2e_$op names the probe" "$block" \
+      "'tests/e2e/lib/assert-networkpolicy-enforced.sh'"
     assert_not_contains "tests_e2e_$op leaves the shared directory out" "$block" "tests/e2e/lib/**"
   done
+  # c5c3 runs no network-policy suite.
+  block="$(filter_block tests_e2e_c5c3)"
+  assert_not_empty "tests_e2e_c5c3 exists" "$block"
+  assert_not_contains "tests_e2e_c5c3 leaves the probe out" "$block" "assert-networkpolicy-enforced.sh"
+  assert_not_contains "tests_e2e_c5c3 leaves the shared directory out" "$block" "tests/e2e/lib/**"
+
+  # Replay the resolver with every tests_e2e filter an edit to the probe sets:
+  # the ones that list the shared directory or name the probe.
+  for op in $(ci_all_operators); do
+    block="$(filter_block "tests_e2e_$op")"
+    if grep -qF -e "'tests/e2e/lib/**'" -e "'tests/e2e/lib/assert-networkpolicy-enforced.sh'" <<<"$block"; then
+      filters+=("FILTER_tests_e2e_$op=true")
+    fi
+  done
+  assert_eq "an edit to the probe runs the eight service legs and ovn" \
+    'e2e-operators={"operator":["keystone","horizon","glance","placement","barbican","ovn","neutron","cinder","nova"]}' \
+    "$(resolve_output e2e-operators refs/heads/main "$(ci_all_operators)" ${filters[@]+"${filters[@]}"})"
 }
 
 # pod_field <file> <pod> <yq expression>: the expression on the named Pod of
