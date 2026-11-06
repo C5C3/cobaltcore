@@ -130,18 +130,32 @@ reconcile. Use the HelmRelease patch above instead.
 
 ## Step 2 — Verify
 
-On kind v0.32 and later this checks the policy's shape and reconciliation
-under enforcement. These commands do not attempt traffic outside the allow-list.
-Restart the operator to test new connections; existing connections can remain
-open after a policy change:
+On the kind devstack this step checks the policy's shape, that the operator
+still reconciles under the enforced policy, and that a fresh connection from
+the operator pod reaches the API server. The step sends no traffic outside the
+allow-list.
+
+Restart the operator. A connection opened before the policy existed stays open,
+so the restart makes the operator open its connections again:
 
 ```bash
 kubectl -n glance-system rollout restart deploy/glance-operator
 kubectl -n glance-system rollout status deploy/glance-operator --timeout=5m
 ```
 
-If the rollout times out, inspect the operator logs and the API-server rules
-using the troubleshooting steps below.
+What the restart shows depends on the CNI. A CNI that isolates a new pod before
+its containers start, as the
+[Kubernetes NetworkPolicy contract](https://kubernetes.io/docs/concepts/services-networking/network-policies/#pod-lifecycle)
+requires, judges the new pod's first API server connection: under a wrong
+`kubeApiServer` rule the rollout does not finish within the timeout and the new
+pod never turns `Ready`. kindnet adds a new pod to its policy set a moment after
+the pod starts. The operator opens its API server connection in that moment and
+keeps it, so on the kind devstack the rollout finishes and the pod turns `Ready`
+under a wrong rule too. On kind, only the fresh-connection check at the end of
+this step judges the rule.
+
+When the rollout times out, see
+[Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
 
 ```bash
 kubectl -n glance-system get networkpolicy
@@ -166,6 +180,92 @@ Set the replica count on the `ControlPlane` CR, not on the projected
 `spec.deployment.replicas` on every reconcile, so a direct edit of the child is
 reverted.
 
+Finally, check the `kubeApiServer` rule on a fresh connection, once the
+restarted pod has run for at least one minute. The block adds an ephemeral
+container to the operator pod. The container shares the pod's network, so the
+policy judges its connections as it judges the operator's. It runs the image
+of the Keystone API Deployment, which ships `python3` and which the devstack's
+single node already holds, and opens one new TCP connection to every address
+and port of the `kubernetes` Endpoints. The block waits up to three minutes
+for the check to end, then prints the state of the check container and its
+log:
+
+```bash
+CHECK='
+import socket, sys
+for ep in sys.argv[1:]:
+    host, port = ep.rsplit(":", 1)
+    try:
+        socket.create_connection((host, int(port)), timeout=5).close()
+        print(ep, "connected")
+    except socket.timeout:
+        print(ep, "timed out")
+    except OSError as exc:
+        print(ep, exc)
+print("endpoints checked:", len(sys.argv) - 1)
+'
+if POD=$(kubectl -n glance-system get pods \
+     -l app.kubernetes.io/name=glance-operator,app.kubernetes.io/instance=glance-operator \
+     -o jsonpath='{.items[0].metadata.name}') &&
+   KS=$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}') &&
+   IMG=$(kubectl -n openstack get deploy "${KS}" \
+     -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}') &&
+   EPS=$(kubectl get endpoints kubernetes -n default -o json \
+     | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip):\($p)"') &&
+   [ -n "${POD}" ] && [ -n "${IMG}" ] && [ -n "${EPS}" ]; then
+  NAME="apiserver-check-$(date +%s)"
+  kubectl -n glance-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
+    --container="${NAME}" -- python3 -u -c "${CHECK}" ${EPS} &&
+  for _ in $(seq 90); do
+    DONE=$(kubectl -n glance-system get pod "${POD}" \
+      -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state.terminated.reason}")
+    [ -n "${DONE}" ] && break
+    sleep 2
+  done &&
+  kubectl -n glance-system get pod "${POD}" \
+    -o jsonpath="{.status.ephemeralContainerStatuses[?(@.name==\"${NAME}\")].state}{'\n'}" &&
+  kubectl -n glance-system logs "pod/${POD}" -c "${NAME}"
+else
+  echo "could not read the operator pod, the Keystone image or the endpoints; nothing was added" >&2
+fi
+```
+
+The first line must show a `terminated` state with reason `Completed`. The
+last line must read `endpoints checked: N`, and every line between them must
+end in `connected`, as on the kind devstack:
+
+```text
+{"terminated":{"containerID":"containerd://d0af3b80a47d77c57535cd38a77f062d8eeaeb1b0210bf2f3d89ec554b3905bc","exitCode":0,"finishedAt":"2026-11-06T15:47:48Z","reason":"Completed","startedAt":"2026-11-06T15:47:48Z"}}
+172.18.0.2:6443 connected
+endpoints checked: 1
+```
+
+A `running` state, or a `waiting` state with reason `ContainerCreating`,
+means the check has not ended yet: run the block's last two `kubectl`
+commands again. Any other `waiting` reason, such as `ImagePullBackOff` or
+`RunContainerError`, means the node could not pull or start the image, and
+the state's `message` names the cause. A `terminated` state with a log that
+lacks the last line means the check failed: the state's `reason` and
+`exitCode` and the log say why. An empty first line means the node has
+not reported the check container yet: check that the node is `Ready`
+with `kubectl get nodes`, then run the block's last two `kubectl`
+commands again.
+
+A line that ends in `timed out` means the policy drops new connections to that
+endpoint: the rule misses its address or its port. Any other message, such as
+`[Errno 111] Connection refused`, means something answered or the route is
+broken; kindnet drops a denied connection without an answer. The ephemeral
+container exits after the check and stays in the pod's spec until the next
+rollout replaces the pod. Adding it needs the `patch` verb on
+`pods/ephemeralcontainers` in the operator's namespace. That verb lets its
+holder mount the operator's ServiceAccount token and act with the operator's
+rights, so run the check as a cluster admin and do not grant the verb to a
+separate verification role. `--profile=restricted` lets it start in a
+namespace that enforces the restricted Pod Security Standard.
+
+When a line ends in `timed out`, see
+[Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
+
 ## Troubleshooting
 
 ### Reconcile timeouts / leader-election churn
@@ -173,6 +273,8 @@ reverted.
 **Symptom:** operator logs show `Get https://<kube-apiserver>: i/o timeout` or
 leader-election lease renewals fail with `context deadline exceeded`, and the
 `glance-operator` pod restarts.
+On the kind devstack the first sign can instead be a `timed out` line from
+the fresh-connection check of the Verify step.
 
 **Diagnosis:** the egress allow-list does not match the API server the operator
 actually dials. Either `kubeApiServer.cidrs` is missing one or more of the
