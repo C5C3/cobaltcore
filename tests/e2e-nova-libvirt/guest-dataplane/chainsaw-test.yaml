@@ -1,0 +1,474 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the data plane of a real guest on Nova's libvirt
+# driver (2026.1 release). Two cirros 0.6.3 guests boot under QEMU's TCG
+# emulation on the one kind node, each with a NIC on one tenant network, and
+# the probe server gets a Cinder volume on NFS. The probe server writes its
+# probe lines to its serial console (guest-user-data.sh), and the suite reads
+# them through the compute API (guest-lib.sh):
+#   - the address DHCP handed out equals the one Neutron assigned, and the
+#     metadata service returns the server's instance id
+#   - the probe server pings the peer, and a counter written to the attached
+#     volume reads back, in five or more contiguous ok lines each
+#   - deleting the ICMP rule of the peer's security group stops the pings, and
+#     re-creating it lets them through again
+#
+# Later steps add the CI form of the lab's faults F1 and F2 (a PodChaos
+# pod-kill of libvirt and of nova-compute under the running guest), a read of
+# the counter on the backend, and four Tempest scenarios.
+#
+# The stack is the one of ../../e2e/nova/compute-node-pool under the nova-pool
+# prefix, whose fixtures 00 to 11 the suite applies by path, as ../server-boot
+# does, with two patches: spec.nova on the Neutron and
+# spec.endpoints.cinder.enabled on the Nova. The fixtures of this directory
+# add the Neutron notifier account, Cinder on the kind NFS server, the cirros
+# image, the metadata agent and the client pod every openstack call runs in.
+# libvirtd and the pool are ../server-boot/00-libvirt.yaml and
+# 01-novacompute-libvirt.yaml.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# libvirtd, the chassis and the nova-compute pod run with hostNetwork and own
+# /run/libvirt, /run/openvswitch and /var/lib/nova on the one kind node, so no
+# other chassis or compute suite may run beside this one.
+#
+# ── The teardown is step cleanups, not finally ───────────────────────
+# A per-step `finally:` runs as soon as its own step ends and would take the
+# pool, libvirtd or the stack down under the next step. A step `cleanup:` is
+# deferred to the end of the test, and the cleanups run in reverse step order:
+# the guests go before the pool whose drain waits for them, the pool before
+# the Nova whose API its drain needs, and the node labels go last. Chainsaw
+# registers a step's cleanup once the step runs, so a failure in any later
+# step still removes the guests first.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nova-libvirt-guest-dataplane
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # As ../server-boot: the stack takes about 8 minutes to Ready, and the
+    # pool's first status needs the nova-compute pod up against libvirtd.
+    assert: 10m
+    exec: 12m
+  steps:
+  # ── Step 1: Label the node ─────────────────────────────────────────────
+  # The labels of ../server-boot step 1. The node's name goes into the
+  # ConfigMap the later steps hand their ids through.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true \
+            topology.kubernetes.io/zone=nova-pool-az1 \
+            openstack.c5c3.io/nova-compute-pool=libvirt --overwrite
+          # Re-created, so no id of an earlier run is read back.
+          kubectl delete configmap nova-pool-guest -n "$NAMESPACE" --ignore-not-found
+          kubectl create configmap nova-pool-guest -n "$NAMESPACE" --from-literal=node="$NODE"
+          echo "OK: labelled node $NODE"
+    cleanup:
+    - script:
+        shell: bash
+        content: |
+          NODE="$(kubectl get configmap nova-pool-guest -n "$NAMESPACE" \
+            -o jsonpath='{.data.node}' 2>/dev/null || true)"
+          if [ -n "$NODE" ]; then
+            kubectl label node "$NODE" openstack.c5c3.io/chassis- \
+              topology.kubernetes.io/zone- openstack.c5c3.io/nova-compute-pool- || true
+            echo "OK: removed the suite's labels from node $NODE"
+          fi
+          kubectl delete configmap nova-pool-guest -n "$NAMESPACE" --ignore-not-found || true
+  # ── Step 2: Bring up the stack, Cinder and the metadata agent ──────────
+  - try:
+    - script:
+        shell: bash
+        timeout: 30m
+        content: |
+          set -euo pipefail
+          FIXTURES=../../e2e/nova/compute-node-pool
+
+          # run_job <name> <fixture> <timeout>: the Job is deleted first because
+          # a Job's pod template is immutable. On the deadline the log and the
+          # pod list of the run say why.
+          run_job() {
+            kubectl delete job "$1" -n "$NAMESPACE" --ignore-not-found
+            kubectl apply -f "$2"
+            kubectl wait --for=condition=complete "job/$1" -n "$NAMESPACE" --timeout="$3" || {
+              kubectl logs -n "$NAMESPACE" "job/$1" 2>&1 || true
+              kubectl get pods -n "$NAMESPACE" -l job-name="$1" -o wide
+              exit 1
+            }
+          }
+
+          # One vhost per suite: nova's RPC topics are named after the service
+          # rather than after the CR. See ../../e2e/cinder/broker-vhost.sh.
+          ../../e2e/cinder/broker-vhost.sh create nova-pool nova-pool-messaging openstack
+
+          kubectl apply -f "$FIXTURES/00-keystone-cr.yaml"
+          kubectl wait --for=condition=Ready --timeout=8m \
+            keystone/keystone-nova-pool -n "$NAMESPACE"
+          echo "OK: Keystone/keystone-nova-pool is Ready"
+
+          # Ready before the seed: the step 2 cleanup deletes the cirros image
+          # through this pod, so it exists whenever the image can. It is the
+          # suite's first pod on the tempest image, so a cold pull on a local
+          # cluster gets the 5m of the Jobs below.
+          kubectl apply -f 06-client-pod.yaml
+          kubectl wait --for=condition=Ready --timeout=5m \
+            pod/nova-pool-guest-client -n "$NAMESPACE"
+          echo "OK: the client pod is Ready"
+
+          run_job nova-pool-catalog-setup "$FIXTURES/01-catalog-setup-job.yaml" 5m
+          echo "OK: the compute, placement, image and network rows are registered"
+          kubectl apply -f 00-notifier-secret.yaml
+          run_job nova-pool-catalog-extras 01-catalog-extras-job.yaml 5m
+          echo "OK: the block-storage row, neutron-nova and the service role of admin are in place"
+
+          kubectl apply -f "$FIXTURES/02-messaging-secret.yaml"
+          kubectl apply -f "$FIXTURES/03-ovncentral-cr.yaml"
+          kubectl apply -f "$FIXTURES/04-neutron-cr.yaml"
+          # The notifier: the guests' ports go through the real
+          # network-vif-plugged path.
+          kubectl patch neutron neutron-nova-pool -n "$NAMESPACE" --type=merge -p \
+            '{"spec":{"nova":{"serviceUser":{"username":"neutron-nova","projectName":"service","userDomainName":"Default","projectDomainName":"Default","secretRef":{"name":"nova-pool-neutron-notifier","key":"password"}}}}}'
+          for fixture in 05-placement-cr.yaml 06-glance-cr.yaml 07-glancebackend-cr.yaml; do
+            kubectl apply -f "$FIXTURES/$fixture"
+          done
+          kubectl apply -f 02-cinderbackend-cr.yaml
+          kubectl apply -f 03-cinder-cr.yaml
+          for target in ovncentral/nova-pool-ovn neutron/neutron-nova-pool \
+                        placement/placement-nova-pool glance/glance-nova-pool \
+                        glancebackend/glance-nova-pool-s3 cinder/cinder-nova-pool \
+                        cinderbackend/nfs1; do
+            kubectl wait --for=condition=Ready --timeout=8m "$target" -n "$NAMESPACE"
+            echo "OK: $target is Ready"
+          done
+
+          run_job nova-pool-cirros-seed 04-image-seed-job.yaml 5m
+          echo "OK: the cirros image is registered"
+
+          kubectl apply -f "$FIXTURES/09-metadata-secret.yaml"
+          kubectl apply -f "$FIXTURES/10-nova-cr.yaml"
+          kubectl patch nova nova-pool -n "$NAMESPACE" --type=merge \
+            -p '{"spec":{"endpoints":{"cinder":{"enabled":true}}}}'
+          kubectl wait --for=condition=Ready --timeout=10m nova/nova-pool -n "$NAMESPACE"
+          echo "OK: Nova/nova-pool is Ready with [cinder]"
+
+          # The chassis the nova-compute pod waits for.
+          kubectl apply -f "$FIXTURES/11-ovnchassis-cr.yaml"
+          kubectl wait --for=condition=Ready --timeout=5m \
+            ovnchassis/nova-pool-chassis -n "$NAMESPACE"
+          echo "OK: OVNChassis/nova-pool-chassis is Ready"
+
+          kubectl apply -f 05-neutronmetadataagent-cr.yaml
+          kubectl wait --for=condition=Ready --timeout=5m \
+            neutronmetadataagent/nova-pool-metadata-agent -n "$NAMESPACE"
+          echo "OK: NeutronMetadataAgent/nova-pool-metadata-agent is Ready"
+    catch: &guest-dump
+    - script:
+        shell: bash
+        content: |
+          . ./guest-lib.sh
+          gl_dump
+    cleanup:
+    # Best-effort. The cirros image goes first, through the API while Keystone
+    # and Glance are up: Glance then deletes its object in the glance-images
+    # bucket, which outlives the Glance and its schema. Left there, the object
+    # would fail the seed of a later run on this cluster with the S3 store's
+    # Duplicate. The Nova and the Cinder go next and are waited for: their
+    # finalizers drive the MariaDB teardown and need the credentials that come
+    # down with the rest. The pool, libvirtd and the guests are already gone:
+    # their own cleanups run before this one.
+    - script:
+        shell: bash
+        timeout: 15m
+        content: |
+          . ./guest-lib.sh
+          gl_os image delete "$GL_IMAGE" || true
+          kubectl delete pod nova-pool-guest-client -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=60s || true
+          kubectl delete neutronmetadataagent nova-pool-metadata-agent -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=180s || true
+          kubectl delete nova nova-pool -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=300s || true
+          kubectl delete ovnchassis nova-pool-chassis -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=180s || true
+          kubectl delete cinderbackend nfs1 -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=300s || true
+          kubectl delete cinder cinder-nova-pool -n "$NAMESPACE" \
+            --ignore-not-found --wait --timeout=300s || true
+          kubectl delete glancebackend glance-nova-pool-s3 -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete glance glance-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete placement placement-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete neutron neutron-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete ovncentral nova-pool-ovn -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete job nova-pool-catalog-setup nova-pool-catalog-extras \
+            nova-pool-cirros-seed -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete secret nova-pool-messaging neutron-nova-pool-messaging \
+            nova-pool-metadata-secret nova-pool-neutron-notifier \
+            -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete keystone keystone-nova-pool -n "$NAMESPACE" --ignore-not-found || true
+          kubectl delete memcached keystone-nova-pool-cache -n "$NAMESPACE" --ignore-not-found || true
+          ../../e2e/cinder/broker-vhost.sh delete nova-pool || true
+  # ── Step 3: Start libvirtd ─────────────────────────────────────────────
+  # ../server-boot step 3. QEMU outlives the libvirt-e2e pod (hostPID) and the
+  # domain definitions are the node's, so ../server-boot/libvirt-domains.sh
+  # removes every domain an earlier suite left before the pool exists, and
+  # every domain again before the DaemonSet goes.
+  - try:
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          set -euo pipefail
+          kubectl apply -f ../server-boot/00-libvirt.yaml
+          kubectl rollout status daemonset/libvirt-e2e -n "$NAMESPACE" --timeout=10m
+          POD="$(kubectl get pod -n "$NAMESPACE" -o name -l app.kubernetes.io/name=libvirt-e2e)"
+          test -n "$POD" || {
+            echo "ERROR: no libvirt-e2e pod was scheduled; no node carries the pool label"
+            exit 1
+          }
+          kubectl exec -n "$NAMESPACE" "$POD" -c libvirtd -- virsh -c qemu:///system version
+          kubectl exec -n "$NAMESPACE" "$POD" -c libvirtd -- \
+            virsh -c qemu:///system domcapabilities --virttype qemu --arch x86_64
+          ../server-boot/libvirt-domains.sh
+    catch: *guest-dump
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 4m
+        content: |
+          ../server-boot/libvirt-domains.sh || true
+          kubectl delete -f ../server-boot/00-libvirt.yaml --ignore-not-found || true
+  # ── Step 4: Apply the pool ─────────────────────────────────────────────
+  # ../server-boot step 4, and its cleanup.
+  - try:
+    - script:
+        content: |
+          set -eu
+          kubectl apply -f ../server-boot/01-novacompute-libvirt.yaml
+    - assert:
+        resource:
+          apiVersion: nova.openstack.c5c3.io/v1alpha1
+          kind: NovaCompute
+          metadata:
+            name: pool-libvirt
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            # The `|| `[]`` guard keeps the filter from aborting on the first
+            # poll, while status.nodes is still absent.
+            ((nodes || `[]`)[0]):
+              phase: Active
+              zone: nova-pool-az1
+              serviceStatus: enabled
+              serviceState: up
+            installedImage: ghcr.io/c5c3/nova-compute:2026.1
+    catch: *guest-dump
+    cleanup:
+    # A pool that is still draining would hold its finalizer for as long as
+    # Nova reports an instance, so after a failed run the suite strips the
+    # finalizer, the documented escape, rather than wedging the shared
+    # namespace.
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          kubectl delete novacompute pool-libvirt -n "$NAMESPACE" --ignore-not-found --wait=false || true
+          kubectl wait --for=delete novacompute/pool-libvirt \
+            -n "$NAMESPACE" --timeout=180s 2>/dev/null || true
+          if kubectl get novacompute pool-libvirt -n "$NAMESPACE" >/dev/null 2>&1; then
+            kubectl patch novacompute pool-libvirt -n "$NAMESPACE" --type=merge \
+              -p '{"metadata":{"finalizers":null}}' || true
+          fi
+  # ── Step 5: Boot the guests and read their probes ──────────────────────
+  # The peer first, so its address can go into the probe server's user-data,
+  # then the probe server and its volume. Both guests run the flavor m1.guest:
+  # cirros boots in 256 MiB as on the lab. The step records the ids the later
+  # steps need in the ConfigMap nova-pool-guest.
+  - try:
+    - script:
+        shell: bash
+        timeout: 25m
+        content: |
+          set -euo pipefail
+          . ./guest-lib.sh
+          FLAVOR=4e0a7e57-0000-4000-8000-0000000000c1
+
+          left="$(gl_os server list --name '^nova-pool-guest-' -f value -c ID)"
+          if [ -n "$left" ]; then
+            echo "FAIL: a nova-pool-guest server is left from an earlier run: $left"
+            exit 1
+          fi
+
+          gl_os flavor show "$FLAVOR" >/dev/null 2>&1 ||
+            gl_os flavor create --id "$FLAVOR" --vcpus 1 --ram 256 --disk 1 m1.guest
+          gl_os network show "$GL_NET" >/dev/null 2>&1 || gl_os network create "$GL_NET"
+          gl_os subnet show "$GL_SUBNET" >/dev/null 2>&1 ||
+            gl_os subnet create --network "$GL_NET" --subnet-range "$GL_CIDR" "$GL_SUBNET"
+          # The probe server's group keeps its default egress rules alone. The
+          # peer's group adds one ingress rule, ICMP from the subnet, which
+          # step 6 deletes and re-creates.
+          gl_os security group show "$GL_PROBE_SG" >/dev/null 2>&1 ||
+            gl_os security group create "$GL_PROBE_SG"
+          gl_os security group show "$GL_PEER_SG" >/dev/null 2>&1 ||
+            gl_os security group create "$GL_PEER_SG"
+          RULE="$(gl_os security group rule list "$GL_PEER_SG" --ingress --protocol icmp \
+            -f value -c ID | awk 'NR == 1')"
+          if [ -z "$RULE" ]; then
+            RULE="$(gl_os security group rule create --ingress --protocol icmp \
+              --remote-ip "$GL_CIDR" "$GL_PEER_SG" -f value -c id)"
+          fi
+          gl_record icmp-rule "$RULE"
+          echo "OK: m1.guest, $GL_NET on $GL_CIDR and the two security groups are in place"
+
+          gl_os server create --image "$GL_IMAGE" --flavor "$FLAVOR" --network "$GL_NET" \
+            --security-group "$GL_PEER_SG" "$GL_PEER" >/dev/null
+          gl_wait_status server "$GL_PEER" ACTIVE 600
+          PEER_IP="$(gl_os server show "$GL_PEER" -f json -c addresses |
+            jq -r --arg n "$GL_NET" '.addresses[$n][0] // empty')"
+          if [ -z "$PEER_IP" ]; then
+            echo "FAIL: $GL_PEER has no address on $GL_NET"
+            exit 1
+          fi
+          gl_record peer-ip "$PEER_IP"
+
+          # The user-data travels as an argument: containerd closes the stdin of
+          # an exec once its output ends, so piped input can be lost.
+          kubectl exec -n "$NAMESPACE" "$GL_CLIENT" -- \
+            sh -c 'printf %s "$1" | base64 -d >/tmp/guest-user-data.sh' _ \
+            "$(sed "s|@PEER@|$PEER_IP|" guest-user-data.sh | base64 -w0)"
+          gl_os server create --image "$GL_IMAGE" --flavor "$FLAVOR" --network "$GL_NET" \
+            --security-group "$GL_PROBE_SG" --user-data /tmp/guest-user-data.sh \
+            "$GL_PROBE" >/dev/null
+          gl_wait_status server "$GL_PROBE" ACTIVE 600
+
+          gl_os volume show "$GL_VOLUME" >/dev/null 2>&1 ||
+            gl_os volume create --size 1 "$GL_VOLUME" >/dev/null
+          gl_wait_status volume "$GL_VOLUME" available 300
+          gl_os server add volume "$GL_PROBE" "$GL_VOLUME"
+          gl_wait_status volume "$GL_VOLUME" in-use 300
+
+          SHOW="$(gl_os server show "$GL_PROBE" -f json)"
+          PROBE_ID="$(jq -r '.id' <<<"$SHOW")"
+          INSTANCE="$(jq -r '."OS-EXT-SRV-ATTR:instance_name"' <<<"$SHOW")"
+          HOST="$(jq -r '."OS-EXT-SRV-ATTR:host"' <<<"$SHOW")"
+          PROBE_IP="$(jq -r --arg n "$GL_NET" '.addresses[$n][0] // empty' <<<"$SHOW")"
+          VOLUME_ID="$(gl_os volume show "$GL_VOLUME" -f value -c id)"
+          gl_record probe-id "$PROBE_ID"
+          gl_record instance-name "$INSTANCE"
+          gl_record host "$HOST"
+          gl_record probe-ip "$PROBE_IP"
+          gl_record volume-id "$VOLUME_ID"
+          echo "OK: $GL_PROBE ($PROBE_ID) runs as $INSTANCE on $HOST at $PROBE_IP, with volume $VOLUME_ID; peer at $PEER_IP"
+
+          # That cirros runs a #! user-data script as root at boot is the
+          # assumption this wait proves.
+          end=$((SECONDS + 600))
+          while :; do
+            if out="$(gl_console "$GL_PROBE")"; then
+              DHCP="$(awk '$2 == "dhcp"' <<<"$out" | tail -n 1)"
+              METADATA="$(awk '$2 == "metadata"' <<<"$out" | tail -n 1)"
+              if [ -n "$DHCP" ] && [ -n "$METADATA" ]; then
+                break
+              fi
+              out="FAIL: no dhcp or metadata line in the console log of $GL_PROBE"
+            fi
+            if [ "$SECONDS" -ge "$end" ]; then
+              echo "$out"
+              exit 1
+            fi
+            sleep "$GL_POLL"
+          done
+          echo "$DHCP"
+          echo "$METADATA"
+
+          read -r _ _ _ _ result address _ <<<"$DHCP"
+          if [ "$result" != ok ]; then
+            echo "FAIL: the guest got no DHCP address"
+            exit 1
+          fi
+          if [ "$address" != "$PROBE_IP" ]; then
+            echo "FAIL: the guest has $address, Neutron assigned $PROBE_IP"
+            exit 1
+          fi
+          echo "OK: DHCP gave the guest $address, the address Neutron assigned"
+
+          WANT="i-${INSTANCE#instance-}"
+          read -r _ _ _ _ result id _ <<<"$METADATA"
+          if [ "$result" != ok ]; then
+            echo "FAIL: the guest could not reach the metadata service"
+            exit 1
+          fi
+          if [ "$id" != "$WANT" ]; then
+            echo "FAIL: metadata returned $id, want $WANT"
+            exit 1
+          fi
+          echo "OK: the metadata service returned $id for $INSTANCE"
+
+          # East-west reachability, and the volume written and read back.
+          gl_wait_window "$GL_PROBE" net 0 5 600
+          gl_wait_window "$GL_PROBE" disk 0 5 600
+    catch: &console-dump
+    - script:
+        shell: bash
+        content: |
+          . ./guest-lib.sh
+          gl_dump
+          gl_dump_chaos
+    cleanup:
+    # Runs before the pool's cleanup drains the node. The client pod is
+    # re-created when it is gone, since every openstack call runs in it.
+    - script:
+        shell: bash
+        timeout: 12m
+        content: |
+          . ./guest-lib.sh
+          if ! kubectl get pod "$GL_CLIENT" -n "$NAMESPACE" >/dev/null 2>&1; then
+            kubectl apply -f 06-client-pod.yaml || true
+            kubectl wait --for=condition=Ready "pod/$GL_CLIENT" -n "$NAMESPACE" --timeout=60s || true
+          fi
+          gl_teardown_guests || true
+  # ── Step 6: Deny ICMP to the peer, then allow it again ─────────────────
+  # The peer's group loses its one ingress rule, so the probe server's pings
+  # fail; the rule comes back, so they pass again. The disk probe keeps
+  # writing throughout. A failure here ends the test before the faults, and
+  # step 5's cleanup removes the group with the guests.
+  - try:
+    - script:
+        shell: bash
+        timeout: 5m
+        content: |
+          set -euo pipefail
+          . ./guest-lib.sh
+          console="$(gl_console "$GL_PROBE")" || { echo "$console"; exit 1; }
+          N="$(gl_last_seq net <<<"$console")" || { echo "$N"; exit 1; }
+          D="$(gl_last_seq disk <<<"$console")" || { echo "$D"; exit 1; }
+          RULE="$(gl_recall icmp-rule)" || { echo "$RULE"; exit 1; }
+
+          gl_os security group rule delete "$RULE"
+          echo "OK: deleted the ICMP rule $RULE of $GL_PEER_SG after net line $N"
+          L="$(gl_wait_result "$GL_PROBE" net lost "$N" 60)" || { echo "$L"; exit 1; }
+          echo "OK: net line $L says lost"
+
+          # The deny holds: every net line after L says lost, three or more
+          # of them without a gap.
+          gl_wait_window "$GL_PROBE" net "$L" 3 60 lost
+
+          RULE="$(gl_os security group rule create --ingress --protocol icmp \
+            --remote-ip "$GL_CIDR" "$GL_PEER_SG" -f value -c id)"
+          gl_record icmp-rule "$RULE"
+          echo "OK: re-created the ICMP rule as $RULE"
+          OK_SEQ="$(gl_wait_result "$GL_PROBE" net ok "$L" 60)" || { echo "$OK_SEQ"; exit 1; }
+          echo "OK: net line $OK_SEQ says ok again"
+
+          console="$(gl_console "$GL_PROBE")" || { echo "$console"; exit 1; }
+          gl_window disk "$D" 3 <<<"$console"
+    catch: *console-dump

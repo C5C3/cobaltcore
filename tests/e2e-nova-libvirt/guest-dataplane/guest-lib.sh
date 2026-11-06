@@ -32,6 +32,12 @@ GL_NET=nova-pool-guest-net
 GL_SUBNET=nova-pool-guest-subnet
 GL_PROBE_SG=nova-pool-guest-probe-sg
 GL_PEER_SG=nova-pool-guest-peer-sg
+# The tenant subnet of the two guests; the peer's ICMP rule admits it.
+# shellcheck disable=SC2034 # read by chainsaw-test.yaml
+GL_CIDR=10.241.0.0/24
+# The cirros image 04-image-seed-job.yaml registers under this fixed id.
+# shellcheck disable=SC2034 # read by chainsaw-test.yaml
+GL_IMAGE=4e0a0000-0000-4000-8000-000000000010
 # The ConfigMap the steps hand ids to each other through.
 GL_STATE=nova-pool-guest
 # The label every chaos object of the suite carries.
@@ -64,6 +70,65 @@ gl_recall() {
     return 1
   fi
   echo "$value"
+}
+
+# gl_wait_status <server|volume> <name> <status> <seconds>: polls the status
+# until it reads the wanted one. A server in ERROR or a volume in an error
+# state ends the wait at once, a server with its fault.
+gl_wait_status() {
+  local kind="$1" name="$2" want="$3" seconds="$4" end status fault=""
+  end=$((SECONDS + seconds))
+  while :; do
+    status="$(gl_os "$kind" show "$name" -f value -c status 2>/dev/null)" || status="unreadable"
+    if [ "$status" = "$want" ]; then
+      echo "OK: $kind $name is $want"
+      return 0
+    fi
+    case "$status" in
+      ERROR | error*)
+        if [ "$kind" = server ]; then
+          fault="$(gl_os server show "$name" -f value -c fault 2>&1)" || true
+        fi
+        echo "FAIL: $kind $name is $status${fault:+: $fault}"
+        return 1
+        ;;
+    esac
+    if [ "$SECONDS" -ge "$end" ]; then
+      echo "FAIL: $kind $name is $status, not $want, after $seconds s"
+      return 1
+    fi
+    sleep "$GL_POLL"
+  done
+}
+
+# gl_wait_compute_up <host> <seconds> <since>: the nova-compute service of
+# the host reads up, and its last report is later than since, a UTC time in
+# the form `date -u +%Y-%m-%dT%H:%M:%S` prints. Nova reads a service as up for
+# 60 s after its last report, so a nova-compute killed a moment ago still
+# reads up; only a report after since shows a live one. The runner and the
+# kind node share one clock.
+gl_wait_compute_up() {
+  local host="$1" seconds="$2" since="$3" end out state updated at
+  end=$((SECONDS + seconds))
+  while :; do
+    out="$(gl_os compute service list --service nova-compute --host "$host" \
+      -f value -c State -c "Updated At" 2>/dev/null)" || out="unreadable"
+    read -r state updated <<<"$out"
+    # The first 14 digits of the time, without its fraction, compare as a
+    # number: 2026-11-06T10:00:05.000000 is 20261106100005.
+    at="${updated%%.*}"
+    at="${at//[!0-9]/}"
+    at="${at:0:14}"
+    if [ "$state" = up ] && [ "${#at}" -eq 14 ] && [ "$at" -gt "${since//[!0-9]/}" ]; then
+      echo "OK: the compute service of $host is up, last report at $updated"
+      return 0
+    fi
+    if [ "$SECONDS" -ge "$end" ]; then
+      echo "FAIL: the compute service of $host is ${state:-absent} with its last report at ${updated:-none}, not up with a report after $since, after $seconds s"
+      return 1
+    fi
+    sleep "$GL_POLL"
+  done
 }
 
 # gl_console <server>: the probe lines of the server's console log. The last
@@ -254,6 +319,12 @@ gl_pids() {
     return 1
   fi
   echo "qemu=$qemu libvirtd=$libvirtd"
+}
+
+# gl_pid <qemu|libvirtd> <gl_pids output>: one PID of the line.
+gl_pid() {
+  local value="${2##*"$1"=}"
+  echo "${value%% *}"
 }
 
 # gl_pod_kill <name> <k=v[,k=v]>: a PodChaos pod-kill of one pod the labels

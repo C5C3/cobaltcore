@@ -1,0 +1,69 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The openstack client of steps 5 to 10. Every later openstack call is a
+# kubectl exec into this pod (gl_os in guest-lib.sh), which saves a Job per
+# call. It carries the environment of the pool's seed Job
+# (../../e2e/nova/compute-node-pool/08-image-seed-job.yaml): the bootstrap
+# admin of keystone-nova-pool.
+#
+# HOME and the user-data file step 5 writes live on the emptyDir at /tmp; the
+# root filesystem stays read-only. The pod calls no Kubernetes API, so no
+# service account token is mounted.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-pool-guest-client
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nova-pool-guest-client
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Always
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: client
+      image: ghcr.io/c5c3/tempest:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      env:
+        - name: HOME
+          value: /tmp
+        - name: OS_AUTH_URL
+          value: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+        - name: OS_IDENTITY_API_VERSION
+          value: "3"
+        - name: OS_USERNAME
+          value: admin
+        - name: OS_USER_DOMAIN_NAME
+          value: Default
+        - name: OS_PROJECT_NAME
+          value: admin
+        - name: OS_PROJECT_DOMAIN_NAME
+          value: Default
+        - name: OS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: keystone-admin
+              key: password
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir: {}

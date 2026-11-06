@@ -12,7 +12,7 @@
 #   2. A copy of the two files whose image.nix carries another sha256 fails,
 #      and the message names both files.
 #   3. The rootLinks path of image.nix ends in the file name of the URL, and
-#      verify_tempest.sh reads that path.
+#      the guest suite's seed Job and verify_tempest.sh read that path.
 #
 # Usage: bash tests/unit/images/tempest_cirros_pin_test.sh
 
@@ -102,14 +102,16 @@ test_one_pin_alone_fails() {
 test_path_and_readers() {
   echo "Test: the rootLinks path carries the URL's file name and its readers name it"
 
-  local rel url path
+  local rel url path reader
   rel="$(sed -n 's/^ *rootLinks\."\(usr\/share\/cirros\/[^"]*\)" = .*/\1/p' "$PROJECT_ROOT/$NIX_FILE")"
   url="$(nix_value "$PROJECT_ROOT" url)"
   path="/$rel"
   assert_not_empty "image.nix places the file below /usr/share/cirros/" "$rel"
   assert_eq "the path ends in the URL's file name" "${url##*/}" "${rel##*/}"
-  assert_file_contains_fixed "verify_tempest.sh reads $path" \
-    "$PROJECT_ROOT/tests/container-images/verify_tempest.sh" "$path"
+  for reader in tests/e2e-nova-libvirt/guest-dataplane/04-image-seed-job.yaml \
+    tests/container-images/verify_tempest.sh; do
+    assert_file_contains_fixed "$reader reads $path" "$PROJECT_ROOT/$reader" "$path"
+  done
 }
 
 # --- Run ---

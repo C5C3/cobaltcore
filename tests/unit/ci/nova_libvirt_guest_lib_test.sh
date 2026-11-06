@@ -25,7 +25,11 @@
 #   5. GL_PIDS_SCRIPT finds the one QEMU of a domain by its -name argument
 #      and libvirtd by argv[0] in a proc tree, and counts neither a scanning
 #      shell's argv nor its own PID; gl_pids prints both, and fails
-#      on two QEMU processes, on none, and when no libvirt pod runs.
+#      on two QEMU processes, on none, and when no libvirt pod runs; gl_pid
+#      reads one of them. gl_wait_status waits for a server or volume status
+#      and fails at once on ERROR with the fault, and gl_wait_compute_up
+#      waits for the host's nova-compute to read up with a report after the
+#      given time, so an up from a report before it does not pass.
 #   6. gl_pod_kill applies a pod-kill of mode one with the suite label and
 #      every label selector, and on a missed AllInjected prints the describe
 #      output and its message.
@@ -77,6 +81,9 @@ mkdir -p "$STUB/bin" "$STUB/consoles"
 #   STUB_VOLUME_SEQ    the volume status reads in order, gone for a missing
 #                      volume (default available)
 #   STUB_NETWORK       the network list (default empty)
+#   STUB_SERVER_SEQ    the server status reads in order (default ACTIVE)
+#   STUB_COMPUTE_SEQ   the compute service State and Updated At in order
+#                      (default up)
 #   STUB_CM            the ConfigMap JSON (default no data)
 cat >"$STUB/bin/kubectl" <<'SH'
 #!/bin/bash
@@ -117,6 +124,13 @@ case "$1" in
         echo "$item"
         ;;
       *" -- openstack network list "*) echo "${STUB_NETWORK:-}" ;;
+      *" -- openstack server show "*" -c status") next server "${STUB_SERVER_SEQ:-ACTIVE}" ;;
+      *" -- openstack server show "*" -c fault") echo "{'code': 500, 'message': 'No valid host was found.'}" ;;
+      *" -- openstack compute service list "*)
+        item="$(next compute "${STUB_COMPUTE_SEQ:-up}")"
+        [ "$item" = fail ] && exit 1
+        echo "$item"
+        ;;
       *" -- bash -c "*) bash -c "${10}" gl-pids "${12}" "$STUB_PROC" ;;
     esac
     ;;
@@ -407,6 +421,52 @@ test_gl_pids() {
   run_lib STUB_LIBVIRT_PODS='{"items":[]}' -- 'gl_pids instance-0000000a'
   assert_eq "no libvirt pod fails" "1" "$GL_RC"
   assert_eq "it says so" "FAIL: no Running libvirt-e2e pod" "$GL_OUT"
+
+  run_lib -- 'gl_pid qemu "qemu=200 libvirtd=100"; gl_pid libvirtd "qemu=200 libvirtd=100"'
+  assert_eq "gl_pid reads one PID each" "200
+100" "$GL_OUT"
+}
+
+# --- Test 5b --------------------------------------------------------------
+test_gl_wait_status() {
+  echo "Test: gl_wait_status and gl_wait_compute_up poll until the wanted state"
+
+  run_lib STUB_SERVER_SEQ="BUILD,BUILD,ACTIVE" -- 'gl_wait_status server nova-pool-guest-peer ACTIVE 60'
+  assert_eq "a server that goes ACTIVE passes" "OK: server nova-pool-guest-peer is ACTIVE" "$GL_OUT"
+  assert_eq "after three reads" "3" "$(grep -c 'server show nova-pool-guest-peer -f value -c status' "$STUB/state/calls")"
+
+  run_lib STUB_SERVER_SEQ="BUILD,ERROR" -- 'gl_wait_status server nova-pool-guest-peer ACTIVE 60'
+  assert_eq "a server in ERROR fails at once" "1" "$GL_RC"
+  assert_eq "with its fault" \
+    "FAIL: server nova-pool-guest-peer is ERROR: {'code': 500, 'message': 'No valid host was found.'}" "$GL_OUT"
+
+  run_lib STUB_VOLUME_SEQ="creating" -- 'gl_wait_status volume nova-pool-guest-vol available 0'
+  assert_eq "a volume that stays creating fails at the bound" \
+    "FAIL: volume nova-pool-guest-vol is creating, not available, after 0 s" "$GL_OUT"
+
+  run_lib STUB_COMPUTE_SEQ="fail,down 2026-11-06T09:59:58.000000,up 2026-11-06T10:00:08.000000,up 2026-11-06T10:00:18.000000" -- \
+    'gl_wait_compute_up kind-control-plane 60 2026-11-06T10:00:10'
+  assert_eq "a compute service that reports up after the given time passes" \
+    "OK: the compute service of kind-control-plane is up, last report at 2026-11-06T10:00:18.000000" "$GL_OUT"
+  assert_eq "after four reads" "4" "$(grep -c 'compute service list' "$STUB/state/calls")"
+  assert_contains "it asks for the host's nova-compute" "$(calls)" \
+    "openstack compute service list --service nova-compute --host kind-control-plane -f value -c State -c Updated At"
+
+  # Nova reads a killed nova-compute as up for 60 s after its last report.
+  run_lib STUB_COMPUTE_SEQ="up 2026-11-06T10:00:08.000000" -- \
+    'gl_wait_compute_up kind-control-plane 0 2026-11-06T10:00:10'
+  assert_eq "an up from a report before the given time fails" "1" "$GL_RC"
+  assert_eq "naming the report" \
+    "FAIL: the compute service of kind-control-plane is up with its last report at 2026-11-06T10:00:08.000000, not up with a report after 2026-11-06T10:00:10, after 0 s" "$GL_OUT"
+
+  run_lib STUB_COMPUTE_SEQ="up 2026-11-06T10:00:10.000000" -- \
+    'gl_wait_compute_up kind-control-plane 0 2026-11-06T10:00:10'
+  assert_eq "a report in the second of the given time does not count" "1" "$GL_RC"
+
+  run_lib STUB_COMPUTE_SEQ="down 2026-11-06T10:00:18.000000" -- \
+    'gl_wait_compute_up kind-control-plane 0 2026-11-06T10:00:10'
+  assert_eq "a compute service that stays down fails" \
+    "FAIL: the compute service of kind-control-plane is down with its last report at 2026-11-06T10:00:18.000000, not up with a report after 2026-11-06T10:00:10, after 0 s" "$GL_OUT"
 }
 
 # --- Test 6 ---------------------------------------------------------------
@@ -597,6 +657,7 @@ test_gl_console
 test_gl_wait_window
 test_gl_wait_result
 test_gl_pids
+test_gl_wait_status
 test_gl_pod_kill
 test_gl_wait_replaced
 test_gl_tempest_verdict
