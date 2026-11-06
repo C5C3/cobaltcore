@@ -81,7 +81,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `nova_chart_egress` | `operators/nova/helm/nova-operator/templates/_helpers.tpl` | the `keystone` and `placement` `test` and `test-integration` legs, whose unit tests check the nova chart's Keystone and Placement egress rules |
 | `image_<svc>` | `images/<svc>/**`, `nix/locks/*/<svc>/**`, `patches/<svc>/**`; `image_nova` also `images/nova-compute/**` | that service's `e2e-operator` leg; `image_keystone` also `keystone-pressure` |
 | `keystone_pressure` | `hack/keystone-pressure-ab.sh`, `hack/dizzy.sh`, `tests/load/keystone-pressure/**` | `keystone-pressure` |
-| `image_ovn`, `image_tempest` | the OVN and Tempest image sources (the Tempest locks included) | the ovn `e2e-operator` job; the Tempest image rebuild |
+| `image_ovn`, `image_tempest` | the OVN and Tempest image sources (the Tempest locks included) | `image_ovn`: the ovn `e2e-operator` job; `image_tempest`: the Tempest image rebuild and `e2e-nova-libvirt` |
 | `image_proxy` | `images/keystone-federation-proxy/**`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | the keystone `e2e-operator` job and the federation proxy image rebuild |
 | `image_libvirt` | `images/libvirt/**`, `nix/pkgs/libvirt.nix`, `flake.nix`, `flake.lock`, `nix/lib/**`, `hack/ci-nix-build-e2e-images.sh` | `e2e-nova-libvirt` and the libvirt image rebuild |
 | `go_common` | `internal/**`, `go.work`, `.golangci.yml`, `flake.nix`, `flake.lock`, `nix/lib/operator-image.nix`, `nix/lib/static-image.nix`, `nix/lib/image-defaults.nix`, `hack/ci-nix-build-e2e-images.sh` | every operator's Go gates and operator image, every `e2e-operator` leg, every `e2e-operator-upgrade` job; a push publishes every operator image |
@@ -1647,21 +1647,32 @@ on any change to the rendered default, so the path needs no job of this size.
 
 ### e2e-nova-libvirt
 
-Runs the `tests/e2e-nova-libvirt/server-boot/` Chainsaw suite, which boots a
-server through Nova's libvirt driver on the one node of a
-`hack/kind-config.yaml` cluster. The suite brings up the 2026.1 stack of
-`tests/e2e/nova/compute-node-pool/` from that suite's own fixtures, starts
-libvirtd in the DaemonSet `libvirt-e2e` and applies a `NovaCompute` pool with
-`virtType: qemu`. The server boots from the stack's 1 MiB zero image under
-QEMU's TCG emulation, which needs no `/dev/kvm` on the runner. The suite
-asserts that the pool is `Ready` with its node `Active` and the compute service
-up, that the rendered `compute-pool.conf` names `libvirt.LibvirtDriver` and
+Runs the two Chainsaw suites of `tests/e2e-nova-libvirt/`, which boot servers
+through Nova's libvirt driver on the one node of a `hack/kind-config.yaml`
+cluster. Both bring up the 2026.1 stack of `tests/e2e/nova/compute-node-pool/`
+from that suite's own fixtures, start libvirtd in the DaemonSet `libvirt-e2e`
+and apply a `NovaCompute` pool with `virtType: qemu`. The guests run under
+QEMU's TCG emulation, which needs no `/dev/kvm` on the runner. The suite root
+sets `failFast: false`, so each suite reports its own verdict.
+
+`server-boot` boots a server from the stack's 1 MiB zero image. It asserts
+that the pool is `Ready` with its node `Active` and the compute service up,
+that the rendered `compute-pool.conf` names `libvirt.LibvirtDriver` and
 `virt_type = qemu`, and that the server goes `ACTIVE` with exactly one running
 domain of type `qemu`. The domain's disk is a qcow2 overlay on a base file
 under `/var/lib/nova/instances/_base/`. Deleting the server removes the domain
-and the instance directory. The guest has no operating system and no NIC: the
-guest boot, KVM, networking and live migration are proven by the lab run of
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md).
+and the instance directory.
+
+`guest-dataplane` adds Cinder on the kind NFS server, the Neutron notifier and
+the metadata agent to the stack, and boots two cirros guests on one tenant
+network, one of them with a volume. Probes inside that guest prove the DHCP
+address, the metadata service, pings to the peer, a security-group deny and
+the volume. The suite then kills libvirt and nova-compute under the running
+guest with a Chaos Mesh PodChaos (the lab's faults F1 and F2), reads the
+volume's counter on the backend, and runs four `tempest.scenario` tests. KVM,
+live migration and north-south traffic are proven by the lab run of
+[Quick Start (metal-stack)](../../quick-start-metal-stack.md). See
+[Nova E2E Test Suites](../testing/nova-e2e-tests.md#the-libvirt-leg).
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-nova-libvirt == 'true'`, the upstream
@@ -1670,33 +1681,45 @@ guest boot, KVM, networking and live migration are proven by the lab run of
 The job runs on `self-hosted` with `continue-on-error: true` under the
 kernel-module rule above: the pool's chassis gate needs an `OVNChassis` on the
 node, and that needs `openvswitch` on the runner host. It runs alone on its
-runner, since `hack/kind-config.yaml` binds host ports 443 and 8428, and its
-wall is 90 minutes. The cluster comes from `config: hack/kind-config.yaml`, and
-`setup-e2e-infra` receives `WITH_OVN_KERNEL_MODULES: "true"` and
-`WITH_MESSAGING: "true"`. `hack/ci-deploy-operator.sh` then installs the
-keystone, placement, glance, ovn, neutron and nova operators in that order,
-each into `<op>-system`, and the suite runs through `make e2e-nova-libvirt`,
-the target a developer calls locally.
+runner, since `hack/kind-config.yaml` binds host ports 443 and 8428. Its wall
+is 150 minutes: about 34 before the guest suite, about 4 for the cinder
+images, NFS and Chaos Mesh, and about 50 for the guest suite, with headroom
+for TCG. The job's comment asks for the value to be re-derived from the first
+green run. The cluster comes from `config: hack/kind-config.yaml`, and
+`setup-e2e-infra` receives `WITH_OVN_KERNEL_MODULES: "true"`,
+`WITH_MESSAGING: "true"`, `WITH_NFS: "true"` and `WITH_CHAOS_MESH: "true"`.
+`hack/ci-deploy-operator.sh` then installs the keystone, placement, glance,
+ovn, neutron, cinder and nova operators in that order, each into
+`<op>-system`, and the suites run through `make e2e-nova-libvirt`, the target
+a developer calls locally.
 
-The job loads 15 images: the six operators at `:dev`, `keystone`, `placement`,
-`glance`, `neutron`, `nova` and `nova-compute` at `2026.1`, the OVN daemon image
-at the tag `hack/ci-resolve-ovn-version.sh` reads from `images/ovn/source.json`,
-`tempest:2026.1`, whose `openstack` client the suite's Jobs run, and
-`libvirt:latest`, which the suite's DaemonSet runs with `IfNotPresent`. The
+The job loads 17 images: the seven operators at `:dev`, `keystone`,
+`placement`, `glance`, `neutron`, `cinder`, `nova` and `nova-compute` at
+`2026.1`, the OVN daemon image at the tag `hack/ci-resolve-ovn-version.sh`
+reads from `images/ovn/source.json`, `tempest:2026.1`, and `libvirt:latest`,
+which the suites' DaemonSet runs with `IfNotPresent`. The tempest image runs
+the `openstack` client of the suites' Jobs and of the guest suite's client pod
+and Tempest run, and it carries the cirros image the guest suite seeds. The
 image map resolves `libvirt:latest` to this run's build when the pull request
 changed an input of the libvirt image, and otherwise to the digest `latest`
-names on GHCR, so a pull request that changes the image runs the suite against
-its own libvirt. Diagnostics run with
-`OPERATOR: nova` and then once per sibling with `OPERATOR_ONLY=1`, and
-`_output/reports/` is uploaded as the `e2e-nova-libvirt-junit-report` artifact
-(14-day retention). `cleanup-e2e-tags` lists the job in its `needs`.
+names on GHCR, so a pull request that changes the image runs the suites
+against its own libvirt. The same holds for the tempest image. Diagnostics run
+with `OPERATOR: nova` and then once per sibling, cinder included, with
+`OPERATOR_ONLY=1`. `_output/reports/` is uploaded as the
+`e2e-nova-libvirt-junit-report` artifact and `_output/tempest-nova-libvirt/`
+as `e2e-nova-libvirt-tempest-results`, both with 14-day retention. The Tempest
+artifact leaves out the rendered `tempest.conf`, which carries the cleartext
+admin password. `cleanup-e2e-tags` lists the job in its `needs`.
 
 **Path filter:** `tests/e2e-nova-libvirt/**`,
 `tests/e2e/nova/compute-node-pool/**` and `tests/e2e/cinder/broker-vhost.sh`
 (the `tests_nova_libvirt` class), `operators/nova/**` (`nova`),
 `images/nova/**`, `images/nova-compute/**` and `patches/nova/**`
-(`image_nova`), and the libvirt image's inputs (`image_libvirt`). A shared Go change does not schedule the job, and `ci:full`
-forces it on.
+(`image_nova`), the libvirt image's inputs (`image_libvirt`), and the Tempest
+image's inputs (`image_tempest`), whose image carries the cirros guest and the
+Tempest the guest suite runs. A shared Go change does not schedule the job,
+and neither does a change to the cinder, neutron or ovn operator, which their
+own `e2e-operator` jobs cover. `ci:full` forces it on.
 
 ### keystone-pressure
 

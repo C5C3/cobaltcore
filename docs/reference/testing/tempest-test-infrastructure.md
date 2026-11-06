@@ -129,6 +129,7 @@ configuration. `hack/tempest/run-tests.sh` sets `HOME=/tmp`, so the read-only
 | `tempest` CLI | Available via `PATH` (`/var/lib/openstack/bin/tempest`) |
 | `openstack` CLI | Available via `PATH`; verified by `verify_tempest.sh` (`openstack --version`) |
 | `subunit2junitxml` | Available via `PATH` |
+| `/usr/share/cirros/cirros-0.6.3-x86_64-disk.img` | The cirros 0.6.3 qcow2 (21,692,416 bytes) the libvirt guest suite boots, fetched at build time and checked against the sha256 `deploy/kind/hypervisor-operator-fixtures/image.yaml` pins; `tests/unit/images/tempest_cirros_pin_test.sh` keeps the two pins equal, and `verify_tempest.sh` hashes the file |
 | Build tools | Absent (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`; `/nix/store` holds no compiler, binutils or uv package) |
 
 ### Local Build
@@ -229,6 +230,19 @@ ML2/OVN does not serve. `api_extensions = all` tells Tempest every extension is
 there, so those classes would run and fail on the `distributed` attribute. The
 reachability suites (`tempest.scenario`, `neutron_tempest_plugin.scenario`)
 stay out: there is no gateway chassis with an uplink and no guest.
+
+Four `tempest.scenario` tests run outside this matrix, in the
+`e2e-nova-libvirt` job: `test_server_basic_ops`,
+`test_server_sequence_suspend_resume`, `test_server_detach_rules` and
+`test_old_versions_reject`. Step 11 of the libvirt guest suite runs them
+through `hack/ci-run-tempest.sh` against its libvirt stack, with one worker and
+the configuration in `tests/e2e-nova-libvirt/guest-dataplane/tempest/`. They
+are the scenarios of Tempest 46.3.0 that never log into the guest. Every
+data-plane scenario connects over SSH through a floating IP, and the runner,
+which reaches the cluster through port-forwards, has no route to one. With
+`[validation] run_validation = false` their `SSHABLE` waits end at `ACTIVE`,
+and the suite's own probes judge the guest's network and volume (see
+[Nova E2E Test Suites](./nova-e2e-tests.md#guest-dataplane)).
 
 The cinder legs take the whole volume tree of both scopes,
 `tempest.api.volume` and `cinder_tempest_plugin.api.volume`. What the

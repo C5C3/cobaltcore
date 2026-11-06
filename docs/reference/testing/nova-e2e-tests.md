@@ -148,12 +148,17 @@ there until the `Run E2E tests` step in
 ### The libvirt leg
 
 Every suite under `tests/e2e/nova/` that runs a nova-compute runs it on the
-fake driver. One suite runs it on Nova's libvirt driver: `tests/e2e-nova-libvirt/server-boot/`, under a suite
-root of its own with its own Chainsaw configuration. It lives outside
-`tests/e2e/nova/` because the nova leg sweeps every directory there and is
-blocking, while this suite runs in the non-blocking `e2e-nova-libvirt` job.
+fake driver. Two suites run it on Nova's libvirt driver, `server-boot` and
+`guest-dataplane`, under the suite root `tests/e2e-nova-libvirt/` with its own
+Chainsaw configuration. They live outside `tests/e2e/nova/` because the nova
+leg sweeps every directory there and is blocking, while these suites run in
+the non-blocking `e2e-nova-libvirt` job. The root runs one suite at a time
+with `failFast: false`: Chainsaw runs `guest-dataplane` first, and its failure
+does not skip `server-boot`.
 
-The suite brings up the stack of `compute-node-pool` from that suite's own
+#### server-boot
+
+`server-boot` brings up the stack of `compute-node-pool` from that suite's own
 fixtures `00` to `11`, which it applies by path, and runs the boot and delete
 Jobs `15` and `16` the same way. Its three files of its own are
 `00-libvirt.yaml`, `01-novacompute-libvirt.yaml` and `chainsaw-test.yaml`.
@@ -162,6 +167,20 @@ privileged, in the node's network namespace, with the node's `/run/libvirt`
 and `/var/lib/nova` shared with the pool's pod. The pool `pool-libvirt` sets
 `virtType: qemu` and no `spec.extraConfig`, so nova-compute runs
 `libvirt.LibvirtDriver` under QEMU's TCG emulation, which needs no `/dev/kvm`.
+
+The DaemonSet runs in the node's PID namespace (`hostPID: true`). libvirt moves
+QEMU into a cgroup of its own below the node's `/machine`, so deleting the pod
+kills libvirtd and leaves the guest running, and a replacement libvirtd finds
+the domain through its state under the node's `/run/libvirt`. The persistent
+domain definitions under `/etc/libvirt/qemu` are the node's as well, so the
+domain stays persistent across the kill and a later stop shuts it off.
+`server-boot/libvirt-domains.sh` destroys and undefines every domain, with
+the managed-save image a suspended guest leaves. Both suites run it in step 3,
+before the pool exists, and fail when a domain an earlier suite left stays.
+They run it again in the cleanup that deletes the DaemonSet.
+`/var/lib/nova` is mounted with `HostToContainer` propagation, so
+QEMU sees the NFS share nova-compute mounts below it when it attaches a
+volume.
 
 The server `s1` boots from the 1 MiB zero image the stack seeds and carries no
 NIC. With no operating system on the disk the guest never gets past its
@@ -181,14 +200,112 @@ reports `ACTIVE`:
 Deleting the server leaves `virsh list --all --uuid` empty and removes the
 instance directory.
 
+#### guest-dataplane
+
+`guest-dataplane` boots two cirros 0.6.3 guests, each with a NIC on one tenant
+network, attaches a Cinder volume to one of them and judges the guest's data
+plane from probes that run inside it. It brings up the same stack as
+`server-boot`, from the same fixtures, and runs the same `libvirt-e2e`
+DaemonSet and pool. Its own fixtures add:
+
+- `spec.nova` on the Neutron, patched in after `04-neutron-cr.yaml`, so the
+  guests' ports go through the real `network-vif-plugged` path. The pool sets
+  no `vif_plugging_is_fatal = false`.
+- `01-catalog-extras-job.yaml`, which registers the block-storage service
+  `cinder` and creates the notifier account `neutron-nova` in the project
+  `service` with `admin` and `service`. It also grants `admin`, Nova's service
+  user, the `service` role: Cinder 2026.1 deletes an attachment Nova owns only
+  for a service token that carries it.
+- `cinder-nova-pool` with the backend `nfs1` on the kind NFS server, and
+  `spec.endpoints.cinder.enabled` patched into the Nova.
+- The cirros image `4e0a0000-0000-4000-8000-000000000010`, seeded from the
+  file the tempest image carries, the metadata agent
+  `nova-pool-metadata-agent`, and the client pod `nova-pool-guest-client`,
+  which every `openstack` call of the suite runs in. The step 2 cleanup
+  deletes the image through the API, so Glance deletes its object in the
+  shared `glance-images` bucket and a later run on the same cluster can seed
+  it again.
+
+The probe server runs `guest-user-data.sh` as its user-data. It writes one
+line per probe to its serial console, which Nova keeps as the console log:
+
+```text
+guest-probe <kind> <seq> <HH:MM:SS UTC> <result> [<detail>]
+```
+
+| Kind | When | Result |
+| --- | --- | --- |
+| `dhcp` | once, seq 1 | `ok <IPv4 of eth0>`, or `none` |
+| `metadata` | once, seq 1 | `ok <instance id>` from `http://169.254.169.254`, or `error` |
+| `net` | every 2 seconds once `/dev/vdb` appears | `ok` when the peer answers one ping, else `lost` |
+| `disk` | every 2 seconds once `/dev/vdb` appears | `ok <n>` when `probe-<n>`, written at byte 4096 of the volume, reads back after the page cache is dropped, else `error <n>`, as while `/dev/vdb` is no block device |
+
+The user-data keeps kernel messages off the serial console (`dmesg -n 1`): a
+message written in the middle of a probe line garbles it, and the missing
+line would read as a gap.
+
+`guest-lib.sh` reads the log through the compute API and judges the lines of
+one kind by their sequence numbers. A window passes when every line after a
+given one says `ok` and no number is missing, so no verdict depends on the
+guest's clock. `tests/unit/ci/nova_libvirt_guest_lib_test.sh` pins each
+function of the library and the message it fails with, against a stub
+`kubectl`. The steps check:
+
+1. DHCP and metadata. The `dhcp` address equals the one Neutron assigned the
+   probe server, and the `metadata` id is `i-` plus the hex part of the
+   server's `instance_name`.
+2. East-west traffic and the volume. Five or more contiguous `ok` lines each
+   of `net` and `disk`.
+3. The security-group deny. The peer's group allows ICMP from the subnet with
+   one rule. Deleting it turns a `net` line `lost` within 60 seconds, and
+   three or more lines after it say `lost` as well, without a gap;
+   re-creating it turns one `ok` within 60 seconds. The `disk` lines stay
+   `ok` throughout.
+4. F1, a PodChaos `pod-kill` of the libvirt pod. A new pod is `Ready` within
+   180 seconds, QEMU keeps its PID while libvirtd gets a new one, `virsh
+   domstate` reports `running`, the server stays `ACTIVE`, and the compute
+   service reads `up` with a report later than the new pod's `Ready`, within
+   120 seconds of it. Nova reads a service as `up` for 60 seconds after its
+   last report, so the state alone would pass a nova-compute that died.
+5. F2, a PodChaos `pod-kill` of the `nova-compute` pod. The same checks, with
+   both PIDs kept, the NFS mount lines below `/var/lib/nova/mnt` in the
+   libvirt pod unchanged, and `pool-libvirt` `Ready` again within 300 seconds.
+6. The backend read. With the probe server `SHUTOFF`, byte 4096 of
+   `volume-<id>`, read through `cinder-nova-pool-volume-nfs1`, holds the
+   counter of the last `ok` disk line or of the next one. The suite reads that
+   last line once the server is stopped, because the guest writes on during
+   the stop, from the console log file on the node.
+7. Tempest. With the guests deleted, `hack/ci-run-tempest.sh` runs the four
+   tests of `tempest/include-tests.txt` with one worker, and all four have to
+   pass, none skipped.
+
+After F1 and after F2, every `net` and `disk` line after the last one read
+before the kill says `ok` without a gap, and three or more of each follow
+within 120 seconds of the new pod turning `Ready`. These are the lab's
+verdicts for both faults (see
+[Lab fault runs](../infrastructure/infrastructure-manifests.md#lab-fault-runs)).
+Each PodChaos carries the label
+`chaos.c5c3.io/suite: nova-libvirt-guest-dataplane`, and the step deletes it
+before it ends. The four Tempest tests are the `tempest.scenario` tests that
+never log into the guest (see
+[Tempest Test Infrastructure](./tempest-test-infrastructure.md#include-tests-txt)).
+
+#### Running the libvirt suites
+
 A local run needs one amd64 node, the stack's infrastructure
-(`WITH_OVN_KERNEL_MODULES=true WITH_MESSAGING=true make deploy-infra`) and the
-six operators the nova leg deploys. `make e2e-nova-libvirt` checks the three
-preconditions and names the one that is missing. The guest operating system,
-KVM, networking and live migration are not part of this suite: the lab run of
-the Quick Start (metal-stack) proves them, in
+(`WITH_OVN_KERNEL_MODULES=true WITH_MESSAGING=true WITH_NFS=true
+WITH_CHAOS_MESH=true make deploy-infra`), the seven operators the CI job
+deploys (keystone, placement, glance, ovn, neutron, cinder and nova), and a
+tempest image that carries the cirros file in the local Docker (`TEMPEST_IMAGE`,
+by default `ghcr.io/c5c3/tempest:2026.1`). `make e2e-nova-libvirt` checks each
+precondition and names the one that is missing.
+
+KVM, live migration, north-south traffic and the lab's faults F3 to F5 are not
+part of these suites. The lab run of the Quick Start (metal-stack) proves the
+guest's uplink and its migration, in
 [Check metadata and the tunnel from the console](../../quick-start-metal-stack.md#hv-console)
-and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate). See
+and [Live-migrate a server](../../quick-start-metal-stack.md#hv-migrate), and
+the lab chaos runner runs F3 to F5. See
 [CI Workflow](../ci-cd/ci-workflow.md#e2e-nova-libvirt).
 
 ## Prerequisites
@@ -1298,10 +1415,25 @@ tests/e2e/nova-operator/
 
 tests/e2e-nova-libvirt/
 ├── chainsaw-config.yaml               Chainsaw configuration of the libvirt suite root
+├── guest-dataplane/
+│   ├── chainsaw-test.yaml             Two cirros guests and their probes, F1, F2, the backend read and Tempest
+│   ├── 00-notifier-secret.yaml        Secret nova-pool-neutron-notifier
+│   ├── 01-catalog-extras-job.yaml     Job nova-pool-catalog-extras: block-storage, neutron-nova, the service role
+│   ├── 02-cinderbackend-cr.yaml       CinderBackend nfs1 on the kind NFS server
+│   ├── 03-cinder-cr.yaml              Cinder cinder-nova-pool
+│   ├── 04-image-seed-job.yaml         Job nova-pool-cirros-seed
+│   ├── 05-neutronmetadataagent-cr.yaml NeutronMetadataAgent nova-pool-metadata-agent
+│   ├── 06-client-pod.yaml             Pod nova-pool-guest-client
+│   ├── guest-lib.sh                   The suite's checks and their failure messages
+│   ├── guest-user-data.sh             The probes the guest runs
+│   └── tempest/
+│       ├── include-tests.txt          The four tempest.scenario tests
+│       └── tempest.conf               Tempest configuration of the nova-pool stack
 └── server-boot/
     ├── chainsaw-test.yaml             A server on the libvirt driver under TCG, and its delete
     ├── 00-libvirt.yaml                ConfigMap and DaemonSet libvirt-e2e
-    └── 01-novacompute-libvirt.yaml    NovaCompute pool-libvirt with virtType: qemu
+    ├── 01-novacompute-libvirt.yaml    NovaCompute pool-libvirt with virtType: qemu
+    └── libvirt-domains.sh             Destroys and undefines every domain on the node
 ```
 
 ## Related Resources
@@ -1310,6 +1442,6 @@ tests/e2e-nova-libvirt/
 - [Nova Reconciler Architecture](../nova/nova-reconciler.md): sub-reconciler contracts and unit tests
 - [Chaos E2E Test Suites](./chaos-e2e-tests.md): the three Nova outage suites on the chaos `nova` leg
 - [CI Workflow](../ci-cd/ci-workflow.md): the `e2e-operator` matrix leg that runs these suites
-- [CI Workflow](../ci-cd/ci-workflow.md#e2e-nova-libvirt): the `e2e-nova-libvirt` job that runs the libvirt suite
+- [CI Workflow](../ci-cd/ci-workflow.md#e2e-nova-libvirt): the `e2e-nova-libvirt` job that runs the libvirt suites
 - [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md): infrastructure stack deployment and `WITH_MESSAGING`
 - `tests/e2e/chainsaw-config.yaml`: shared Chainsaw configuration

@@ -3713,7 +3713,10 @@ libvirt's start script its `TERM` handler and `ovn-controller` its preStop
 
 `make lab-chaos-faults` of the [Lab chaos runner](#lab-chaos-runner) runs the
 five faults under its own probe server `lab-chaos-0` and the peer
-`lab-chaos-1` on another node. The run below typed them by hand into a shell
+`lab-chaos-1` on another node. The `guest-dataplane` suite runs F1 and F2 on
+kind in every run of the `e2e-nova-libvirt` job, with the same PodChaos and
+the same verdict (see
+[Nova E2E Test Suites](../testing/nova-e2e-tests.md#guest-dataplane)). The run below typed them by hand into a shell
 and into the console of the quick start's `lab-0`, from a block this page held
 until the runner replaced it.
 
