@@ -5,8 +5,9 @@
 
 # Verify the ovn operator reaches the e2e-operators matrix and the helm filter
 # in .github/workflows/ci.yaml, that build-e2e-images builds both of its
-# images, and that the e2e-operator leg loads the OVN daemon image and asks for
-# the OVN kernel modules.
+# images, and that the e2e-operator leg loads the OVN daemon image, loads the
+# keystone image its network-policy-egress probe pods run, and asks for the OVN
+# kernel modules.
 #
 # Every signal here fails silently when it is missing. ALL_OPERATORS is the sole
 # source of the e2e-operators matrix, so an operator absent from it never
@@ -263,6 +264,55 @@ test_e2e_leg_loads_the_ovn_image() {
     'kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"'
 }
 
+test_e2e_leg_loads_the_probe_image() {
+  echo "Test: the ovn e2e leg pulls and loads the keystone image of its probe pods"
+
+  # The probe pods of tests/e2e/ovn-operator/network-policy-egress run
+  # python3, which the OVN image leaves out (images/ovn/ovn.nix), so they run
+  # ghcr.io/c5c3/keystone:2026.1. A leg that never loads it leaves the pods
+  # waiting on a registry pull. Run both steps' own scripts to see the refs.
+  if ! command -v yq >/dev/null 2>&1 || ! yq --version 2>&1 | grep -q mikefarah; then
+    echo "  SKIP: mikefarah yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local dir pin refs
+  dir=$(mktemp -d)
+  mkdir "$dir/bin"
+  yq -r '.jobs.e2e-operator.steps[] | select(.name == "Resolve E2E images") | .run' \
+    "$CI_YAML" >"$dir/resolve.sh"
+  yq -r '.jobs.e2e-operator.steps[] | select(.name == "Load images into kind") | .run' \
+    "$CI_YAML" >"$dir/load.sh"
+  pin=$("$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh")
+
+  # The script shells out to hack/ by relative path.
+  (cd "$PROJECT_ROOT" &&
+    OPERATOR=ovn IMAGE_PREFIX=ghcr.io/c5c3 GITHUB_OUTPUT="$dir/output" \
+      bash -eo pipefail "$dir/resolve.sh")
+  refs=$(awk '/^refs<<EOF$/ { in_b = 1; next }
+    in_b && /^EOF$/ { exit }
+    in_b { print }' "$dir/output")
+  assert_eq "the ovn leg resolves its operator, the OVN image and the keystone image" \
+    "$(printf '%s\n' ghcr.io/c5c3/ovn-operator:dev "ghcr.io/c5c3/ovn:$pin" ghcr.io/c5c3/keystone:2026.1)" \
+    "$refs"
+
+  # A kind stub logs each call, so the load step runs without a cluster.
+  cat >"$dir/bin/kind" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >>"$dir/kind.log"
+STUB
+  chmod +x "$dir/bin/kind"
+  (PATH="$dir/bin:$PATH" OPERATOR=ovn IMAGE_PREFIX=ghcr.io/c5c3 SERVICE_RELEASES="" \
+    OVN_VERSION="$pin" REFS="$refs" KIND_CLUSTER=e2e bash -eo pipefail "$dir/load.sh")
+  assert_eq "the ovn leg loads the operator, the OVN image and the keystone image" \
+    "$(printf '%s\n' "load docker-image ghcr.io/c5c3/ovn-operator:dev --name e2e" \
+      "load docker-image ghcr.io/c5c3/ovn:$pin --name e2e" \
+      "load docker-image ghcr.io/c5c3/keystone:2026.1 --name e2e")" \
+    "$(cat "$dir/kind.log" 2>/dev/null)"
+  rm -rf "$dir"
+}
+
 test_e2e_leg_opts_into_kernel_modules() {
   echo "Test: the ovn, neutron and nova e2e legs ask for the OVN kernel modules"
 
@@ -421,6 +471,7 @@ test_cleanup_matrices_cover_the_ovn_images
 test_a_keystone_only_change_produces_no_ovn_leg
 test_build_e2e_images_builds_the_ovn_images
 test_e2e_leg_loads_the_ovn_image
+test_e2e_leg_loads_the_probe_image
 test_e2e_leg_opts_into_kernel_modules
 test_overlay_job_is_wired
 test_tempest_neutron_leg_loads_the_ovn_image

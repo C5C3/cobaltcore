@@ -324,10 +324,11 @@ jobs:
               # the environment scan beside it, so those seven filters list the
               # directory. ovn and neutron run the scan, the metric-family
               # check and the event budget, and list those three scripts.
-              # neutron also lists the NetworkPolicy probe its network-policy
-              # suite runs. c5c3 runs the scan and the metric-family check and
-              # lists those two scripts, so an edit to the proof runs none of
-              # the three.
+              # Both also list the NetworkPolicy probe: their
+              # network-policy-egress suites run it, and so does neutron's
+              # network-policy suite. c5c3 runs the scan and the metric-family
+              # check and lists those two scripts, so an edit to the proof runs
+              # none of the three.
               - 'tests/e2e/lib/**'
             tests_e2e_c5c3:
               - 'tests/e2e/c5c3/**'
@@ -356,6 +357,7 @@ jobs:
               - 'tests/e2e/lib/assert-operator-env-clean.sh'
               - 'tests/e2e/lib/assert-operator-metric-families.sh'
               - 'tests/e2e/lib/assert-steady-state-events.sh'
+              - 'tests/e2e/lib/assert-networkpolicy-enforced.sh'
             tests_e2e_neutron:
               - 'tests/e2e/neutron/**'
               - 'tests/e2e/neutron-operator/**'
@@ -1638,7 +1640,8 @@ jobs:
       # orchestration operator without a service image — e.g. c5c3 —
       # loads no service image of its own instead of failing to pull a
       # non-existent c5c3:<release>; the c5c3 block below adds the keystone
-      # image its env-key-material suite needs.
+      # image its env-key-material suite needs, and the ovn block adds it for
+      # the probe pods of its network-policy-egress suite.
       - name: Resolve E2E images
         id: e2e-images
         env:
@@ -1659,8 +1662,12 @@ jobs:
           # ovn ships no per-release service image: its DaemonSets and Pods all
           # run the one OVN daemon image the operator hard-codes at the pin
           # hack/ci-resolve-ovn-version.sh reads from images/ovn/source.json.
+          # The probe pods of the network-policy-egress suite run python3,
+          # which the OVN image leaves out (images/ovn/ovn.nix), so the leg
+          # loads the keystone image for them, as the c5c3 leg does.
           if [ "${OPERATOR}" = "ovn" ]; then
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/keystone:2026.1"
           fi
           # A Neutron never reaches Ready without a live OVNCentral, so the
           # neutron leg deploys the ovn-operator as well and needs both the
@@ -1740,8 +1747,11 @@ jobs:
           if [ "${OPERATOR}" = "keystone" ]; then
             kind load docker-image "${IMAGE_PREFIX}/keystone-federation-proxy:dev" --name "${KIND_CLUSTER}"
           fi
+          # The ovn leg's network-policy-egress probe pods need the python3
+          # of the keystone image (see the resolve step).
           if [ "${OPERATOR}" = "ovn" ]; then
             kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}" --name "${KIND_CLUSTER}"
+            kind load docker-image "${IMAGE_PREFIX}/keystone:2026.1" --name "${KIND_CLUSTER}"
           fi
           if [ "${OPERATOR}" = "neutron" ]; then
             kind load docker-image "${IMAGE_PREFIX}/ovn-operator:dev" --name "${KIND_CLUSTER}"
