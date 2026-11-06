@@ -132,6 +132,24 @@ test_barbicanclient_importable() {
   assert_eq "import barbicanclient exits 0" "0" "$exit_code"
 }
 
+# --- Test 12: the cirros guest image of the libvirt guest suite ---
+test_cirros_image_present() {
+  echo "Test: the cirros 0.6.3 guest image is present with the pinned digest"
+  # tests/e2e-nova-libvirt/guest-dataplane/ seeds Glance from this file. The
+  # wanted digest is read from images/tempest/image.nix, and
+  # tests/unit/images/tempest_cirros_pin_test.sh ties that pin to the one of
+  # the kind fixture.
+  local want digest exit_code=0
+  want="$(sed -n 's/^ *sha256 = "\(.*\)";$/\1/p' "$SCRIPT_DIR/../../images/tempest/image.nix")"
+  digest=$(docker run --rm "$IMAGE" python3 -c \
+    'import hashlib; print(hashlib.sha256(open("/usr/share/cirros/cirros-0.6.3-x86_64-disk.img", "rb").read()).hexdigest())' \
+    2>&1) || exit_code=$?
+
+  assert_not_empty "images/tempest/image.nix pins a sha256" "$want"
+  assert_eq "hashing the cirros image exits 0" "0" "$exit_code"
+  assert_eq "the cirros image has the sha256 image.nix pins" "$want" "$digest"
+}
+
 # --- Run all tests ---
 echo "=== tempest container verification tests ==="
 echo "Image: $IMAGE"
@@ -157,6 +175,8 @@ echo ""
 test_barbicanclient_importable
 echo ""
 test_cinder_tempest_plugin_importable
+echo ""
+test_cirros_image_present
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
