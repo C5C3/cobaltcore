@@ -20,15 +20,26 @@
 #     2. The operator pod starts and turns Ready under the enforced policy,
 #        so its DNS and API server rules admit the traffic it starts with,
 #        and its setup probes read the Gateway API as installed (Step 2b).
-#     3. A Horizon CR reconciles to Ready=True while the policy is present.
-#     4. A pod the policy selects is dropped on a port no rule admits and
+#     3. The policy selects the pod of this release and not the pod of the
+#        primary horizon-operator release, and it is the only NetworkPolicy
+#        in horizon-system (Step 2c). The operator pod never restarted,
+#        checked after the install (Step 2c) and after the last probe
+#        (Step 5b).
+#     4. A Horizon CR reconciles to Ready=True while the policy is present.
+#     5. A control pod no policy selects reaches TCP 3306 on openstack-db, so
+#        Step 5 reads a timeout on that port as the policy's drop and not as
+#        a server that does not listen (Step 4b).
+#     6. A pod the policy selects is dropped on a port no rule admits and
 #        reaches the dashboard through its Service (Step 5), which the
 #        chart's TCP 8080 rule admits for the dashboard health check.
+#     7. After that drop, the pod the policy selects resolves a cluster name
+#        and reaches the API server endpoint and the kubernetes Service VIP
+#        on fresh connections (Step 5b).
 #   With leader election enabled and a second operator release installed
 #   alongside the primary one from hack/ci-deploy-operator.sh, there is no
 #   guarantee the netpol-restricted pod (vs. the primary) is the one that
-#   drove the CR to Ready, so item 3 alone does not prove the API rule;
-#   item 4 does.
+#   drove the CR to Ready, so item 4 alone does not prove the API rule;
+#   item 6 does.
 #
 # Installs a second horizon-operator Helm release with networkPolicy.enabled=
 # true and the cluster's API server endpoint, then applies a minimal Horizon
@@ -46,9 +57,14 @@
 #   - Operator pod starts and stays Ready under the policy
 #   - The netpol operator's setup log reports the Gateway API as detected, so
 #     a probe the policy blocks is not read as a missing CRD
+#   - The policy selects only the pod of this release, it is the only policy
+#     in horizon-system, and the operator pod never restarts during the test
 #   - A Horizon CR reconciles to Ready=True under the policy
+#   - A control pod no policy selects reaches the MariaDB port
 #   - The policy drops a pod it selects on the MariaDB port and admits it to
 #     the dashboard on TCP 8080
+#   - After that drop, the pod resolves a cluster name and reaches the API
+#     server endpoint and the kubernetes Service VIP
 #   - Failures produce enough diagnostic output to debug egress regressions
 #     without re-running locally
 #
@@ -165,6 +181,103 @@ spec:
             fi
             echo "${pod} logged the Gateway API as detected"
           done
+  # ── Step 2c: Assert what the policy selects and that the pod never restarted
+  # The policy selects the pods of this release by its two selector labels.
+  # The primary horizon-operator release carries instance horizon-operator,
+  # so the policy cannot select it, and no other policy in horizon-system may
+  # judge the pods of Steps 4b and 5. A restart shows that the policy denied
+  # the operator something it starts with.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: horizon-operator-netpol
+            namespace: horizon-system
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: horizon-operator
+                app.kubernetes.io/instance: horizon-operator-netpol
+          status:
+            readyReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: horizon-operator
+            namespace: horizon-system
+          spec:
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/instance: horizon-operator
+    - script:
+        timeout: 30s
+        content: |
+          set -eu
+          POLICIES="$(kubectl get networkpolicy -n horizon-system -o name)"
+          if [ "${POLICIES}" != "networkpolicy.networking.k8s.io/horizon-operator-netpol" ]; then
+            echo "ERROR: horizon-system holds NetworkPolicies besides horizon-operator-netpol:"
+            printf '%s\n' "${POLICIES}"
+            exit 1
+          fi
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          PODS="$(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol -o name)"
+          if [ -z "${PODS}" ]; then
+            echo "ERROR: no horizon-operator-netpol pod found"
+            exit 1
+          fi
+          for pod in ${PODS}; do
+            RESTARTS="$(kubectl get -n horizon-system "${pod}" -o jsonpath='{.status.containerStatuses[*].restartCount}')"
+            if [ -z "${RESTARTS}" ]; then
+              echo "ERROR: ${pod} reports no container status"
+              exit 1
+            fi
+            for n in ${RESTARTS}; do
+              if [ "${n}" != 0 ]; then
+                echo "ERROR: ${pod} restarted ${n} times under the policy; previous log:"
+                kubectl logs -n horizon-system "${pod}" --all-containers --previous --tail=60 2>&1 || true
+                exit 1
+              fi
+            done
+            echo "${pod} has not restarted under the policy"
+          done
+    catch:
+    - script:
+        timeout: 60s
+        content: |
+          echo "=== Fixture pods ==="
+          kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol -o wide --show-labels 2>&1 || true
+          kubectl get pods -n openstack -l app.kubernetes.io/instance=horizon-netpol-egress -o wide --show-labels 2>&1 || true
+          echo "=== Pods that are not Ready ==="
+          for pod in $(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol -o name 2>/dev/null); do
+            ready="$(kubectl get -n horizon-system "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+            if [ "$ready" != True ]; then
+              echo "--- $pod ---"
+              kubectl describe -n horizon-system "$pod" 2>&1 | tail -20 || true
+            fi
+          done
+          echo "=== NetworkPolicy YAML ==="
+          kubectl get networkpolicy horizon-operator-netpol -n horizon-system -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol,pod-template-hash -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n horizon-system "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n horizon-system "$pod" --all-containers --tail=120 --previous 2>&1 || true
+          done
+          echo "=== EndpointSlice and Service default/kubernetes ==="
+          kubectl get endpointslice kubernetes -n default -o yaml 2>&1 || true
+          kubectl get service kubernetes -n default -o yaml 2>&1 || true
+          echo "=== Events (horizon-system, last 30) ==="
+          kubectl get events -n horizon-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Events (openstack, last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 3: Apply minimal Horizon CR ───────────────────────────
   - try:
     - apply:
@@ -208,6 +321,52 @@ spec:
           echo "=== Events (operator ns, last 30) ==="
           kubectl get events -n horizon-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
           echo "=== Events (workload ns, last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4b: Reach the MariaDB port from a pod no policy selects ────────
+  # The control pod of 03-control-pod.yaml carries a name no policy selects.
+  # Its connection shows that openstack-db listens on TCP 3306 and is
+  # reachable from horizon-system, so a timeout in Step 5 is the policy's
+  # drop and not a server that does not answer.
+  - try:
+    - apply:
+        file: 03-control-pod.yaml
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready pod/horizon-operator-netpol-control \
+            -n horizon-system --timeout=120s
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          "${PROBE}" horizon-system horizon-operator-netpol-control open openstack-db.openstack.svc 3306
+    catch:
+    - script:
+        timeout: 60s
+        content: |
+          echo "=== Fixture pods ==="
+          kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol -o wide --show-labels 2>&1 || true
+          kubectl get pods -n openstack -l app.kubernetes.io/instance=horizon-netpol-egress -o wide --show-labels 2>&1 || true
+          echo "=== Pods that are not Ready ==="
+          for pod in $(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol -o name 2>/dev/null); do
+            ready="$(kubectl get -n horizon-system "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+            if [ "$ready" != True ]; then
+              echo "--- $pod ---"
+              kubectl describe -n horizon-system "$pod" 2>&1 | tail -20 || true
+            fi
+          done
+          echo "=== NetworkPolicy YAML ==="
+          kubectl get networkpolicy horizon-operator-netpol -n horizon-system -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol,pod-template-hash -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n horizon-system "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n horizon-system "$pod" --all-containers --tail=120 --previous 2>&1 || true
+          done
+          echo "=== EndpointSlice and Service default/kubernetes ==="
+          kubectl get endpointslice kubernetes -n default -o yaml 2>&1 || true
+          kubectl get service kubernetes -n default -o yaml 2>&1 || true
+          echo "=== Events (horizon-system, last 30) ==="
+          kubectl get events -n horizon-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Events (openstack, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 5: Probe the enforced policy from a pod it selects ─────────────
   # Step 4 cannot tell which release drove the CR to Ready (see ENFORCEMENT
@@ -273,3 +432,102 @@ spec:
           kubectl get networkpolicy horizon-operator-netpol -n horizon-system -o yaml 2>&1 || true
           echo "=== Dashboard pods and Service ==="
           kubectl get pods,endpointslices -n openstack -l app.kubernetes.io/instance=horizon-netpol-egress -o wide --show-labels 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol,pod-template-hash -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n horizon-system "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n horizon-system "$pod" --all-containers --tail=120 --previous 2>&1 || true
+          done
+          echo "=== Events (horizon-system, last 30) ==="
+          kubectl get events -n horizon-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Events (openstack, last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5b: Probe DNS and the API server after the drop ────────────────
+  # Step 5 saw the policy drop the probe pod, so kindnet holds it. Each call
+  # below opens a fresh connection, which only the policy's DNS and API
+  # server rules admit. The API endpoint is the first IPv4 address of
+  # EndpointSlice default/kubernetes, the address Step 1 admits; the Service
+  # VIP reaches it through the DNAT. The trailing dot keeps the resolver off
+  # the search list. The last script repeats Step 2c's restart check, since
+  # the operator pod has run under the policy through Steps 3 to 5b. The
+  # probe and control pods carry the release's instance label too, so the
+  # pod-template-hash selector leaves them out.
+  - try:
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          # require <name> <value>: stop with an ERROR line when the value is empty.
+          require() {
+            if [ -z "$2" ]; then
+              echo "ERROR: $1 is empty"
+              exit 1
+            fi
+          }
+          SLICE="$(kubectl get endpointslice kubernetes -n default -o json)"
+          API_IP="$(echo "${SLICE}" | jq -r '[.endpoints[]?.addresses[]? | select(contains(":") | not)] | first // empty')"
+          API_PORT="$(echo "${SLICE}" | jq -r '[.ports[]?.port | select(. != null)] | first // empty')"
+          VIP="$(kubectl get service kubernetes -n default -o jsonpath='{.spec.clusterIP}')"
+          VIP_PORT="$(kubectl get service kubernetes -n default -o jsonpath='{.spec.ports[0].port}')"
+          require API_IP "${API_IP}"
+          require API_PORT "${API_PORT}"
+          require VIP "${VIP}"
+          require VIP_PORT "${VIP_PORT}"
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          "${PROBE}" horizon-system horizon-operator-netpol-probe resolves kubernetes.default.svc.cluster.local.
+          "${PROBE}" horizon-system horizon-operator-netpol-probe open "${API_IP}" "${API_PORT}"
+          "${PROBE}" horizon-system horizon-operator-netpol-probe open "${VIP}" "${VIP_PORT}"
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          PODS="$(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol,pod-template-hash -o name)"
+          if [ -z "${PODS}" ]; then
+            echo "ERROR: no horizon-operator-netpol operator pod found"
+            exit 1
+          fi
+          for pod in ${PODS}; do
+            RESTARTS="$(kubectl get -n horizon-system "${pod}" -o jsonpath='{.status.containerStatuses[*].restartCount}')"
+            if [ -z "${RESTARTS}" ]; then
+              echo "ERROR: ${pod} reports no container status"
+              exit 1
+            fi
+            for n in ${RESTARTS}; do
+              if [ "${n}" != 0 ]; then
+                echo "ERROR: ${pod} restarted ${n} times under the policy; previous log:"
+                kubectl logs -n horizon-system "${pod}" --all-containers --previous --tail=60 2>&1 || true
+                exit 1
+              fi
+            done
+            echo "${pod} has not restarted under the policy"
+          done
+    catch:
+    - script:
+        timeout: 60s
+        content: |
+          echo "=== Fixture pods ==="
+          kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol -o wide --show-labels 2>&1 || true
+          kubectl get pods -n openstack -l app.kubernetes.io/instance=horizon-netpol-egress -o wide --show-labels 2>&1 || true
+          echo "=== Pods that are not Ready ==="
+          for pod in $(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol -o name 2>/dev/null); do
+            ready="$(kubectl get -n horizon-system "$pod" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+            if [ "$ready" != True ]; then
+              echo "--- $pod ---"
+              kubectl describe -n horizon-system "$pod" 2>&1 | tail -20 || true
+            fi
+          done
+          echo "=== NetworkPolicy YAML ==="
+          kubectl get networkpolicy horizon-operator-netpol -n horizon-system -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n horizon-system -l app.kubernetes.io/instance=horizon-operator-netpol,pod-template-hash -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n horizon-system "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n horizon-system "$pod" --all-containers --tail=120 --previous 2>&1 || true
+          done
+          echo "=== EndpointSlice and Service default/kubernetes ==="
+          kubectl get endpointslice kubernetes -n default -o yaml 2>&1 || true
+          kubectl get service kubernetes -n default -o yaml 2>&1 || true
+          echo "=== Events (horizon-system, last 30) ==="
+          kubectl get events -n horizon-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Events (openstack, last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
