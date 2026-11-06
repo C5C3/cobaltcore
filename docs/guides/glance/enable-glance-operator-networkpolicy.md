@@ -45,17 +45,20 @@ A running `glance-operator` Helm release (namespace `glance-system`) is required
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
-template refuses to render. Gather the API server CIDR and port from the
-in-cluster `kubernetes` Service (on kind this is `10.96.0.1/32` port `6443`):
+template refuses to render. Gather the API server CIDRs and ports from the
+`kubernetes` **Endpoints**, which hold the real API server addresses. Do not
+use the `10.96.0.1` Service VIP that `kubectl get service kubernetes` reports:
+kindnet (kind v0.32 and later) and enforcing CNIs such as Calico and Cilium
+evaluate policy after the Service DNAT, so a rule naming the VIP never matches:
 
 ```bash
 kubectl get endpoints kubernetes -n default -o json \
   | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
 ```
 
-Record **every** endpoint IP the command prints. A kind devstack reports a
-single `10.96.0.1/32`, but an HA control plane reports one
-per API server replica:
+Record **every** endpoint IP the command prints. A kind devstack reports the
+one control-plane node's address on the kind bridge, for example
+`172.18.0.2/32`, but an HA control plane reports one per API server replica:
 
 ```
 10.0.0.10/32 port=6443
@@ -66,15 +69,30 @@ per API server replica:
 The rule must cover all of them, or the operator loses its leader-election
 lease whenever it happens to be talking to an excluded replica.
 
+On Cilium, a CIDR selector, and so an `ipBlock` peer, matches no cluster node
+address by default. When the API server runs on a cluster node, as on a
+kubeadm control plane, Cilium drops the operator's API server traffic even
+with every endpoint address in the rule. Before you enable the policy, add a
+CiliumNetworkPolicy in the operator's namespace that selects the operator pod
+and allows egress `toEntities: [kube-apiserver]`. Starting the Cilium agents
+with `--policy-cidr-match-mode=nodes` (Helm value `policyCIDRMatchMode: nodes`)
+also works, but it is cluster-wide: every CIDR selector in every
+NetworkPolicy, CiliumNetworkPolicy, and CiliumClusterwideNetworkPolicy, in
+both directions (`ipBlock`, `fromCIDR`, `fromCIDRSet`, `toCIDR`, `toCIDRSet`,
+and CIDR deny rules), then matches node addresses too. Audit those rules
+before you turn it on.
+
 On the tutorial devstacks the `glance-operator` release is owned by Flux (a
 `HelmRelease`), so set the values by patching its `spec.values`. The Flux
 helm-controller reverts a raw `helm upgrade` on its next
-reconcile. Substitute the CIDRs and ports from above; the single-CIDR list
-below is the kind case, so extend it to every IP you recorded:
+reconcile. Substitute the CIDRs and ports from above. The single-CIDR list
+below is the kind case, one control-plane node, so replace `172.18.0.2/32`
+with the address the discovery command printed and extend the list to every
+IP an HA control plane prints:
 
 ```bash
 kubectl patch helmrelease glance-operator -n glance-system --type=merge \
-  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["10.96.0.1/32"],"ports":[6443]}}}}}'
+  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
 kubectl wait helmrelease/glance-operator -n glance-system \
   --for=condition=Ready --timeout=5m
@@ -101,7 +119,7 @@ values with a rolling `helm upgrade`. The fail-closed guard requires
 helm upgrade glance-operator oci://ghcr.io/c5c3/charts/glance-operator \
   --namespace glance-system --reuse-values \
   --set networkPolicy.enabled=true \
-  --set 'networkPolicy.kubeApiServer.cidrs[0]=10.96.0.1/32' \
+  --set 'networkPolicy.kubeApiServer.cidrs[0]=172.18.0.2/32' \
   --set 'networkPolicy.kubeApiServer.ports[0]=6443'
 ```
 
@@ -160,7 +178,11 @@ leader-election lease renewals fail with `context deadline exceeded`, and the
 actually dials. Either `kubeApiServer.cidrs` is missing one or more of the
 current endpoint IPs (an HA control plane may have added a replica, or a
 control-plane node may have been replaced with a different IP), or your CNI maps
-the API server behind a port that is not in `kubeApiServer.ports`.
+the API server behind a port that is not in `kubeApiServer.ports`. A rule naming
+the `10.96.0.1` Service VIP instead of an endpoint address fails the same way,
+because the CNI evaluates the connection after the Service DNAT. On Cilium
+without `--policy-cidr-match-mode=nodes`, no `ipBlock` matches an API server
+that runs on a cluster node; see the Cilium paragraph in Step 1.
 
 **Fix:** re-run the discovery command from Step 1 and update
 `networkPolicy.kubeApiServer.cidrs` to include **every** IP it returns, plus
