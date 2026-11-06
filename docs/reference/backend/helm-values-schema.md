@@ -535,8 +535,11 @@ federation:
 networkPolicy:
   enabled: true
   kubeApiServer:
-    # cluster-specific — discover with: kubectl get endpoints kubernetes -o json
-    cidrs: ["10.96.0.1/32"]
+    # cluster-specific: the kubernetes Endpoints addresses, not the Service VIP;
+    # discover with: kubectl get endpoints kubernetes -n default -o json;
+    # on Cilium, node addresses match only with --policy-cidr-match-mode=nodes
+    # (cluster-wide); prefer a CiliumNetworkPolicy toEntities: [kube-apiserver]
+    cidrs: ["10.0.0.10/32", "10.0.0.11/32", "10.0.0.12/32"]
     ports: [6443]
 ```
 
