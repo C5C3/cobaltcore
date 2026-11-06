@@ -19,12 +19,15 @@
 #
 # The guest has no operating system and no NIC, so the suite proves the libvirt
 # path of nova-compute (socket, driver, disk tooling, domain XML) and nothing
-# behind it. The guest boot, KVM, networking and live migration between two
-# libvirt nodes are proven by the lab run of docs/quick-start-metal-stack.md.
+# behind it. ../guest-dataplane boots a cirros guest with a NIC and a Cinder
+# volume and judges its operating system, network and volume from inside the
+# guest. KVM and live migration between two libvirt nodes are proven by the
+# lab run of docs/quick-start-metal-stack.md.
 #
 # The stack is the one of ../../e2e/nova/compute-node-pool under the nova-pool
-# prefix, and the suite applies its fixtures 00 to 11, 15 and 16 from there. No
-# other suite runs on the job's cluster, so the names cannot collide.
+# prefix, and the suite applies its fixtures 00 to 11, 15 and 16 from there.
+# ../guest-dataplane brings up the same stack under the same names, and the
+# suite root runs one suite at a time, so the names cannot collide.
 #
 # ── concurrent: false ────────────────────────────────────────────────
 # libvirtd, the chassis and the nova-compute pod run with hostNetwork and own
@@ -223,7 +226,10 @@ spec:
           ../../e2e/cinder/broker-vhost.sh delete nova-pool || true
   # ── Step 3: Start libvirtd ─────────────────────────────────────────────
   # The DaemonSet selects the pool label of step 1. rollout status succeeds on
-  # a DaemonSet that schedules no pod, hence the check that one exists.
+  # a DaemonSet that schedules no pod, hence the check that one exists. QEMU
+  # outlives the libvirt-e2e pod and the domain definitions are the node's
+  # (00-libvirt.yaml), so libvirt-domains.sh removes every domain an earlier
+  # suite left before the pool exists, and fails when one stays.
   - try:
     - script:
         shell: bash
@@ -240,10 +246,16 @@ spec:
           kubectl exec -n "$NAMESPACE" "$POD" -c libvirtd -- virsh -c qemu:///system version
           kubectl exec -n "$NAMESPACE" "$POD" -c libvirtd -- \
             virsh -c qemu:///system domcapabilities --virttype qemu --arch x86_64
+          ./libvirt-domains.sh
     catch: *libvirt-dump
     cleanup:
+    # Every domain goes before the DaemonSet, for the same reason. Best-effort:
+    # every command ends in `|| true`.
     - script:
+        shell: bash
+        timeout: 4m
         content: |
+          ./libvirt-domains.sh || true
           kubectl delete -f 00-libvirt.yaml --ignore-not-found || true
   # ── Step 4: Apply the pool ─────────────────────────────────────────────
   - try:

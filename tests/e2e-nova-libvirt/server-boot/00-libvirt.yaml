@@ -25,22 +25,44 @@
 # server_listen = $my_ip. It runs privileged as root because libvirtd manages
 # the node's devices and the domain's cgroups.
 #
-# shareProcessNamespace makes the pod's pause container PID 1, and it reaps the
-# QEMU processes libvirtd daemonizes. With libvirtd as PID 1 they are
-# reparented to libvirtd, which never reaps them: they stay zombies, every
-# kill libvirtd sends them ends in "Failed to terminate process ... with
-# SIGKILL: Device or resource busy", and its QEMU capability probe never
-# completes.
+# hostPID runs libvirtd in the node's PID namespace. The QEMU processes
+# libvirtd daemonizes are reparented to a process that reaps them, the pod's
+# containerd shim and, once the pod is gone, the node's PID 1, and a
+# replacement pod sees the same PIDs. With libvirtd as the PID 1 of a namespace
+# of its own they would be reparented to libvirtd, which never reaps them: they
+# stay zombies, every kill libvirtd sends them ends in "Failed to terminate
+# process ... with SIGKILL: Device or resource busy", and its QEMU capability
+# probe never completes. The API server refuses hostPID beside
+# shareProcessNamespace. The pod is already privileged with the node's /dev,
+# and on kind the host PID namespace is the node container's, so hostPID widens
+# nothing beyond the kind node.
 #
 # The privileged pod sees the node's cgroup tree, and libvirt moves the
 # guest's QEMU into a cgroup of its own below the node's /machine, so the
-# pod's resources bound libvirtd and not the 128 MiB guest of the m1.nano
-# flavor. QEMU still runs in the pod's PID namespace, and deleting the pod
-# kills it. The suite needs no domain to outlive the pod, so there is no host
-# scope, no hostPID and no init container. There is no liveness probe: a
-# restart on a slow answer under TCG would drop nova-compute's connection in
-# the middle of a boot. The readiness probe asks libvirtd for its version
-# over the local socket.
+# pod's resources bound libvirtd and not the guests. Deleting the pod kills
+# libvirtd, which runs in the container's cgroup, and leaves QEMU running. A
+# replacement libvirtd finds the running domain through its state under the
+# node's /run/libvirt and /var/lib/libvirt. A domain therefore outlives the
+# DaemonSet. libvirt-domains.sh beside this file destroys and undefines every
+# domain, and each suite runs it in step 3, before its pool exists, and in the
+# cleanup that deletes the DaemonSet. There is no host scope and no init
+# container.
+#
+# /etc/libvirt/qemu, where libvirtd keeps the persistent definition of each
+# domain, is the node's too. With the image's copy a replacement libvirtd knows
+# the running domain from its state alone, as a transient domain that vanishes
+# when the guest shuts down; Nova's power-off then fails with InstanceNotFound
+# and leaves the server ACTIVE.
+#
+# /var/lib/nova is mounted with HostToContainer propagation. nova-compute
+# mounts the NFS export of an attached volume below it after this pod started,
+# with Bidirectional propagation on its own mount, and QEMU opens the volume
+# file there. Without the propagation the mount never reaches this pod and the
+# attach fails.
+#
+# There is no liveness probe: a restart on a slow answer under TCG would drop
+# nova-compute's connection in the middle of a boot. The readiness probe asks
+# libvirtd for its version over the local socket.
 #
 # The image tag is latest because it is the only tag of ghcr.io/c5c3/libvirt
 # that does not name a commit of this repository. The job loads the image into
@@ -86,7 +108,7 @@ spec:
         openstack.c5c3.io/nova-compute-pool: libvirt
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      shareProcessNamespace: true
+      hostPID: true
       automountServiceAccountToken: false
       containers:
         - name: libvirtd
@@ -117,8 +139,11 @@ spec:
               mountPath: /run/libvirt
             - name: var-lib-libvirt
               mountPath: /var/lib/libvirt
+            - name: etc-libvirt-qemu
+              mountPath: /etc/libvirt/qemu
             - name: var-lib-nova
               mountPath: /var/lib/nova
+              mountPropagation: HostToContainer
             - name: dev
               mountPath: /dev
             - name: sys-fs-cgroup
@@ -134,6 +159,10 @@ spec:
         - name: var-lib-libvirt
           hostPath:
             path: /var/lib/libvirt
+            type: DirectoryOrCreate
+        - name: etc-libvirt-qemu
+          hostPath:
+            path: /etc/libvirt/qemu
             type: DirectoryOrCreate
         - name: var-lib-nova
           hostPath:

@@ -9,8 +9,11 @@
 # There is no spec.extraConfig: the driver is the pool's default,
 # libvirt.LibvirtDriver on qemu:///system, and virtType: qemu runs the guest
 # under QEMU's TCG emulation, which needs no /dev/kvm on the runner. The
-# server carries no NIC, so nova-compute plugs no VIF and waits for no
-# network-vif-plugged event.
+# server of this suite carries no NIC, so nova-compute plugs no VIF for it.
+# The pool also serves ../guest-dataplane, whose servers carry a NIC: their
+# boot waits for the network-vif-plugged event Neutron sends, because the
+# pool does not set vif_plugging_is_fatal = false the way the fake-driver
+# pools of the Tempest suites do.
 #
 # The resources are the ones pool-a of ../../e2e/nova/compute-node-pool runs on.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
