@@ -14,10 +14,13 @@
 #     volume reads back, in five or more contiguous ok lines each
 #   - deleting the ICMP rule of the peer's security group stops the pings, and
 #     re-creating it lets them through again
-#
-# Later steps add the CI form of the lab's faults F1 and F2 (a PodChaos
-# pod-kill of libvirt and of nova-compute under the running guest), a read of
-# the counter on the backend, and four Tempest scenarios.
+#   - F1 and F2 of the lab, a PodChaos pod-kill of libvirt and of nova-compute
+#     under the running guest, keep QEMU running and the probes ok without a
+#     gap, F1 with a new libvirtd and F2 with both PIDs and the NFS mounts kept
+#   - with the probe server stopped, the volume file on the backend holds the
+#     counter of the last ok disk line
+#   - four tempest.scenario tests that never log into a guest pass, none
+#     skipped (tempest/)
 #
 # The stack is the one of ../../e2e/nova/compute-node-pool under the nova-pool
 # prefix, whose fixtures 00 to 11 the suite applies by path, as ../server-boot
@@ -679,4 +682,29 @@ spec:
           set -euo pipefail
           . ./guest-lib.sh
           gl_teardown_guests
+    catch: *guest-dump
+  # ── Step 11: Run four Tempest scenarios ────────────────────────────────
+  # The tempest.scenario tests that never log into the guest, through
+  # hack/ci-run-tempest.sh as the Tempest suites run it, from tempest/. One
+  # worker keeps one TCG guest at a time on the runner. The script retries a
+  # failed test once, serially, before it exits non-zero; the verdict then
+  # wants all four tests in the report, passed and none skipped.
+  - try:
+    - script:
+        shell: bash
+        timeout: 40m
+        content: |
+          set -euo pipefail
+          . ./guest-lib.sh
+          cd "$(git rev-parse --show-toplevel)"
+          SERVICE=nova CONFIG_DIR=tests/e2e-nova-libvirt/guest-dataplane/tempest \
+            OUTPUT_DIR=_output/tempest-nova-libvirt \
+            TEMPEST_IMAGE="${TEMPEST_IMAGE:-ghcr.io/c5c3/tempest:2026.1}" TEMPEST_CONCURRENCY=1 \
+            SERVICE_K8S_NAME=keystone-nova-pool GLANCE_K8S_NAME=glance-nova-pool \
+            NEUTRON_K8S_NAME=neutron-nova-pool CINDER_K8S_NAME=cinder-nova-pool \
+            NOVA_K8S_NAME=nova-pool PLACEMENT_K8S_NAME=placement-nova-pool \
+            hack/ci-run-tempest.sh
+          # shellcheck disable=SC2046 # one test id per word
+          gl_tempest_verdict _output/tempest-nova-libvirt/tempest-results.xml \
+            $(grep -E '^tempest\.' tests/e2e-nova-libvirt/guest-dataplane/tempest/include-tests.txt)
     catch: *guest-dump
