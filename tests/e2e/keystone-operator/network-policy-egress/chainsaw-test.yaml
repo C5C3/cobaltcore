@@ -101,6 +101,15 @@ spec:
           kubectl get networkpolicy keystone-operator-netpol -n keystone-system -o yaml 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n keystone-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    # The step cleanup runs at the end of the test, also after a failed step,
+    # so the second release cannot outlive this suite. The release-scoped
+    # uninstall removes the Deployment, ServiceAccount, ClusterRole/Binding
+    # and NetworkPolicy of this release and leaves the primary operator of
+    # hack/ci-deploy-operator.sh installed.
+    cleanup:
+    - script:
+        content: |
+          helm uninstall keystone-operator-netpol -n keystone-system 2>&1 || true
   # ── Step 2: Assert NetworkPolicy exists in release namespace ──
   - try:
     - assert:
@@ -256,12 +265,3 @@ spec:
           kubectl get networkpolicy keystone-operator-netpol -n keystone-system -o yaml 2>&1 || true
           echo "=== Keystone API pods and Service ==="
           kubectl get pods,endpointslices -n openstack -l app.kubernetes.io/instance=keystone-netpol-egress -o wide --show-labels 2>&1 || true
-  # ── Step 6: Cleanup Helm release ─────────────────────────────────────────
-  # Release-scoped uninstall removes the Deployment, ServiceAccount,
-  # ClusterRole/Binding, and NetworkPolicy owned by this release, leaving the
-  # primary operator installed by hack/ci-deploy-operator.sh intact.
-  - try:
-    - script:
-        content: |
-          helm uninstall keystone-operator-netpol -n keystone-system 2>&1 || true
-          kubectl delete keystone keystone-netpol-egress -n openstack --ignore-not-found 2>&1 || true
