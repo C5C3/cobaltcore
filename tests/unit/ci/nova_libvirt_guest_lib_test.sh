@@ -46,6 +46,10 @@
 #      and sourcing it calls nothing.
 #  11. The probe function of guest-user-data.sh writes lines GL_PROBE_RE
 #      matches and gl_window reads, and the rendered user-data names the peer.
+#  12. gl_last_ok_disk prints the seq of the last ok disk line of a raw log
+#      with CRLF lines and kinds out of order, drops the line the EOF marker
+#      joins, and fails without an ok disk line; gl_backend_holds passes on
+#      probe-N and probe-N+1 and fails on any other value.
 #
 # Usage: bash tests/unit/ci/nova_libvirt_guest_lib_test.sh
 
@@ -652,6 +656,48 @@ probe dhcp 1 ok 10.241.0.5; probe net 1 ok; probe net 2 ok; probe disk 1 ok 1"
   assert_eq "and the disk line" "OK: disk 1..1 all ok" "$GL_OUT"
 }
 
+# --- Test 12 --------------------------------------------------------------
+# raw <name> <content> <tail>: a console log file as step 9 reads it, its
+# lines ending in \r\n, then tail, then the EOF marker step 9 appends.
+raw() {
+  {
+    printf '%s\n' "$2" | sed 's/$/\r/'
+    printf '%sEOF\n' "$3"
+  } >"$TMP_DIR/$1"
+}
+
+test_backend_read() {
+  echo "Test: gl_last_ok_disk reads the last ok disk line, gl_backend_holds the volume"
+  raw newline "$(lines disk 1 7; lines net 1 9; lines disk 8 8)" ""
+  raw cut "$(lines disk 1 8; lines net 1 9)" "guest-probe disk 9 10:0"
+  raw joined "$(lines disk 1 8)" "guest-probe disk 9 10:00:09 ok 9"
+  raw error "$(lines disk 1 5; lines net 1 9; lines disk 6 6 error)" ""
+  raw none "$(lines net 1 9)" ""
+
+  run_lib -- "gl_last_ok_disk <'$TMP_DIR/newline'"
+  assert_eq "a log that ends in a newline keeps its last line" "8" "$GL_OUT"
+  run_lib -- "gl_last_ok_disk <'$TMP_DIR/cut'"
+  assert_eq "a line the stop cut short is dropped" "8" "$GL_OUT"
+  run_lib -- "gl_last_ok_disk <'$TMP_DIR/joined'"
+  assert_eq "a last line without its newline is dropped" "8" "$GL_OUT"
+  run_lib -- "gl_last_ok_disk <'$TMP_DIR/error'"
+  assert_eq "a disk line that is not ok does not count" "5" "$GL_OUT"
+  run_lib -- "gl_last_ok_disk <'$TMP_DIR/none'"
+  assert_eq "a log without an ok disk line fails" "1" "$GL_RC"
+  assert_eq "it says so" "FAIL: no ok disk line in the console log" "$GL_OUT"
+
+  run_lib -- 'gl_backend_holds probe-8 8'
+  assert_eq "the counter of the last ok line passes" \
+    "OK: the volume file holds probe-8, the last ok disk line counted 8" "$GL_OUT"
+  run_lib -- 'gl_backend_holds probe-9 8'
+  assert_eq "the next counter passes" "0" "$GL_RC"
+  run_lib -- 'gl_backend_holds probe-10 8'
+  assert_eq "a counter two ahead fails" "1" "$GL_RC"
+  run_lib -- "gl_backend_holds '' 8"
+  assert_eq "an empty read fails" "1" "$GL_RC"
+  assert_eq "naming the value" "FAIL: the volume file holds '', the last ok disk line counted 8" "$GL_OUT"
+}
+
 test_gl_window
 test_gl_console
 test_gl_wait_window
@@ -664,6 +710,7 @@ test_gl_tempest_verdict
 test_gl_teardown_guests
 test_state_dump_and_sourcing
 test_user_data_matches_parser
+test_backend_read
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

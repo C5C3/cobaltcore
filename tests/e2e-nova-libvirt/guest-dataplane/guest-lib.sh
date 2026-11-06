@@ -248,6 +248,37 @@ gl_wait_result() {
   done
 }
 
+# gl_last_ok_disk: the seq of the last ok disk line of a console log file
+# read raw on stdin, with the line EOF appended (`cat <log> && echo EOF`). The
+# last line is dropped: the marker alone when the log ends in a newline, the
+# marker and the line a stop cut short when it does not.
+gl_last_ok_disk() {
+  local seq
+  seq="$(sed '$d' | tr -d '\r' | grep -oE "$GL_PROBE_RE" |
+    awk '$2 == "disk" && $5 == "ok" && (!f || $3 + 0 > m) { m = $3 + 0; f = 1 }
+      END { if (f) print m }')" || seq=""
+  if [ -z "$seq" ]; then
+    echo "FAIL: no ok disk line in the console log"
+    return 1
+  fi
+  echo "$seq"
+}
+
+# gl_backend_holds <value> <n>: the value read at byte 4096 of the volume file
+# is probe-<n>, the counter of the last ok disk line, or probe-<n+1> when the
+# stop fell between the write of n+1 and its line.
+gl_backend_holds() {
+  case "$1" in
+    "probe-$2" | "probe-$(($2 + 1))")
+      echo "OK: the volume file holds $1, the last ok disk line counted $2"
+      ;;
+    *)
+      echo "FAIL: the volume file holds '$1', the last ok disk line counted $2"
+      return 1
+      ;;
+  esac
+}
+
 # gl_libvirt_pod: the Running libvirt-e2e pod that is not terminating.
 gl_libvirt_pod() {
   local pod
