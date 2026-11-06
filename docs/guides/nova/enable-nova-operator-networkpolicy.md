@@ -354,18 +354,64 @@ three egress rules the chart adds, for its API health check, for the Keystone
 API and for the Placement API. These tests cover rendering only; they do not
 exercise packet enforcement.
 
-The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
-provides runtime enforcement coverage for the Keystone chart using the shared
-template. It does not install the Nova chart or test its Nova, Keystone or
-Placement egress rules at runtime. There is no Nova operator
-`network-policy-egress` suite.
+The `nova-operator-network-policy-egress` Chainsaw suite adds runtime coverage
+for the Nova operator chart. CI runs it in the nova `e2e-operator` job on kind
+v0.33.0 with the default kindnet CNI. The suite installs a second release,
+`nova-operator-netpol`, with `networkPolicy.enabled=true` and the API server
+addresses of EndpointSlice `default/kubernetes`. It checks that the policy
+selects the pod of that release and leaves the primary `nova-operator` pod
+alone, and that this policy is the only NetworkPolicy in `nova-system`. The
+operator pod must start without a restart and log that it detected the Gateway
+API.
 
-With the linked suite's prerequisites satisfied, run its Keystone-only example
-from the repository root:
+kindnet adds a new pod to its policy set a moment after the pod starts, so these
+startup checks show only that the operator started with the policy present. The
+proof comes from a probe pod the policy selects, on fresh connections:
+
+1. It is dropped on a sink port that a control pod outside the policy reaches.
+   The suite waits for this drop and fails with `was never dropped` on a cluster
+   that does not enforce NetworkPolicy.
+2. It resolves a cluster name and reaches the API server endpoint and the
+   `kubernetes` Service VIP.
+3. It reaches stand-ins for the Nova API on TCP 8774, the Keystone API on TCP
+   5000 and 5050, and the Placement API on TCP 8778. It is dropped on each
+   stand-in's TCP 9999 and on the sink's TCP 5000, 5050, 8774 and 8778, so each
+   rule admits its ports only to its peer.
+
+Stand-ins replace the API pods: each one is a bare pod that carries the two
+labels of one chart rule and listens on its ports. The suite applies no Nova,
+Keystone or Placement CR. The `chart_networkpolicy_test.go` files of the nova,
+keystone and placement operators, under
+`operators/<operator>/internal/controller/`, check that each rule admits the
+labels those operators set on the real API pods and the ports their Services
+target. The Keystone stand-in on TCP 5050 shows that the policy admits the port
+the Keystone Service targets while federation is active. It does not exercise
+the OIDC sidecar itself.
+
+Run the following from the repository root against a disposable devstack with
+infrastructure, the primary `nova-operator` release in `nova-system`, and the
+keystone, placement, glance, ovn and neutron operators that the nova
+`e2e-operator` job also deploys. Install the tools pinned by
+`hack/install-test-deps.sh`; the script steps need Git, Helm, kubectl and jq as
+well as Chainsaw, and image loading needs kind and Docker. Building the image
+with `make image` requires
+[Nix with flakes](../../reference/ci-cd/nix-image-build.md). The release runs
+`ghcr.io/c5c3/nova-operator:dev` with `image.pullPolicy=Never`, so load that
+image into the kind cluster first:
 
 ```bash
-chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
+make image OPERATOR=nova IMG=ghcr.io/c5c3/nova-operator:dev
+kind load docker-image ghcr.io/c5c3/nova-operator:dev --name cobaltcore
+helm dependency build --skip-refresh operators/nova/helm/nova-operator
+chainsaw test --test-dir tests/e2e/nova-operator/network-policy-egress
 ```
+
+Replace `cobaltcore` if your cluster has another name. The probe pods run
+`ghcr.io/c5c3/nova:2026.1`, which the kind node pulls when the cluster does not
+hold it yet. Chainsaw runs scripts from the test directory, and the install step
+resolves the chart and values paths from `GITHUB_WORKSPACE` in CI and from
+`git rev-parse --show-toplevel` locally. No `GITHUB_WORKSPACE` export is needed
+in a local Git checkout.
 
 A second suite, `tests/e2e/nova/network-policy`, covers the other policies: the
 ones the operator projects around the Nova pods from `spec.networkPolicy` on a

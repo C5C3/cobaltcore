@@ -280,16 +280,59 @@ pins the shared rules. The cinder chart's helm-unittest
 egress rule the chart adds for its API health check. These tests cover rendering
 only; they do not exercise packet enforcement.
 
-The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
-provides runtime enforcement coverage for the Keystone chart using the shared
-template. It does not install the Cinder chart or test Cinder-specific runtime
-egress. There is no Cinder operator `network-policy-egress` suite.
-With the linked suite's prerequisites satisfied, run its Keystone-only example
-from the repository root:
+The `cinder-operator-network-policy-egress` Chainsaw suite adds runtime coverage
+for the Cinder operator chart. CI runs it in the cinder `e2e-operator` job on
+kind v0.33.0 with the default kindnet CNI. The suite installs a second release,
+`cinder-operator-netpol`, with `networkPolicy.enabled=true` and the API server
+addresses of EndpointSlice `default/kubernetes`. It checks that the policy
+selects the pod of that release and leaves the primary `cinder-operator` pod
+alone, and that this policy is the only NetworkPolicy in `cinder-system`. The
+operator pod must start without a restart and log that it detected the Gateway
+API.
+
+kindnet adds a new pod to its policy set a moment after the pod starts, so these
+startup checks show only that the operator started with the policy present. The
+proof comes from a probe pod the policy selects, on fresh connections:
+
+1. It is dropped on a sink port that a control pod outside the policy reaches.
+   The suite waits for this drop and fails with `was never dropped` on a cluster
+   that does not enforce NetworkPolicy.
+2. It resolves a cluster name and reaches the API server endpoint and the
+   `kubernetes` Service VIP.
+3. It reaches a stand-in for the Cinder API on TCP 8776. It is dropped on the
+   stand-in's TCP 9999 and on the sink's TCP 8776, so the rule admits the port
+   only to its peer.
+
+A stand-in replaces the Cinder API pods: a bare pod that carries the two labels
+of the chart's rule (`app.kubernetes.io/name: cinder` and
+`app.kubernetes.io/managed-by: cinder-operator`) and listens on TCP 8776. The
+suite applies no Cinder CR.
+`operators/cinder/internal/controller/chart_networkpolicy_test.go` checks that
+the rule admits the labels the operator sets on the real API pods and the port
+their Service targets.
+
+Run the following from the repository root against a disposable devstack with
+infrastructure and the primary `cinder-operator` release in `cinder-system`.
+Install the tools pinned by `hack/install-test-deps.sh`; the script steps need
+Git, Helm, kubectl and jq as well as Chainsaw, and image loading needs kind and
+Docker. Building the image with `make image` requires
+[Nix with flakes](../../reference/ci-cd/nix-image-build.md). The release runs
+`ghcr.io/c5c3/cinder-operator:dev` with `image.pullPolicy=Never`, so load that
+image into the kind cluster first:
 
 ```bash
-chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
+make image OPERATOR=cinder IMG=ghcr.io/c5c3/cinder-operator:dev
+kind load docker-image ghcr.io/c5c3/cinder-operator:dev --name cobaltcore
+helm dependency build --skip-refresh operators/cinder/helm/cinder-operator
+chainsaw test --test-dir tests/e2e/cinder-operator/network-policy-egress
 ```
+
+Replace `cobaltcore` if your cluster has another name. The probe pods run
+`ghcr.io/c5c3/cinder:2026.1`, which the kind node pulls when the cluster does
+not hold it yet. Chainsaw runs scripts from the test directory, and the install
+step resolves the chart and values paths from `GITHUB_WORKSPACE` in CI and from
+`git rev-parse --show-toplevel` locally. No `GITHUB_WORKSPACE` export is needed
+in a local Git checkout.
 
 A second suite, `tests/e2e/cinder/network-policy`, covers the other policy: the
 one the operator projects around the Cinder pods from `spec.networkPolicy` on a

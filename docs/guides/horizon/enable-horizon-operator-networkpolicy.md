@@ -162,4 +162,13 @@ its connection to the MariaDB port must be dropped, and the dashboard must answe
 first and fails when it never comes, so it passes only on a cluster that
 enforces the policy, as the CI kind cluster does.
 
+The suite also checks that the policy selects the pod of the
+`horizon-operator-netpol` release and leaves the primary `horizon-operator` pod
+alone, that it is the only NetworkPolicy in `horizon-system`, and that the
+operator pod never restarted. Before the probe pod runs, a control pod that no
+policy selects must reach the MariaDB port, which shows that the server listens.
+After the drop, the probe pod must resolve a cluster name and reach the API
+server endpoint and the `kubernetes` Service VIP on fresh connections, which only
+the policy's DNS and API server rules admit.
+
 This suite covers only the Horizon chart. It does not validate other operators.

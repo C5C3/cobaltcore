@@ -210,16 +210,59 @@ pins the shared rules. The glance chart's helm-unittest
 egress rule the chart adds for its API health check. These tests cover rendering
 only; they do not exercise packet enforcement.
 
-The [Keystone operator suite](../keystone/enable-keystone-operator-networkpolicy.md#tested-by)
-provides runtime enforcement coverage for the Keystone chart using the shared
-template. It does not install the Glance chart or test Glance-specific runtime
-egress. There is no Glance operator `network-policy-egress` suite.
-With the linked suite's prerequisites satisfied, run its Keystone-only example
-from the repository root:
+The `glance-operator-network-policy-egress` Chainsaw suite adds runtime coverage
+for the Glance operator chart. CI runs it in the glance `e2e-operator` job on
+kind v0.33.0 with the default kindnet CNI. The suite installs a second release,
+`glance-operator-netpol`, with `networkPolicy.enabled=true` and the API server
+addresses of EndpointSlice `default/kubernetes`. It checks that the policy
+selects the pod of that release and leaves the primary `glance-operator` pod
+alone, and that this policy is the only NetworkPolicy in `glance-system`. The
+operator pod must start without a restart and log that it detected the Gateway
+API.
+
+kindnet adds a new pod to its policy set a moment after the pod starts, so these
+startup checks show only that the operator started with the policy present. The
+proof comes from a probe pod the policy selects, on fresh connections:
+
+1. It is dropped on a sink port that a control pod outside the policy reaches.
+   The suite waits for this drop and fails with `was never dropped` on a cluster
+   that does not enforce NetworkPolicy.
+2. It resolves a cluster name and reaches the API server endpoint and the
+   `kubernetes` Service VIP.
+3. It reaches a stand-in for the Glance API on TCP 9292. It is dropped on the
+   stand-in's TCP 9999 and on the sink's TCP 9292, so the rule admits the port
+   only to its peer.
+
+A stand-in replaces the Glance API pods: a bare pod that carries the two labels
+of the chart's rule (`app.kubernetes.io/name: glance` and
+`app.kubernetes.io/managed-by: glance-operator`) and listens on TCP 9292. The
+suite applies no Glance CR.
+`operators/glance/internal/controller/chart_networkpolicy_test.go` checks that
+the rule admits the labels the operator sets on the real API pods and the port
+their Service targets.
+
+Run the following from the repository root against a disposable devstack with
+infrastructure and the primary `glance-operator` release in `glance-system`.
+Install the tools pinned by `hack/install-test-deps.sh`; the script steps need
+Git, Helm, kubectl and jq as well as Chainsaw, and image loading needs kind and
+Docker. Building the image with `make image` requires
+[Nix with flakes](../../reference/ci-cd/nix-image-build.md). The release runs
+`ghcr.io/c5c3/glance-operator:dev` with `image.pullPolicy=Never`, so load that
+image into the kind cluster first:
 
 ```bash
-chainsaw test --test-dir tests/e2e/keystone-operator/network-policy-egress
+make image OPERATOR=glance IMG=ghcr.io/c5c3/glance-operator:dev
+kind load docker-image ghcr.io/c5c3/glance-operator:dev --name cobaltcore
+helm dependency build --skip-refresh operators/glance/helm/glance-operator
+chainsaw test --test-dir tests/e2e/glance-operator/network-policy-egress
 ```
+
+Replace `cobaltcore` if your cluster has another name. The probe pods run
+`ghcr.io/c5c3/glance:2026.1`, which the kind node pulls when the cluster does
+not hold it yet. Chainsaw runs scripts from the test directory, and the install
+step resolves the chart and values paths from `GITHUB_WORKSPACE` in CI and from
+`git rev-parse --show-toplevel` locally. No `GITHUB_WORKSPACE` export is needed
+in a local Git checkout.
 
 The per-CR suite `tests/e2e/glance/network-policy` covers the Glance workload
 policy, a different scope from this guide.
