@@ -55,6 +55,8 @@ runner-lost|The self-hosted runner lost communication with the server|infra: the
 runner-lost|The runner has received a shutdown signal|infra: sibling job on a runner that was going down; rerun the failed jobs
 anon-clone-401|could not read Username for 'https://github.com'|infra: GitHub refused an anonymous clone from the runner's old git; the cloning step lacks GITHUB_TOKEN
 anon-clone-401|expected flush after ref listing|infra: anonymous upload-pack got a 401 challenge; the cloning step lacks GITHUB_TOKEN
+runner-disk-full|You are running out of disk space|infra: the runner's Docker disk filled up; compare the free space of the [ogrm-disk-guard] line in Set up runner with what the job's kind nodes fill
+runner-disk-full|no space left on device|infra: a write on a full disk failed; in a kind load step it is the runner's Docker disk, read the [ogrm-disk-guard] line of Set up runner
 korc-tag-expired|quay.io/orc/openstack-resource-controller.*not found|infra: the pinned K-ORC commit-<sha> tag expired on quay; re-pin commit, newTag and digest together
 ghcr-transient|ghcr\.io.*\(Client\.Timeout exceeded while awaiting headers\)|infra: transient ghcr.io timeout past the bounded retries
 ghcr-transient|docker login to [a-z0-9.-]+ failed after [0-9]+ attempts|infra: ghcr.io stayed unreachable through every login retry
