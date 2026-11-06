@@ -216,8 +216,8 @@ operator configuration. Upstream status: not yet proposed.
 `nix/locks/<release>/horizon/`
 
 The `horizon===` pin in `upper-constraints.txt` is stripped before the lock is
-resolved (see [Constraint Overrides](#constraint-overrides)). Two parts of the
-image are horizon's own:
+resolved (see [Constraint Overrides](#constraint-overrides)). Three parts of
+the image are horizon's own:
 
 - The static assets are built with the image. A derivation copies
   `openstack_dashboard` out of the venv into a writable tree, replaces
@@ -234,6 +234,13 @@ image are horizon's own:
   mounts the rendered Django settings ConfigMap. The image creates
   `/etc/openstack-dashboard/`, owned by root; the link dangles until the
   ConfigMap is mounted
+- `/etc/mime.types` links to the MIME table of the `mailcap` package. uWSGI's
+  `--static-map` reads it to set the `Content-Type` of every static asset.
+  Without it uWSGI sends the assets untyped, and a browser does not render an
+  untyped SVG, so the logos on the login page and in the header stay empty.
+  `test_static_assets_typed` in `tests/container-images/verify_horizon.sh`
+  starts uWSGI with that mapping and asserts `image/svg+xml` for the splash
+  logo and `text/css` for a compressed stylesheet
 
 The venv holds horizon with the one `pip_packages` entry of
 `releases/<release>/extra-packages.yaml`: `oslo.log`, pinned in
@@ -245,8 +252,9 @@ The venv holds horizon with the one `pip_packages` entry of
 in `tests/container-images/verify_horizon.sh` imports the formatter in the
 built image.
 
-**Runtime packages:** none beyond the venv; the pymemcache session-cache client
-and uwsgi come from the base pins of `nix/base-requirements.txt`.
+**Runtime packages:** `mailcap`, for its `/etc/mime.types`; the pymemcache
+session-cache client and uwsgi come from the base pins of
+`nix/base-requirements.txt`.
 
 **Final image properties:**
 

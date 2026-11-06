@@ -10,6 +10,8 @@
 # (nix/lib/python-env.nix). The static assets are built into
 # /var/lib/openstack/horizon-static here, collectstatic and offline
 # compression included, so the runtime image needs no init container.
+# uWSGI serves them through --static-map and types each file from
+# /etc/mime.types, which the image links from mailcap.
 #
 # DEVIATION from the original build-pipeline design: the image runs as the
 # generic 'openstack' user (UID/GID 42424) instead of a per-service user; see
@@ -65,6 +67,12 @@ serviceImage {
   description = "OpenStack horizon service";
 
   extraRoots."horizon-static" = horizonStatic;
+
+  # uWSGI's --static-map takes the Content-Type of a file from the table at
+  # /etc/mime.types, its default --mime-file on Linux. Without one it sends
+  # the assets untyped, and a browser never sniffs an untyped SVG as an
+  # image, so the login page and header logos stay empty (#1624).
+  rootLinks."etc/mime.types" = "${pkgs.mailcap}/etc/mime.types";
 
   # The mount point of the settings ConfigMap, owned by root like the rest of
   # the image.

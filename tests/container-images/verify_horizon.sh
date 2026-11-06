@@ -168,6 +168,59 @@ if took >= 3:
   assert_eq "the rendered pymemcache OPTIONS bound Django's cache and errors are misses" "0" "$exit_code"
 }
 
+# --- Test 8: uWSGI serves the static assets with their Content-Type ---
+test_static_assets_typed() {
+  echo "Test: uWSGI serves the static assets with their Content-Type"
+  # The horizon-operator serves /static through uWSGI's --static-map
+  # (uwsgiCommand in operators/horizon/internal/controller/reconcile_deployment.go),
+  # and uWSGI types each file from /etc/mime.types. Without that table it
+  # sends the assets untyped, and a browser never sniffs an untyped SVG as an
+  # image, so the login page logo stays empty (#1624). The check starts uWSGI
+  # with the operator's --static-map and no application and fetches the
+  # splash logo the login page links and one compressed stylesheet. The
+  # probe travels in an environment variable, as in tests/lib/uwsgi.sh.
+  local probe output exit_code=0
+  probe=$(
+    cat <<'EOF'
+import glob
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+root = "/var/lib/openstack/horizon-static"
+stylesheets = sorted(glob.glob(root + "/dashboard/css/*.css"))
+if not stylesheets:
+    sys.exit("no stylesheet under %s/dashboard/css" % root)
+paths = [
+    "/static/dashboard/img/logo-splash.svg",
+    "/static/" + os.path.relpath(stylesheets[0], root),
+]
+for path in paths:
+    for _ in range(50):
+        try:
+            response = urllib.request.urlopen("http://127.0.0.1:8080" + path, timeout=2)
+            break
+        except urllib.error.HTTPError as exc:
+            sys.exit("GET %s -> HTTP %d" % (path, exc.code))
+        except OSError:
+            time.sleep(0.2)
+    else:
+        sys.exit("uWSGI never answered GET %s" % path)
+    print("%s %s" % (path.rsplit(".", 1)[1], response.headers.get("Content-Type", "none")))
+EOF
+  )
+  output=$(docker run --rm -e STATIC_PROBE="$probe" "$IMAGE" sh -c \
+    'uwsgi --http :8080 --static-map /static=/var/lib/openstack/horizon-static --logto /tmp/uwsgi.log &
+     /var/lib/openstack/bin/python -c "$STATIC_PROBE"' 2>&1) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $output"
+
+  assert_eq "static probe exits 0" "0" "$exit_code"
+  assert_eq "logo-splash.svg is served as image/svg+xml" "image/svg+xml" "$(awk '$1 == "svg" { print $2 }' <<<"$output")"
+  assert_eq "the compressed stylesheet is served as text/css" "text/css" "$(awk '$1 == "css" { print $2 }' <<<"$output")"
+}
+
 # --- Run all tests ---
 echo "=== horizon container verification tests ==="
 echo "Image: $IMAGE"
@@ -185,6 +238,8 @@ echo ""
 test_uwsgi_runnable
 echo ""
 test_django_pymemcache_bounded
+echo ""
+test_static_assets_typed
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

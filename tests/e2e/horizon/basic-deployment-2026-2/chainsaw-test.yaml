@@ -137,6 +137,9 @@ spec:
   # The probe retries connection-level failures inside the pod: kube-proxy's
   # endpoint programming can trail the CR's Ready flip by a second or two, so
   # a single-shot request races it (seen in CI). HTTP errors still fail hard.
+  # The splash logo the page links has to come back as image/svg+xml: uWSGI's
+  # --static-map types the assets from the image's /etc/mime.types, and a
+  # browser never renders an untyped SVG (#1624).
   - try:
     - script:
         timeout: 90s
@@ -161,6 +164,12 @@ spec:
                   time.sleep(2)
           else:
               raise SystemExit('GET /auth/login/ never answered after retries: %r' % last)
+          logo = '/static/dashboard/img/logo-splash.svg'
+          assert logo in body, 'login page must link the splash logo'
+          r = urllib.request.urlopen('http://horizon-basic-2026-2.openstack.svc:8080' + logo)
+          content_type = r.headers.get('Content-Type')
+          assert content_type == 'image/svg+xml', 'GET %s -> Content-Type %r, want image/svg+xml' % (logo, content_type)
+          print('splash logo OK, %s' % content_type)
           "
     catch:
     - script:
