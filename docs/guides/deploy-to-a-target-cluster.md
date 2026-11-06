@@ -31,14 +31,14 @@ The figure shows what this guide builds. `{cluster}` is `cobaltcore-target`,
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy Keystone Locally](../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
 INFRA_ONLY=true CLUSTER_NAME=cobaltcore-target KIND_HOST_PORT=9443 make deploy-infra
 ```
 
-Follow that tutorial through its **Step 2 — Cluster + infrastructure stack** and
-stop there. `INFRA_ONLY=true` keeps every CobaltCore operator off this cluster, which
+Follow that guide through **Step 3 — Deploy the infrastructure stack**, using
+the command above for the target cluster, and stop there. `INFRA_ONLY=true` keeps every CobaltCore operator off this cluster, which
 is what the two-cluster split is for, so the tutorial's operator and CR steps do
 not apply here. Host port 9443 leaves 8443 free for a `cobaltcore` devstack you may
 already be running, and overriding `KIND_HOST_PORT` needs

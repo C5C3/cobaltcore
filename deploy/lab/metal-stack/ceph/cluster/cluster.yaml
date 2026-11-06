@@ -137,10 +137,13 @@ spec:
           topologySpreadConstraints:
             - maxSkew: 1
               topologyKey: kubernetes.io/hostname
-              whenUnsatisfiable: ScheduleAnyway
+              whenUnsatisfiable: DoNotSchedule
               labelSelector:
-                matchLabels:
-                  app: rook-ceph-osd
+                # Non-portable OSDs inherit their preparation job's host.
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values: [rook-ceph-osd, rook-ceph-osd-prepare]
         resources:
           requests:
             cpu: 500m

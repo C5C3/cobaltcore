@@ -17,7 +17,7 @@ does not do is talk to Keystone's admin API. On a ControlPlane the c5c3 operator
 mints the service user, assigns its role, and registers the service and its
 endpoints through K-ORC. Standalone, that half is yours.
 
-This guide walks the whole bring-your-own path against the Quick Start devstack:
+This guide walks the whole bring-your-own path against the local Keystone environment:
 install the operator, create the Keystone identity objects, apply the CR, and
 hand-register the catalog rows. For the field-by-field contract, see the
 [Placement CRD API Reference](../../reference/placement/placement-crd.md); for
@@ -27,7 +27,7 @@ the sub-reconciler order and the conditions each step reports, see the
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy Keystone Locally](../../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
@@ -52,7 +52,7 @@ credentials Secret `keystone-admin`, the shared `openstack-db` and
 
 ## Step 1 — Install the placement-operator
 
-The Quick Start already applied the `c5c3-charts` HelmRepository source, and the
+The local deployment guide already applied the `c5c3-charts` HelmRepository source, and the
 kind overlay ships the `placement-operator` HelmRelease suspended. Applying the
 release manifest clears the suspension and lets Flux install the chart:
 
@@ -189,7 +189,7 @@ to be `placement.127-0-0-1.nip.io`: that is the one the devstack's `openstack-gw
 terminates TLS for, with a cert-manager certificate issued for that name.
 
 The first reconcile pulls `ghcr.io/c5c3/placement:2026.1` onto the kind node. To
-take that out of the critical path, load the image the way the Quick Start loads
+take that out of the critical path, load the image the way the local deployment guide loads
 Keystone's:
 
 ```bash
@@ -252,7 +252,7 @@ and that `placement-service-user` holds the password Keystone actually has.
   defaults.
 - [Controller Events](../../reference/placement/placement-events.md) — what the
   operator emits while the CR converges.
-- [Quick Start (ControlPlane)](../../quick-start-controlplane.md) — the managed
+- [Deploy a ControlPlane](../../quick-start-controlplane.md) — the managed
   path, where the identity objects and catalog rows of Steps 2 and 4 are
   projected instead of typed.
 
