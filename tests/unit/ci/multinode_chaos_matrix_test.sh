@@ -6,17 +6,19 @@
 # Verify the multinode entry of the e2e-chaos matrix in
 # .github/workflows/ci.yaml (#1392): the entry and its suites in their order,
 # the topology label that keeps those suites out of `make e2e-chaos`, the
-# two-worker kind config, the step that prepares the leg and the one that
-# restores its workers, the nova stack it shares with the nova entry, and its
-# wall.
+# two-worker kind config, the step that prepares the leg, the one that secures
+# its disk space (#1618) and the one that restores its workers, the nova stack
+# it shares with the nova entry, and its wall.
 #
 # Every signal here fails silently when it is missing. A suite absent from the
 # entry is lint-checked and never applied to a cluster. On the single-node
 # config every suite fails its own two-worker preflight. Without the prepare
 # step the singletons land on a worker a suite kills, and without the restore
 # step a worker a killed chainsaw left paused hides the diagnostics and the
-# coverage counters of its node. Without the nova images, operators and
-# opt-ins the compute and API suites have nothing to fault.
+# coverage counters of its node. Without the disk space step a runner that
+# starts the leg with less free than its three nodes fill runs out mid-load,
+# before any suite. Without the nova images, operators and opt-ins the compute
+# and API suites have nothing to fault.
 #
 # Usage: bash tests/unit/ci/multinode_chaos_matrix_test.sh
 
@@ -110,6 +112,27 @@ test_the_leg_creates_the_two_worker_cluster() {
     "$(step_at "Setup E2E infrastructure")" "$(step_at "Prepare the multinode leg")"
 }
 
+test_the_leg_secures_its_disk_space() {
+  echo "Test: the multinode leg secures its disk space between the cluster and the first image pull"
+  local guard name
+  guard="$(job_step e2e-chaos "Secure disk space for the multinode leg")"
+  assert_not_empty "a disk space step exists" "$guard"
+  assert_eq "it runs on the multinode leg alone" "if: matrix.suite == 'multinode'" \
+    "$(step_if "Secure disk space for the multinode leg")"
+  # Run 42148206213 started with 43 GiB free and ran out loading its last
+  # image (#1618); the two green runs used 53.
+  assert_contains "it asks for the leg's 75 GiB" "$guard" 'DISK_SPACE_REQUIRED_GIB: "75"'
+  assert_contains "it runs the guard" "$guard" "run: hack/ci-ensure-disk-space.sh"
+  assert_not_contains "a short runner fails the leg, never silently" "$guard" "continue-on-error"
+  # After the creation, so the prune keeps the node image the nodes use.
+  assert_gte "it follows the cluster creation" "$(step_at "Secure disk space for the multinode leg")" \
+    "$(step_at "Create kind cluster")"
+  for name in "Load E2E images (keystone stack)" "Load E2E images" "Load images into kind" \
+    "Load nova leg images into kind"; do
+    assert_gte "and precedes ${name}" "$(step_at "$name")" "$(step_at "Secure disk space for the multinode leg")"
+  done
+}
+
 test_the_leg_restores_its_workers() {
   echo "Test: the multinode leg restores its workers after the suites, before the diagnostics"
   local restore run_at restore_at
@@ -173,6 +196,7 @@ test_the_leg_has_its_wall() {
 test_the_entry_runs_the_multinode_suites
 test_only_the_multinode_suites_carry_the_topology_label
 test_the_leg_creates_the_two_worker_cluster
+test_the_leg_secures_its_disk_space
 test_the_leg_restores_its_workers
 test_the_leg_brings_up_the_nova_stack
 test_the_leg_has_its_wall

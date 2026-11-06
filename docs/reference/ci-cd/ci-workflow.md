@@ -1367,9 +1367,21 @@ The `multinode` entry creates its cluster from `hack/kind-config-multinode.yaml`
 `tests/e2e-chaos/lib/nodes.sh prepare`, which removes the control-plane taint and
 cordons both workers, so every singleton of the stack lands on the control-plane
 node, which no fault touches. DaemonSet pods and pods with `nodeName` still reach
-the workers. Every `nova` gate also accepts `multinode`: the seven image refs, the
-kind load, the placement, neutron and nova deploys and `Dump diagnostic info (nova
-leg)`. `Restore the workers` runs `nodes.sh restore-all` after `Run chaos E2E
+the workers. `Secure disk space for the multinode leg` comes next and runs
+`hack/ci-ensure-disk-space.sh` with `DISK_SPACE_REQUIRED_GIB: "75"`. Each of the
+three nodes keeps its own copy of every image the entry loads, so its two green
+runs used 53 GiB of the runner's Docker disk, where the `nova` entry uses about
+22. The runner's own disk guard clears the disk only once it is 80% full, so a
+runner can start the job with about 40 GiB free. Run 42148206213 started
+with 43 GiB and failed loading `nova-compute:2026.1` into a worker with `no space
+left on device` (#1618). The 75 GiB are those 53, about 11 for the nineteen images
+a pruned runner pulls again, and a margin. With that much free the script changes
+nothing, and the runner keeps the images later jobs pull. With less it removes
+every image no container uses and the build cache, measures again, and fails the
+job before its first pull when the runner is still short. Containers and volumes
+stay, and so does the node image of the running cluster. Every `nova` gate also
+accepts `multinode`: the seven image refs, the kind load, the placement, neutron
+and nova deploys and `Dump diagnostic info (nova leg)`. `Restore the workers` runs `nodes.sh restore-all` after `Run chaos E2E
 tests` and before the diagnostics, under `if: always() && matrix.suite ==
 'multinode'` and `continue-on-error: true`: a wall that kills chainsaw skips every
 suite cleanup, and a paused or dead worker would hide the diagnostics and the
@@ -1405,6 +1417,7 @@ green run with them.
 | 2 | `actions/setup-go@v7` | Sets up Go with `go-version-file: go.work` for the `go tool covdata` of step 14 |
 | 3 | `create-kind-cluster` composite action | Clears any cluster a cancelled job left on the runner, then creates the kind cluster (`cobaltcore`) at `KIND_VERSION`, from `hack/kind-config-multinode.yaml` on the `multinode` leg |
 | 4 | `Prepare the multinode leg` (`multinode`) | `tests/e2e-chaos/lib/nodes.sh prepare`: removes the control-plane taint and cordons both workers |
+| 4a | `Secure disk space for the multinode leg` (`multinode`) | `hack/ci-ensure-disk-space.sh` with `DISK_SPACE_REQUIRED_GIB: "75"`: prunes every unused image and the build cache only when the runner's Docker disk has less free, and fails the job before its first pull when it is still short |
 | 5 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/source.json` pin to `$GITHUB_ENV` as `OVN_VERSION` |
 | 6 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs; `operator-variant: cover` fills every `<op>-operator:dev` ref from the coverage-instrumented `<op>-operator:cover` image ([Operator coverage](#operator-coverage)) |
 | 7 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod` and `network`), the OVN images (all but `pod`), the neutron and cinder images (`network`), the seven images of the `nova` entry (`nova` and `multinode`), `c5c3-operator:dev` (`controlplane`), and the three cinder images of `upgrade` |
@@ -3376,6 +3389,7 @@ The CI workflow depends on the following artifacts:
 | `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-leg.sh` | `e2e-operator-upgrade.yaml` | Fetch the pinned baseline chart and image; name what an operator's upgrade suite loads and deploys |
 | `hack/ci-read-chart-version.sh` | `merge-operator-images`, `hack/ci-fetch-released-operator.sh`, `hack/ci-operator-upgrade-main-matrix.sh` | Prints the version a `Chart.yaml` or a `baseline.yaml` pin names |
 | `hack/ci-operator-upgrade-main-matrix.sh` | `operator-upgrade.yaml` | Selects the operators a push to `main` published whose pin is frozen, and maps the images their suites load |
+| `hack/ci-ensure-disk-space.sh` | `e2e-chaos` job, `multinode` entry | Prunes every unused image and the build cache when the runner's Docker disk has less free than the entry needs, and fails when it is still short |
 | `hack/ci-check-node-budget.sh` | `e2e-controlplane` job, through the full-chain suite's Link 6z | Fails when the pods on the kind node request more than 4000m CPU or 16Gi memory |
 | `hack/ci-vpa-recommendations.sh` | `e2e-controlplane`, `e2e-controlplane-sso`, `tempest` jobs under `ci:measure-sizing`, and by hand in the [lab measurement](../testing/sizing-calibration.md#lab-measurement) | Records the VPA recommendations of the `openstack` workloads for the [sizing measurement](#sizing-measurement); its `prepare` subcommand removes the MariaDB scale subresource on the lab, which refuses `WITH_VPA=true` |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
