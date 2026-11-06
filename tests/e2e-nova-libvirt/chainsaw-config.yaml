@@ -2,22 +2,26 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Chainsaw configuration for the Nova libvirt suite.
+# Chainsaw configuration for the Nova libvirt suites, server-boot and
+# guest-dataplane.
 #
-# The suite lives outside tests/e2e/ because it needs a libvirtd on an amd64
-# node and enters CI as a non-blocking job of its own (e2e-nova-libvirt). The
+# The suites live outside tests/e2e/ because they need a libvirtd on an amd64
+# node and enter CI as a non-blocking job of their own (e2e-nova-libvirt). The
 # blocking nova leg of e2e-operator sweeps every directory under
 # tests/e2e/nova/, and `make e2e` sweeps tests/e2e/, so a suite there would run
 # in both.
 #
 # Key differences from the happy-path config at tests/e2e/chainsaw-config.yaml:
-#   - Assert timeout: 300s (5m) vs 120s. The suite raises it to 10m in its own
+#   - Assert timeout: 300s (5m) vs 120s. Each suite raises it to 10m in its own
 #     Test, for the full Nova stack it brings up.
 #   - Cleanup timeout: 120s (2m) vs 3m. The step cleanups that wait on a
 #     finalizer set their own script timeouts.
 #   - Parallelism: 1 vs 4: libvirtd, the chassis and nova-compute run with
 #     hostNetwork and own /run/libvirt, /run/openvswitch and /var/lib/nova on
-#     the one kind node.
+#     the one kind node, and both suites bring up the same nova-pool stack.
+#   - failFast: false. Chainsaw runs guest-dataplane before server-boot, and a
+#     failure of the guest suite must not skip server-boot, the narrow check
+#     of the libvirt path: each suite reports its own verdict.
 #
 # apiVersion v1alpha2 Configuration is the correct pairing with v1alpha1 Test
 # manifests, matching the sibling configs.
@@ -41,7 +45,7 @@ spec:
 
   # ── Execution ───────────────────────────────────────────────────────────
   execution:
-    failFast: true
+    failFast: false
     parallel: 1
 
   # ── Report ──────────────────────────────────────────────────────────────

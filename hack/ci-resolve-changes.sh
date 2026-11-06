@@ -362,18 +362,21 @@ cond=false
 if filter_on tests_ovn_overlay || filter_on ovn || filter_on image_ovn; then cond=true; fi
 e2e_ovn_overlay=$(or_force "$cond")
 
-# The single-node libvirt job. Its inputs are the suite with the pool fixtures
-# it applies by path, the nova-operator, the Nova and nova-compute images and
-# the libvirt image: the libvirt path it proves runs through the pool's
-# DaemonSet, the nova-compute image that DaemonSet runs and the libvirtd the
-# suite starts from the libvirt image.
+# The single-node libvirt job. Its inputs are the suites with the pool fixtures
+# they apply by path, the nova-operator, the Nova and nova-compute images, the
+# libvirt image and the tempest image: the libvirt path they prove runs through
+# the pool's DaemonSet, the nova-compute image that DaemonSet runs and the
+# libvirtd the suites start from the libvirt image, and the tempest image
+# carries the cirros guest the guest suite boots and the Tempest it runs.
 #
 # Deliberately FILTER_nova rather than membership of op_changed, for the reason
 # the overlay gives above: the job brings up a full Nova stack on a self-hosted
-# runner, so a shared Go change must not schedule it. ci:full is how you ask
-# for it anyway.
+# runner, so a shared Go change must not schedule it. The same holds for the
+# cinder, neutron and ovn operators the guest suite also runs: their own legs
+# cover them. ci:full is how you ask for it anyway.
 cond=false
-if filter_on tests_nova_libvirt || filter_on nova || filter_on image_nova || filter_on image_libvirt; then
+if filter_on tests_nova_libvirt || filter_on nova || filter_on image_nova ||
+  filter_on image_libvirt || filter_on image_tempest; then
   cond=true
 fi
 e2e_nova_libvirt=$(or_force "$cond")
