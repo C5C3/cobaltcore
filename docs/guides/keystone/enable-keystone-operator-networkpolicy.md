@@ -60,10 +60,29 @@ kubectl get endpoints kubernetes -n default -o json \
   | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
 ```
 
-Example output on a kind cluster:
+Use these endpoint addresses. Do not use the `10.96.0.1` Service VIP that
+`kubectl get service kubernetes` reports: kindnet (kind v0.32 and later) and
+enforcing CNIs such as Calico and Cilium evaluate policy after the Service
+DNAT, so a rule naming the VIP never matches.
+
+On Cilium, a CIDR selector, and so an `ipBlock` peer, matches no cluster node
+address by default. When the API server runs on a cluster node, as on a
+kubeadm control plane, Cilium drops the operator's API server traffic even
+with every endpoint address in the rule. Before you enable the policy, add a
+CiliumNetworkPolicy in the operator's namespace that selects the operator pod
+and allows egress `toEntities: [kube-apiserver]`. Starting the Cilium agents
+with `--policy-cidr-match-mode=nodes` (Helm value `policyCIDRMatchMode: nodes`)
+also works, but it is cluster-wide: every CIDR selector in every
+NetworkPolicy, CiliumNetworkPolicy, and CiliumClusterwideNetworkPolicy, in
+both directions (`ipBlock`, `fromCIDR`, `fromCIDRSet`, `toCIDR`, `toCIDRSet`,
+and CIDR deny rules), then matches node addresses too. Audit those rules
+before you turn it on.
+
+Example output on a kind cluster (the control-plane node on the kind bridge;
+the address depends on the subnet of the kind network):
 
 ```
-10.96.0.1/32 port=6443
+172.18.0.2/32 port=6443
 ```
 
 Example output on a kubeadm cluster with an HA control plane:
@@ -94,7 +113,7 @@ networkPolicy:
   enabled: true
   kubeApiServer:
     cidrs:
-      - 10.96.0.1/32      # replace with the CIDRs from step 1
+      - 172.18.0.2/32     # replace with the CIDRs from step 1
     ports:
       - 6443              # replace with the ports from step 1
 ```
@@ -104,7 +123,7 @@ On the tutorial devstacks the `keystone-operator` release is owned by Flux (a
 
 ```bash
 kubectl patch helmrelease keystone-operator -n keystone-system --type=merge \
-  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["10.96.0.1/32"],"ports":[6443]}}}}}'
+  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
 kubectl wait helmrelease/keystone-operator -n keystone-system \
   --for=condition=Ready --timeout=5m
@@ -263,11 +282,15 @@ and the operator pod restarts.
 **Diagnosis:** the `kubeApiServer.cidrs` list is missing one or more of the
 current API server endpoint IPs. Re-run step 1: an HA control plane may
 have added a new replica, or a control-plane node may have been replaced
-with a different IP.
+with a different IP. A rule naming the `10.96.0.1` Service VIP instead of an
+endpoint address fails the same way, because the CNI evaluates the
+connection after the Service DNAT. On Cilium without
+`--policy-cidr-match-mode=nodes`, no `ipBlock` matches an API server that
+runs on a cluster node; see the Cilium paragraph in step 1.
 
 **Fix:** update `networkPolicy.kubeApiServer.cidrs` to include every IP
 returned by `kubectl get endpoints kubernetes -n default -o json`, then
-reapply the values using step 2.
+reapply the values using step 2 and restart the operator as in step 3.
 
 ### Webhook TLS failures during admission
 
