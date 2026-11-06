@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one volume backend of cinder-nova-pool, on the /volumes export the kind
+# NFS server pre-creates (deploy/kind/nfs/nfs-server.yaml). Its volume service
+# runs in the Deployment cinder-nova-pool-volume-nfs1, which step 9 reads the
+# volume file through. nova-compute mounts the same export below
+# /var/lib/nova/mnt when it attaches the volume, and QEMU opens the file there.
+#
+# The name needs no suite prefix: the suite root runs one suite at a time, and
+# no other Cinder runs on the job's cluster.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-nova-pool
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

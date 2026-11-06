@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The Cinder the guest's volume and the Tempest volume scenarios run on (2026.1
+# release). Nova reaches it through the block-storage row
+# 01-catalog-extras-job.yaml registers, which is what [cinder] catalog_info
+# names (block-storage:cinder:internalURL).
+#
+# It authenticates against keystone-nova-pool with the bootstrap admin, the
+# serviceUser of every other service of the stack, on the schema
+# cinder_nova_pool. One API replica with the default uWSGI processes: Tempest
+# runs one worker on this suite.
+#
+# The broker is the kind-only shared-rabbitmq. Managed mode lands on its
+# default vhost, which is fine here: no other Cinder runs on the job's
+# cluster, so no other deployment consumes its RPC topics. glanceEndpoint is
+# left out, so the image service comes from the catalog.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-nova-pool
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_nova_pool
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: shared-rabbitmq
+  keystoneEndpoint: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

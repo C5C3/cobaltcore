@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The OVN metadata agent on the chassis of the stack. It answers the guest's
+# requests to 169.254.169.254, the instance id of the metadata probe and the
+# user-data cirros runs the probes from, and forwards them to the Nova
+# metadata API, signed with the secret both sides read from
+# nova-pool-metadata-secret.
+#
+# Laid out as tests/tempest/nova-2026-1/13-neutronmetadataagent-cr.yaml.
+# spec.messaging is unset: the agent reads what it needs out of the Southbound
+# database. novaMetadata.host is the Service the Nova operator puts in front of
+# the metadata Deployment, the Nova CR's name plus "-metadata", and 8775 is
+# nova-api-metadata's own port.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: nova-pool-metadata-agent
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2026.1"
+  chassisRef:
+    name: nova-pool-chassis
+  novaMetadata:
+    host: nova-pool-metadata.openstack.svc.cluster.local
+    port: 8775
+    sharedSecretRef:
+      name: nova-pool-metadata-secret

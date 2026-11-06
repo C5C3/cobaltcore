@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# What the guest suite adds to the catalog and the accounts of
+# keystone-nova-pool, beside the four services
+# ../../e2e/nova/compute-node-pool/01-catalog-setup-job.yaml registers:
+#
+#   - the block-storage service cinder with a public and an internal endpoint
+#     on the project-less /v3 path. Nova resolves Cinder through [cinder]
+#     catalog_info = block-storage:cinder:internalURL, and Tempest and the
+#     suite's client through the public row.
+#   - the account neutron-nova in the project service, which neutron-nova-pool
+#     posts its port-status notifications to Nova as (spec.nova, patched in by
+#     step 2). It holds admin and service, as the ControlPlane's notifier
+#     registration does: Nova's default policy asks for the service role to
+#     accept an external event, and Nova looks the instance behind a notified
+#     port up in the caller's own context, which answers 404 to an account
+#     without admin.
+#   - the service role for admin in the project admin. Nova's service user is
+#     admin (10-nova-cr.yaml), and Nova sends its service token as that user.
+#     Cinder 2026.1 deletes an attachment Nova owns only for a caller whose
+#     service token carries the service role, so without it Nova's own detach
+#     fails, which test_server_detach_rules would show as a 409.
+#
+# It runs after 01-catalog-setup-job.yaml, before any service CR is applied, as
+# the bootstrap admin (keystone-admin Secret). Both guards read one listing
+# taken up front, for the reason the pool's Job gives: an openstack call costs
+# about 12 s on the CI node. The other steps are idempotent: --or-show and a
+# role assignment repeat as no-ops, so a Job retry converges.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-pool-catalog-extras
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+            - name: NOTIFIER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nova-pool-neutron-notifier
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              existing_services="$(openstack service list --format value -c Name)"
+              existing_endpoints="$(openstack endpoint list --format value \
+                -c "Service Name" -c Interface -c URL)"
+
+              # Guarded by a name-list grep rather than by a show, as in the
+              # pool's Job: `openstack service show` of a missing resource can
+              # exit 0 on this image.
+              if ! grep -qx cinder <<<"${existing_services}"; then
+                openstack service create --name cinder \
+                  --description "OpenStack Block Storage" block-storage
+              fi
+
+              # Matched as one fixed string, so the dotted FQDN is not read as
+              # a regex.
+              CINDER_URL="http://cinder-nova-pool.openstack.svc:8776/v3"
+              for interface in public internal; do
+                if ! grep -qxF "cinder ${interface} ${CINDER_URL}" <<<"${existing_endpoints}"; then
+                  openstack endpoint create --region RegionOne cinder "${interface}" "${CINDER_URL}"
+                fi
+              done
+
+              openstack project create --or-show --domain Default service
+              openstack role create --or-show service
+              openstack user create --or-show --domain Default \
+                --password "${NOTIFIER_PASSWORD}" neutron-nova
+              openstack role add --user neutron-nova --user-domain Default \
+                --project service --project-domain Default admin
+              openstack role add --user neutron-nova --user-domain Default \
+                --project service --project-domain Default service
+              openstack role add --user admin --user-domain Default \
+                --project admin --project-domain Default service
+
+              echo "OK: block-storage registered, neutron-nova and the service role of admin in place"

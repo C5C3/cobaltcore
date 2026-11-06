@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Seeds the cirros 0.6.3 image the suite's two guests and the Tempest
+# scenarios boot from. The file is the one the tempest image carries
+# (images/tempest/image.nix), so no run downloads it.
+#
+# The id is fixed so tempest.conf and step 5 need no lookup (GL_IMAGE of
+# guest-lib.sh), and it is unique to this suite: every Glance on the job's
+# cluster writes into the one glance-images bucket and keys its objects by
+# image id. It lies above the ids the other nova-pool suites use.
+#
+# An active image of that id is kept. An image of that id in any other state
+# fails the Job. Such an image is most often the trace of an upload the S3
+# store refused as Duplicate, because an earlier run on this cluster left its
+# object in glance-images. The object outlives the Glance and its schema, so
+# the suite's step 2 cleanup deletes the image through the API, which deletes
+# the object, before the Glance goes.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-pool-cirros-seed
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-nova-pool.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              IMAGE_ID="4e0a0000-0000-4000-8000-000000000010"
+              FILE="/usr/share/cirros/cirros-0.6.3-x86_64-disk.img"
+              status="$(openstack image show "${IMAGE_ID}" -f value -c status 2>/dev/null || true)"
+              if [ "${status}" = active ]; then
+                echo "OK: cirros image ${IMAGE_ID} already active"
+                exit 0
+              fi
+              if [ -n "${status}" ]; then
+                echo "ERROR: image ${IMAGE_ID} exists in status ${status}"
+                exit 1
+              fi
+              if [ ! -f "${FILE}" ]; then
+                echo "ERROR: ${FILE} is missing; the tempest image predates the guest image"
+                exit 1
+              fi
+              # --public, so the Tempest projects boot from it too.
+              openstack image create --id "${IMAGE_ID}" \
+                --disk-format qcow2 --container-format bare \
+                --public --file "${FILE}" cirros-0.6.3
+              echo "OK: cirros image registered"
+              openstack image show "${IMAGE_ID}" --format value -c id -c status
