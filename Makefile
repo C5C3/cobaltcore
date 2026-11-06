@@ -177,9 +177,10 @@ govulncheck:
 # shellcheck lints all shell scripts with shellcheck --severity=warning.
 # Covers hack/ utility scripts, operator rotation scripts embedded via ConfigMaps,
 # the chaos workload harness (tests/e2e-chaos/lib/ and the probe-lib.sh a suite
-# sources), the library of the lab failover suites (tests/lab-failover/lib/)
-# and the patch checks the hvo and kna manager builds run
-# (images/*/patch-checks.sh).
+# sources), the library of the lab failover suites (tests/lab-failover/lib/),
+# the scripts of the libvirt suites (the guest suite's guest-lib.sh and the
+# POSIX sh guest-user-data.sh) and the patch checks the hvo and kna manager
+# builds run (images/*/patch-checks.sh).
 shellcheck:
 	@echo "Linting hack/*.sh..."
 	@shellcheck --severity=warning hack/*.sh
@@ -191,6 +192,8 @@ shellcheck:
 	@shellcheck --severity=warning tests/lab-failover/lib/*.sh
 	@echo "Linting the shared e2e suite scripts..."
 	@shellcheck --severity=warning tests/e2e/lib/*.sh
+	@echo "Linting the libvirt suite scripts..."
+	@shellcheck --severity=warning tests/e2e-nova-libvirt/*/*.sh
 	@echo "Linting the image patch checks..."
 	@shellcheck --severity=warning images/*/patch-checks.sh
 
