@@ -24,11 +24,13 @@ deployment automation, see
 The suites cover the reconciler lifecycle from a first deployment through
 scaling, the three optional HTTP front ends, a cross-release upgrade, the
 archive of soft-deleted rows and deletion. Each one creates its own `Nova` CR in
-the shared `openstack` namespace. Three sit outside it: `pod-security-restricted`
+the shared `openstack` namespace. Four sit outside it: `pod-security-restricted`
 owns a `nova-pss` namespace labelled with the restricted profile,
 `nova-operator/metrics` installs a second nova-operator Helm release in
-`nova-system`, and `nova-operator/env-key-material` reads the spec and the
-process environment of the operator pod there.
+`nova-system`, `nova-operator/network-policy-egress` installs another one with
+the chart's NetworkPolicy and probes it from `nova-system`, and
+`nova-operator/env-key-material` reads the spec and the process environment of
+the operator pod there.
 
 ### Fixture tiers
 
@@ -283,6 +285,7 @@ a labelled namespace of its own.
 | [invalid-novacompute-cr](#invalid-novacompute-cr) | (rejected at admission) | `NovaCompute` rejection corpus: the novaRef, selector, name and target rules, the offboarding toleration by key and as a wildcard, the cpuModels rule both ways, the two libvirt enums, a rejected extraConfig key, maxUnavailable under OnDelete, the image pin and the custom-trait rules. See [NovaCompute CRD](../nova/novacompute-crd.md#defaulting-and-validation) |
 | [metrics](#metrics) | — (operator-level) | nova-operator chart renders and removes the ServiceMonitor |
 | [env-key-material](#env-key-material) | — (operator-level) | The nova-operator pod reads no Secret into env, and its manager's process environment holds no key material |
+| [network-policy-egress](#network-policy-egress) | — (operator-level) | A nova-operator release with `networkPolicy.enabled=true`: the policy selects only its pod, which starts without a restart; a pod the policy selects is dropped on a port a control pod reaches, then resolves a cluster name and reaches the API server and the Nova, Keystone and Placement API stand-ins on their ports |
 
 ---
 
@@ -976,6 +979,51 @@ deployed.
 
 ---
 
+### network-policy-egress
+
+**File:** `tests/e2e/nova-operator/network-policy-egress/chainsaw-test.yaml`
+
+**Purpose:** The chart-level NetworkPolicy of the nova-operator chart, applied
+to packets. A second release with `networkPolicy.enabled=true` starts under
+the policy, and a pod the policy selects is dropped and admitted as the rules
+say.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Install the chart with the policy on | `script` (120s) | `helm install nova-operator-netpol` with `00-install-operator.yaml` and the addresses and port of EndpointSlice `default/kubernetes` as `networkPolicy.kubeApiServer`; the step cleanup uninstalls the release, also after a failed step |
+| 2 | Assert the policy and what it selects | `assert`, `script` (30s) | NetworkPolicy `nova-operator-netpol` with the release's two selector labels, Deployment `nova-operator-netpol` Ready, the primary `nova-operator` pod template on instance `nova-operator`, and no other NetworkPolicy in `nova-system` |
+| 3 | Assert the operator started under the policy | `script` (60s) | Zero restarts and the line `Gateway API detected; enabling HTTPRoute watch and reconciliation` in the operator log |
+| 4 | Probe the enforced policy | `apply`, `script` (8m) | Through `../../lib/assert-networkpolicy-enforced.sh`: the control pod reaches the sink on TCP 5000, 5050, 8774, 8778 and 9999 and each stand-in on its ports and 9999; then the probe pod is dropped on sink port 9999, resolves `kubernetes.default.svc.cluster.local.`, reaches the API server endpoint and the Service VIP, reaches the Nova API stand-in on TCP 8774, the Keystone API stand-in on TCP 5000 and 5050 and the Placement API stand-in on TCP 8778, and is dropped on each stand-in's TCP 9999 and on the sink's TCP 5000, 5050, 8774 and 8778 |
+
+**Fixtures:** `00-install-operator.yaml` (the `:dev` image, one replica,
+`webhook.enabled=false` and `networkPolicy.enabled=true`) and
+`01-probe-pods.yaml` (the namespace `nova-operator-netpol-targets` and six bare
+pods on `nova:2026.1`: the probe and the control in `nova-system`, the sink and
+the Nova, Keystone and Placement API stand-ins in the targets namespace).
+
+**Design notes:**
+
+- Each stand-in carries the two labels of one chart rule and replaces an API
+  pod. The suite applies no Nova, Keystone or Placement CR, so it makes no
+  claim about which release reconciles one. The
+  `chart_networkpolicy_test.go` files of the nova, keystone and placement
+  operators tie the three rules to the labels and ports of the real API pods.
+- The Keystone stand-in on TCP 5050 shows that the policy admits the port the
+  Keystone Service targets while federation is active. It does not exercise
+  the OIDC sidecar itself.
+- The sink's drops on the stand-ins' ports show that each rule admits its
+  ports only to its peer.
+- kindnet adds a new pod to its policy set a moment after the pod starts, so
+  Step 3 is evidence only. The probe pod's first call waits for a drop, and
+  each later call opens a fresh connection.
+- The suite sets its own `spec.timeouts`, so a run without
+  `tests/e2e/chainsaw-config.yaml` gets the bounds CI has.
+- The suite is not named in the shard list, so it runs in shard 1.
+
+---
+
 ## Assertion Patterns
 
 ### Resource assertion (`assert`)
@@ -1241,8 +1289,12 @@ tests/e2e/nova/
 tests/e2e/nova-operator/
 ├── env-key-material/
 │   └── chainsaw-test.yaml             Operator pod spec and process environment free of key material
-└── metrics/
-    └── chainsaw-test.yaml             nova-operator chart ServiceMonitor
+├── metrics/
+│   └── chainsaw-test.yaml             nova-operator chart ServiceMonitor
+└── network-policy-egress/
+    ├── chainsaw-test.yaml             Chart NetworkPolicy on a second release, probed from a pod it selects
+    ├── 00-install-operator.yaml       Release values with networkPolicy.enabled=true
+    └── 01-probe-pods.yaml             Targets namespace, probe, control, sink and three API stand-ins
 
 tests/e2e-nova-libvirt/
 ├── chainsaw-config.yaml               Chainsaw configuration of the libvirt suite root

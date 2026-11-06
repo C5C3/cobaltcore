@@ -25,11 +25,13 @@ infrastructure deployment automation, see
 The suites cover the reconciler lifecycle from a first deployment through backend
 attach and detach, a backup round trip, scaling, a cross-release upgrade and
 deletion. Each suite creates its own `Cinder` CR in the shared `openstack`
-namespace. Three suites sit outside it: `pod-security-restricted` owns a
+namespace. Four suites sit outside it: `pod-security-restricted` owns a
 `cinder-pss` namespace labelled with the restricted profile,
 `cinder-operator/metrics` installs a second cinder-operator Helm release in
-`cinder-system`, and `cinder-operator/env-key-material` reads the spec and the
-process environment of the operator pod there.
+`cinder-system`, `cinder-operator/network-policy-egress` installs another one
+with the chart's NetworkPolicy and probes it from `cinder-system`, and
+`cinder-operator/env-key-material` reads the spec and the process environment
+of the operator pod there.
 
 Satellite objects carry a per-suite name prefix (`basic-nfs1`, `nfsbe-nfs1`,
 `multi-nfs-a`). `CinderBackend.spec.cinderRef` is immutable, so a backend named
@@ -171,6 +173,7 @@ deletions.
 | [gateway-quick-start-smoke](#gateway-quick-start-smoke) | `cinder-smoke` | `curl -k https://cinder.127-0-0-1.nip.io/` answers HTTP 300 with the Cinder version document |
 | [metrics](#metrics) | — (operator-level) | cinder-operator chart renders and removes the ServiceMonitor |
 | [env-key-material](#env-key-material) | — (operator-level) | The cinder-operator pod reads no Secret into env, and its manager's process environment holds no key material |
+| [network-policy-egress](#network-policy-egress) | — (operator-level) | A cinder-operator release with `networkPolicy.enabled=true`: the policy selects only its pod, which starts without a restart; a pod the policy selects is dropped on a port a control pod reaches, then resolves a cluster name and reaches the API server and a Cinder API stand-in on TCP 8776 |
 | [invalid-cr](../cinder/cinder-crd.md) | (rejected at admission) | `Cinder` rejection corpus: the release pattern and the release floor, the image and database and cache and messaging union rules, the messaging TLS rule, the db-purge bounds, the Keystone-pairing rules, the volume replica cap, the backup strategy, both `extraConfig` guards, the name bound, the gateway rule and the `verticalAutoscaling` rules |
 | [invalid-cinderbackend-cr](../cinder/cinder-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackend` rejection corpus: the union rule, the reserved name, a relative export path, an export path carrying a newline, both `extraOptions` guards, the `cinderRef` transition rule, and the two name bounds; for RBD both halves of the union, the `client.` prefix, an empty monitor list, a network that is no CIDR, an invalid key Secret name, the per-type denylist, and the `type` transition rule |
 | [invalid-cinderbackupbackend-cr](../cinder/cinder-backup-backend-crd.md#chainsaw-e2e-tests) | (rejected at admission) | `CinderBackupBackend` rejection corpus: the union rule, the chunk-size minimum, the compression enum, the `extraOptions` denylist, the `cinderRef` transition rule, the second-backup rule, and an export path carrying a newline; for RBD both halves of the union, the `client.` prefix, an empty monitor list, a network that is no CIDR, an invalid key Secret name, the per-type denylist, and the `type` transition rule |
@@ -811,6 +814,49 @@ deployed.
 
 ---
 
+### network-policy-egress
+
+**File:** `tests/e2e/cinder-operator/network-policy-egress/chainsaw-test.yaml`
+
+**Purpose:** The chart-level NetworkPolicy of the cinder-operator chart, applied
+to packets. A second release with `networkPolicy.enabled=true` starts under
+the policy, and a pod the policy selects is dropped and admitted as the rules
+say.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Install the chart with the policy on | `script` (120s) | `helm install cinder-operator-netpol` with `00-install-operator.yaml` and the addresses and port of EndpointSlice `default/kubernetes` as `networkPolicy.kubeApiServer`; the step cleanup uninstalls the release, also after a failed step |
+| 2 | Assert the policy and what it selects | `assert`, `script` (30s) | NetworkPolicy `cinder-operator-netpol` with the release's two selector labels, Deployment `cinder-operator-netpol` Ready, the primary `cinder-operator` pod template on instance `cinder-operator`, and no other NetworkPolicy in `cinder-system` |
+| 3 | Assert the operator started under the policy | `script` (60s) | Zero restarts and the line `Gateway API detected; enabling HTTPRoute watch and reconciliation` in the operator log |
+| 4 | Probe the enforced policy | `apply`, `script` (8m) | Through `../../lib/assert-networkpolicy-enforced.sh`: the control pod reaches the sink on TCP 8776 and 9999 and the stand-in on TCP 8776 and 9999; then the probe pod is dropped on sink port 9999, resolves `kubernetes.default.svc.cluster.local.`, reaches the API server endpoint and the Service VIP, reaches the stand-in on TCP 8776, and is dropped on the stand-in's TCP 9999 and on the sink's TCP 8776 |
+
+**Fixtures:** `00-install-operator.yaml` (the `:dev` image, one replica,
+`webhook.enabled=false` and `networkPolicy.enabled=true`) and
+`01-probe-pods.yaml` (the namespace `cinder-operator-netpol-targets` and four
+bare pods on `cinder:2026.1`: the probe and the control in `cinder-system`, the
+sink and the Cinder API stand-in in the targets namespace).
+
+**Design notes:**
+
+- The stand-in carries the two labels of the chart's rule
+  (`app.kubernetes.io/name: cinder` and
+  `app.kubernetes.io/managed-by: cinder-operator`) and replaces a Cinder API
+  pod. The suite applies no Cinder CR, so it makes no claim about which
+  release reconciles one.
+  `operators/cinder/internal/controller/chart_networkpolicy_test.go` ties the
+  rule to the labels and port of the real API pods.
+- The sink's drop on TCP 8776 shows that the rule admits the port only
+  to its peer.
+- kindnet adds a new pod to its policy set a moment after the pod starts, so
+  Step 3 is evidence only. The probe pod's first call waits for a drop, and
+  each later call opens a fresh connection.
+- The suite sets its own `spec.timeouts`, so a run without
+  `tests/e2e/chainsaw-config.yaml` gets the bounds CI has.
+
+---
+
 ## Assertion Patterns
 
 ### Resource assertion (`assert`)
@@ -1005,8 +1051,12 @@ tests/e2e/cinder/
 tests/e2e/cinder-operator/
 ├── env-key-material/
 │   └── chainsaw-test.yaml              Operator pod spec and process environment free of key material
-└── metrics/
-    └── chainsaw-test.yaml              cinder-operator chart ServiceMonitor
+├── metrics/
+│   └── chainsaw-test.yaml              cinder-operator chart ServiceMonitor
+└── network-policy-egress/
+    ├── chainsaw-test.yaml              Chart NetworkPolicy on a second release, probed from a pod it selects
+    ├── 00-install-operator.yaml        Release values with networkPolicy.enabled=true
+    └── 01-probe-pods.yaml              Targets namespace, probe, control, sink and Cinder API stand-in
 ```
 
 ## Related Resources
