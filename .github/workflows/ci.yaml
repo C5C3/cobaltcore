@@ -4821,16 +4821,25 @@ jobs:
 
   # Nova's libvirt driver against a real libvirtd on kind. Brings up the
   # single-node cluster of hack/kind-config.yaml, deploys the nova-operator
-  # and its five siblings, and runs tests/e2e-nova-libvirt/: libvirtd from
-  # ghcr.io/c5c3/libvirt:latest in a DaemonSet on the node, a NovaCompute pool
-  # with virtType: qemu beside it, and a server booted from the stack's zero
-  # image under QEMU's TCG emulation, which needs no /dev/kvm. The suite
-  # asserts that libvirt runs the domain from the qcow2 disk nova-compute
-  # built, and that deleting the server removes both. The guest boot, KVM and
-  # live migration stay with the lab run of docs/quick-start-metal-stack.md.
+  # and its six siblings, and runs the two suites of tests/e2e-nova-libvirt/
+  # against libvirtd from ghcr.io/c5c3/libvirt:latest in a DaemonSet on the
+  # node and a NovaCompute pool with virtType: qemu beside it. The guests run
+  # under QEMU's TCG emulation, which needs no /dev/kvm.
+  #
+  # server-boot boots a server from the stack's zero image and asserts that
+  # libvirt runs the domain from the qcow2 disk nova-compute built, and that
+  # deleting the server removes both. guest-dataplane boots two cirros guests
+  # on one tenant network and attaches a Cinder volume on the kind NFS server
+  # to one of them. Probes inside that guest judge DHCP, metadata, pings to
+  # the peer, a security-group deny and the volume. The suite then kills
+  # libvirt and nova-compute under the running guest with Chaos Mesh (the
+  # lab's faults F1 and F2), reads the volume's counter on the backend, and
+  # runs four tempest.scenario tests that never log into a guest. KVM, live
+  # migration and north-south traffic stay with the lab run of
+  # docs/quick-start-metal-stack.md.
   #
   # continue-on-error: true because the pool's chassis gate needs the
-  # openvswitch kernel module on the runner host, which puts the suite under
+  # openvswitch kernel module on the runner host, which puts the job under
   # the non-blocking entry rule of `### Kernel-module-dependent suites` in
   # docs/reference/ci-cd/ci-workflow.md. A later change flips it to blocking
   # once its pass history on main justifies the flip.
@@ -4852,7 +4861,13 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 90
+    # About 34 minutes before the guest suite (four runs, the suite 14 of
+    # them), plus about 4 for the cinder images, NFS and Chaos Mesh, plus
+    # about 50 for the guest suite: the bring-up 12, the guests 10, the deny
+    # and the faults 12, the backend read 3 and Tempest 15. The rest is
+    # headroom for TCG on a busy runner. Re-derive the value from the first
+    # green run.
+    timeout-minutes: 150
     continue-on-error: true
     permissions:
       contents: read
@@ -4870,8 +4885,10 @@ jobs:
       - name: Resolve OVN version
         run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
       # The 2026.1 stack of tests/e2e/nova/compute-node-pool, whose fixtures the
-      # suite applies, the tempest image its Jobs run the openstack client
-      # from, and the libvirt image the suite starts libvirtd from. The map
+      # suites apply, the Cinder the guest suite adds, the tempest image its
+      # Jobs, its client pod and its Tempest run use, which also carries the
+      # cirros guest image, and the libvirt image the suites start libvirtd
+      # from. The map
       # resolves libvirt:latest to this run's build when the pull request
       # changed an input of the image, and otherwise to the digest latest
       # names on GHCR.
@@ -4885,11 +4902,13 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
             ${{ env.IMAGE_PREFIX }}/neutron-operator:dev
+            ${{ env.IMAGE_PREFIX }}/cinder-operator:dev
             ${{ env.IMAGE_PREFIX }}/nova-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2026.1
             ${{ env.IMAGE_PREFIX }}/placement:2026.1
             ${{ env.IMAGE_PREFIX }}/glance:2026.1
             ${{ env.IMAGE_PREFIX }}/neutron:2026.1
+            ${{ env.IMAGE_PREFIX }}/cinder:2026.1
             ${{ env.IMAGE_PREFIX }}/nova:2026.1
             ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
@@ -4905,11 +4924,13 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev \
             ${{ env.IMAGE_PREFIX }}/ovn-operator:dev \
             ${{ env.IMAGE_PREFIX }}/neutron-operator:dev \
+            ${{ env.IMAGE_PREFIX }}/cinder-operator:dev \
             ${{ env.IMAGE_PREFIX }}/nova-operator:dev \
             ${{ env.IMAGE_PREFIX }}/keystone:2026.1 \
             ${{ env.IMAGE_PREFIX }}/placement:2026.1 \
             ${{ env.IMAGE_PREFIX }}/glance:2026.1 \
             ${{ env.IMAGE_PREFIX }}/neutron:2026.1 \
+            ${{ env.IMAGE_PREFIX }}/cinder:2026.1 \
             ${{ env.IMAGE_PREFIX }}/nova:2026.1 \
             ${{ env.IMAGE_PREFIX }}/nova-compute:2026.1 \
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} \
@@ -4918,15 +4939,19 @@ jobs:
             --name "${{ env.KIND_CLUSTER }}"
       # The pool's chassis gate needs an OVNChassis on the node, which needs
       # the openvswitch module on the host, and every Nova process dials the
-      # message bus.
+      # message bus. The guest suite's Cinder serves its volume from the kind
+      # NFS server, and its faults F1 and F2 are Chaos Mesh PodChaos objects.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_OVN_KERNEL_MODULES: "true"
           WITH_MESSAGING: "true"
+          WITH_NFS: "true"
+          WITH_CHAOS_MESH: "true"
       # The operators of the nova leg of e2e-operator, in its order: the
       # ovn-operator before the neutron-operator, whose reconcilers watch the
-      # OVN kinds, and both before the nova-operator.
+      # OVN kinds, and both before the nova-operator. The cinder-operator runs
+      # the guest suite's volume service.
       - name: Deploy keystone-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -4957,6 +4982,12 @@ jobs:
           OPERATOR: neutron
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
           NAMESPACE: neutron-system
+      - name: Deploy cinder-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: cinder
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/cinder-operator
+          NAMESPACE: cinder-system
       - name: Deploy nova-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -4972,13 +5003,13 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: nova
-      # The five sibling operators run in Namespaces of their own, which the
+      # The six sibling operators run in Namespaces of their own, which the
       # dump above never looks at. OPERATOR_ONLY keeps each pass to the
       # operator's own sections, as on the nova leg of e2e-operator.
       - name: Dump diagnostic info (nova siblings)
         if: always()
         run: |
-          for op in keystone placement glance ovn neutron; do
+          for op in keystone placement glance ovn neutron cinder; do
             OPERATOR="${op}" OPERATOR_ONLY=1 hack/ci-dump-diagnostics.sh
           done
       - name: Upload JUnit report
@@ -4987,6 +5018,18 @@ jobs:
         with:
           name: e2e-nova-libvirt-junit-report
           path: _output/reports/
+          retention-days: 14
+      # The guest suite's Tempest run. The rendered tempest.conf carries the
+      # cleartext Keystone admin password hack/ci-run-tempest.sh substitutes,
+      # so it stays out of the retained artifact, as on the tempest job.
+      - name: Upload Tempest results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-nova-libvirt-tempest-results
+          path: |
+            _output/tempest-nova-libvirt/
+            !_output/tempest-nova-libvirt/config/tempest.conf
           retention-days: 14
       # Last step of the job, so the dump above still had a cluster to read;
       # `always()` covers the failed and timed-out runs.  Never fails the job

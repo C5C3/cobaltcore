@@ -13,9 +13,10 @@
 # nova-compute permanently unexercised.
 #
 # The resolve script is executed for real in all of its branches; the ci.yaml
-# sides are asserted against the workflow file. The last two tests follow the
-# signal to its two consumers: the job that reads it, and the Makefile target
-# that job calls, which is also how a developer reproduces the job locally.
+# sides are asserted against the workflow file. The last tests follow the
+# signal to its consumers: the job that reads it, the libvirt DaemonSet the
+# guest suite's faults rely on, and the Makefile target that job calls, which
+# is also how a developer reproduces the job locally.
 #
 # Modelled on the sibling ci_resolve_changes_ovn_overlay_test.sh, with the
 # shared scaffolding in tests/lib/ci_resolve.sh and tests/lib/ci_yaml.sh.
@@ -31,8 +32,9 @@ CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 MAKEFILE="$PROJECT_ROOT/Makefile"
 
 # The resolve script reads FILTER_${op} only for operators named here, so nova
-# must be in the list for the operator-change scenario to assert anything.
-ALL_OPERATORS_FIXTURE="keystone nova"
+# must be in the list for the operator-change scenario to assert anything, and
+# cinder and neutron for the scenarios that keep them off the job.
+ALL_OPERATORS_FIXTURE="keystone nova cinder neutron"
 
 PASS=0
 FAIL=0
@@ -65,7 +67,7 @@ run_resolve() {
 # ---------------------------------------------------------------------------
 
 test_each_input_schedules_the_job() {
-  echo "Test: the suite, the nova-operator, the Nova images and the libvirt image each schedule the job"
+  echo "Test: the suites, the nova-operator, the Nova, libvirt and tempest images each schedule the job"
 
   assert_eq "a changed suite schedules the job" \
     "e2e-nova-libvirt=true" "$(run_resolve refs/heads/main true)"
@@ -75,6 +77,9 @@ test_each_input_schedules_the_job() {
     "e2e-nova-libvirt=true" "$(run_resolve refs/heads/main false FILTER_image_nova=true)"
   assert_eq "a libvirt image change schedules the job" \
     "e2e-nova-libvirt=true" "$(run_resolve refs/heads/main false FILTER_image_libvirt=true)"
+  # The tempest image carries the guest suite's cirros image and its Tempest.
+  assert_eq "a tempest image change schedules the job" \
+    "e2e-nova-libvirt=true" "$(run_resolve refs/heads/main false FILTER_image_tempest=true)"
   # The libvirt image change also tells build-e2e-images to build it, so the
   # job runs against the pull request's libvirt.
   assert_eq "a libvirt image change signals the libvirt build" \
@@ -99,6 +104,13 @@ test_other_changes_do_not_schedule_the_job() {
     "e2e-nova-libvirt=false" "$(run_resolve refs/heads/main false FILTER_keystone=true)"
   assert_eq "an ovn-operator change does not schedule the job" \
     "e2e-nova-libvirt=false" "$(run_resolve refs/heads/main false FILTER_ovn=true)"
+  # The guest suite runs Cinder and the Neutron notifier, but the cinder and
+  # neutron legs cover those operators; the sibling filters stay off this
+  # self-hosted job.
+  assert_eq "a cinder-operator change does not schedule the job" \
+    "e2e-nova-libvirt=false" "$(run_resolve refs/heads/main false FILTER_cinder=true)"
+  assert_eq "a neutron-operator change does not schedule the job" \
+    "e2e-nova-libvirt=false" "$(run_resolve refs/heads/main false FILTER_neutron=true)"
   # The cheap changes resolve_changes_scenarios_test.sh keeps every expensive
   # job off for: the canary's two inputs, and another nova suite's edit.
   assert_eq "a substrate change does not schedule the job" \
@@ -251,6 +263,61 @@ test_the_job_reads_the_signal() {
     "$(job_block cleanup-e2e-tags)" "e2e-nova-libvirt"
 }
 
+test_the_job_runs_the_guest_suite() {
+  echo "Test: the job carries what the guest suite needs"
+
+  local job load kind_load image upload
+  job=$(job_block e2e-nova-libvirt)
+  load=$(job_step e2e-nova-libvirt "Load E2E images")
+  kind_load=$(job_step e2e-nova-libvirt "Load images into kind")
+  for image in cinder:2026.1 cinder-operator:dev; do
+    assert_contains "the job pulls $image" "$load" "\${{ env.IMAGE_PREFIX }}/$image"
+    assert_contains "the job loads $image into kind" "$kind_load" "\${{ env.IMAGE_PREFIX }}/$image"
+  done
+  assert_contains "the job deploys the kind NFS server" "$job" 'WITH_NFS: "true"'
+  assert_contains "the job deploys Chaos Mesh" "$job" 'WITH_CHAOS_MESH: "true"'
+  assert_contains "the job deploys the cinder-operator" \
+    "$(job_step e2e-nova-libvirt "Deploy cinder-operator")" "OPERATOR: cinder"
+  # Between the neutron and the nova deploys.
+  assert_eq "the cinder-operator deploys between neutron and nova" \
+    "Deploy neutron-operator,Deploy cinder-operator,Deploy nova-operator" \
+    "$(grep -oE 'name: Deploy (neutron|cinder|nova)-operator' <<<"$job" | sed 's/^name: //' | paste -sd, -)"
+  assert_contains "the sibling dump covers cinder" \
+    "$(job_step e2e-nova-libvirt "Dump diagnostic info (nova siblings)")" \
+    "for op in keystone placement glance ovn neutron cinder; do"
+  upload=$(job_step e2e-nova-libvirt "Upload Tempest results")
+  assert_contains "the job uploads the Tempest results" "$upload" \
+    "name: e2e-nova-libvirt-tempest-results"
+  assert_contains "the upload takes the Tempest output" "$upload" "_output/tempest-nova-libvirt/"
+  # The rendered tempest.conf carries the cleartext admin password.
+  assert_contains "the upload leaves the rendered tempest.conf out" "$upload" \
+    "!_output/tempest-nova-libvirt/config/tempest.conf"
+  assert_contains "the job's wall is 150 minutes" "$job" "timeout-minutes: 150"
+  assert_eq "the suite root reports each suite on its own" "false" \
+    "$(yq -r '.spec.execution.failFast' "$PROJECT_ROOT/tests/e2e-nova-libvirt/chainsaw-config.yaml")"
+}
+
+test_the_libvirt_pod_lets_qemu_outlive_it() {
+  echo "Test: the libvirt DaemonSet runs in the host PID namespace and sees the NFS mounts"
+
+  local manifest pod
+  manifest="$PROJECT_ROOT/tests/e2e-nova-libvirt/server-boot/00-libvirt.yaml"
+  pod='select(.kind == "DaemonSet") | .spec.template.spec'
+  # F1 kills the pod and expects QEMU to run on.
+  assert_eq "the pod runs with hostPID" "true" "$(yq -r "$pod | .hostPID" "$manifest")"
+  assert_eq "the pod does not share a process namespace of its own" "null" \
+    "$(yq -r "$pod | .shareProcessNamespace" "$manifest")"
+  # QEMU opens the volume file on the NFS mount nova-compute makes later.
+  assert_eq "/var/lib/nova propagates the host's mounts into the pod" "HostToContainer" \
+    "$(yq -r "$pod | .containers[0].volumeMounts[] | select(.mountPath == \"/var/lib/nova\") | .mountPropagation" "$manifest")"
+  # A replacement libvirtd keeps the domain persistent, so a stop after F1
+  # shuts it off.
+  local volume
+  volume=$(yq -r "$pod | .containers[0].volumeMounts[] | select(.mountPath == \"/etc/libvirt/qemu\") | .name" "$manifest")
+  assert_eq "the domain definitions are the node's" "/etc/libvirt/qemu" \
+    "$(yq -r "$pod | .volumes[] | select(.name == \"$volume\") | .hostPath.path" "$manifest")"
+}
+
 test_makefile_target() {
   echo "Test: the Makefile target exists and names each missing precondition"
 
@@ -266,6 +333,14 @@ test_makefile_target() {
   assert_file_contains_fixed "the third preflight names the one amd64 node and the cluster's architectures" \
     "$MAKEFILE" \
     "the libvirt suite boots an x86_64 guest on one amd64 node; this cluster's nodes are: \$\$archs"
+  assert_file_contains_fixed "a preflight names the missing cinder-operator" "$MAKEFILE" \
+    "the guest suite attaches a Cinder volume; deploy the cinder-operator with hack/ci-deploy-operator.sh first"
+  assert_file_contains_fixed "a preflight names the missing Chaos Mesh" "$MAKEFILE" \
+    "the guest suite kills libvirt and nova-compute with PodChaos; run WITH_CHAOS_MESH=true make deploy-infra first"
+  assert_file_contains_fixed "a preflight names the missing NFS server" "$MAKEFILE" \
+    "the guest suite's volume backend is the kind NFS server; run WITH_NFS=true make deploy-infra first"
+  assert_file_contains_fixed "a preflight names the missing tempest image" "$MAKEFILE" \
+    "the guest suite runs Tempest from \$\$img; pull or build it first"
 }
 
 # ---------------------------------------------------------------------------
@@ -280,6 +355,8 @@ test_the_signal_reaches_the_image_build
 test_ci_yaml_wires_the_signal
 test_filter_names_the_suite_and_its_fixtures
 test_the_job_reads_the_signal
+test_the_job_runs_the_guest_suite
+test_the_libvirt_pod_lets_qemu_outlive_it
 test_makefile_target
 
 echo ""

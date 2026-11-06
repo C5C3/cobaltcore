@@ -1024,30 +1024,43 @@ e2e-ovn-overlay:
 	chainsaw test --config tests/e2e-ovn-overlay/chainsaw-config.yaml tests/e2e-ovn-overlay/
 
 .PHONY: e2e-nova-libvirt
-# e2e-nova-libvirt runs a NovaCompute pool on Nova's libvirt driver against a
-# libvirtd on the one kind node and boots a server there under QEMU's TCG
-# emulation (virtType: qemu), from the stack's 1 MiB zero image. It asserts
-# that libvirt runs the domain and that nova-compute built its disk as a qcow2
-# overlay, and that deleting the server removes both. The suite lives OUTSIDE
-# tests/e2e/ because the blocking nova leg of e2e-operator sweeps every
-# directory under tests/e2e/nova/, while this suite runs in the non-blocking
-# e2e-nova-libvirt CI job of its own.
+# e2e-nova-libvirt runs the two suites of tests/e2e-nova-libvirt/ against a
+# libvirtd on the one kind node and a NovaCompute pool beside it, whose guests
+# run under QEMU's TCG emulation (virtType: qemu). server-boot boots a server
+# from the stack's 1 MiB zero image and asserts that libvirt runs the domain,
+# that nova-compute built its disk as a qcow2 overlay, and that deleting the
+# server removes both. guest-dataplane boots two cirros guests with a NIC, one
+# with a Cinder volume on the kind NFS server, judges DHCP, metadata, pings, a
+# security-group deny and the volume from probes inside the guest, kills
+# libvirt and nova-compute under it with Chaos Mesh, and runs four Tempest
+# scenarios. The suites live OUTSIDE tests/e2e/ because the blocking nova leg
+# of e2e-operator sweeps every directory under tests/e2e/nova/, while these
+# run in the non-blocking e2e-nova-libvirt CI job of their own.
 #
-# The three preflights are kept separate so each failure names its own cause:
-# no reachable cluster, the operators missing, a cluster that is not one amd64
-# node. The third exists because images/libvirt/qemu.nix builds the
-# x86_64-softmmu target only: on an arm64 node Nova asks for an aarch64 guest
-# that image cannot run.
+# The preflights are kept separate so each failure names its own cause: no
+# reachable cluster, the operators missing, a cluster that is not one amd64
+# node, no cinder-operator, no Chaos Mesh, no kind NFS server, and no tempest
+# image in the local Docker. The amd64 check exists because
+# images/libvirt/qemu.nix builds the x86_64-softmmu target only: on an arm64
+# node Nova asks for an aarch64 guest that image cannot run. The Tempest run
+# starts TEMPEST_IMAGE (default ghcr.io/c5c3/tempest:2026.1) with docker on
+# this host, and the guest suite seeds its cirros image from the same image,
+# so the image has to carry /usr/share/cirros/ (images/tempest/image.nix).
 #
-# The suite labels and unlabels the node and starts libvirtd itself. It asks
-# of the cluster the stack's infrastructure (`WITH_OVN_KERNEL_MODULES=true
-# WITH_MESSAGING=true make deploy-infra`) and the six operators the CI job
-# deploys with hack/ci-deploy-operator.sh: keystone, placement, glance, ovn,
-# neutron and nova, each into <op>-system.
+# The suites label and unlabel the node and start libvirtd themselves. They
+# ask of the cluster the stack's infrastructure (`WITH_OVN_KERNEL_MODULES=true
+# WITH_MESSAGING=true WITH_NFS=true WITH_CHAOS_MESH=true make deploy-infra`)
+# and the seven operators the CI job deploys with hack/ci-deploy-operator.sh:
+# keystone, placement, glance, ovn, neutron, cinder and nova, each into
+# <op>-system.
 e2e-nova-libvirt:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@kubectl get crd novacomputes.nova.openstack.c5c3.io >/dev/null 2>&1 || { echo 'the libvirt suite needs the nova-operator and its five siblings (keystone, placement, glance, ovn, neutron); deploy each with hack/ci-deploy-operator.sh first' >&2; exit 1; }
 	@archs="$$(kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.architecture}')"; [ "$$archs" = "amd64" ] || { echo "the libvirt suite boots an x86_64 guest on one amd64 node; this cluster's nodes are: $$archs" >&2; exit 1; }
+	@kubectl get crd cinders.cinder.openstack.c5c3.io >/dev/null 2>&1 || { echo 'the guest suite attaches a Cinder volume; deploy the cinder-operator with hack/ci-deploy-operator.sh first' >&2; exit 1; }
+	@kubectl get crd podchaos.chaos-mesh.org >/dev/null 2>&1 || { echo 'the guest suite kills libvirt and nova-compute with PodChaos; run WITH_CHAOS_MESH=true make deploy-infra first' >&2; exit 1; }
+	@kubectl get svc nfs-server -n openstack >/dev/null 2>&1 || { echo "the guest suite's volume backend is the kind NFS server; run WITH_NFS=true make deploy-infra first" >&2; exit 1; }
+	@img="$${TEMPEST_IMAGE:-ghcr.io/c5c3/tempest:2026.1}"; docker image inspect "$$img" >/dev/null 2>&1 || { echo "the guest suite runs Tempest from $$img; pull or build it first" >&2; exit 1; }
 	chainsaw test --config tests/e2e-nova-libvirt/chainsaw-config.yaml tests/e2e-nova-libvirt/
 
 .PHONY: tempest-test
