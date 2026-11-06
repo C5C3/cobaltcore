@@ -1,0 +1,285 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the ovn-operator NetworkPolicy egress restriction.
+#
+# Installs a second ovn-operator Helm release, ovn-operator-netpol, with
+# networkPolicy.enabled=true and the API server endpoint of EndpointSlice
+# default/kubernetes. kindnet judges egress after the Service DNAT, so a rule
+# naming the 10.96.0.1 Service VIP never matches (see ENFORCEMENT in
+# tests/e2e/horizon-operator/network-policy-egress/chainsaw-test.yaml).
+#
+# This test validates that:
+#   1. The chart renders the NetworkPolicy. It selects the pod of this release
+#      and not the pod of the primary ovn-operator release, and it is the
+#      only NetworkPolicy in ovn-system (Step 2).
+#   2. The operator pod starts under the policy without a restart and logs
+#      cert-manager as detected (Step 3).
+#   3. A probe pod the policy selects is dropped on sink port 9999, which a
+#      control pod no policy selects reaches. The probe pod then resolves a
+#      cluster name and reaches the API server endpoint and the kubernetes
+#      Service VIP (Step 4). The OVN chart adds no egress rule of its own, so
+#      no stand-in runs.
+#
+# What it does not prove:
+#   - It applies no custom resource, so it makes no claim about which release
+#     reconciled anything. The primary release holds the leader lease.
+#   - Step 3 is evidence, not proof. kindnet adds a new pod to its policy set a
+#     moment after the pod starts, and PR #1467 measured a connection opened at
+#     pod start passing a rule that dropped a fresh one 15 s later. Only the
+#     probe pod's fresh connections after an observed drop prove a rule.
+#
+# webhook.enabled=false (see 00-install-operator.yaml) avoids conflicting
+# admission-webhook registration with the primary operator deployed by
+# hack/ci-deploy-operator.sh. The step-level cleanup of Step 1 uninstalls the
+# release also after a failed step, and chainsaw deletes the probe pods and
+# ovn-operator-netpol-targets.
+#
+# Running it locally: the chart's operator-library dependency must be vendored
+# first (`helm dependency build operators/ovn/helm/ovn-operator`, which
+# hack/ci-deploy-operator.sh does on CI). Paths resolve from GITHUB_WORKSPACE
+# in CI and from the git repository root locally.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-operator-network-policy-egress
+spec:
+  namespace: ovn-system
+  timeouts:
+    apply: 30s
+    assert: 2m
+    cleanup: 3m
+    delete: 1m
+    error: 30s
+    exec: 2m
+  steps:
+  # ── Step 1: Install operator Helm chart with networkPolicy.enabled=true ──
+  # kubeApiServer comes from EndpointSlice default/kubernetes, not from the
+  # values file (see the header).
+  - try:
+    - script:
+        timeout: 120s
+        content: |
+          set -eu
+          REPO_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
+          SLICE="$(kubectl get endpointslice kubernetes -n default -o json)"
+          CIDRS="$(echo "${SLICE}" | jq -r '[.endpoints[]?.addresses[]? | . + (if contains(":") then "/128" else "/32" end)] | unique | join(",")')"
+          PORT="$(echo "${SLICE}" | jq -r '[.ports[]?.port | select(. != null)] | first // empty')"
+          if [ -z "${CIDRS}" ] || [ -z "${PORT}" ]; then
+            echo "ERROR: EndpointSlice default/kubernetes carries no address or no port"
+            exit 1
+          fi
+          helm install ovn-operator-netpol \
+            "${REPO_ROOT}/operators/ovn/helm/ovn-operator/" \
+            --namespace ovn-system --create-namespace \
+            --values "${REPO_ROOT}/tests/e2e/ovn-operator/network-policy-egress/00-install-operator.yaml" \
+            --set "networkPolicy.kubeApiServer.cidrs={${CIDRS}}" \
+            --set "networkPolicy.kubeApiServer.ports={${PORT}}" \
+            --wait --timeout 90s
+    catch:
+    - script:
+        content: |
+          echo "=== Helm status ==="
+          helm status ovn-operator-netpol -n ovn-system 2>&1 || true
+          echo "=== Pod status ==="
+          kubectl get pods -n ovn-system -l app.kubernetes.io/instance=ovn-operator-netpol -o wide 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n ovn-system -l app.kubernetes.io/instance=ovn-operator-netpol -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n ovn-system "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n ovn-system "$pod" --all-containers --tail=120 --previous 2>&1 || true
+          done
+          echo "=== NetworkPolicy state ==="
+          kubectl get networkpolicy ovn-operator-netpol -n ovn-system -o yaml 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n ovn-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    # The step cleanup runs at the end of the test, also after a failed step,
+    # so the second release cannot outlive this suite. The release-scoped
+    # uninstall removes the Deployment, ServiceAccount, ClusterRole/Binding
+    # and NetworkPolicy of this release and leaves the primary operator of
+    # hack/ci-deploy-operator.sh installed.
+    cleanup:
+    - script:
+        content: |
+          helm uninstall ovn-operator-netpol -n ovn-system 2>&1 || true
+  # ── Step 2: Assert the policy and what it selects ───────────────────────
+  # The policy selects the pods of this release by its two selector labels.
+  # The primary ovn-operator release carries instance ovn-operator, so
+  # the policy cannot select it, and no other policy in ovn-system may judge the
+  # probe pods of Step 4.
+  - try:
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: ovn-operator-netpol
+            namespace: ovn-system
+            labels:
+              app.kubernetes.io/name: ovn-operator
+              app.kubernetes.io/instance: ovn-operator-netpol
+              app.kubernetes.io/managed-by: Helm
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: ovn-operator
+                app.kubernetes.io/instance: ovn-operator-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-operator-netpol
+            namespace: ovn-system
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: ovn-operator
+                app.kubernetes.io/instance: ovn-operator-netpol
+          status:
+            readyReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-operator
+            namespace: ovn-system
+          spec:
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/instance: ovn-operator
+    - script:
+        timeout: 30s
+        content: |
+          set -eu
+          POLICIES="$(kubectl get networkpolicy -n ovn-system -o name)"
+          if [ "${POLICIES}" != "networkpolicy.networking.k8s.io/ovn-operator-netpol" ]; then
+            echo "ERROR: ovn-system holds NetworkPolicies besides ovn-operator-netpol:"
+            printf '%s\n' "${POLICIES}"
+            exit 1
+          fi
+  # ── Step 3: Assert the operator started under the policy ────────────────
+  # A restart or a blocked setup probe read as a missing CRD shows that the
+  # policy denied the operator something it starts with. The setup log is
+  # written before leader election, so the line is there whichever release
+  # leads. This is evidence only: a connection opened before kindnet added
+  # the pod to its policy set passes whatever the rules say (see the header).
+  - try:
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          PODS="$(kubectl get pods -n ovn-system -l app.kubernetes.io/instance=ovn-operator-netpol -o name)"
+          if [ -z "${PODS}" ]; then
+            echo "ERROR: no ovn-operator-netpol pod found"
+            exit 1
+          fi
+          for pod in ${PODS}; do
+            RESTARTS="$(kubectl get -n ovn-system "${pod}" -o jsonpath='{.status.containerStatuses[*].restartCount}')"
+            if [ -z "${RESTARTS}" ]; then
+              echo "ERROR: ${pod} reports no container status"
+              exit 1
+            fi
+            for n in ${RESTARTS}; do
+              if [ "${n}" != 0 ]; then
+                echo "ERROR: ${pod} restarted ${n} times under the policy; previous log:"
+                kubectl logs -n ovn-system "${pod}" --all-containers --previous --tail=60 2>&1 || true
+                exit 1
+              fi
+            done
+            LOGS="$(kubectl logs -n ovn-system "${pod}" --all-containers)"
+            if ! printf '%s\n' "${LOGS}" | grep -qF 'cert-manager detected; enabling Certificate watch and reconciliation'; then
+              echo "ERROR: ${pod} did not log 'cert-manager detected; enabling Certificate watch and reconciliation' under the policy; first 40 log lines:"
+              printf '%s\n' "${LOGS}" | head -40
+              exit 1
+            fi
+            echo "${pod} started without a restart and logged cert-manager as detected"
+          done
+  # ── Step 4: Probe the enforced policy from a pod it selects ─────────────
+  # The control calls come first: the sink listens and answers a pod no
+  # policy selects, so a later timeout is a drop and not a dead listener. The
+  # probe pod's first call polls until kindnet holds the pod and fails with
+  # "was never dropped" on a cluster that does not enforce the policy. Only
+  # then do the DNS and API server rules count, each on a fresh connection.
+  # The trailing dot keeps the resolver off the search list.
+  - try:
+    - apply:
+        file: 01-probe-pods.yaml
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          kubectl wait --for=condition=Ready --timeout=120s -n ovn-system \
+            pod/ovn-operator-netpol-probe pod/ovn-operator-netpol-control
+          kubectl wait --for=condition=Ready --timeout=120s -n ovn-operator-netpol-targets \
+            pod/ovn-operator-netpol-sink
+          POLICIES="$(kubectl get networkpolicy -n ovn-operator-netpol-targets -o name)"
+          if [ -n "${POLICIES}" ]; then
+            echo "ERROR: ovn-operator-netpol-targets holds a NetworkPolicy"
+            printf '%s\n' "${POLICIES}"
+            exit 1
+          fi
+          # require <name> <value>: stop with an ERROR line when the value is empty.
+          require() {
+            if [ -z "$2" ]; then
+              echo "ERROR: $1 is empty"
+              exit 1
+            fi
+          }
+          SINK="$(kubectl get pod ovn-operator-netpol-sink -n ovn-operator-netpol-targets -o jsonpath='{.status.podIP}')"
+          SLICE="$(kubectl get endpointslice kubernetes -n default -o json)"
+          API_IP="$(echo "${SLICE}" | jq -r '[.endpoints[]?.addresses[]? | select(contains(":") | not)] | first // empty')"
+          API_PORT="$(echo "${SLICE}" | jq -r '[.ports[]?.port | select(. != null)] | first // empty')"
+          VIP="$(kubectl get service kubernetes -n default -o jsonpath='{.spec.clusterIP}')"
+          VIP_PORT="$(kubectl get service kubernetes -n default -o jsonpath='{.spec.ports[0].port}')"
+          require SINK "${SINK}"
+          require API_IP "${API_IP}"
+          require API_PORT "${API_PORT}"
+          require VIP "${VIP}"
+          require VIP_PORT "${VIP_PORT}"
+          PROBE=../../lib/assert-networkpolicy-enforced.sh
+          # Control: every destination the probe pod expects dropped listens and
+          # answers a pod no policy selects.
+          "${PROBE}" ovn-system ovn-operator-netpol-control open "${SINK}" 9999
+          # The probe pod's first call polls until kindnet holds the pod.
+          "${PROBE}" ovn-system ovn-operator-netpol-probe dropped "${SINK}" 9999
+          "${PROBE}" ovn-system ovn-operator-netpol-probe resolves kubernetes.default.svc.cluster.local.
+          "${PROBE}" ovn-system ovn-operator-netpol-probe open "${API_IP}" "${API_PORT}"
+          "${PROBE}" ovn-system ovn-operator-netpol-probe open "${VIP}" "${VIP_PORT}"
+    catch:
+    - script:
+        timeout: 60s
+        content: |
+          echo "=== Fixture pods ==="
+          kubectl get pods -n ovn-system -l app.kubernetes.io/instance=ovn-operator-netpol -o wide --show-labels 2>&1 || true
+          kubectl get pods -n ovn-operator-netpol-targets -o wide --show-labels 2>&1 || true
+          echo "=== Fixture pods that are not Ready ==="
+          for ref in ovn-system/ovn-operator-netpol-probe ovn-system/ovn-operator-netpol-control \
+            ovn-operator-netpol-targets/ovn-operator-netpol-sink; do
+            ready="$(kubectl get pod -n "${ref%%/*}" "${ref#*/}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)"
+            if [ "${ready}" != True ]; then
+              echo "--- ${ref} ---"
+              kubectl describe pod -n "${ref%%/*}" "${ref#*/}" 2>&1 | tail -20 || true
+            fi
+          done
+          echo "=== NetworkPolicy YAML ==="
+          kubectl get networkpolicy ovn-operator-netpol -n ovn-system -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          for pod in $(kubectl get pods -n ovn-system -l app.kubernetes.io/instance=ovn-operator-netpol,pod-template-hash -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n ovn-system "$pod" --all-containers --tail=120 2>&1 || true
+            kubectl logs -n ovn-system "$pod" --all-containers --tail=120 --previous 2>&1 || true
+          done
+          echo "=== EndpointSlice and Service default/kubernetes ==="
+          kubectl get endpointslice kubernetes -n default -o yaml 2>&1 || true
+          kubectl get service kubernetes -n default -o yaml 2>&1 || true
+          echo "=== Events (ovn-system, last 30) ==="
+          kubectl get events -n ovn-system --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          echo "=== Events (ovn-operator-netpol-targets, last 30) ==="
+          kubectl get events -n ovn-operator-netpol-targets --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

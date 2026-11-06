@@ -13,10 +13,10 @@
 #   - a chart whose values.schema.json lacks the key, and a chart without a
 #     values.schema.json, get no such --set, and the script does not fail;
 #   - every chainsaw file that installs an operator chart with
-#     image.pullPolicy=Never, and each of the two network-policy-egress values
-#     files (horizon and keystone), also sets controller.defaultImagePullPolicy
-#     to IfNotPresent, so a second operator release that wins the leader
-#     election keeps the workloads on the images CI loaded into kind.
+#     image.pullPolicy=Never, and each of the nine network-policy-egress values
+#     files, also sets controller.defaultImagePullPolicy to IfNotPresent, so a
+#     second operator release that wins the leader election keeps the
+#     workloads on the images CI loaded into kind.
 #
 # Follows tests/unit/hack/ci_deploy_operator_replicas_test.sh.
 #
@@ -29,8 +29,15 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_SH="$PROJECT_ROOT/hack/ci-deploy-operator.sh"
 # The Helm values files of the network-policy-egress suites, relative to
 # PROJECT_ROOT and sorted.
-VALUES_FILES="tests/e2e/horizon-operator/network-policy-egress/00-install-operator.yaml
-tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml"
+VALUES_FILES="tests/e2e/barbican-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/cinder-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/glance-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/horizon-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/keystone-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/neutron-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/nova-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/ovn-operator/network-policy-egress/00-install-operator.yaml
+tests/e2e/placement-operator/network-policy-egress/00-install-operator.yaml"
 
 PASS=0
 FAIL=0

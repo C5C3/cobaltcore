@@ -3,8 +3,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Replay the operator NetworkPolicy install scripts from Chainsaw's working
-# directory, without a cluster. Helm checks the real chart and values paths.
+# Replay the install scripts of the nine operator network-policy-egress suites
+# (keystone, horizon, glance, placement, barbican, neutron, cinder, nova and
+# ovn) from Chainsaw's working directory, without a cluster. Helm checks the
+# real chart and values paths. An EndpointSlice without an address or without
+# a port stops the script before helm runs.
 # Usage: bash tests/unit/ci/operator_networkpolicy_paths_test.sh
 
 set -uo pipefail
@@ -33,7 +36,8 @@ cat >"$STUBS/bin/kubectl" <<'STUB'
 #!/bin/bash
 set -eu
 [ "$*" = "get endpointslice kubernetes -n default -o json" ]
-printf '%s\n' '{"endpoints":[{"addresses":["172.18.0.2"]}],"ports":[{"port":6443}]}'
+slice='{"endpoints":[{"addresses":["172.18.0.2"]}],"ports":[{"port":6443}]}'
+printf '%s\n' "${STUB_SLICE:-$slice}"
 STUB
 
 cat >"$STUBS/bin/helm" <<'STUB'
@@ -55,7 +59,7 @@ exit 1
 STUB
 chmod +x "$STUBS/bin/kubectl" "$STUBS/bin/helm"
 
-for operator in keystone horizon; do
+for operator in keystone horizon glance placement barbican neutron cinder nova ovn; do
   suite="$PROJECT_ROOT/tests/e2e/$operator-operator/network-policy-egress"
   yq -r '.spec.steps[0].try[0].script.content' "$suite/chainsaw-test.yaml" \
     >"$STUBS/install.sh"
@@ -99,6 +103,34 @@ for operator in keystone horizon; do
   assert_nonzero_exit "$operator fails outside a checkout without a workspace" "$rc"
   assert_contains "$operator reports the missing repository" \
     "$(cat "$STUBS/output")" "not a git repository"
+
+  rm -f "$STUBS/paths.log"
+  rc=0
+  (
+    export PATH="$STUBS/bin:$PATH" PATH_LOG="$STUBS/paths.log"
+    export STUB_SLICE='{"endpoints":[],"ports":[{"port":6443}]}'
+    cd "$suite" || exit 1
+    bash "$STUBS/install.sh"
+  ) >"$STUBS/output" 2>&1 || rc=$?
+  assert_eq "$operator stops on an EndpointSlice without an address" "1" "$rc"
+  assert_contains "$operator names the empty EndpointSlice" "$(cat "$STUBS/output")" \
+    "ERROR: EndpointSlice default/kubernetes carries no address or no port"
+  assert_eq "$operator calls no helm without an address" "absent" \
+    "$([ -e "$STUBS/paths.log" ] && echo present || echo absent)"
+
+  rm -f "$STUBS/paths.log"
+  rc=0
+  (
+    export PATH="$STUBS/bin:$PATH" PATH_LOG="$STUBS/paths.log"
+    export STUB_SLICE='{"endpoints":[{"addresses":["172.18.0.2"]}],"ports":[]}'
+    cd "$suite" || exit 1
+    bash "$STUBS/install.sh"
+  ) >"$STUBS/output" 2>&1 || rc=$?
+  assert_eq "$operator stops on an EndpointSlice without a port" "1" "$rc"
+  assert_contains "$operator names the portless EndpointSlice" "$(cat "$STUBS/output")" \
+    "ERROR: EndpointSlice default/kubernetes carries no address or no port"
+  assert_eq "$operator calls no helm without a port" "absent" \
+    "$([ -e "$STUBS/paths.log" ] && echo present || echo absent)"
 done
 
 echo ""

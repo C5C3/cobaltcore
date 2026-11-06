@@ -1,0 +1,326 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Probe pods for the network-policy-egress E2E test. Step 4 of
+# chainsaw-test.yaml runs ../../lib/assert-networkpolicy-enforced.sh from them.
+#
+# nova-operator-netpol-probe carries the two selector labels of the
+# nova-operator-netpol NetworkPolicy, so the policy judges its connections as
+# it judges the operator pod's. It has no pod-template-hash label, so the
+# release's ReplicaSet does not adopt it. nova-operator-netpol-control carries
+# a name no policy selects. Its connections show that every destination the
+# probe pod expects dropped listens and is reachable.
+#
+# The other pods run in nova-operator-netpol-targets, a namespace with no
+# NetworkPolicy and no Service, so no operator's Service picks a stand-in up.
+# Three stand-ins carry exactly the two labels a chart rule selects and listen
+# on its ports and on 9999, which no rule admits: nova-operator-netpol-nova-api
+# for the Nova API (TCP 8774), nova-operator-netpol-keystone-api for the
+# Keystone API (TCP 5000 and 5050) and nova-operator-netpol-placement-api for
+# the Placement API (TCP 8778). nova-operator-netpol-sink carries a name no
+# rule selects and listens on 5000, 5050, 8774 and 8778, which the rules admit
+# only to their peers, and on 9999.
+#
+# The pods are bare: fixed names, no controller to adopt them, and chainsaw
+# deletes the Namespace and the pods when the test ends. kind already holds the
+# nova image for the leg's Nova CRs. UID and GID 42424 are the openstack user
+# of the service images (internal/common/deployment/security_context.go). The
+# listener is the one of tests/e2e/keystone/network-policy/03-probe-pods.yaml,
+# byte for byte. It binds each port in its main thread, so a bind error ends
+# the container and the probe fails instead of a port silently staying closed.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nova-operator-netpol-targets
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-operator-netpol-probe
+  namespace: nova-system
+  labels:
+    app.kubernetes.io/name: nova-operator
+    app.kubernetes.io/instance: nova-operator-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-operator-netpol-control
+  namespace: nova-system
+  labels:
+    app.kubernetes.io/name: netpol-probe-client
+    app.kubernetes.io/instance: nova-operator-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-operator-netpol-sink
+  namespace: nova-operator-netpol-targets
+  labels:
+    app.kubernetes.io/name: netpol-probe-sink
+    app.kubernetes.io/instance: nova-operator-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "5000"
+        - "5050"
+        - "8774"
+        - "8778"
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-operator-netpol-nova-api
+  namespace: nova-operator-netpol-targets
+  labels:
+    app.kubernetes.io/name: nova
+    app.kubernetes.io/managed-by: nova-operator
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "8774"
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-operator-netpol-keystone-api
+  namespace: nova-operator-netpol-targets
+  labels:
+    app.kubernetes.io/name: keystone
+    app.kubernetes.io/managed-by: keystone-operator
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "5000"
+        - "5050"
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nova-operator-netpol-placement-api
+  namespace: nova-operator-netpol-targets
+  labels:
+    app.kubernetes.io/name: placement
+    app.kubernetes.io/managed-by: placement-operator
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/nova:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "8778"
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi

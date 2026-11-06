@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Probe pods for the network-policy-egress E2E test. Step 4 of
+# chainsaw-test.yaml runs ../../lib/assert-networkpolicy-enforced.sh from them.
+#
+# ovn-operator-netpol-probe carries the two selector labels of the
+# ovn-operator-netpol NetworkPolicy, so the policy judges its connections as it
+# judges the operator pod's. It has no pod-template-hash label, so the
+# release's ReplicaSet does not adopt it. ovn-operator-netpol-control carries a
+# name no policy selects. Its connections show that every destination the probe
+# pod expects dropped listens and is reachable.
+#
+# ovn-operator-netpol-sink runs in ovn-operator-netpol-targets, a namespace
+# with no NetworkPolicy, carries a name no rule selects and listens on 9999.
+# The OVN chart adds no egress rule of its own, so no stand-in runs.
+#
+# The pods are bare: fixed names, no controller to adopt them, and chainsaw
+# deletes the Namespace and the pods when the test ends. The pods run the
+# keystone image: the OVN image ships no python3 (images/ovn/ovn.nix), and the
+# ovn leg loads keystone:2026.1 for these pods. UID and GID 42424 are the
+# openstack user of the service images
+# (internal/common/deployment/security_context.go). The listener is the one of
+# tests/e2e/keystone/network-policy/03-probe-pods.yaml, byte for byte. It binds
+# each port in its main thread, so a bind error ends the container and the
+# probe fails instead of a port silently staying closed.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ovn-operator-netpol-targets
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ovn-operator-netpol-probe
+  namespace: ovn-system
+  labels:
+    app.kubernetes.io/name: ovn-operator
+    app.kubernetes.io/instance: ovn-operator-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/keystone:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ovn-operator-netpol-control
+  namespace: ovn-system
+  labels:
+    app.kubernetes.io/name: netpol-probe-client
+    app.kubernetes.io/instance: ovn-operator-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/keystone:2026.1
+      imagePullPolicy: IfNotPresent
+      command: ["sleep", "infinity"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ovn-operator-netpol-sink
+  namespace: ovn-operator-netpol-targets
+  labels:
+    app.kubernetes.io/name: netpol-probe-sink
+    app.kubernetes.io/instance: ovn-operator-netpol
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 0
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 42424
+    runAsGroup: 42424
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: ghcr.io/c5c3/keystone:2026.1
+      imagePullPolicy: IfNotPresent
+      command:
+        - python3
+        - -c
+        - |
+          import socket, sys, threading
+
+          def accept_forever(srv):
+              while True:
+                  srv.accept()[0].close()
+
+          for port in sys.argv[1:]:
+              srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              srv.bind(("0.0.0.0", int(port)))
+              srv.listen(64)
+              threading.Thread(target=accept_forever, args=(srv,), daemon=True).start()
+          print("listening on " + " ".join(sys.argv[1:]), flush=True)
+          threading.Event().wait()
+        - "9999"
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+        limits:
+          memory: 128Mi
