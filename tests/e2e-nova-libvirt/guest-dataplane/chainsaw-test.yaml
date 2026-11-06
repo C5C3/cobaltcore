@@ -472,3 +472,211 @@ spec:
           console="$(gl_console "$GL_PROBE")" || { echo "$console"; exit 1; }
           gl_window disk "$D" 3 <<<"$console"
     catch: *console-dump
+  # ── Step 7: F1, kill the libvirt pod under the running guest ───────────
+  # The CI form of the lab's fault F1: a PodChaos pod-kill of libvirt-e2e.
+  # libvirtd dies with its container; QEMU runs on below the node's /machine
+  # cgroup (hostPID, see ../server-boot/00-libvirt.yaml), and the replacement
+  # libvirtd finds the domain through the node's /run/libvirt. The verdict is
+  # the lab's: QEMU keeps its PID, libvirtd gets a new one, the domain runs,
+  # the server stays ACTIVE, the compute service reports up after the new pod
+  # turned Ready, and the probes carry on without a gap or a failed line.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ./guest-lib.sh
+          SEL=app.kubernetes.io/name=libvirt-e2e
+          INSTANCE="$(gl_recall instance-name)" || { echo "$INSTANCE"; exit 1; }
+          HOST="$(gl_recall host)" || { echo "$HOST"; exit 1; }
+          POD="$(gl_libvirt_pod)" || { echo "$POD"; exit 1; }
+          POD_UID="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')"
+          BEFORE="$(gl_pids "$INSTANCE")" || { echo "$BEFORE"; exit 1; }
+          console="$(gl_console "$GL_PROBE")" || { echo "$console"; exit 1; }
+          N="$(gl_last_seq net <<<"$console")" || { echo "$N"; exit 1; }
+          D="$(gl_last_seq disk <<<"$console")" || { echo "$D"; exit 1; }
+          echo "before: $POD ($POD_UID), $BEFORE, last net line $N, last disk line $D"
+
+          gl_pod_kill guest-libvirt-kill "$SEL"
+          gl_wait_replaced "$SEL" "$POD_UID" 180
+          READY=$SECONDS
+          # Only a report after this time comes from a live nova-compute: Nova
+          # reads a service as up for 60 s after its last report.
+          SINCE="$(date -u +%Y-%m-%dT%H:%M:%S)"
+
+          AFTER="$(gl_pids "$INSTANCE")" || { echo "$AFTER"; exit 1; }
+          echo "after: $AFTER"
+          if [ "$(gl_pid qemu "$AFTER")" != "$(gl_pid qemu "$BEFORE")" ]; then
+            echo "FAIL: QEMU of $INSTANCE was $(gl_pid qemu "$BEFORE"), is $(gl_pid qemu "$AFTER")"
+            exit 1
+          fi
+          if [ "$(gl_pid libvirtd "$AFTER")" = "$(gl_pid libvirtd "$BEFORE")" ]; then
+            echo "FAIL: libvirtd of $INSTANCE was $(gl_pid libvirtd "$BEFORE"), is $(gl_pid libvirtd "$AFTER"); the kill did not replace it"
+            exit 1
+          fi
+          echo "OK: QEMU kept PID $(gl_pid qemu "$AFTER"), libvirtd moved to PID $(gl_pid libvirtd "$AFTER")"
+
+          NEW="$(gl_libvirt_pod)" || { echo "$NEW"; exit 1; }
+          STATE="$(kubectl exec -n "$NAMESPACE" "$NEW" -c libvirtd -- \
+            virsh -c qemu:///system domstate "$INSTANCE" | sed '/^[[:space:]]*$/d')"
+          case "$STATE" in
+            running*) echo "OK: virsh domstate $INSTANCE in $NEW says $STATE" ;;
+            *)
+              echo "FAIL: virsh domstate $INSTANCE in $NEW says $STATE, want running"
+              exit 1
+              ;;
+          esac
+
+          gl_wait_status server "$GL_PROBE" ACTIVE 0
+          # Within 120 s of the replacement turning Ready. The seqs come from
+          # the guest's own counter, so a stalled guest leaves no gap and only
+          # this bound catches it.
+          LEFT=$((READY + 120 - SECONDS))
+          gl_wait_compute_up "$HOST" $((LEFT > 0 ? LEFT : 0)) "$SINCE"
+          LEFT=$((READY + 120 - SECONDS))
+          gl_wait_window "$GL_PROBE" net "$N" 3 $((LEFT > 0 ? LEFT : 0))
+          LEFT=$((READY + 120 - SECONDS))
+          gl_wait_window "$GL_PROBE" disk "$D" 3 $((LEFT > 0 ? LEFT : 0))
+
+          kubectl delete podchaos guest-libvirt-kill -n "$NAMESPACE" --wait=true --timeout=120s
+    catch: *console-dump
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          . ./guest-lib.sh
+          kubectl delete podchaos -n "$NAMESPACE" -l "$GL_CHAOS_LABEL" \
+            --ignore-not-found --wait=true --timeout=120s || true
+  # ── Step 8: F2, kill the nova-compute pod under the running guest ──────
+  # The CI form of the lab's fault F2: a PodChaos pod-kill of pool-libvirt's
+  # nova-compute. QEMU and libvirtd run on, so both keep their PIDs, and the
+  # NFS share nova-compute mounted below /var/lib/nova/mnt stays mounted as
+  # the libvirt pod sees it. The replacement reports to Nova within 120 s of
+  # turning Ready, and the pool turns Ready again.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ./guest-lib.sh
+          SEL=app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt
+          INSTANCE="$(gl_recall instance-name)" || { echo "$INSTANCE"; exit 1; }
+          HOST="$(gl_recall host)" || { echo "$HOST"; exit 1; }
+          POD_UID="$(kubectl get pod -n "$NAMESPACE" -l "$SEL" -o jsonpath='{.items[0].metadata.uid}')"
+          if [ -z "$POD_UID" ]; then
+            echo "FAIL: no nova-compute pod of pool-libvirt"
+            exit 1
+          fi
+          LPOD="$(gl_libvirt_pod)" || { echo "$LPOD"; exit 1; }
+          # An empty list on both sides would compare equal.
+          MOUNTS_BEFORE="$(kubectl exec -n "$NAMESPACE" "$LPOD" -c libvirtd -- \
+            awk '$2 ~ "^/var/lib/nova/mnt/"' /proc/mounts)"
+          if [ -z "$MOUNTS_BEFORE" ]; then
+            echo "FAIL: no NFS mount below /var/lib/nova/mnt in $LPOD"
+            exit 1
+          fi
+          BEFORE="$(gl_pids "$INSTANCE")" || { echo "$BEFORE"; exit 1; }
+          console="$(gl_console "$GL_PROBE")" || { echo "$console"; exit 1; }
+          N="$(gl_last_seq net <<<"$console")" || { echo "$N"; exit 1; }
+          D="$(gl_last_seq disk <<<"$console")" || { echo "$D"; exit 1; }
+          echo "before: nova-compute $POD_UID, $BEFORE, last net line $N, last disk line $D"
+          echo "$MOUNTS_BEFORE"
+
+          gl_pod_kill guest-nova-compute-kill "$SEL"
+          gl_wait_replaced "$SEL" "$POD_UID" 180
+          READY=$SECONDS
+          # As in step 7: the killed nova-compute still reads up for 60 s.
+          SINCE="$(date -u +%Y-%m-%dT%H:%M:%S)"
+
+          AFTER="$(gl_pids "$INSTANCE")" || { echo "$AFTER"; exit 1; }
+          echo "after: $AFTER"
+          for proc in qemu libvirtd; do
+            if [ "$(gl_pid "$proc" "$AFTER")" != "$(gl_pid "$proc" "$BEFORE")" ]; then
+              label=QEMU
+              [ "$proc" = qemu ] || label=libvirtd
+              echo "FAIL: $label of $INSTANCE was $(gl_pid "$proc" "$BEFORE"), is $(gl_pid "$proc" "$AFTER")"
+              exit 1
+            fi
+          done
+          echo "OK: QEMU and libvirtd kept their PIDs"
+
+          gl_wait_status server "$GL_PROBE" ACTIVE 0
+          # Within 120 s of the replacement turning Ready, as in step 7.
+          LEFT=$((READY + 120 - SECONDS))
+          gl_wait_compute_up "$HOST" $((LEFT > 0 ? LEFT : 0)) "$SINCE"
+          LEFT=$((READY + 120 - SECONDS))
+          gl_wait_window "$GL_PROBE" net "$N" 3 $((LEFT > 0 ? LEFT : 0))
+          LEFT=$((READY + 120 - SECONDS))
+          gl_wait_window "$GL_PROBE" disk "$D" 3 $((LEFT > 0 ? LEFT : 0))
+          kubectl wait --for=condition=Ready --timeout=300s \
+            novacompute/pool-libvirt -n "$NAMESPACE"
+          echo "OK: NovaCompute/pool-libvirt is Ready"
+
+          MOUNTS_AFTER="$(kubectl exec -n "$NAMESPACE" "$LPOD" -c libvirtd -- \
+            awk '$2 ~ "^/var/lib/nova/mnt/"' /proc/mounts)"
+          if ! CHANGE="$(diff -u <(echo "$MOUNTS_BEFORE") <(echo "$MOUNTS_AFTER"))"; then
+            echo "FAIL: the NFS mounts below /var/lib/nova/mnt changed: $CHANGE"
+            exit 1
+          fi
+          echo "OK: the NFS mounts below /var/lib/nova/mnt are unchanged"
+
+          kubectl delete podchaos guest-nova-compute-kill -n "$NAMESPACE" --wait=true --timeout=120s
+    catch: *console-dump
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          . ./guest-lib.sh
+          kubectl delete podchaos -n "$NAMESPACE" -l "$GL_CHAOS_LABEL" \
+            --ignore-not-found --wait=true --timeout=120s || true
+  # ── Step 9: Read the counter on the backend ────────────────────────────
+  # The write as the volume service sees it. The probe server is stopped, and
+  # byte 4096 of the volume file, read through the cinder-volume pod of nfs1,
+  # holds the counter of the last ok disk line, or of the next one when the
+  # stop fell between the write and its line. The last line is read after
+  # SHUTOFF, because the guest writes on during the stop, from the console log
+  # file on the node, where a line the stop cut short can be told apart.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ./guest-lib.sh
+          PROBE_ID="$(gl_recall probe-id)" || { echo "$PROBE_ID"; exit 1; }
+          VOLUME_ID="$(gl_recall volume-id)" || { echo "$VOLUME_ID"; exit 1; }
+
+          gl_os server stop "$GL_PROBE"
+          gl_wait_status server "$GL_PROBE" SHUTOFF 300
+
+          CPOD="$(kubectl get pod -n "$NAMESPACE" -o name \
+            -l app.kubernetes.io/name=novacompute,app.kubernetes.io/instance=pool-libvirt)"
+          # The EOF marker lets gl_last_ok_disk tell a log that ends in a
+          # newline from one the stop cut in the middle of a line.
+          RAW="$(kubectl exec -n "$NAMESPACE" "$CPOD" -c nova-compute -- \
+            sh -c 'cat "$1" && echo EOF' _ "/var/lib/nova/instances/$PROBE_ID/console.log")"
+          N="$(gl_last_ok_disk <<<"$RAW")" || { echo "$N"; exit 1; }
+          echo "the last ok disk line of $GL_PROBE counted $N"
+
+          VALUE="$(kubectl exec -n "$NAMESPACE" deployment/cinder-nova-pool-volume-nfs1 -- \
+            sh -c "f=\$(ls /var/lib/cinder/mnt/*/volume-$VOLUME_ID); dd if=\"\$f\" bs=512 skip=8 count=1 2>/dev/null | head -c 16" |
+            tr -d '\0')"
+          echo "volume-$VOLUME_ID read through cinder-nova-pool-volume-nfs1"
+          gl_backend_holds "$VALUE" "$N"
+    catch: *console-dump
+  # ── Step 10: Delete the guests ─────────────────────────────────────────
+  # Tempest gets the runner's CPU to itself. The flavor and the image stay:
+  # tempest.conf names both.
+  - try:
+    - script:
+        shell: bash
+        timeout: 10m
+        content: |
+          set -euo pipefail
+          . ./guest-lib.sh
+          gl_teardown_guests
+    catch: *guest-dump
