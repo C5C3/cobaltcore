@@ -38,22 +38,46 @@ A running `horizon-operator` Helm release (namespace `horizon-system`) is requir
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
-template refuses to render. Gather the API server CIDR and port from the
-in-cluster `kubernetes` Service (on kind this is `10.96.0.1/32` port `6443`):
+template refuses to render. Gather the API server CIDRs and ports from the
+`kubernetes` **Endpoints**, which hold the real API server addresses. Do not
+use the `10.96.0.1` Service VIP that `kubectl get service kubernetes` reports:
+kindnet (kind v0.32 and later) and enforcing CNIs such as Calico and Cilium
+evaluate policy after the Service DNAT, so a rule naming the VIP never matches:
 
 ```bash
 kubectl get endpoints kubernetes -n default -o json \
   | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
 ```
 
+Record every endpoint IP the command prints. A kind devstack prints the one
+control-plane node's address on the kind bridge, for example
+`172.18.0.2/32 port=6443`; an HA control plane prints one line per API server
+replica.
+
+On Cilium, a CIDR selector, and so an `ipBlock` peer, matches no cluster node
+address by default. When the API server runs on a cluster node, as on a
+kubeadm control plane, Cilium drops the operator's API server traffic even
+with every endpoint address in the rule. Before you enable the policy, add a
+CiliumNetworkPolicy in the operator's namespace that selects the operator pod
+and allows egress `toEntities: [kube-apiserver]`. Starting the Cilium agents
+with `--policy-cidr-match-mode=nodes` (Helm value `policyCIDRMatchMode: nodes`)
+also works, but it is cluster-wide: every CIDR selector in every
+NetworkPolicy, CiliumNetworkPolicy, and CiliumClusterwideNetworkPolicy, in
+both directions (`ipBlock`, `fromCIDR`, `fromCIDRSet`, `toCIDR`, `toCIDRSet`,
+and CIDR deny rules), then matches node addresses too. Audit those rules
+before you turn it on.
+
 On the tutorial devstacks the `horizon-operator` release is owned by Flux (a
 `HelmRelease`), so set the values by patching its `spec.values`. The Flux
 helm-controller reverts a raw `helm upgrade` on its next
-reconcile. Substitute the CIDRs and ports from above:
+reconcile. Substitute the CIDRs and ports from above. The single-CIDR list
+below is the kind case, one control-plane node, so replace `172.18.0.2/32`
+with the address the discovery command printed and extend the list to every
+IP an HA control plane prints:
 
 ```bash
 kubectl patch helmrelease horizon-operator -n horizon-system --type=merge \
-  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["10.96.0.1/32"],"ports":[6443]}}}}}'
+  -p '{"spec":{"values":{"networkPolicy":{"enabled":true,"kubeApiServer":{"cidrs":["172.18.0.2/32"],"ports":[6443]}}}}}'
 
 kubectl wait helmrelease/horizon-operator -n horizon-system \
   --for=condition=Ready --timeout=5m
@@ -80,7 +104,7 @@ values with a rolling `helm upgrade`. The fail-closed guard requires
 helm upgrade horizon-operator oci://ghcr.io/c5c3/charts/horizon-operator \
   --namespace horizon-system --reuse-values \
   --set networkPolicy.enabled=true \
-  --set 'networkPolicy.kubeApiServer.cidrs[0]=10.96.0.1/32' \
+  --set 'networkPolicy.kubeApiServer.cidrs[0]=172.18.0.2/32' \
   --set 'networkPolicy.kubeApiServer.ports[0]=6443'
 ```
 
@@ -125,9 +149,13 @@ kubectl patch controlplane controlplane -n openstack --type merge \
 Set the replica count on the `ControlPlane` CR, not on the projected
 `controlplane-horizon` child: the c5c3-operator re-asserts the child's
 `spec.deployment.replicas` on every reconcile, so a direct edit of the child is
-reverted. If the operator loses apiserver connectivity after enabling the policy,
-your CNI may map the apiserver behind a different port. Compare the policy's egress
-ports with `kubectl get endpoints kubernetes -n default`.
+reverted. If the restarted operator does not reach `Ready` or loses API server
+connectivity, the egress rule misses the address or the port its connections
+reach after the Service DNAT. A rule naming the `10.96.0.1` Service VIP fails
+this way, and so does a port missing from `kubeApiServer.ports`. Compare the
+policy's egress CIDRs and ports with `kubectl get endpoints kubernetes -n default`.
+On Cilium without `--policy-cidr-match-mode=nodes`, no `ipBlock` matches an API
+server that runs on a cluster node; see the Cilium paragraph in Step 1.
 
 ## Tested by
 
