@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest include list of the libvirt guest suite (step 11 of
+# ../chainsaw-test.yaml).
+#
+# One regex pattern per line, matched against test IDs. Lines starting with #
+# are comments.
+#
+# The four tempest.scenario tests of Tempest 46.3.0 that never log into the
+# guest. Every data-plane scenario logs in over SSH through a floating IP,
+# which a runner that reaches the cluster through port-forwards has no route
+# to; the suite's own probes judge the data plane instead. With
+# [validation] run_validation = false the SSHABLE waits of these four end at
+# ACTIVE.
+tempest.scenario.test_server_basic_ops.TestServerBasicOps.test_server_basic_ops
+tempest.scenario.test_server_advanced_ops.TestServerAdvancedOps.test_server_sequence_suspend_resume
+tempest.scenario.test_server_volume_attachment.TestServerVolumeAttachmentScenario.test_server_detach_rules
+tempest.scenario.test_server_volume_attachment.TestServerVolumeAttachScenarioOldVersion.test_old_versions_reject
