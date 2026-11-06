@@ -2307,6 +2307,22 @@ jobs:
       - name: Prepare the multinode leg
         if: matrix.suite == 'multinode'
         run: tests/e2e-chaos/lib/nodes.sh prepare
+      # Each of the multinode leg's three nodes keeps its own copy of every
+      # image the leg loads. Its two green runs used 53 GiB of the runner's
+      # Docker disk (124 to 177 GiB in run 41807396659, 105 to 158 in run
+      # 41995666070), the nova leg about 22. The runner's own disk guard clears
+      # the disk only at 80%, so a runner can start the leg with about 40 GiB
+      # free; run 42148206213 started with 43 and failed loading
+      # nova-compute:2026.1 with "no space left on device" (#1618). 75 GiB is
+      # those 53, about 11 for the nineteen images a pruned runner pulls again,
+      # and a margin. The script prunes unused images and the build cache only
+      # when the runner is short, and runs after the cluster exists so the node
+      # image stays.
+      - name: Secure disk space for the multinode leg
+        if: matrix.suite == 'multinode'
+        env:
+          DISK_SPACE_REQUIRED_GIB: "75"
+        run: hack/ci-ensure-disk-space.sh
       # images/ovn/source.json holds the pin; resolving it here keeps the tag
       # out of this workflow.
       - name: Resolve OVN version

@@ -123,7 +123,7 @@ describes them and holds their record.
 | OpenBao instance | Running in `shared-services` namespace |
 | ControlPlane stack | For the `controlplane` matrix entry: `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external` on the infrastructure bring-up, K-ORC from `hack/ci-deploy-korc.sh` and the c5c3-operator in `c5c3-system` |
 | Upgrade entry | For the `upgrade` matrix entry: `WITH_NFS=true WITH_MESSAGING=true` on the infrastructure bring-up, the cinder-operator in `cinder-system`, and the `cinder:2026.1` and `cinder:2026.2` images on the node |
-| Multinode entry | For the `multinode` matrix entry: a kind cluster of one control-plane node and two workers (`hack/kind-config-multinode.yaml`), prepared by `tests/e2e-chaos/lib/nodes.sh prepare` before the stack, `WITH_MESSAGING=true WITH_OVN_KERNEL_MODULES=true` on the infrastructure bring-up, and the placement-, neutron- and nova-operators beside the others |
+| Multinode entry | For the `multinode` matrix entry: a kind cluster of one control-plane node and two workers (`hack/kind-config-multinode.yaml`), prepared by `tests/e2e-chaos/lib/nodes.sh prepare` before the stack, 75 GiB free on the runner's Docker disk (`hack/ci-ensure-disk-space.sh`), `WITH_MESSAGING=true WITH_OVN_KERNEL_MODULES=true` on the infrastructure bring-up, and the placement-, neutron- and nova-operators beside the others |
 
 ## Running the Tests
 
@@ -558,9 +558,15 @@ right after it, which removes the control-plane taint and cordons both workers.
 Every singleton of the stack then lands on the control-plane node, which no
 fault touches, while DaemonSet pods and pods with `nodeName` still reach the
 workers. A suite that needs replicas on the workers uncordons them and cordons
-them again in its cleanup. The entry brings up the stack of the `nova` entry: the
-same seven images beside the keystone and OVN stacks, the placement, neutron and
-nova operators, `WITH_MESSAGING=true` and `WITH_OVN_KERNEL_MODULES=true`. The
+them again in its cleanup. Each of the three nodes keeps its own copy of every
+image the entry loads, which takes about 53 GiB of the runner's Docker disk, so
+the step `Secure disk space for the multinode leg` runs
+`hack/ci-ensure-disk-space.sh` before the first image pull. A runner with less
+than 75 GiB free loses its unused images and build cache first, and one still
+short after that fails the job there (#1618). The entry brings up the stack of
+the `nova` entry: the same seven images beside the keystone and OVN stacks, the
+placement, neutron and nova operators, `WITH_MESSAGING=true` and
+`WITH_OVN_KERNEL_MODULES=true`. The
 step `Restore the workers` runs `nodes.sh restore-all` after the suites, on every
 outcome and without failing the job, because a wall that kills chainsaw skips
 every suite cleanup, and a paused or dead worker would hide the diagnostics and
