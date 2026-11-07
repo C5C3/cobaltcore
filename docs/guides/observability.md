@@ -47,8 +47,8 @@ kubectl get keystones -A
 ```
 
 ```text
-NAMESPACE   NAME       READY   ENDPOINT                                                 RELEASE   AGE
-openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/v3      2026.1    12m
+NAMESPACE   NAME       READY   ENDPOINT                                                 RELEASE   SUSPENDED   AGE
+openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/v3      2026.1                12m
 ```
 
 | Column | Source | Meaning |
@@ -56,6 +56,7 @@ openstack   keystone   True    http://keystone.openstack.svc.cluster.local:5000/
 | `READY` | `.status.conditions[?(@.type=='Ready')].status` | Aggregate health |
 | `ENDPOINT` | `.status.endpoint` | Service API URL, if the CR exposes one |
 | `RELEASE` | `.status.installedRelease` | OpenStack release currently deployed |
+| `SUSPENDED` | `.spec.suspend` | `true` while reconciliation of the CR is suspended; empty when the field was never set |
 | `AGE` | `.metadata.creationTimestamp` | CR age |
 
 Some services do not expose every field. In those cases, read the related status block instead of assuming the CR has the same shape as Keystone.

@@ -10,8 +10,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # Day 2 Operations
 
-Three operational patterns you will use most often on a running control plane:
-scaling, upgrading the OpenStack release, and rotating Fernet keys.
+Four operational patterns you will use most often on a running control plane:
+scaling, upgrading the OpenStack release, rotating Fernet keys, and suspending
+reconciliation of one service.
 
 ## Prerequisites
 
@@ -40,7 +41,9 @@ down. Where the `ControlPlane` CRD does not expose a knob, this guide points to
 the [Standalone Keystone](#standalone-keystone-without-a-controlplane) section,
 which drives a Keystone CR you own. See the
 [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for the
-full projection contract.
+full projection contract. `spec.suspend` is the exception: the ControlPlane
+never projects it, so a suspend set on the child holds while the c5c3-operator
+chart comes from the same release as the service operator charts.
 :::
 
 ---
@@ -220,8 +223,9 @@ On the ControlPlane path the schedule is set through
 `spec.services.keystone.rotationInterval`, a duration (e.g. `168h`) the operator
 converts to a cron expression and projects onto the child's
 `spec.fernet.rotationSchedule` and `spec.credentialKeys.rotationSchedule`. The
-`ControlPlane` CRD does not expose the `suspend` or `maxActiveKeys` knobs; pausing
-scheduled rotation or tuning the overlap window is standalone-only (see the
+`ControlPlane` CRD does not expose the Fernet `suspend` or `maxActiveKeys`
+fields; pausing scheduled rotation or tuning the overlap window is
+standalone-only (see the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section).
 
 Rotation uses a split staging-to-production path: the CronJob writes the new key set
@@ -284,6 +288,101 @@ kubectl -n openstack get jobs -o name \
 
 ---
 
+## Suspend reconciliation of one service
+
+During maintenance or an incident you may need to change an object the operator
+owns, such as a Deployment, without the operator setting it back on its next
+pass. `spec.suspend` pauses the reconciliation of one service CR, while every
+other service keeps reconciling. On the devstack, suspend the projected Keystone
+child:
+
+```bash
+kubectl patch keystone controlplane-keystone -n openstack \
+  --type merge \
+  -p '{"spec":{"suspend":true}}'
+```
+
+The `SUSPENDED` column shows the state. It is empty on a CR that never set the
+field:
+
+```bash
+kubectl get keystone -n openstack
+```
+
+```text
+NAME                    READY   ENDPOINT                               RELEASE   SUSPENDED   AGE
+controlplane-keystone   True    https://keystone.127-0-0-1.nip.io/v3   2026.1    true        3h
+```
+
+The child carries the condition `Suspended=True` with reason
+`ReconciliationSuspended`, and the keystone-operator records an event of the
+same reason:
+
+```bash
+kubectl get keystone controlplane-keystone -n openstack \
+  -o jsonpath='{.status.conditions[?(@.type=="Suspended")].reason}{"\n"}'
+kubectl get events -n openstack \
+  --field-selector reason=ReconciliationSuspended,involvedObject.name=controlplane-keystone
+```
+
+While the child is suspended, the keystone-operator creates, updates and deletes
+nothing for it, and the workloads that already run keep running. `Ready` keeps
+the value of the last full pass, and so does `status.observedGeneration`. A spec
+change made in the meantime, by you or by the ControlPlane's projection, shows
+as `status.observedGeneration` below `metadata.generation` and takes effect on
+resume. `KeystoneReady` on the ControlPlane keeps mirroring the child's `Ready`,
+so the services that wait for Keystone keep reconciling.
+
+Rotations the operator drives wait for the resume too. The Fernet and
+credential-key CronJobs keep firing, but the operator commits the staged keys
+only after the resume. A credential rotated outside the CR, such as a
+KeystoneUser password schedule or an ESO resync, reaches the pods only then.
+Deleting a suspended CR still runs its finalizer cleanup.
+
+The delayed database credential limits how long a ControlPlane child with
+Dynamic database credentials, the default on a managed database, may stay
+suspended. ESO issues a fresh database credential every 24 hours, and the
+lease of the credential the pods hold ends 48 hours after it was issued (the
+`default_ttl` of
+[setup-database-tenant.sh](../reference/infrastructure/openbao-bootstrap.md#setup-database-tenant-sh)).
+Resume such a child within 24 hours, with time left for the rollout onto the
+fresh credential. A longer suspension can outlive the lease: the database then
+rejects the pods' logins while `Ready` stays `True`.
+
+Resume by clearing the field:
+
+```bash
+kubectl patch keystone controlplane-keystone -n openstack \
+  --type merge \
+  -p '{"spec":{"suspend":false}}'
+```
+
+The operator removes the `Suspended` condition, records a
+`ReconciliationResumed` event and runs a full pass. That pass sets the owned
+objects back to what the spec declares and rolls out the spec changes made
+meanwhile. Carry a manual fix you want to keep into the spec first, which for a
+projected field is the `ControlPlane` spec.
+
+To stop the ControlPlane from projecting anything, for example while you edit
+several children by hand, suspend the `controlplane` CR instead. Its children
+are not suspended and keep reconciling under their own operators:
+
+```bash
+kubectl patch controlplane controlplane -n openstack \
+  --type merge \
+  -p '{"spec":{"suspend":true}}'
+```
+
+Clear `spec.suspend` before you roll an operator back to a release without the
+field. An older operator does not know it and reconciles the CR as if it were
+not set. The
+[Keystone reconciler](../reference/keystone/keystone-reconciler.md#reconciliation-flow)
+and the
+[ControlPlane reconciler](../reference/c5c3/controlplane-reconciler.md#reconciliation-flow)
+describe where the pass stops.
+
+---
+
 ## Standalone Keystone, without a ControlPlane
 
 On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
@@ -340,6 +439,9 @@ kubectl -n openstack create job \
 scheduled rotation during an incident without deleting the CronJob, and
 `spec.fernet.maxActiveKeys` bounds the overlap window.
 
+**Suspend** with the same `spec.suspend` patch on `keystone`. No ControlPlane
+projects this CR, so nothing else writes the field.
+
 ---
 
 ## Further reading
@@ -355,9 +457,9 @@ scheduled rotation during an incident without deleting the CronJob, and
 ## Tested by
 
 Scale, release upgrade (Keystone and Horizon, and all eight children through the
-ControlPlane), image upgrade, zero-downtime rollout, manual Fernet rotation, and
-the release floor are each asserted on the CI e2e kind cluster by these chainsaw
-suites:
+ControlPlane), image upgrade, zero-downtime rollout, manual Fernet rotation,
+suspension, and the release floor are each asserted on the CI e2e kind cluster
+by these chainsaw suites:
 
 ```bash
 chainsaw test --test-dir tests/e2e/c5c3/full-controlplane-keystone
@@ -366,8 +468,16 @@ chainsaw test --test-dir tests/e2e/horizon/release-upgrade
 chainsaw test --test-dir tests/e2e/keystone/image-upgrade
 chainsaw test --test-dir tests/e2e/keystone/rolling-update-zero-downtime
 chainsaw test --test-dir tests/e2e/keystone/fernet-rotation
+chainsaw test --test-dir tests/e2e/keystone/suspend
 chainsaw test --test-dir tests/e2e/c5c3/invalid-cr
 ```
 
 The full-chain suite needs the stack the `e2e-controlplane` job brings up; see
 [ControlPlane E2E Test Suites](../reference/testing/controlplane-e2e-tests.md#running-the-tests).
+
+That a suspend set on a projected child holds across the ControlPlane's
+projection, and that a suspended ControlPlane projects nothing until it is
+resumed, is asserted against a real API server by the envtest tests
+`TestIntegration_SuspendedKeystoneChildSurvivesProjection` and
+`TestIntegration_SuspendedControlPlaneStopsProjection`
+(`make test-integration OPERATOR=c5c3`).
