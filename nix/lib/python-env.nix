@@ -136,7 +136,30 @@ let
       pbr = [ ];
       setuptools = [ ];
     };
-    uwsgi.buildSystem.setuptools = [ ];
+    # uWSGI 2.0.31's write wait returns when a signal interrupts its poll(),
+    # so the SIGHUP of the graceful shutdown that SIGTERM starts cut a
+    # streamed response to a slow client with
+    # "uwsgi_simple_wait_write_hook()/poll(): Interrupted system call"
+    # (#1635). The patch retries the poll, as the read wait does. uWSGI's
+    # atexit log drain also swaps the log buffer and reads the pipe beside
+    # the --threaded-logger thread, so the last lines of a container log came
+    # out as heap memory; the second patch drains under the thread's lock.
+    # A uWSGI bump that moves the patched lines, or already carries a fix,
+    # fails here with "Hunk #1 FAILED" or "Reversed (or previously applied)
+    # patch detected".
+    uwsgi = {
+      buildSystem.setuptools = [ ];
+      attrs = {
+        patches = [
+          ./patches/uwsgi-2.0.31-retry-write-poll-on-eintr.patch
+          ./patches/uwsgi-2.0.31-flush-logs-under-threaded-logger-lock.patch
+        ];
+        patchFlags = [
+          "-p1"
+          "--fuzz=0"
+        ];
+      };
+    };
     # The nova locks' nova-compute group: PyPI ships no wheel. setup.py finds
     # libvirt through pkg-config and generates the binding from the
     # libvirt-api.xml that `pkg-config --variable=libvirt_api libvirt` names.

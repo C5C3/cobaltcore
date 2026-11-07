@@ -1,0 +1,80 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Drain the log pipe at exit under the threaded logger's lock
+
+With --log-master, the uWSGI 2.0.31 master reads its workers' log lines
+from a pipe into the global buffer `uwsgi.log_master_buf` and writes
+them out. With --threaded-logger, a master thread does that read and
+write in `uwsgi_master_log` (core/logging.c), holding
+`uwsgi.threaded_logger_lock`. At exit, the atexit handler
+`uwsgi_flush_logs` (core/uwsgi.c) drains what is left in the pipe from
+the main thread. It allocates a new `uwsgi.log_master_buf` every time
+and reads without the lock. When the thread has read a line but not yet
+written it, the swap makes it write uninitialized heap memory of that
+line's length instead, and the line is lost; both threads also read the
+pipe at once.
+
+The CobaltCore API containers run uWSGI with --threaded-logger
+(`UWSGIGracefulShutdownArgs` in internal/common/deployment/uwsgi.go).
+The master logs `gateway "uWSGI http 1" has been buried` and
+`goodbye to uWSGI.` right before it exits, so the race hits the last
+lines of every container log. Measured in 40 start/SIGTERM cycles of the
+keystone 2026.1 image with those flags: unpatched, 25 logs carried a
+record of NUL bytes and heap pointers, 24 of them in place of the buried
+line, 31 logged `goodbye to uWSGI.` twice and 2 not at all; patched, 40
+of 40 logs carried both lines once and no such record. The image check
+below failed 15 of 20 runs unpatched and passed 30 of 30 patched.
+
+The patch allocates the buffer only when none exists, and drains the
+pipe under the lock the thread holds, so a line is read and written by
+one thread from one buffer. Only the master takes the lock: the other
+processes that run this handler fork from the master and may inherit
+the mutex locked, and none of them runs the thread.
+
+`assert_uwsgi_graceful_shutdown` in tests/lib/uwsgi.sh, which the verify
+scripts of the eight uWSGI API images call, fails when the log carries
+`goodbye to uWSGI.` other than exactly once, or a byte outside
+printable ASCII, tab and newline.
+
+nix/lib/python-env.nix applies the patch to the uwsgi source of every
+lock with `patch --fuzz=0`. A uWSGI release that moves these lines, or
+already carries the fix, fails the build there.
+
+Applies to uWSGI 2.0.31 (nix/base-requirements.txt).
+
+Upstream status: not reported; tracked in #1635.
+
+diff --git a/core/uwsgi.c b/core/uwsgi.c
+index 5316efe..d0a1dd4 100644
+--- a/core/uwsgi.c
++++ b/core/uwsgi.c
+@@ -1925,10 +1925,17 @@ void uwsgi_flush_logs() {
+ 
+ check:
+ 	// this buffer could not be initialized !!!
+-	if (uwsgi.log_master) {
++	if (uwsgi.log_master && !uwsgi.log_master_buf) {
+ 		uwsgi.log_master_buf = uwsgi_malloc(uwsgi.log_master_bufsize);
+ 	}
+ 
++	// the master's threaded logger reads the same pipe into the same buffer
++	int locked = 0;
++	if (uwsgi.threaded_logger && uwsgi.workers && uwsgi.workers[0].pid == getpid()) {
++		pthread_mutex_lock(&uwsgi.threaded_logger_lock);
++		locked = 1;
++	}
++
+ 	// check for data in logpipe
+ 	pfd.events = POLLIN;
+ 	pfd.fd = uwsgi.shared->worker_log_pipe[0];
+@@ -1940,6 +1947,9 @@ check:
+ 			break;
+ 		}
+ 	}
++
++	if (locked)
++		pthread_mutex_unlock(&uwsgi.threaded_logger_lock);
+ }
+ 
+ static void plugins_list(void) {

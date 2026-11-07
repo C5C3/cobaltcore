@@ -179,7 +179,17 @@ with `nix/lib/patches/dogpile-cache-1.5.0-pymemcache-timeouts.patch`: oslo.cache
 and every pymemcache error becomes a cache miss unless `distributed_lock` is
 set (#1560). The row runs
 `patch --fuzz=0`, so a dogpile.cache release that moves the patched lines fails
-the build with `Hunk #N FAILED`; #1562 tracks that re-check.
+the build with `Hunk #N FAILED`; #1562 tracks that re-check. The `uwsgi` row
+patches the source with
+`nix/lib/patches/uwsgi-2.0.31-retry-write-poll-on-eintr.patch` and
+`nix/lib/patches/uwsgi-2.0.31-flush-logs-under-threaded-logger-lock.patch`
+through the derivation's `patches`, with `patchFlags` `-p1 --fuzz=0`: the
+write wait of `core/writer.c` retries its `poll()` after EINTR, so the
+graceful shutdown SIGTERM starts does not cut a streamed response, and the
+atexit log drain of `core/uwsgi.c` holds the `--threaded-logger` thread's
+lock, so the last log lines are not replaced by heap memory (#1635). It also
+runs `patch --fuzz=0`, so a uWSGI release that moves the patched lines, or
+already carries the fix, fails the build instead of shipping without it.
 
 ## Service images
 
