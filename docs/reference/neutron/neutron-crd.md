@@ -35,7 +35,8 @@ in, which is not a namespace the API Deployment belongs in.
 
 `kubectl get neutrons` prints Ready
 (`.status.conditions[?(@.type=='Ready')].status`), Release
-(`.status.installedRelease`), Endpoint (`.status.endpoint`), and Age.
+(`.status.installedRelease`), Endpoint (`.status.endpoint`),
+Suspended (`.spec.suspend`), and Age.
 
 Most deployments get their `Neutron` from a ControlPlane projection. See
 [`ServiceNeutronSpec`](../c5c3/controlplane-crd.md#serviceneutronspec) for which
@@ -69,6 +70,7 @@ of the fields below the plane fills and which it leaves to this CR.
 | `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](../keystone/keystone-crd.md#secretstorerefspec) | no | `nil` (`openbao-cluster-store`) | Selects the External Secrets store the operator resolves `SecretsReady` against: `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. A namespaced store is resolved in this Neutron's own namespace. The ControlPlane projects this field onto the Neutron it owns |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | Names the registered target cluster that receives this Neutron's children: the three Deployments, the ConfigMaps, the Secrets, and the database CRs. The CR itself stays on the management cluster, and so do its status and its finalizers. Immutable, enforced by two CEL transition rules and by the webhook. See [Target Clusters](../target-clusters.md) |
 | `extraConfig` | `map[string]map[string]string` | no | `nil` | Free-form INI sections for options with no dedicated field. The render-time merge is `operator defaults < extraConfig`, so a user value wins, and each section is routed to the file its consumer reads. An override of an operator-owned key is honored and reported through the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event, except for the fifteen keys the webhook refuses outright. Option names are checked at admission against the per-release catalog embedded in the operator. See [Defaulting and validation](#defaulting-and-validation) |
+| `suspend` | `bool` | no | `false` | Pauses the operator's reconciliation of this Neutron. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running, the `spec.ovnDBSync` CronJob included. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its finalizer cleanup as usual. Setting it to `false` or removing it resumes reconciliation. `spec.ovnDBSync.suspend` pauses the OVN database sync CronJob only, while the rest of the CR keeps reconciling. See [Suspension](./neutron-reconciler.md#suspension). |
 
 `DeploymentSpec`, `AutoscalingSpec`, `NetworkPolicySpec`,
 `NetworkPolicyIngressSource`, `LoggingSpec`, `GatewaySpec`,
@@ -712,6 +714,11 @@ see the [reconciler reference](./neutron-reconciler.md).
 `ExtraConfigHealthy` is set beside these on every pass that renders a config,
 reporting the honored overrides of operator-owned keys. It is informational and
 stays out of the `Ready` aggregation.
+
+While `spec.suspend` is `true`, the CR also carries `Suspended=True` with reason
+`ReconciliationSuspended`, and the operator removes it once the field is
+cleared. `Suspended` is never aggregated into `Ready`, which keeps the value of
+the last full pass. See [Suspension](./neutron-reconciler.md#suspension).
 
 `NeutronAPIReady`, `HTTPRouteReady`, `HPAReady` and `NetworkPolicyReady` are the
 members of the post-deployment parallel group. Each of them always resolves,

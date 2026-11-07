@@ -19,7 +19,8 @@ part of this spec. Volume backends attach through
 
 `kubectl get cinders` shows Ready
 (`.status.conditions[?(@.type=='Ready')].status`), Release
-(`.status.installedRelease`), Endpoint (`.status.endpoint`) and Age.
+(`.status.installedRelease`), Endpoint (`.status.endpoint`),
+Suspended (`.spec.suspend`) and Age.
 
 ## Spec
 
@@ -51,6 +52,7 @@ part of this spec. Volume backends attach through
 | `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for options with no dedicated field. See [extraConfig](#extraconfig) |
 | `secretStoreRef` | `SecretStoreRefSpec` | no | Selects the External Secrets store `SecretsReady` is resolved against: `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. When omitted the shared cluster-scoped `openbao-cluster-store` is used |
 | `targetClusterRef` | `TargetClusterRefSpec` | no | Names the registered target cluster that receives this Cinder's children: the Deployments, the ConfigMaps, the Secrets, the Jobs and the database CRs. The CR itself does not move, and neither do its status, its finalizers or the webhooks that admit it. An attached satellite carries no ref of its own and follows this one. Immutable (two CEL transition rules, mirrored by the webhook): adding, removing or renaming it strands the children on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md) |
+| `suspend` | `bool` | no | Pauses the operator's reconciliation of this Cinder. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running, the `spec.dbPurge` CronJob included. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its finalizer cleanup as usual. Setting it to `false` or removing it resumes reconciliation. `spec.dbPurge.suspend` pauses the purge CronJob only, while the rest of the CR keeps reconciling. See [Suspension](./cinder-reconciler.md#suspension). |
 
 ### CinderAPISpec
 
@@ -486,6 +488,11 @@ one more, `cinder.c5c3.io/installed-release`.
 | `targetRelease` | The release being upgraded to during an active transition. Set when the upgrade initiates, cleared on completion or abort |
 | `upgradePhase` | The current phase during an active release upgrade (`Expanding`, `Migrating`, `RollingUpdate`, `Contracting`); empty when no upgrade is in flight |
 | `volumeServices` | One entry per attached backend: `backend` and the `host` identity its `cinder-volume` registers under. It reports what the operator configured, not what Cinder reports back, so an entry appears as soon as the Deployment is projected |
+
+While `spec.suspend` is `true`, `conditions` also holds `Suspended=True` with
+reason `ReconciliationSuspended`, and the operator removes it once the field is
+cleared. `Suspended` is never aggregated into `Ready`, which keeps the value of
+the last full pass. See [Suspension](./cinder-reconciler.md#suspension).
 
 ## Sub-Resource Naming Convention
 

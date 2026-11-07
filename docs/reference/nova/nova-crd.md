@@ -21,7 +21,8 @@ copy under the name `status.computeConfigSecretRef` gives.
 
 `kubectl get novas` shows Ready
 (`.status.conditions[?(@.type=='Ready')].status`), Release
-(`.status.installedRelease`), Endpoint (`.status.endpoint`) and Age.
+(`.status.installedRelease`), Endpoint (`.status.endpoint`),
+Suspended (`.spec.suspend`) and Age.
 
 ## Spec
 
@@ -53,6 +54,7 @@ copy under the name `status.computeConfigSecretRef` gives.
 | `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for options with no dedicated field. See [extraConfig](#extraconfig) |
 | `secretStoreRef` | `SecretStoreRefSpec` | no | Selects the External Secrets store `SecretsReady` is resolved against: `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required `name`. When omitted the shared cluster-scoped `openbao-cluster-store` is used |
 | `targetClusterRef` | `TargetClusterRefSpec` | no | Names the registered target cluster that receives this Nova's children: the five Deployments, the Services, the ConfigMaps, the Secrets, the Jobs, the CronJob and the database CRs. The CR itself does not move, and neither do its status, its finalizers or the webhooks that admit it. Immutable (two CEL transition rules, mirrored by the webhook): adding, removing or renaming it strands the children on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md) |
+| `suspend` | `bool` | no | Pauses the operator's reconciliation of this Nova. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running, the `spec.dbArchive` CronJob included. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its finalizer cleanup as usual. Setting it to `false` or removing it resumes reconciliation. `spec.dbArchive.suspend` pauses the archive CronJob only, while the rest of the CR keeps reconciling. See [Suspension](./nova-reconciler.md#suspension). |
 
 ### NovaAPISpec
 
@@ -612,6 +614,11 @@ and rolling every pod.
 | `cells` | One entry per mapped cell, `name` and `uuid`, cell0 first. The UUIDs are read back off the `db-sync` Job's termination log, because nova generates them at map time and a per-cell `nova-manage cell_v2` command addresses a cell by UUID |
 | `computeConfigSecretRef` | Names the compute-contract Secret, `{name}-compute-config` |
 | `remoteComputeConfigSecretRef` | Names the remote compute-contract Secret, `{name}-remote-compute-config`, on this Nova's own cluster. A copy on a compute cluster carries the name its copier gives it; the ControlPlane mirror keeps the `computeConfigSecretRef` name. Set once that Secret is written while `spec.remoteCompute` is set, and cleared when the block is removed |
+
+While `spec.suspend` is `true`, `conditions` also holds `Suspended=True` with
+reason `ReconciliationSuspended`, and the operator removes it once the field is
+cleared. `Suspended` is never aggregated into `Ready`, which keeps the value of
+the last full pass. See [Suspension](./nova-reconciler.md#suspension).
 
 ## Compute contract
 

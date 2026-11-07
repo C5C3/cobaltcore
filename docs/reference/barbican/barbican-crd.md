@@ -20,7 +20,8 @@ stays close to the plain API-server shape.
 
 `kubectl get barbicans` prints Ready
 (`.status.conditions[?(@.type=='Ready')].status`), Release
-(`.status.installedRelease`), Endpoint (`.status.endpoint`), and Age.
+(`.status.installedRelease`), Endpoint (`.status.endpoint`),
+Suspended (`.spec.suspend`), and Age.
 
 ## Spec
 
@@ -49,6 +50,7 @@ stays close to the plain API-server shape.
 | `middleware` | `[]MiddlewareSpec` | no | WSGI filters inserted into the `barbican-api-keystone` pipeline, the one `composite:main` routes `/v1` to. Each entry carries `name`, `filterFactory`, `position` (`before` or `after` the base filters), and a `config` map rendered as the filter's own paste section. The other pipelines the image ships are rendered verbatim and are unreachable through `composite:main` |
 | `plugins` | `[]PluginSpec` | no | Service plugins or drivers, each with a `name`, a `configSection`, and a `config` map. Modeled as a list-map keyed by `configSection`, so the API server rejects duplicate sections structurally and server-side apply merges entries by section instead of replacing the whole list. Plugin sections lose to the operator defaults on a key collision and to `extraConfig` on top of that |
 | `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields, the escape hatch for options with no dedicated knob. The render-time merge is `plugins < operator defaults < extraConfig`, so user values win. Overrides of operator-owned keys are honored but surfaced through the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event, with three exceptions the validating webhook refuses outright (see [Defaulting and validation](#defaulting-and-validation)). Option names are checked at admission against a per-release option catalog embedded in the operator, selected by `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning. The per-store `[secretstore:<name>]` sections are exempt from the catalog scan, since their names come from the attached store CRs and no release catalog can list them. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing: a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject config lines past the ownership and catalog gates |
+| `suspend` | `bool` | no | Pauses the operator's reconciliation of this Barbican. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running, the `spec.dbClean` CronJob included. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its finalizer cleanup as usual. Setting it to `false` or removing it resumes reconciliation. `spec.dbClean.suspend` pauses the clean CronJob only, while the rest of the CR keeps reconciling. See [Suspension](./barbican-reconciler.md#suspension). |
 
 ### ServiceUserSpec
 
@@ -258,6 +260,11 @@ operator renders the 2026.1 configuration for it. Set spec.openStackRelease to
 | `targetRelease` | The `spec.openStackRelease` a release bump is converging to. Stamped when the gate accepts the bump, cleared once `installedRelease` equals the spec release; empty in steady state |
 | `projectedSecretStores` | The attached, credential-ready stores the last valid projection rendered into `barbican.conf`, in section order. A store dropping out of this set is what a detach is detected against |
 | `projectedSecretStoreHosts` | The server URLs that same projection resolved. The NetworkPolicy egress set of an invalid projection is widened from this record and never re-derived from the live store specs, since `spec.openBao.server.url` is mutable and only scheme-checked |
+
+While `spec.suspend` is `true`, `conditions` also holds `Suspended=True` with
+reason `ReconciliationSuspended`, and the operator removes it once the field is
+cleared. `Suspended` is never aggregated into `Ready`, which keeps the value of
+the last full pass. See [Suspension](./barbican-reconciler.md#suspension).
 
 The status carries no `upgradePhase`. Barbican runs no expand-migrate-contract
 phase machine: its migrations apply in one `barbican-manage db upgrade` pass,

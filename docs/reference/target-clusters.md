@@ -224,6 +224,10 @@ reports the reason on its own condition while the other members still run.
 Either way the CR requeues on that sub-reconciler's interval, 15 seconds on the
 namespace and backing-service legs and 10 on the credential ones.
 
+A CR with `spec.suspend: true` does not resolve its target at all and reports
+none of these conditions until `spec.suspend` is cleared. The attachments in the
+second row have no such field and keep resolving through their parent.
+
 A cluster that is deregistered under a running CR flips the same condition, and
 the children already written to it stay where they are. The reconciler never
 reaches its sub-reconcilers without a client, so nothing deletes them.

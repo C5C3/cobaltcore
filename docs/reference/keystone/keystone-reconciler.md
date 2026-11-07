@@ -320,19 +320,35 @@ One pass, in order:
    `reconcileDelete`, `reconcileDeleteOpenBao`, then the sweep of the children
    on a target cluster (see [Finalizer](#finalizer) and
    [OpenBao Finalizer](#openbao-finalizer)).
-3. Resolves the client its children are written with. A
+3. Ends the pass while `spec.suspend` is `true`. `GateSuspend` in
+   `internal/common/reconcile/suspend.go` sets `Suspended=True` with reason
+   `ReconciliationSuspended` and returns an empty result, so nothing requeues
+   the CR. `Ready` and `status.observedGeneration` keep the values of the last
+   full pass. A spec change made meanwhile shows as `status.observedGeneration`
+   below `metadata.generation`. No target is resolved, no finalizer is added,
+   no entry below runs, and the health re-probe stops. The rotations the
+   pipeline drives stop with it: the `PasswordRotation` entry does not run, and
+   the Fernet and credential-key CronJobs keep firing, but their staged keys
+   wait in the staging Secrets until the controller commits them after the
+   resume. A credential rotated outside the CR, such as a KeystoneUser password
+   schedule or an ESO resync, reaches the pods only after the resume. Clearing
+   `spec.suspend` bumps the generation and starts a pass, in which the gate
+   removes the condition and the pass goes on to step 4. A deletion runs step 2
+   in full, since it comes first. The two events are listed under
+   [Suspension](./keystone-events.md#suspension).
+4. Resolves the client its children are written with. A
    `spec.targetClusterRef` that does not resolve sets
    `SecretsReady=False/TargetClusterUnavailable` and requeues after 15s, and no
    finalizer is added.
-4. Installs the finalizers `keystone.openstack.c5c3.io/finalizer` and
+5. Installs the finalizers `keystone.openstack.c5c3.io/finalizer` and
    `keystone.openstack.c5c3.io/openbao-finalizer`, and
    `openstack.c5c3.io/remote-children` while `spec.targetClusterRef` is set. A
    pass that installs one ends with a requeue after 1s.
-5. Runs the pipeline through `RunPipeline`, the rows below. The first entry
+6. Runs the pipeline through `RunPipeline`, the rows below. The first entry
    that returns a requeue or an error ends the pass. A pass that every entry
    completes is requeued for the moment the probe-cache entry expires
    (`healthcheck.ScheduleReprobe`, see [`reconcileHealthCheck`](#reconcilehealthcheck)).
-6. Calls `updateStatus()` on every exit path of steps 3 and 5: it recomputes
+7. Calls `updateStatus()` on every exit path of steps 4 and 6: it recomputes
    the aggregate `Ready`, stamps `status.observedGeneration`, and skips the
    write when nothing changed.
 

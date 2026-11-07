@@ -20,7 +20,7 @@ together.
 `kubectl get ovncentrals` prints Ready
 (`.status.conditions[?(@.type=='Ready')].status`), NB
 (`.status.northbound.readyReplicas`), SB (`.status.southbound.readyReplicas`),
-and Age.
+Suspended (`.spec.suspend`), and Age.
 
 ## Spec
 
@@ -35,6 +35,7 @@ and Age.
 | `tls` | [`OVNTLSSpec`](#ovntlsspec) | yes | — | The cert-manager issuer every OVN certificate is requested from. Required: the databases carry the entire logical network model, so an unauthenticated listener would let any pod that reaches the port rewrite the network |
 | `backup` | [`*OVNBackupSpec`](#ovnbackupspec) | no | `nil` | Tunes the recurring database backup. A nil block still gets a CronJob; it only means every setting resolves to the operator default. See [Backup](#backup) |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | no | `nil` (the local cluster) | The registered target cluster the children are created on. The CR itself, its status and its finalizer stay on the management cluster. Immutable, enforced by two CEL transition rules and by the webhook. See [Target Clusters](../target-clusters.md) |
+| `suspend` | `bool` | no | `false` | Pauses the operator's reconciliation of this OVNCentral. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running, the `spec.backup` CronJob included. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its teardown as usual. Setting it to `false` or removing it resumes reconciliation. `spec.backup.suspend` pauses the backup CronJob only, while the rest of the CR keeps reconciling. See [Suspension](./ovn-reconciler.md#suspension). |
 
 ### OVNDatabaseSpec
 
@@ -432,6 +433,11 @@ Eight sub-reconcilers each own one condition type. The aggregate `Ready` is
 
 northd, the relay, and the backup read the published addresses and nothing of
 each other's output, so they run as a parallel group after the endpoint step.
+
+While `spec.suspend` is `true`, the CR also carries `Suspended=True` with reason
+`ReconciliationSuspended`, and the operator removes it once the field is
+cleared. `Suspended` is never aggregated into `Ready`, which keeps the value of
+the last full pass. See [Suspension](./ovn-reconciler.md#suspension).
 
 ## Sub-Resource Naming Convention
 
