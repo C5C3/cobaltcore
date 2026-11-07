@@ -23,7 +23,7 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **58 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **59 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
@@ -100,6 +100,7 @@ Deployment rollout, bootstrap Job).
 | [saml-federation](../keystone/identity-backend-crd.md#chainsaw-e2e-tests) | `keystone-saml` | Full SAML federation cycle against an in-suite Keycloak SAML realm: IdP-metadata Secret from the live descriptor, federation-object provisioning, mod_auth_mellon sidecar rollout + Service targetPort switch, SP-metadata export, OIDC/SAML coexistence on one sidecar, clean detach |
 | [fernet-rotation](#fernet-rotation) | `keystone-fernet` | CronJob schedule and `concurrencyPolicy: Forbid`, manual rotation trigger, Secret data change, pod UID stability (no rollout), token validation, staging-Secret recreation after an out-of-band delete, pruning past `maxActiveKeys` (a pruned token gets a 401), a refused staging PATCH retried without a second rotation, a held scheduled rotation skipped under Forbid (`JobAlreadyActive`) |
 | [scale](#scale) | `keystone-scale` | Replica scaling up (3→5) and down (5→2) |
+| [suspend](#suspend) | `keystone-suspend` | `spec.suspend`: Suspended=True beside a frozen Ready, no correction of a hand-scaled Deployment or a spec change while suspended, catch-up on resume, finalizer cleanup on delete while suspended |
 | [deletion-cleanup](#deletion-cleanup) | `keystone-cleanup` | Owner reference cascading deletion of all owned resources |
 | [policy-overrides](#policy-overrides) | `keystone-policy` | oslo.policy integration via ConfigMap reference |
 | [middleware-config](#middleware-config) | `keystone-middleware` | WSGI middleware pipeline customization in api-paste.ini |
@@ -319,6 +320,34 @@ underlying Deployment. Tests both scale-up (3→5) and scale-down (5→2).
 | 6 | Assert scale-down | `assert` (5m) | Deployment has replicas: 2 and availableReplicas == 2 (exact equality to verify scale-down completed) |
 
 **Fixtures:** `00-keystone-cr.yaml`, `01-patch-scale-up.yaml`, `02-patch-scale-down.yaml`
+
+---
+
+### suspend
+
+**File:** `tests/e2e/keystone/suspend/chainsaw-test.yaml`
+
+**Purpose:** Validates `spec.suspend`. A suspended Keystone CR reports
+`Suspended=True` beside an unchanged `Ready=True`, leaves a hand-scaled
+Deployment and a spec change alone, catches up once resumed, and still runs its
+finalizer cleanup when it is deleted while suspended.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR with replicas: 1 | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-suspend` with replicas: 1 |
+| 2 | Assert Ready and the initial replica count | `assert` (5m) | Ready=True with reason AllReady, Deployment `keystone-suspend` has replicas: 1 |
+| 3 | Suspend reconciliation | `patch` | Applies `01-patch-suspend.yaml` — sets `spec.suspend: true` |
+| 4 | Assert Suspended=True beside the frozen Ready=True | `assert` (5m), `script` | `Suspended=True` with reason ReconciliationSuspended and Ready still True; a `ReconciliationSuspended` Event on the Keystone; the SUSPENDED printer column of `kubectl get keystone` reads `true` |
+| 5 | Drift and a spec change stay uncorrected | `script`, `patch`, `assert` (5m) | Scales the Deployment to 2 by hand, applies `02-patch-replicas.yaml` (replicas: 3), waits until the `Suspended` condition's `observedGeneration` equals `metadata.generation`, waits 60 seconds, then asserts the Deployment still has replicas: 2 and `status.observedGeneration < metadata.generation` |
+| 6 | Resume reconciliation | `patch` | Applies `03-patch-resume.yaml` — sets `spec.suspend: false` |
+| 7 | Assert the resumed pass catches up | `assert` (5m) | Deployment has replicas: 3; Ready=True with `status.observedGeneration == metadata.generation` and no `Suspended` condition; a `ReconciliationResumed` Event |
+| 8 | Suspend again | `patch`, `assert` (5m) | Applies `01-patch-suspend.yaml` and asserts `Suspended=True` |
+| 9 | Delete the suspended Keystone CR | `delete` (3m) | Deletes Keystone CR `keystone-suspend` from namespace `openstack` |
+| 10 | Assert the finalizer cleanup ran | `error` | NotFound for Database, User and Grant `keystone-suspend`, PushSecret `keystone-suspend-fernet-keys-backup` and Deployment `keystone-suspend` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-patch-suspend.yaml`, `02-patch-replicas.yaml`, `03-patch-resume.yaml`
 
 ---
 
