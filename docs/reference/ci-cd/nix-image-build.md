@@ -203,7 +203,12 @@ venv's `bin/uwsgi` is a copy of the uwsgi binary. uWSGI names its embedded
 interpreter after the resolved path of `/proc/self/exe`, and Python finds the
 venv's `pyvenv.cfg`, and with it the service package, only beside that path.
 The `uwsgi --pyrun` probe of `tests/lib/uwsgi.sh` checks that import in each
-service image. The image runs as 42424, sets `PATH` to
+service image. `assert_uwsgi_graceful_shutdown` in the same file checks the
+graceful shutdown in the eight uWSGI API images: a 128 MiB response streamed
+across SIGTERM arrives whole, a request sent after SIGTERM on a new or a
+kept-alive connection ends before that stream is due to end, and uWSGI exits 0
+after logging `goodbye to uWSGI.` once, with no byte outside printable ASCII,
+tab and newline in its log. The image runs as 42424, sets `PATH` to
 `/var/lib/openstack/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
 and has no `Cmd` and no `Entrypoint`.
 

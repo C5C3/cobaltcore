@@ -1057,6 +1057,10 @@ test_changes_job_gates_matrix_jobs() {
     "$pr_paths" ".github/actions/setup-nix/**"
   assert_contains "the pull-request trigger names the build-tools helper" \
     "$pr_paths" "tests/lib/build_tools.sh"
+  assert_contains "the pull-request trigger names the uWSGI helper" \
+    "$pr_paths" "tests/lib/uwsgi.sh"
+  assert_contains "the push trigger names the uWSGI helper" \
+    "$push_paths" "tests/lib/uwsgi.sh"
   assert_contains "the pull-request trigger names the static-image helper" \
     "$pr_paths" "tests/lib/static_image.sh"
   assert_contains "the push trigger names the static-image helper" \
@@ -1073,6 +1077,9 @@ test_changes_job_gates_matrix_jobs() {
   assert_contains "the base filter rebuilds every image whose verify script sources the build-tools helper" \
     "$(path_filters | yq_raw '.base[]' - || true)" \
     "tests/lib/build_tools.sh"
+  assert_contains "the base filter rebuilds every image whose verify script sources the uWSGI helper" \
+    "$(path_filters | yq_raw '.base[]' - || true)" \
+    "tests/lib/uwsgi.sh"
   assert_not_contains "the pull-request trigger drops the .github/actions/ catch-all" \
     "$pr_paths" ".github/actions/**"
   assert_not_contains "the pull-request trigger drops the hack/ci-* catch-all" \

@@ -73,6 +73,7 @@ test_runtime_libraries_present() {
   [ "$exit_code" -eq 0 ] || echo "    $output"
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_uwsgi_imports keystone
+  assert_uwsgi_graceful_shutdown
 }
 
 # --- Test 5: the implied-role patch is applied ---
