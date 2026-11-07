@@ -734,6 +734,7 @@ test_uwsgi_runnable() {
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_not_empty "uwsgi version output is non-empty" "$version"
   assert_uwsgi_imports cinder
+  assert_uwsgi_graceful_shutdown
 }
 
 # --- Test 15: the state directories ship empty and owned by 42424 ---

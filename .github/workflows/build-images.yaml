@@ -25,6 +25,7 @@ name: Build Images
       - tests/container-images/**
       - tests/lib/ceph_bindings.sh
       - tests/lib/build_tools.sh
+      - tests/lib/uwsgi.sh
       - tests/lib/static_image.sh
       - tests/lib/pymemcache.sh
       - .github/workflows/build-images.yaml
@@ -88,6 +89,7 @@ name: Build Images
       - "!tests/container-images/verify_spdx_headers.sh"
       - tests/lib/ceph_bindings.sh
       - tests/lib/build_tools.sh
+      - tests/lib/uwsgi.sh
       - tests/lib/static_image.sh
       - tests/lib/pymemcache.sh
       - .github/workflows/build-images.yaml
@@ -224,6 +226,9 @@ jobs:
               # The build-tools check of every service and Tempest verify
               # script.
               - 'tests/lib/build_tools.sh'
+              # The uWSGI import and graceful-shutdown checks of every API
+              # service verify script.
+              - 'tests/lib/uwsgi.sh'
               - 'releases/**'
               - 'scripts/**'
               - 'overrides/**'

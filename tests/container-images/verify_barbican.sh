@@ -162,6 +162,7 @@ test_uwsgi_runnable() {
   assert_eq "uwsgi --version exits 0" "0" "$exit_code"
   assert_not_empty "uwsgi version output is non-empty" "$version"
   assert_uwsgi_imports barbican
+  assert_uwsgi_graceful_shutdown
 }
 
 # --- Run all tests ---

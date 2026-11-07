@@ -86,7 +86,9 @@ because it rebuilds those images (the `ovn` and `libvirt` filters name it as wel
 static-image check the hvo and kna verify scripts source, which the `hvo` and `kna`
 filters name. They name `tests/lib/pymemcache.sh` as well, the pymemcache bound check
 the keystone and nova verify scripts source, which the `svc_keystone` and `svc_nova`
-filters name.
+filters name. They name `tests/lib/uwsgi.sh`, and so does the `base` filter: the
+uWSGI import and graceful-shutdown checks that the verify scripts of keystone,
+glance, placement, barbican, neutron, cinder, nova and horizon source.
 
 > **Fork PRs are not supported.** Fork PRs receive a read-only `GITHUB_TOKEN`
 > that cannot write packages. The workflow detects fork PRs and fails fast with a
