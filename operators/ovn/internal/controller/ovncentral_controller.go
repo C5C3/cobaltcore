@@ -255,10 +255,10 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the OVNCentral CR. It fetches
-// the CR, drives the teardown of a terminating one, ensures the remote-children
-// finalizer, then runs the sub-reconciler pipeline. Every exit funnels through
-// updateStatus, which re-aggregates the Ready condition and stamps
-// ObservedGeneration.
+// the CR, drives the teardown of a terminating one, ends the pass for a
+// suspended one, ensures the remote-children finalizer, then runs the
+// sub-reconciler pipeline. Every exit funnels through updateStatus, which
+// re-aggregates the Ready condition and stamps ObservedGeneration.
 func (r *OVNCentralReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var cr ovnv1alpha1.OVNCentral
 	if err := r.Get(ctx, req.NamespacedName, &cr); err != nil {
@@ -309,6 +309,13 @@ func (r *OVNCentralReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// A suspended CR ends the pass here. The deletion branch above still runs
+	// its cleanup; nothing below runs until spec.suspend is cleared.
+	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &cr,
+		&cr.Status.Conditions, cr.Spec.Suspend); stop || err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Resolve the client every child object of this CR is read and written with.

@@ -371,9 +371,10 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the Barbican CR. It fetches the
-// CR, drives the finalizer-gated deletion path, ensures the finalizer, then runs
-// the sub-reconciler pipeline. Every exit funnels through updateStatus, which
-// re-aggregates the Ready condition and stamps ObservedGeneration.
+// CR, drives the finalizer-gated deletion path, ends the pass for a suspended
+// CR, ensures the finalizer, then runs the sub-reconciler pipeline. Every exit
+// funnels through updateStatus, which re-aggregates the Ready condition and
+// stamps ObservedGeneration.
 func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var barbican barbicanv1alpha1.Barbican
 	if err := r.Get(ctx, req.NamespacedName, &barbican); err != nil {
@@ -426,6 +427,13 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// A suspended CR ends the pass here. The deletion branch above still runs
+	// its cleanup; nothing below runs until spec.suspend is cleared.
+	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &barbican,
+		&barbican.Status.Conditions, barbican.Spec.Suspend); stop || err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Resolve the client every child object of this CR is read and written with.

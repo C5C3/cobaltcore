@@ -213,6 +213,109 @@ func TestReconcile_TargetClusterUnavailableGatesBeforeFinalizer(t *testing.T) {
 	g.Expect(cronJobs.Items).To(BeEmpty())
 }
 
+// TestReconcile_SuspendedCRTouchesNothing pins where the suspend gate sits:
+// after the deletion branch and before the target-cluster resolution. A
+// suspended CR naming an unregistered cluster therefore reports Suspended=True
+// and nothing else: no TargetClusterUnavailable, no finalizer, no child object,
+// no Ready, and its last status.observedGeneration. It is not requeued.
+func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+	glance.Finalizers = nil
+	glance.Generation = 2
+	glance.Status.ObservedGeneration = 1
+	glance.Spec.Suspend = true
+	glance.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+	r := newGlanceTestReconciler(glance)
+	r.Resolver = unresolvableResolver{}
+
+	ctx := context.Background()
+	res, err := r.Reconcile(ctx, glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "a suspended CR is not requeued")
+
+	got := getGlance(t, r.Client, "test-glance")
+	suspended := conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(suspended.Reason).To(Equal(commonreconcile.ReasonReconciliationSuspended))
+	g.Expect(suspended.ObservedGeneration).To(Equal(int64(2)))
+	g.Expect(conditions.GetCondition(got.Status.Conditions, "Ready")).To(BeNil())
+	g.Expect(got.Status.Conditions).NotTo(ContainElement(
+		HaveField("Reason", commonmulticluster.TargetClusterUnavailable)),
+		"a suspended CR never resolves its target cluster")
+	g.Expect(got.Status.ObservedGeneration).To(Equal(int64(1)))
+	g.Expect(got.Finalizers).To(BeEmpty())
+
+	var deployments appsv1.DeploymentList
+	g.Expect(r.List(ctx, &deployments)).To(Succeed())
+	g.Expect(deployments.Items).To(BeEmpty())
+	var secrets corev1.SecretList
+	g.Expect(r.List(ctx, &secrets)).To(Succeed())
+	g.Expect(secrets.Items).To(BeEmpty())
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(ctx, &configMaps)).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
+	var jobs batchv1.JobList
+	g.Expect(r.List(ctx, &jobs)).To(Succeed())
+	g.Expect(jobs.Items).To(BeEmpty())
+	var cronJobs batchv1.CronJobList
+	g.Expect(r.List(ctx, &cronJobs)).To(Succeed())
+	g.Expect(cronJobs.Items).To(BeEmpty())
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+		ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+}
+
+// TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR
+// whose spec.suspend was cleared loses the Suspended condition left by the
+// suspended passes, and the same pass goes on to its first pipeline effect.
+func TestReconcile_ResumedCRDropsSuspendedCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance() // no finalizer yet
+	glance.Status.Conditions = []metav1.Condition{{
+		Type:               commonreconcile.ConditionTypeSuspended,
+		Status:             metav1.ConditionTrue,
+		Reason:             commonreconcile.ReasonReconciliationSuspended,
+		ObservedGeneration: 1,
+		LastTransitionTime: metav1.Now(),
+	}}
+	r := newGlanceTestReconciler(glance)
+
+	res, err := r.Reconcile(context.Background(), glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	got := getGlance(t, r.Client, "test-glance")
+	g.Expect(conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	g.Expect(got.Finalizers).To(ContainElement(glanceFinalizer))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+		ContainSubstring(commonreconcile.ReasonReconciliationResumed)))
+}
+
+// TestReconcile_SuspendedTerminatingCRRunsDeletion pins that suspension never
+// holds a deletion: the deletion branch runs ahead of the gate, so a suspended
+// CR with no live MariaDB resource releases its finalizer and is gone.
+func TestReconcile_SuspendedTerminatingCRRunsDeletion(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+	glance.Finalizers = []string{glanceFinalizer}
+	glance.Spec.Suspend = true
+	r := newGlanceTestReconciler(glance) // no MariaDB CRs
+
+	g.Expect(r.Delete(context.Background(), glance)).To(Succeed())
+
+	res, err := r.Reconcile(context.Background(), glanceRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	var gone glancev1alpha1.Glance
+	err = r.Get(context.Background(), glanceRequest.NamespacedName, &gone)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the finalizer is released as for an unsuspended CR")
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).NotTo(ContainElement(
+		ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+}
+
 func TestReconcileDelete_LiveResourcesRetainFinalizer(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()

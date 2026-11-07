@@ -2072,6 +2072,116 @@ func TestReconcile_TargetClusterUnavailableGatesBeforeFinalizer(t *testing.T) {
 	g.Expect(secrets.Items).To(BeEmpty())
 }
 
+// TestReconcile_SuspendedCRTouchesNothing pins where the suspend gate sits:
+// after the deletion branch and before the target-cluster resolution. A
+// suspended CR naming an unregistered cluster therefore reports Suspended=True
+// and nothing else: no TargetClusterUnavailable, no finalizer, no child object,
+// no Ready, and its last status.observedGeneration. It is not requeued.
+func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Finalizers = nil
+	ks.Generation = 2
+	ks.Status.ObservedGeneration = 1
+	ks.Spec.Suspend = true
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+	r := newTestReconciler(ks)
+	r.Resolver = unresolvableResolver{}
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}), "a suspended CR is not requeued")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	suspended := meta.FindStatusCondition(updated.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(suspended.Reason).To(Equal(commonreconcile.ReasonReconciliationSuspended))
+	g.Expect(suspended.ObservedGeneration).To(Equal(int64(2)))
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "Ready")).To(BeNil())
+	g.Expect(updated.Status.Conditions).NotTo(ContainElement(
+		HaveField("Reason", commonmulticluster.TargetClusterUnavailable)),
+		"a suspended CR never resolves its target cluster")
+	g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(1)))
+	g.Expect(updated.Finalizers).To(BeEmpty())
+
+	var deployments appsv1.DeploymentList
+	g.Expect(r.List(ctx, &deployments)).To(Succeed())
+	g.Expect(deployments.Items).To(BeEmpty())
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(ctx, &configMaps)).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
+	var secrets corev1.SecretList
+	g.Expect(r.List(ctx, &secrets)).To(Succeed())
+	g.Expect(secrets.Items).To(BeEmpty())
+	var jobs batchv1.JobList
+	g.Expect(r.List(ctx, &jobs)).To(Succeed())
+	g.Expect(jobs.Items).To(BeEmpty())
+
+	g.Expect(drainEventReasons(r.Recorder.(*record.FakeRecorder))).To(
+		ConsistOf(commonreconcile.ReasonReconciliationSuspended))
+}
+
+// TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR
+// whose spec.suspend was cleared loses the Suspended condition left by the
+// suspended passes, and the same pass goes on to install the finalizer.
+func TestReconcile_ResumedCRDropsSuspendedCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Finalizers = nil
+	ks.Status.Conditions = []metav1.Condition{{
+		Type:               commonreconcile.ConditionTypeSuspended,
+		Status:             metav1.ConditionTrue,
+		Reason:             commonreconcile.ReasonReconciliationSuspended,
+		ObservedGeneration: 1,
+		LastTransitionTime: metav1.Now(),
+	}}
+	r := newTestReconciler(ks)
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneFinalizer)).To(BeTrue())
+	g.Expect(drainEventReasons(r.Recorder.(*record.FakeRecorder))).To(
+		ConsistOf(commonreconcile.ReasonReconciliationResumed))
+}
+
+// TestReconcile_SuspendedTerminatingCRRunsDeletion pins that suspension never
+// holds a deletion: the deletion branch runs ahead of the gate, so a suspended
+// CR with no MariaDB CR and no backup PushSecret releases both finalizers in
+// one pass and is gone.
+func TestReconcile_SuspendedTerminatingCRRunsDeletion(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Spec.Suspend = true
+
+	r := newTestReconciler(ks)
+	ctx := context.Background()
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+	getErr := r.Get(ctx, req.NamespacedName, &keystonev1alpha1.Keystone{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(), "the finalizers are released as for an unsuspended CR")
+	g.Expect(drainEventReasons(r.Recorder.(*record.FakeRecorder))).NotTo(
+		ContainElement(commonreconcile.ReasonReconciliationSuspended))
+}
+
 // TestReconcile_TerminatingCR_UnresolvableTargetReleasesFinalizers is the guard
 // against a CR that can never be deleted. Deregistering a target cluster is a
 // documented operation, and a CR that already provisioned on it carries both

@@ -291,6 +291,106 @@ func TestReconcile_TargetClusterUnavailableGatesBeforeFinalizer(t *testing.T) {
 	g.Expect(configMaps.Items).To(BeEmpty())
 }
 
+// TestReconcile_SuspendedCRTouchesNothing pins where the suspend gate sits:
+// after the deletion branch and before the target-cluster resolution. A
+// suspended CR naming an unregistered cluster therefore reports Suspended=True
+// and nothing else: no TargetClusterUnavailable, no finalizer, no child object,
+// no Ready, and its last status.observedGeneration. It is not requeued.
+func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	neutron := validNeutron()
+	neutron.Finalizers = nil
+	neutron.Generation = 2
+	neutron.Status.ObservedGeneration = 1
+	neutron.Spec.Suspend = true
+	neutron.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+	r := newNeutronTestReconciler(neutron)
+	r.Resolver = unresolvableResolver{}
+
+	ctx := context.Background()
+	res, err := r.Reconcile(ctx, neutronRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "a suspended CR is not requeued")
+
+	got := getNeutron(t, r.Client)
+	suspended := conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(suspended.Reason).To(Equal(commonreconcile.ReasonReconciliationSuspended))
+	g.Expect(suspended.ObservedGeneration).To(Equal(int64(2)))
+	g.Expect(conditions.GetCondition(got.Status.Conditions, "Ready")).To(BeNil())
+	g.Expect(got.Status.Conditions).NotTo(ContainElement(
+		HaveField("Reason", commonmulticluster.TargetClusterUnavailable)),
+		"a suspended CR never resolves its target cluster")
+	g.Expect(got.Status.ObservedGeneration).To(Equal(int64(1)))
+	g.Expect(got.Finalizers).To(BeEmpty())
+
+	var deployments appsv1.DeploymentList
+	g.Expect(r.List(ctx, &deployments)).To(Succeed())
+	g.Expect(deployments.Items).To(BeEmpty())
+	var secrets corev1.SecretList
+	g.Expect(r.List(ctx, &secrets)).To(Succeed())
+	g.Expect(secrets.Items).To(BeEmpty())
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(ctx, &configMaps)).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
+	var jobs batchv1.JobList
+	g.Expect(r.List(ctx, &jobs)).To(Succeed())
+	g.Expect(jobs.Items).To(BeEmpty())
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+		ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+}
+
+// TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR
+// whose spec.suspend was cleared loses the Suspended condition left by the
+// suspended passes, and the same pass goes on to its first pipeline effect.
+func TestReconcile_ResumedCRDropsSuspendedCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	neutron := validNeutron() // no finalizer yet
+	neutron.Status.Conditions = []metav1.Condition{{
+		Type:               commonreconcile.ConditionTypeSuspended,
+		Status:             metav1.ConditionTrue,
+		Reason:             commonreconcile.ReasonReconciliationSuspended,
+		ObservedGeneration: 1,
+		LastTransitionTime: metav1.Now(),
+	}}
+	r := newNeutronTestReconciler(neutron)
+
+	res, err := r.Reconcile(context.Background(), neutronRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	got := getNeutron(t, r.Client)
+	g.Expect(conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	g.Expect(got.Finalizers).To(ContainElement(neutronFinalizer))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+		ContainSubstring(commonreconcile.ReasonReconciliationResumed)))
+}
+
+// TestReconcile_SuspendedTerminatingCRRunsDeletion pins that suspension never
+// holds a deletion: the deletion branch runs ahead of the gate, so a suspended
+// CR with no live MariaDB resource releases its finalizer and is gone.
+func TestReconcile_SuspendedTerminatingCRRunsDeletion(t *testing.T) {
+	g := NewGomegaWithT(t)
+	neutron := validNeutron()
+	neutron.Finalizers = []string{neutronFinalizer}
+	neutron.Spec.Suspend = true
+	r := newNeutronTestReconciler(neutron) // no MariaDB CRs
+
+	g.Expect(r.Delete(context.Background(), neutron)).To(Succeed())
+
+	res, err := r.Reconcile(context.Background(), neutronRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	var gone neutronv1alpha1.Neutron
+	err = r.Get(context.Background(), neutronRequest.NamespacedName, &gone)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the finalizer is released as for an unsuspended CR")
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).NotTo(ContainElement(
+		ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+}
+
 // TestReconcile_TerminatingCR_UnresolvableTargetReleasesFinalizer is the guard
 // against a CR that can never be deleted. Deregistering a target cluster is a
 // documented operation, and a CR that already provisioned on it carries the

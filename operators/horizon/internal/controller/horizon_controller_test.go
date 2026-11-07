@@ -13,6 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -155,6 +156,111 @@ func TestReconcile_TargetClusterUnavailableGatesReconcile(t *testing.T) {
 	var secrets corev1.SecretList
 	g.Expect(r.List(ctx, &secrets)).To(Succeed())
 	g.Expect(secrets.Items).To(HaveLen(1), "only the seeded SECRET_KEY Secret may exist")
+}
+
+// TestReconcile_SuspendedCRTouchesNothing pins where the suspend gate sits:
+// after the deletion branch and before the target-cluster resolution. A
+// suspended CR naming an unregistered cluster therefore reports Suspended=True
+// and nothing else: no TargetClusterUnavailable, no finalizer, no child object,
+// no Ready, and its last status.observedGeneration. It is not requeued.
+func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Generation = 2
+	h.Status.ObservedGeneration = 1
+	h.Spec.Suspend = true
+	h.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+	r := newTestReconciler(testScheme(), h)
+	r.Resolver = unresolvableResolver{}
+
+	ctx := context.Background()
+	res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: horizonKey})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "a suspended CR is not requeued")
+
+	got := getHorizon(t, r)
+	suspended := conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(suspended.Reason).To(Equal(commonreconcile.ReasonReconciliationSuspended))
+	g.Expect(suspended.ObservedGeneration).To(Equal(int64(2)))
+	g.Expect(conditions.GetCondition(got.Status.Conditions, "Ready")).To(BeNil())
+	g.Expect(got.Status.Conditions).NotTo(ContainElement(
+		HaveField("Reason", commonmulticluster.TargetClusterUnavailable)),
+		"a suspended CR never resolves its target cluster")
+	g.Expect(got.Status.ObservedGeneration).To(Equal(int64(1)))
+	g.Expect(got.Finalizers).To(BeEmpty())
+
+	var deployments appsv1.DeploymentList
+	g.Expect(r.List(ctx, &deployments)).To(Succeed())
+	g.Expect(deployments.Items).To(BeEmpty())
+	var secrets corev1.SecretList
+	g.Expect(r.List(ctx, &secrets)).To(Succeed())
+	g.Expect(secrets.Items).To(BeEmpty())
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(ctx, &configMaps)).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
+	var jobs batchv1.JobList
+	g.Expect(r.List(ctx, &jobs)).To(Succeed())
+	g.Expect(jobs.Items).To(BeEmpty())
+
+	rec := r.Recorder.(*record.FakeRecorder)
+	g.Expect(rec.Events).To(Receive(ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+	g.Expect(rec.Events).NotTo(Receive(), "exactly one event is emitted")
+}
+
+// TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR
+// whose spec.suspend was cleared loses the Suspended condition left by the
+// suspended passes, and the same pass goes on to the secrets gate, the first
+// step of the pipeline (a local CR installs no finalizer).
+func TestReconcile_ResumedCRDropsSuspendedCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Status.Conditions = []metav1.Condition{{
+		Type:               commonreconcile.ConditionTypeSuspended,
+		Status:             metav1.ConditionTrue,
+		Reason:             commonreconcile.ReasonReconciliationSuspended,
+		ObservedGeneration: 1,
+		LastTransitionTime: metav1.Now(),
+	}}
+	r := newTestReconciler(testScheme(), h) // no secret store: the secrets gate waits
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: horizonKey})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	got := getHorizon(t, r)
+	g.Expect(conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	secretsReady := conditions.GetCondition(got.Status.Conditions, "SecretsReady")
+	g.Expect(secretsReady).NotTo(BeNil(), "the pipeline's first gate ran in the resuming pass")
+	g.Expect(secretsReady.Status).To(Equal(metav1.ConditionFalse))
+	rec := r.Recorder.(*record.FakeRecorder)
+	g.Expect(rec.Events).To(Receive(ContainSubstring(commonreconcile.ReasonReconciliationResumed)))
+}
+
+// TestReconcile_SuspendedTerminatingCRRunsDeletion pins that suspension never
+// holds a deletion: the deletion branch runs ahead of the gate. A local CR has
+// no finalizer of this operator, so the fixture holds the CR with a foreign
+// one, and the pass ends as the teardown of an unsuspended CR does, without a
+// Suspended condition.
+func TestReconcile_SuspendedTerminatingCRRunsDeletion(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Suspend = true
+	h.Finalizers = []string{"test.c5c3.io/hold"}
+	deletedAt := metav1.NewTime(time.Now())
+	h.DeletionTimestamp = &deletedAt
+	r := newTestReconciler(testScheme(), h)
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: horizonKey})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	got := getHorizon(t, r)
+	g.Expect(conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	rec := r.Recorder.(*record.FakeRecorder)
+	g.Expect(rec.Events).NotTo(Receive(ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
 }
 
 // TestUpdateStatus_SkipsWriteWhenUnchanged verifies the C3 gate: when the
