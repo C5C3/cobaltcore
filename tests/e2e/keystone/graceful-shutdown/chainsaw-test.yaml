@@ -7,6 +7,9 @@
 #   - terminationGracePeriodSeconds: 30
 #   - preStop lifecycle hook: sleep 5 via exec
 #   - startupProbe: HTTP GET /v3:5000 with failureThreshold 30
+# and that a terminated API pod drains a request in flight: a token request
+# whose body arrives over 20 s, started before the pod is deleted, answers
+# 401 after SIGTERM, and uWSGI logs "goodbye to uWSGI." instead of reloading.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -90,3 +93,170 @@ spec:
           kubectl get deployment keystone-graceful-shutdown -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Drain an in-flight token request across SIGTERM ──────────────
+  # A Job opens a connection straight to one API pod, sends the headers of a
+  # POST /v3/auth/tokens with Content-Length 400 and prints HEADERS-SENT, then
+  # sends the body at 20 bytes per second (20 s). The step deletes the pod as
+  # soon as the headers are out: the 5 s preStop sleep puts SIGTERM about 13 s
+  # before the body ends and well inside the 30 s grace period. uWSGI's
+  # graceful shutdown (deployment.UWSGIGracefulShutdownArgs) lets the worker
+  # read the rest of the body and answer 401 for the unknown user before it
+  # exits. The brutal reload uWSGI does without the hook cuts the request,
+  # and the log then shows "binary reloading uWSGI".
+  - name: keystone-graceful-shutdown-drains-in-flight
+    cleanup:
+    - delete:
+        ref:
+          apiVersion: batch/v1
+          kind: Job
+          name: keystone-graceful-shutdown-slow-client
+          namespace: openstack
+    try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          LOG=/tmp/keystone-graceful-shutdown-drain.log
+          JOBLOG=/tmp/keystone-graceful-shutdown-slow-client.log
+          JOB=job/keystone-graceful-shutdown-slow-client
+          # A pod of an earlier rollout keeps phase Running while it
+          # terminates, and the Keystone Ready gate of step 2 does not
+          # count it.
+          POD=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-graceful-shutdown,app.kubernetes.io/component=api \
+            -o json \
+            | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)
+                | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                | .metadata.name][0] // empty')
+          if [ -z "$POD" ]; then
+            echo "FAIL: no keystone-graceful-shutdown API pod"
+            exit 1
+          fi
+          POD_IP=$(kubectl get pod -n openstack "$POD" -o jsonpath='{.status.podIP}')
+          echo "Target pod $POD at $POD_IP"
+          # The follower keeps the uWSGI log of the pod the step deletes.
+          timeout 240 kubectl logs -f -n openstack "$POD" -c keystone > "$LOG" 2>&1 &
+          FOLLOWER=$!
+          kubectl apply -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: keystone-graceful-shutdown-slow-client
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: keystone-graceful-shutdown-slow-client
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 180
+            ttlSecondsAfterFinished: 300
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: keystone-graceful-shutdown-slow-client
+              spec:
+                restartPolicy: Never
+                containers:
+                - name: slow-client
+                  image: ghcr.io/c5c3/keystone:2026.1
+                  imagePullPolicy: IfNotPresent
+                  env:
+                  - name: TARGET_IP
+                    value: "$POD_IP"
+                  command: ["python3"]
+                  args:
+                  - "-c"
+                  - |
+                    import json, os, socket, sys, time
+                    ip = os.environ["TARGET_IP"]
+                    body = json.dumps({"auth": {"identity": {
+                        "methods": ["password"],
+                        "password": {"user": {
+                            "name": "graceful-shutdown-probe",
+                            "domain": {"id": "default"},
+                            "password": "graceful-shutdown-probe"}}}}})
+                    body = body.ljust(400).encode()
+                    head = ("POST /v3/auth/tokens HTTP/1.1\r\n"
+                            "Host: %s:5000\r\n"
+                            "Content-Type: application/json\r\n"
+                            "Connection: close\r\n"
+                            "Content-Length: %d\r\n\r\n" % (ip, len(body)))
+                    reply = b""
+                    try:
+                        sock = socket.create_connection((ip, 5000), timeout=120)
+                        sock.sendall(head.encode())
+                        print("HEADERS-SENT", flush=True)
+                        for i in range(0, len(body), 20):
+                            time.sleep(1)
+                            sock.sendall(body[i:i + 20])
+                        while True:
+                            data = sock.recv(65536)
+                            if not data:
+                                break
+                            reply += data
+                    except OSError as exc:
+                        print("FAIL: %s" % exc, flush=True)
+                        sys.exit(1)
+                    status = reply.split(b"\r\n", 1)[0].decode(errors="replace")
+                    print("STATUS %s" % status, flush=True)
+                    sys.exit(0 if status.startswith("HTTP/1.1 401") else 1)
+          EOF
+          sent=no
+          for _ in $(seq 1 120); do
+            kubectl logs -n openstack "$JOB" > "$JOBLOG" 2>&1 || true
+            if grep -q HEADERS-SENT "$JOBLOG"; then
+              sent=yes
+              break
+            fi
+            sleep 1
+          done
+          if [ "$sent" != yes ]; then
+            echo "FAIL: slow client never sent its headers"
+            exit 1
+          fi
+          kubectl delete pod -n openstack "$POD" --wait=false
+          # A failed Job ends the wait at once instead of after 180 s.
+          state=""
+          for _ in $(seq 1 90); do
+            state=$(kubectl get -n openstack "$JOB" \
+              -o jsonpath='{.status.conditions[?(@.status=="True")].type}')
+            case "$state" in
+              *Complete*|*Failed*) break ;;
+            esac
+            sleep 2
+          done
+          kubectl logs -n openstack "$JOB" > "$JOBLOG" 2>&1 || true
+          cat "$JOBLOG"
+          if ! grep -q '^STATUS HTTP/1.1 401' "$JOBLOG"; then
+            echo "FAIL: the in-flight token request did not answer 401 (Job state: ${state:-none})"
+            exit 1
+          fi
+          kubectl wait --for=delete -n openstack pod/"$POD" --timeout=120s
+          wait "$FOLLOWER" || true
+          for line in 'graceful shutdown triggered' 'goodbye to uWSGI.'; do
+            if ! grep -qF "$line" "$LOG"; then
+              echo "FAIL: the pod log lacks \"$line\""
+              exit 1
+            fi
+          done
+          if grep -qF 'binary reloading uWSGI' "$LOG"; then
+            echo "FAIL: uWSGI reloaded on SIGTERM"
+            exit 1
+          fi
+          # The 401 is logged after SIGTERM, so the request was in flight when
+          # the shutdown started and a late delete cannot pass this step.
+          if ! awk '/graceful shutdown triggered/ { t = 1 }
+            t && /POST \/v3\/auth\/tokens => generated .*\(HTTP\/1\.1 401\)/ { f = 1 }
+            END { exit !f }' "$LOG"; then
+            echo "FAIL: no 401 for POST /v3/auth/tokens after the shutdown started"
+            exit 1
+          fi
+          echo "PASS: the in-flight token request answered 401 across SIGTERM"
+    catch:
+    - script:
+        content: |
+          echo "=== Slow client Job log ==="
+          kubectl logs -n $NAMESPACE job/keystone-graceful-shutdown-slow-client 2>&1 || true
+          echo "=== Captured keystone log ==="
+          tail -n 80 /tmp/keystone-graceful-shutdown-drain.log 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
