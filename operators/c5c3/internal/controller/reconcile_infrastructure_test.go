@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
-	"github.com/mariadb-operator/mariadb-operator/pkg/environment"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
+	"github.com/mariadb-operator/mariadb-operator/v26/pkg/environment"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -3031,13 +3031,13 @@ func TestEnsureMariaDB_RestrictedSecurity(t *testing.T) {
 					Enabled: true,
 					GaleraSpec: mariadbv1alpha1.GaleraSpec{
 						SST: mariadbv1alpha1.SSTMariaBackup,
-						Agent: mariadbv1alpha1.GaleraAgent{
+						Agent: mariadbv1alpha1.Agent{
 							ContainerTemplate: mariadbv1alpha1.ContainerTemplate{
 								SecurityContext: wantMariaDBContainerSecurityContext(),
 							},
 							Port: 5555,
 						},
-						InitContainer: mariadbv1alpha1.GaleraInit{Image: initImage},
+						InitContainer: mariadbv1alpha1.InitContainer{Image: initImage},
 					},
 				},
 			},
