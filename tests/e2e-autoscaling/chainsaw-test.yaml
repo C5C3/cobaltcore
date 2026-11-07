@@ -94,6 +94,21 @@ spec:
         kubectl logs job/autoscaling-service-burst -n openstack --tail=200 2>&1 || true
         echo "=== MariaDB connections by user ==="
         ./mariadb-sql.sh "SELECT USER, COUNT(*) FROM information_schema.PROCESSLIST GROUP BY USER" 2>&1 || true
+        # Why an API refused a request is logged only in the API pods: the
+        # token middleware logs why it could not validate a token, and
+        # Keystone logs its answer. The cleanup of step 2 deletes those pods
+        # before the job's diagnostics dump runs, and the dump keeps 30 lines
+        # per pod. uWSGI's 2xx request lines and the two warnings Keystone
+        # writes for every token it issues are left out, so the rest fits the
+        # job log. --tail=-1: with a selector, kubectl logs keeps 10 lines per
+        # pod.
+        for svc in keystone glance placement barbican neutron cinder nova; do
+          echo "=== cp-autoscaling-${svc} API logs (last 15 minutes, without uWSGI 2xx request lines) ==="
+          kubectl logs -n openstack --all-containers --prefix --timestamps --since=15m \
+            --tail=-1 --max-log-requests=10 \
+            -l "app.kubernetes.io/instance=cp-autoscaling-${svc},app.kubernetes.io/component=api" 2>&1 \
+            | grep -vE '\(HTTP/1\.[01] 2[0-9]{2}\)$|WARNING keystone\.common\.(password_hashing|fernet_utils) ' || true
+        done
   steps:
   # ── Step 1: metrics-server and the ControlPlane CRD ─────────────────────
   - name: preflight
