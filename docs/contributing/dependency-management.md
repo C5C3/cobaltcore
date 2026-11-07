@@ -96,6 +96,17 @@ not tracked (see `.gitignore`). The go command appends a checksum to it whenever
 workspace build needs one that no member `go.sum` holds, so its content depends on
 which command ran, and Renovate's gomod manager writes it only when it vendors.
 
+One Go module is held on an older minor. `github.com/cert-manager/cert-manager` stays
+below v1.21.0 (`allowedVersions`), because cert-manager v1.21.0 removed `ObjectReference`
+from `pkg/apis/meta/v1` and the API types of `github.com/mariadb-operator/mariadb-operator`
+v0.38.1, which `internal/common` and the operator modules pin, still use it. No module
+builds on v1.21. Without the hold, Renovate offers only the newest v1.21 release, and the
+v1.20 patch releases with their security fixes never arrive: v1.20.3 waited four months
+until GO-2026-6889 turned the `govulncheck` job red on every Go pull request. The
+mariadb-operator v26 module path uses `IssuerReference` only, so the change that moves the
+workspace to it drops the hold as well. `tests/unit/renovate/cert_manager_go_hold_test.sh`
+fails once no module requires the v0 path.
+
 Separately, the native `nix` manager keeps the root flake fresh: it maintains
 `flake.lock` via lock-file maintenance. The lock pins five inputs: `nixpkgs`
 (`nixos-unstable`) feeds the dev shell, `nixpkgs-images` (`nixos-26.05`) feeds the
@@ -242,7 +253,8 @@ merging, the reviewer handles the coupling the e2e legs do not see:
   hand on the same branch; the test above stays red until it is.
 - A `mariadb-operator` major moves the `github.com/mariadb-operator/mariadb-operator` Go
   module (pinned in `internal/common/go.mod` and the operator modules) along with the
-  CRDs the chart installs.
+  CRDs the chart installs. The move to the v26 module path also ends the cert-manager
+  Go module hold described above.
 - `prometheus-operator-crds` owns the CRDs `kube-prometheus-stack` runs against
   (`deploy/kind/prometheus/release.yaml` sets `crds.enabled=false`), so the two share the
   `prometheus-operator charts` group. A PR that raises only the `kube-prometheus-stack`
