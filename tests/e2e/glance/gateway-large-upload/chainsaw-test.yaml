@@ -691,7 +691,7 @@ spec:
           # curl is EXPECTED to die mid-request (an empty or 5xx code) when
           # the eviction kills the pod, so the HTTP code separates nothing;
           # each attempt reads the cluster instead, strongest signal first.
-          # A pod already marked Evicted proves the breach outright, and it
+          # A pod kubelet already evicted proves the breach outright, and it
           # must be checked first: the Deployment replaces an evicted pod
           # within seconds (the image is cached on the node), so the two
           # fallback probes race that replacement — "no Running pod" is a
@@ -715,13 +715,35 @@ spec:
           # it, so skipping the probes on that path makes the loop blindest at
           # the exact moment the answer is sitting in the cluster (seen in CI —
           # the pod was Evicted 22s before the loop reported "never breached").
+          #
+          # An eviction is read from the Evicted event kubelet records on the
+          # pod before it kills it, never from the pod's status.reason.
+          # glance-api's uWSGI drains on SIGTERM and exits 0, and kubelet then
+          # ends the evicted pod in phase Succeeded with no reason; it keeps
+          # reason Evicted only when a request outlives the eviction's 2 s
+          # SIGTERM window (seen in CI: Succeeded, and the Evicted event). An
+          # emptyDir-limit eviction sets no DisruptionTarget condition either.
+          # The event is matched to the pod by UID.
+          evicted_pod() {
+            local uids uid name
+            uids=" $(kubectl get pods -n openstack \
+              -l app.kubernetes.io/instance=glance-upload \
+              -o 'jsonpath={.items[*].metadata.uid}' 2>/dev/null || true) "
+            while read -r uid name; do
+              case "$uids" in
+                *" $uid "*) echo "$name"; return 0 ;;
+              esac
+            done < <(kubectl get events -n openstack \
+              --field-selector reason=Evicted,involvedObject.kind=Pod \
+              -o 'jsonpath={range .items[*]}{.involvedObject.uid}{" "}{.involvedObject.name}{"\n"}{end}' \
+              2>/dev/null || true)
+            return 0
+          }
+
           BREACHED=""
           probe_breach() {
             local n="$1" evicted pod staged
-            evicted="$(kubectl get pods -n openstack \
-              -l app.kubernetes.io/instance=glance-upload \
-              -o 'jsonpath={range .items[?(@.status.reason=="Evicted")]}{.metadata.name}{"\n"}{end}' \
-              2>/dev/null | head -1 || true)"
+            evicted="$(evicted_pod)"
             if [ -n "$evicted" ]; then
               echo "OK: pod $evicted is already Evicted — the 64Mi bound is breached"
               BREACHED="yes"
@@ -791,10 +813,7 @@ spec:
           # 30 polls x 10s = 5m.
           EVICTED=""
           for _ in $(seq 1 30); do
-            EVICTED="$(kubectl get pods -n openstack \
-              -l app.kubernetes.io/instance=glance-upload \
-              -o 'jsonpath={range .items[?(@.status.reason=="Evicted")]}{.metadata.name}{"\n"}{end}' \
-              2>/dev/null | head -1 || true)"
+            EVICTED="$(evicted_pod)"
             [ -n "$EVICTED" ] && break
             sleep 10
           done

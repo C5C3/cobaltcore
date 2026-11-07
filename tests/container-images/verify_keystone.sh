@@ -197,6 +197,7 @@ done
 uwsgi --http :5000 --http-keepalive --log-master \
   --log-format '%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))' \
   --wsgi-file /var/lib/openstack/bin/keystone-wsgi-public --master --lazy-apps --need-app \
+  --hook-master-start "unix_signal:15 gracefully_kill_them_all" --shutdown-sockets --threaded-logger \
   --processes 2 --threads 1 --pyargv=--config-dir=/etc/keystone/keystone.conf.d/ \
   > /tmp/uwsgi.log 2>&1 &
 /var/lib/openstack/bin/python - <<'PY' || { tail -n 20 /tmp/uwsgi.log; exit 1; }

@@ -76,6 +76,39 @@ func EffectiveUWSGIConcurrency(spec *commonv1.UWSGISpec) (processes, threads int
 	return processes, threads
 }
 
+// UWSGIGracefulShutdownArgs returns the uWSGI flags that make SIGTERM finish
+// the requests in flight and exit. BuildUWSGICommand appends them after
+// --need-app.
+//
+//   - --hook-master-start "unix_signal:15 gracefully_kill_them_all" replaces
+//     the master's SIGTERM handler, a brutal reload by default, with the
+//     graceful shutdown: every worker finishes its current request and exits,
+//     then the master exits 0 after logging "goodbye to uWSGI.". An 8 s request
+//     in flight at SIGTERM answered 200 with it, and an empty reply without it.
+//   - --shutdown-sockets makes the first idle worker shut down the socket the
+//     HTTP router forwards to, so a request that arrives after SIGTERM fails
+//     at once. Without it, such a request was held 6 s, until the slowest
+//     request in flight ended, and then got an empty reply.
+//   - --threaded-logger moves the log reader into a master thread. The master
+//     blocks while it waits for the workers to exit, and without the thread
+//     only 275 of 4,000 log lines written during the shutdown, and no
+//     "goodbye to uWSGI.", reached the container log.
+//
+// The master does not enforce --harakiri while it waits for the workers, so
+// only the kubelet's SIGKILL at the end of the termination grace period bounds
+// a request still running then. uWSGI resolves gracefully_kill_them_all with
+// dlsym, and a binary that does not export it exits at start with
+// `unable to find function "gracefully_kill_them_all"`.
+//
+// Each call returns a new slice, so a caller may modify the result.
+func UWSGIGracefulShutdownArgs() []string {
+	return []string{
+		"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+		"--shutdown-sockets",
+		"--threaded-logger",
+	}
+}
+
 // BuildUWSGICommand renders the uWSGI container command shared by every service
 // operator's API container. It owns exactly the parts the operators would
 // otherwise each repeat:
@@ -90,8 +123,8 @@ func EffectiveUWSGIConcurrency(spec *commonv1.UWSGISpec) (processes, threads int
 //   - the request logging --log-master and --log-format UWSGILogFormat, emitted
 //     in every configuration so request lines reach stderr even with keep-alive
 //     disabled;
-//   - the fixed run --master --lazy-apps --need-app with --processes and
-//     --threads;
+//   - the fixed run --master --lazy-apps --need-app, the graceful-shutdown
+//     flags of UWSGIGracefulShutdownArgs, then --processes and --threads;
 //   - the --harakiri cap when the spec sets a positive one, last in the command.
 //
 // Everything else comes from p and is emitted verbatim: the bind, the launch
@@ -170,6 +203,10 @@ func BuildUWSGICommand(p UWSGICommandParams) []string {
 		"--master",
 		"--lazy-apps",
 		"--need-app",
+	)
+	cmd = append(cmd, UWSGIGracefulShutdownArgs()...)
+	cmd = append(
+		cmd,
 		"--processes", strconv.Itoa(int(processes)),
 		"--threads", strconv.Itoa(int(threads)),
 	)

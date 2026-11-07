@@ -35,6 +35,43 @@ func valueAfter(cmd []string, flag string) string {
 	return cmd[i+1]
 }
 
+// countOf returns how many times tok appears in cmd.
+func countOf(cmd []string, tok string) int {
+	n := 0
+	for _, arg := range cmd {
+		if arg == tok {
+			n++
+		}
+	}
+	return n
+}
+
+// gracefulShutdownTokens is the literal UWSGIGracefulShutdownArgs returns,
+// spelled out so a change to the shared flags fails here first.
+var gracefulShutdownTokens = []string{
+	"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+	"--shutdown-sockets",
+	"--threaded-logger",
+}
+
+// expectGracefulShutdownFlags asserts that cmd carries each graceful-shutdown
+// token once, contiguous, directly after --need-app and directly before
+// --processes.
+func expectGracefulShutdownFlags(t *testing.T, cmd []string) {
+	t.Helper()
+	g := gomega.NewWithT(t)
+
+	for _, tok := range gracefulShutdownTokens {
+		g.Expect(countOf(cmd, tok)).To(gomega.Equal(1), "token %q", tok)
+	}
+	i := indexOf(cmd, "--need-app")
+	g.Expect(i).To(gomega.BeNumerically(">=", 0))
+	end := i + 1 + len(gracefulShutdownTokens)
+	g.Expect(len(cmd)).To(gomega.BeNumerically(">", end))
+	g.Expect(cmd[i+1 : end]).To(gomega.Equal(gracefulShutdownTokens))
+	g.Expect(cmd[end]).To(gomega.Equal("--processes"))
+}
+
 // keepAliveTokens returns every token with the prefix --http-keepalive: the bare
 // flag, the --http-keepalive=<n> form, and any stray flag that shares the prefix.
 func keepAliveTokens(cmd []string) []string {
@@ -273,6 +310,65 @@ func TestBuildUWSGICommand_NilAndEmptySlicesAddNothing(t *testing.T) {
 	g.Expect(emptySlices).To(gomega.Equal(nilSlices))
 }
 
+// SIGTERM starts uWSGI's graceful shutdown in every API container, so every
+// params value renders the three shutdown flags in one place, and none
+// switches them off. Each call of UWSGIGracefulShutdownArgs hands out a slice
+// of its own: a caller that changes its copy changes no later command.
+func TestBuildUWSGICommand_GracefulShutdownFlags(t *testing.T) {
+	t.Run("nil spec", func(t *testing.T) {
+		expectGracefulShutdownFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			Bind:         ":5000",
+			WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+		}))
+	})
+
+	t.Run("full spec with module and raw tokens", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		cmd := BuildUWSGICommand(UWSGICommandParams{
+			UWSGI: &commonv1.UWSGISpec{
+				Processes:            4,
+				Threads:              8,
+				HTTPKeepAlive:        ptr.To(true),
+				HTTPKeepAliveTimeout: ptr.To(int32(15)),
+				Harakiri:             ptr.To(int32(30)),
+			},
+			Bind:          ":9311",
+			ArgsAfterHTTP: []string{"--buffer-size", "65535"},
+			Module:        "barbican.wsgi.api:application",
+			TrailingArgs:  []string{"--pyargv", "--config-dir /etc/svc/svc.conf.d/"},
+		})
+
+		expectGracefulShutdownFlags(t, cmd)
+		g.Expect(valueAfter(cmd, "--processes")).To(gomega.Equal("4"))
+		g.Expect(cmd[len(cmd)-2:]).To(gomega.Equal([]string{"--harakiri", "30"}))
+	})
+
+	t.Run("empty raw-token slices", func(t *testing.T) {
+		expectGracefulShutdownFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			Bind:          ":5000",
+			ArgsAfterHTTP: []string{},
+			WSGIFilePath:  "/var/lib/openstack/bin/svc-wsgi",
+			TrailingArgs:  []string{},
+		}))
+	})
+
+	t.Run("new slice on every call", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		args := UWSGIGracefulShutdownArgs()
+		g.Expect(args).To(gomega.Equal(gracefulShutdownTokens))
+
+		args[0] = "--mutated"
+
+		g.Expect(UWSGIGracefulShutdownArgs()).To(gomega.Equal(gracefulShutdownTokens))
+		expectGracefulShutdownFlags(t, BuildUWSGICommand(UWSGICommandParams{
+			Bind:         ":5000",
+			WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+		}))
+	})
+}
+
 // The launch mode is a single flag with a value behind it: --module for a
 // service image that ships an importable WSGI application, --wsgi-file for one
 // that ships an entry script. Params that set both fall to --module, params that
@@ -300,6 +396,9 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 				"--master",
 				"--lazy-apps",
 				"--need-app",
+				"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+				"--shutdown-sockets",
+				"--threaded-logger",
 				"--processes", "2",
 				"--threads", "1",
 			},
@@ -323,6 +422,9 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 				"--master",
 				"--lazy-apps",
 				"--need-app",
+				"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+				"--shutdown-sockets",
+				"--threaded-logger",
 				"--processes", "2",
 				"--threads", "1",
 				"--pyargv=--config-dir=/etc/svc/svc.conf.d/",
@@ -342,6 +444,9 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 				"--master",
 				"--lazy-apps",
 				"--need-app",
+				"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+				"--shutdown-sockets",
+				"--threaded-logger",
 				"--processes", "2",
 				"--threads", "1",
 			},
@@ -366,6 +471,9 @@ func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
 				"--master",
 				"--lazy-apps",
 				"--need-app",
+				"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+				"--shutdown-sockets",
+				"--threaded-logger",
 				"--processes", "2",
 				"--threads", "1",
 			},
@@ -406,6 +514,9 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--master",
 				"--lazy-apps",
 				"--need-app",
+				"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+				"--shutdown-sockets",
+				"--threaded-logger",
 				"--processes", "2",
 				"--threads", "1",
 				"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
@@ -433,6 +544,9 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--master",
 				"--lazy-apps",
 				"--need-app",
+				"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+				"--shutdown-sockets",
+				"--threaded-logger",
 				"--processes", "2",
 				"--threads", "1",
 				"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
@@ -463,6 +577,9 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--master",
 				"--lazy-apps",
 				"--need-app",
+				"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+				"--shutdown-sockets",
+				"--threaded-logger",
 				"--processes", "2",
 				"--threads", "1",
 				"--pyargv",
@@ -487,6 +604,9 @@ func TestBuildUWSGICommand_RealParameterizations(t *testing.T) {
 				"--master",
 				"--lazy-apps",
 				"--need-app",
+				"--hook-master-start", "unix_signal:15 gracefully_kill_them_all",
+				"--shutdown-sockets",
+				"--threaded-logger",
 				"--processes", "2",
 				"--threads", "1",
 			},
