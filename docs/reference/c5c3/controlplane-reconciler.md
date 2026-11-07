@@ -377,18 +377,48 @@ One pass, in order:
    pass with an empty result. A failed read ends the pass with an error.
    Otherwise the live copy goes to `reconcileDelete` (see
    [Owner-ref / GC model](#owner-ref-gc-model)).
-3. Runs the duplicate guard: every ControlPlane but the oldest in a namespace is
+3. Ends the pass while `spec.suspend` is `true`. `GateSuspend` in
+   `internal/common/reconcile/suspend.go` sets `Suspended=True` with reason
+   `ReconciliationSuspended` and returns an empty result, so nothing requeues
+   the ControlPlane. `Ready` and `status.observedGeneration` keep the values of
+   the last full pass, and a spec change made meanwhile shows as
+   `status.observedGeneration` below `metadata.generation`. Nothing is
+   projected and no finalizer is added. A suspended duplicate reports
+   `Suspended`, because the duplicate guard runs after the gate. The children
+   keep reconciling under their own operators, and the rotations they run
+   themselves go on. A rotation the ControlPlane drives, such as the renewal of
+   the admin ApplicationCredential in `reconcileKORC`, waits for the resume.
+   The gate emits the Normal event `ReconciliationSuspended`
+   (`Reconciliation suspended by spec.suspend`) when the ControlPlane becomes
+   suspended. Once `spec.suspend` is cleared, it removes the condition, emits
+   the Normal event `ReconciliationResumed`
+   (`Reconciliation resumed: spec.suspend is cleared`) and lets the pass go on
+   to step 4. Neither event fires on a steady pass. A deletion runs step 2 in
+   full, since it comes first.
+
+   A child CR can be suspended on its own while the ControlPlane keeps
+   projecting the others. The projection never writes a child's
+   `spec.suspend`: Server-Side Apply leaves out a field that is `false`, so the
+   `cobaltcore-operator` field manager never owns it, and `reconcileHorizon`
+   assigns named fields only. A suspend set by hand on a child therefore holds
+   across every projection while the c5c3-operator chart comes from the same
+   release as the service operator charts. An older c5c3-operator writes the
+   Horizon child with a full `Update` and drops a `spec.suspend` its types do
+   not know. The `<Service>Ready` condition keeps mirroring the
+   child's `Ready`, which the suspended child leaves at the value of its last
+   full pass.
+4. Runs the duplicate guard: every ControlPlane but the oldest in a namespace is
    parked with `Ready=False/DuplicateControlPlane` and requeued after 30s, and
    none of its sub-reconcilers run (see [Multi-instance](#multi-instance)).
-4. Installs the finalizer `c5c3.io/orc-teardown`, and
+5. Installs the finalizer `c5c3.io/orc-teardown`, and
    `openstack.c5c3.io/remote-children` once a target cluster the spec names
    resolves. A pass that installs one ends with a requeue.
-5. Runs the blocking prefix through `RunPipeline`, rows 1 to 7 below. The first
+6. Runs the blocking prefix through `RunPipeline`, rows 1 to 7 below. The first
    step that returns a requeue or an error ends the pass.
-6. Runs the tail group through `RunSequentialGroup`, rows 8 to 21. Every member
+7. Runs the tail group through `RunSequentialGroup`, rows 8 to 21. Every member
    runs. Member requeues collapse to the shortest (`ShortestRequeue`), member
    errors are joined (`errors.Join`).
-7. Calls `updateStatus()` on every exit path of steps 5 and 6: it recomputes the
+8. Calls `updateStatus()` on every exit path of steps 6 and 7: it recomputes the
    aggregate `Ready` as `AllTrue(subConditionTypes)`, writes `status.services`,
    stamps `status.observedGeneration`, and skips the write when nothing changed.
 

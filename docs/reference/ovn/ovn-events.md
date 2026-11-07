@@ -76,6 +76,22 @@ A permanently failed maintenance Job is reported on the condition instead of
 being returned as an error. Rerunning it under an unchanged key produces the same failure, so a
 returned error would only put the CR on the workqueue's backoff.
 
+### Suspension
+
+Emitted by the suspend gate when `spec.suspend` changes whether an OVNCentral CR
+is reconciled. Both fire on a transition only, never on the steady pass of a
+suspended CR, and neither fires for a CR that is being deleted, because the
+deletion branch runs before the gate. An `OVNChassis` has no `spec.suspend` and
+emits neither.
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `ReconciliationSuspended` | Normal | `spec.suspend` is `true` and the CR does not carry `Suspended=True` yet; the gate sets the condition | `Reconciliation suspended by spec.suspend` |
+| `ReconciliationResumed` | Normal | `spec.suspend` is cleared on a CR that carries a `Suspended` condition; the gate removes it | `Reconciliation resumed: spec.suspend is cleared` |
+
+**Source:** `GateSuspend` in `internal/common/reconcile/suspend.go`, called from
+`Reconcile` in `ovncentral_controller.go` right after the deletion branch
+
 ### Finalization
 
 | Reason | Type | Trigger Condition | Example Message |

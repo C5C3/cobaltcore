@@ -28,6 +28,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 | `multiDomain` | `*MultiDomainSpec` | no | Multi-domain login: the domain field (or dropdown) on the login form, needed when users live in domains other than the default one — typically LDAP-backed. When nil the operator renders no `OPENSTACK_KEYSTONE_MULTIDOMAIN_*` settings |
 | `secretStoreRef` | `*SecretStoreRefSpec` | no | Selects the External Secrets store the dashboard resolves its `SecretsReady` gate against — `kind` (`ClusterSecretStore` \| `SecretStore`, default `ClusterSecretStore`) and a required non-empty `name`. When omitted the shared cluster-scoped `ClusterSecretStore` `openbao-cluster-store` is used, so existing deployments are unchanged; set to a namespaced `SecretStore` in this Horizon's own namespace to reach OpenBao as a per-tenant identity. It only gates `SecretsReady` on the selected store — Horizon creates no PushSecrets. Normally projected from the owning ControlPlane |
 | `targetClusterRef` | `*TargetClusterRefSpec` | no | Names the registered target cluster that receives this Horizon's children: the Deployment, the ConfigMaps, and the Secrets. The CR itself does not move, and neither do its status or the webhooks that admit it. When omitted the children are created on the local cluster the operator runs on, so an existing CR keeps its behavior without an edit. `name` must be a non-empty DNS-1123 subdomain matching the registration Secret. **Immutable** (CEL transition rule): adding, removing, or renaming the ref strands the children already created on the previously selected cluster; delete and recreate instead. See [Target Clusters](../target-clusters.md) |
+| `suspend` | `bool` | no | Pauses the operator's reconciliation of this Horizon. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its deletion path as usual. Setting it to `false` or removing it resumes reconciliation. It is the only pause switch a Horizon has, since the CR runs no CronJob. `kubectl get horizons` shows the value in the Suspended column. See [Suspension](./horizon-reconciler.md#suspension). |
 
 ### Defaulting and validation
 
@@ -153,6 +154,11 @@ with `enabled` alone the form shows a free-text domain field.
 | `conditions` | List-map keyed by `type`; see the [reconciler reference](./horizon-reconciler.md#conditions) for the vocabulary |
 | `observedGeneration` | The `.metadata.generation` last reconciled |
 | `endpoint` | The dashboard URL: `https://{gateway.hostname}/` when a gateway is set, otherwise the cluster-local Service URL |
+
+While `spec.suspend` is `true`, `conditions` also holds `Suspended=True` with
+reason `ReconciliationSuspended`, and the operator removes it once the field is
+cleared. `Suspended` is never aggregated into `Ready`, which keeps the value of
+the last full pass. See [Suspension](./horizon-reconciler.md#suspension).
 
 ## Sub-Resource Naming Convention
 

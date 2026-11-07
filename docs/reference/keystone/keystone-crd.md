@@ -142,6 +142,7 @@ status:
 | Ready | `.status.conditions[?(@.type=='Ready')].status` | string |
 | Endpoint | `.status.endpoint` | string |
 | Release | `.status.installedRelease` | string |
+| Suspended | `.spec.suspend` | boolean |
 | Age | `.metadata.creationTimestamp` | date |
 
 ---
@@ -172,6 +173,7 @@ status:
 | `uwsgi` | [`*UWSGISpec`](#uwsgispec) | No | `nil` | uWSGI application server parameters. When set, the operator uses these values for the Deployment container command. When `nil`, hardcoded defaults (processes=2, threads=1, httpKeepAlive=true) are used in the reconciler. |
 | `logging` | [`*LoggingSpec`](#loggingspec) | No | See below | oslo.log configuration for the Keystone API container. When `nil`, the defaulting webhook materializes a baseline (`format=text`, `level=INFO`, `debug=false`, no per-logger overrides) so downstream reconciler code never sees a nil pointer. When set, zero-valued sub-fields are partially filled with the same baseline. |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for additional configuration. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so `extraConfig` wins over both. Overrides of operator-owned keys are honored but reported via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.image.tag`; a digest-pinned image or a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins` and operator-owned keys are exempt; an unknown section or option is rejected with the section and key named, and a deprecated-but-accepted option is admitted with a warning naming its replacement. Values are never checked, and the rule is webhook-only with no CEL backstop. |
+| `suspend` | `bool` | No | `false` | Pauses the operator's reconciliation of this Keystone. While it is `true` the operator creates, updates and deletes nothing for the CR: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running, the CronJobs included. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its finalizer cleanup as usual. Setting it to `false` or removing it resumes reconciliation. The `suspend` fields of `fernet`, `credentialKeys`, `trustFlush` and `passwordRotation` pause one scheduled job only, while the rest of the CR keeps reconciling. See step 3 of [Reconciliation Flow](./keystone-reconciler.md#reconciliation-flow). |
 
 ### DeploymentSpec
 
@@ -1392,6 +1394,12 @@ does not collide on a shared object.
 | `installedRelease` | `string` | OpenStack release version currently deployed. Set by the controller after a successful `db_sync`; reflects the value extracted from `spec.image.tag`. Left unset when the image is pinned by `digest` (digest mode disables release tracking). |
 | `targetRelease` | `string` | Upgrade target release during an active upgrade. Set while `upgradePhase` is one of `Expanding`/`Migrating`/`RollingUpdate`/`Contracting`; cleared after `Contracting` completes. |
 | `upgradePhase` | [`UpgradePhase`](#upgradephase) | Current phase of an active database upgrade. Empty outside upgrades. |
+
+While `spec.suspend` is `true`, `conditions` also holds `Suspended=True` with
+reason `ReconciliationSuspended`, and the operator removes it once the field is
+cleared. `Suspended` is never aggregated into `Ready`, which keeps the value of
+the last full pass. See
+step 3 of [Reconciliation Flow](./keystone-reconciler.md#reconciliation-flow).
 
 The status subresource is enabled via `+kubebuilder:subresource:status`.
 

@@ -141,6 +141,21 @@ the shared `RecordJobTerminalState` (`DBCleanMetricEmissionDeferred`)
 > only signal that the backlog is growing is that the `db_clean` metric stops
 > incrementing.
 
+### Suspension
+
+Emitted by the suspend gate when `spec.suspend` changes whether a Barbican CR is
+reconciled. Both fire on a transition only, never on the steady pass of a
+suspended CR, and neither fires for a CR that is being deleted, because the
+deletion branch runs before the gate.
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `ReconciliationSuspended` | Normal | `spec.suspend` is `true` and the CR does not carry `Suspended=True` yet; the gate sets the condition | `Reconciliation suspended by spec.suspend` |
+| `ReconciliationResumed` | Normal | `spec.suspend` is cleared on a CR that carries a `Suspended` condition; the gate removes it | `Reconciliation resumed: spec.suspend is cleared` |
+
+**Source:** `GateSuspend` in `internal/common/reconcile/suspend.go`, called from
+`Reconcile` in `barbican_controller.go` right after the deletion branch
+
 ### Finalization
 
 Emitted while the finalizer tears a deleted Barbican CR down.
