@@ -717,9 +717,11 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 	}
 
 	// harakiri must be strictly less than the drain window
-	// (terminationGracePeriodSeconds - preStopSleepSeconds) so the worst-case
-	// uWSGI per-request kill fits inside the envelope between preStop sleep
-	// completion and SIGKILL. Only applied when spec.uwsgi.harakiri is set.
+	// (terminationGracePeriodSeconds - preStopSleepSeconds). harakiri bounds a
+	// request only while uWSGI serves: during the graceful shutdown that
+	// SIGTERM starts, only the kubelet's SIGKILL at the end of the grace period
+	// bounds a request still running. Only applied when spec.uwsgi.harakiri is
+	// set.
 	if k.Spec.UWSGI != nil && k.Spec.UWSGI.Harakiri != nil {
 		drain := resolvedGrace - resolvedPreStop
 		harakiri := int64(*k.Spec.UWSGI.Harakiri)

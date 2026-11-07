@@ -449,7 +449,7 @@ uWSGI and the rollout strategy:
 
 | Message | Trigger |
 | --- | --- |
-| `harakiri (%d) must be strictly less than terminationGracePeriodSeconds - preStopSleepSeconds (%d)` | The worst-case per-request kill would fall outside the drain window. The arguments are the harakiri value and the resolved window |
+| `harakiri (%d) must be strictly less than terminationGracePeriodSeconds - preStopSleepSeconds (%d)` | The harakiri value is not below the drain window. uWSGI enforces harakiri only while it serves: during the graceful shutdown that SIGTERM starts, only the kubelet's SIGKILL at the end of the grace period bounds a request ([Keystone shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)). The arguments are the harakiri value and the resolved window |
 | `httpKeepAliveTimeout may only be set when httpKeepAlive is true` | A timeout set beside an explicit `httpKeepAlive: false`. A nil pointer counts as unset and resolves to `true`, so only the explicit `false` conflicts |
 | `rollingUpdate must not be set when strategy.type is Recreate` | The Deployment controller would reject the object at apply time |
 

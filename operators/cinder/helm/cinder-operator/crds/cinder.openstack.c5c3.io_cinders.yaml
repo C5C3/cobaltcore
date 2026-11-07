@@ -1506,13 +1506,14 @@ spec:
                       harakiri:
                         description: |-
                           Harakiri caps the per-request worker lifetime (seconds) via the uWSGI
-                          --harakiri flag. A request blocked longer than this bound is
-                          killed so a single stuck request cannot prevent other in-flight
-                          requests from completing cleanly before graceful shutdown ends. When
-                          nil, the --harakiri flag is omitted from the uWSGI command entirely
-                          (no hidden default is injected). The webhook additionally requires
-                          harakiri < terminationGracePeriodSeconds - preStopSleepSeconds so the
-                          shutdown envelope is consistent.
+                          --harakiri flag. While uWSGI serves, a request blocked longer than this
+                          bound is killed, so a single stuck request cannot hold its worker.
+                          uWSGI does not enforce it during the graceful shutdown that SIGTERM
+                          starts: only the kubelet's SIGKILL at the end of
+                          terminationGracePeriodSeconds bounds a request still running then. When
+                          nil, the --harakiri flag is omitted from the uWSGI command entirely (no
+                          hidden default is injected). The webhook additionally requires
+                          harakiri < terminationGracePeriodSeconds - preStopSleepSeconds.
                         format: int32
                         minimum: 1
                         type: integer

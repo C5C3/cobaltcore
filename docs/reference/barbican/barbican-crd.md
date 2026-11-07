@@ -94,7 +94,7 @@ set timeout.
 | `processes` | `int32` (Minimum=1) | no | `2` | uWSGI worker-process count (`--processes`) |
 | `threads` | `int32` (Minimum=1) | no | `1` | Threads per worker (`--threads`) |
 | `httpKeepAlive` | `*bool` | no | `true` | Enables `--http-keepalive`. A nil-preserving pointer: nil restores the default, an explicit `false` is honored verbatim and drops the flag |
-| `harakiri` | `*int32` (Minimum=1) | no | — | Per-request worker lifetime cap (`--harakiri`, seconds). Omitted from the command when nil, with no hidden default. The webhook requires `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds`, so the worst-case per-request kill fits inside the drain window |
+| `harakiri` | `*int32` (Minimum=1) | no | — | Per-request worker lifetime cap (`--harakiri`, seconds). Omitted from the command when nil, with no hidden default. The webhook requires `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds`. uWSGI enforces harakiri only while it serves: during the graceful shutdown that SIGTERM starts, only the kubelet's SIGKILL at the end of the grace period bounds a request ([Keystone shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)) |
 | `httpKeepAliveTimeout` | `*int32` (Minimum=2) | no | — | Idle time (seconds) a keep-alive connection may stay open between requests, rendered as `--http-keepalive=<n>`. Omitted when nil, which leaves the bare `--http-keepalive`. Values below 2 are rejected on create and on change, since uWSGI reads 1 as no idle timer and 0 as keep-alive off. A 1 stored under the earlier minimum stays admitted while an update leaves it unchanged, and the bare `--http-keepalive` is rendered for it |
 
 Raising `processes` raises the pooled connection count: every worker holds at
