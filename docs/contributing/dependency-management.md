@@ -242,7 +242,13 @@ merging, the reviewer handles the coupling the e2e legs do not see:
   hand on the same branch; the test above stays red until it is.
 - A `mariadb-operator` major moves the `github.com/mariadb-operator/mariadb-operator` Go
   module (pinned in `internal/common/go.mod` and the operator modules) along with the
-  CRDs the chart installs.
+  CRDs the chart installs. Since 25.10 the module path carries the major
+  (`.../mariadb-operator/v26`), so the move rewrites every import, re-runs `go mod tidy`
+  in each module and `make nix-lock` for the operator vendor hashes. `widen` keeps the old
+  floor; lift it by hand on the PR branch to the release the Go module pins, because the
+  manifests and the operators only work against the CRDs of that major. Read the upstream
+  upgrade guides (`docs/releases/UPGRADE_<version>.md` in the mariadb-operator repository)
+  for removed fields: 25.10.3 dropped the embedded `spec.maxScale` of the MariaDB CR.
 - `prometheus-operator-crds` owns the CRDs `kube-prometheus-stack` runs against
   (`deploy/kind/prometheus/release.yaml` sets `crds.enabled=false`), so the two share the
   `prometheus-operator charts` group. A PR that raises only the `kube-prometheus-stack`
