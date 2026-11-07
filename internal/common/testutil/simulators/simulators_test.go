@@ -12,7 +12,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
-	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"

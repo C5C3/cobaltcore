@@ -6,7 +6,7 @@ require (
 	github.com/c5c3/cobaltcore/internal/common v0.0.0
 	github.com/dc-tec/openbao-operator v0.0.0-20260922111451-ef96ef2ddcaa
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
-	github.com/mariadb-operator/mariadb-operator v0.38.1
+	github.com/mariadb-operator/mariadb-operator/v26 v26.10.2
 	github.com/onsi/gomega v1.44.0
 	github.com/openbao/openbao/api/v2 v2.7.1
 	github.com/prometheus/client_golang v1.24.1
@@ -25,7 +25,7 @@ require (
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
-	github.com/cert-manager/cert-manager v1.20.2 // indirect
+	github.com/cert-manager/cert-manager v1.21.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/distribution/reference v0.6.0 // indirect
@@ -75,7 +75,7 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
-	github.com/sethvargo/go-envconfig v1.1.1 // indirect
+	github.com/sethvargo/go-envconfig v1.3.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect

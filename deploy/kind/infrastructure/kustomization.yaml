@@ -4,8 +4,8 @@
 
 # Kustomize overlay for kind cluster — CRD-dependent infrastructure resources.
 # References the production flux-system/infrastructure kustomization and
-# patches MariaDB CR (1 replica, Galera disabled, MaxScale disabled,
-# standard storage class) and Memcached CR (1 replica) for single-node
+# patches MariaDB CR (1 replica, Galera disabled, standard storage class),
+# deletes the MaxScale CR and patches Memcached CR (1 replica) for single-node
 # kind cluster resource constraints.
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -133,7 +133,7 @@ patches:
   # Intentional divergence the kind overlay disables
   # spec.tls. The production base (deploy/flux-system/infrastructure/
   # mariadb.yaml) enables TLS via serverCertIssuerRef/clientCertIssuerRef
-  # because mariadb-operator v0.38.1 issues per-Galera-node server certs and
+  # because mariadb-operator issues per-Galera-node server certs and
   # MaxScale terminates client TLS. In the kind overlay we patch out Galera
   # AND MaxScale to fit a single-node cluster — leaving spec.tls.enabled=true
   # would force a single-replica mariadbd to terminate TLS without the
@@ -142,8 +142,8 @@ patches:
   # green; the production TLS posture is exercised by the
   # tests/e2e/keystone/database-tls/ chainsaw suite on a full Galera+MaxScale
   # cluster. To exercise the mTLS path against kind,
-  # remove this spec.tls override and re-enable Galera/MaxScale in this
-  # patch.
+  # remove this spec.tls override, re-enable Galera and the maxScaleRef in
+  # this patch, and drop the MaxScale delete patch below.
   - target:
       group: k8s.mariadb.com
       version: v1alpha1
@@ -160,8 +160,9 @@ patches:
         replicas: 1
         galera:
           enabled: false
-        maxScale:
-          enabled: false
+        # The base's MaxScale CR is deleted by the next patch; drop the
+        # reference to it as well.
+        maxScaleRef: null
         # Probe thresholds only: a probe override without a handler keeps
         # mariadb-operator's own exec command (SELECT 1 as root) and merges
         # these values over its defaults (timeoutSeconds 5, periodSeconds 10,
@@ -188,7 +189,7 @@ patches:
         # whichever suite was waiting on DatabaseReady at that moment failed.
         # The request moves the database below the service pods in the
         # killer's order and makes the scheduler account for it; the equal
-        # limit bounds mariadbd (11.4 defaults: 128M buffer pool, 151
+        # limit bounds mariadbd (server defaults: 128M buffer pool, 151
         # connections) so an undersized value surfaces as OOMKilled against
         # a limit instead of a restart nobody can attribute. No CPU: a 500m
         # request left pods Pending on the 4-vCPU keystone leg (#970), and a
@@ -204,6 +205,22 @@ patches:
         tls:
           enabled: false
           required: false
+
+  # MaxScale: none on the single-node cluster. The base's standalone MaxScale
+  # CR is removed, the patch above drops the MariaDB's maxScaleRef to it.
+  - target:
+      group: k8s.mariadb.com
+      version: v1alpha1
+      kind: MaxScale
+      name: openstack-db-maxscale
+      namespace: openstack
+    patch: |
+      $patch: delete
+      apiVersion: k8s.mariadb.com/v1alpha1
+      kind: MaxScale
+      metadata:
+        name: openstack-db-maxscale
+        namespace: openstack
 
   # Memcached: single replica
   - target:

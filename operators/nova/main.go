@@ -17,7 +17,7 @@ import (
 	"os"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
-	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"

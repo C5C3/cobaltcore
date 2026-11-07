@@ -16,7 +16,10 @@ spec:
   chart:
     spec:
       chart: mariadb-operator-crds
-      version: ">=0.30.0 <1.0.0"
+      # The floor follows the github.com/mariadb-operator/mariadb-operator/v26
+      # Go module the operators build against and the CRDs the manifests
+      # need (no embedded spec.maxScale since 25.10.3).
+      version: ">=26.10.2 <27.0.0"
       sourceRef:
         kind: HelmRepository
         name: mariadb-operator
