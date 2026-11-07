@@ -28,7 +28,8 @@ type ChildProjectionParams[T client.Object] struct {
 	// Child is the fully-built desired child; ProjectChild applies it via SSA
 	// (so the builder must be a pure projection of the owner spec, reading no
 	// live child state) and decodes the server response back into it, so its
-	// status is populated for the readiness mirror.
+	// status is populated for the readiness mirror. The builder never sets
+	// spec.suspend: a suspend set by hand on the child has to survive the apply.
 	Child T
 	// ConditionType is the readiness condition the projection reports on (for
 	// example "KeystoneReady").
