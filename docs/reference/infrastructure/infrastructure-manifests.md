@@ -450,7 +450,7 @@ controller, which unconditionally watches ServiceMonitor resources via Owns().
 | --- | --- |
 | Target namespace | `mariadb-system` |
 | Chart | `mariadb-operator-crds` |
-| Version constraint | `>=0.30.0 <1.0.0` |
+| Version constraint | `>=26.10.2 <27.0.0` |
 | Source | `mariadb-operator` HelmRepository |
 | Dependencies | None |
 
@@ -466,7 +466,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 | --- | --- |
 | Target namespace | `mariadb-system` |
 | Chart | `mariadb-operator` |
-| Version constraint | `>=0.30.0 <1.0.0` |
+| Version constraint | `>=26.10.2 <27.0.0` |
 | Source | `mariadb-operator` HelmRepository |
 | Dependencies | `cert-manager` in `cert-manager` namespace, `mariadb-operator-crds` in `mariadb-system` namespace |
 
