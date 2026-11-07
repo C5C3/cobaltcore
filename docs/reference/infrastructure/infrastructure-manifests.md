@@ -1174,17 +1174,22 @@ is rejected by the ovn-operator's TLS sub-reconciler.
 | Property | Value |
 | --- | --- |
 | API version | `k8s.mariadb.com/v1alpha1` |
-| Kind | `MariaDB` |
-| Name | `openstack-db` |
+| Kind | `MariaDB`, `MaxScale` |
+| Name | `openstack-db`, `openstack-db-maxscale` |
 | Namespace | `openstack` |
 | Replicas | `3` |
 | Galera | Enabled (`spec.galera.enabled: true`) |
-| MaxScale | Enabled, 2 replicas (`spec.maxScale.enabled: true`, `spec.maxScale.replicas: 2`) |
+| MaxScale | `MaxScale` CR `openstack-db-maxscale` with 2 replicas and `spec.mariaDbRef: openstack-db`; the MariaDB names it in `spec.maxScaleRef` |
 | Storage | `100Gi`, storage class `ceph-rbd` |
 
 The MariaDB CR provisions a 3-node Galera cluster with synchronous replication managed
-by the mariadb-operator. MaxScale is enabled with 2 replicas to provide intelligent query
-routing and read/write splitting across the Galera nodes.
+by the mariadb-operator. The MaxScale CR in the same file runs 2 MaxScale replicas in
+front of the Galera nodes for query routing and read/write splitting; the operator infers
+its servers and its `galeramon` monitor from `spec.mariaDbRef`. Through
+`spec.maxScaleRef` the MariaDB takes the primary that MaxScale reports and leaves primary
+failover to MaxScale. mariadb-operator 25.10.3 removed the embedded `spec.maxScale` of
+the MariaDB CR, which made the operator create the same `<mariadb>-maxscale` CR and set
+`spec.maxScaleRef`; the file now declares both explicitly.
 
 The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, key
 `password`). The production stack ships **no** `ExternalSecret` for it — a non-kind Flux
@@ -1213,7 +1218,8 @@ self-contained.
 **TLS.** Galera inter-node replication, the MaxScale client
 listener, and every Keystone-to-database connection all sit inside the OpenStack DB
 trust domain rooted at the `openstack-db-ca-issuer` ClusterIssuer documented above.
-The MariaDB CR enables TLS in `spec.tls` and the MaxScale sub-spec inherits it:
+The MariaDB CR enables TLS in `spec.tls`, and the MaxScale CR takes its server CA and
+client certificate from the referenced MariaDB:
 
 | Field | Value | Purpose |
 | --- | --- | --- |
@@ -1221,7 +1227,7 @@ The MariaDB CR enables TLS in `spec.tls` and the MaxScale sub-spec inherits it:
 | `spec.tls.required` | `true` | Reject any non-TLS connection at the transport layer (verified by the chainsaw plaintext-rejection probe in `tests/e2e/keystone/database-tls/chainsaw-test.yaml`) |
 | `spec.tls.serverCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue server certs for Galera + MaxScale from the shared DB CA |
 | `spec.tls.clientCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Trust client certs minted by the same DB CA (the Keystone operator issues its DB-client keypair from this issuer; see [reconcile_databasetls.go](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)) |
-| `spec.maxScale.tls.enabled` | `true` | MaxScale terminates TLS on its client listener (proxy-side); explicit block documents intent even where the proxy would otherwise inherit `spec.tls` |
+| `spec.tls.enabled` (MaxScale CR) | `true` | MaxScale terminates TLS on its client listener (proxy-side); explicit block documents intent even where MaxScale would enable it on its own because the MariaDB requires TLS |
 
 The rendered YAML in `deploy/flux-system/infrastructure/mariadb.yaml` is:
 
@@ -1238,14 +1244,17 @@ spec:
       name: openstack-db-ca-issuer
       kind: ClusterIssuer
       group: cert-manager.io
-  maxScale:
+---
+kind: MaxScale
+spec:
+  mariaDbRef:
+    name: openstack-db
+  replicas: 2
+  tls:
     enabled: true
-    replicas: 2
-    tls:
-      enabled: true
 ```
 
-The mariadb-operator (v0.30+) auto-derives the server and client CA bundles from the
+The mariadb-operator auto-derives the server and client CA bundles from the
 referenced issuer, so explicit `serverCASecretRef` / `clientCASecretRef` entries are
 intentionally omitted — see the inline `DECISION` comment in `mariadb.yaml` for the
 trade-off against the cross-namespace `*CASecretRef` form. End-to-end verification
@@ -1873,7 +1882,8 @@ One row per entry of `deploy/flux-system/kustomization.yaml` and
 | `releases/keystone-operator.yaml`, `horizon-operator.yaml`, `glance-operator.yaml`, `placement-operator.yaml`, `barbican-operator.yaml`, `ovn-operator.yaml`, `neutron-operator.yaml`, `cinder-operator.yaml`, `nova-operator.yaml`, `c5c3-operator.yaml` | HelmRelease | `spec.values`, and `spec.chart.spec.version` with the placement keys ([merge rule 3](#merge-rules)) | [`replicas`, `resources`, `nodeSelector`, `tolerations`, `priorityClassName`](../backend/helm-values-schema.md#nodeselector-tolerations-and-priorityclassname) |
 | `releases/k-orc.yaml` | Flux Kustomization | `spec.patches` | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
 | `releases/rabbitmq-cluster-operator.yaml` | Flux Kustomization | `spec.patches` | [JSON6902 recipe](#patching-the-upstream-installers-and-the-flux-controllers) |
-| `infrastructure/mariadb.yaml` | CR (`MariaDB`) | `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` | The `ContainerTemplate` and `PodTemplate` fields of mariadb-operator v0.38.1. The embedded `spec.maxScale` carries none of them |
+| `infrastructure/mariadb.yaml` | CR (`MariaDB`) | `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` | The `ContainerTemplate` and `PodTemplate` fields of mariadb-operator v26 |
+| `infrastructure/mariadb.yaml` | CR (`MaxScale`) | `spec.resources`, `spec.nodeSelector`, `spec.tolerations`, `spec.priorityClassName` | The `ContainerTemplate` and `MaxScalePodTemplate` fields of mariadb-operator v26 |
 | `infrastructure/memcached.yaml` | CR (`Memcached`) | `spec.resources` | The CRD has no placement fields. The operator's webhook requires a memory limit of at least `maxMemoryMB` plus 32Mi, 96Mi at the default of 64 |
 | `infrastructure/garage.yaml` | CR (`GarageCluster`) | `spec.storage.resources`, `spec.storage.nodeSelector`, `spec.storage.tolerations`, `spec.storage.priorityClassName` | The pod template `GarageCluster` v1beta2 inlines into `spec.storage`; confirm against the installed CRD with `kubectl explain garagecluster.spec.storage` |
 

@@ -7,9 +7,10 @@
 # with automatic failover and synchronous replication.
 #
 # TLS is configured via ClusterIssuer refs rather than raw CA Secret refs.
-# Verified against the vendored mariadb-operator v0.38.1 Go types
-# (k8s.mariadb.com/v1alpha1: TLS.ServerCertIssuerRef, TLS.ClientCertIssuerRef
-# in api/v1alpha1/mariadb_types.go). The operator auto-derives the
+# Verified against the mariadb-operator v26.10.2 Go types
+# (github.com/mariadb-operator/mariadb-operator/v26, k8s.mariadb.com/v1alpha1:
+# TLS.ServerCertIssuerRef, TLS.ClientCertIssuerRef in
+# api/v1alpha1/mariadb_types.go). The operator auto-derives the
 # server/client CA bundles from the referenced issuer, which:
 #   (a) avoids the cross-namespace problem of mirroring the CA bundle Secret
 #       from the cert-manager clusterResourceNamespace (where the CA keypair
@@ -18,6 +19,12 @@
 #       the Keystone operator issues from the same ClusterIssuer
 #       (operators/keystone/internal/controller/reconcile_databasetls.go).
 #
+# MaxScale is a CR of its own, openstack-db-maxscale below. mariadb-operator
+# 25.10.3 removed the embedded spec.maxScale of the MariaDB CR; up to then
+# spec.maxScale.enabled made the operator create exactly that CR (name
+# <mariadb>-maxscale, mariaDbRef to the MariaDB) and set spec.maxScaleRef on
+# the MariaDB. The two documents spell out what the operator used to derive,
+# so the topology stays the same.
 ---
 apiVersion: k8s.mariadb.com/v1alpha1
 kind: MariaDB
@@ -28,15 +35,10 @@ spec:
   replicas: 3
   galera:
     enabled: true
-  maxScale:
-    enabled: true
-    replicas: 2
-    # MaxScale terminates TLS for client connections; the per-listener
-    # ServerCA/ServerCert refs default from the referenced MariaDB instance
-    # (verified against the vendored mariadb-operator v0.38.1 MaxScaleTLS
-    # type in api/v1alpha1/maxscale_types.go SetDefaults).
-    tls:
-      enabled: true
+  # Makes the MariaDB MaxScale-aware: it takes the primary MaxScale reports
+  # and leaves primary failover to MaxScale.
+  maxScaleRef:
+    name: openstack-db-maxscale
   # The mariadb-root-password Secret will be provisioned by the External
   # Secrets Operator integration.
   rootPasswordSecretKeyRef:
@@ -66,3 +68,21 @@ spec:
       name: openstack-db-ca-issuer
       kind: ClusterIssuer
       group: cert-manager.io
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: MaxScale
+metadata:
+  name: openstack-db-maxscale
+  namespace: openstack
+spec:
+  # Servers and the monitor module (galeramon) are inferred from the
+  # referenced MariaDB.
+  mariaDbRef:
+    name: openstack-db
+  replicas: 2
+  # MaxScale terminates TLS for client connections; the ServerCA/ServerCert
+  # refs it uses towards the MariaDB servers default from the referenced
+  # MariaDB instance (MaxScaleTLS.SetDefaults in api/v1alpha1/maxscale_types.go
+  # of the v26 module).
+  tls:
+    enabled: true

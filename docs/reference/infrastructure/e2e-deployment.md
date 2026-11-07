@@ -706,7 +706,7 @@ relies on it. The patches lower requests and change no limit.
 | --- | --- | --- |
 | Replicas | 3 | 1 |
 | Galera | enabled | disabled |
-| MaxScale | enabled | disabled |
+| MaxScale | `openstack-db-maxscale` CR, 2 replicas | CR deleted, no `maxScaleRef` |
 | Storage class | `ceph-rbd` | `standard` |
 | Resources | operator defaults (none) | memory request and limit `1Gi`, no CPU |
 

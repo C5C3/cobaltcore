@@ -13,7 +13,7 @@
 #     keystone-operator chart version floor and the keystone-operator and
 #     cert-manager HelmRelease values, the JSON6902 patch the k-orc and
 #     rabbitmq-cluster-operator Flux Kustomizations and the FluxInstance
-#     carry, and the MariaDB and Memcached CR fields.
+#     carry, and the MariaDB, MaxScale and Memcached CR fields.
 #   - the base phase renders the PriorityClass both phases' patches
 #     reference, and the infrastructure phase does not, so deleting that
 #     phase leaves the class in place.
@@ -26,8 +26,8 @@
 #     install, both Flux Kustomizations' image digests, the RabbitMQ
 #     cluster operator's upstream limits (the entry repeats the base
 #     release's two request operations, because the merge replaces the
-#     base's patch list), the rest of the FluxInstance spec, and the MariaDB
-#     replicas and Galera block.
+#     base's patch list), the rest of the FluxInstance spec, the MariaDB
+#     replicas and Galera block, and the MaxScale replicas and mariaDbRef.
 #   - the in-repo keystone-operator chart renders the example's
 #     keystone-operator values into its Deployment, so the example cannot go
 #     stale against the chart's values schema. The chart's operator-library
@@ -322,17 +322,19 @@ test_fluxinstance_patch() {
 
 # --- Test 7: the infrastructure CRs ---
 test_infrastructure_patches() {
-  echo "Test: MariaDB openstack/openstack-db and Memcached openstack/openstack-memcached"
+  echo "Test: MariaDB openstack/openstack-db, MaxScale openstack/openstack-db-maxscale and Memcached openstack/openstack-memcached"
 
   if [ "$INFRA_OVERLAY_OK" != true ]; then
-    echo "  SKIP: the infrastructure overlay did not build (13 checks skipped)"
-    SKIP=$((SKIP + 13))
+    echo "  SKIP: the infrastructure overlay did not build (21 checks skipped)"
+    SKIP=$((SKIP + 21))
     return
   fi
 
-  local db base_db mc
+  local db base_db mxs base_mxs mc
   db="$(obj "$INFRA_OVERLAY" MariaDB openstack-db openstack)"
   base_db="$(obj "$INFRA_BASE" MariaDB openstack-db openstack)"
+  mxs="$(obj "$INFRA_OVERLAY" MaxScale openstack-db-maxscale openstack)"
+  base_mxs="$(obj "$INFRA_BASE" MaxScale openstack-db-maxscale openstack)"
   mc="$(obj "$INFRA_OVERLAY" Memcached openstack-memcached openstack)"
 
   assert_eq "MariaDB resources.requests.cpu" "500m" "$(val "$db" '.spec.resources.requests.cpu')"
@@ -345,6 +347,16 @@ test_infrastructure_patches() {
   assert_eq "MariaDB galera.enabled is kept" "true" "$(val "$db" '.spec.galera.enabled')"
   assert_eq "MariaDB galera equals the base" \
     "$(cjson "$base_db" '.spec.galera')" "$(cjson "$db" '.spec.galera')"
+
+  assert_eq "MaxScale resources.requests.cpu" "100m" "$(val "$mxs" '.spec.resources.requests.cpu')"
+  assert_eq "MaxScale resources.requests.memory" "256Mi" "$(val "$mxs" '.spec.resources.requests.memory')"
+  assert_eq "MaxScale resources.limits.memory" "256Mi" "$(val "$mxs" '.spec.resources.limits.memory')"
+  assert_eq "MaxScale nodeSelector" "$NODE_SELECTOR" "$(cjson "$mxs" '.spec.nodeSelector')"
+  assert_eq "MaxScale tolerations" "$TOLERATIONS" "$(cjson "$mxs" '.spec.tolerations')"
+  assert_eq "MaxScale priorityClassName" "$PRIORITY_CLASS" "$(val "$mxs" '.spec.priorityClassName')"
+  assert_eq "MaxScale replicas are kept" "2" "$(val "$mxs" '.spec.replicas')"
+  assert_eq "MaxScale mariaDbRef equals the base" \
+    "$(cjson "$base_mxs" '.spec.mariaDbRef')" "$(cjson "$mxs" '.spec.mariaDbRef')"
 
   assert_eq "Memcached resources.requests.cpu" "100m" "$(val "$mc" '.spec.resources.requests.cpu')"
   assert_eq "Memcached resources.requests.memory" "128Mi" "$(val "$mc" '.spec.resources.requests.memory')"
