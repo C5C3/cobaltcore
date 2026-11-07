@@ -53,8 +53,8 @@ spec:
   # directly precedes the commit line, and both values are double-quoted. Keep
   # the order and the quoting when bumping, or the pair stops being tracked.
   ref:
-    tag: "v2.23.1"
-    commit: "8db765e845443489c643fabc508396d4ef5d31a7"
+    tag: "v2.23.2"
+    commit: "fec3016c0e35b80cbc1419d458b913d27fd1603a"
   ignore: |
     # Vendor only the config/ kustomize base; skip the rest of the repo.
     /*
