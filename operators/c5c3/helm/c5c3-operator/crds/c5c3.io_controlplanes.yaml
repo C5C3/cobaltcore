@@ -24,6 +24,9 @@ spec:
     - jsonPath: .spec.openStackRelease
       name: Release
       type: string
+    - jsonPath: .spec.suspend
+      name: Suspended
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -12559,6 +12562,21 @@ spec:
                 x-kubernetes-validations:
                 - message: profile and profileRef are mutually exclusive
                   rule: '!(has(self.profile) && has(self.profileRef))'
+              suspend:
+                description: |-
+                  Suspend pauses the operator's reconciliation of this resource. While it is
+                  true the operator creates, updates and deletes nothing for it: no
+                  provisioning, no rollout of spec changes, no release upgrade or schema
+                  migration, and no correction of drift in the objects it owns. Workloads
+                  that already run, CronJobs included, keep running unchanged. The resource
+                  reports Suspended=True and keeps its last Ready condition and
+                  status.observedGeneration. Deleting a suspended resource runs its
+                  finalizer cleanup as usual. Setting it to false or removing it resumes
+                  reconciliation. The per-CronJob suspend fields pause one scheduled job
+                  only, while the rest of the resource keeps reconciling.
+                  Suspending the ControlPlane stops its projection into the child service
+                  resources; the children keep reconciling and are not suspended themselves.
+                type: boolean
             required:
             - korc
             - openStackRelease

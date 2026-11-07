@@ -16,6 +16,7 @@ import (
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="NB",type="integer",JSONPath=".status.northbound.readyReplicas"
 // +kubebuilder:printcolumn:name="SB",type="integer",JSONPath=".status.southbound.readyReplicas"
+// +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // OVNCentral is the Schema for the ovncentrals API. It deploys the OVN control
@@ -123,6 +124,19 @@ type OVNCentralSpec struct {
 	// and by the validating webhook.
 	// +optional
 	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
+
+	// Suspend pauses the operator's reconciliation of this resource. While it is
+	// true the operator creates, updates and deletes nothing for it: no
+	// provisioning, no rollout of spec changes, no release upgrade or schema
+	// migration, and no correction of drift in the objects it owns. Workloads
+	// that already run, CronJobs included, keep running unchanged. The resource
+	// reports Suspended=True and keeps its last Ready condition and
+	// status.observedGeneration. Deleting a suspended resource runs its
+	// teardown as usual. Setting it to false or removing it resumes
+	// reconciliation. The per-CronJob suspend fields pause one scheduled job
+	// only, while the rest of the resource keeps reconciling.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // OVNDatabaseSpec configures one of the two OVN Raft databases.

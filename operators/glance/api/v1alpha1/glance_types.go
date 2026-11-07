@@ -17,6 +17,7 @@ import (
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Release",type="string",JSONPath=".status.installedRelease"
 // +kubebuilder:printcolumn:name="Endpoint",type="string",JSONPath=".status.endpoint"
+// +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Glance is the Schema for the glances API. It deploys the Glance image service:
@@ -295,6 +296,19 @@ type GlanceSpec struct {
 	// no dedicated knob of their own.
 	// +optional
 	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
+
+	// Suspend pauses the operator's reconciliation of this resource. While it is
+	// true the operator creates, updates and deletes nothing for it: no
+	// provisioning, no rollout of spec changes, no release upgrade or schema
+	// migration, and no correction of drift in the objects it owns. Workloads
+	// that already run, CronJobs included, keep running unchanged. The resource
+	// reports Suspended=True and keeps its last Ready condition and
+	// status.observedGeneration. Deleting a suspended resource runs its
+	// finalizer cleanup as usual. Setting it to false or removing it resumes
+	// reconciliation. The per-CronJob suspend fields pause one scheduled job
+	// only, while the rest of the resource keeps reconciling.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // DeploymentSpec, AutoscalingSpec, VerticalAutoscalingSpec, NetworkPolicySpec,
