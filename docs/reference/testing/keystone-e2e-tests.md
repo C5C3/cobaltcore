@@ -112,7 +112,7 @@ Deployment rollout, bootstrap Job).
 | [concurrent-cr-conflicts](#concurrent-cr-conflicts) | `keystone-concurrent-a`, `keystone-concurrent-b` | Concurrent CR reconciliation with shared secrets, sub-resource isolation, deletion without cross-CR impact |
 | [config-pruning](#config-pruning) | `keystone-pruning` | Immutable ConfigMap pruning — stale ConfigMaps removed after multiple config changes, retain+1 cap, Ready=True preserved |
 | [events](#events) | `keystone-events` | Kubernetes event emission for BootstrapComplete, DatabaseSynced, FernetKeysGenerated, CredentialKeysGenerated |
-| [graceful-shutdown](#graceful-shutdown) | `keystone-graceful-shutdown` | Deployment configured with `terminationGracePeriodSeconds=30`, preStop sleep hook, startup probe |
+| [graceful-shutdown](#graceful-shutdown) | `keystone-graceful-shutdown` | Deployment configured with `terminationGracePeriodSeconds=30`, preStop sleep hook, startup probe; an in-flight slow token request answers 401 across SIGTERM and uWSGI exits with `goodbye to uWSGI.` |
 | [healthcheck](#healthcheck) | `keystone-healthcheck` | Post-Deployment HTTP health check gates `KeystoneAPIReady=True` with reason `APIHealthy` before aggregate `Ready` flips |
 | [policy-validation](#policy-validation) | `keystone-policy-validation` | `PolicyValidReady` gates the Deployment; validation Job lifecycle on `policyOverrides` add/remove |
 | [priority-class](#priority-class) | `keystone-pc` | `spec.deployment.priorityClassName` propagation: unset → empty, set → applied to the Deployment, the db-sync Job and the fernet-rotate CronJob, `spec.jobs.priorityClassName: ""` → removed from the Jobs only, patched empty → removed |
@@ -677,7 +677,10 @@ observe: `BootstrapComplete`, `DatabaseSynced`, `FernetKeysGenerated`,
 **Purpose:** Ensures the reconciler configures the Keystone API Deployment with
 the graceful-shutdown shape:
 `terminationGracePeriodSeconds=30`, a `preStop` exec hook (`sleep 5`), and a
-startup probe (`HTTP GET /v3:5000`, `failureThreshold=30`).
+startup probe (`HTTP GET /v3:5000`, `failureThreshold=30`). Step 4 then
+deletes an API pod while a token request is in flight and checks that uWSGI
+finishes it before it exits
+([Shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)).
 
 **Steps:**
 
@@ -686,8 +689,9 @@ startup probe (`HTTP GET /v3:5000`, `failureThreshold=30`).
 | 1 | Apply Keystone CR | `apply` | `00-keystone-cr.yaml` — Keystone CR `keystone-graceful-shutdown` |
 | 2 | Assert Ready=True | `assert` (5m) | Ready condition reaches True/AllReady |
 | 3 | Assert Deployment pod spec shape | `assert` | `terminationGracePeriodSeconds: 30`, preStop exec hook present, startupProbe shape |
+| 4 | Drain an in-flight token request | `script` (5m) | Picks a Ready API pod that is not terminating and follows its `keystone` log. The Job `keystone-graceful-shutdown-slow-client` connects to the pod IP, sends the headers of `POST /v3/auth/tokens` with `Content-Length: 400`, then the body for the unknown user `graceful-shutdown-probe` at 20 bytes per second. Once the Job logs `HEADERS-SENT`, the step deletes the pod, so SIGTERM arrives about 13 s before the body ends. The Job must log `STATUS HTTP/1.1 401`; the pod log must contain `graceful shutdown triggered`, a 401 line for the token request after it, and `goodbye to uWSGI.`, and no `binary reloading uWSGI`. Fails at once with `FAIL: no keystone-graceful-shutdown API pod` when no pod matches. A step `cleanup` deletes the Job |
 
-**Fixtures:** `00-keystone-cr.yaml`
+**Fixtures:** `00-keystone-cr.yaml`; step 4 applies its Job inline.
 
 ---
 
