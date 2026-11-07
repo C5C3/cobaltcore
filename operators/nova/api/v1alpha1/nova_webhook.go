@@ -980,12 +980,13 @@ func resolveDrainWindow(d *commonv1.DeploymentSpec) (grace, preStop int64) {
 	return grace, preStop
 }
 
-// validateUWSGIHarakiri requires the worst-case uWSGI per-request kill to fit
-// inside the envelope between preStop sleep completion and SIGKILL, so a request
-// harakiri aborts still has time to be answered before the kubelet kills the pod.
-// It reaches the two HTTP front ends alone: the scheduler, conductor and console
-// proxy run no application server. It is nil-safe on both arguments' optional
-// halves.
+// validateUWSGIHarakiri requires harakiri to stay below the drain window
+// (terminationGracePeriodSeconds - preStopSleepSeconds). harakiri bounds a
+// request only while uWSGI serves: during the graceful shutdown that SIGTERM
+// starts, only the kubelet's SIGKILL at the end of the grace period bounds a
+// request still running. It reaches the two HTTP front ends alone: the
+// scheduler, conductor and console proxy run no application server. It is
+// nil-safe on both arguments' optional halves.
 func validateUWSGIHarakiri(fldPath *field.Path, u *commonv1.UWSGISpec, d *commonv1.DeploymentSpec) field.ErrorList {
 	if u == nil || u.Harakiri == nil {
 		return nil

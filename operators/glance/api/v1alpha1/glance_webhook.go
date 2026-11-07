@@ -583,10 +583,12 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	}
 
 	// harakiri must be strictly less than the drain window
-	// (terminationGracePeriodSeconds - preStopSleepSeconds) so the worst-case
-	// uWSGI per-request kill fits inside the envelope between preStop sleep
-	// completion and SIGKILL. Only applied when spec.apiServer.uwsgi.harakiri is
-	// set, reusing the grace/preStop values already resolved above.
+	// (terminationGracePeriodSeconds - preStopSleepSeconds). harakiri bounds a
+	// request only while uWSGI serves: during the graceful shutdown that
+	// SIGTERM starts, only the kubelet's SIGKILL at the end of the grace period
+	// bounds a request still running. Only applied when
+	// spec.apiServer.uwsgi.harakiri is set, reusing the grace/preStop values
+	// already resolved above.
 	if g.Spec.APIServer != nil && g.Spec.APIServer.UWSGI != nil && g.Spec.APIServer.UWSGI.Harakiri != nil {
 		drain := resolvedGrace - resolvedPreStop
 		harakiri := int64(*g.Spec.APIServer.UWSGI.Harakiri)

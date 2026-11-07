@@ -374,10 +374,12 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 		uwsgiPath := specPath.Child("apiServer", "uwsgi")
 		u := p.Spec.APIServer.UWSGI
 		// harakiri must be strictly less than the drain window
-		// (terminationGracePeriodSeconds - preStopSleepSeconds) so the worst-case
-		// uWSGI per-request kill fits inside the envelope between preStop sleep
-		// completion and SIGKILL. Only applied when harakiri is set, reusing the
-		// grace/preStop values already resolved above.
+		// (terminationGracePeriodSeconds - preStopSleepSeconds). harakiri
+		// bounds a request only while uWSGI serves: during the graceful
+		// shutdown that SIGTERM starts, only the kubelet's SIGKILL at the end
+		// of the grace period bounds a request still running. Only applied when
+		// harakiri is set, reusing the grace/preStop values already resolved
+		// above.
 		if u.Harakiri != nil {
 			drain := resolvedGrace - resolvedPreStop
 			harakiri := int64(*u.Harakiri)
