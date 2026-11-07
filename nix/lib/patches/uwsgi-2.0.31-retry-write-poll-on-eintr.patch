@@ -1,0 +1,69 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Retry the write wait's poll after EINTR
+
+uWSGI 2.0.31 waits for a socket in two hooks. The read wait,
+`uwsgi_simple_wait_read_hook` in core/reader.c, calls `poll()` again
+when a signal interrupts it. The write wait,
+`uwsgi_simple_wait_write_hook` in core/writer.c, returns the error: it
+logs `uwsgi_simple_wait_write_hook()/poll(): Interrupted system call`,
+the write fails with `OSError: write error`, and the worker drops the
+response.
+
+The CobaltCore API containers run uWSGI with
+`--hook-master-start "unix_signal:15 gracefully_kill_them_all"`
+(`UWSGIGracefulShutdownArgs` in internal/common/deployment/uwsgi.go).
+On SIGTERM the master sends SIGHUP to every worker, and each worker
+finishes its current request before it exits. That SIGHUP interrupts a
+worker that waits for a slow client to take a streamed response, so
+without this patch the graceful shutdown cuts the stream. Uploads are
+not affected, because the read wait retries.
+
+Measured with uWSGI 2.0.31 built from the sdist with and without this
+hunk (python:3.12-bookworm, the three flags of
+`UWSGIGracefulShutdownArgs`, a 128 MiB response with Content-Length, a
+client reading at 64 MiB/s that sends SIGTERM 0.5 s after the first
+body byte): unpatched delivered about 42 MB and logged the EINTR line
+in 3 of 3 runs; patched delivered all 134,217,728 bytes, exited 0 and
+logged `goodbye to uWSGI.` in 3 of 3. 24 MB at 4 MB/s gave 21.3 MB
+unpatched and every byte patched; 100 MB at 50 MB/s gave 65 MB
+unpatched and every byte patched.
+
+The patch retries `poll()` after EINTR the way the read wait does. The
+timeout restarts with each retry, as it does in the read wait. The
+master still SIGKILLs the HTTP router once the last worker exits, so a
+client too slow for the router to flush its buffer within about a
+second still loses the tail of the response.
+
+`assert_uwsgi_graceful_shutdown` in tests/lib/uwsgi.sh, which the
+verify scripts of the eight uWSGI API images call, streams 128 MiB
+through SIGTERM and fails on a short body or on the EINTR line.
+
+nix/lib/python-env.nix applies the patch to the uwsgi source of every
+lock with `patch --fuzz=0`. A uWSGI release that moves these lines, or
+already carries the fix, fails the build there.
+
+Applies to uWSGI 2.0.31 (nix/base-requirements.txt).
+
+Upstream status: not reported; tracked in #1635.
+
+diff --git a/core/writer.c b/core/writer.c
+index 5491986..447e9c7 100644
+--- a/core/writer.c
++++ b/core/writer.c
+@@ -692,7 +692,13 @@ int uwsgi_simple_wait_write_hook(int fd, int timeout) {
+         upoll.fd = fd;
+         upoll.events = POLLOUT;
+         upoll.revents = 0;
+-        int ret = poll(&upoll, 1, timeout);
++        int ret;
++        for (;;) {
++                ret = poll(&upoll, 1, timeout);
++                if ((ret < 0) && (errno == EINTR))
++                        continue;
++                break;
++        }
+ 
+         if (ret > 0) {
+                 if (upoll.revents & POLLOUT) {

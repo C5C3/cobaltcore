@@ -85,6 +85,39 @@ horizon-operator renders the same bound as cache `OPTIONS`;
 names against the image's Django. Upstream status: not reported; #1562 tracks
 the patch.
 
+**Library patches:** every service image, nova-compute and tempest included,
+carries `nix/lib/patches/uwsgi-2.0.31-retry-write-poll-on-eintr.patch` and
+`nix/lib/patches/uwsgi-2.0.31-flush-logs-under-threaded-logger-lock.patch`,
+which `nix/lib/python-env.nix` applies to the uWSGI 2.0.31 source of every
+lock before the build. On SIGTERM the master of an API container sends SIGHUP
+to every worker to start the graceful shutdown
+([Shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)). Upstream,
+that signal ends the wait of a worker that writes a streamed response to a
+slow client: the worker logs
+`uwsgi_simple_wait_write_hook()/poll(): Interrupted system call` and
+`OSError: write error`, and the client gets a short body, about 42 MB of a
+128 MiB response read at 64 MiB/s. The patch retries the `poll()` after EINTR,
+as the read wait in `core/reader.c` already does, and the response then
+arrives whole. A client too slow for the HTTP router to flush its buffer
+within about a second of the last worker's exit still loses the tail, because
+the master SIGKILLs the router then (50 MB at 5 MB/s lost about 1.3 MB).
+The second patch fixes the last lines of the container log. With
+`--threaded-logger`, a master thread reads the log pipe into
+`uwsgi.log_master_buf` and writes each line out. At exit, the atexit handler
+`uwsgi_flush_logs` drains the pipe from the main thread: upstream, it
+allocates a new buffer and reads without the thread's lock, so a line the
+thread has read comes out as heap memory of the same length. In 40
+start/SIGTERM cycles of the keystone image, 25 logs carried such a record, 24
+of them in place of `gateway "uWSGI http 1" has been buried`; 31 logged
+`goodbye to uWSGI.` twice and 2 not at all. The patch keeps the buffer and
+drains under the lock, and 40 of 40 logs ended with both lines once.
+`assert_uwsgi_graceful_shutdown` in `tests/lib/uwsgi.sh`, which the verify
+scripts of keystone, glance, placement, barbican, neutron, cinder, nova and
+horizon call, streams 128 MiB across SIGTERM and fails on a short body, the
+EINTR line, a `goodbye to uWSGI.` count other than one, or a log byte outside
+printable ASCII, tab and newline. Upstream status: not reported; #1635 tracks
+both patches.
+
 ### keystone
 
 **Location:** `images/keystone/image.nix`, built from the lock
