@@ -1,0 +1,370 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for spec.suspend on a Keystone CR.
+# Verifies that a suspended CR is left alone and that resuming it catches up:
+#   - Deploy with replicas: 1 and wait for Ready=True
+#   - Suspend: Suspended=True, Ready stays True, a ReconciliationSuspended
+#     event, and true in the Suspended printer column
+#   - Scale the Deployment to 2 by hand and change spec.deployment.replicas
+#     to 3: the Suspended condition reaches the new generation, and after 60
+#     seconds the Deployment still has 2 replicas and the CR has not observed
+#     its new generation
+#   - Resume: the Deployment rolls to 3, Ready=True at the current
+#     generation, no Suspended condition, a ReconciliationResumed event
+#   - Suspend again and delete: the finalizers still clean up the MariaDB
+#     CRs, the backup PushSecret and the Deployment
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-suspend
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with replicas: 1 ─────────────────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert Ready and the initial replica count ─────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+          spec:
+            replicas: 1
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Suspend reconciliation ─────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-suspend.yaml
+  # ── Step 4: Assert Suspended=True beside the frozen Ready=True ─────────
+  # The gate leaves Ready as the last full pass wrote it. The Event has no
+  # fixed name, so the assert matches any Event in the namespace with this
+  # involved object and reason; the kind keeps the Deployment of the same
+  # name out of it.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+          status:
+            (conditions[?type == 'Suspended']):
+            - status: "True"
+              reason: ReconciliationSuspended
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Event
+          metadata:
+            namespace: openstack
+          involvedObject:
+            kind: Keystone
+            name: keystone-suspend
+          reason: ReconciliationSuspended
+          type: Normal
+    - script:
+        content: |
+          set -eu
+          column=$(kubectl get keystone keystone-suspend -n $NAMESPACE | awk '
+            NR == 1 { for (i = 1; i <= NF; i++) if ($i == "SUSPENDED") c = i }
+            NR == 2 && c { print $c }')
+          if [ "$column" != "true" ]; then
+            echo "ERROR: the SUSPENDED column reads '$column', want 'true'"
+            kubectl get keystone keystone-suspend -n $NAMESPACE 2>&1 || true
+            exit 1
+          fi
+          echo "OK: the SUSPENDED column reads true"
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Drift and a spec change stay uncorrected ──────────────────
+  # Scale the Deployment by hand and raise spec.deployment.replicas. A
+  # reconciling operator would set the Deployment back within seconds, on
+  # the Deployment event and on the generation bump; a suspended one leaves
+  # both alone. The CR shows the unhandled spec change as
+  # status.observedGeneration below metadata.generation. The script after
+  # the patch waits until the Suspended condition carries the new
+  # generation, so the operator has seen the change before the 60 seconds
+  # start. It reads both values with kubectl, because chainsaw's JMESPath
+  # cannot reach metadata.generation from inside a condition filter.
+  - try:
+    - script:
+        timeout: 30s
+        content: |
+          set -eu
+          kubectl scale deployment keystone-suspend -n $NAMESPACE --replicas=2
+    - patch:
+        file: 02-patch-replicas.yaml
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          gen=""
+          seen=""
+          for _ in $(seq 1 60); do
+            gen=$(kubectl get keystone keystone-suspend -n $NAMESPACE -o jsonpath='{.metadata.generation}')
+            seen=$(kubectl get keystone keystone-suspend -n $NAMESPACE \
+              -o jsonpath='{.status.conditions[?(@.type=="Suspended")].observedGeneration}')
+            if [ "$gen" = "$seen" ]; then
+              echo "OK: the Suspended condition is at generation $gen"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "ERROR: the Suspended condition is at generation '$seen', metadata.generation is $gen"
+          exit 1
+    - script:
+        timeout: 2m
+        content: |
+          sleep 60
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+          spec:
+            replicas: 2
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+          (status.observedGeneration < metadata.generation): true
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Resume reconciliation ──────────────────────────────────────
+  - try:
+    - patch:
+        file: 03-patch-resume.yaml
+  # ── Step 7: Assert the resumed pass catches up ─────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+          spec:
+            replicas: 3
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+          (status.observedGeneration == metadata.generation): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (length(conditions[?type == 'Suspended'])): 0
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Event
+          metadata:
+            namespace: openstack
+          involvedObject:
+            kind: Keystone
+            name: keystone-suspend
+          reason: ReconciliationResumed
+          type: Normal
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Pod describe ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Job status ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== ConfigMap content ==="
+          for cm in $(kubectl get cm -n $NAMESPACE -o name 2>/dev/null | grep config-); do
+            echo "--- $cm ---"
+            kubectl get -n $NAMESPACE "$cm" -o jsonpath='{.data}' 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 8: Suspend again ──────────────────────────────────────────────
+  - try:
+    - patch:
+        file: 01-patch-suspend.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+          status:
+            (conditions[?type == 'Suspended']):
+            - status: "True"
+              reason: ReconciliationSuspended
+  # ── Step 9: Delete the suspended Keystone CR ───────────────────────────
+  # The suspend gate sits after the deletion branch, so the finalizers run
+  # their cleanup as for an unsuspended CR.
+  - try:
+    - delete:
+        timeout: 3m
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          name: keystone-suspend
+          namespace: openstack
+  # ── Step 10: Assert the finalizer cleanup ran ──────────────────────────
+  - try:
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: external-secrets.io/v1alpha1
+          kind: PushSecret
+          metadata:
+            name: keystone-suspend-fernet-keys-backup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-suspend
+            namespace: openstack
