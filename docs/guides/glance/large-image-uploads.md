@@ -169,13 +169,17 @@ its next local-storage housekeeping pass, and the sequence from there is fixed:
 3. the Deployment replaces the pod and the API recovers without operator or
    human intervention.
 
-The eviction is visible on the pod and in the event stream:
+The event stream records the eviction:
 
 ```bash
-kubectl get pods -n openstack -l app.kubernetes.io/instance=controlplane-glance \
-  -o 'custom-columns=NAME:.metadata.name,PHASE:.status.phase,REASON:.status.reason'
 kubectl get events -n openstack --field-selector reason=Evicted
 ```
+
+The pod's own status does not always show it. glance-api drains its requests on
+SIGTERM and exits 0, so an evicted pod whose requests ended within the
+eviction's two-second window shows phase `Succeeded` (`Completed` in
+`kubectl get pods`) and no reason. A pod whose request outlived that window
+shows `Failed` with reason `Evicted`.
 
 The image record survives in a non-active status. Delete it, then retry with a
 larger bound or a smaller image; nothing about the failed import is retried

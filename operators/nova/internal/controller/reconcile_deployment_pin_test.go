@@ -75,6 +75,10 @@ spec:
         - --master
         - --lazy-apps
         - --need-app
+        - --hook-master-start
+        - unix_signal:15 gracefully_kill_them_all
+        - --shutdown-sockets
+        - --threaded-logger
         - --processes
         - "2"
         - --threads
@@ -275,6 +279,10 @@ spec:
         - --master
         - --lazy-apps
         - --need-app
+        - --hook-master-start
+        - unix_signal:15 gracefully_kill_them_all
+        - --shutdown-sockets
+        - --threaded-logger
         - --processes
         - "2"
         - --threads
@@ -471,6 +479,10 @@ spec:
         - --master
         - --lazy-apps
         - --need-app
+        - --hook-master-start
+        - unix_signal:15 gracefully_kill_them_all
+        - --shutdown-sockets
+        - --threaded-logger
         - --processes
         - "2"
         - --threads

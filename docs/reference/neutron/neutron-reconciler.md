@@ -518,7 +518,11 @@ path.
 entry script, so the API container runs
 `uwsgi --http :9696 … --module neutron.wsgi.api`, with the shared
 `deployment.BuildUWSGICommand` emitting the process, thread, keep-alive and
-harakiri parameters, and a trailing `--ini /etc/neutron/uwsgi.ini`. That file
+harakiri parameters and the graceful-shutdown flags
+`--hook-master-start "unix_signal:15 gracefully_kill_them_all"`,
+`--shutdown-sockets` and `--threaded-logger`
+([Keystone shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)),
+and a trailing `--ini /etc/neutron/uwsgi.ini`. That file
 carries `start-time = %t`, which uWSGI expands while it reads it; rendering the
 same marker on the command line would pass the literal `%t` and kill neutron on
 `int('%t')`.

@@ -584,6 +584,9 @@ of configuration:
 | `--master` | Fixed — enables uWSGI master process |
 | `--lazy-apps` | Fixed — loads apps in each worker after fork |
 | `--need-app` | Fixed — exits if no WSGI app is found |
+| `--hook-master-start "unix_signal:15 gracefully_kill_them_all"` | Fixed — SIGTERM starts the graceful shutdown, see [Shutdown sequence](#shutdown-sequence) |
+| `--shutdown-sockets` | Fixed — an idle worker shuts down the socket the HTTP router forwards to, so a request that arrives during the shutdown fails at once |
+| `--threaded-logger` | Fixed — a master thread reads the log pipe while the master waits for the workers, so every log line up to `goodbye to uWSGI.` reaches the container log; the images carry a uWSGI patch that keeps the exit drain from racing this thread ([Container Images](../ci-cd/container-images.md#service-images)) |
 | `--processes <N>` | `spec.uwsgi.processes` (default: 2) |
 | `--threads <N>` | `spec.uwsgi.threads` (default: 1) |
 | `--pyargv=--config-dir=/etc/keystone/keystone.conf.d/` | Fixed — passes config directory to Keystone |
@@ -647,6 +650,42 @@ and defaulting behavior.
 | `spec.deployment.strategy`                           | `*appsv1.DeploymentStrategy`      | `RollingUpdate(maxSurge=1, maxUnavailable=0)` | —       | Deployment rollout strategy. Default guarantees surge-before-remove so capacity never dips below `spec.deployment.replicas`.                  |
 | `spec.uwsgi.harakiri`                     | `*int32`                          | unset (flag omitted)                         | `1`     | Per-request worker kill bound (`--harakiri <n>`). Prevents a single stuck request from holding a worker past the shutdown envelope. |
 | `spec.uwsgi.httpKeepAliveTimeout`         | `*int32`                          | unset (bare `--http-keepalive`)              | `2`     | Idle time between two requests on a keep-alive socket (`--http-keepalive=<n>`). Only rendered when `httpKeepAlive=true`.           |
+
+### Shutdown sequence
+
+A rollout, a scale-in or a node drain terminates a Keystone API pod in this
+order:
+
+1. The kubelet runs the preStop hook, `sleep <preStopSleepSeconds>`, while the
+   pod leaves the Service's EndpointSlice and kube-proxy stops sending it new
+   connections.
+2. The kubelet sends SIGTERM to uWSGI. The master logs
+   `graceful shutdown triggered...` and sends SIGHUP to every worker
+   (`--hook-master-start "unix_signal:15 gracefully_kill_them_all"`).
+3. A worker that is serving a request finishes it, then exits.
+4. A worker that is idle shuts down the socket the HTTP router forwards to
+   (`--shutdown-sockets`) and exits at once.
+5. A request that reaches the router after that fails at once, also on a
+   keep-alive connection a client reuses (see
+   [Operator Guidance](#operator-guidance-not-webhook-enforced)).
+6. The master does not enforce `--harakiri` while it waits for the workers.
+7. Once the last worker has exited, the master SIGKILLs the HTTP router, logs
+   `goodbye to uWSGI.` and exits 0.
+8. A request still running when `terminationGracePeriodSeconds` ends is cut by
+   the kubelet's SIGKILL, the only bound on it during the shutdown.
+
+A streamed response finishes as long as the client keeps reading. The images
+carry a uWSGI patch for that
+([Container Images](../ci-cd/container-images.md#service-images)). The master
+SIGKILLs the HTTP router within about a second of the last worker's exit, so
+a client too slow for the router to flush its buffer in that time loses the
+tail of the response: a 50 MB download read at 5 MB/s lost about 1.3 MB.
+
+uWSGI looks up `gracefully_kill_them_all` when it starts. A custom
+`spec.image` whose uWSGI does not export that function exits at start with
+`unable to find function "gracefully_kill_them_all"`. The default
+`RollingUpdate` strategy with `maxUnavailable: 0` keeps the old pods serving
+while the new ones fail.
 
 ### Interaction Rules Enforced by the Webhook
 

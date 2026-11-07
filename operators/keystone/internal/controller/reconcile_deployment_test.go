@@ -1414,7 +1414,9 @@ func TestUWSGICommand_KeepAliveEnabled(t *testing.T) {
 
 // TestUWSGICommand_FixedFlagsAlwaysPresent verifies that regardless of uwsgi
 // config, the command always includes --http :5000, --wsgi-file, --master,
-// --lazy-apps, --need-app, and --pyargv.
+// --lazy-apps, --need-app, the graceful-shutdown flags --hook-master-start
+// "unix_signal:15 gracefully_kill_them_all", --shutdown-sockets and
+// --threaded-logger, and --pyargv.
 func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1435,6 +1437,10 @@ func TestUWSGICommand_FixedFlagsAlwaysPresent(t *testing.T) {
 		g.Expect(cmd).To(ContainElement("--master"))
 		g.Expect(cmd).To(ContainElement("--lazy-apps"))
 		g.Expect(cmd).To(ContainElement("--need-app"))
+		g.Expect(cmd).To(ContainElement("--hook-master-start"))
+		g.Expect(cmd).To(ContainElement("unix_signal:15 gracefully_kill_them_all"))
+		g.Expect(cmd).To(ContainElement("--shutdown-sockets"))
+		g.Expect(cmd).To(ContainElement("--threaded-logger"))
 		g.Expect(cmd).To(ContainElement("--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"))
 	}
 }

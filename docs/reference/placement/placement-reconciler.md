@@ -119,8 +119,12 @@ The container command is `uwsgi --http :8778`, followed by `--http-keepalive`
 (`--http-keepalive=<n>` when `httpKeepAliveTimeout` is set),
 `--log-master`, `--log-format` with the request-line format the sibling operators
 share, `--wsgi-file /var/lib/openstack/bin/placement-api`, `--master`,
-`--lazy-apps`, `--need-app`, `--processes`, `--threads`, and `--harakiri <n>`
-when `harakiri` is set. Keep-alive is on by default and an explicit
+`--lazy-apps`, `--need-app`, the graceful-shutdown flags
+`--hook-master-start "unix_signal:15 gracefully_kill_them_all"`,
+`--shutdown-sockets` and `--threaded-logger`, `--processes`, `--threads`, and
+`--harakiri <n>` when `harakiri` is set. SIGTERM then drains the requests in
+flight before uWSGI exits
+([Keystone shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)). Keep-alive is on by default and an explicit
 `httpKeepAlive: false` drops the keep-alive token; `--harakiri` appears only when
 the field is set.
 
