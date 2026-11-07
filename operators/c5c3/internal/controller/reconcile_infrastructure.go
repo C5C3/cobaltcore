@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strconv"
 
-	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -55,7 +55,7 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // DECISION the managed-mode MariaDB CR is provisioned with
 // a MINIMAL but VALID spec. The mariadb-operator's webhook requires
 // Storage.Size (or a VolumeClaimTemplate) — see Storage.Validate in the
-// vendored v0.38.1 types — so a size is always set. Both the replica topology
+// v26 types — so a size is always set. Both the replica topology
 // and the storage size are DERIVED from the DECLARED instance — the shared
 // spec.infrastructure.database or a per-service dedicated one, which is exactly
 // what lets an operator size a busy service's database independently of the

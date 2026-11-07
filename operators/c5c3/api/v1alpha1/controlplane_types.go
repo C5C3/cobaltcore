@@ -395,7 +395,7 @@ type ServicesSpec struct {
 // nothing here imported them. The L2 reconciler will need these coordinates
 // (recorded here so the orchestrator does not have to re-resolve them):
 //   - keystone           => ../keystone (local replace directive)
-//   - mariadb-operator    => github.com/mariadb-operator/mariadb-operator v0.38.1
+//   - mariadb-operator    => github.com/mariadb-operator/mariadb-operator/v26 v26.10.2
 //   - external-secrets    => github.com/external-secrets/external-secrets/apis
 //     (match the pin in operators/keystone/go.mod)
 //   - K-ORC               => github.com/k-orc/openstack-resource-controller/v3 (main-commit pseudo-version in go.mod)
