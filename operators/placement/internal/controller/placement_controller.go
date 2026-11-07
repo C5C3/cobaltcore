@@ -294,10 +294,11 @@ var PlacementRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by internal/common/validation/validation.go:312 (PriorityClassExists) to get priorityclasses.
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
-// Reconcile is the main reconciliation loop for the Placement CR. It fetches the
-// CR, drives the finalizer-gated deletion path, ensures the finalizer, then runs
-// the sub-reconciler pipeline. Every exit funnels through updateStatus, which
-// re-aggregates the Ready condition and stamps ObservedGeneration.
+// Reconcile is the main reconciliation loop for the Placement CR. It fetches
+// the CR, drives the finalizer-gated deletion path, ends the pass for a
+// suspended CR, ensures the finalizer, then runs the sub-reconciler pipeline.
+// Every exit funnels through updateStatus, which re-aggregates the Ready
+// condition and stamps ObservedGeneration.
 func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var placement placementv1alpha1.Placement
 	if err := r.Get(ctx, req.NamespacedName, &placement); err != nil {
@@ -350,6 +351,13 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// A suspended CR ends the pass here. The deletion branch above still runs
+	// its cleanup; nothing below runs until spec.suspend is cleared.
+	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &placement,
+		&placement.Status.Conditions, placement.Spec.Suspend); stop || err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Resolve the client every child object of this CR is read and written with.

@@ -380,10 +380,11 @@ var GlanceRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the Glance CR. It fetches the
-// CR, drives the finalizer-gated deletion path, ensures the finalizer, then runs
-// the sub-reconciler pipeline threading the digests, projection, and config
-// artefacts through the closures. Every exit funnels through updateStatus, which
-// re-aggregates the Ready condition and stamps ObservedGeneration.
+// CR, drives the finalizer-gated deletion path, ends the pass for a suspended
+// CR, ensures the finalizer, then runs the sub-reconciler pipeline threading
+// the digests, projection, and config artefacts through the closures. Every
+// exit funnels through updateStatus, which re-aggregates the Ready condition
+// and stamps ObservedGeneration.
 func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var glance glancev1alpha1.Glance
 	if err := r.Get(ctx, req.NamespacedName, &glance); err != nil {
@@ -436,6 +437,13 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// A suspended CR ends the pass here. The deletion branch above still runs
+	// its cleanup; nothing below runs until spec.suspend is cleared.
+	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &glance,
+		&glance.Status.Conditions, glance.Spec.Suspend); stop || err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Resolve the client every child object of this CR is read and written with.

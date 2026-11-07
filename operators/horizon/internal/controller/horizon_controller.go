@@ -303,6 +303,13 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
+	// A suspended CR ends the pass here. The deletion branch above still runs
+	// its cleanup; nothing below runs until spec.suspend is cleared.
+	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &horizon,
+		&horizon.Status.Conditions, horizon.Spec.Suspend); stop || err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// Snapshot the persisted status so updateStatus can skip the write when a
 	// pass leaves status unchanged (no write → no watch event → no
 	// resourceVersion churn).
