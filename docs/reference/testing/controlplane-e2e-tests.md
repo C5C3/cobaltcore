@@ -1924,8 +1924,14 @@ changes that make the caps testable and a third that makes the VPAs testable:
 | 13. `behavior-removal` (5m) | A JSON patch removes the Keystone behavior; the child carries none and the HPA's scale-down window reads 300 (or `spec.behavior` is absent) |
 
 A test-level `catch` (5m) dumps the HPAs, the VPAs, `kubectl top pods`, pods,
-events, both Jobs' logs and the live MariaDB connections per user. The
-`cleanup` of step 2 (15m) runs when the test ends, whichever step it ends in,
+events, both Jobs' logs and the live MariaDB connections per user. It also
+prints the last 15 minutes of the seven API Deployments' logs, without
+uWSGI's 2xx request lines and the two warnings Keystone writes for every token
+it issues. Only those logs say why an API refused a request, and the cleanup
+deletes their pods before the job's diagnostics dump, which keeps 30 lines
+per pod.
+
+The `cleanup` of step 2 (15m) runs when the test ends, whichever step it ends in,
 and deletes both Jobs, the ControlPlane, the OVNCentral, the broker vhost and
 the eight KV paths. The worst-case ceiling is the sum of these timeouts, 164 minutes.
 
