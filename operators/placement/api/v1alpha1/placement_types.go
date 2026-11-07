@@ -15,6 +15,7 @@ import (
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Release",type="string",JSONPath=".status.installedRelease"
 // +kubebuilder:printcolumn:name="Endpoint",type="string",JSONPath=".status.endpoint"
+// +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Placement is the Schema for the placements API. It deploys the Placement
@@ -216,6 +217,19 @@ type PlacementSpec struct {
 	// no dedicated knob of their own.
 	// +optional
 	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
+
+	// Suspend pauses the operator's reconciliation of this resource. While it is
+	// true the operator creates, updates and deletes nothing for it: no
+	// provisioning, no rollout of spec changes, no release upgrade or schema
+	// migration, and no correction of drift in the objects it owns. Workloads
+	// that already run keep running unchanged. The resource reports
+	// Suspended=True and keeps its last Ready condition and
+	// status.observedGeneration. Deleting a suspended resource runs its
+	// finalizer cleanup as usual. Setting it to false or removing it resumes
+	// reconciliation. It is the only pause switch this resource has, since it
+	// runs no CronJob.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // DeploymentSpec, AutoscalingSpec, VerticalAutoscalingSpec, NetworkPolicySpec,

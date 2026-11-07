@@ -116,6 +116,29 @@ block that is not set.
 longer resolves. The CR requeues after 15 seconds and acquires no finalizer, and
 nothing is created on any cluster. See [Target Clusters](../target-clusters.md).
 
+### Suspension
+
+`spec.suspend: true` ends every pass right after the deletion branch, before the
+target cluster is resolved, a finalizer is added or any sub-reconciler runs.
+`GateSuspend` in `internal/common/reconcile/suspend.go` sets `Suspended=True`
+with reason `ReconciliationSuspended` and returns an empty result. Nothing
+requeues the CR: no health probe runs, so the re-probe requeue stops as well.
+`Ready` and `status.observedGeneration` keep the values of the last full pass,
+and a spec change made meanwhile shows as `status.observedGeneration` below
+`metadata.generation`. `Suspended` is never part of the `Ready` aggregation.
+Clearing `spec.suspend` bumps the generation, which starts the next pass: the
+gate removes the condition and the pass runs in full.
+
+The rotations and rollouts the pipeline drives stop with it. The
+`spec.dbArchive` CronJob keeps its schedule, because Kubernetes runs it without
+the operator. A credential that changes outside the CR in the meantime, such as
+a password an ESO resync delivers into a credential Secret, reaches the pods
+only after the resume. Deleting a suspended CR runs the deletion path as usual,
+because it comes before the gate.
+
+The two events the gate emits are listed under
+[Suspension](./nova-events.md#suspension).
+
 ## Database
 
 The Database step runs the shared provisioning flow twice, once per block: the

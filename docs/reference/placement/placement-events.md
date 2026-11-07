@@ -99,6 +99,21 @@ that refused it, and returns an error so the controller backs off.
 > pass and would otherwise re-fire for as long as the two fields disagree. Read
 > that case off the condition, not the event stream.
 
+### Suspension
+
+Emitted by the suspend gate when `spec.suspend` changes whether a Placement CR
+is reconciled. Both fire on a transition only, never on the steady pass of a
+suspended CR, and neither fires for a CR that is being deleted, because the
+deletion branch runs before the gate.
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `ReconciliationSuspended` | Normal | `spec.suspend` is `true` and the CR does not carry `Suspended=True` yet; the gate sets the condition | `Reconciliation suspended by spec.suspend` |
+| `ReconciliationResumed` | Normal | `spec.suspend` is cleared on a CR that carries a `Suspended` condition; the gate removes it | `Reconciliation resumed: spec.suspend is cleared` |
+
+**Source:** `GateSuspend` in `internal/common/reconcile/suspend.go`, called from
+`Reconcile` in `placement_controller.go` right after the deletion branch
+
 ### Finalization
 
 Emitted while the finalizer tears a deleted Placement CR down.

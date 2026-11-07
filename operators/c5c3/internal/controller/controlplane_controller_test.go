@@ -23,8 +23,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -1119,6 +1121,102 @@ func TestReconcile_DuplicateControlPlane_TieBreakByName(t *testing.T) {
 		"on a creation-time tie the lexically larger name must be parked")
 	g.Expect(ready.Message).To(ContainSubstring(`"alpha"`),
 		"the tie-break incumbent must be the lexically smallest name")
+}
+
+// TestReconcile_SuspendedControlPlaneTouchesNothing pins that a suspended
+// ControlPlane ends the pass before the ORC-teardown finalizer and the
+// sub-reconcilers. The scheme registers no child kinds, so any sub-reconciler
+// that ran would error on them; the suspended pass reports only Suspended=True,
+// installs no ORC-teardown finalizer and is not requeued. The reconciler has no
+// recorder, which the gate tolerates.
+func TestReconcile_SuspendedControlPlaneTouchesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	cp := duplicateGuardControlPlane("alpha", "default", "uid-alpha", time.Now())
+	cp.Spec.Suspend = true
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	key := types.NamespacedName{Namespace: "default", Name: "alpha"}
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "a suspended ControlPlane is not requeued")
+	var got c5c3v1alpha1.ControlPlane
+	g.Expect(c.Get(context.Background(), key, &got)).To(Succeed())
+	suspended := conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(suspended.Reason).To(Equal(commonreconcile.ReasonReconciliationSuspended))
+	g.Expect(controllerutil.ContainsFinalizer(&got, controlPlaneORCFinalizer)).To(BeFalse())
+	g.Expect(conditions.GetCondition(got.Status.Conditions, conditionTypeReady)).To(BeNil())
+}
+
+// TestReconcile_SuspendedDuplicateControlPlaneReportsSuspended pins that the
+// suspend gate runs before the duplicate guard: a suspended younger duplicate
+// reports Suspended=True, and is neither parked with DuplicateControlPlane nor
+// requeued.
+func TestReconcile_SuspendedDuplicateControlPlaneReportsSuspended(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	now := time.Now()
+	older := duplicateGuardControlPlane("alpha", "default", "uid-alpha", now.Add(-time.Hour))
+	younger := duplicateGuardControlPlane("bravo", "default", "uid-bravo", now)
+	younger.Spec.Suspend = true
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(older, younger).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	key := types.NamespacedName{Namespace: "default", Name: "bravo"}
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "a suspended duplicate is not parked and requeued")
+	var got c5c3v1alpha1.ControlPlane
+	g.Expect(c.Get(context.Background(), key, &got)).To(Succeed())
+	suspended := conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(conditions.GetCondition(got.Status.Conditions, conditionTypeReady)).To(BeNil(),
+		"the duplicate guard must not run for a suspended ControlPlane")
+}
+
+// TestReconcile_ResumedControlPlaneDropsSuspendedCondition pins the resume path:
+// a ControlPlane whose spec.suspend was cleared loses the Suspended condition
+// and the same pass goes on to install the ORC-teardown finalizer.
+func TestReconcile_ResumedControlPlaneDropsSuspendedCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := controllerTestScheme(t)
+	cp := duplicateGuardControlPlane("alpha", "default", "uid-alpha", time.Now())
+	cp.Status.Conditions = []metav1.Condition{{
+		Type:               commonreconcile.ConditionTypeSuspended,
+		Status:             metav1.ConditionTrue,
+		Reason:             commonreconcile.ReasonReconciliationSuspended,
+		LastTransitionTime: metav1.Now(),
+	}}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	key := types.NamespacedName{Namespace: "default", Name: "alpha"}
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	var got c5c3v1alpha1.ControlPlane
+	g.Expect(c.Get(context.Background(), key, &got)).To(Succeed())
+	g.Expect(conditions.GetCondition(got.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	g.Expect(controllerutil.ContainsFinalizer(&got, controlPlaneORCFinalizer)).To(BeTrue())
 }
 
 func TestDuplicateControlPlaneIncumbent_OldestProceeds(t *testing.T) {

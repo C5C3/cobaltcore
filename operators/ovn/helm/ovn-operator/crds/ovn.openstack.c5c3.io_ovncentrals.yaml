@@ -27,6 +27,9 @@ spec:
     - jsonPath: .status.southbound.readyReplicas
       name: SB
       type: integer
+    - jsonPath: .spec.suspend
+      name: Suspended
+      type: boolean
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -6308,6 +6311,19 @@ spec:
                 - message: 'storage is immutable: volumeClaimTemplates cannot change'
                   rule: '!has(self.storage) || !has(oldSelf.storage) || self.storage
                     == oldSelf.storage'
+              suspend:
+                description: |-
+                  Suspend pauses the operator's reconciliation of this resource. While it is
+                  true the operator creates, updates and deletes nothing for it: no
+                  provisioning, no rollout of spec changes, no release upgrade or schema
+                  migration, and no correction of drift in the objects it owns. Workloads
+                  that already run, CronJobs included, keep running unchanged. The resource
+                  reports Suspended=True and keeps its last Ready condition and
+                  status.observedGeneration. Deleting a suspended resource runs its
+                  teardown as usual. Setting it to false or removing it resumes
+                  reconciliation. The per-CronJob suspend fields pause one scheduled job
+                  only, while the rest of the resource keeps reconciling.
+                type: boolean
               targetClusterRef:
                 description: |-
                   TargetClusterRef selects the registered target cluster the children are

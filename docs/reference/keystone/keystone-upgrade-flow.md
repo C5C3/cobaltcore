@@ -460,8 +460,8 @@ output:
 
 ```bash
 kubectl get keystones
-# NAME       READY   ENDPOINT                                            RELEASE   AGE
-# keystone   True    http://keystone.openstack.svc:5000/v3               2026.1    7d
+# NAME       READY   ENDPOINT                                            RELEASE   SUSPENDED   AGE
+# keystone   True    http://keystone.openstack.svc:5000/v3               2026.1                7d
 ```
 
 ### Inspecting Conditions

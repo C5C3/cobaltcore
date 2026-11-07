@@ -128,6 +128,29 @@ The three credential overrides that would already have done their damage by the
 time a condition could report them are refused at admission; see
 [Defaulting and validation](./barbican-crd.md#defaulting-and-validation).
 
+### Suspension
+
+`spec.suspend: true` ends every pass right after the deletion branch, before the
+target cluster is resolved, a finalizer is added or any sub-reconciler runs.
+`GateSuspend` in `internal/common/reconcile/suspend.go` sets `Suspended=True`
+with reason `ReconciliationSuspended` and returns an empty result. Nothing
+requeues the CR: no health probe runs, so the re-probe requeue stops as well.
+`Ready` and `status.observedGeneration` keep the values of the last full pass,
+and a spec change made meanwhile shows as `status.observedGeneration` below
+`metadata.generation`. `Suspended` is never part of the `Ready` aggregation.
+Clearing `spec.suspend` bumps the generation, which starts the next pass: the
+gate removes the condition and the pass runs in full.
+
+The rotations and rollouts the pipeline drives stop with it. The `spec.dbClean`
+CronJob keeps its schedule, because Kubernetes runs it without the operator. A
+credential that changes outside the CR in the meantime, such as a password an
+ESO resync delivers into a credential Secret, reaches the pods only after the
+resume. Deleting a suspended CR runs the deletion path as usual, because it
+comes before the gate.
+
+The two events the gate emits are listed under
+[Suspension](./barbican-events.md#suspension).
+
 ## Secret-store aggregation
 
 The SecretStores step lists the attached stores through the

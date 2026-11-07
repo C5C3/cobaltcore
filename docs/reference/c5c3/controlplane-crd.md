@@ -177,6 +177,7 @@ status:
 | --- | --- | --- |
 | Ready | `.status.conditions[?(@.type=='Ready')].status` | string |
 | Release | `.spec.openStackRelease` | string |
+| Suspended | `.spec.suspend` | boolean |
 | Age | `.metadata.creationTimestamp` | date |
 
 The status subresource is enabled via `+kubebuilder:subresource:status`.
@@ -232,6 +233,7 @@ status:
 | `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (the operator-provisioned `SecretStore` `openbao-tenant-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, Placement, Neutron, Cinder, Nova and Barbican children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, the c5c3-operator provisions the namespaced `SecretStore` `openbao-tenant-store` in the ControlPlane namespace and routes the control plane through it. Set the field only to use a store you manage yourself: `{kind: SecretStore, name: <store>}`, resolved in the ControlPlane's own namespace; the shared `openbao-cluster-store` lacks the per-ControlPlane grants and is not an option. See [SecretStoreRefSpec](#secretstorerefspec). |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
 | `namespaceAssignments` | [`[]NamespaceAssignmentSpec`](#namespaceassignmentspec) | No | `nil` | Namespaces on the management cluster or on a registered target cluster assigned to the owners of services the control plane does not manage, each with the Keystone roles an order from it may request and whether it may order catalog entries. `listType=atomic`, at most 32 entries, each (`namespace`, `targetClusterRef.name`) pair unique. It sits beside `korc` because the consent also covers database and message-bus orders. Reported in `status.namespaceAssignments` and by [`NamespaceAssignmentsReady`](#namespaceassignmentsready). Legal in both keystone modes. See [NamespaceAssignmentSpec](#namespaceassignmentspec). |
+| `suspend` | `bool` | No | `false` | Pauses the operator's reconciliation of this ControlPlane. While it is `true` the operator creates, updates and deletes nothing for it: no provisioning, no rollout of spec changes, no release upgrade or schema migration, and no correction of drift in the objects it owns. Workloads that already run keep running, CronJobs included. The CR reports `Suspended=True` and keeps its last `Ready` condition and `status.observedGeneration`. Deleting a suspended CR runs its finalizer cleanup as usual. Setting it to `false` or removing it resumes reconciliation. `services.nova.dbArchive.suspend` pauses one scheduled job only, while the rest of the ControlPlane keeps reconciling. Suspending the ControlPlane stops its projection into the child service resources; the children keep reconciling and are not suspended themselves. To pause one service, set `spec.suspend` on its child CR instead: the projection never writes the field, so the value holds while the service operator charts come from the same release as the c5c3-operator chart. An older c5c3-operator writes the Horizon child with a full `Update` and drops the field. See step 3 of [Reconciliation Flow](./controlplane-reconciler.md#reconciliation-flow). |
 
 ### SecretStoreRefSpec
 
@@ -3766,6 +3768,14 @@ one-per-namespace webhook guard or bypassed it), every CR except the oldest is
 parked with `Ready=False` reason `DuplicateControlPlane` naming the incumbent,
 and none of its sub-reconcilers run. For the full flow, see the
 [ControlPlane Reconciler reference](./controlplane-reconciler.md).
+
+`Suspended` is the one condition outside the sub-reconcilers. The operator sets
+it to `True` with reason `ReconciliationSuspended` while `spec.suspend` is
+`true`, before the duplicate guard and before any sub-reconciler, and removes it
+once the field is cleared. It is never aggregated into `Ready`, which keeps the
+value of the last full pass, as does `status.observedGeneration`. A suspended
+duplicate reports `Suspended`, not `DuplicateControlPlane`. See
+[Reconciliation Flow](./controlplane-reconciler.md#reconciliation-flow).
 
 ### SizingReady
 

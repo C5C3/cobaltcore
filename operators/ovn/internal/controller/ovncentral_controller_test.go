@@ -136,6 +136,115 @@ func TestReconcile_TargetClusterUnavailableGatesBeforeFinalizer(t *testing.T) {
 	g.Expect(statefulSets.Items).To(BeEmpty())
 }
 
+// TestReconcile_SuspendedCRTouchesNothing pins where the suspend gate sits:
+// after the deletion branch and before the target-cluster resolution. A
+// suspended CR naming an unregistered cluster therefore reports Suspended=True
+// and nothing else: no TargetClusterUnavailable, no finalizer, no child object,
+// no Ready, and its last status.observedGeneration. It is not requeued.
+func TestReconcile_SuspendedCRTouchesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNCentral()
+	cr.Generation = 2
+	cr.Status.ObservedGeneration = 1
+	cr.Spec.Suspend = true
+	cr.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+	r := newTestOVNCentralReconciler(t, cr)
+	r.Resolver = unresolvableResolver{}
+
+	ctx := context.Background()
+	res, err := r.Reconcile(ctx, ovnCentralRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "a suspended CR is not requeued")
+
+	got := getOVNCentral(t, r.Client, testOVNCentralName)
+	suspended := ovnCentralCondition(got, commonreconcile.ConditionTypeSuspended)
+	g.Expect(suspended).NotTo(BeNil())
+	g.Expect(suspended.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(suspended.Reason).To(Equal(commonreconcile.ReasonReconciliationSuspended))
+	g.Expect(suspended.ObservedGeneration).To(Equal(int64(2)))
+	g.Expect(ovnCentralCondition(got, "Ready")).To(BeNil())
+	g.Expect(got.Status.Conditions).NotTo(ContainElement(
+		HaveField("Reason", commonmulticluster.TargetClusterUnavailable)),
+		"a suspended CR never resolves its target cluster")
+	g.Expect(got.Status.ObservedGeneration).To(Equal(int64(1)))
+	g.Expect(got.Finalizers).To(BeEmpty())
+
+	var deployments appsv1.DeploymentList
+	g.Expect(r.List(ctx, &deployments)).To(Succeed())
+	g.Expect(deployments.Items).To(BeEmpty())
+	var secrets corev1.SecretList
+	g.Expect(r.List(ctx, &secrets)).To(Succeed())
+	g.Expect(secrets.Items).To(BeEmpty())
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(ctx, &configMaps)).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
+	var jobs batchv1.JobList
+	g.Expect(r.List(ctx, &jobs)).To(Succeed())
+	g.Expect(jobs.Items).To(BeEmpty())
+	var certificates certmanagerv1.CertificateList
+	g.Expect(r.List(ctx, &certificates)).To(Succeed())
+	g.Expect(certificates.Items).To(BeEmpty())
+	var statefulSets appsv1.StatefulSetList
+	g.Expect(r.List(ctx, &statefulSets)).To(Succeed())
+	g.Expect(statefulSets.Items).To(BeEmpty())
+
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+		ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+}
+
+// TestReconcile_ResumedCRDropsSuspendedCondition pins the resume path: a CR
+// whose spec.suspend was cleared loses the Suspended condition left by the
+// suspended passes, and the same pass goes on to the TLS gate, the first step
+// of the pipeline (a local CR installs no finalizer).
+func TestReconcile_ResumedCRDropsSuspendedCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNCentral()
+	cr.Status.Conditions = []metav1.Condition{{
+		Type:               commonreconcile.ConditionTypeSuspended,
+		Status:             metav1.ConditionTrue,
+		Reason:             commonreconcile.ReasonReconciliationSuspended,
+		LastTransitionTime: metav1.Now(),
+	}}
+	r := newTestOVNCentralReconciler(t, cr)
+
+	res, err := r.Reconcile(context.Background(), ovnCentralRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}))
+	got := getOVNCentral(t, r.Client, testOVNCentralName)
+	g.Expect(ovnCentralCondition(got, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	tlsReady := ovnCentralCondition(got, conditionTypeTLSReady)
+	g.Expect(tlsReady).NotTo(BeNil(), "the pipeline's first gate ran in the resuming pass")
+	g.Expect(tlsReady.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(tlsReady.Reason).To(Equal(conditionReasonCertificatePending))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(ConsistOf(
+		ContainSubstring(commonreconcile.ReasonReconciliationResumed)))
+}
+
+// TestReconcile_SuspendedTerminatingCRRunsDeletion pins that suspension never
+// holds a deletion: the deletion branch runs ahead of the gate. A local CR has
+// no finalizer of this operator, so the fixture holds the CR with a foreign
+// one, and the pass ends as the teardown of an unsuspended CR does, without a
+// Suspended condition.
+func TestReconcile_SuspendedTerminatingCRRunsDeletion(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cr := testOVNCentral()
+	cr.Spec.Suspend = true
+	cr.Finalizers = []string{"test.c5c3.io/hold"}
+	cr.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+	r := newTestOVNCentralReconciler(t, cr)
+
+	res, err := r.Reconcile(context.Background(), ovnCentralRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	got := getOVNCentral(t, r.Client, testOVNCentralName)
+	g.Expect(ovnCentralCondition(got, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).NotTo(ContainElement(
+		ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+}
+
 // TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster verifies that a
 // CR naming a target cluster is pinned before anything is projected onto it, so
 // a deletion issued between this pass and the next still funnels through the

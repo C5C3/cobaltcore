@@ -157,6 +157,27 @@ A `sub_reconciler` name that reaches the instrumenter without a key here resolve
 to `UNKNOWN`. An empty label would collapse two series into one; `UNKNOWN` makes
 the drift visible in alerts.
 
+### Suspension
+
+`spec.suspend: true` ends every pass right after the deletion branch, before the
+target cluster is resolved, a finalizer is added or any sub-reconciler runs.
+`GateSuspend` in `internal/common/reconcile/suspend.go` sets `Suspended=True`
+with reason `ReconciliationSuspended` and returns an empty result. Nothing
+requeues the CR. `Ready` and `status.observedGeneration` keep the values of the
+last full pass, and a spec change made meanwhile shows as
+`status.observedGeneration` below `metadata.generation`. `Suspended` is never
+part of the `Ready` aggregation. Clearing `spec.suspend` bumps the generation,
+which starts the next pass: the gate removes the condition and the pass runs in
+full.
+
+The rotations and rollouts the pipeline drives stop with it. The `spec.backup`
+CronJob keeps its schedule, because Kubernetes runs it without the operator.
+Deleting a suspended CR runs the deletion path as usual, because it comes before
+the gate.
+
+The two events the gate emits are listed under
+[Suspension](./ovn-events.md#suspension). An `OVNChassis` has no `spec.suspend`.
+
 ## Sub-reconcilers
 
 ### reconcileTLS

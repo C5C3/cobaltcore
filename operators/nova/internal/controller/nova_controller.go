@@ -306,9 +306,10 @@ var NovaRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get
 
 // Reconcile is the main reconciliation loop for the Nova CR. It fetches the CR,
-// drives the finalizer-gated deletion path, ensures the finalizers, then runs
-// the sub-reconciler pipeline. Every exit funnels through updateStatus, which
-// re-aggregates the Ready condition and stamps ObservedGeneration.
+// drives the finalizer-gated deletion path, ends the pass for a suspended CR,
+// ensures the finalizers, then runs the sub-reconciler pipeline. Every exit
+// funnels through updateStatus, which re-aggregates the Ready condition and
+// stamps ObservedGeneration.
 func (r *NovaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var nova novav1alpha1.Nova
 	if err := r.Get(ctx, req.NamespacedName, &nova); err != nil {
@@ -361,6 +362,13 @@ func (r *NovaReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// A suspended CR ends the pass here. The deletion branch above still runs
+	// its cleanup; nothing below runs until spec.suspend is cleared.
+	if stop, err := commonreconcile.GateSuspend(ctx, r.Client, r.Recorder, &nova,
+		&nova.Status.Conditions, nova.Spec.Suspend); stop || err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Resolve the client every child object of this CR is read and written with.

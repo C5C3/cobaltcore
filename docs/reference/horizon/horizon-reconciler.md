@@ -56,6 +56,29 @@ longer resolves. The message carries the resolver's error, the CR requeues after
 15 seconds, and nothing is created on any cluster. See
 [Target Clusters](../target-clusters.md).
 
+### Suspension
+
+`spec.suspend: true` ends every pass right after the deletion branch, before the
+target cluster is resolved, a finalizer is added or any sub-reconciler runs.
+`GateSuspend` in `internal/common/reconcile/suspend.go` sets `Suspended=True`
+with reason `ReconciliationSuspended` and returns an empty result. Nothing
+requeues the CR: no health probe runs, so the re-probe requeue stops as well.
+`Ready` and `status.observedGeneration` keep the values of the last full pass,
+and a spec change made meanwhile shows as `status.observedGeneration` below
+`metadata.generation`. `Suspended` is never part of the `Ready` aggregation.
+Clearing `spec.suspend` bumps the generation, which starts the next pass: the
+gate removes the condition and the pass runs in full.
+
+The rollouts the pipeline drives stop with it. A `SECRET_KEY` that changes in
+its Secret in the meantime reaches the pods only after the resume. Deleting a
+suspended CR runs the deletion path as usual, because it comes before the gate.
+
+The gate emits two Normal events, on a transition only and never on the steady
+pass of a suspended CR: `ReconciliationSuspended` (`Reconciliation suspended by
+spec.suspend`) when the CR becomes suspended, and `ReconciliationResumed`
+(`Reconciliation resumed: spec.suspend is cleared`) when `spec.suspend` is
+cleared on a suspended CR.
+
 ## Requeue semantics
 
 | Interval | Used by |
