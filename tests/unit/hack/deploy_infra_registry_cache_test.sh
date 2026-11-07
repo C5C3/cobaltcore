@@ -211,14 +211,14 @@ test_start_registry_cache() {
   # One `docker run` per upstream, each with the pinned image + persistence + label.
   local runs
   runs="$(grep -c 'docker run -d' "$tmp/docker.log")"
-  assert_eq "one docker run per upstream (6)" "6" "$runs"
+  assert_eq "one docker run per upstream (5)" "5" "$runs"
 
   assert_contains "dockerio proxy is created" "$log" "--name registry-cache-dockerio"
   assert_contains "ghcr proxy is created" "$log" "--name registry-cache-ghcr"
   assert_contains "k8s proxy is created" "$log" "--name registry-cache-k8s"
   assert_contains "quay proxy is created" "$log" "--name registry-cache-quay"
   assert_contains "external-secrets vanity proxy is created" "$log" "--name registry-cache-eso"
-  assert_contains "mariadb vanity proxy is created" "$log" "--name registry-cache-mariadb"
+  assert_not_contains "no proxy for the retired mariadb vanity host" "$log" "--name registry-cache-mariadb"
 
   assert_contains "containers join the kind network" "$log" "--network kind"
   assert_contains "containers carry the purge label" "$log" "--label cobaltcore.registry-cache=true"
@@ -233,8 +233,6 @@ test_start_registry_cache() {
     "$log" "REGISTRY_PROXY_REMOTEURL=https://quay.io"
   assert_contains "external-secrets proxy points at its vanity host" \
     "$log" "REGISTRY_PROXY_REMOTEURL=https://oci.external-secrets.io"
-  assert_contains "mariadb proxy points at its vanity host" \
-    "$log" "REGISTRY_PROXY_REMOTEURL=https://docker-registry3.mariadb.com"
   assert_not_contains "no Zot config is mounted anymore" "$log" "/etc/zot/config.json"
 
   # Persistent volumes are created with the same label so teardown can find them.
@@ -315,10 +313,10 @@ test_wire_node_registry_mirror() {
   log="$(cat "$tmp/docker.log")"
 
   # One config_path probe per node + one write exec per node per upstream:
-  # 2 probes + 2 nodes × 6 upstreams = 14 docker exec calls.
+  # 2 probes + 2 nodes × 5 upstreams = 12 docker exec calls.
   local execs
   execs="$(grep -c 'docker exec' "$tmp/docker.log" || true)"
-  assert_eq "one probe per node + one exec per node per upstream (2+12=14)" "14" "$execs"
+  assert_eq "one probe per node + one exec per node per upstream (2+10=12)" "12" "$execs"
 
   # Each exec passes the host/server/mirror as env so the node shell writes the
   # right hosts.toml. Spot-check docker.io, quay, and a vanity front.
@@ -330,8 +328,6 @@ test_wire_node_registry_mirror() {
   assert_contains "worker node is targeted for quay" "$log" "HOSTS_MIRROR=http://registry-cache-quay:5000"
   assert_contains "the external-secrets vanity host is wired" \
     "$log" "HOSTS_HOST=oci.external-secrets.io"
-  assert_contains "the mariadb vanity host mirror is wired" \
-    "$log" "HOSTS_MIRROR=http://registry-cache-mariadb:5000"
 
   # The inner node script (part of argv) writes the certs.d hosts.toml with the
   # pull/resolve fallback capabilities.

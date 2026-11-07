@@ -265,11 +265,13 @@ KIND_DOCKER_NETWORK="${KIND_DOCKER_NETWORK:-kind}"
 #   - name suffix     — appended to `registry-cache-` for the container/volume
 #                      names.
 # A plain indexed array of pipe-delimited tuples (not an associative array) keeps
-# this bash 3.2-compatible. The set is the six registry hosts a live
+# this bash 3.2-compatible. The set is the five registry hosts a live
 # WITH_CONTROLPLANE deploy actually pulls from, taken from a pod-image inventory:
-# the four common hubs (docker.io, ghcr.io, registry.k8s.io, quay.io) plus two
-# per-project vanity fronts — oci.external-secrets.io (external-secrets, backed by
-# ghcr.io) and docker-registry3.mariadb.com (mariadb-operator). gcr.io is not used.
+# the four common hubs (docker.io, ghcr.io, registry.k8s.io, quay.io) plus one
+# per-project vanity front — oci.external-secrets.io (external-secrets, backed by
+# ghcr.io). gcr.io is not used. mariadb-operator 26.x pulls its operator image
+# from ghcr.io and the MariaDB, MaxScale and exporter images from docker.io; the
+# docker-registry*.mariadb.com hosts of the 0.x charts are gone.
 # A registry NOT listed here simply pulls from its origin (uncached), so extend
 # this list if a future component introduces another host.
 REGISTRY_CACHE_UPSTREAMS=(
@@ -278,7 +280,6 @@ REGISTRY_CACHE_UPSTREAMS=(
   "registry.k8s.io|https://registry.k8s.io|k8s"
   "quay.io|https://quay.io|quay"
   "oci.external-secrets.io|https://oci.external-secrets.io|eso"
-  "docker-registry3.mariadb.com|https://docker-registry3.mariadb.com|mariadb"
 )
 
 # Gates the opt-in c5c3 ControlPlane bring-up. When true, deploy-infra

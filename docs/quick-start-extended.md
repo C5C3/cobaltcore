@@ -399,9 +399,9 @@ documented in [dizzy Chaos Testing](./reference/testing/dizzy-chaos-testing.md).
 
 ::: tip Enabling the local registry pull-through cache
 Every **fresh** kind cluster pulls every third-party image (from `docker.io`,
-`ghcr.io`, `registry.k8s.io`, `quay.io`, and the per-project vanity registries
-`oci.external-secrets.io` and `docker-registry3.mariadb.com`) from its upstream
-registry inside the node's containerd. If you recreate the cluster many times a
+`ghcr.io`, `registry.k8s.io`, `quay.io`, and the per-project vanity registry
+`oci.external-secrets.io`) from its upstream registry inside the node's
+containerd. If you recreate the cluster many times a
 day, the same images are fetched over the wire again and again. That is slow,
 and it exposes you to Docker Hub rate limits and transient upstream flakes.
 `kind load docker-image` only helps for the handful of images you build
