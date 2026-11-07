@@ -78,7 +78,7 @@ func EffectiveUWSGIConcurrency(spec *commonv1.UWSGISpec) (processes, threads int
 
 // UWSGIGracefulShutdownArgs returns the uWSGI flags that make SIGTERM finish
 // the requests in flight and exit. BuildUWSGICommand appends them after
-// --need-app.
+// --need-app, and the horizon-operator appends them to its own command.
 //
 //   - --hook-master-start "unix_signal:15 gracefully_kill_them_all" replaces
 //     the master's SIGTERM handler, a brutal reload by default, with the

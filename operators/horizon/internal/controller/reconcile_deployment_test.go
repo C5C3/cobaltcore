@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,6 +21,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/naming"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil"
@@ -123,6 +125,22 @@ func TestBuildHorizonDeployment_Shape(t *testing.T) {
 	// The Deployment selector is immutable, so the component key must stay out
 	// of it: adding one would force a delete/recreate of every live Deployment.
 	g.Expect(deploy.Spec.Selector.MatchLabels).NotTo(HaveKey(naming.LabelKeyComponent))
+}
+
+// SIGTERM starts the graceful shutdown the API operators' uWSGI runs: the
+// shared flags follow --need-app as one block. --die-on-term would only remap
+// SIGQUIT once the hook owns SIGTERM, so it is gone.
+func TestUWSGICommand_GracefulShutdown(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cmd := uwsgiCommand()
+	want := deployment.UWSGIGracefulShutdownArgs()
+
+	g.Expect(cmd).NotTo(ContainElement("--die-on-term"))
+	i := slices.Index(cmd, "--need-app")
+	g.Expect(i).To(BeNumerically(">=", 0), "the command must carry --need-app")
+	g.Expect(len(cmd)).To(BeNumerically(">=", i+1+len(want)))
+	g.Expect(cmd[i+1 : i+1+len(want)]).To(Equal(want))
 }
 
 func TestBuildHorizonDeployment_NoHashAnnotationWhenDigestEmpty(t *testing.T) {
