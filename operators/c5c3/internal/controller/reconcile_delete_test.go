@@ -464,6 +464,27 @@ func TestReconcile_TerminatingControlPlaneIsReadLive(t *testing.T) {
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		g.Expect(eventsWithReason(rec, "ORCTeardownComplete")).To(HaveLen(1))
 	})
+
+	// The suspend gate sits after the deletion branch, so suspension never holds
+	// a teardown and the pass writes no Suspended condition on the way out.
+	t.Run("a suspended CR keeps its teardown", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		stale := deletingControlPlane(0)
+		stale.Spec.Suspend = true
+		r, truth, rec := staleControlPlaneReconciler(t, stale, stale.DeepCopy())
+
+		res, err := r.Reconcile(ctx, request(stale))
+
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res).To(Equal(ctrl.Result{}))
+		err = truth.Get(ctx, client.ObjectKeyFromObject(stale), &c5c3v1alpha1.ControlPlane{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		events := drainEvents(rec)
+		g.Expect(events).NotTo(ContainElement(ContainSubstring(commonreconcile.ReasonReconciliationSuspended)))
+		g.Expect(slices.DeleteFunc(events, func(e string) bool {
+			return !strings.Contains(e, "ORCTeardownComplete")
+		})).To(HaveLen(1))
+	})
 }
 
 // failingControlPlaneUpdates makes fail decide every Update of a ControlPlane: a

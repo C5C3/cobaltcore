@@ -45,8 +45,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
+	"github.com/c5c3/cobaltcore/internal/common/apply"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
@@ -3612,6 +3614,152 @@ func TestIntegration_MinimalManagedToReady(t *testing.T) {
 	g.Expect(ks.Spec.Cache.ClusterRef).NotTo(BeNil(), "Keystone cache clusterRef must be wired")
 	g.Expect(ks.Spec.Cache.ClusterRef.Name).To(Equal(c5c3v1alpha1.DefaultCacheClusterRefName),
 		"Keystone cache clusterRef must reference the defaulted managed Memcached")
+}
+
+// suspendTestControlPlane drives a minimal ControlPlane, with one Keystone API
+// replica, to AdminCredentialReady in a fresh namespace and returns it with the
+// key of its projected Keystone child.
+func suspendTestControlPlane(
+	t *testing.T, ctx context.Context, c client.Client, namespacePrefix string,
+) (types.NamespacedName, types.NamespacedName) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	ensureReadyClusterSecretStore(t, ctx, c)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: namespacePrefix}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+	cp := integrationMinimalControlPlane("cp", ns.Name)
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create minimal ControlPlane CR")
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cp)
+
+	return types.NamespacedName{Name: cp.Name, Namespace: ns.Name},
+		types.NamespacedName{Name: keystoneName(cp), Namespace: ns.Name}
+}
+
+// setControlPlaneSpec re-reads the ControlPlane and applies mutate to its spec,
+// retrying on conflicts with the reconciler's status writes.
+func setControlPlaneSpec(
+	t *testing.T, ctx context.Context, c client.Client, key types.NamespacedName,
+	mutate func(*c5c3v1alpha1.ControlPlane), description string,
+) {
+	t.Helper()
+	NewGomegaWithT(t).Eventually(func() error {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, key, live); err != nil {
+			return err
+		}
+		mutate(live)
+		return c.Update(ctx, live)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), description)
+}
+
+// TestIntegration_SuspendedKeystoneChildSurvivesProjection pins that a suspend
+// set by hand on a projected child holds against the ControlPlane's Server-Side
+// Apply. The projection omits a false spec.suspend, so its field manager never
+// owns the field, and a replica change the ControlPlane projects afterwards
+// lands on the child without resetting it.
+func TestIntegration_SuspendedKeystoneChildSurvivesProjection(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	cpKey, childKey := suspendTestControlPlane(t, ctx, c, "test-suspend-child-")
+
+	child := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, childKey, child)).To(Succeed(), "get projected Keystone child")
+	g.Expect(child.Spec.Deployment.Replicas).To(Equal(int32(1)))
+	g.Expect(c.Patch(ctx, child, client.RawPatch(types.MergePatchType, []byte(`{"spec":{"suspend":true}}`)),
+		client.FieldOwner("suspend-test"))).To(Succeed(), "suspend the Keystone child by hand")
+
+	setControlPlaneSpec(t, ctx, c, cpKey, func(cp *c5c3v1alpha1.ControlPlane) {
+		cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{
+			Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: apiReplicas(2)},
+		})
+	}, "raise the Keystone API replicas on the ControlPlane")
+
+	g.Eventually(func(g Gomega) {
+		live := &keystonev1alpha1.Keystone{}
+		g.Expect(c.Get(ctx, childKey, live)).To(Succeed())
+		g.Expect(live.Spec.Deployment.Replicas).To(Equal(int32(2)), "the replica change must be projected")
+		g.Expect(live.Spec.Suspend).To(BeTrue(), "the projection must not reset the child's spec.suspend")
+		var handOwned bool
+		for _, entry := range live.ManagedFields {
+			owns := entry.FieldsV1 != nil && strings.Contains(string(entry.FieldsV1.Raw), `"f:suspend"`)
+			if entry.Manager == apply.FieldManager {
+				g.Expect(owns).To(BeFalse(), "the ControlPlane's field manager must not own spec.suspend")
+			}
+			if entry.Manager == "suspend-test" && owns {
+				handOwned = true
+			}
+		}
+		g.Expect(handOwned).To(BeTrue(), "spec.suspend stays owned by the manager that set it")
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed())
+}
+
+// TestIntegration_SuspendedControlPlaneStopsProjection pins the ControlPlane's
+// own suspend: while it is set, a sizing change is neither projected into the
+// Keystone child nor acknowledged in status.observedGeneration. Clearing it
+// resumes the projection and removes the Suspended condition.
+func TestIntegration_SuspendedControlPlaneStopsProjection(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	cpKey, childKey := suspendTestControlPlane(t, ctx, c, "test-suspend-cp-")
+
+	before := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(ctx, childKey, before)).To(Succeed(), "get projected Keystone child")
+	g.Expect(before.Spec.Deployment.Replicas).To(Equal(int32(1)))
+
+	setControlPlaneSpec(t, ctx, c, cpKey, func(cp *c5c3v1alpha1.ControlPlane) {
+		cp.Spec.Suspend = true
+	}, "suspend the ControlPlane")
+	waitForControlPlaneCondition(t, ctx, c, cpKey, commonreconcile.ConditionTypeSuspended,
+		metav1.ConditionTrue, itEventuallyTimeout)
+	// The gate never writes status.observedGeneration, and the passes of one
+	// ControlPlane run one at a time, so the value read once Suspended=True is
+	// set holds until the resume.
+	suspended := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, suspended)).To(Succeed())
+	lastObserved := suspended.Status.ObservedGeneration
+
+	setControlPlaneSpec(t, ctx, c, cpKey, func(cp *c5c3v1alpha1.ControlPlane) {
+		cp.Spec.Sizing = sizingOf(c5c3v1alpha1.SizingSpec{
+			Keystone: &c5c3v1alpha1.KeystoneSizingSpec{API: apiReplicas(2)},
+		})
+	}, "raise the Keystone API replicas on the suspended ControlPlane")
+
+	g.Eventually(func(g Gomega) {
+		cp := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, cpKey, cp)).To(Succeed())
+		cond := meta.FindStatusCondition(cp.Status.Conditions, commonreconcile.ConditionTypeSuspended)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.ObservedGeneration).To(Equal(cp.Generation))
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the gate must see the sizing generation")
+
+	g.Consistently(func(g Gomega) {
+		live := &keystonev1alpha1.Keystone{}
+		g.Expect(c.Get(ctx, childKey, live)).To(Succeed())
+		g.Expect(live.Generation).To(Equal(before.Generation), "the child must not be written")
+		g.Expect(live.Spec.Deployment.Replicas).To(Equal(int32(1)))
+		cp := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, cpKey, cp)).To(Succeed())
+		g.Expect(cp.Status.ObservedGeneration).To(Equal(lastObserved),
+			"a suspended ControlPlane does not acknowledge a spec change")
+	}, 15*time.Second, itPollInterval).Should(Succeed())
+
+	setControlPlaneSpec(t, ctx, c, cpKey, func(cp *c5c3v1alpha1.ControlPlane) {
+		cp.Spec.Suspend = false
+	}, "resume the ControlPlane")
+
+	g.Eventually(func(g Gomega) {
+		live := &keystonev1alpha1.Keystone{}
+		g.Expect(c.Get(ctx, childKey, live)).To(Succeed())
+		g.Expect(live.Spec.Deployment.Replicas).To(Equal(int32(2)), "the resumed pass projects the change")
+		cp := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(ctx, cpKey, cp)).To(Succeed())
+		g.Expect(meta.FindStatusCondition(cp.Status.Conditions, commonreconcile.ConditionTypeSuspended)).To(BeNil())
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed())
 }
 
 // TestIntegration_DBCredentialsGate_BlocksKeystoneUntilSecretExists proves the
