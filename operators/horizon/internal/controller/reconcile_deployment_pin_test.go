@@ -67,8 +67,11 @@ spec:
         - --module
         - openstack_dashboard.wsgi
         - --master
-        - --die-on-term
         - --need-app
+        - --hook-master-start
+        - unix_signal:15 gracefully_kill_them_all
+        - --shutdown-sockets
+        - --threaded-logger
         - --processes
         - "2"
         - --threads
@@ -208,8 +211,11 @@ spec:
         - --module
         - openstack_dashboard.wsgi
         - --master
-        - --die-on-term
         - --need-app
+        - --hook-master-start
+        - unix_signal:15 gracefully_kill_them_all
+        - --shutdown-sockets
+        - --threaded-logger
         - --processes
         - "2"
         - --threads

@@ -287,21 +287,24 @@ const (
 // per-CR uWSGI knobs in v1 (design decision D5): uwsgi loads
 // openstack_dashboard.wsgi directly (the module ships `application`), serves
 // the pre-built static assets via --static-map, and mirrors keystone's
-// always-on request logging.
+// always-on request logging. SIGTERM starts uWSGI's graceful shutdown with the
+// flags of the API operators (deployment.UWSGIGracefulShutdownArgs).
 func uwsgiCommand() []string {
-	return []string{
+	cmd := []string{
 		"uwsgi",
 		"--http", fmt.Sprintf(":%d", horizonAPIPort),
 		"--module", "openstack_dashboard.wsgi",
 		"--master",
-		"--die-on-term",
 		"--need-app",
+	}
+	cmd = append(cmd, deployment.UWSGIGracefulShutdownArgs()...)
+	return append(cmd,
 		"--processes", strconv.Itoa(horizonUWSGIProcesses),
 		"--threads", strconv.Itoa(horizonUWSGIThreads),
-		"--static-map", "/static=" + horizonStaticRoot,
+		"--static-map", "/static="+horizonStaticRoot,
 		"--log-master",
 		"--log-format", "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))",
-	}
+	)
 }
 
 // buildPodDisruptionBudget constructs the desired PDB for the dashboard

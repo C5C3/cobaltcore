@@ -63,7 +63,9 @@ The v1 operator resolves the onboarding decisions as follows:
 - **WSGI server: uWSGI.** Pinned in the horizon lock under `nix/locks/` from
   the base pins of `nix/base-requirements.txt` and operationally identical to the keystone
   deployment; uWSGI loads `openstack_dashboard.wsgi` directly. No per-CR uWSGI
-  knobs in v1.
+  knobs in v1. SIGTERM starts the same graceful shutdown as in the API
+  operators' uWSGI: the requests in flight finish, then uWSGI exits (see the
+  [Keystone shutdown sequence](../keystone/keystone-crd.md#shutdown-sequence)).
 - **Login-page probes.** The readiness and startup probes GET `/auth/login/`
   with a fixed `Host: localhost` header, which satisfies Django's
   `ALLOWED_HOSTS` check without allow-listing the pod IP; rendering the page
