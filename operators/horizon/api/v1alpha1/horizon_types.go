@@ -110,6 +110,7 @@ var (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Endpoint",type="string",JSONPath=".status.endpoint"
+// +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Horizon is the Schema for the horizons API.
@@ -275,6 +276,19 @@ type HorizonSpec struct {
 	// validating webhook only.
 	// +optional
 	ExtraConfig map[string]apiextensionsv1.JSON `json:"extraConfig,omitempty"`
+
+	// Suspend pauses the operator's reconciliation of this resource. While it is
+	// true the operator creates, updates and deletes nothing for it: no
+	// provisioning, no rollout of spec changes, no release upgrade or schema
+	// migration, and no correction of drift in the objects it owns. Workloads
+	// that already run keep running unchanged. The resource reports
+	// Suspended=True and keeps its last Ready condition and
+	// status.observedGeneration. Deleting a suspended resource runs its
+	// deletion path as usual. Setting it to false or removing it resumes
+	// reconciliation. It is the only pause switch this resource has, since it
+	// runs no CronJob.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // WebSSOSpec configures Horizon's federated single-sign-on surface. Each

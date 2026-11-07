@@ -21,6 +21,7 @@ import (
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Release",type="string",JSONPath=".spec.openStackRelease"
+// +kubebuilder:printcolumn:name="Suspended",type="boolean",JSONPath=".spec.suspend"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // ControlPlane is the Schema for the controlplanes API. It is the
@@ -187,6 +188,21 @@ type ControlPlaneSpec struct {
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=32
 	NamespaceAssignments []NamespaceAssignmentSpec `json:"namespaceAssignments,omitempty"`
+
+	// Suspend pauses the operator's reconciliation of this resource. While it is
+	// true the operator creates, updates and deletes nothing for it: no
+	// provisioning, no rollout of spec changes, no release upgrade or schema
+	// migration, and no correction of drift in the objects it owns. Workloads
+	// that already run, CronJobs included, keep running unchanged. The resource
+	// reports Suspended=True and keeps its last Ready condition and
+	// status.observedGeneration. Deleting a suspended resource runs its
+	// finalizer cleanup as usual. Setting it to false or removing it resumes
+	// reconciliation. The per-CronJob suspend fields pause one scheduled job
+	// only, while the rest of the resource keeps reconciling.
+	// Suspending the ControlPlane stops its projection into the child service
+	// resources; the children keep reconciling and are not suspended themselves.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // InfrastructureSpec declares the shared backing services for the control
