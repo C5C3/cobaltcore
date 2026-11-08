@@ -1,5 +1,5 @@
 ---
-status: Proposed
+status: Draft
 date: "YYYY-MM-DD"
 related: []
 ---
@@ -9,7 +9,7 @@ related: []
 <!--
 Use this structure as a starting point. Add, rename, or remove sections as needed.
 Fill in the metadata and remove these prompts. See rfcs/README.md for submission guidance.
-RFCs require review and maintainer approval before merging; update Proposed to Accepted after approval.
+Use Proposed when ready for review; update to Accepted after maintainer approval and before merging.
 -->
 
 ## 1. Summary
