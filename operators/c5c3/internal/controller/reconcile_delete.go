@@ -100,11 +100,13 @@ type orcChildObject struct {
 //     Service and its per-interface Endpoints are ManagementPolicyUnmanaged imports
 //     (see ensureExternalCatalogImports), so deleting them is a CR-only delete and
 //     the external catalog is left bit-for-bit intact.
-//   - Region is ManagementPolicyManaged with onDelete: detach (see
-//     managedCatalogRegion), so a Delete removes the CR and leaves the Keystone row
-//     in place; that row goes with the Keystone database. K-ORC still authenticates
-//     before releasing the detach finalizer, which is why reconcileDelete releases
-//     it together with the unmanaged imports.
+//   - Region — in Managed mode it is ManagementPolicyManaged with onDelete: detach
+//     (see managedCatalogRegion), so a Delete removes the CR and leaves the Keystone
+//     row in place; that row goes with the Keystone database. K-ORC still
+//     authenticates before releasing the detach finalizer, which is why
+//     reconcileDelete releases it together with the unmanaged imports. In External
+//     mode the same name is a ManagementPolicyUnmanaged import of spec.region (see
+//     ensureExternalCatalogImports), so deleting it is a CR-only delete.
 //
 // That holds for a teardown K-ORC can complete. The stall escape in reconcileDelete
 // is the deliberate exception: it strips the very finalizer that would have revoked
@@ -140,10 +142,11 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 		}
 	}
 
-	// The adopted Region is enumerated in both modes: an External-mode ControlPlane
-	// never projected one, so its name is NotFound and tolerated like every other
-	// absent name, and enumerating it unconditionally keeps the sweep independent of
-	// the mode the CR was created under.
+	// The Region name is enumerated in both modes: Managed mode adopts the region
+	// under it, and External mode projects an unmanaged import of spec.region under
+	// the same name, which the sweep deletes without calling OpenStack. Enumerating
+	// it unconditionally keeps the sweep independent of the mode the CR was created
+	// under.
 	objs = append(
 		objs,
 		orcChildObject{func() client.Object { return &orcv1alpha1.Region{} }, keystoneRegionName(cp)},

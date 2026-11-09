@@ -14,9 +14,13 @@ import (
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -74,6 +78,29 @@ func pendingImportConditions(age time.Duration) []metav1.Condition {
 		Reason:             orcv1alpha1.ConditionReasonProgressing,
 		Message:            korcImportPendingExternalMarker,
 		LastTransitionTime: metav1.NewTime(time.Now().Add(-age)),
+	}}
+}
+
+// waitingOnDependencyConditions stamps the state K-ORC gives an import whose
+// referenced CR is not Available yet: Progressing=True and Available=False, both
+// on reason Progressing with K-ORC's "Waiting for <kind>/<name> to be ready"
+// message. Both transitioned longer ago than externalImportStallGrace, so a
+// stall detector that took the wait for the pending-external marker would fire.
+func waitingOnDependencyConditions(kind, name string) []metav1.Condition {
+	message := "Waiting for " + kind + "/" + name + " to be ready"
+	since := metav1.NewTime(time.Now().Add(-(externalImportStallGrace + time.Minute)))
+	return []metav1.Condition{{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionFalse,
+		Reason:             orcv1alpha1.ConditionReasonProgressing,
+		Message:            message,
+		LastTransitionTime: since,
+	}, {
+		Type:               orcv1alpha1.ConditionProgressing,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonProgressing,
+		Message:            message,
+		LastTransitionTime: since,
 	}}
 }
 
@@ -144,6 +171,25 @@ func importedIdentityService(cp *c5c3v1alpha1.ControlPlane, conds []metav1.Condi
 	return svc
 }
 
+// importedIdentityRegion returns the Region import of spec.region the identity
+// Endpoint imports name as their regionRef.
+func importedIdentityRegion(cp *c5c3v1alpha1.ControlPlane, conds []metav1.Condition, id string) *orcv1alpha1.Region {
+	region := &orcv1alpha1.Region{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)},
+		Status:     orcv1alpha1.RegionStatus{Conditions: conds},
+	}
+	if id != "" {
+		region.Status.ID = ptr.To(id)
+	}
+	return region
+}
+
+// resolvedIdentityRegion is the Region import K-ORC resolved to spec.region; a
+// Keystone region id is its name.
+func resolvedIdentityRegion(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.Region {
+	return importedIdentityRegion(cp, availableImportConditions(), korcRegion(cp))
+}
+
 func importedIdentityEndpoint(
 	cp *c5c3v1alpha1.ControlPlane, iface c5c3v1alpha1.ExternalEndpointType, conds []metav1.Condition, id string,
 ) *orcv1alpha1.Endpoint {
@@ -157,10 +203,14 @@ func importedIdentityEndpoint(
 	return ep
 }
 
-// resolvedIdentityCatalog returns the four import CRs all reporting Available with
-// a resolved id — the converged External-mode catalog.
+// resolvedIdentityCatalog returns the five import CRs (Service, Region and three
+// Endpoints) all reporting Available with a resolved id — the converged
+// External-mode catalog. The Service stays at index 0 and the Region at index 1.
 func resolvedIdentityCatalog(cp *c5c3v1alpha1.ControlPlane) []client.Object {
-	objs := []client.Object{importedIdentityService(cp, availableImportConditions(), "svc-id")}
+	objs := []client.Object{
+		importedIdentityService(cp, availableImportConditions(), "svc-id"),
+		resolvedIdentityRegion(cp),
+	}
 	for _, iface := range externalCatalogInterfaces {
 		objs = append(objs, importedIdentityEndpoint(cp, iface, availableImportConditions(), "ep-"+string(iface)))
 	}
@@ -171,8 +221,9 @@ func resolvedIdentityCatalog(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 
 // TestReconcileCatalogExternal_ImportsServiceAndAllEndpointInterfaces is the
 // headline acceptance criterion: pointed at a populated catalog, External mode
-// creates ZERO catalog entries and instead imports the identity Service and all
-// three endpoint interfaces as unmanaged, read-only K-ORC CRs.
+// creates ZERO catalog entries and instead imports the identity Service, the
+// region spec.region names, and all three endpoint interfaces in that region as
+// unmanaged, read-only K-ORC CRs.
 func TestReconcileCatalogExternal_ImportsServiceAndAllEndpointInterfaces(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -199,6 +250,8 @@ func TestReconcileCatalogExternal_ImportsServiceAndAllEndpointInterfaces(t *test
 		g.Expect(ep.Spec.Resource).To(BeNil())
 		g.Expect(ep.Spec.Import.Filter.Interface).To(Equal(string(iface)))
 		g.Expect(ep.Spec.Import.Filter.ServiceRef).To(HaveValue(Equal(orcv1alpha1.KubernetesNameRef(keystoneServiceName(cp)))))
+		g.Expect(ep.Spec.Import.Filter.RegionRef).To(HaveValue(Equal(orcv1alpha1.KubernetesNameRef(keystoneRegionName(cp)))),
+			"the %q import must select the row in spec.region", iface)
 		g.Expect(metav1.IsControlledBy(ep, cp)).To(BeTrue())
 	}
 
@@ -216,6 +269,11 @@ func TestReconcileCatalogExternal_ImportsServiceAndAllEndpointInterfaces(t *test
 		g.Expect(item.Spec.ManagementPolicy).NotTo(Equal(orcv1alpha1.ManagementPolicyManaged),
 			"External mode must create no managed Endpoint by default")
 	}
+	var regions orcv1alpha1.RegionList
+	g.Expect(c.List(context.Background(), &regions, client.InNamespace(childNamespace(cp)))).To(Succeed())
+	g.Expect(regions.Items).To(HaveLen(1), "External mode imports exactly the region spec.region names")
+	g.Expect(regions.Items[0].Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged),
+		"External mode must create no managed Region")
 
 	// Freshly created imports carry no status yet, so the catalog is not Ready.
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -233,9 +291,10 @@ func TestReconcileCatalogExternal_ResolvedImportsFlipCatalogImported(t *testing.
 
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogImported))
+	g.Expect(cond.Message).To(ContainSubstring(`3 of 3 Endpoint interface(s) in region "RegionOne"`))
 
 	g.Expect(cp.Status.Catalog).NotTo(BeNil())
-	g.Expect(cp.Status.Catalog.Imports).To(HaveLen(1 + len(externalCatalogInterfaces)))
+	g.Expect(cp.Status.Catalog.Imports).To(HaveLen(2 + len(externalCatalogInterfaces)))
 
 	byName := map[string]c5c3v1alpha1.CatalogImportStatus{}
 	for _, imp := range cp.Status.Catalog.Imports {
@@ -246,6 +305,10 @@ func TestReconcileCatalogExternal_ResolvedImportsFlipCatalogImported(t *testing.
 	g.Expect(svc.Resolved).To(BeTrue())
 	g.Expect(svc.ID).To(Equal("svc-id"))
 	g.Expect(svc.Interface).To(BeEmpty(), "the Service import carries no interface")
+
+	g.Expect(byName[keystoneRegionName(cp)]).To(Equal(c5c3v1alpha1.CatalogImportStatus{
+		Name: keystoneRegionName(cp), Kind: "Region", Interface: "", Resolved: true, ID: "RegionOne",
+	}))
 
 	for _, iface := range externalCatalogInterfaces {
 		ep := byName[keystoneEndpointImportName(cp, iface)]
@@ -323,7 +386,7 @@ func TestReconcileCatalogExternal_StalledEndpointNamesMissingInterface(t *testin
 	g := NewGomegaWithT(t)
 
 	cp := externalCatalogControlPlane() // endpointType defaults to public
-	objs := []client.Object{importedIdentityService(cp, availableImportConditions(), "svc-id")}
+	objs := []client.Object{importedIdentityService(cp, availableImportConditions(), "svc-id"), resolvedIdentityRegion(cp)}
 	objs = append(
 		objs,
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic,
@@ -334,7 +397,37 @@ func TestReconcileCatalogExternal_StalledEndpointNamesMissingInterface(t *testin
 	cond, _ := reconcileCatalogFor(t, cp, objs...)
 
 	g.Expect(cond.Reason).To(Equal(conditionReasonImportStalled))
-	g.Expect(cond.Message).To(ContainSubstring(`no "public" endpoint`))
+	g.Expect(cond.Message).To(ContainSubstring(`no "public" endpoint for the identity service in region "RegionOne"`))
+}
+
+// TestReconcileCatalogExternal_StalledRegionImportSurfacesImportStalled proves a
+// Region import that matched nothing fails loud instead of leaving every Endpoint
+// import waiting on it: the external Keystone has no region of the name
+// spec.region carries. The Endpoint imports carry what K-ORC gives them then, a
+// wait on the Region, and the condition names the Region rather than any of them.
+func TestReconcileCatalogExternal_StalledRegionImportSurfacesImportStalled(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalCatalogControlPlane()
+	objs := []client.Object{
+		importedIdentityService(cp, availableImportConditions(), "svc-id"),
+		importedIdentityRegion(cp, pendingImportConditions(externalImportStallGrace+time.Minute), ""),
+	}
+	for _, iface := range externalCatalogInterfaces {
+		objs = append(objs, importedIdentityEndpoint(cp, iface,
+			waitingOnDependencyConditions("Region", keystoneRegionName(cp)), ""))
+	}
+	cond, _ := reconcileCatalogFor(t, cp, objs...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonImportStalled))
+	g.Expect(cond.Message).To(ContainSubstring(keystoneRegionName(cp)), "the message must name the stuck import")
+	g.Expect(cond.Message).To(ContainSubstring("spec.region"))
+	g.Expect(cond.Message).To(ContainSubstring(`no region "RegionOne"`))
+	for _, iface := range externalCatalogInterfaces {
+		g.Expect(cond.Message).NotTo(ContainSubstring(keystoneEndpointImportName(cp, iface)),
+			"an Endpoint import merely waiting on the Region is not the root")
+	}
 }
 
 // TestReconcileCatalogExternal_UnpublishedInterfacesDoNotBlockReady is the
@@ -352,6 +445,7 @@ func TestReconcileCatalogExternal_UnpublishedInterfacesDoNotBlockReady(t *testin
 	stalled := pendingImportConditions(externalImportStallGrace + time.Minute)
 	objs := []client.Object{
 		importedIdentityService(cp, availableImportConditions(), "svc-id"),
+		resolvedIdentityRegion(cp),
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic, availableImportConditions(), "ep-public"),
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeInternal, stalled, ""),
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeAdmin, stalled, ""),
@@ -388,6 +482,7 @@ func TestReconcileCatalogExternal_RequiredInterfaceFollowsEndpointType(t *testin
 		cp.Spec.Services.Keystone.External.EndpointType = c5c3v1alpha1.ExternalEndpointTypeInternal
 		objs := []client.Object{
 			importedIdentityService(cp, availableImportConditions(), "svc-id"),
+			resolvedIdentityRegion(cp),
 			importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic, stalled(), ""),
 			importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeInternal, availableImportConditions(), "ep-internal"),
 			importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeAdmin, stalled(), ""),
@@ -405,6 +500,7 @@ func TestReconcileCatalogExternal_RequiredInterfaceFollowsEndpointType(t *testin
 		cp.Spec.Services.Keystone.External.EndpointType = c5c3v1alpha1.ExternalEndpointTypeInternal
 		objs := []client.Object{
 			importedIdentityService(cp, availableImportConditions(), "svc-id"),
+			resolvedIdentityRegion(cp),
 			importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic, availableImportConditions(), "ep-public"),
 			importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeInternal, stalled(), ""),
 			importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeAdmin, availableImportConditions(), "ep-admin"),
@@ -427,6 +523,61 @@ func TestReconcileCatalogExternal_StalledInsideGraceStaysWaiting(t *testing.T) {
 	cond, _ := reconcileCatalogFor(t, cp, fresh)
 
 	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+}
+
+// TestReconcileCatalogExternal_StaleImportReportsNoID pins the status contract
+// that an unresolved import carries no id. A CR whose current spec K-ORC has not
+// run yet keeps the status.id of the filter it resolved before, as a re-imported
+// Endpoint does while K-ORC still holds the old CR, and projecting that id would
+// report a row the current filter may not select.
+func TestReconcileCatalogExternal_StaleImportReportsNoID(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalCatalogControlPlane() // endpointType defaults to public
+	stale := importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeInternal,
+		availableImportConditions(), "ep-internal-previous-filter")
+	stale.Generation = 1 // availableImportConditions is for generation 0
+	objs := []client.Object{
+		importedIdentityService(cp, availableImportConditions(), "svc-id"),
+		resolvedIdentityRegion(cp),
+		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic, availableImportConditions(), "ep-public"),
+		stale,
+	}
+	cond, _ := reconcileCatalogFor(t, cp, objs...)
+
+	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogImported))
+	byName := map[string]c5c3v1alpha1.CatalogImportStatus{}
+	for _, imp := range cp.Status.Catalog.Imports {
+		byName[imp.Name] = imp
+	}
+	internal := byName[keystoneEndpointImportName(cp, c5c3v1alpha1.ExternalEndpointTypeInternal)]
+	g.Expect(internal.Resolved).To(BeFalse())
+	g.Expect(internal.ID).To(BeEmpty(), "an unresolved import must not report the id of its previous filter")
+	g.Expect(byName[keystoneEndpointImportName(cp, c5c3v1alpha1.ExternalEndpointTypePublic)].ID).To(Equal("ep-public"))
+}
+
+// TestReconcileCatalogExternal_UnresolvedRegionImportWaits proves the Region import
+// gates CatalogReady: every Endpoint import names it as its regionRef, so the
+// catalog is not Ready until it resolves, even with every other import resolved.
+func TestReconcileCatalogExternal_UnresolvedRegionImportWaits(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalCatalogControlPlane()
+	objs := resolvedIdentityCatalog(cp)
+	objs[1] = importedIdentityRegion(cp, nil, "")
+	cond, _ := reconcileCatalogFor(t, cp, objs...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+	g.Expect(cond.Message).To(ContainSubstring(keystoneRegionName(cp)))
+
+	byName := map[string]c5c3v1alpha1.CatalogImportStatus{}
+	for _, imp := range cp.Status.Catalog.Imports {
+		byName[imp.Name] = imp
+	}
+	g.Expect(byName).To(HaveKey(keystoneRegionName(cp)))
+	g.Expect(byName[keystoneRegionName(cp)].Resolved).To(BeFalse())
+	g.Expect(byName[keystoneRegionName(cp)].ID).To(BeEmpty())
 }
 
 // TestReconcileCatalogExternal_AmbiguousImportFailsLoud is the duplicate-name
@@ -462,33 +613,55 @@ func TestReconcileCatalogExternal_AmbiguousImportNamesEffectiveFilter(t *testing
 	g.Expect(cond.Message).To(ContainSubstring(`type=identity, name="keystone"`))
 }
 
-// TestReconcileCatalogExternal_AmbiguousEndpointNamesRegionLimitation proves a
-// multi-match on an ENDPOINT import does not point at identityServiceName (which
-// would not help): K-ORC's endpoint filter carries no region.
-func TestReconcileCatalogExternal_AmbiguousEndpointNamesRegionLimitation(t *testing.T) {
+// TestReconcileCatalogExternal_AmbiguousEndpointNamesDuplicateRowsInRegion proves
+// a multi-match on an ENDPOINT import does not point at identityServiceName (which
+// would not help): the filter already selects the row in spec.region, so a >1
+// match means duplicate rows of one interface inside that region, which only a
+// repair of the external catalog removes.
+func TestReconcileCatalogExternal_AmbiguousEndpointNamesDuplicateRowsInRegion(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	cp := externalCatalogControlPlane()
 	objs := []client.Object{
 		importedIdentityService(cp, availableImportConditions(), "svc-id"),
+		resolvedIdentityRegion(cp),
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic,
 			terminalImportConditions(korcImportMultipleMatchesMarker), ""),
 	}
 	cond, _ := reconcileCatalogFor(t, cp, objs...)
 
 	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogFailed))
-	g.Expect(cond.Message).To(ContainSubstring("one per region"))
+	g.Expect(cond.Message).To(ContainSubstring(`in region "RegionOne"`))
+	g.Expect(cond.Message).To(ContainSubstring("remove the duplicate"))
 	g.Expect(cond.Message).NotTo(ContainSubstring("identityServiceName"),
-		"the endpoint filter is not spec-disambiguable, so do not point at a field that would not help")
+		"no spec field selects among duplicate rows, so do not point at a field that would not help")
+	g.Expect(cond.Message).NotTo(ContainSubstring("one per region"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("cannot select"))
+}
+
+// TestReconcileCatalogExternal_AmbiguousRegionNamesRegionFilter proves a
+// multi-match on the Region import names the Region filter and spec.region, not
+// the identity Service filter field.
+func TestReconcileCatalogExternal_AmbiguousRegionNamesRegionFilter(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalCatalogControlPlane()
+	objs := resolvedIdentityCatalog(cp)
+	objs[1] = importedIdentityRegion(cp, terminalImportConditions(korcImportMultipleMatchesMarker), "")
+	cond, _ := reconcileCatalogFor(t, cp, objs...)
+
+	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogFailed))
+	g.Expect(cond.Message).To(ContainSubstring(`Region import filter (name="RegionOne", spec.region)`))
+	g.Expect(cond.Message).NotTo(ContainSubstring("identityServiceName"))
 }
 
 // TestReconcileCatalogExternal_RewordedAmbiguityOnOptionalInterfaceDoesNotWedge is
 // the guard on the marker coupling. korcImportMultipleMatchesMarker is K-ORC's
 // literal wording, and a K-ORC bump may reword it at any time. If the tolerate branch
-// keyed on that string, the reword would silently promote the per-region ambiguity
-// below into a permanent CatalogReady=False — and therefore Ready=False — on a
-// healthy multi-region control plane, over an interface nothing depends on and with
-// no spec edit able to repair it. Every other test feeds the constant back to itself,
+// keyed on that string, the reword would silently promote the duplicate-row
+// ambiguity below into a permanent CatalogReady=False — and therefore Ready=False —
+// on a healthy control plane, over an interface nothing depends on and with no spec
+// edit able to repair it. Every other test feeds the constant back to itself,
 // so only this one would catch the regression. The tolerance is keyed on K-ORC's
 // machine-readable InvalidConfiguration reason instead; the message selects the hint.
 func TestReconcileCatalogExternal_RewordedAmbiguityOnOptionalInterfaceDoesNotWedge(t *testing.T) {
@@ -497,6 +670,7 @@ func TestReconcileCatalogExternal_RewordedAmbiguityOnOptionalInterfaceDoesNotWed
 	cp := externalCatalogControlPlane() // endpointType defaults to public
 	objs := []client.Object{
 		importedIdentityService(cp, availableImportConditions(), "svc-id"),
+		resolvedIdentityRegion(cp),
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic, availableImportConditions(), "ep-public"),
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeInternal,
 			terminalImportConditions("import filter matched multiple OpenStack resources"), ""),
@@ -510,11 +684,12 @@ func TestReconcileCatalogExternal_RewordedAmbiguityOnOptionalInterfaceDoesNotWed
 }
 
 // TestReconcileCatalogExternal_AmbiguousOptionalInterfaceDoesNotBlockReady is the
-// other half of the region limitation the test above names. A Keystone whose
+// other half of the duplicate-row case the test above names. A Keystone whose
 // `public` endpoint resolves cleanly but which registers its `internal` endpoint
-// once per region makes K-ORC's region-less EndpointFilter match several rows and
-// go terminal — on an interface nothing in this control plane authenticates
-// through, and which ambiguityHint itself says no spec edit can disambiguate.
+// twice inside spec.region makes the region-scoped EndpointFilter match several
+// rows and go terminal — on an interface nothing in this control plane
+// authenticates through, and which ambiguityHint itself says no spec edit can
+// disambiguate.
 // Gating CatalogReady on it would hold the aggregate Ready False forever with no
 // remediation, so it is tolerated exactly like the unpublished interfaces above
 // and surfaced through status.catalog.imports instead.
@@ -524,6 +699,7 @@ func TestReconcileCatalogExternal_AmbiguousOptionalInterfaceDoesNotBlockReady(t 
 	cp := externalCatalogControlPlane() // endpointType defaults to public
 	objs := []client.Object{
 		importedIdentityService(cp, availableImportConditions(), "svc-id"),
+		resolvedIdentityRegion(cp),
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic, availableImportConditions(), "ep-public"),
 		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypeInternal,
 			terminalImportConditions(korcImportMultipleMatchesMarker), ""),
@@ -643,6 +819,27 @@ func TestReconcileCatalogExternal_TerminalServiceBeatsTerminalEndpoint(t *testin
 	g.Expect(cond.Message).NotTo(ContainSubstring("endpoint is broken"))
 }
 
+// TestReconcileCatalogExternal_TerminalRegionBeatsTerminalEndpoint pins the Region
+// between the Service and the Endpoints in the dependency order: a terminal Region
+// import is the root an Endpoint import that names it is blocked on.
+func TestReconcileCatalogExternal_TerminalRegionBeatsTerminalEndpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := externalCatalogControlPlane()
+	objs := []client.Object{
+		importedIdentityService(cp, availableImportConditions(), "svc-id"),
+		importedIdentityRegion(cp, unrecoverableImportConditions("region is broken"), ""),
+		importedIdentityEndpoint(cp, c5c3v1alpha1.ExternalEndpointTypePublic,
+			terminalImportConditions("endpoint is broken"), ""),
+	}
+	cond, _ := reconcileCatalogFor(t, cp, objs...)
+
+	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogFailed))
+	g.Expect(cond.Message).To(ContainSubstring(`Region "` + keystoneRegionName(cp) + `"`))
+	g.Expect(cond.Message).To(ContainSubstring("region is broken"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("endpoint is broken"))
+}
+
 // TestReconcileCatalogExternal_ClassifiableMessageSurfaced proves a K-ORC message
 // that identifies a failure CLASS is relayed with that class rather than collapsed
 // into a generic wait — the wrong-endpointType hazard cannot look like progress.
@@ -682,6 +879,237 @@ func TestReconcileCatalogExternal_ResolvedImportKeepsStaleMessageQuiet(t *testin
 	})
 	cond, _ := reconcileCatalogFor(t, cp, objs...)
 
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogImported))
+}
+
+// preRegionEndpointImport returns the Endpoint import an earlier version created
+// for iface: owned by the ControlPlane, with a filter of interface and Service
+// only.
+func preRegionEndpointImport(
+	t *testing.T, s *runtime.Scheme, cp *c5c3v1alpha1.ControlPlane, iface c5c3v1alpha1.ExternalEndpointType,
+	conds []metav1.Condition, id string,
+) *orcv1alpha1.Endpoint {
+	t.Helper()
+	ep := importedIdentityEndpoint(cp, iface, conds, id)
+	ep.UID = types.UID("pre-region-" + string(iface))
+	ep.Spec = orcv1alpha1.EndpointSpec{
+		ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged,
+		Import: &orcv1alpha1.EndpointImport{Filter: &orcv1alpha1.EndpointFilter{
+			Interface:  string(iface),
+			ServiceRef: ptr.To(orcv1alpha1.KubernetesNameRef(keystoneServiceName(cp))),
+		}},
+	}
+	if err := controllerutil.SetControllerReference(cp, ep, s); err != nil {
+		t.Fatalf("owning the pre-region %q import: %v", iface, err)
+	}
+	return ep
+}
+
+// resolveRegionImport stamps what K-ORC writes once the Region import of
+// spec.region resolved.
+func resolveRegionImport(ctx context.Context, g Gomega, c client.Client, cp *c5c3v1alpha1.ControlPlane) {
+	region := &orcv1alpha1.Region{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)}, region)).To(Succeed())
+	region.Status.Conditions = availableImportConditions()
+	region.Status.Conditions[0].ObservedGeneration = region.Generation
+	region.Status.ID = ptr.To(korcRegion(cp))
+	g.Expect(c.Update(ctx, region)).To(Succeed())
+}
+
+// TestReconcileCatalogExternal_UpgradeReimportsEndpointsResolvedWithoutRegion is
+// the upgrade of a plane whose Endpoint imports an earlier version created with a
+// filter of interface and Service only, and which K-ORC resolved against it.
+// K-ORC never runs a filter again once status.id is set, so the pass replaces
+// each of them with a fresh import under the regioned filter. The external
+// catalog here publishes `internal` in another region only: the old filter
+// resolved it, the regioned one does not, and the catalog is Ready regardless,
+// because internal is not the interface the plane authenticates through.
+func TestReconcileCatalogExternal_UpgradeReimportsEndpointsResolvedWithoutRegion(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+
+	cp := externalCatalogControlPlane() // endpointType defaults to public
+	objs := []client.Object{cp, importedIdentityService(cp, availableImportConditions(), "svc-id")}
+	for _, iface := range externalCatalogInterfaces {
+		objs = append(objs, preRegionEndpointImport(t, s, cp, iface, availableImportConditions(), "pre-region-"+string(iface)))
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	endpointKey := func(iface c5c3v1alpha1.ExternalEndpointType) client.ObjectKey {
+		return client.ObjectKey{Name: keystoneEndpointImportName(cp, iface), Namespace: childNamespace(cp)}
+	}
+
+	_, err := r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, iface := range externalCatalogInterfaces {
+		ep := &orcv1alpha1.Endpoint{}
+		g.Expect(c.Get(ctx, endpointKey(iface), ep)).To(Succeed())
+		g.Expect(ep.UID).NotTo(Equal(types.UID("pre-region-"+string(iface))),
+			"the %q import K-ORC resolved without a region must be re-imported, not patched", iface)
+		g.Expect(ep.Status.ID).To(BeNil(), "the re-imported %q CR carries no id K-ORC resolved without a region", iface)
+		g.Expect(ep.Spec.Import.Filter.RegionRef).To(HaveValue(Equal(orcv1alpha1.KubernetesNameRef(keystoneRegionName(cp)))))
+		g.Expect(metav1.IsControlledBy(ep, cp)).To(BeTrue())
+	}
+	for _, imp := range cp.Status.Catalog.Imports {
+		if imp.Kind == "Endpoint" {
+			g.Expect(imp.Resolved).To(BeFalse(), "%s reads as unresolved until K-ORC resolves the new CR", imp.Name)
+			g.Expect(imp.ID).To(BeEmpty(), "%s must not report the id resolved without a region", imp.Name)
+		}
+	}
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+
+	// K-ORC resolves the Region and runs the regioned filters: the public and admin
+	// rows sit in RegionOne, the only internal row sits in another region.
+	resolveRegionImport(ctx, g, c, cp)
+	inRegion := map[c5c3v1alpha1.ExternalEndpointType]string{
+		c5c3v1alpha1.ExternalEndpointTypePublic: "ep-public-regionone",
+		c5c3v1alpha1.ExternalEndpointTypeAdmin:  "ep-admin-regionone",
+	}
+	for _, iface := range externalCatalogInterfaces {
+		ep := &orcv1alpha1.Endpoint{}
+		g.Expect(c.Get(ctx, endpointKey(iface), ep)).To(Succeed())
+		if id, ok := inRegion[iface]; ok {
+			ep.Status.Conditions = availableImportConditions()
+			ep.Status.Conditions[0].ObservedGeneration = ep.Generation
+			ep.Status.ID = ptr.To(id)
+		} else {
+			ep.Status.Conditions = pendingImportConditions(externalImportStallGrace + time.Minute)
+		}
+		g.Expect(c.Update(ctx, ep)).To(Succeed())
+	}
+
+	_, err = r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	cond = conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogImported))
+	g.Expect(cond.Message).To(ContainSubstring(`2 of 3 Endpoint interface(s) in region "RegionOne"`))
+
+	byName := map[string]c5c3v1alpha1.CatalogImportStatus{}
+	for _, imp := range cp.Status.Catalog.Imports {
+		byName[imp.Name] = imp
+	}
+	public := byName[keystoneEndpointImportName(cp, c5c3v1alpha1.ExternalEndpointTypePublic)]
+	g.Expect(public.Resolved).To(BeTrue())
+	g.Expect(public.ID).To(Equal("ep-public-regionone"), "a re-imported CR is kept on the next pass")
+	internal := byName[keystoneEndpointImportName(cp, c5c3v1alpha1.ExternalEndpointTypeInternal)]
+	g.Expect(internal.Resolved).To(BeFalse(), "internal has no row in spec.region")
+	g.Expect(internal.ID).To(BeEmpty())
+}
+
+// TestReconcileCatalogExternal_UpgradeReimportsEndpointsResolvingWithoutRegion
+// is the upgrade of a plane whose region-less Endpoint import K-ORC is resolving
+// for the first time while the pass runs: the pass reads the CR without an id,
+// and K-ORC then records the row its region-less filter matched, which here sits
+// in another region. K-ORC binds that write to the CR it read, so the pass must
+// re-import the CR rather than add the regionRef to it, or the regioned import
+// would keep the out-of-region row for good.
+func TestReconcileCatalogExternal_UpgradeReimportsEndpointsResolvingWithoutRegion(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+
+	cp := externalCatalogControlPlane() // endpointType defaults to public
+	internal := preRegionEndpointImport(t, s, cp, c5c3v1alpha1.ExternalEndpointTypeInternal, nil, "")
+	internalKey := client.ObjectKeyFromObject(internal)
+
+	// The interceptor plays K-ORC landing its region-less resolution between the
+	// pass's read and its apply. Like K-ORC's status apply, the write carries the
+	// UID of the CR K-ORC resolved, so it never reaches a re-created CR.
+	korcResolved := false
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, importedIdentityService(cp, availableImportConditions(), "svc-id"), internal).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, wc client.WithWatch, ac runtime.ApplyConfiguration,
+				opts ...client.ApplyOption,
+			) error {
+				if named, ok := ac.(interface{ GetName() string }); ok && named.GetName() == internalKey.Name && !korcResolved {
+					korcResolved = true
+					live := &orcv1alpha1.Endpoint{}
+					err := wc.Get(ctx, internalKey, live)
+					if client.IgnoreNotFound(err) != nil {
+						return err
+					}
+					if err == nil && live.UID == internal.UID {
+						live.Status.Conditions = availableImportConditions()
+						live.Status.ID = ptr.To("ep-internal-regiontwo")
+						if err := wc.Update(ctx, live); err != nil {
+							return err
+						}
+					}
+				}
+				return wc.Apply(ctx, ac, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(korcResolved).To(BeTrue())
+
+	live := &orcv1alpha1.Endpoint{}
+	g.Expect(c.Get(ctx, internalKey, live)).To(Succeed())
+	g.Expect(live.Spec.Import.Filter.RegionRef).To(HaveValue(Equal(orcv1alpha1.KubernetesNameRef(keystoneRegionName(cp)))))
+	g.Expect(live.Status.ID).To(BeNil(), "the regioned import must not carry the row resolved without a region")
+	for _, imp := range cp.Status.Catalog.Imports {
+		if imp.Name == internalKey.Name {
+			g.Expect(imp.Resolved).To(BeFalse())
+			g.Expect(imp.ID).To(BeEmpty())
+		}
+	}
+}
+
+// TestReconcileCatalogExternal_UpgradeClearsPerRegionAmbiguity is the upgrade of a
+// plane against a catalog that publishes the public identity endpoint in two
+// regions. Before it, the region-less public import matched both rows, K-ORC
+// failed it terminally, and CatalogReady held CatalogFailed. The pass re-imports
+// that CR under the regioned filter, so the terminal error goes with it: the pass
+// waits on the Region rather than repeating the old ambiguity, and the catalog is
+// Ready once K-ORC runs the regioned filter.
+func TestReconcileCatalogExternal_UpgradeClearsPerRegionAmbiguity(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+
+	cp := externalCatalogControlPlane() // endpointType defaults to public
+	ambiguous := terminalImportConditions(korcImportMultipleMatchesMarker)
+	public := preRegionEndpointImport(t, s, cp, c5c3v1alpha1.ExternalEndpointTypePublic, ambiguous, "")
+	publicKey := client.ObjectKeyFromObject(public)
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, importedIdentityService(cp, availableImportConditions(), "svc-id"), public).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+	g.Expect(cond.Message).To(ContainSubstring(keystoneRegionName(cp)))
+	g.Expect(cond.Message).NotTo(ContainSubstring("remove the duplicate"),
+		"the ambiguity belongs to the region-less filter K-ORC no longer runs")
+
+	live := &orcv1alpha1.Endpoint{}
+	g.Expect(c.Get(ctx, publicKey, live)).To(Succeed())
+	g.Expect(live.UID).NotTo(Equal(public.UID), "a region-less import is re-imported even when it never resolved")
+	g.Expect(live.Spec.Import.Filter.RegionRef).To(HaveValue(Equal(orcv1alpha1.KubernetesNameRef(keystoneRegionName(cp)))))
+
+	// K-ORC resolves the Region and runs the regioned filter, which matches the
+	// RegionOne row only.
+	resolveRegionImport(ctx, g, c, cp)
+	live.Status.Conditions = availableImportConditions()
+	live.Status.Conditions[0].ObservedGeneration = live.Generation
+	live.Status.ID = ptr.To("ep-public-regionone")
+	g.Expect(c.Update(ctx, live)).To(Succeed())
+
+	_, err = r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	cond = conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogImported))
 }

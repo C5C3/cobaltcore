@@ -10,10 +10,12 @@ import (
 	"strings"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v3/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/apply"
@@ -85,21 +87,35 @@ func keystoneEndpointImportName(cp *c5c3v1alpha1.ControlPlane, iface c5c3v1alpha
 	return keystoneEndpointName(cp) + "-" + string(iface)
 }
 
+// The kinds of catalogImport.kind. They are the values of the
+// CatalogImportStatus.Kind enum, and the failure messages branch on them.
+const (
+	catalogImportKindService  = "Service"
+	catalogImportKindRegion   = "Region"
+	catalogImportKindEndpoint = "Endpoint"
+)
+
 // catalogImport is one unmanaged import CR carrying its live status, plus the
 // metadata the status projection and the failure messages need.
 type catalogImport struct {
 	kind  string
 	name  string
-	iface c5c3v1alpha1.ExternalEndpointType // empty for the Service import
+	iface c5c3v1alpha1.ExternalEndpointType // empty for the Service and Region imports
 	id    string                            // the resolved OpenStack id, "" while unresolved
 	obj   orcv1alpha1.ObjectWithConditions
 
 	// required marks the imports CatalogReady is gated on: the identity Service,
-	// and the Endpoint of the interface spec.services.keystone.external.
-	// endpointType selects. Those two must resolve — the control plane already
-	// authenticates through that interface, so a catalog that does not publish it
-	// is not the catalog K-ORC was pointed at. Every other interface is
-	// best-effort: see externalCatalogInterfaces.
+	// the Region import of spec.region, and the Endpoint of the interface
+	// spec.services.keystone.external.endpointType selects. The Service and that
+	// Endpoint must resolve — the control plane already authenticates through
+	// that interface in spec.region, so a catalog that does not publish it is not
+	// the catalog K-ORC was pointed at. The Region is gated because every
+	// Endpoint import names it as its regionRef: K-ORC holds an Endpoint import
+	// on "waiting for Region" while the Region is unresolved, which is not the
+	// pending-external marker korcImportStalled keys on, so an ungated Region
+	// that matches nothing would read as an endless WaitingForCatalog on the
+	// Endpoint instead of ImportStalled naming the region. Every other interface
+	// is best-effort: see externalCatalogInterfaces.
 	required bool
 }
 
@@ -143,12 +159,12 @@ func korcTerminalReason(obj orcv1alpha1.ObjectWithConditions) string {
 //  1. a classifiable K-ORC message on an unresolved import (auth, TLS,
 //     reachability, catalog mismatch) — relayed verbatim, the failure class is
 //     only recoverable from the message text
-//  2. a terminal K-ORC error on an import, Service before Endpoints so the ROOT is
-//     reported. Unlike the waits below this covers every import, required or not:
-//     K-ORC has given up on it, which is loud, actionable and never a property of
-//     the external catalog merely omitting an interface. The lone exception is an
-//     InvalidConfiguration on a non-required import, which no spec edit can repair —
-//     see the rationale at the loop
+//  2. a terminal K-ORC error on an import, Service, then Region, then Endpoints so
+//     the ROOT is reported. Unlike the waits below this covers every import,
+//     required or not: K-ORC has given up on it, which is loud, actionable and
+//     never a property of the external catalog merely omitting an interface. The
+//     lone exception is an InvalidConfiguration on a non-required import, which no
+//     spec edit can repair — see the rationale at the loop
 //  3. a REQUIRED import stalled past externalImportStallGrace — the silent-empty
 //     hazard
 //  4. a REQUIRED import not yet resolved — a legitimate, bounded wait
@@ -207,21 +223,23 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 	// ONE exception: an InvalidConfiguration on an import that is not required. That
 	// reason is K-ORC's machine-readable "the user must fix the configuration", and a
 	// non-required import has no configuration a user CAN fix: its filter is entirely
-	// operator-derived (an interface plus the identity Service reference), and K-ORC's
-	// EndpointFilter carries no region (see ambiguityHint), so a catalog publishing an
-	// interface once per region is not spec-disambiguable at all. Gating on it would
-	// hold CatalogReady False forever, with no remediation, over an interface nothing
-	// in this control plane depends on. That is the same brownfield asymmetry step 3
-	// already tolerates for the 0-match case, so tolerate it here too and surface it
-	// through status.catalog.imports as unresolved. The same import required — the
-	// interface the control plane authenticates through — still fails loud, and so
-	// does an UnrecoverableError on any import.
+	// operator-derived (an interface, the identity Service reference and the Region
+	// import of the immutable spec.region), so a >1 match means the external catalog
+	// publishes duplicate rows of one interface inside one region, which no spec edit
+	// repairs (see ambiguityHint). Gating on it would hold CatalogReady False forever,
+	// with no remediation, over an interface nothing in this control plane depends on.
+	// That is the same brownfield asymmetry step 3 already tolerates for the 0-match
+	// case, so tolerate it here too and surface it through status.catalog.imports as
+	// unresolved. The same import required — the interface the control plane
+	// authenticates through — still fails loud, and so does an UnrecoverableError on
+	// any import.
 	//
 	// The exception is keyed on the REASON, never on korcImportMultipleMatchesMarker:
 	// that marker is coupled to K-ORC's literal wording, so keying the tolerate branch
 	// on it would turn a K-ORC rewording into a permanent CatalogReady=False on a
-	// healthy multi-region control plane. The marker selects the HINT only, where a
-	// rewording degrades to "the terminal error is surfaced without the hint".
+	// healthy control plane whose catalog carries a duplicate optional row. The marker
+	// selects the HINT only, where a rewording degrades to "the terminal error is
+	// surfaced without the hint".
 	for _, imp := range imports {
 		termErr := orcv1alpha1.GetTerminalError(imp.obj)
 		if termErr == nil {
@@ -279,9 +297,9 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 		ObservedGeneration: cp.Generation,
 		Reason:             conditionReasonCatalogImported,
 		Message: fmt.Sprintf(
-			"imported the external identity Service and %d of %d Endpoint interface(s) as unmanaged K-ORC CRs "+
-				"(see status.catalog.imports)",
-			resolvedInterfaces, len(externalCatalogInterfaces),
+			"imported the external identity Service and %d of %d Endpoint interface(s) in region %q "+
+				"as unmanaged K-ORC CRs (see status.catalog.imports)",
+			resolvedInterfaces, len(externalCatalogInterfaces), korcRegion(cp),
 		),
 	})
 	return ctrl.Result{}, nil
@@ -291,16 +309,24 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 //
 // The identity Service import filters on type (and optionally name), both of
 // which the spec controls, so the hint names the disambiguation field. An
-// Endpoint import filters on interface and its owning Service — K-ORC's
-// EndpointFilter carries no region — so a catalog publishing the same interface
-// per region cannot be disambiguated from the spec at all; say so rather than
-// pointing at a field that would not help.
+// Endpoint import filters on interface, its owning Service and the Region
+// import of spec.region, so a >1 match means duplicate rows of one interface
+// inside that region; no spec field selects among those, so the hint names the
+// external catalog as the place to repair. Keystone region ids are unique, so
+// the Region branch is defensive.
 func (i catalogImport) ambiguityHint(cp *c5c3v1alpha1.ControlPlane) string {
-	if i.iface != "" {
+	switch i.kind {
+	case catalogImportKindEndpoint:
 		return fmt.Sprintf(
-			"the external catalog publishes more than one %q endpoint for the identity service "+
-				"(commonly one per region); K-ORC's endpoint import filter cannot select among them",
-			i.iface,
+			"the external catalog publishes more than one %q endpoint for the identity service in region %q; "+
+				"K-ORC refuses to pick one and no spec field selects among duplicate rows of one region, "+
+				"so remove the duplicate from the external catalog",
+			i.iface, korcRegion(cp),
+		)
+	case catalogImportKindRegion:
+		return fmt.Sprintf(
+			"the Region import filter (name=%q, spec.region) matched more than one Keystone region",
+			korcRegion(cp),
 		)
 	}
 	filter := "type=" + c5c3v1alpha1.IdentityCatalogServiceType
@@ -317,7 +343,8 @@ func (i catalogImport) ambiguityHint(cp *c5c3v1alpha1.ControlPlane) string {
 // stallMessage renders the ImportStalled message: what is stuck, where it was
 // looked for, and the two spec fields that decide where K-ORC looks. For an
 // Endpoint import it also names the third possibility — the external catalog
-// simply does not publish that interface, which no spec edit can fix.
+// simply does not publish that interface in spec.region, which no spec edit can
+// fix. For the Region import it names the region the external Keystone lacks.
 func (i catalogImport) stallMessage(cp *c5c3v1alpha1.ControlPlane) string {
 	message := fmt.Sprintf(
 		"catalog import %s has been waiting to be created externally in %s for longer than %s; "+
@@ -325,35 +352,54 @@ func (i catalogImport) stallMessage(cp *c5c3v1alpha1.ControlPlane) string {
 			"check spec.services.keystone.external.endpointType and spec.region",
 		i.describe(), externalKeystoneAuthURL(cp), externalImportStallGrace,
 	)
-	if i.iface != "" {
-		message += fmt.Sprintf(", or the external catalog publishes no %q endpoint for the identity service", i.iface)
-	} else if name := externalIdentityServiceName(cp); name != "" {
-		message += fmt.Sprintf(", or the external catalog holds no identity service named %q "+
-			"(spec.services.keystone.external.catalog.identityServiceName)", name)
+	switch i.kind {
+	case catalogImportKindEndpoint:
+		message += fmt.Sprintf(", or the external catalog publishes no %q endpoint for the identity service in region %q",
+			i.iface, korcRegion(cp))
+	case catalogImportKindRegion:
+		message += fmt.Sprintf(", or the external Keystone has no region %q (spec.region)", korcRegion(cp))
+	default:
+		if name := externalIdentityServiceName(cp); name != "" {
+			message += fmt.Sprintf(", or the external catalog holds no identity service named %q "+
+				"(spec.services.keystone.external.catalog.identityServiceName)", name)
+		}
 	}
 	return message
 }
 
 // catalogImportStatus projects the observed imports onto status.catalog.imports.
+// An unresolved import reports no id: a CR whose current spec K-ORC has not run
+// yet, such as one being re-imported (see retirePreRegionEndpointImport), still
+// carries the id of the filter it resolved before.
 func catalogImportStatus(imports []catalogImport) []c5c3v1alpha1.CatalogImportStatus {
 	out := make([]c5c3v1alpha1.CatalogImportStatus, 0, len(imports))
 	for _, imp := range imports {
-		out = append(out, c5c3v1alpha1.CatalogImportStatus{
+		status := c5c3v1alpha1.CatalogImportStatus{
 			Name:      imp.name,
 			Kind:      imp.kind,
 			Interface: imp.iface,
 			Resolved:  imp.resolved(),
-			ID:        imp.id,
-		})
+		}
+		if status.Resolved {
+			status.ID = imp.id
+		}
+		out = append(out, status)
 	}
 	return out
 }
 
 // ensureExternalCatalogImports create-or-updates the UNMANAGED K-ORC CRs that
-// import the external identity service and each of its endpoint interfaces, and
-// returns them carrying live status in dependency order (Service first, so a
-// classifier reports the root stuck dependency rather than an Endpoint merely
+// import the external identity service, the region spec.region names, and each
+// endpoint interface of that service in that region, and returns them carrying
+// live status in dependency order (Service, then Region, then the Endpoints, so
+// a classifier reports the root stuck dependency rather than an Endpoint merely
 // blocked on it), each flagged with whether CatalogReady is gated on it.
+//
+// Every Endpoint filter names the Region import as its regionRef, so a catalog
+// that publishes an interface once per region resolves to the row in
+// spec.region. K-ORC's own endpoint client looks the identity endpoint up in
+// spec.region, so the row of the interface it authenticates through is there
+// whenever an import can run at all.
 //
 // ManagementPolicyUnmanaged with Spec.Import and no Spec.Resource is what makes
 // these read-only: K-ORC resolves them against the existing catalog, writes
@@ -382,12 +428,28 @@ func (r *ControlPlaneReconciler) ensureExternalCatalogImports(
 	}
 
 	imports := []catalogImport{{
-		kind:     "Service",
+		kind:     catalogImportKindService,
 		name:     service.Name,
 		id:       ptr.Deref(service.Status.ID, ""),
 		obj:      service,
 		required: true,
 	}}
+
+	// Reading a region mutates nothing, so the import rides the spec's own
+	// clouds.yaml like the other imports. The name is the one Managed mode adopts
+	// its Region under; modes cannot transition, and the deletion sweep enumerates
+	// it in both.
+	region := unmanagedRegionImport(keystoneRegionName(cp), ns, korcRegion(cp), credRef)
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, region, apply.FieldManager); err != nil {
+		return nil, fmt.Errorf("identity Region import %q: %w", region.Name, err)
+	}
+	imports = append(imports, catalogImport{
+		kind:     catalogImportKindRegion,
+		name:     region.Name,
+		id:       ptr.Deref(region.Status.ID, ""),
+		obj:      region,
+		required: true,
+	})
 
 	authInterface := korcEndpointType(cp)
 	for _, iface := range externalCatalogInterfaces {
@@ -400,15 +462,19 @@ func (r *ControlPlaneReconciler) ensureExternalCatalogImports(
 					Filter: &orcv1alpha1.EndpointFilter{
 						Interface:  string(iface),
 						ServiceRef: ptr.To(orcv1alpha1.KubernetesNameRef(service.Name)),
+						RegionRef:  ptr.To(orcv1alpha1.KubernetesNameRef(region.Name)),
 					},
 				},
 			},
+		}
+		if err := r.retirePreRegionEndpointImport(ctx, cp, client.ObjectKeyFromObject(endpoint)); err != nil {
+			return nil, err
 		}
 		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, endpoint, apply.FieldManager); err != nil {
 			return nil, fmt.Errorf("identity Endpoint import %q: %w", endpoint.Name, err)
 		}
 		imports = append(imports, catalogImport{
-			kind:     "Endpoint",
+			kind:     catalogImportKindEndpoint,
 			name:     endpoint.Name,
 			iface:    iface,
 			id:       ptr.Deref(endpoint.Status.ID, ""),
@@ -418,6 +484,45 @@ func (r *ControlPlaneReconciler) ensureExternalCatalogImports(
 	}
 
 	return imports, nil
+}
+
+// retirePreRegionEndpointImport deletes the Endpoint import CR at key when an
+// earlier version created it with a filter that names no regionRef. K-ORC runs
+// an import filter only while status.id is unset, so adding the regionRef in
+// place would keep a row that may sit outside spec.region. That holds even when
+// the CR read here carries no status.id: the read comes from the cache, and
+// K-ORC's status.id write is bound to the CR's UID, not to the generation whose
+// filter it ran, so a resolution K-ORC has in flight under the old filter lands
+// on the patched CR. The CR is unmanaged, so the delete removes only the
+// Kubernetes object. The caller's apply re-creates it under the regioned filter
+// once K-ORC has released it, and the import reads as unresolved until K-ORC
+// resolves the new CR. The cache can still hold a CR an earlier pass deleted
+// after its apply re-created the name, so the delete is bound to the UID read
+// here and never reaches the re-created CR.
+func (r *ControlPlaneReconciler) retirePreRegionEndpointImport(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, key client.ObjectKey,
+) error {
+	live := &orcv1alpha1.Endpoint{}
+	if err := r.Get(ctx, key, live); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("reading identity Endpoint import %q: %w", key.Name, err)
+	}
+	if !metav1.IsControlledBy(live, cp) || live.DeletionTimestamp != nil ||
+		live.Spec.Import == nil || live.Spec.Import.Filter == nil || live.Spec.Import.Filter.RegionRef != nil {
+		return nil
+	}
+	uid := live.UID
+	if err := r.Delete(ctx, live, client.Preconditions{UID: &uid}); err != nil {
+		// NotFound: the CR is gone. Conflict: the name holds another CR, one this
+		// version applied with the regionRef, so there is nothing to retire.
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("deleting the pre-region identity Endpoint import %q: %w", key.Name, err)
+	}
+	return nil
 }
 
 // entryCredentialsRef returns the credentials the MANAGED K-ORC children

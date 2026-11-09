@@ -74,8 +74,9 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 	// nova client section and the neutron notifier do: keystoneauth answers
 	// EndpointNotFound. The region is imported rather than the ControlPlane's own
 	// Region CR referenced: K-ORC holds a Region CR while an Endpoint names it, so
-	// a shared one would tie the plane's teardown to every registration, and an
-	// External plane has none.
+	// a shared one would tie the plane's teardown to every registration. An
+	// External plane holds only a read-only import of its region, owned by the
+	// ControlPlane, which a registration must not depend on either.
 	region := unmanagedRegionImport(keystoneServiceCatalogRegionRef(ks), keystoneServiceChildNamespace(cp),
 		korcRegion(cp), credRef)
 	if err := r.ensureKeystoneServiceChild(ctx, ks, region); err != nil {
