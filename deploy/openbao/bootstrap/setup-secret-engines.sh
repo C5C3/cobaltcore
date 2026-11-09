@@ -21,6 +21,13 @@ BAO_TOKEN="${BAO_TOKEN:?BAO_TOKEN must be set}"
 # ---------------------------------------------------------------------------
 # secrets_list
 # Returns the list of currently enabled secret engine paths (one per line).
+#
+# main reads it once into a variable, and each guard greps that copy. Never pipe
+# it straight into `grep -q`: grep exits at its first match, a jq that still has
+# output to write then dies of SIGPIPE (exit 141), and pipefail turns the
+# condition false. jq 1.8 writes its first result before `kubectl exec` closes
+# its output, so the check of the mount that sorted first (barbican/) reported
+# it absent and the enable failed with "path is already in use".
 # ---------------------------------------------------------------------------
 secrets_list() {
   bao_exec bao secrets list -format=json | jq -r 'keys[]'
@@ -32,9 +39,10 @@ secrets_list() {
 # Skips if the path already exists.
 # ---------------------------------------------------------------------------
 enable_kv_v2() {
+  local engines="$1"
   local path="kv-v2/"
 
-  if secrets_list | grep -qx "${path}"; then
+  if grep -qx "${path}" <<<"${engines}"; then
     log "Secret engine already enabled at ${path}. Skipping."
     return 0
   fi
@@ -50,9 +58,10 @@ enable_kv_v2() {
 # Skips the enable step if the path already exists.
 # ---------------------------------------------------------------------------
 enable_pki() {
+  local engines="$1"
   local path="pki/"
 
-  if secrets_list | grep -qx "${path}"; then
+  if grep -qx "${path}" <<<"${engines}"; then
     log "Secret engine already enabled at ${path}. Skipping enable."
     return 0
   fi
@@ -79,9 +88,10 @@ enable_pki() {
 # matches the architecture handbook (database/mariadb/creds/<role>).
 # ---------------------------------------------------------------------------
 enable_database() {
+  local engines="$1"
   local path="database/mariadb/"
 
-  if secrets_list | grep -qx "${path}"; then
+  if grep -qx "${path}" <<<"${engines}"; then
     log "Secret engine already enabled at ${path}. Skipping."
     return 0
   fi
@@ -103,9 +113,10 @@ enable_database() {
 # (deploy/kind/infrastructure/openbao-instance.yaml).
 # ---------------------------------------------------------------------------
 enable_barbican_kv() {
+  local engines="$1"
   local path="barbican/"
 
-  if secrets_list | grep -qx "${path}"; then
+  if grep -qx "${path}" <<<"${engines}"; then
     log "Secret engine already enabled at ${path}. Skipping."
     return 0
   fi
@@ -123,10 +134,16 @@ main() {
   log "Namespace : ${NAMESPACE}"
   log "BAO_ADDR  : ${BAO_ADDR}"
 
-  enable_kv_v2
-  enable_pki
-  enable_database
-  enable_barbican_kv
+  local engines
+  if ! engines="$(secrets_list)"; then
+    log "ERROR: could not list the secret engines on openbao-0 in namespace '${NAMESPACE}'."
+    exit 1
+  fi
+
+  enable_kv_v2 "${engines}"
+  enable_pki "${engines}"
+  enable_database "${engines}"
+  enable_barbican_kv "${engines}"
 
   log "=== Done ==="
 }

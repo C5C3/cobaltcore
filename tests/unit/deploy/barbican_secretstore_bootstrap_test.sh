@@ -420,11 +420,10 @@ test_every_bootstrap_script_demands_a_token() {
 # ---------------------------------------------------------------------------
 # Test: an unreachable OpenBao aborts the engine setup
 # ---------------------------------------------------------------------------
-# The failing `bao secrets list` itself does not abort: it sits in an `if`
-# condition, where set -e does not fire, and an unreadable list is
-# indistinguishable from an empty one. The abort comes from the first enable
-# that fails, and it must be an abort — continuing would walk through the
-# remaining mounts reporting success for engines that were never created.
+# The script reads the engine list once, before the first enable, and a list it
+# cannot read ends the run there. Reading it as an empty list would send an
+# enable for every engine to an OpenBao that may already have them; going on
+# past a failed enable would report success for engines that were never created.
 test_aborts_when_openbao_is_unreachable() {
   echo "Test: setup-secret-engines.sh aborts when OpenBao is unreachable"
 
@@ -440,6 +439,8 @@ test_aborts_when_openbao_is_unreachable() {
   calls="$(cat "$tmp/calls.log")"
 
   assert_nonzero_exit "the script exits non-zero" "$exit_code"
+  assert_contains "the failure names the list it could not read" \
+    "$output" "ERROR: could not list the secret engines"
   assert_not_contains "the barbican mount is not attempted after the failure" \
     "$calls" "bao secrets enable -path=barbican"
   assert_not_contains "no further mount is attempted after the failure" \

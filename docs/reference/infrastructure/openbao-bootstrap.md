@@ -292,9 +292,10 @@ the Barbican KV v2 mount.
 | database | `database/mariadb/` | mount only; per-tenant connections/roles are added later by `setup-database-tenant.sh` |
 | KV v2 | `barbican/` | `version=2`, enabled by `enable_barbican_kv`; the mount for the Barbican brownfield secret-store leg, where Barbican attaches to this shared instance instead of a dedicated one |
 
-**Idempotency:** Before enabling each engine, the script checks `bao secrets list
--format=json` for the mount path. If the path already exists, the engine enable is
-skipped with a log message.
+**Idempotency:** The script reads `bao secrets list -format=json` once, before the
+first enable. It skips the enable of each engine whose mount path is already in that
+list, with a log message. When the list cannot be read, the script stops before any
+enable.
 
 **Database engine:** the `database` engine is only mounted here — no connection or
 role is written, because the managed MariaDB instances do not exist at bootstrap
@@ -644,10 +645,10 @@ bao_exec bao write auth/approle/role/barbican/secret-id-accessor/destroy \
 re-logs in whenever its cached token ages out (`token_ttl` is 1h), so a use cap would
 expire the credential mid-operation rather than bound it.
 
-**Idempotency:** Before enabling each auth method, the script checks `bao auth list
--format=json` for the mount path. If the path already exists, the auth enable is
-skipped. Role creation uses `bao write` which is an upsert operation (creates or
-updates).
+**Idempotency:** The script reads `bao auth list -format=json` once, before the first
+enable. It skips the enable of each auth method whose mount path is already in that
+list. When the list cannot be read, the script stops before any enable. Role creation
+uses `bao write` which is an upsert operation (creates or updates).
 
 ### setup-policies.sh
 
