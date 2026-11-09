@@ -86,6 +86,7 @@ of this site.
 | Check | What it catches |
 | --- | --- |
 | `tests/unit/docs/cobaltcore_dev_publish_test.sh`, part of `make test-shell` | A `publish.json` that does not parse, a pattern that matches no page, an `@/` import, and an import of a published page that resolves outside `docs/`, `tests/` and `deploy/` |
+| The [`docs-overlay`](../reference/ci-cd/ci-workflow.md#docs-overlay) job on a pull request | Anything else that breaks the cobaltcore.dev build, such as a link that resolves on neither site: the job builds cobaltcore-dev/docs with the docs of the pull request. It does not block a merge, and it skips the build while cobaltcore-dev/docs does not read these docs |
 
 ## Preview a change on cobaltcore.dev
 

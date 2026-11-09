@@ -1096,6 +1096,62 @@ jobs:
       - name: Build documentation
         run: npm run docs:build
 
+  # Build cobaltcore.dev with the docs of the pull request. cobaltcore-dev/docs
+  # renders the pages docs/.vitepress/publish.json lists from a checkout of
+  # docs/, tests/ and deploy/ below its own source root, so a page that builds
+  # in the docs job can still break that build, for example with a link that
+  # resolves on neither site. While cobaltcore-dev/docs has no
+  # docs/.vitepress/overlay.ts it does not read the checkout, and the job ends
+  # with a notice. It does not block a merge, because it builds the default
+  # branch of another repository. Neither checkout persists its token: the job
+  # runs npm ci and the build of that repository, and no step needs the token.
+  docs-overlay:
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - name: Check out cobaltcore-dev/docs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: cobaltcore-dev/docs
+          path: site
+          persist-credentials: false
+      - name: Check whether cobaltcore-dev/docs reads the overlay
+        id: consumer
+        run: |
+          if [ -f site/docs/.vitepress/overlay.ts ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::cobaltcore-dev/docs has no docs/.vitepress/overlay.ts and does not render these docs yet; skipping the cobaltcore.dev build"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out the docs of the pull request
+        if: steps.consumer.outputs.ready == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: site/docs/_upstream/cobaltcore
+          persist-credentials: false
+          sparse-checkout: |
+            docs
+            tests
+            deploy
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: steps.consumer.outputs.ready == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Install dependencies
+        if: steps.consumer.outputs.ready == 'true'
+        working-directory: site
+        run: npm ci
+      - name: Build cobaltcore.dev
+        if: steps.consumer.outputs.ready == 'true'
+        working-directory: site
+        run: npm run docs:build
+
   # Validate Helm chart structure, template rendering, and unit tests.
   # Runs helm lint, helm template with multiple value override scenarios, and
   # helm-unittest for every operator chart to catch regressions early without a
