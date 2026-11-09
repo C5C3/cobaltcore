@@ -24,7 +24,7 @@ are being brought into conformance.
 Mirroring the reference set, service-specific guides live in a per-service
 subdirectory — `docs/guides/keystone/`, `docs/guides/horizon/`,
 `docs/guides/glance/`, and so on — and register in the matching collapsed
-service group of the `Guides` sidebar section in `docs/.vitepress/config.ts`.
+service group of the `Guides` sidebar section in `docs/.vitepress/sidebar.ts`.
 Cross-service and general operational guides (observability, day-2 operations,
 tenancy, end-to-end SSO) sit flat under `docs/guides/` and register above the
 service groups. A guide that walks a single service's CRs, operator, or
@@ -163,7 +163,7 @@ names the reader's devstack can actually copy.
 
 - Frontmatter (`title`, `quadrant: operator`) starts on **line 1**. VitePress
   renders anything above the frontmatter as body text.
-- Register a new guide in the `Guides` sidebar in `docs/.vitepress/config.ts`.
+- Register a new guide in the `Guides` sidebar in `docs/.vitepress/sidebar.ts`.
 - Source describes behaviour, not internal tracking. Do not put internal
   feature or requirement IDs, or issue references, in a guide.
 - Guides are written in English.

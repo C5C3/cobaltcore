@@ -61,7 +61,7 @@ skeleton fails the docs gate — that is intended, not a scaffold bug.
 
 Add a `{ text: '<Title>', link: '/guides/<service>/<slug>' }` entry to the
 matching collapsed service group of the `Guides` sidebar section in
-`docs/.vitepress/config.ts` (general guides register flat as
+`docs/.vitepress/sidebar.ts` (general guides register flat as
 `/guides/<slug>` above the service groups).
 
 ### 4. Author the body with the devstack's real names
@@ -139,7 +139,7 @@ What the scripts cannot decide:
   isolation-named and labelled as such.
 - Frontmatter (`title`, `quadrant: operator`) starts on line 1.
 - The guide is registered in the `Guides` sidebar in
-  `docs/.vitepress/config.ts`.
+  `docs/.vitepress/sidebar.ts`.
 
 ## Findings report
 

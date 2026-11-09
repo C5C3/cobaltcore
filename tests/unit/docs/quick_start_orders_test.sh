@@ -7,7 +7,7 @@
 # service the control plane does not manage:
 #   1. the frontmatter holds `title: Quick Start (Orders)` and no other key,
 #      the SPDX comment is present, and the H1 follows it
-#   2. docs/.vitepress/config.ts lists the page after the metal-stack quick
+#   2. docs/.vitepress/sidebar.ts lists the page after the metal-stack quick
 #      start and before the Architecture group
 #   3. the six `## ` sections occur once each and in order, every
 #      `### Step` heading carries an explicit anchor, `cp-` in Part 1 and `tc-`
@@ -57,7 +57,7 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-orders.md}"
-VITEPRESS_CONFIG="$PROJECT_ROOT/docs/.vitepress/config.ts"
+VITEPRESS_SIDEBAR="$PROJECT_ROOT/docs/.vitepress/sidebar.ts"
 KIND_CONFIG="$PROJECT_ROOT/hack/kind-config.yaml"
 CONTROLPLANE_TYPES="$PROJECT_ROOT/operators/c5c3/api/v1alpha1/controlplane_types.go"
 APPCRED_VERIFY_JOB="$PROJECT_ROOT/tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml"
@@ -140,9 +140,9 @@ test_frontmatter() {
 test_sidebar() {
   echo "Test: the sidebar lists the page after the metal-stack quick start"
   local metal_stack orders architecture ok=0
-  metal_stack="$(grep -nF "link: '/quick-start-metal-stack'" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  orders="$(grep -nF "{ text: 'Quick Start (Orders)', link: '/quick-start-orders' }" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  architecture="$(grep -nE "^[[:space:]]*text: 'Architecture',[[:space:]]*$" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
+  metal_stack="$(grep -nF "link: '/quick-start-metal-stack'" "$VITEPRESS_SIDEBAR" | head -n 1 | cut -d: -f1)"
+  orders="$(grep -nF "{ text: 'Quick Start (Orders)', link: '/quick-start-orders' }" "$VITEPRESS_SIDEBAR" | head -n 1 | cut -d: -f1)"
+  architecture="$(grep -nE "^[[:space:]]*text: 'Architecture',[[:space:]]*$" "$VITEPRESS_SIDEBAR" | head -n 1 | cut -d: -f1)"
   if [[ -n "$metal_stack" && -n "$orders" && -n "$architecture" ]] &&
     ((metal_stack < orders && orders < architecture)); then
     ok=1

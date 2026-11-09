@@ -17,7 +17,8 @@ reached at all. Those are the checks here:
   T3  every relative/absolute docs link resolves to a page, and every
       `#fragment` (same-page or cross-page) resolves to a heading slug, an
       explicit {#id}, or an HTML id/name on the target page
-  T4  every sidebar/nav `link:` in docs/.vitepress/config.ts resolves to a page
+  T4  every nav `link:` in docs/.vitepress/config.ts and every sidebar `link:`
+      in docs/.vitepress/sidebar.ts resolves to a page
   T5  every page is reachable: listed in the sidebar/nav or linked from at
       least one other page (an orphan is [FAIL]); pages reachable only
       through links are listed as [INFO]
@@ -38,7 +39,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DOCS = REPO_ROOT / "docs"
-CONFIG = DOCS / ".vitepress" / "config.ts"
+# The nav lives in config.ts, the sidebar in sidebar.ts; T4 reads the links of both.
+NAV_FILES = [DOCS / ".vitepress" / "config.ts", DOCS / ".vitepress" / "sidebar.ts"]
 
 fail_count = 0
 
@@ -277,15 +279,17 @@ def main():
 
     header("T4: sidebar and nav links resolve")
     config_links = []
-    if CONFIG.is_file():
-        for n, line in enumerate(CONFIG.read_text(encoding="utf-8").split("\n"), start=1):
+    for nav_file in NAV_FILES:
+        rel = nav_file.relative_to(REPO_ROOT)
+        if not nav_file.is_file():
+            emit("FAIL", f"{rel} not found")
+            continue
+        for n, line in enumerate(nav_file.read_text(encoding="utf-8").split("\n"), start=1):
             for link in re.findall(r"link:\s*'([^']+)'", line) + re.findall(r'link:\s*"([^"]+)"', line):
-                config_links.append((n, link))
-    else:
-        emit("FAIL", f"{CONFIG.relative_to(REPO_ROOT)} not found")
+                config_links.append((rel, n, link))
     listed = set()
     dead = 0
-    for n, link in config_links:
+    for rel, n, link in config_links:
         if re.match(r"^[a-z]+:", link):
             continue
         path_part = link.split("#")[0]
@@ -293,7 +297,7 @@ def main():
         if dest is None and path_part.endswith("/"):
             dest = page_for(path_part + "index", DOCS / "index.md")
         if dest is None:
-            emit("FAIL", f"docs/.vitepress/config.ts:{n}: link '{link}' resolves to no page")
+            emit("FAIL", f"{rel}:{n}: link '{link}' resolves to no page")
             dead += 1
         else:
             listed.add(dest)
