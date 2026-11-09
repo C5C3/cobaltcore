@@ -11,7 +11,13 @@
 #   - a SECOND identity-type service (keystone-legacy) so the type-only import
 #     filter matches more than one entry — the P7 fail-loudly case. The main
 #     ControlPlane disambiguates with catalog.identityServiceName; the ambiguous
-#     ControlPlane (05) omits it and must surface CatalogFailed.
+#     ControlPlane (05) omits it and must surface CatalogFailed;
+#   - a SECOND region (RegionTwo) with a `public` endpoint of the keystone
+#     service, so the catalog publishes the public identity endpoint once per
+#     region. The ControlPlanes keep the default spec.region RegionOne, and their
+#     public Endpoint import must resolve to the RegionOne row. The RegionTwo URL
+#     is reachable on purpose: a client that sets no region, like the suite's own
+#     `openstack` calls, may take either row.
 #
 # It authenticates as the bootstrap admin (keystone-fixture-admin) and is written
 # idempotently so a Job retry converges rather than duplicating or erroring.
@@ -82,6 +88,16 @@ spec:
               if ! openstack service list --format value -c Name \
                    | grep -qx keystone-legacy; then
                 openstack service create --name keystone-legacy identity
+              fi
+              # Second region: a public identity row outside RegionOne, so a
+              # region-less Endpoint import filter would match two rows. Both
+              # steps are guarded so a retry converges.
+              openstack region list -f value -c Region | grep -qx RegionTwo \
+                || openstack region create RegionTwo
+              if ! openstack endpoint list --service keystone --interface public \
+                   --region RegionTwo -f value -c ID | grep -q .; then
+                openstack endpoint create --region RegionTwo keystone public \
+                  http://keystone.brownfield-keystone.svc.cluster.local:5000/v3
               fi
               echo "OK: brownfield fixture catalog populated"
               openstack service list --format value -c Name -c Type

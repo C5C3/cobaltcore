@@ -223,10 +223,11 @@ spec:
           }
           # Poll until <want> entries of status.catalog.imports report resolved=true.
           # CatalogReady=True is gated on the REQUIRED imports only (the identity
-          # Service and the endpointType interface; reconcile_catalog_external.go).
-          # The other interfaces are best-effort: K-ORC resolves them a few seconds
-          # after the Service becomes Available, so the projection lags the Ready
-          # edge and a single sample there races K-ORC.
+          # Service, the Region of spec.region and the endpointType interface;
+          # reconcile_catalog_external.go). The other interfaces are best-effort:
+          # K-ORC resolves them a few seconds after the Service and the Region
+          # become Available, so the projection lags the Ready edge and a single
+          # sample there races K-ORC.
           wait_cp_imports_resolved() { # <name> <ns> <want> <timeout>
             local name="$1" ns="$2" want="$3" timeout="$4" deadline n
             deadline=$(( $(date +%s) + timeout ))
@@ -403,7 +404,7 @@ spec:
               --env "OS_PASSWORD=${BOOTSTRAP_ADMIN_PW}" \
               --command -- /bin/sh -c '
                 set -e
-                for r in service endpoint user project domain role; do
+                for r in service endpoint user project domain role region; do
                   echo "@@@${r}@@@"
                   openstack ${r} list -f value 2>/dev/null
                 done
@@ -420,10 +421,11 @@ spec:
               echo "ERROR: inventory capture ${prefix} did not complete; output was:"
               printf '%s\n' "$raw"; exit 1
             fi
-            for r in service endpoint user project domain role; do
+            # A region's id is its name, so a region row keeps its first column.
+            for r in service endpoint user project domain role region; do
               printf '%s\n' "$out" \
                 | awk -v s="@@@${r}@@@" '$0==s{f=1;next} /^@@@/{f=0} f' \
-                | awk '{$1=""; sub(/^ +/,""); print}' | LC_ALL=C sort > "${prefix}.${r}"
+                | awk -v r="$r" 'r != "region" {$1=""; sub(/^ +/,"")} {print}' | LC_ALL=C sort > "${prefix}.${r}"
             done
           }
 
@@ -454,7 +456,7 @@ spec:
           echo "OK: the External ControlPlane's OpenBao paths hold no live value (never seeded or cleanly purged)."
           capture_inventory "${WORK}/B0"
           echo "== baseline external inventory =="
-          for r in service endpoint user project domain role; do
+          for r in service endpoint user project domain role region; do
             echo "-- ${r} --"; cat "${WORK}/B0.${r}"
           done
 
@@ -508,19 +510,40 @@ spec:
           assert_eq "AdminCredentialReady status" "True" "$(cp_status "${CP}" "${CP_NS}" AdminCredentialReady)"
           assert_eq "CatalogReady status" "True" "$(cp_status "${CP}" "${CP_NS}" CatalogReady)"
           assert_eq "CatalogReady reason" "CatalogImported" "$(cp_reason "${CP}" "${CP_NS}" CatalogReady)"
-          # The fixture publishes all three interfaces, so all four imports resolve;
-          # give the best-effort Endpoint imports the operator's own import grace
+          # The fixture publishes all three interfaces in RegionOne, so all five
+          # imports (Service, Region, three Endpoints) resolve; give the
+          # best-effort Endpoint imports the operator's own import grace
           # (externalImportStallGrace, 2m) to settle before sampling the projection.
-          wait_cp_imports_resolved "${CP}" "${CP_NS}" 4 120
+          wait_cp_imports_resolved "${CP}" "${CP_NS}" 5 120
           cp_json="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json)"
-          assert_eq "catalog import count" "4" \
+          assert_eq "catalog import count" "5" \
             "$(printf '%s' "$cp_json" | jq '.status.catalog.imports | length')"
-          assert_eq "all catalog imports resolved" "4" \
+          assert_eq "all catalog imports resolved" "5" \
             "$(printf '%s' "$cp_json" | jq '[.status.catalog.imports[] | select(.resolved==true)] | length')"
           if ! printf '%s' "$cp_json" | jq -e 'all(.status.catalog.imports[]; (.id // "") != "")' >/dev/null; then
             echo "ERROR: a resolved catalog import carries no OpenStack id"; exit 1
           fi
-          echo "OK: identity Service + 3 Endpoint interfaces imported and resolved with ids."
+          echo "OK: identity Service, its Region + 3 Endpoint interfaces imported and resolved with ids."
+          # The catalog publishes the public identity endpoint in RegionOne and in
+          # RegionTwo; the public import filters on the Region import of
+          # spec.region (RegionOne) and must resolve to that row.
+          region_row="$(printf '%s' "$cp_json" | jq -c --arg n "${CP}-region" \
+            '[.status.catalog.imports[] | select(.name==$n)][0] // {}')"
+          assert_eq "Region import kind" "Region" "$(printf '%s' "$region_row" | jq -r '.kind // ""')"
+          assert_eq "Region import id" "RegionOne" "$(printf '%s' "$region_row" | jq -r '.id // ""')"
+          region_two_public="$(osc_admin_capture endpoint list --service keystone --interface public \
+            --region RegionTwo -f value -c ID | tr -d '[:space:]' || true)"
+          assert_empty "the fixture publishes a RegionTwo public identity endpoint" \
+            "$([ -n "${region_two_public}" ] && echo "" || echo "empty")"
+          region_one_public="$(osc_admin_capture endpoint list --service keystone --interface public \
+            --region RegionOne -f value -c ID || true)"
+          assert_eq "RegionOne public identity endpoint rows" "1" \
+            "$(printf '%s\n' "$region_one_public" | grep -c . || true)"
+          assert_eq "public import resolved to the RegionOne row" \
+            "$(printf '%s' "$region_one_public" | tr -d '[:space:]')" \
+            "$(printf '%s' "$cp_json" | jq -r --arg n "${CP}-identity-endpoint-public" \
+              '[.status.catalog.imports[] | select(.name==$n)][0].id // ""')"
+          echo "OK: the public import resolved to the RegionOne row of a two-region catalog."
           ADMIN_AC_ID="$(printf '%s' "$cp_json" | jq -r '.status.adminApplicationCredential.id // ""')"
           assert_empty "status.adminApplicationCredential.id is set" \
             "$([ -n "${ADMIN_AC_ID}" ] && echo "" || echo "empty")"
@@ -546,16 +569,16 @@ spec:
             || { echo "ERROR: identity service not listed in the external catalog by the verify Job"; exit 1; }
           echo "OK: the minted credential authenticates a client against the external API."
 
-          # No pollution: services, endpoints, domains, roles, users and projects
-          # stay byte-identical to the baseline.
+          # No pollution: services, endpoints, domains, roles, regions, users and
+          # projects stay byte-identical to the baseline.
           capture_inventory "${WORK}/A1"
-          for r in service endpoint domain role; do
+          for r in service endpoint domain role region; do
             if ! diff "${WORK}/B0.${r}" "${WORK}/A1.${r}" >/dev/null; then
               echo "ERROR: external ${r} inventory changed after convergence (pollution):"
               diff "${WORK}/B0.${r}" "${WORK}/A1.${r}" || true; exit 1
             fi
           done
-          echo "OK: external services/endpoints/domains/roles unchanged after convergence."
+          echo "OK: external services/endpoints/domains/roles/regions unchanged after convergence."
           assert_empty "no external users removed/renamed" "$(comm -23 "${WORK}/B0.user" "${WORK}/A1.user")"
           assert_empty "no external users added" "$(comm -13 "${WORK}/B0.user" "${WORK}/A1.user")"
           assert_empty "no external projects removed/renamed" "$(comm -23 "${WORK}/B0.project" "${WORK}/A1.project")"
@@ -654,7 +677,7 @@ spec:
           assert_eq "exactly user nova added" "nova" "$(comm -13 "${WORK}/A1.user" "${WORK}/A1b.user")"
           assert_eq "exactly project service-nova added" "service-nova" "$(comm -13 "${WORK}/A1.project" "${WORK}/A1b.project")"
           assert_empty "no external role added by the registration" "$(comm -13 "${WORK}/A1.role" "${WORK}/A1b.role")"
-          for r in service endpoint user project domain role; do
+          for r in service endpoint user project domain role region; do
             assert_empty "no external ${r} removed by the registration" "$(comm -23 "${WORK}/A1.${r}" "${WORK}/A1b.${r}")"
           done
           echo "OK: the registration added exactly its service, two endpoints, user and project, and removed nothing."
@@ -746,7 +769,7 @@ spec:
           wait_gone keystoneservice nova "${CP_NS}" 300
           wait_gone secret nova-credentials "${CP_NS}" 120
           capture_inventory "${WORK}/A1c"
-          for r in service endpoint user project domain role; do
+          for r in service endpoint user project domain role region; do
             if ! diff "${WORK}/A1.${r}" "${WORK}/A1c.${r}" >/dev/null; then
               echo "ERROR: external ${r} inventory differs from the post-convergence baseline after the nova teardown:"
               diff "${WORK}/A1.${r}" "${WORK}/A1c.${r}" || true; exit 1
@@ -892,7 +915,7 @@ spec:
 
           # All K-ORC CRs owned by the CP are gone (imports GC'd; the managed AC
           # revoked and deleted in Keystone by the finalizers).
-          for kind in applicationcredentials services endpoints users domains projects; do
+          for kind in applicationcredentials services endpoints regions users domains projects; do
             n="$(kubectl get "${kind}.openstack.k-orc.cloud" -n "${CP_NS}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
             assert_eq "no ${kind}.openstack.k-orc.cloud remain in ${CP_NS}" "0" "${n}"
           done
@@ -909,13 +932,13 @@ spec:
 
           # The external installation is bit-for-bit untouched, and still serving.
           capture_inventory "${WORK}/A2"
-          for r in service endpoint user project domain role; do
+          for r in service endpoint user project domain role region; do
             if ! diff "${WORK}/B0.${r}" "${WORK}/A2.${r}" >/dev/null; then
               echo "ERROR: external ${r} inventory differs from baseline after deletion (blast radius):"
               diff "${WORK}/B0.${r}" "${WORK}/A2.${r}" || true; exit 1
             fi
           done
-          echo "OK: external services/endpoints/users/projects/domains/roles are bit-for-bit identical to the baseline."
+          echo "OK: external services/endpoints/users/projects/domains/roles/regions are bit-for-bit identical to the baseline."
           osc_admin token issue >/dev/null
           osc_user brownfield-admin heimdall "${NEW_ADMIN_PW}" token issue >/dev/null
           echo "OK: the fixture Keystone still issues tokens after the ControlPlane is gone."
