@@ -63,8 +63,10 @@ spec:
 # CA-type ClusterIssuer signing leaf certs for MariaDB, MaxScale, and
 # Keystone DB-client mTLS. The name "openstack-db-ca-issuer" is the
 # source-of-truth referenced by operators/keystone/internal/controller/
-# reconcile_databasetls.go (const dbCAIssuerName) and by mariadb.yaml's
-# spec.tls.serverCertIssuerRef / clientCertIssuerRef.
+# reconcile_databasetls.go (const dbCAIssuerName), by the MariaDB's
+# spec.tls.serverCertIssuerRef / clientCertIssuerRef, and by the MaxScale
+# CR's spec.tls.listenerCertIssuerRef / adminCertIssuerRef, both in
+# mariadb.yaml. A rename must change all of them.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
