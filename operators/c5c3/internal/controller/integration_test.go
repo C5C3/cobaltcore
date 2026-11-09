@@ -1235,9 +1235,10 @@ func simulateRegistrationAccountConvergedWhenPresent(
 	}
 }
 
-// simulateExternalCatalogImportsAvailableWhenPresent waits for the four UNMANAGED
-// catalog import CRs an External-mode ControlPlane projects — the identity Service
-// plus one Endpoint per interface — and resolves each one inline: Available=True
+// simulateExternalCatalogImportsAvailableWhenPresent waits for the five UNMANAGED
+// catalog import CRs an External-mode ControlPlane projects — the identity Service,
+// the Region of spec.region, and one Endpoint per interface — and resolves each
+// one inline: Available=True
 // with a matching ObservedGeneration (korcAvailableUpToDate refuses a stale
 // condition) and a resolved OpenStack id. That is what K-ORC stamps once an import
 // matches a live catalog entry, and there is no K-ORC controller in envtest.
@@ -1261,6 +1262,20 @@ func simulateExternalCatalogImportsAvailableWhenPresent(
 	})
 	svc.Status.ID = ptr.To("simulated-identity-service-id")
 	g.Expect(c.Status().Update(ctx, svc)).To(Succeed(), "resolve the identity Service import")
+
+	region := &orcv1alpha1.Region{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: keystoneRegionName(cp)}, region)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the identity Region import should be projected")
+	meta.SetStatusCondition(&region.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: region.Generation,
+		Message:            "simulated import resolved",
+	})
+	region.Status.ID = ptr.To(korcRegion(cp))
+	g.Expect(c.Status().Update(ctx, region)).To(Succeed(), "resolve the identity Region import")
 
 	for _, iface := range externalCatalogInterfaces {
 		ep := &orcv1alpha1.Endpoint{}
@@ -6239,9 +6254,10 @@ func TestIntegration_ExternalMode_ConvergesToReadyWithNoWorkloads(t *testing.T) 
 			"External mode must create no managed catalog Endpoint")
 	}
 
-	// ... and the existing identity service/endpoints appear as resolved imports.
-	// CatalogReady gates only on the REQUIRED imports — the identity Service and the
-	// single endpointType interface (public here) — so the two non-gating interface
+	// ... and the existing identity service, its region and its endpoints appear as
+	// resolved imports. CatalogReady gates only on the REQUIRED imports — the
+	// identity Service, the Region of spec.region and the single endpointType
+	// interface (public here) — so the two non-gating interface
 	// imports resolve on a later reconcile driven by their K-ORC status watch, which
 	// can land after Ready flips. Poll for that convergence rather than asserting on
 	// the single snapshot taken the instant Ready went True.
@@ -6253,7 +6269,7 @@ func TestIntegration_ExternalMode_ConvergesToReadyWithNoWorkloads(t *testing.T) 
 		if live.Status.Catalog == nil {
 			return fmt.Errorf("status.catalog not projected yet")
 		}
-		if got, want := len(live.Status.Catalog.Imports), 1+len(externalCatalogInterfaces); got != want {
+		if got, want := len(live.Status.Catalog.Imports), 2+len(externalCatalogInterfaces); got != want {
 			return fmt.Errorf("status.catalog.imports has %d entries, want %d", got, want)
 		}
 		for _, imp := range live.Status.Catalog.Imports {
@@ -6266,7 +6282,7 @@ func TestIntegration_ExternalMode_ConvergesToReadyWithNoWorkloads(t *testing.T) 
 		}
 		return nil
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
-		"every catalog import — the identity Service and all %d interfaces — must resolve with an id",
+		"every catalog import — the identity Service, the Region and all %d interfaces — must resolve with an id",
 		len(externalCatalogInterfaces))
 }
 

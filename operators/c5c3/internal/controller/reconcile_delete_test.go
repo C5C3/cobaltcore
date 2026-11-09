@@ -2432,10 +2432,9 @@ func TestReconcileDelete_MixedRemainderStillWaitsForManaged(t *testing.T) {
 // externalModeORCChildren returns the owned K-ORC CRs an External-mode
 // ControlPlane projects, with the ManagementPolicy each really carries: the
 // ApplicationCredential is Managed (its finalizer revokes at the Keystone level),
-// while the admin User/Domain and the whole identity catalog — the Service plus
-// one Endpoint per interface — are Unmanaged imports whose CR deletion cannot
-// touch the external Keystone. No Region is seeded: an External-mode ControlPlane
-// projects none, and the sweep has to tolerate that name as NotFound.
+// while the admin User/Domain and the whole identity catalog — the Service, the
+// Region of spec.region, and one Endpoint per interface — are Unmanaged imports
+// whose CR deletion cannot touch the external Keystone.
 func externalModeORCChildren(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 	ns := childNamespace(cp)
 	objs := []client.Object{
@@ -2462,6 +2461,15 @@ func externalModeORCChildren(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 			Spec: orcv1alpha1.DomainSpec{
 				ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged,
 				Import:           &orcv1alpha1.DomainImport{Filter: &orcv1alpha1.DomainFilter{}},
+			},
+		},
+		&orcv1alpha1.Region{
+			ObjectMeta: metav1.ObjectMeta{Name: keystoneRegionName(cp), Namespace: ns},
+			Spec: orcv1alpha1.RegionSpec{
+				ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged,
+				Import: &orcv1alpha1.RegionImport{Filter: &orcv1alpha1.RegionFilter{
+					Name: ptr.To(orcv1alpha1.OpenStackName(korcRegion(cp))),
+				}},
 			},
 		},
 	}
@@ -2508,9 +2516,8 @@ func TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs(t *testing.T) {
 	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeFalse(),
 		"the ControlPlane finalizer must be released once every owned K-ORC CR is gone")
 
-	// Every owned K-ORC CR is gone — including the three per-interface identity
-	// Endpoint imports. The Region name is enumerated too and was never seeded, so
-	// this also pins that the sweep tolerates it as NotFound.
+	// Every owned K-ORC CR is gone — including the Region import of spec.region and
+	// the three per-interface identity Endpoint imports.
 	children := orcChildObjects(cp)
 	g.Expect(children).To(HaveLen(6+len(externalCatalogInterfaces)),
 		"the sweep must enumerate the identity/admin CRs, the Region and the catalog imports")
@@ -2530,7 +2537,8 @@ func TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs(t *testing.T) {
 
 // TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched pins WHY the
 // sweep has zero blast radius on the external installation: the admin User/Domain
-// AND the whole identity catalog the sweep deletes are Unmanaged imports, so
+// AND the whole identity catalog the sweep deletes, the Region import included,
+// are Unmanaged imports, so
 // removing their CRs cannot delete the OpenStack resources behind them — the
 // external catalog is left bit-for-bit intact. Only the ApplicationCredential is
 // Managed — its K-ORC finalizer revokes at the Keystone level before the CR delete
@@ -2573,6 +2581,12 @@ func TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched(t *test
 			"the %q endpoint is an import, so its CR delete cannot touch the external catalog", iface)
 		g.Expect(ep.Spec.Import).NotTo(BeNil())
 	}
+	regionKey := types.NamespacedName{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)}
+	region := &orcv1alpha1.Region{}
+	g.Expect(c.Get(ctx, regionKey, region)).To(Succeed())
+	g.Expect(region.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged),
+		"the Region is an import of spec.region, so its CR delete cannot touch the external Keystone")
+	g.Expect(region.Spec.Import).NotTo(BeNil())
 
 	ac := &orcv1alpha1.ApplicationCredential{}
 	g.Expect(c.Get(ctx, types.NamespacedName{Name: adminAppCredentialName(cp), Namespace: childNamespace(cp)}, ac)).To(Succeed())
@@ -2583,6 +2597,8 @@ func TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched(t *test
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(hasLiveWork).To(BeTrue(), "live (not-yet-Terminating) CRs must announce the teardown once")
 	g.Expect(remaining).To(BeEmpty())
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, regionKey, &orcv1alpha1.Region{}))).To(BeTrue(),
+		"the sweep must remove the Region import CR")
 }
 
 // TestOrcChildObjects_ManagedModeUnchanged is the golden-behavior guard on the
@@ -2699,8 +2715,9 @@ func stalledExternalORCChildren(cp *c5c3v1alpha1.ControlPlane) []client.Object {
 // revoke" never says an OpenStack resource leaked.
 //
 // The escape must therefore name exactly the Managed CRs it orphaned, and never the
-// Unmanaged imports, whose CR deletion could not have touched OpenStack anyway, nor
-// the detach-on-delete Region, whose OpenStack row K-ORC would have left in place.
+// Unmanaged imports, the Region import of spec.region among them, whose CR deletion
+// could not have touched OpenStack anyway. The detach-on-delete rule a Managed-mode
+// Region relies on is pinned by TestIsManagedORCChild_ClassifiesRegion.
 func TestReconcileDelete_StallEscapeNamesOrphanedManagedResources(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -2709,17 +2726,7 @@ func TestReconcileDelete_StallEscapeNamesOrphanedManagedResources(t *testing.T) 
 	stalled := metav1.NewTime(metav1.Now().Add(-2 * orcTeardownStallTimeout))
 	cp.DeletionTimestamp = &stalled
 
-	// The adopted Region, stalled behind a K-ORC finalizer like the rest: managed,
-	// but detach-on-delete, so releasing it abandons nothing.
-	region := &orcv1alpha1.Region{
-		ObjectMeta: terminatingImportMeta(keystoneRegionName(cp), childNamespace(cp), korcFinalizerPrefix+"region"),
-		Spec: orcv1alpha1.RegionSpec{
-			ManagementPolicy: orcv1alpha1.ManagementPolicyManaged,
-			ManagedOptions:   &orcv1alpha1.ManagedOptions{OnDelete: orcv1alpha1.OnDeleteDetach},
-		},
-	}
-
-	objs := append([]client.Object{cp, region}, stalledExternalORCChildren(cp)...)
+	objs := append([]client.Object{cp}, stalledExternalORCChildren(cp)...)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
 	rec := record.NewFakeRecorder(20)
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
@@ -2750,9 +2757,8 @@ func TestReconcileDelete_StallEscapeNamesOrphanedManagedResources(t *testing.T) 
 	g.Expect(orphanEvent).NotTo(ContainSubstring(adminUserRef(cp)))
 	g.Expect(orphanEvent).NotTo(ContainSubstring(adminDomainRef(cp)))
 
-	// The Region: managed, but onDelete: detach, so K-ORC would have left the
-	// Keystone row standing too. Naming it would send the operator hunting a leak
-	// that does not exist.
+	// The Region import of spec.region: reading a region never wrote one, so naming
+	// it would send the operator hunting a leak that does not exist.
 	g.Expect(orphanEvent).NotTo(ContainSubstring(keystoneRegionName(cp)))
 	for _, iface := range externalCatalogInterfaces {
 		g.Expect(orphanEvent).NotTo(ContainSubstring(keystoneEndpointImportName(cp, iface)))

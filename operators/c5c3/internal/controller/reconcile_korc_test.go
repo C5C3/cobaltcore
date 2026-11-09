@@ -2370,25 +2370,82 @@ func TestReconcileCatalog_RegionGetErrorSurfaced(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("reading Region"))
 }
 
-// TestReconcileCatalog_ExternalModeProjectsNoRegion is the mode guard: the region
-// of a pre-existing installation belongs to that installation, so the import branch
-// adopts nothing and reports its own reason.
-func TestReconcileCatalog_ExternalModeProjectsNoRegion(t *testing.T) {
+// TestReconcileCatalog_ExternalModeImportsRegionUnmanaged is the mode guard: the
+// region of a pre-existing installation belongs to that installation, so the
+// import branch adopts nothing. It imports the region spec.region names as a
+// read-only K-ORC Region, which the identity Endpoint imports filter on.
+func TestReconcileCatalog_ExternalModeImportsRegionUnmanaged(t *testing.T) {
+	for _, tc := range []struct {
+		name, region, wantFilter string
+	}{
+		{name: "spec.region is imported", region: "eu-de-1", wantFilter: "eu-de-1"},
+		{name: "an empty spec.region imports RegionOne", region: "", wantFilter: "RegionOne"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			cp := korcExternalControlPlane()
+			cp.Spec.Region = tc.region
+			setAdminCredentialReady(cp)
+			cond, c := reconcileCatalogFor(t, cp)
+
+			region := &orcv1alpha1.Region{}
+			g.Expect(c.Get(context.Background(), types.NamespacedName{
+				Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
+			}, region)).To(Succeed())
+			g.Expect(region.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged),
+				"External mode must import the region, never adopt or create it")
+			g.Expect(region.Spec.Resource).To(BeNil(), "an unmanaged import must declare no desired resource")
+			g.Expect(region.Spec.ManagedOptions).To(BeNil())
+			g.Expect(region.Spec.Import).NotTo(BeNil())
+			g.Expect(region.Spec.Import.Filter.Name).To(HaveValue(Equal(orcv1alpha1.OpenStackName(tc.wantFilter))))
+			g.Expect(metav1.IsControlledBy(region, cp)).To(BeTrue())
+
+			svc := &orcv1alpha1.Service{}
+			g.Expect(c.Get(context.Background(), types.NamespacedName{
+				Name: keystoneServiceName(cp), Namespace: childNamespace(cp),
+			}, svc)).To(Succeed())
+			g.Expect(region.Spec.CloudCredentialsRef).To(Equal(svc.Spec.CloudCredentialsRef),
+				"the Region import rides the same credentials as the identity Service import")
+
+			// Freshly created imports carry no status, so the import branch waits on them.
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+		})
+	}
+}
+
+// TestReconcileCatalog_ExternalModeRegionImportApplyErrorSurfaced covers a refused
+// apply of the Region import: the error propagates so the manager requeues with
+// backoff, and the condition names the import under the ImportError reason.
+func TestReconcileCatalog_ExternalModeRegionImportApplyErrorSurfaced(t *testing.T) {
 	g := NewGomegaWithT(t)
 
+	s := korcTestScheme(t)
 	cp := korcExternalControlPlane()
 	setAdminCredentialReady(cp)
-	cond, c := reconcileCatalogFor(t, cp)
+	refused := errors.New("region apply refused")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Apply: func(ctx context.Context, wc client.WithWatch, ac runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if kinded, ok := ac.(interface{ GetKind() string }); ok && kinded.GetKind() == "Region" {
+					return refused
+				}
+				return wc.Apply(ctx, ac, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	err := c.Get(context.Background(), types.NamespacedName{
-		Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
-	}, &orcv1alpha1.Region{})
-	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "External mode must adopt no Region")
+	_, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).To(MatchError(refused))
 
-	// Freshly created imports carry no status, so the import branch waits on them.
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
 	g.Expect(cond).NotTo(BeNil())
-	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
-	g.Expect(cond.Message).NotTo(ContainSubstring("Region"))
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonImportError))
+	g.Expect(cond.Message).To(ContainSubstring(`identity Region import "` + keystoneRegionName(cp) + `"`))
+	g.Expect(cond.Message).To(ContainSubstring("region apply refused"))
 }
 
 // --- helpers ---

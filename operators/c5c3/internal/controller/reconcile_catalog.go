@@ -428,8 +428,10 @@ func keystoneEndpointName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + "-identity-endpoint"
 }
 
-// keystoneRegionName returns the deterministic name of the owned K-ORC Region CR
-// adopting the region the keystone bootstrap inserted.
+// keystoneRegionName returns the deterministic name of the owned K-ORC Region CR:
+// in Managed mode it adopts the region the keystone bootstrap inserted, in
+// External mode it is the unmanaged import of spec.region that the identity
+// Endpoint imports filter on.
 func keystoneRegionName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + "-region"
 }
