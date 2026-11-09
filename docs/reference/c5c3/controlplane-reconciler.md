@@ -157,7 +157,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
 | K-ORC `User`, `Domain` | `Owns()` | Re-reconciles when the admin identity imports change. These, the `ApplicationCredential`, the identity `Service`/`Endpoint` and the adopted `Region` are the K-ORC CRs the ControlPlane itself owns (`orcChildObjects`) |
-| K-ORC `Region` | `Owns()` | Re-reconciles when the adopted bootstrap Region (`{controlplane.Name}-region`) reports `status.id` or its `Available` condition moves, which is what advances the two-phase description push |
+| K-ORC `Region` | `Owns()` | Re-reconciles when the `{controlplane.Name}-region` CR reports `status.id` or its `Available` condition moves. In Managed mode that is the adopted bootstrap Region, whose status advances the two-phase description push. In External mode the same name is the unmanaged import of `spec.region` that the identity `Endpoint` imports filter on |
 | K-ORC `Project`, `Role`, `RoleAssignment` | `Owns()` | Registered, but no CR the ControlPlane projects carries them any more. A registration's project, role imports and role assignments are claimed by its own `KeystoneService` (`claimKeystoneServiceChild`: a controller owner reference to the **registration** when co-located with it, ownership labels otherwise), never by the ControlPlane, so an `Owns()` leg keyed on a ControlPlane owner reference does not match them. Such a change wakes the registration's controller, and the ControlPlane sees it one step later when the registration's status moves, through the legs below |
 | `ExternalSecret` | `Owns()` | Re-reconciles when an owned ESO ExternalSecret (DB credential, admin password, K-ORC clouds.yaml) syncs or fails, so the credential conditions track ESO promptly |
 | `PushSecret` | `Owns()` | Re-reconciles when the owned admin-credential PushSecret status changes |
@@ -693,8 +693,9 @@ towards the one-per-namespace contract.
 
 `reconcileCatalog` neither skips nor behaves as it does in Managed mode: it
 forks. The catalog belongs to the external installation, so External mode is
-**import-first** — the existing identity service and its endpoints are imported
-read-only, zero catalog entries are created by default, and an import that
+**import-first** — the existing identity service, the region `spec.region`
+names, and the service's endpoints in that region are imported read-only, zero
+catalog entries are created by default, and an import that
 resolves to nothing fails loud rather than waiting forever. See
 [reconcileCatalog](#reconcilecatalog).
 
@@ -3284,7 +3285,7 @@ OpenBao:
 | File | `reconcile_catalog.go` (Managed), `reconcile_catalog_external.go` (External) |
 | Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** every catalog child reports `Available` |
-| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`). That is the whole managed table: a built-in service's catalog row belongs to the `KeystoneService` registration projected for it, not here. Managed mode also owns the `Region` (`{controlplane.Name}-region`, `onDelete: detach`) that adopts the bootstrap region. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, and nothing managed. All in `childNamespace(cp)` |
+| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`). That is the whole managed table: a built-in service's catalog row belongs to the `KeystoneService` registration projected for it, not here. Managed mode also owns the `Region` (`{controlplane.Name}-region`, `onDelete: detach`) that adopts the bootstrap region. External mode: the same identity `Service`, an unmanaged `Region` import of `spec.region` (`{controlplane.Name}-region`), and one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, and nothing managed. All in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while gated, while a child is not yet Available, or on a terminal K-ORC failure |
 
 `reconcileCatalog` drives `CatalogReady`. Everything up to and including the
@@ -3400,10 +3401,22 @@ Ready.
 The catalog belongs to the pre-existing installation. Keystone enforces no
 uniqueness on service names, so registering an identity `Service` against a
 populated catalog would silently duplicate rows. `reconcileCatalogExternal`
-therefore **imports** instead: the identity `Service` and each of its three
-endpoint interfaces become K-ORC CRs with `managementPolicy: unmanaged`, an
-import filter, and no desired resource. K-ORC resolves them read-only and writes
+therefore **imports** instead: the identity `Service`, the `Region` that
+`spec.region` names, and each of the service's three endpoint interfaces become
+K-ORC CRs with `managementPolicy: unmanaged`, an import filter, and no desired
+resource. Each `Endpoint` filter names the `Region` import as its `regionRef`,
+so it selects the row in `spec.region`. K-ORC resolves them read-only and writes
 nothing; deleting their CRs later removes only the Kubernetes objects.
+
+An `Endpoint` import an earlier version created carries a filter without
+`regionRef`. K-ORC runs an import filter only while `status.id` is unset, so
+the pass deletes such a CR and applies it again under the regioned filter. It
+does so even when the CR shows no `status.id`: K-ORC binds the `status.id` it
+writes to the CR, not to the filter generation it ran, so a resolution still in
+flight under the old filter would stick to a CR that gained the `regionRef` in
+place. The delete removes only the Kubernetes object. The import reads
+`resolved: false` until K-ORC resolves the new CR, and while the gating one is
+unresolved `CatalogReady` reports `WaitingForCatalog`.
 
 The ControlPlane creates **zero** catalog entries in External mode: this branch
 of `reconcileCatalog` is import-only. A genuinely new row is declared with a `KeystoneService` CR, whose
@@ -3423,19 +3436,25 @@ so past `externalImportStallGrace` (2m) that wait is a misconfiguration signal,
 not a wait. An import that matches **several** entries is terminal in K-ORC
 itself, which refuses to guess and stops retrying.
 
-Only two of the four imports gate `CatalogReady`: the identity `Service`, and the
-`Endpoint` of the interface `external.endpointType` selects. The control plane
-already authenticates through that interface, so a catalog that does not publish
-it is not the catalog K-ORC was pointed at. The other two interfaces are imported
-for visibility, projected into `status.catalog.imports`, and may stall forever —
-or resolve ambiguously — without failing the condition. An external installation
-is free not to publish an interface, and free to publish it once per region (which
-K-ORC's region-less `EndpointFilter` cannot select among, so no spec edit repairs
-it); both are precisely the brownfield posture External mode adopts.
+Three of the five imports gate `CatalogReady`: the identity `Service`, the
+`Region` import, and the `Endpoint` of the interface `external.endpointType`
+selects. The control plane already authenticates through that interface in
+`spec.region`, so a catalog that does not publish it there is not the catalog
+K-ORC was pointed at. The `Region` gates because every `Endpoint` import names
+it: K-ORC holds an `Endpoint` import while its `Region` import is unresolved, on
+a message the stall detector does not key on. The other two interfaces are
+imported for visibility, projected into `status.catalog.imports`, and may stall
+forever — or resolve ambiguously — without failing the condition. An external
+installation is free not to publish an interface, or to publish it in another
+region only; both are the brownfield posture External mode adopts. A catalog
+that publishes an interface once per region resolves to the row in
+`spec.region`. Duplicate rows of one interface inside `spec.region` are a
+catalog defect no spec edit repairs: on the gating interface they fail the
+condition, on a non-gating one they are tolerated.
 
-The precedence below reports the most specific cause first, and the `Service`
-before the `Endpoint`s so the **root** stuck dependency is named rather than an
-endpoint merely blocked on the service it references:
+The precedence below reports the most specific cause first, and the `Service`,
+then the `Region`, before the `Endpoint`s, so the **root** stuck dependency is
+named rather than an endpoint merely blocked on what it references:
 
 | # | Path | Status | Reason | Notes |
 | --- | --- | --- | --- | --- |
@@ -3443,10 +3462,10 @@ endpoint merely blocked on the service it references:
 | — | import create/update fails | False | `ImportError` | returns the error |
 | — | clearing a latched transport error from an import fails | False | `TransportErrorRetryFailed` | returns the error |
 | 1 | an **unresolved** import carries a classifiable K-ORC message | False | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | requeue 10s; K-ORC's message is relayed verbatim. A resolved import is never re-classified — K-ORC leaves the last transient attempt's message on `Progressing`, and classifying it would flip a converged catalog to a failure it has recovered from |
-| 2 | an import reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s; gating or not — K-ORC has given up on it. A latched transport error (the `InvalidConfiguration` rule in the [`KORCReady` table](#reconcilekorc)) is cleared before this row, so K-ORC retries and the pass falls through to the waits below. On the **>1-match** message the hint names `external.catalog.identityServiceName` for the `Service` import, or the region limitation for an `Endpoint` import (K-ORC's `EndpointFilter` carries no region, so no spec field can select among per-region rows). **One exception:** an `InvalidConfiguration` on a **non-gating** import does not fail the condition. A non-gating import has no user-supplied configuration to fix — its filter is entirely operator-derived — so it has no remediation and nothing depends on it; it is tolerated exactly like the 0-match of row 3 and reported as `resolved: false`. The exception is keyed on K-ORC's machine-readable reason, never on the >1-match message text: keying it on the text would turn a K-ORC rewording into a permanent `CatalogReady=False`. An `UnrecoverableError` gates on every import, and so does any terminal error on a gating one |
-| 3 | a **gating** import stalled past `externalImportStallGrace` | False | `ImportStalled` | requeue 10s; the **0-match** case. The message names the stuck import, the `authURL`, and `external.endpointType` / `spec.region` — plus, for an `Endpoint` import, that the external catalog may publish no such interface |
+| 2 | an import reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s; gating or not — K-ORC has given up on it. A latched transport error (the `InvalidConfiguration` rule in the [`KORCReady` table](#reconcilekorc)) is cleared before this row, so K-ORC retries and the pass falls through to the waits below. On the **>1-match** message the hint names `external.catalog.identityServiceName` for the `Service` import. For an `Endpoint` import it names the duplicate rows of that interface in `spec.region` and asks for the duplicate to be removed from the external catalog, since no spec field selects among them. **One exception:** an `InvalidConfiguration` on a **non-gating** import does not fail the condition. A non-gating import has no user-supplied configuration to fix — its filter is entirely operator-derived — so it has no remediation and nothing depends on it; it is tolerated exactly like the 0-match of row 3 and reported as `resolved: false`. The exception is keyed on K-ORC's machine-readable reason, never on the >1-match message text: keying it on the text would turn a K-ORC rewording into a permanent `CatalogReady=False`. An `UnrecoverableError` gates on every import, and so does any terminal error on a gating one |
+| 3 | a **gating** import stalled past `externalImportStallGrace` | False | `ImportStalled` | requeue 10s; the **0-match** case. The message names the stuck import, the `authURL`, and `external.endpointType` / `spec.region` — plus, for an `Endpoint` import, that the external catalog may publish no such interface in `spec.region`, and for the `Region` import, that the external Keystone may have no region of that name |
 | 4 | a **gating** import is unresolved | False | `WaitingForCatalog` | requeue 10s; the bounded, legitimate wait |
-| 5 | every gating import resolved | True | `CatalogImported` | the message reports how many of the three endpoint interfaces resolved |
+| 5 | every gating import resolved | True | `CatalogImported` | the message reports how many of the three endpoint interfaces resolved in `spec.region` and names the region |
 
 A latched transport error is cleared ahead of row 1, so a latch that is being
 cleared is not classified as `EndpointUnreachable`.
@@ -4220,6 +4239,7 @@ it.
 | `Service` (K-ORC) | `{name}-identity-service` | ControlPlane CR | both modes; managed catalog entry in Managed mode, unmanaged import in External mode |
 | `Endpoint` (K-ORC) | `{name}-identity-endpoint` | ControlPlane CR | managed mode only; public interface |
 | `Endpoint` (K-ORC) | `{name}-identity-endpoint-{interface}` | ControlPlane CR | External mode only; one unmanaged import per interface (`public`, `internal`, `admin`) |
+| `Region` (K-ORC) | `{name}-region` | ControlPlane CR | both modes; managed adoption of the bootstrap region with `onDelete: detach` in Managed mode, unmanaged import of `spec.region` in External mode |
 
 #### Barbican secret-store teardown
 
@@ -4403,12 +4423,13 @@ K-ORC CR's `ManagementPolicy`, not by the ControlPlane's mode:
   the identity `Service` and its per-interface `Endpoint`s are `Unmanaged`
   imports, so deleting them is a CR-only delete and the external catalog is left
   bit-for-bit intact.
-- **`Region`** — `Managed` with `onDelete: detach`, so a `Delete` removes the
-  CR and leaves the Keystone row in place; that row goes with the Keystone
-  database.
+- **`Region`** — in Managed mode it is `Managed` with `onDelete: detach`, so a
+  `Delete` removes the CR and leaves the Keystone row in place; that row goes
+  with the Keystone database.
   K-ORC still authenticates before releasing the detach finalizer, which is why
-  `reconcileDelete` releases it together with the unmanaged imports. External
-  mode projects no `Region`, so the name is `NotFound` there.
+  `reconcileDelete` releases it together with the unmanaged imports. In
+  **External** mode the same name is the `Unmanaged` import of `spec.region`, so
+  deleting it is a CR-only delete.
 That holds for a teardown K-ORC can complete. The **stall escape is the deliberate
 exception**: past `orcTeardownDeadline` it releases every stuck CR by stripping
 the finalizer that would have done the revoke or the `DELETE`, so each `Managed` CR

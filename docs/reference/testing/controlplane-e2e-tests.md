@@ -601,7 +601,8 @@ Proves the External-mode adoption contract against a Keystone the operator does
 (`00-fixture-keystone.yaml`, a single SQLite-backed pod with its own bootstrap
 history and admin Secret) in the `brownfield-keystone` namespace and populates
 its catalog with a non-default admin identity (domain `heimdall`, project
-`platform-admin`, user `brownfield-admin`) and a duplicate identity service
+`platform-admin`, user `brownfield-admin`), a duplicate identity service, and a
+second region `RegionTwo` with a `public` endpoint of the identity service
 (`01-fixture-catalog-setup-job.yaml`). It then drives four External
 `ControlPlane`s against that fixture and asserts, in one consolidated script:
 
@@ -610,12 +611,14 @@ its catalog with a non-default admin identity (domain `heimdall`, project
    `ExternallyManaged` and Horizon reports `HorizonNotManaged`.
 2. **Imports resolve** — `KORCReady=ApplicationCredentialMinted`,
    `CatalogReady=CatalogImported`, and `status.catalog.imports` shows the identity
-   Service plus three Endpoint interfaces resolved with OpenStack ids.
+   Service, the `Region` import and three Endpoint interfaces resolved with
+   OpenStack ids. The `Region` import resolves to `RegionOne`, and the `public`
+   Endpoint import to the `RegionOne` row of the two `public` identity rows.
 3. **App credential** — minted against the external Keystone, present at the per-CR
    OpenBao path with the ESO `managed-by` stamp and in a materialised clouds.yaml
    targeting the external API; a verify Job authenticates a client with it.
 4. **No pollution** — once the ControlPlane has converged, the external services,
-   endpoints, domains, roles, users and projects are byte-identical to a
+   endpoints, domains, roles, regions, users and projects are byte-identical to a
    pre-recorded baseline.
 5. **Brownfield registration** — the `nova` `KeystoneService` (a `compute` catalog
    entry with two endpoint rows, an account in `heimdall` holding the `service`
@@ -636,7 +639,7 @@ its catalog with a non-default admin identity (domain `heimdall`, project
    condition; an ambiguous identity catalog fails with `CatalogFailed`.
 9. **Zero blast radius** — deleting the main CP revokes the app credential, removes
    the OpenBao-backed Secrets, emits `ORCTeardownComplete`, leaves the external
-   users/domains/catalog bit-for-bit identical to the baseline, and the fixture
+   users/domains/regions/catalog bit-for-bit identical to the baseline, and the fixture
    keeps serving tokens.
 
 Run it locally against a full ControlPlane stack with
@@ -1668,7 +1671,7 @@ tests/e2e/c5c3/
 ├── external-keystone/
 │   ├── chainsaw-test.yaml              External mode vs a plain, operator-free Keystone
 │   ├── 00-fixture-keystone.yaml        Plain SQLite Keystone fixture (no operator)
-│   ├── 01-fixture-catalog-setup-job.yaml  Non-default identities + duplicate service
+│   ├── 01-fixture-catalog-setup-job.yaml  Non-default identities, duplicate service, second region
 │   ├── 02-admin-password-secret.yaml   Fixture admin password for the main CR
 │   ├── 02-controlplane-external.yaml   Main External CR
 │   ├── 03-controlplane-wrong-password.yaml  Wrong-password negative case
