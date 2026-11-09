@@ -354,6 +354,7 @@ const sidebar: DefaultTheme.Sidebar = [
       { text: 'Adding a New Operator', link: '/contributing/adding-a-new-operator' },
       { text: 'Adding a New Release', link: '/contributing/adding-a-new-release' },
       { text: 'Guide Conventions', link: '/contributing/guide-conventions' },
+      { text: 'Publishing to cobaltcore.dev', link: '/contributing/publishing-to-cobaltcore-dev' },
       { text: 'Architecture Diagrams', link: '/contributing/architecture-diagrams' },
       { text: 'Dependency Management', link: '/contributing/dependency-management' },
       { text: 'Nix Development Environment', link: '/contributing/nix-dev-environment' },
