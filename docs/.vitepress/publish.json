@@ -1,0 +1,11 @@
+{
+  "canonical": "https://c5c3.github.io/cobaltcore/",
+  "repository": "https://github.com/C5C3/cobaltcore",
+  "publish": [
+    "index.md",
+    "quick-start*.md",
+    "architecture/**",
+    "guides/**",
+    "reference/*/index.md"
+  ]
+}

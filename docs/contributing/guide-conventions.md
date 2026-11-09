@@ -143,7 +143,8 @@ with:
 ```
 
 Never start the path with `@/`. VitePress resolves `@` against the source root
-of the site that renders the page, and cobaltcore.dev renders the guides from
+of the site that renders the page, and
+[cobaltcore.dev](./publishing-to-cobaltcore-dev.md) renders the guides from
 another source root, where `@/../tests/` names no file.
 
 The fixture and the walkthrough serve different masters, so they carry different
