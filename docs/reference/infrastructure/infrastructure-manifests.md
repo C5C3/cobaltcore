@@ -1119,8 +1119,8 @@ which is where a CA-type `ClusterIssuer` looks up its `secretName`. The
 the OpenStack DB trust domain:
 
 - MariaDB Galera server TLS material (`spec.tls.serverCertIssuerRef`, see below).
-- MaxScale listener TLS material (same issuer via inheritance / explicit
-  `serverCertIssuerRef`).
+- MaxScale listener and admin API TLS material (`spec.tls.listenerCertIssuerRef`
+  and `spec.tls.adminCertIssuerRef` of the MaxScale CR, see below).
 - The Keystone DB-client keypair issued by the keystone-operator's
   `reconcileDatabaseTLS` sub-reconciler — the constant
   [`dbCAIssuerName`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)
@@ -1216,18 +1216,21 @@ self-contained.
 **Monitoring:** Prometheus metrics are enabled (`spec.metrics.enabled: true`).
 
 **TLS.** Galera inter-node replication, the MaxScale client
-listener, and every Keystone-to-database connection all sit inside the OpenStack DB
-trust domain rooted at the `openstack-db-ca-issuer` ClusterIssuer documented above.
-The MariaDB CR enables TLS in `spec.tls`, and the MaxScale CR takes its server CA and
+listener and admin API, and every Keystone-to-database connection all sit inside the
+OpenStack DB trust domain rooted at the `openstack-db-ca-issuer` ClusterIssuer
+documented above. The MariaDB CR enables TLS in `spec.tls`. The MaxScale CR takes its
+listener and admin certificates from `openstack-db-ca-issuer`, and its server CA and
 client certificate from the referenced MariaDB:
 
 | Field | Value | Purpose |
 | --- | --- | --- |
 | `spec.tls.enabled` | `true` | Turn on TLS for the MariaDB cluster |
 | `spec.tls.required` | `true` | Reject any non-TLS connection at the transport layer (verified by the chainsaw plaintext-rejection probe in `tests/e2e/keystone/database-tls/chainsaw-test.yaml`) |
-| `spec.tls.serverCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue server certs for Galera + MaxScale from the shared DB CA |
+| `spec.tls.serverCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue the Galera server certificates from the shared DB CA |
 | `spec.tls.clientCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Trust client certs minted by the same DB CA (the Keystone operator issues its DB-client keypair from this issuer; see [reconcile_databasetls.go](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)) |
 | `spec.tls.enabled` (MaxScale CR) | `true` | MaxScale terminates TLS on its client listener (proxy-side); explicit block documents intent even where MaxScale would enable it on its own because the MariaDB requires TLS |
+| `spec.tls.listenerCertIssuerRef` (MaxScale CR) | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue the client-listener certificate from the shared DB CA. Without the ref, mariadb-operator provisions the self-signed CA `openstack-db-maxscale-ca` and signs the listener certificate with it |
+| `spec.tls.adminCertIssuerRef` (MaxScale CR) | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue the admin REST API and GUI certificate from the shared DB CA |
 
 The rendered YAML in `deploy/flux-system/infrastructure/mariadb.yaml` is:
 
@@ -1252,15 +1255,49 @@ spec:
   replicas: 2
   tls:
     enabled: true
+    listenerCertIssuerRef:
+      name: openstack-db-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
+    adminCertIssuerRef:
+      name: openstack-db-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
 ```
 
 The mariadb-operator auto-derives the server and client CA bundles from the
 referenced issuer, so explicit `serverCASecretRef` / `clientCASecretRef` entries are
-intentionally omitted — see the inline `DECISION` comment in `mariadb.yaml` for the
-trade-off against the cross-namespace `*CASecretRef` form. End-to-end verification
+intentionally omitted. The header comment of `mariadb.yaml` (the paragraph that opens
+with "TLS is configured via ClusterIssuer refs") records the trade-off against the
+cross-namespace `*CASecretRef` form. The MaxScale CR sets no
+`listenerCASecretRef` / `adminCASecretRef` either, because the `ca.crt` that
+cert-manager writes into each certificate Secret is its trust chain. End-to-end verification
 that the live connection is encrypted lives in
 [`tests/e2e/keystone/database-tls/chainsaw-test.yaml`](https://github.com/c5c3/cobaltcore/blob/main/tests/e2e/keystone/database-tls/chainsaw-test.yaml)
 (asserts `SHOW STATUS LIKE 'Ssl_cipher'` reports a non-empty cipher).
+
+On the MaxScale CR, `status.tls.listenerCert.issuer` and `status.tls.adminCert.issuer`
+read `CN=openstack-db-ca`. No CI job deploys MaxScale, so
+`tests/unit/deploy/maxscale_tls_issuer_test.sh` checks the rendered manifests: both
+refs name the `openstack-db-ca-issuer` ClusterIssuer, the listener ref equals the
+MariaDB's `spec.tls.serverCertIssuerRef`, and the four `*CertSecretRef` /
+`*CASecretRef` fields for the listener and admin API stay unset.
+
+mariadb-operator writes a hash of each certificate into the MaxScale pod template, so
+on an existing install the two MaxScale pods restart while the certificates change.
+Removing the refs again leaves the Certificates `openstack-db-maxscale-listener-cert`
+and `openstack-db-maxscale-admin-cert` in place: mariadb-operator does not delete
+them, and the garbage collector removes them only with the MaxScale CR that owns them.
+Each Certificate writes the Secret of the same name, and without the ref mariadb-operator
+signs that Secret with its own CA `openstack-db-maxscale-ca`, so a leftover Certificate
+leaves two controllers writing one Secret. To roll back, remove both refs, then delete
+the two Certificates. While a ref is still set, mariadb-operator creates its Certificate
+again.
+
+```bash
+kubectl -n openstack delete certificate \
+  openstack-db-maxscale-listener-cert openstack-db-maxscale-admin-cert
+```
 
 To turn the path on for a `Keystone` CR, follow the
 [Enable Keystone Database TLS](../../guides/keystone/enable-keystone-database-tls.md) guide.
