@@ -153,9 +153,8 @@ the table identifies the remaining checks and when to run them. Existing
 `/var/lib/rook` needs review before a fresh install and is expected on an
 already deployed cluster; the probe never deletes host data.
 
-::: details Complete runner source
-<<< @/../hack/lab-node-probe.sh
-:::
+Read the [complete runner source](https://github.com/C5C3/cobaltcore/blob/main/hack/lab-node-probe.sh)
+for the checks and cleanup behavior.
 
 The [node probe reference](./reference/infrastructure/infrastructure-manifests.md#node-probe)
 describes the read-only Job and its raw survey fields.
