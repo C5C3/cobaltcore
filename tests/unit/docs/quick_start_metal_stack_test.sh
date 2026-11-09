@@ -6,7 +6,7 @@
 # Verify docs/quick-start-metal-stack.md, the lab's one runbook:
 #   1. the frontmatter holds `title: Quick Start (metal-stack)` and no other
 #      key, and the SPDX comment is present
-#   2. docs/.vitepress/config.ts lists the page after the ControlPlane quick
+#   2. docs/.vitepress/sidebar.ts lists the page after the ControlPlane quick
 #      start, in the Getting Started group
 #   3. the seven `## ` sections occur once each and in order, Part 3 between
 #      Part 2 and the Teardown, and the twenty-three `### Step` headings carry
@@ -114,7 +114,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/quick_start_metal_stack.sh"
 
 QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-metal-stack.md}"
-VITEPRESS_CONFIG="$PROJECT_ROOT/docs/.vitepress/config.ts"
+VITEPRESS_SIDEBAR="$PROJECT_ROOT/docs/.vitepress/sidebar.ts"
 GUIDE_CONVENTIONS="$PROJECT_ROOT/docs/contributing/guide-conventions.md"
 INFRA_MANIFESTS="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
 GUIDE_SCAFFOLD="$PROJECT_ROOT/.claude/skills/prepare-new-guide/scripts/scaffold-guide.sh"
@@ -231,9 +231,9 @@ test_frontmatter() {
 test_sidebar() {
   echo "Test: the sidebar lists the page after the ControlPlane quick start"
   local controlplane metal_stack architecture
-  controlplane="$(grep -nF "link: '/quick-start-controlplane'" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  metal_stack="$(grep -nF "{ text: 'Quick Start (metal-stack)', link: '/quick-start-metal-stack' }" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
-  architecture="$(grep -nE "^[[:space:]]*text: 'Architecture',[[:space:]]*$" "$VITEPRESS_CONFIG" | head -n 1 | cut -d: -f1)"
+  controlplane="$(grep -nF "link: '/quick-start-controlplane'" "$VITEPRESS_SIDEBAR" | head -n 1 | cut -d: -f1)"
+  metal_stack="$(grep -nF "{ text: 'Quick Start (metal-stack)', link: '/quick-start-metal-stack' }" "$VITEPRESS_SIDEBAR" | head -n 1 | cut -d: -f1)"
+  architecture="$(grep -nE "^[[:space:]]*text: 'Architecture',[[:space:]]*$" "$VITEPRESS_SIDEBAR" | head -n 1 | cut -d: -f1)"
   if [[ -n "$controlplane" && -n "$metal_stack" && -n "$architecture" ]] &&
     ((controlplane < metal_stack && metal_stack < architecture)); then
     echo "  PASS: sidebar item on line $metal_stack, between the ControlPlane item and the Architecture group"

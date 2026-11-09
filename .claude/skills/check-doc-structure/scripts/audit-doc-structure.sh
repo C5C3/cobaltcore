@@ -7,7 +7,7 @@
 #   T1  frontmatter with title: on every page (quadrant: listed where absent)
 #   T2  one H1 per page, no skipped heading level
 #   T3  docs links and #anchors resolve (the build checks pages, not anchors)
-#   T4  sidebar/nav links in docs/.vitepress/config.ts resolve
+#   T4  nav links in docs/.vitepress/config.ts and sidebar links in sidebar.ts resolve
 #   T5  no orphan page (neither in the sidebar/nav nor linked from any page)
 #   T6  no bare <placeholder> in prose (Vue parses it as an unclosed element)
 #

@@ -80,8 +80,8 @@ bash .claude/skills/check-doc-structure/scripts/audit-doc-structure.sh --full   
   punctuation outside the separator set survives (an em dash stays in
   the slug), and `.` is a separator (`extra-packages.yaml` →
   `#extra-packages-yaml`). A heading can pin its id with `{#custom-id}`.
-- **T4** — every sidebar/nav `link:` in `docs/.vitepress/config.ts`
-  resolves to a page (the build does not check these).
+- **T4** — every nav `link:` in `docs/.vitepress/config.ts` and every
+  sidebar `link:` in `docs/.vitepress/sidebar.ts` resolves to a page (the build does not check these).
 - **T5** — no orphan page: every page is in the sidebar/nav or linked
   from another page. Pages reachable only through links are listed as
   `[INFO]`.

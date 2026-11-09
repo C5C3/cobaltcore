@@ -190,7 +190,7 @@ check "full-ControlPlane e2e suite drives '${SERVICE}'" \
 header "Layer 5: documentation"
 check "docs/reference/${SERVICE}/ pages" bash -c "ls docs/reference/${SERVICE}/*.md"
 check "VitePress sidebar references reference/${SERVICE}/" \
-  grep -q "reference/${SERVICE}/" docs/.vitepress/config.ts
+  grep -q "reference/${SERVICE}/" docs/.vitepress/sidebar.ts
 check "tests/unit/docs/${SERVICE}_crd_naming_convention_test.sh" \
   test -f "tests/unit/docs/${SERVICE}_crd_naming_convention_test.sh"
 check "docs/reference/testing/${SERVICE}-e2e-tests.md (optional)" \

@@ -397,9 +397,9 @@ for svc in ${SERVICES}; do
   check "${svc}" P8 "guide-networkpolicy" "${t}" \
     "docs/guides/${svc}/enable-${svc}-operator-networkpolicy.md present"
 
-  t=0; grep -qF "/reference/${svc}/" docs/.vitepress/config.ts || t=1
+  t=0; grep -qF "/reference/${svc}/" docs/.vitepress/sidebar.ts || t=1
   check "${svc}" P8 "vitepress-nav" "${t}" \
-    "docs/.vitepress/config.ts navigates to /reference/${svc}/"
+    "docs/.vitepress/sidebar.ts navigates to /reference/${svc}/"
 done
 
 # ---------------------------------------------------------------------------

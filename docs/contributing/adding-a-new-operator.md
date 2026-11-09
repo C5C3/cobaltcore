@@ -150,7 +150,7 @@ bottom when scaffolding `operators/<op>/`:
   operator missing from the un-suspend list wedges the ControlPlane cache
   sync.
 - **Docs** — a CRD reference and reconciler reference under
-  `docs/reference/<op>/`, wired into `docs/.vitepress/config.ts`, and, for a
+  `docs/reference/<op>/`, wired into the sidebar in `docs/.vitepress/sidebar.ts`, and, for a
   user-facing knob, a guide under `docs/guides/<op>/` per the
   [guide conventions](./guide-conventions.md), plus a naming-convention test in
   `tests/unit/docs/` (discovered by glob, so nothing fails while it is
