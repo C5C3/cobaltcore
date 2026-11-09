@@ -27,6 +27,14 @@ C5C3_OPERATOR_NAMESPACE="${C5C3_OPERATOR_NAMESPACE:-c5c3-system}"
 CLUSTERS=(management control-plane hypervisor storage)
 
 # Return the list of currently enabled auth mounts (trailing slashes included).
+#
+# main reads it once into a variable, and enable_auth_if_missing greps that
+# copy. Never pipe it straight into `grep -q`: grep exits at its first match, a
+# jq that still has output to write then dies of SIGPIPE (exit 141), and
+# pipefail turns the condition false. jq 1.8 writes its first result before
+# `kubectl exec` closes its output, so the check of the mount that sorted first
+# (approle/) reported it absent and the enable failed with "path is already in
+# use".
 auth_mounts() {
   bao_exec bao auth list -format=json | jq -r 'keys[]'
 }
@@ -35,9 +43,10 @@ auth_mounts() {
 enable_auth_if_missing() {
   local path="$1"   # e.g. kubernetes/management
   local type="$2"   # e.g. kubernetes
+  local mounts="$3" # the auth_mounts output main read
 
   # Auth list keys have a trailing slash, so we compare with one appended.
-  if auth_mounts | grep -qx "${path}/"; then
+  if grep -qx "${path}/" <<<"${mounts}"; then
     log "Auth mount '${path}/' already enabled — skipping."
   else
     log "Enabling auth method '${type}' at path '${path}'..."
@@ -54,9 +63,15 @@ main() {
   log "Namespace : ${NAMESPACE}"
   log "BAO_ADDR  : ${BAO_ADDR}"
 
+  local mounts
+  if ! mounts="$(auth_mounts)"; then
+    log "ERROR: could not list the auth mounts on openbao-0 in namespace '${NAMESPACE}'."
+    exit 1
+  fi
+
   # Kubernetes auth — four cluster mounts
   for cluster in "${CLUSTERS[@]}"; do
-    enable_auth_if_missing "kubernetes/${cluster}" "kubernetes"
+    enable_auth_if_missing "kubernetes/${cluster}" "kubernetes" "${mounts}"
   done
 
   # Configure the management cluster auth mount with the in-cluster Kubernetes
@@ -484,7 +499,7 @@ main() {
   log "eso-tenant role written."
 
   # AppRole auth
-  enable_auth_if_missing "approle" "approle"
+  enable_auth_if_missing "approle" "approle" "${mounts}"
 
   log "Writing AppRole provisioner role..."
   # secret_id_ttl=8760h (1 year) bounds the blast radius of a leaked secret
