@@ -44,7 +44,7 @@ The manifest lives in `deploy/kind/fake-compute/`, an opt-in kind overlay that
 `make deploy-infra` never applies. It holds a ConfigMap with the compute's own
 overlay and the Deployment that mounts it beside the contract Secret:
 
-<<< @/../deploy/kind/fake-compute/fake-compute.yaml
+<<< ../../../deploy/kind/fake-compute/fake-compute.yaml
 
 The names assume the quick start's ControlPlane. For a ControlPlane named `<cp>`,
 replace every `controlplane-` prefix in the file with `<cp>-`, and for a release
@@ -285,5 +285,5 @@ that prefix: `controlplane-keystone-nova-compute-config`,
 `controlplane-keystone-fake-compute`. The manifest above is this fixture with the
 prefix replaced by `controlplane`, and a unit test pins the two to each other.
 
-<<< @/../tests/e2e/c5c3/full-controlplane-keystone/06-fake-compute.yaml
+<<< ../../../tests/e2e/c5c3/full-controlplane-keystone/06-fake-compute.yaml
 :::

@@ -430,7 +430,7 @@ names: Cinder `cinder-bkrbd` with the target `bkrbd-rbdbk` and its Secret
 `bkrbd-rbdbk-key`, and a monitor no cluster resolves. The walkthrough above
 keeps the `controlplane-cinder` / `rbdbk` names the devstack produces.
 
-<<< @/../tests/e2e/cinder/backup-rbd/04-cinderbackupbackend-cr.yaml#backup-backend
+<<< ../../../tests/e2e/cinder/backup-rbd/04-cinderbackupbackend-cr.yaml#backup-backend
 :::
 
 ## Proven by

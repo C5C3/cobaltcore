@@ -566,9 +566,9 @@ devstack-named: the plane is `cp` instead of `controlplane`, and the
 suites never collide.
 
 ::: details The ControlPlane fixture the suite applies
-<<< @/../tests/e2e/c5c3/keystone-service-foreign-namespace/00-controlplane-cr.yaml#controlplane
+<<< ../../tests/e2e/c5c3/keystone-service-foreign-namespace/00-controlplane-cr.yaml#controlplane
 :::
 
 ::: details The registration the suite applies from the allowlisted namespace
-<<< @/../tests/e2e/c5c3/keystone-service-foreign-namespace/01-keystoneservice-tenant.yaml#keystoneservice-workflow
+<<< ../../tests/e2e/c5c3/keystone-service-foreign-namespace/01-keystoneservice-tenant.yaml#keystoneservice-workflow
 :::

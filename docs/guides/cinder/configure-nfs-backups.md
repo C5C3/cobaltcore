@@ -293,5 +293,5 @@ walkthrough above keeps the `controlplane-cinder` / `nfsbk` names the devstack
 produces. `fileSize`, `compression` and `mountOptions` are omitted there, so the
 suite reads the schema defaults back off the rendered section.
 
-<<< @/../tests/e2e/cinder/backup-nfs/02-cinderbackupbackend-cr.yaml#backup-backend
+<<< ../../../tests/e2e/cinder/backup-nfs/02-cinderbackupbackend-cr.yaml#backup-backend
 :::

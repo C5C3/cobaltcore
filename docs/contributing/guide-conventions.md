@@ -134,11 +134,17 @@ Where a guide mirrors an e2e suite, embed the fixture the suite applies rather
 than hand-maintaining a second copy that drifts. A VitePress snippet import
 keeps the rendered YAML in lockstep with the tested fixture; mark the region to
 import with column-0 `# region <name>` / `# endregion <name>` YAML comments
-around the CR document in the fixture:
+around the CR document in the fixture. The path is relative to the page, so a
+guide under `docs/guides/keystone/` imports the fixture of a Keystone suite
+with:
 
 ```md
-<<< @/../tests/e2e/keystone/<suite>/00-keystone-cr.yaml#<region>
+<<< ../../../tests/e2e/keystone/<suite>/00-keystone-cr.yaml#<region>
 ```
+
+Never start the path with `@/`. VitePress resolves `@` against the source root
+of the site that renders the page, and cobaltcore.dev renders the guides from
+another source root, where `@/../tests/` names no file.
 
 The fixture and the walkthrough serve different masters, so they carry different
 names. A suite fixture is **isolation-named** — a distinct CR name, its own

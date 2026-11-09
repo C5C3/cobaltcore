@@ -198,5 +198,5 @@ where the walkthrough above uses the `controlplane-chassis` and
 `spec.gateway`: a kind node has no uplink, and a gateway chassis without one
 would announce connectivity it does not have.
 
-<<< @/../tests/e2e/ovn/chassis-single-node/02-ovnchassis-cr.yaml#ovnchassis-cr
+<<< ../../../tests/e2e/ovn/chassis-single-node/02-ovnchassis-cr.yaml#ovnchassis-cr
 :::

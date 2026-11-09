@@ -224,5 +224,5 @@ backend CR name (`planetexpress-ldap`) and `keystoneRef` (`keystone-ldap`)
 differ from the `corp-ldap` / `keystone` names used in the
 walkthrough above.
 
-<<< @/../tests/e2e/keystone/ldap-domain-backend/02-backend-cr.yaml#backend-cr
+<<< ../../../tests/e2e/keystone/ldap-domain-backend/02-backend-cr.yaml#backend-cr
 :::

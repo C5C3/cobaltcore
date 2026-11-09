@@ -295,5 +295,5 @@ is isolation-named (`ovn-restore`) where the walkthrough above uses the
 `controlplane-ovn` name the devstack produces. Its backup is suspended, so the
 only snapshot on the volume is the one the suite writes by hand.
 
-<<< @/../tests/e2e/ovn/central-backup-restore/00-ovncentral-cr.yaml#ovncentral-cr
+<<< ../../../tests/e2e/ovn/central-backup-restore/00-ovncentral-cr.yaml#ovncentral-cr
 :::

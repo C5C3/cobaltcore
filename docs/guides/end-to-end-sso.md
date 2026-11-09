@@ -429,12 +429,12 @@ only one ControlPlane per namespace), so its CR name (`controlplane-sso`)
 differs from the `controlplane` devstack name used in the
 walkthrough above.
 
-<<< @/../tests/e2e-controlplane-sso/02-controlplane-cr.yaml#controlplane-cr
+<<< ../../tests/e2e-controlplane-sso/02-controlplane-cr.yaml#controlplane-cr
 :::
 
 ::: details The identity backends the suite applies
 Both backends reference the suite's projected Keystone child
 (`controlplane-sso-keystone`) rather than the walkthrough's `controlplane-keystone`.
 
-<<< @/../tests/e2e-controlplane-sso/04-backends.yaml#backends
+<<< ../../tests/e2e-controlplane-sso/04-backends.yaml#backends
 :::

@@ -341,5 +341,5 @@ the suite's isolation identifiers (Barbican `barbican-store-brownfield`, store
 the walkthrough above uses. The server, the two Secrets, and the default
 `kvMountpoint` are the ones from sections 2 and 3.
 
-<<< @/../tests/e2e/barbican/secretstore-brownfield/01-barbican-secretstore.yaml#brownfield-store
+<<< ../../../tests/e2e/barbican/secretstore-brownfield/01-barbican-secretstore.yaml#brownfield-store
 :::

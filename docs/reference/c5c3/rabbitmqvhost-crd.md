@@ -58,7 +58,7 @@ A vhost for the assigned namespace `tenant-a`, on the bus of the ControlPlane
 the superseded one for a minute, which is what the e2e suite uses; an order
 without the block gets a new user every 720 hours and keeps the old one for 24.
 
-<<< @/../tests/e2e/c5c3/messaging/01-rabbitmqvhost-tenant.yaml#rabbitmqvhost-workflow
+<<< ../../../tests/e2e/c5c3/messaging/01-rabbitmqvhost-tenant.yaml#rabbitmqvhost-workflow
 
 The suite substitutes `@TENANT_NS@` and `@CP_NS@`; an order of your own names
 its namespaces directly.

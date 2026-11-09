@@ -339,5 +339,5 @@ own rather than the `controlplane-glance` devstack names used above. Its
 `disallowedHosts` stays unset, so the operator's host denylist keeps applying
 behind the widened scheme and port:
 
-<<< @/../tests/tempest/glance-2026-1/02-glance-cr.yaml#glance-cr
+<<< ../../../tests/tempest/glance-2026-1/02-glance-cr.yaml#glance-cr
 :::

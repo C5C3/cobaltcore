@@ -372,7 +372,7 @@ names: Cinder `cinder-rbd` with the backend `rbdbe-rbd1` and its Secret
 `rbdbe-rbd1-key`, and a monitor no cluster resolves. The walkthrough above keeps
 the `controlplane-cinder` / `rbd1` names the devstack produces.
 
-<<< @/../tests/e2e/cinder/rbd-backend/02-cinderbackend-cr.yaml#cinder-backend
+<<< ../../../tests/e2e/cinder/rbd-backend/02-cinderbackend-cr.yaml#cinder-backend
 :::
 
 ## Proven by

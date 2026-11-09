@@ -78,8 +78,8 @@ naming worlds in the primary walkthrough.
 
 Point `## Tested by` at the mirroring suite (`chainsaw test --test-dir
 tests/e2e/keystone/<suite>`, one line per suite) and embed mirrored
-fixtures via `<<< @/../tests/e2e/...#<region>` imports instead of
-hand-maintained copies. The walkthrough YAML stays devstack-named; the
+fixtures via `<<< ../../../tests/e2e/...#<region>` imports (the path is
+relative to the guide, never `@/`) instead of hand-maintained copies. The walkthrough YAML stays devstack-named; the
 imported fixture is isolation-named and lives as a labelled `::: details`
 exhibit inside `## Tested by`, prefaced by a sentence that states which
 names the exhibit uses and why.

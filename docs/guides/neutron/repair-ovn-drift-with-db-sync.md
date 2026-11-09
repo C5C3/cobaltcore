@@ -224,5 +224,5 @@ where the walkthrough above uses the `controlplane-neutron` name the devstack
 produces. Its `spec.ovnDBSync` is the block Step 1 patches in, already switched
 to the mode Step 4 reaches.
 
-<<< @/../tests/e2e/neutron/ovn-db-sync-repair/02-neutron-cr.yaml#neutron-cr
+<<< ../../../tests/e2e/neutron/ovn-db-sync-repair/02-neutron-cr.yaml#neutron-cr
 :::

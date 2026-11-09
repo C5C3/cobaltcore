@@ -276,5 +276,5 @@ than the `placement` user Step 2 creates. It declares no `spec.gateway`; the
 `gateway-quick-start-smoke` suite covers that with a `placement-smoke` CR of its
 own.
 
-<<< @/../tests/e2e/placement/basic-deployment/00-placement-cr.yaml#placement-cr
+<<< ../../../tests/e2e/placement/basic-deployment/00-placement-cr.yaml#placement-cr
 :::

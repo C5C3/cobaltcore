@@ -1853,16 +1853,16 @@ you observe.
 
 The base phase, `deploy/examples/sizing-overlay/kustomization.yaml`:
 
-<<< @/../deploy/examples/sizing-overlay/kustomization.yaml
+<<< ../../../deploy/examples/sizing-overlay/kustomization.yaml
 
 The PriorityClass, `deploy/examples/sizing-overlay/priorityclass.yaml`, which
 the base phase includes:
 
-<<< @/../deploy/examples/sizing-overlay/priorityclass.yaml
+<<< ../../../deploy/examples/sizing-overlay/priorityclass.yaml
 
 The infrastructure phase, `deploy/examples/sizing-overlay/infrastructure/kustomization.yaml`:
 
-<<< @/../deploy/examples/sizing-overlay/infrastructure/kustomization.yaml
+<<< ../../../deploy/examples/sizing-overlay/infrastructure/kustomization.yaml
 
 ### Where each workload is sized
 

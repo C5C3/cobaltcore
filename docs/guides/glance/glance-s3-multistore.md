@@ -433,6 +433,6 @@ names use the suite's isolation identifiers — Glance `glance-multistore` with
 stores `garage-a` (default) and `garage-b` — rather than the `controlplane-glance`
 / `default` / `secondary` devstack names used in the walkthrough above.
 
-<<< @/../tests/e2e/glance/s3-multistore/01-backend-a.yaml#backend-a
-<<< @/../tests/e2e/glance/s3-multistore/02-backend-b.yaml#backend-b
+<<< ../../../tests/e2e/glance/s3-multistore/01-backend-a.yaml#backend-a
+<<< ../../../tests/e2e/glance/s3-multistore/02-backend-b.yaml#backend-b
 :::

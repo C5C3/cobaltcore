@@ -120,7 +120,7 @@ walkthrough and suite use the same namespace (`brownfield`), ControlPlane name
 (`controlplane-external`), and admin-password Secret. See
 [Tested by](#tested-by).
 
-<<< @/../tests/e2e/c5c3/external-keystone/02-controlplane-external.yaml#controlplane-external
+<<< ../../../tests/e2e/c5c3/external-keystone/02-controlplane-external.yaml#controlplane-external
 
 The file contains only the ControlPlane. The suite keeps its fixture
 admin-password Secret in a separate file, so this apply will not overwrite the
@@ -253,7 +253,7 @@ operator-generated OpenBao-backed password, and the teardown of all three.
 This is the registration the e2e suite creates in the ControlPlane's own
 namespace, declaring a catalog entry and an account:
 
-<<< @/../tests/e2e/c5c3/external-keystone/07-keystoneservice-nova.yaml#keystoneservice-nova
+<<< ../../../tests/e2e/c5c3/external-keystone/07-keystoneservice-nova.yaml#keystoneservice-nova
 
 The semantics that matter:
 

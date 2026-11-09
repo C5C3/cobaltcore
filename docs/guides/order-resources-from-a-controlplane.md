@@ -666,7 +666,7 @@ kubectl delete job workflow-db-verify -n workflow
 ```
 
 ::: details The Job
-<<< @/../tests/e2e/c5c3/keystone-user/13-mariadb-verify-job.yaml#mariadb-verify-job
+<<< ../../tests/e2e/c5c3/keystone-user/13-mariadb-verify-job.yaml#mariadb-verify-job
 :::
 
 The credential rotates on its own. ESO reads a new user from OpenBao every 24
@@ -871,35 +871,35 @@ is devstack-named: the plane is `cp` instead of `controlplane`, and the
 suites never collide.
 
 ::: details The ControlPlane fixture the suite applies
-<<< @/../tests/e2e/c5c3/keystone-user/00-controlplane-cr.yaml#controlplane
+<<< ../../tests/e2e/c5c3/keystone-user/00-controlplane-cr.yaml#controlplane
 :::
 
 ::: details The order the suite applies from the assigned namespace
-<<< @/../tests/e2e/c5c3/keystone-user/01-keystoneuser-tenant.yaml#keystoneuser-workflow
+<<< ../../tests/e2e/c5c3/keystone-user/01-keystoneuser-tenant.yaml#keystoneuser-workflow
 :::
 
 ::: details The project the suite orders
-<<< @/../tests/e2e/c5c3/keystone-user/04-keystoneproject-tenant.yaml#keystoneproject-workflow-project
+<<< ../../tests/e2e/c5c3/keystone-user/04-keystoneproject-tenant.yaml#keystoneproject-workflow-project
 :::
 
 ::: details The role assignment the suite orders
-<<< @/../tests/e2e/c5c3/keystone-user/05-keystoneroleassignment-tenant.yaml#keystoneroleassignment-workflow-member
+<<< ../../tests/e2e/c5c3/keystone-user/05-keystoneroleassignment-tenant.yaml#keystoneroleassignment-workflow-member
 :::
 
 ::: details The catalog entry the suite orders
-<<< @/../tests/e2e/c5c3/keystone-user/06-keystonecatalogentry-tenant.yaml#keystonecatalogentry-workflow-dns
+<<< ../../tests/e2e/c5c3/keystone-user/06-keystonecatalogentry-tenant.yaml#keystonecatalogentry-workflow-dns
 :::
 
 ::: details The application credential the suite orders
-<<< @/../tests/e2e/c5c3/keystone-user/10-keystoneapplicationcredential-tenant.yaml#keystoneapplicationcredential-workflow-appcred
+<<< ../../tests/e2e/c5c3/keystone-user/10-keystoneapplicationcredential-tenant.yaml#keystoneapplicationcredential-workflow-appcred
 :::
 
 ::: details The Job the suite authenticates with the application credential from
-<<< @/../tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml#appcred-verify-job
+<<< ../../tests/e2e/c5c3/keystone-user/11-openstack-appcred-verify-job.yaml#appcred-verify-job
 :::
 
 ::: details The database the suite orders
-<<< @/../tests/e2e/c5c3/keystone-user/12-mariadbdatabase-tenant.yaml#mariadbdatabase-workflow-db
+<<< ../../tests/e2e/c5c3/keystone-user/12-mariadbdatabase-tenant.yaml#mariadbdatabase-workflow-db
 :::
 
 The vhost order mirrors a second suite, the one with a live managed bus:
@@ -919,5 +919,5 @@ vhost goes, and freezes an order by withdrawing the assignment. The suite runs
 on the `e2e-operator (c5c3)` job; its plane is `cp` and its order `workflow`.
 
 ::: details The vhost order the messaging suite applies
-<<< @/../tests/e2e/c5c3/messaging/01-rabbitmqvhost-tenant.yaml#rabbitmqvhost-workflow
+<<< ../../tests/e2e/c5c3/messaging/01-rabbitmqvhost-tenant.yaml#rabbitmqvhost-workflow
 :::

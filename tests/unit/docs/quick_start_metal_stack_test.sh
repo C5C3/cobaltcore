@@ -320,9 +320,10 @@ test_references_resolve() {
     fi
   done <<<"$paths"
 
-  imports="$(grep -E '^<<< @/\.\./' "$QUICK_START_DOC" | sed -E 's|^<<< @/\.\./||; s/[{#].*$//; s/[[:space:]]+$//' || true)"
+  imports="$(grep -E '^<<< ' "$QUICK_START_DOC" | sed -E 's|^<<< ||; s/[{#].*$//; s/[[:space:]]+$//' || true)"
   while IFS= read -r import; do
     [[ -z "$import" ]] && continue
+    import="$(realpath -m --relative-to="$PROJECT_ROOT" "$(dirname "$QUICK_START_DOC")/$import")"
     found=$((found + 1))
     if [[ -f "$PROJECT_ROOT/$import" ]]; then
       echo "  PASS: code import $import resolves"
