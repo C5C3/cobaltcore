@@ -53,10 +53,11 @@ spec:
     type: ClusterIP
   secondaryService:
     type: ClusterIP
-  # TLS to the database. Galera inter-node, MaxScale
-  # listener, and Keystone client all sit inside the OpenStack DB trust
-  # domain rooted at the "openstack-db-ca-issuer" ClusterIssuer defined
-  # in db-ca-issuer.yaml.
+  # TLS to the database. Galera inter-node traffic and the Keystone client
+  # sit inside the OpenStack DB trust domain rooted at the
+  # "openstack-db-ca-issuer" ClusterIssuer defined in db-ca-issuer.yaml.
+  # The MaxScale listener and admin API join it through
+  # listenerCertIssuerRef / adminCertIssuerRef of the MaxScale CR below.
   tls:
     enabled: true
     required: true
@@ -80,9 +81,27 @@ spec:
   mariaDbRef:
     name: openstack-db
   replicas: 2
-  # MaxScale terminates TLS for client connections; the ServerCA/ServerCert
-  # refs it uses towards the MariaDB servers default from the referenced
-  # MariaDB instance (MaxScaleTLS.SetDefaults in api/v1alpha1/maxscale_types.go
-  # of the v26 module).
+  # MaxScale terminates TLS on its client listener (3306) and its admin
+  # REST API (8989). Both certificates come from the OpenStack DB trust
+  # domain: the two issuer refs name the ClusterIssuer that the MariaDB's
+  # serverCertIssuerRef names. Without them mariadb-operator provisions a
+  # self-signed CA of its own, openstack-db-maxscale-ca, and signs both
+  # certificates with it.
+  # There is no listenerCASecretRef / adminCASecretRef: the trust chain is
+  # the ca.crt that cert-manager writes into each certificate Secret, and a
+  # CA ref would replace it. There is no listenerCertSecretRef /
+  # adminCertSecretRef either, because the webhook rejects a cert Secret
+  # ref beside an issuer ref.
+  # The ServerCA/ServerCert refs MaxScale uses towards the MariaDB servers
+  # still default from the referenced MariaDB (MaxScaleTLS.SetDefaults in
+  # api/v1alpha1/maxscale_types.go of the v26 module).
   tls:
     enabled: true
+    listenerCertIssuerRef:
+      name: openstack-db-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
+    adminCertIssuerRef:
+      name: openstack-db-ca-issuer
+      kind: ClusterIssuer
+      group: cert-manager.io
