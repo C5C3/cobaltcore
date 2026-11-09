@@ -16,8 +16,8 @@ already exists.
 External mode does not deploy Keystone, MariaDB, or Memcached. The c5c3 operator
 configures K-ORC to create and rotate the admin application credential and to
 manage service accounts declared as `KeystoneService` resources. It also asks
-K-ORC to import the existing admin identity, domain, identity service, and
-endpoints as unmanaged resources; those imports are not changed or deleted by
+K-ORC to import the existing admin identity, domain, identity service, region,
+and endpoints as unmanaged resources; those imports are not changed or deleted by
 the ControlPlane. When the ControlPlane is deleted, it removes resources it
 managed, including the generated credential and managed service accounts, while
 the existing Keystone installation and imported objects remain.
@@ -81,7 +81,10 @@ installation:
   `platform-admin`, and domain `heimdall`;
 - two catalog services with type `identity`: `keystone` and
   `keystone-legacy`. In [step 2](#_2-apply-the-external-mode-controlplane),
-  select the one to import by its service name.
+  select the one to import by its service name;
+- a second region `RegionTwo` with a `public` endpoint of `keystone`. The
+  ControlPlane imports only the identity endpoints in its own `spec.region`,
+  `RegionOne` by default.
 
 Against a real installation, skip this section entirely.
 
@@ -462,8 +465,9 @@ kubectl -n brownfield delete controlplane controlplane-external
   OpenBao-backed Secrets are removed.
 - Managed service-account users and projects are deleted from Keystone,
   including users marked `adopt: true`.
-- Unmanaged imports remain: the admin user, the domain, the catalog
-  services and endpoints, and any project referenced with `project.create: false`.
+- Unmanaged imports remain: the admin user, the domain, the region, the
+  catalog services and endpoints, and any project referenced with
+  `project.create: false`.
 - Your Keystone keeps serving tokens throughout.
 
 The `c5c3.io/orc-teardown` finalizer keeps the ControlPlane until K-ORC revokes
