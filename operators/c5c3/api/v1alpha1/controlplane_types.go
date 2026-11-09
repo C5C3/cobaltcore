@@ -3158,7 +3158,8 @@ type NamespaceAssignmentStatus struct {
 // resolved, this list says which ones did.
 type CatalogStatus struct {
 	// Imports lists the unmanaged K-ORC CRs importing the external identity
-	// service and its endpoint interfaces, keyed by CR name.
+	// service, the region spec.region names, and the identity endpoint
+	// interfaces in that region, keyed by CR name.
 	// +optional
 	// +listType=map
 	// +listMapKey=name
@@ -3171,12 +3172,12 @@ type CatalogImportStatus struct {
 	// Name is the K-ORC CR name; it keys the listType=map Imports list.
 	Name string `json:"name"`
 
-	// Kind is the imported K-ORC kind, "Service" or "Endpoint".
-	// +kubebuilder:validation:Enum=Service;Endpoint
+	// Kind is the imported K-ORC kind, "Service", "Region" or "Endpoint".
+	// +kubebuilder:validation:Enum=Service;Endpoint;Region
 	Kind string `json:"kind"`
 
 	// Interface is the catalog interface of an imported Endpoint; empty for the
-	// Service import.
+	// Service and Region imports.
 	// +optional
 	Interface ExternalEndpointType `json:"interface,omitempty"`
 
