@@ -12610,7 +12610,8 @@ spec:
                   imports:
                     description: |-
                       Imports lists the unmanaged K-ORC CRs importing the external identity
-                      service and its endpoint interfaces, keyed by CR name.
+                      service, the region spec.region names, and the identity endpoint
+                      interfaces in that region, keyed by CR name.
                     items:
                       description: |-
                         CatalogImportStatus reports the observed state of a single unmanaged catalog
@@ -12625,18 +12626,19 @@ spec:
                         interface:
                           description: |-
                             Interface is the catalog interface of an imported Endpoint; empty for the
-                            Service import.
+                            Service and Region imports.
                           enum:
                           - public
                           - internal
                           - admin
                           type: string
                         kind:
-                          description: Kind is the imported K-ORC kind, "Service"
-                            or "Endpoint".
+                          description: Kind is the imported K-ORC kind, "Service",
+                            "Region" or "Endpoint".
                           enum:
                           - Service
                           - Endpoint
+                          - Region
                           type: string
                         name:
                           description: Name is the K-ORC CR name; it keys the listType=map
