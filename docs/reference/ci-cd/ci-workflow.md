@@ -96,7 +96,7 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
 | `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
-| `docs`, `helm`, `target_cluster_chart` | as before | `docs`, `helm-validate`, `helm-push-target-cluster` |
+| `docs`, `helm`, `target_cluster_chart` | as before | `docs` and `docs-overlay`, `helm-validate`, `helm-push-target-cluster` |
 | `publish_legacy` | the wide paths a push publishes from | push events only, ignored on pull requests |
 
 The canary is the deliberate gap. A change to the substrate every e2e job stands
@@ -224,7 +224,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 41 jobs. `changes` and `test-shell` run on every event. The
+The workflow defines 42 jobs. `changes` and `test-shell` run on every event. The
 gate, test and E2E jobs carry a `github.event_name == 'pull_request'` guard.
 `build-e2e-images`, `e2e-chaos` and `e2e-chaos-random` also run on a `schedule` or
 `workflow_dispatch` event, the nightly chaos run, and `report-nightly-chaos` runs on a `schedule` event
@@ -235,7 +235,7 @@ The figure groups the jobs into stages and draws the order of the stages. The
 table lists every job with its stage and its `needs:` list, and links the
 section that describes the job.
 
-![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
+![The jobs of the CI workflow, grouped into stages. The job changes works out what a run has to do, and every job of the two events needs it. test-shell needs no job and runs on every event. On a pull request the gates come first: lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures and chainsaw-lint. The image build, build-e2e-images, needs each of them. The E2E fan-out needs the image build: e2e-operator, e2e-operator-upgrade, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso, e2e-autoscaling, e2e-external-keystone, e2e-multicluster, e2e-orders-multicluster, e2e-ovn-overlay, e2e-nova-libvirt and keystone-pressure. e2e-chaos follows e2e-operator, the random chaos run e2e-chaos-random follows the image build, and report-nightly-chaos follows both on a schedule only. tempest follows e2e-chaos and the infrastructure suite e2e-infra, and cleanup-e2e-tags runs last. No other job needs the checks format-check, feature-ids, review-markers, actionlint, test-race, govulncheck, docs, docs-overlay and helm-validate. On a push to main or of a v* tag, build-and-push and merge-operator-images publish the operator images, helm-push and helm-push-target-cluster publish the charts, and github-release follows both for a v* tag.](../../diagrams/ci-stage-overview.svg)
 
 | Job | Stage | `needs` |
 | --- | --- | --- |
@@ -255,6 +255,7 @@ section that describes the job.
 | [`govulncheck`](#govulncheck) | Checks | `changes` |
 | [`verify-codegen`](#verify-codegen) | Gates | `changes` |
 | [`docs`](#docs) | Checks | `changes` |
+| [`docs-overlay`](#docs-overlay) | Checks | `changes` |
 | [`helm-validate`](#helm-validate) | Checks | `changes` |
 | [`e2e-infra`](#e2e-infra) | Infrastructure suite | `changes` |
 | [`build-e2e-images`](#build-e2e-images) | Image build | `changes`, `lint`, `shellcheck`, `test`, `test-integration`, `verify-codegen`, `verify-invalid-cr-fixtures`, `chainsaw-lint` |
@@ -339,7 +340,7 @@ The flags come first. Each one is `true` or `false`:
 | --- | --- |
 | `noop` | `true` for a `labeled` event whose label does not steer CI. `shellcheck`, `feature-ids`, `review-markers`, `verify-invalid-cr-fixtures` and `chainsaw-lint` skip on `true` |
 | `go` | Gates `lint`, `format-check`, `test`, `test-integration`, `test-race`, `govulncheck` and `verify-codegen` |
-| `docs` | Gates `docs` |
+| `docs` | Gates `docs` and `docs-overlay` |
 | `helm` | Gates `helm-validate` |
 | `target-cluster-chart` | Gates `helm-push-target-cluster` |
 | `e2e-infra` | Gates `e2e-infra` |
@@ -804,6 +805,28 @@ Builds the VitePress documentation site to catch broken links and build errors.
 | 2 | `actions/setup-node@v7` | Node.js 24, npm cache enabled |
 | 3 | `npm ci` | Installs dependencies from lockfile |
 | 4 | `npm run docs:build` | Builds the documentation site |
+
+### docs-overlay
+
+Builds cobaltcore.dev with the docs of the pull request. cobaltcore.dev builds
+its OpenStack section from these docs (see
+[Publishing to cobaltcore.dev](../../contributing/publishing-to-cobaltcore-dev.md)),
+so a change that builds in [`docs`](#docs) can still break that build. The job
+does not block a merge (`continue-on-error: true`), because it builds the
+default branch of cobaltcore-dev/docs.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.docs == 'true'`
+**Path filter:** `docs/**`, `package.json`, `package-lock.json`
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | cobaltcore-dev/docs into `site/`, without persisting the token |
+| 2 | Check for `docs/.vitepress/overlay.ts` | Without the file cobaltcore-dev/docs does not render these docs: the step prints a `::notice::`, and the steps after it are skipped |
+| 3 | `actions/checkout@v7` | The pull request into `site/docs/_upstream/cobaltcore/`, sparse (`docs`, `tests`, `deploy`), without persisting the token |
+| 4 | `actions/setup-node@v7` | Node.js 24, npm cache keyed on `site/package-lock.json` |
+| 5 | `npm ci` | Installs the dependencies of cobaltcore-dev/docs |
+| 6 | `npm run docs:build` | Builds cobaltcore.dev; a dead link fails the step |
 
 ### helm-validate
 

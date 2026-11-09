@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1832" height="1340" viewBox="0 0 1832 1340" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="CI stage overview">
+<svg xmlns="http://www.w3.org/2000/svg" width="1832" height="1368" viewBox="0 0 1832 1368" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="CI stage overview">
 <title>CI stage overview</title>
-<rect width="1832" height="1340" fill="#F6F5F1"/>
+<rect width="1832" height="1368" fill="#F6F5F1"/>
 <rect x="40" y="40" width="300" height="125" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="59" y="79.36" font-size="26" font-weight="700" fill="#2B3440">Every event</text>
 <text x="59" y="114.2" font-size="20" font-weight="400" fill="#2B3440">test-shell</text>
@@ -24,7 +24,7 @@
 <text x="1537" y="209.36" font-size="26" font-weight="700" fill="#2B3440">Release</text>
 <text x="1537" y="244.2" font-size="20" font-weight="400" fill="#2B3440">github-release</text>
 <text x="1537" y="272.2" font-size="20" font-weight="400" fill="#55606E">v* tags only</text>
-<rect x="40" y="481" width="1752" height="693" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<rect x="40" y="481" width="1752" height="721" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="59" y="520.36" font-size="26" font-weight="700" fill="#2B3440">Pull request</text>
 <rect x="60" y="544" width="272" height="377" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="79" y="583.36" font-size="26" font-weight="700" fill="#2B3440">Gates</text>
@@ -76,7 +76,7 @@
 <text x="1545" y="646.2" font-size="20" font-weight="400" fill="#55606E">deletes the run-scoped</text>
 <text x="1545" y="674.2" font-size="20" font-weight="400" fill="#55606E">image tags, also</text>
 <text x="1545" y="702.2" font-size="20" font-weight="400" fill="#55606E">after a failure</text>
-<rect x="60" y="997" width="1000" height="153" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<rect x="60" y="997" width="1000" height="181" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="79" y="1036.36" font-size="26" font-weight="700" fill="#2B3440">Checks</text>
 <text x="79" y="1071.2" font-size="20" font-weight="400" fill="#2B3440">format-check</text>
 <text x="319" y="1071.2" font-size="20" font-weight="400" fill="#2B3440">feature-ids</text>
@@ -85,8 +85,9 @@
 <text x="79" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">test-race</text>
 <text x="319" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">govulncheck</text>
 <text x="559" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">docs</text>
-<text x="799" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">helm-validate</text>
-<text x="79" y="1127.2" font-size="20" font-weight="400" fill="#55606E">needed by no other job</text>
+<text x="799" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">docs-overlay</text>
+<text x="79" y="1127.2" font-size="20" font-weight="400" fill="#2B3440">helm-validate</text>
+<text x="79" y="1155.2" font-size="20" font-weight="400" fill="#55606E">needed by no other job</text>
 <rect x="1232" y="997" width="300" height="125" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
 <text x="1251" y="1036.36" font-size="26" font-weight="700" fill="#2B3440">Infrastructure suite</text>
 <text x="1251" y="1071.2" font-size="20" font-weight="400" fill="#2B3440">e2e-infra</text>
@@ -111,7 +112,7 @@
 <polygon points="1518,220 1503,227.2 1503,212.8" fill="#3A4452"/>
 <polyline points="1320,312 1507.5,312" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="1518,312 1503,319.2 1503,304.8" fill="#3A4452"/>
-<text x="40" y="1225.2" font-size="20" font-weight="400" fill="#55606E">A label is a job of .github/workflows/ci.yaml, under its key. A box holds the jobs of one stage, and a frame the stages of one event.</text>
-<text x="40" y="1259.2" font-size="20" font-weight="400" fill="#55606E">An arrow says that a job of the stage at its tip needs a job of the stage at its tail. The job table on the page lists every needs entry.</text>
-<text x="40" y="1293.2" font-size="20" font-weight="400" fill="#55606E">From the image build on, a job starts when the image build succeeded and none of the jobs it needs failed or was cancelled. A gate that was skipped holds nothing back.</text>
+<text x="40" y="1253.2" font-size="20" font-weight="400" fill="#55606E">A label is a job of .github/workflows/ci.yaml, under its key. A box holds the jobs of one stage, and a frame the stages of one event.</text>
+<text x="40" y="1287.2" font-size="20" font-weight="400" fill="#55606E">An arrow says that a job of the stage at its tip needs a job of the stage at its tail. The job table on the page lists every needs entry.</text>
+<text x="40" y="1321.2" font-size="20" font-weight="400" fill="#55606E">From the image build on, a job starts when the image build succeeded and none of the jobs it needs failed or was cancelled. A gate that was skipped holds nothing back.</text>
 </svg>
