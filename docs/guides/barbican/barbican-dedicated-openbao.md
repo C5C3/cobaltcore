@@ -504,5 +504,5 @@ the suite's isolation identifiers (Barbican `barbican-store-managed`, store
 `barbican-store-managed-store`, instance `openbao-instance`) rather than the
 `controlplane-barbican` names the walkthrough above uses.
 
-<<< @/../tests/e2e/barbican/secretstore-managed/01-barbican-secretstore.yaml#managed-store
+<<< ../../../tests/e2e/barbican/secretstore-managed/01-barbican-secretstore.yaml#managed-store
 :::

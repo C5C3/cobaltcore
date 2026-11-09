@@ -204,5 +204,5 @@ its CRs are isolation-named (`neutron-provider-chassis` against the central
 `controlplane-chassis` and `controlplane-ovn` names the devstack produces. The
 mapping is the same one Step 1 patches in.
 
-<<< @/../tests/e2e/neutron/provider-network-smoke/02-ovnchassis-cr.yaml#ovnchassis-cr
+<<< ../../../tests/e2e/neutron/provider-network-smoke/02-ovnchassis-cr.yaml#ovnchassis-cr
 :::

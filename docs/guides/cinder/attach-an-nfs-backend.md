@@ -443,6 +443,6 @@ identifiers: Cinder `cinder-nfs` with the backend `nfsbe-nfs1`, and Cinder
 `cinder-multi` with the second backend `multi-nfs-b`. The walkthrough above keeps
 the `controlplane-cinder` / `nfs1` names the devstack produces.
 
-<<< @/../tests/e2e/cinder/nfs-backend/01-cinderbackend-cr.yaml#cinder-backend
-<<< @/../tests/e2e/cinder/multi-backend/02-cinderbackend-b-cr.yaml#backend-b
+<<< ../../../tests/e2e/cinder/nfs-backend/01-cinderbackend-cr.yaml#cinder-backend
+<<< ../../../tests/e2e/cinder/multi-backend/02-cinderbackend-b-cr.yaml#backend-b
 :::

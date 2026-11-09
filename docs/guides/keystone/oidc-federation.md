@@ -499,5 +499,5 @@ backend CR points `keystoneRef` at `keystone-oidc` (and enables
 `oauth2Introspection` for the CLI bearer flow) — differing from the
 `controlplane-keystone` reference used in the walkthrough above.
 
-<<< @/../tests/e2e/keystone/oidc-federation/02-backend-cr.yaml#backend-cr
+<<< ../../../tests/e2e/keystone/oidc-federation/02-backend-cr.yaml#backend-cr
 :::

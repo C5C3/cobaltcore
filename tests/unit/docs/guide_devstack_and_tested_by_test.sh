@@ -15,9 +15,10 @@
 #   (e) the "## Tested by" section names at least one suite via
 #       "chainsaw test --test-dir tests/...", and every referenced suite
 #       directory resolves to a real chainsaw-test.yaml;
-#   (f) every VitePress code-import ("<<< @/../...") in the guide resolves to a
-#       file that exists, and when a "#region" is named the fixture carries the
-#       matching "# region <name>" / "# endregion <name>" markers.
+#   (f) every VitePress code-import ("<<< ../...", relative to the guide) in
+#       the guide resolves to a file that exists, and when a "#region" is
+#       named the fixture carries the matching "# region <name>" /
+#       "# endregion <name>" markers.
 #
 # VitePress does not fail the build on a dead snippet path, so (e) and (f) are
 # the enforcing gate for the tested-by references and the code-import wiring.
@@ -140,8 +141,8 @@ check_guide() {
   local spec importfile region
   while IFS= read -r spec; do
     [[ -z "$spec" ]] && continue
-    spec="${spec#<<< @/../}"
-    importfile="${spec%%#*}"
+    spec="${spec#<<< }"
+    importfile="$(realpath -m --relative-to="$PROJECT_ROOT" "$(dirname "$file")/${spec%%#*}")"
     if [[ ! -f "$PROJECT_ROOT/$importfile" ]]; then
       echo "  FAIL: $name code-import target $importfile does not exist"
       FAIL=$((FAIL + 1))
@@ -161,7 +162,7 @@ check_guide() {
       echo "  PASS: $name code-import $importfile resolves (whole file)"
       PASS=$((PASS + 1))
     fi
-  done < <(grep -E '^<<< @/\.\./' "$file")
+  done < <(grep -E '^<<< ' "$file")
 }
 
 # --- Run ---

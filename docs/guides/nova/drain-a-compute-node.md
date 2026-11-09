@@ -420,5 +420,5 @@ the Nova `nova-pool`) where the walkthrough above uses `controlplane-pool-a` of
 the devstack's `controlplane-nova`. The selector is the one the walkthrough
 removes.
 
-<<< @/../tests/e2e/nova/compute-node-pool/12-novacompute-pool-a.yaml#novacompute-cr
+<<< ../../../tests/e2e/nova/compute-node-pool/12-novacompute-pool-a.yaml#novacompute-cr
 :::

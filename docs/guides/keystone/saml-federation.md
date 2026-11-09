@@ -364,5 +364,5 @@ backend CR name (`keycloak-saml`) and `keystoneRef` (`keystone-saml`)
 differ from the `corp-saml` / `keystone` names used in the
 walkthrough above.
 
-<<< @/../tests/e2e/keystone/saml-federation/02-backend-cr.yaml#backend-cr
+<<< ../../../tests/e2e/keystone/saml-federation/02-backend-cr.yaml#backend-cr
 :::

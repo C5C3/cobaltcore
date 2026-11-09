@@ -220,5 +220,5 @@ where the walkthrough above uses the `controlplane-chassis` and
 `controlplane-ovn` names the devstack produces. Both selectors are the ones this
 guide removes labels for.
 
-<<< @/../tests/e2e/ovn/chassis-drain/01-ovnchassis-cr.yaml#ovnchassis-cr
+<<< ../../../tests/e2e/ovn/chassis-drain/01-ovnchassis-cr.yaml#ovnchassis-cr
 :::

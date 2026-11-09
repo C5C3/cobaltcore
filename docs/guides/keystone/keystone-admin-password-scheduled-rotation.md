@@ -480,5 +480,5 @@ CR name (`keystone-adminpw-sched`) and logical database
 (`keystone_adminpw_sched`) differ from the devstack names used in
 the walkthrough above.
 
-<<< @/../tests/e2e/keystone/admin-password-scheduled-rotation/00-keystone-cr.yaml#keystone-cr
+<<< ../../../tests/e2e/keystone/admin-password-scheduled-rotation/00-keystone-cr.yaml#keystone-cr
 :::

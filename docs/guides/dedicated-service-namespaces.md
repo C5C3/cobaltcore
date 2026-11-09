@@ -479,5 +479,5 @@ suites never collide. The walkthrough above keeps the names your devstack
 actually produces.
 
 ::: details The ControlPlane fixture the suite applies
-<<< @/../tests/e2e/c5c3/dedicated-namespaces/00-controlplane-cr.yaml#controlplane
+<<< ../../tests/e2e/c5c3/dedicated-namespaces/00-controlplane-cr.yaml#controlplane
 :::

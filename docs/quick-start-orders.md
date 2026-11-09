@@ -1085,15 +1085,15 @@ the trust anchor of Part 2. The exhibits are its fixtures as it applies them;
 the walkthrough above uses the devstack's names.
 
 ::: details The suite's ControlPlane
-<<< @/../tests/e2e-orders-multicluster/orders/00-controlplane-cr.yaml#controlplane
+<<< ../tests/e2e-orders-multicluster/orders/00-controlplane-cr.yaml#controlplane
 :::
 
 ::: details The user order on the target
-<<< @/../tests/e2e-orders-multicluster/orders/01-keystoneuser-target.yaml#keystoneuser-workflow
+<<< ../tests/e2e-orders-multicluster/orders/01-keystoneuser-target.yaml#keystoneuser-workflow
 :::
 
 ::: details The bus Job
-<<< @/../tests/e2e-orders-multicluster/orders/14-bus-verify-job.yaml#bus-verify-job
+<<< ../tests/e2e-orders-multicluster/orders/14-bus-verify-job.yaml#bus-verify-job
 :::
 
 ## Related references

@@ -247,5 +247,5 @@ the `nfsbk` backup target. The backend entry names are the same ones the devstac
 uses, because cinder keys every volume by the backend it was created on and the
 entry name reaches the satellite unprefixed.
 
-<<< @/../tests/e2e/c5c3/full-controlplane-keystone/00-controlplane-cr.yaml#controlplane-cr
+<<< ../../../tests/e2e/c5c3/full-controlplane-keystone/00-controlplane-cr.yaml#controlplane-cr
 :::

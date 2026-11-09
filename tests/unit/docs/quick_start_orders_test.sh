@@ -14,8 +14,9 @@
 #      in Part 2, and Part 2 keeps `### The path from the target {#tc-path}`,
 #      which the guide and the diagram catalogue link
 #   4. every `chainsaw test --test-dir` path resolves to a chainsaw-test.yaml
-#   5. every `<<< @/../` import names a file that holds its region once, as a
-#      column-0 `# region <name>` before a column-0 `# endregion <name>`
+#   5. every `<<<` import names a file, relative to the page, that holds its
+#      region once, as a column-0 `# region <name>` before a column-0
+#      `# endregion <name>`
 #   6. the page names `targetPort: 31443` once, hack/kind-config.yaml maps
 #      `containerPort: 31443`, the Envoy Gateway's NodePort the Service of Part
 #      2 forwards to, and both forms of the target-path figure name
@@ -212,13 +213,13 @@ test_tested_by_paths_resolve() {
 test_imports_resolve_with_balanced_regions() {
   echo "Test: every code import names a file that holds its region once, in order"
   local imports import file region opens closes first_open first_close ok
-  imports="$(grep -E '^<<< @/\.\./' "$QUICK_START_DOC" | sed -E 's|^<<< @/\.\./||; s/[[:space:]]+$//' || true)"
+  imports="$(grep -E '^<<< ' "$QUICK_START_DOC" | sed -E 's|^<<< ||; s/[[:space:]]+$//' || true)"
   if [[ -z "$imports" ]]; then
     record 0 "the page imports a fixture"
     return
   fi
   while IFS= read -r import; do
-    file="${import%%#*}"
+    file="$(realpath -m --relative-to="$PROJECT_ROOT" "$(dirname "$QUICK_START_DOC")/${import%%#*}")"
     region="${import#*#}"
     if [[ "$region" == "$import" || -z "$region" ]]; then
       record 0 "code import $import names a region"

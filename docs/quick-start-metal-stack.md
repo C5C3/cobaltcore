@@ -265,9 +265,9 @@ gives the reason behind each setting and the source of every value of the Ceph
 entries.
 
 ::: details The two manifests
-<<< @/../deploy/lab/metal-stack/controlplane/ovncentral.yaml
+<<< ../deploy/lab/metal-stack/controlplane/ovncentral.yaml
 
-<<< @/../deploy/lab/metal-stack/controlplane/controlplane-lab.yaml
+<<< ../deploy/lab/metal-stack/controlplane/controlplane-lab.yaml
 :::
 
 ### Step 5: Onboard the database-engine tenant {#cp-tenant}
@@ -938,7 +938,7 @@ The backup Deployment gains the inline volume `share-nfs1` of the CSI driver
 describes the way back to `ceph1` alone.
 
 ::: details The NFS variant
-<<< @/../deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml
+<<< ../deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml
 :::
 
 ### Step 2: Attach an NFS volume {#nfs-volume}

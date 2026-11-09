@@ -5,7 +5,7 @@
 
 # Verify that no Markdown page under DOCS_DIR (outside .vitepress/) holds a
 # merge conflict marker: a line that starts with seven `<` or seven `>`
-# followed by a space. The `<<< @/` code imports have three and do not match.
+# followed by a space. The `<<<` code imports have three and do not match.
 # Each hit names the file and line.
 #
 # DOCS_DIR overrides the scanned tree.

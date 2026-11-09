@@ -537,7 +537,7 @@ The suite runs in the parallel suite pool, so its CR is isolation-named:
 `keystone-mc`, on its own logical database `keystone_mc`, where the walkthrough
 above uses the `keystone` name the devstack produces.
 
-<<< @/../tests/e2e-multicluster/placed-services/00-keystone-cr.yaml#keystone-cr
+<<< ../../tests/e2e-multicluster/placed-services/00-keystone-cr.yaml#keystone-cr
 :::
 
 ::: details The Barbican pair the suite applies
@@ -546,7 +546,7 @@ against the walkthrough's `keystone`). The pair is what takes the API probe
 through the target's service proxy and the OpenBao handshake through a
 `pods/portforward` tunnel, both on the access chart's credentials.
 
-<<< @/../tests/e2e-multicluster/placed-services/01-barbican-cr.yaml#barbican-cr
+<<< ../../tests/e2e-multicluster/placed-services/01-barbican-cr.yaml#barbican-cr
 
-<<< @/../tests/e2e-multicluster/placed-services/02-barbican-secretstore.yaml#barbican-store
+<<< ../../tests/e2e-multicluster/placed-services/02-barbican-secretstore.yaml#barbican-store
 :::
