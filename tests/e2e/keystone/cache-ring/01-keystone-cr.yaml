@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the cache-ring E2E test: three API pods on the
+# three-pod Memcached of 00-memcached.yaml, so a token validation can land on
+# any Keystone process and its cache key on any cache pod.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-cache-ring
+  namespace: openstack
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_cache_ring
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: keystone-cache-ring-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

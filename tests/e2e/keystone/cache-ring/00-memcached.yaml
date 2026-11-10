@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A Memcached of three pods for the cache-ring suite, the shape of
+# deploy/flux-system/infrastructure/memcached.yaml. kind runs
+# openstack-memcached with one replica, so the shared cache cannot show a
+# revocation that reaches one pod of several. The suite owns this Memcached
+# alone: Keystone's cache keys carry no instance identity, and a second
+# Keystone on the same cache would read this one's entries.
+#
+# The name differs from the Keystone's: memcached-operator names its headless
+# Service after the Memcached, and the keystone-operator names the API Service
+# after the Keystone, so one name for both would claim one Service.
+apiVersion: memcached.c5c3.io/v1beta1
+kind: Memcached
+metadata:
+  name: keystone-cache-ring-memcached
+  namespace: openstack
+spec:
+  replicas: 3
+  image: memcached:1.6
