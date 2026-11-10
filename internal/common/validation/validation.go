@@ -85,9 +85,11 @@ func MessagingXOR(fldPath *field.Path, m *commonv1.MessagingSpec) field.ErrorLis
 
 // CacheNoControlChars rejects a newline or carriage return in the CacheSpec
 // fields that reach the INI renderer verbatim. cache.ResolveServers joins
-// spec.cache.servers with commas (brownfield mode) or derives
-// "<clusterRef.name>:11211" (managed mode), and every consumer renders the
-// result as "memcached_servers = %s" inside [keystone_authtoken]. A newline
+// spec.cache.servers with commas (brownfield mode), or in managed mode joins
+// the status.serverList of the referenced Memcached and derives
+// "<clusterRef.name>:11211" while it publishes none, and every consumer renders
+// the result as "memcached_servers = %s" inside [keystone_authtoken]. The
+// status list is checked by cache.ManagedServers, not here. A newline
 // there injects an additional config line — smuggling a whole key past the
 // (section, key)-keyed ownership and catalog gates that guard extraConfig,
 // which is exactly how an attacker-controlled auth_url would reach

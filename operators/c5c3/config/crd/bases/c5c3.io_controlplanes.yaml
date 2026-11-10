@@ -174,8 +174,9 @@ spec:
                       replicas:
                         description: |-
                           Replicas is the number of Memcached pod replicas in the referenced cluster
-                          (managed mode). Used to generate the correct number of StatefulSet pod
-                          endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                          (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                          service operators ignore it and read the server list from the Memcached
+                          status. Only used when ClusterRef is set. When unset, the ControlPlane
                           takes the value from its sizing (Standard: 3).
                         format: int32
                         minimum: 1
@@ -1009,8 +1010,9 @@ spec:
                               replicas:
                                 description: |-
                                   Replicas is the number of Memcached pod replicas in the referenced cluster
-                                  (managed mode). Used to generate the correct number of StatefulSet pod
-                                  endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                                  (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                                  service operators ignore it and read the server list from the Memcached
+                                  status. Only used when ClusterRef is set. When unset, the ControlPlane
                                   takes the value from its sizing (Standard: 3).
                                 format: int32
                                 minimum: 1
@@ -2021,8 +2023,9 @@ spec:
                               replicas:
                                 description: |-
                                   Replicas is the number of Memcached pod replicas in the referenced cluster
-                                  (managed mode). Used to generate the correct number of StatefulSet pod
-                                  endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                                  (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                                  service operators ignore it and read the server list from the Memcached
+                                  status. Only used when ClusterRef is set. When unset, the ControlPlane
                                   takes the value from its sizing (Standard: 3).
                                 format: int32
                                 minimum: 1
@@ -2623,8 +2626,9 @@ spec:
                               replicas:
                                 description: |-
                                   Replicas is the number of Memcached pod replicas in the referenced cluster
-                                  (managed mode). Used to generate the correct number of StatefulSet pod
-                                  endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                                  (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                                  service operators ignore it and read the server list from the Memcached
+                                  status. Only used when ClusterRef is set. When unset, the ControlPlane
                                   takes the value from its sizing (Standard: 3).
                                 format: int32
                                 minimum: 1
@@ -3508,8 +3512,9 @@ spec:
                               replicas:
                                 description: |-
                                   Replicas is the number of Memcached pod replicas in the referenced cluster
-                                  (managed mode). Used to generate the correct number of StatefulSet pod
-                                  endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                                  (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                                  service operators ignore it and read the server list from the Memcached
+                                  status. Only used when ClusterRef is set. When unset, the ControlPlane
                                   takes the value from its sizing (Standard: 3).
                                 format: int32
                                 minimum: 1
@@ -3874,8 +3879,9 @@ spec:
                               replicas:
                                 description: |-
                                   Replicas is the number of Memcached pod replicas in the referenced cluster
-                                  (managed mode). Used to generate the correct number of StatefulSet pod
-                                  endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                                  (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                                  service operators ignore it and read the server list from the Memcached
+                                  status. Only used when ClusterRef is set. When unset, the ControlPlane
                                   takes the value from its sizing (Standard: 3).
                                 format: int32
                                 minimum: 1
@@ -4656,8 +4662,9 @@ spec:
                               replicas:
                                 description: |-
                                   Replicas is the number of Memcached pod replicas in the referenced cluster
-                                  (managed mode). Used to generate the correct number of StatefulSet pod
-                                  endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                                  (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                                  service operators ignore it and read the server list from the Memcached
+                                  status. Only used when ClusterRef is set. When unset, the ControlPlane
                                   takes the value from its sizing (Standard: 3).
                                 format: int32
                                 minimum: 1
@@ -5343,8 +5350,9 @@ spec:
                               replicas:
                                 description: |-
                                   Replicas is the number of Memcached pod replicas in the referenced cluster
-                                  (managed mode). Used to generate the correct number of StatefulSet pod
-                                  endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                                  (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                                  service operators ignore it and read the server list from the Memcached
+                                  status. Only used when ClusterRef is set. When unset, the ControlPlane
                                   takes the value from its sizing (Standard: 3).
                                 format: int32
                                 minimum: 1
@@ -5966,8 +5974,9 @@ spec:
                               replicas:
                                 description: |-
                                   Replicas is the number of Memcached pod replicas in the referenced cluster
-                                  (managed mode). Used to generate the correct number of StatefulSet pod
-                                  endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+                                  (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+                                  service operators ignore it and read the server list from the Memcached
+                                  status. Only used when ClusterRef is set. When unset, the ControlPlane
                                   takes the value from its sizing (Standard: 3).
                                 format: int32
                                 minimum: 1

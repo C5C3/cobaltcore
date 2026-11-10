@@ -276,11 +276,14 @@ const (
 // CacheSpec, so it holds even when a validating webhook is bypassed.
 //
 // Both modes' inputs reach the verbatim INI renderer — cache.ResolveServers
-// joins Servers with commas or derives "<ClusterRef.Name>:11211", and the
+// joins Servers with commas, or in managed mode joins the status.serverList of
+// the referenced Memcached that cache.ManagedServers read and derives
+// "<ClusterRef.Name>:11211" while the Memcached publishes none, and the
 // consumers render the result as "<key> = <value>" into a config section. A
 // newline or carriage return there injects an additional config line, so the
 // items pattern on Servers and the second XValidation rule below reject them at
 // the schema layer, alongside validation.CacheNoControlChars in the webhooks.
+// The status entries are checked in cache.ManagedServers, not by these rules.
 //
 // +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)",message="exactly one of clusterRef or servers must be set"
 // +kubebuilder:validation:XValidation:rule="!has(self.clusterRef) || !self.clusterRef.name.matches('[\\n\\r]')",message="clusterRef.name must not contain a newline or carriage return"
@@ -295,8 +298,9 @@ type CacheSpec struct {
 	// +kubebuilder:validation:items:Pattern=`^[^\n\r]*$`
 	Servers []string `json:"servers,omitempty"`
 	// Replicas is the number of Memcached pod replicas in the referenced cluster
-	// (managed mode). Used to generate the correct number of StatefulSet pod
-	// endpoints. Only used when ClusterRef is set. When unset, the ControlPlane
+	// (managed mode). The ControlPlane sizes the Memcached it owns with it. The
+	// service operators ignore it and read the server list from the Memcached
+	// status. Only used when ClusterRef is set. When unset, the ControlPlane
 	// takes the value from its sizing (Standard: 3).
 	// +optional
 	// +kubebuilder:validation:Minimum=1
