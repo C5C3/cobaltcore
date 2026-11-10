@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -16,7 +17,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
@@ -341,7 +344,8 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 
 	barbican := testBarbican()
 	barbican.Spec.Region = "RegionOne"
-	defaults := config.InjectOsloPolicyConfig(operatorDefaults(barbican, projection), policyFilePath)
+	defaults := config.InjectOsloPolicyConfig(
+		operatorDefaults(barbican, projection, cache.ResolveServers(&barbican.Spec.Cache, nil)), policyFilePath)
 
 	registered := make(map[[2]string]struct{}, len(barbicanv1alpha1.OwnedConfigKeys))
 	for _, o := range barbicanv1alpha1.OwnedConfigKeys {
@@ -602,4 +606,93 @@ func pipelineDirectives(rendered string) map[string]string {
 		}
 	}
 	return directives
+}
+
+// TestReconcileConfig_CacheServers covers the server list barbican.conf
+// renders into [keystone_authtoken] memcached_servers: the sorted
+// status.serverList of the referenced Memcached, the Service name while there
+// is none, a brownfield list without a Memcached read, and no Secret with
+// SecretsReady=False on a failed read.
+func TestReconcileConfig_CacheServers(t *testing.T) {
+	entries := []string{
+		"memcached-0.memcached.openstack.svc:11211",
+		"memcached-1.memcached.openstack.svc:11211",
+		"memcached-2.memcached.openstack.svc:11211",
+	}
+	managed := func() *barbicanv1alpha1.Barbican {
+		barbican := testBarbican()
+		barbican.Spec.Cache = commonv1.CacheSpec{
+			Backend: "dogpile.cache.pymemcache", ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
+		}
+		return barbican
+	}
+
+	tests := []struct {
+		name     string
+		barbican *barbicanv1alpha1.Barbican
+		objs     []client.Object
+		want     string
+		wantGets int32
+	}{
+		{
+			name:     "managed with a server list renders the sorted entries",
+			barbican: managed(),
+			objs:     []client.Object{testutil.MemcachedWithServerList(testNamespace, "memcached", entries[2], entries[1], entries[0])},
+			want:     strings.Join(entries, ","),
+			wantGets: 1,
+		},
+		{
+			name:     "managed without a Memcached renders the Service name",
+			barbican: managed(),
+			want:     "memcached:11211",
+			wantGets: 1,
+		},
+		{
+			name:     "brownfield renders servers without a Memcached read",
+			barbican: testBarbican(),
+			objs:     []client.Object{testutil.MemcachedWithServerList(testNamespace, "memcached", entries...)},
+			want:     "mc:11211",
+			wantGets: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			c := barbicanFakeClientBuilder(append(tc.objs, tc.barbican)...).
+				WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, nil)).Build()
+			r := &BarbicanReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+			_, name, err := r.reconcileConfig(context.Background(), r.Client, tc.barbican, validProjection())
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var secret corev1.Secret
+			g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &secret)).To(Succeed())
+			g.Expect(sectionOf(t, string(secret.Data[barbicanConfDataKey]), "keystone_authtoken")).
+				To(ContainElement("memcached_servers = " + tc.want))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
+	}
+
+	t.Run("a failed Memcached read writes no Secret", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var gets atomic.Int32
+		barbican := managed()
+		c := barbicanFakeClientBuilder(barbican).
+			WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, context.DeadlineExceeded)).Build()
+		r := &BarbicanReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+		_, name, err := r.reconcileConfig(context.Background(), r.Client, barbican, validProjection())
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err).To(MatchError(ContainSubstring("resolving cache servers")))
+		g.Expect(name).To(BeEmpty())
+
+		var secrets corev1.SecretList
+		g.Expect(r.List(context.Background(), &secrets, client.InNamespace(testNamespace))).To(Succeed())
+		g.Expect(secrets.Items).To(BeEmpty())
+		cond := barbicanCondition(barbican, "SecretsReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	})
 }
