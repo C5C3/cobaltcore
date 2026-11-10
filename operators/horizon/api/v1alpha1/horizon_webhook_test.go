@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -646,6 +647,65 @@ func TestValidate_MultiDomainDropdownRequiresChoices(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), h)
 	g.Expect(err).To(gomega.HaveOccurred())
 	g.Expect(err.Error()).To(gomega.ContainSubstring("at least one domain choice must be declared"))
+}
+
+// TestValidateMultiDomain pins the exported validator the ControlPlane webhook
+// delegates to: a nil block is valid, and each rule reports under the path the
+// caller supplies rather than under the Horizon's own spec.multiDomain.
+func TestValidateMultiDomain(t *testing.T) {
+	fldPath := field.NewPath("spec", "services", "horizon", "multiDomain")
+	tests := []struct {
+		name      string
+		md        *MultiDomainSpec
+		wantType  field.ErrorType
+		wantField string
+	}{
+		{name: "nil block", md: nil},
+		{
+			name: "enabled dropdown with distinct choices",
+			md: &MultiDomainSpec{Enabled: true, DomainDropdown: true, DomainChoices: []DomainChoice{
+				{Name: "Default", Label: "Default"},
+				{Name: "playground", Label: "Playground"},
+			}},
+		},
+		{
+			name:      "dropdown without enabled",
+			md:        &MultiDomainSpec{DomainDropdown: true, DomainChoices: []DomainChoice{{Name: "Default", Label: "Default"}}},
+			wantType:  field.ErrorTypeForbidden,
+			wantField: "spec.services.horizon.multiDomain.domainDropdown",
+		},
+		{
+			name:      "dropdown without choices",
+			md:        &MultiDomainSpec{Enabled: true, DomainDropdown: true},
+			wantType:  field.ErrorTypeRequired,
+			wantField: "spec.services.horizon.multiDomain.domainChoices",
+		},
+		{
+			name: "duplicate choice name",
+			md: &MultiDomainSpec{Enabled: true, DomainDropdown: true, DomainChoices: []DomainChoice{
+				{Name: "Default", Label: "Default"},
+				{Name: "Default", Label: "Default again"},
+			}},
+			wantType:  field.ErrorTypeDuplicate,
+			wantField: "spec.services.horizon.multiDomain.domainChoices[1].name",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			errs := ValidateMultiDomain(fldPath, tc.md)
+
+			if tc.wantField == "" {
+				g.Expect(errs).To(gomega.BeEmpty())
+				return
+			}
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(tc.wantType))
+			g.Expect(errs[0].Field).To(gomega.Equal(tc.wantField))
+		})
+	}
 }
 
 // TestValidate_WebSSOAcceptsFullyMappedBlock pins the happy path so the
