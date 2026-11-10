@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # PodChaos CR to kill a Memcached pod.
-# One-shot pod-kill action — the Deployment controller will restart the pod.
+# One-shot pod-kill action — the StatefulSet controller recreates the pod under
+# the same name.
 # Selector targets Memcached pods in the openstack namespace via standard labels.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos

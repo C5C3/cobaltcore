@@ -18,7 +18,7 @@
 #     RuntimeDefault, allowPrivilegeEscalation false, capabilities drop ALL);
 #   - the metadata.generation of neither CR moves over the next 60 s, so the
 #     operator does not rewrite what it projected;
-#   - pod openstack-db-0 and the pods of deployment/openstack-memcached are
+#   - pod openstack-db-0 and the pods of memcached/openstack-memcached are
 #     Running;
 #   - no event in the namespace carries a
 #     'violates PodSecurity "restricted:latest"' message.
@@ -315,16 +315,16 @@ spec:
           # leaves a Failed pod that restricted admitted, so the suite does not
           # demand that every pod is Running or Succeeded.
           assert_eq "pod openstack-db-0 phase" "Running" "$(field pod openstack-db-0 '{.status.phase}')"
-          MEMCACHED_SELECTOR="$(kubectl get deployment openstack-memcached -n "${CP_NS}" -o json \
-            | jq -r '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",")')"
+          # The labels memcached-operator sets on the pods of a Memcached.
+          MEMCACHED_SELECTOR="app.kubernetes.io/name=memcached,app.kubernetes.io/instance=openstack-memcached"
           memcached_pods="$(kubectl get pods -n "${CP_NS}" -l "${MEMCACHED_SELECTOR}" \
             -o jsonpath='{range .items[*]}{.metadata.name} {.status.phase}{"\n"}{end}')"
           if [ -z "${memcached_pods}" ] || grep -qv ' Running$' <<<"${memcached_pods}"; then
-            echo "ERROR: the pods of deployment/openstack-memcached are not all Running:"
+            echo "ERROR: the pods of memcached/openstack-memcached are not all Running:"
             echo "${memcached_pods:-<none>}"
             exit 1
           fi
-          echo "OK: the pods of deployment/openstack-memcached are Running: $(tr '\n' ' ' <<<"${memcached_pods}")"
+          echo "OK: the pods of memcached/openstack-memcached are Running: $(tr '\n' ' ' <<<"${memcached_pods}")"
 
           # ── Zero PodSecurity violations ───────────────────────────────────
           # A refused pod shows as a FailedCreate event on its parent with the
