@@ -15,8 +15,10 @@ package controller
 import (
 	"testing"
 
-	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	. "github.com/onsi/gomega"
+
+	"github.com/c5c3/cobaltcore/internal/common/cache"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
 
 // pinCinderConfKeystoneGolden is the cinder.conf rendered for the Keystone-backed
@@ -185,10 +187,11 @@ func TestOperatorDefaults_IsAPureFunction(t *testing.T) {
 	cinder := cinderForConfig()
 	before := cinder.DeepCopy()
 
-	defaults := operatorDefaults(cinder)
+	cacheServers := cache.ResolveServers(&cinder.Spec.Cache, nil)
+	defaults := operatorDefaults(cinder, cacheServers)
 
 	g.Expect(defaults).To(HaveKey("DEFAULT"))
-	g.Expect(operatorDefaults(cinder)).To(Equal(defaults),
+	g.Expect(operatorDefaults(cinder, cacheServers)).To(Equal(defaults),
 		"nothing in the renderer reaches the API server, so a second call over the same input repeats itself")
 	g.Expect(cinder).To(Equal(before), "operatorDefaults must not write back into the spec it reads")
 }

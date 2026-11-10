@@ -8,16 +8,20 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
@@ -559,7 +563,8 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 		PerLoggerLevels: map[string]string{"cinder": "DEBUG"},
 	}
 
-	defaults := config.InjectOsloPolicyConfig(operatorDefaults(cinder), policyFilePath)
+	defaults := config.InjectOsloPolicyConfig(
+		operatorDefaults(cinder, cache.ResolveServers(&cinder.Spec.Cache, nil)), policyFilePath)
 
 	registered := make(map[[2]string]struct{}, len(cinderv1alpha1.OwnedConfigKeys))
 	for _, owned := range cinderv1alpha1.OwnedConfigKeys {
@@ -574,4 +579,91 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 				"cinderv1alpha1.OwnedConfigKeys", section, key)
 		}
 	}
+}
+
+// TestReconcileConfig_CacheServers covers the server list cinder.conf renders
+// into [keystone_authtoken] memcached_servers: the sorted status.serverList of
+// the referenced Memcached, the Service name while there is none, a brownfield
+// list without a Memcached read, and no ConfigMap with SecretsReady=False on a
+// failed read.
+func TestReconcileConfig_CacheServers(t *testing.T) {
+	entries := []string{
+		"memcached-0.memcached.openstack.svc:11211",
+		"memcached-1.memcached.openstack.svc:11211",
+		"memcached-2.memcached.openstack.svc:11211",
+	}
+	managed := func() *cinderv1alpha1.Cinder {
+		cinder := cinderForConfig()
+		cinder.Spec.Cache = commonv1.CacheSpec{
+			Backend: "dogpile.cache.pymemcache", ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
+		}
+		return cinder
+	}
+
+	tests := []struct {
+		name     string
+		cinder   *cinderv1alpha1.Cinder
+		objs     []client.Object
+		want     string
+		wantGets int32
+	}{
+		{
+			name:     "managed with a server list renders the sorted entries",
+			cinder:   managed(),
+			objs:     []client.Object{testutil.MemcachedWithServerList(testNamespace, "memcached", entries[1], entries[0], entries[2])},
+			want:     strings.Join(entries, ","),
+			wantGets: 1,
+		},
+		{
+			name:     "managed without a Memcached renders the Service name",
+			cinder:   managed(),
+			want:     "memcached:11211",
+			wantGets: 1,
+		},
+		{
+			name:     "brownfield renders servers without a Memcached read",
+			cinder:   cinderForConfig(),
+			objs:     []client.Object{testutil.MemcachedWithServerList(testNamespace, "memcached", entries...)},
+			want:     "mc:11211",
+			wantGets: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			c := cinderFakeClientBuilder(append(tc.objs, tc.cinder)...).
+				WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, nil)).Build()
+			r := &CinderReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+			_, art, err := r.reconcileConfig(context.Background(), r.Client, tc.cinder)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			conf := renderedConfigMap(t, r, art.configMapName).Data[cinderConfDataKey]
+			g.Expect(iniSection(conf, "keystone_authtoken")).To(HaveKeyWithValue("memcached_servers", tc.want))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
+	}
+
+	t.Run("a failed Memcached read writes no ConfigMap", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var gets atomic.Int32
+		cinder := managed()
+		c := cinderFakeClientBuilder(cinder).
+			WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, context.DeadlineExceeded)).Build()
+		r := &CinderReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+		_, art, err := r.reconcileConfig(context.Background(), r.Client, cinder)
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err).To(MatchError(ContainSubstring("resolving cache servers")))
+		g.Expect(art).To(Equal(configArtifacts{}))
+
+		var cms corev1.ConfigMapList
+		g.Expect(r.List(context.Background(), &cms, client.InNamespace(testNamespace))).To(Succeed())
+		g.Expect(cms.Items).To(BeEmpty())
+		cond := cinderCondition(cinder, "SecretsReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	})
 }

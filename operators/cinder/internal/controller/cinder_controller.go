@@ -36,6 +36,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
@@ -166,6 +167,14 @@ type CinderReconciler struct {
 	// opt-in on a cluster without the VPA.
 	vpaAvailable bool
 
+	// memcachedAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and reports whether it serves the
+	// memcached.c5c3.io/v1beta1 Memcached kind. It gates the Memcached watch,
+	// which re-renders cinder.conf when status.serverList changes. Without
+	// the kind no leg is registered, and a managed cache renders the Service
+	// name until a Memcached publishes a list.
+	memcachedAvailable bool
+
 	// healthProbeCache memoizes the last successful Cinder API probe per CR
 	// (shared TTL probe cache) so a steady-state reconcile does not fire a
 	// synchronous HTTP GET on every pass. The cache's internal mutex guards
@@ -287,6 +296,9 @@ var CinderRemoteChildKinds = []schema.GroupVersionKind{
 // Required for the operator to observe the referenced MariaDB cluster's
 // Ready condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
+// Required to read status.serverList of the Memcached spec.cache.clusterRef
+// names (an uncached Get) and to re-render cinder.conf when the list changes.
+// +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch
 // In managed messaging mode the transport URL is derived from the named
 // RabbitmqCluster instead of read from a Secret, so the operator reads the
 // cluster. It reads it as an unstructured object, which the manager client
@@ -825,6 +837,19 @@ func (r *CinderReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcontro
 		setupLog.Info("VerticalPodAutoscaler CRD not installed; VPA watch disabled, verticalAutoscaling will be reported through VPAReady")
 	}
 
+	// Detect the Memcached CRD: memcached-operator is optional, so the
+	// operator must run on clusters without it, where an unconditional watch
+	// would fail the controller at Start.
+	r.memcachedAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), cache.MemcachedGVK)
+	if err != nil {
+		return err
+	}
+	if r.memcachedAvailable {
+		setupLog.Info("Memcached CRD detected; enabling the Memcached watch")
+	} else {
+		setupLog.Info("Memcached CRD not installed; Memcached watch disabled, managed caches render the Service name")
+	}
+
 	// Register the field indexers before Watches so the Secret mapper and the two
 	// satellite fan-outs can rely on them for their MatchingFields lookups. This
 	// is the single registration site for all three controllers of the operator.
@@ -911,6 +936,17 @@ func (r *CinderReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcontro
 		mariaDBToCinderMapper(local.GetClient()))
 	if err != nil {
 		return err
+	}
+
+	// Watch the Memcached referenced by spec.cache.clusterRef so a changed
+	// status.serverList re-renders cinder.conf at watch latency. No
+	// predicate: the list lives in status, which a generation predicate drops.
+	if r.memcachedAvailable {
+		b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, cache.NewMemcached(),
+			memcachedToCinderMapper(local.GetClient()))
+		if err != nil {
+			return err
+		}
 	}
 
 	// Watch both the cluster-scoped ClusterSecretStore and the namespaced
