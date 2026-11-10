@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -128,6 +129,38 @@ func TestMariaDBToKeystoneMapper_ScopedToNamespace(t *testing.T) {
 	g.Expect(reqs).To(HaveLen(1),
 		"only the Keystone in the MariaDB event's namespace must be enqueued")
 	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Namespace: "ns-a", Name: "ks-in"}))
+}
+
+// --- memcachedToKeystoneMapper ---
+
+// TestMemcachedToKeystoneMapper verifies a Memcached event enqueues exactly
+// the Keystones in its namespace whose spec.cache.clusterRef names it, and
+// leaves brownfield caches, other namespaces and other names alone.
+func TestMemcachedToKeystoneMapper(t *testing.T) {
+	withCache := func(name, namespace string, cache commonv1.CacheSpec) *keystonev1alpha1.Keystone {
+		ks := mapperManagedKeystone(name, namespace, "openstack-db")
+		ks.Spec.Cache = cache
+		return ks
+	}
+	managed := func(clusterRef string) commonv1.CacheSpec {
+		return commonv1.CacheSpec{ClusterRef: &corev1.LocalObjectReference{Name: clusterRef}}
+	}
+	c := newMapperFakeClient(
+		withCache("ks-match", "openstack", managed("mc")),
+		withCache("ks-brownfield", "openstack", commonv1.CacheSpec{Servers: []string{"mc:11211"}}),
+		withCache("ks-other-ns", "elsewhere", managed("mc")),
+		withCache("ks-other-name", "openstack", managed("other-mc")),
+	)
+	mc := cache.NewMemcached()
+	mc.SetNamespace("openstack")
+	mc.SetName("mc")
+
+	reqs := memcachedToKeystoneMapper(c)(context.Background(), mc)
+
+	g := NewGomegaWithT(t)
+	g.Expect(reqs).To(ConsistOf(reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "ks-match"},
+	}))
 }
 
 // --- storeToKeystoneMapper ---

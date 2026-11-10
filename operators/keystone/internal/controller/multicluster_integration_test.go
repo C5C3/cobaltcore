@@ -57,6 +57,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/apply"
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -78,9 +79,11 @@ import (
 // that was deregistered, the deletion of a targeted CR sweeping every child it
 // projected off the target, a child deleted on the target being put back, a
 // rotated input Secret on the target re-rendering what was derived from it, a
-// targeted CR whose HTTPRoute the management cluster could not serve, the
-// registration being scoped to named namespaces under the running CRs, and a CR
-// in a namespace that scope leaves out.
+// targeted CR whose HTTPRoute the management cluster could not serve, a changed
+// Memcached server list re-rendering a local CR and a targeted one (the latter
+// read on the target cluster), the registration being scoped to named
+// namespaces under the running CRs, and a CR in a namespace that scope leaves
+// out.
 func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -134,6 +137,12 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		// cache and not a missing Secret.
 		unscopedNamespace = "mc-unscoped"
 		unscopedKeystone  = "mc-unscoped-keystone"
+
+		// The CR that keeps its children local and reads its Memcached on the
+		// management cluster, in a namespace of its own. The targeted half of
+		// the Memcached coverage runs on the drift CR instead.
+		cacheLocalNamespace = "mc-cache-local"
+		cacheLocalKeystone  = "mc-cache-local-keystone"
 
 		// rotatedPassword replaces the "secret" the input fixture seeds, and is
 		// distinctive enough that finding it in the derived DSN cannot be an
@@ -1069,6 +1078,95 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		}, eventuallyTimeout, pollInterval).Should(Equal(deployment.ReasonVPAReady))
 	})
 
+	t.Run("a changed serverList re-renders a local CR through the local Memcached watch", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// THE ACCEPTANCE RULE of the drift subtest applies to the list change
+		// at the end: no write to the Keystone CR. Once the CR is Ready nothing
+		// requeues it, because every sub-reconciler returns a zero result and
+		// RegisterController turned the re-probe at the probe-cache expiry off.
+		// The list lives in the Memcached status, so the change is no spec
+		// change either, and only the local leg of the Memcached watch can turn
+		// it into a reconcile. Take that leg away and this subtest sits out the
+		// budget and fails.
+		multiclusterEnsureNamespace(t, ctx, mgmtClient, cacheLocalNamespace)
+		createPrerequisites(t, ctx, mgmtClient, cacheLocalNamespace)
+
+		mcKey := client.ObjectKey{Namespace: cacheLocalNamespace, Name: "mc"}
+		entries := multiclusterMemcachedEntries(mcKey, 3)
+		multiclusterCreateMemcached(t, ctx, mgmtClient, mcKey, entries)
+
+		ks := integrationBrownfieldKeystone(cacheLocalKeystone, cacheLocalNamespace)
+		ks.Spec.Cache = commonv1.CacheSpec{
+			Backend:    "dogpile.cache.pymemcache",
+			ClusterRef: &corev1.LocalObjectReference{Name: mcKey.Name},
+		}
+		g.Expect(mgmtClient.Create(ctx, ks)).To(Succeed())
+		driveFullReconciliation(t, ctx, mgmtClient, cacheLocalKeystone, cacheLocalNamespace)
+
+		childKey := client.ObjectKey{Namespace: cacheLocalNamespace, Name: cacheLocalKeystone}
+		multiclusterEventuallyRendersCacheServers(t, ctx, mgmtClient, childKey, entries)
+
+		// The replacement db-sync Job is the first thing the re-render
+		// produces, so it is what fails without the watch.
+		g.Expect(simulators.SimulateMemcachedReady(ctx, mgmtClient, mcKey, 2, entries[:2])).
+			To(Succeed(), "shrink the server list of the Memcached to two entries")
+		multiclusterCompleteReplacementJobs(t, ctx, mgmtClient, childKey)
+		multiclusterEventuallyRendersCacheServers(t, ctx, mgmtClient, childKey, entries[:2])
+	})
+
+	t.Run("a targeted CR reads its Memcached on the target cluster and follows its serverList", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// This runs on the drift CR: it projects onto the target, it is
+		// settled, and its namespace stays inside the registration scope the
+		// next subtest declares. A Memcached named "mc" sits in that namespace
+		// on both clusters with different lists. The children live on the
+		// target, so the rendered list has to be the target's; the management
+		// cluster's names pods the target cannot resolve.
+		crKey := types.NamespacedName{Name: driftKeystone, Namespace: driftNamespace}
+		childKey := client.ObjectKey{Namespace: driftNamespace, Name: driftKeystone}
+		mcKey := client.ObjectKey{Namespace: driftNamespace, Name: "mc"}
+		onTarget := multiclusterMemcachedEntries(mcKey, 3)
+		multiclusterCreateMemcached(t, ctx, targetClient, mcKey, onTarget)
+		multiclusterCreateMemcached(t, ctx, mgmtClient, mcKey,
+			[]string{fmt.Sprintf("management-0.%s.%s.svc:11211", mcKey.Name, mcKey.Namespace)})
+
+		g.Eventually(func() error {
+			ks := &keystonev1alpha1.Keystone{}
+			if err := mgmtClient.Get(ctx, crKey, ks); err != nil {
+				return err
+			}
+			ks.Spec.Cache = commonv1.CacheSpec{
+				Backend:    "dogpile.cache.pymemcache",
+				ClusterRef: &corev1.LocalObjectReference{Name: mcKey.Name},
+			}
+			return mgmtClient.Update(ctx, ks)
+		}, eventuallyTimeout, pollInterval).Should(Succeed(), "switch the drift CR to the managed cache")
+
+		multiclusterCompleteReplacementJobs(t, ctx, targetClient, childKey)
+		multiclusterEventuallyRendersCacheServers(t, ctx, targetClient, childKey, onTarget)
+
+		// The new config rolled the Deployment, which put the deployment
+		// reconciler's 10s requeue back on the CR. Settle it again, as the
+		// rotation subtest does, or that requeue would deliver the list change
+		// below with no watch involved.
+		waitForCondition(t, ctx, mgmtClient, crKey, "DeploymentReady", metav1.ConditionFalse, eventuallyTimeout)
+		rolled := &appsv1.Deployment{}
+		g.Expect(targetClient.Get(ctx, childKey, rolled)).To(Succeed())
+		g.Expect(simulators.SimulateDeploymentReady(ctx, targetClient, childKey, ptr.Deref(rolled.Spec.Replicas, 1))).
+			To(Succeed(), "simulate the rolled Deployment ready on the target cluster")
+		waitForCondition(t, ctx, mgmtClient, crKey, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+
+		// No write to the CR from here on: a status-only change on the target,
+		// which only the remote leg of the Memcached watch can turn into a
+		// reconcile.
+		g.Expect(simulators.SimulateMemcachedReady(ctx, targetClient, mcKey, 2, onTarget[:2])).
+			To(Succeed(), "shrink the server list of the target's Memcached to two entries")
+		multiclusterCompleteReplacementJobs(t, ctx, targetClient, childKey)
+		multiclusterEventuallyRendersCacheServers(t, ctx, targetClient, childKey, onTarget[:2])
+	})
+
 	t.Run("scoping the live registration re-engages the cluster with a narrowed cache", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 
@@ -1327,4 +1425,76 @@ func multiclusterWaitForUnavailable(t testing.TB, ctx context.Context, c client.
 		"SecretsReady should report the unresolvable target cluster")
 
 	return cond
+}
+
+// multiclusterMemcachedEntries returns the status.serverList memcached-operator
+// publishes for the Memcached at key with the given number of pods:
+// "<name>-<i>.<name>.<namespace>.svc:11211" in index order.
+func multiclusterMemcachedEntries(key client.ObjectKey, pods int) []string {
+	entries := make([]string, 0, pods)
+	for i := range pods {
+		entries = append(entries, fmt.Sprintf("%s-%d.%s.%s.svc:11211", key.Name, i, key.Name, key.Namespace))
+	}
+	return entries
+}
+
+// multiclusterCreateMemcached creates the Memcached at key on c and publishes
+// entries as its status.serverList, with one ready replica per entry.
+func multiclusterCreateMemcached(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey, entries []string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	mc := cache.NewMemcached()
+	mc.SetNamespace(key.Namespace)
+	mc.SetName(key.Name)
+	g.Expect(c.Create(ctx, mc)).To(Succeed(), "create Memcached %s", key)
+	g.Expect(simulators.SimulateMemcachedReady(ctx, c, key, len(entries), entries)).
+		To(Succeed(), "publish the server list of Memcached %s", key)
+}
+
+// multiclusterCompleteReplacementJobs waits on c for the db-sync and
+// schema-check Jobs of the Keystone at key to be re-created and simulates
+// their completion. A re-rendered config ConfigMap changes the Jobs' pod spec,
+// RunJob replaces the completed Jobs for it, and the Deployment rolls onto the
+// new ConfigMap only once both replacements have completed.
+func multiclusterCompleteReplacementJobs(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	for _, suffix := range []string{"db-sync", "schema-check"} {
+		jobKey := client.ObjectKey{Namespace: key.Namespace, Name: fmt.Sprintf("%s-%s", key.Name, suffix)}
+		g.Eventually(func(ig Gomega) {
+			job := &batchv1.Job{}
+			ig.Expect(c.Get(ctx, jobKey, job)).To(Succeed())
+			ig.Expect(job.Status.Conditions).To(BeEmpty(), "the Job should not be the completed one it replaces")
+		}, eventuallyTimeout, pollInterval).Should(Succeed(), "the replacement %s Job should appear", jobKey)
+		g.Expect(simulators.SimulateJobComplete(ctx, c, jobKey)).
+			To(Succeed(), "simulate the replacement %s Job complete", jobKey)
+	}
+}
+
+// multiclusterEventuallyRendersCacheServers polls c until the ConfigMap the
+// Keystone Deployment at key mounts as its "config" volume renders entries,
+// comma-joined, as [cache] memcache_servers.
+func multiclusterEventuallyRendersCacheServers(
+	t testing.TB,
+	ctx context.Context,
+	c client.Client,
+	key client.ObjectKey,
+	entries []string,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	want := strings.Join(entries, ",")
+	g.Eventually(func(ig Gomega) {
+		deploy := &appsv1.Deployment{}
+		ig.Expect(c.Get(ctx, key, deploy)).To(Succeed())
+		name := configVolumeConfigMapName(deploy)
+		ig.Expect(name).NotTo(BeEmpty(), "the Deployment should mount a config ConfigMap")
+		cm := &corev1.ConfigMap{}
+		ig.Expect(c.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: name}, cm)).To(Succeed())
+		ig.Expect(cm.Data["keystone.conf"]).To(ContainSubstring("\nmemcache_servers = " + want + "\n"))
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"the config ConfigMap Deployment %s mounts should render memcache_servers = %s", key, want)
 }

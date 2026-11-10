@@ -40,6 +40,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/gateway"
@@ -280,6 +281,14 @@ type KeystoneReconciler struct {
 	// opt-in on a cluster without the VPA.
 	vpaAvailable bool
 
+	// memcachedAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and reports whether it serves the
+	// memcached.c5c3.io/v1beta1 Memcached kind. It gates the Memcached watch,
+	// which re-renders keystone.conf when status.serverList changes. Without
+	// the kind no leg is registered, and a managed cache renders the Service
+	// name until a Memcached publishes a list.
+	memcachedAvailable bool
+
 	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a
 	// direct, uncached reader. reconcileDeployment latches the two-phase
 	// narrowing of the API Service selector on the live Service, and the
@@ -423,6 +432,9 @@ var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 // Required for the operator to observe the referenced MariaDB cluster's
 // Ready condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
+// Required to read status.serverList of the Memcached spec.cache.clusterRef
+// names (an uncached Get) and to re-render keystone.conf when the list changes.
+// +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch
 // Required so the operator can issue the per-Keystone database client
 // Certificate (Spec.Database.TLS) and have cert-manager rotate the keypair
 // Secret consumed by the Keystone workloads.
@@ -1107,6 +1119,19 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 		setupLog.Info("VerticalPodAutoscaler CRD not installed; VPA watch disabled, verticalAutoscaling will be reported through VPAReady")
 	}
 
+	// Detect the Memcached CRD: memcached-operator is optional, so the
+	// operator must run on clusters without it, where an unconditional watch
+	// would fail the controller at Start.
+	r.memcachedAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), cache.MemcachedGVK)
+	if err != nil {
+		return err
+	}
+	if r.memcachedAvailable {
+		setupLog.Info("Memcached CRD detected; enabling the Memcached watch")
+	} else {
+		setupLog.Info("Memcached CRD not installed; Memcached watch disabled, managed caches render the Service name")
+	}
+
 	// Detect cert-manager so the operator can Owns(Certificate) — surfacing
 	// later DB-client Certificate issuance failures in DatabaseTLSReady — and
 	// so reconcileDatabaseTLS knows whether a managed Certificate can exist on
@@ -1234,6 +1259,17 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 		mariaDBToKeystoneMapper(local.GetClient()))
 	if err != nil {
 		return err
+	}
+
+	// Watch the Memcached referenced by spec.cache.clusterRef so a changed
+	// status.serverList re-renders keystone.conf at watch latency. No
+	// predicate: the list lives in status, which a generation predicate drops.
+	if r.memcachedAvailable {
+		b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, cache.NewMemcached(),
+			memcachedToKeystoneMapper(local.GetClient()))
+		if err != nil {
+			return err
+		}
 	}
 
 	// Watch both the cluster-scoped ClusterSecretStore and the namespaced

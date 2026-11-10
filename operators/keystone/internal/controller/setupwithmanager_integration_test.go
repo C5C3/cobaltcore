@@ -84,4 +84,6 @@ func TestSetupWithManager_StartsManagerWithAllWatches(t *testing.T) {
 		"SetupWithManager must detect the cert-manager CRD from the RESTMapper")
 	g.Expect(r.vpaAvailable).To(BeTrue(),
 		"SetupWithManager must detect the VerticalPodAutoscaler CRD and register its Owns leg")
+	g.Expect(r.memcachedAvailable).To(BeTrue(),
+		"SetupWithManager must detect the Memcached CRD served from fake_crds/memcached-operator")
 }
