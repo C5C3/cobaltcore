@@ -267,7 +267,8 @@ packages.
 names in any INI block are rejected. Horizon setting names must be non-empty
 Python identifiers. The webhook also rejects keys the ControlPlane projects
 itself: Glance's `[keystone_authtoken] password` (always), the Horizon
-`SECRET_KEY` and every WebSSO / multi-domain setting (always, since the
+`SECRET_KEY`, every multi-domain setting (always, since they are set through
+`services.horizon.multiDomain`) and every WebSSO setting (always, since the
 ControlPlane projects those dynamically from the attached identity backends), and
 Keystone's `[federation] trusted_dashboard` only when the ControlPlane derives a
 dashboard endpoint from `services.horizon`. With no Horizon block that Keystone

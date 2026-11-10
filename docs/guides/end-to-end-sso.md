@@ -70,7 +70,8 @@ every one that reaches `Ready`, projects:
 - a **WebSSO choice** onto the Horizon child (`spec.websso`), so the login page
   gains an entry in its "Authenticate using" dropdown for each OIDC backend;
 - a **domain field** onto the Horizon child (`spec.multiDomain`), once any
-  LDAP-backed domain is in play;
+  LDAP-backed domain is in play, unless `services.horizon.multiDomain` is
+  enabled (Step 4);
 - the **trusted dashboard origin** onto the Keystone child
   (`spec.federation.trustedDashboards`), so Keystone accepts the token hand-off
   back to your dashboard. This one waits for no backend: the operator derives it
@@ -79,7 +80,8 @@ every one that reaches `Ready`, projects:
 Only `Ready` backends contribute. A backend whose Keystone-side federation
 objects are not provisioned yet never produces an SSO button that dead-ends.
 Detaching the last backend clears the block again, and the login page reverts to
-local credentials.
+local credentials. An enabled `services.horizon.multiDomain` keeps its domain
+field after the detach.
 
 The SSO choices also need both services published (Step 1). Until then the
 operator projects no `spec.websso` at all, even for a `Ready` backend, and logs
@@ -301,9 +303,33 @@ domain dropdown by `OPENSTACK_KEYSTONE_DOMAIN_CHOICES` and rejects every domain
 outside it, but the operator only sees the domains your LDAP backends declare.
 A dropdown built from those would lock out everyone in a domain it cannot
 enumerate — a SQL-backed domain you populated out-of-band, or the domain an OIDC
-backend targets. A standalone Horizon CR (one no ControlPlane projects onto) can
-still set `spec.multiDomain.domainDropdown` and `domainChoices` itself, once you
-have enumerated every domain your users live in.
+backend targets.
+
+Once you have enumerated every domain your users live in, declare the dropdown
+on the ControlPlane yourself. The same block also turns on the domain field
+with no LDAP backend attached, for users of SQL-backed domains outside
+`Default`:
+
+```yaml
+spec:
+  services:
+    horizon:
+      multiDomain:
+        enabled: true
+        domainDropdown: true
+        domainChoices:
+          - name: Default
+            label: Default
+          - name: corp
+            label: Corp directory
+```
+
+An enabled block replaces the one the LDAP backend projects, and an empty
+`defaultDomain` resolves to `Default`. A block with `enabled: false` cannot
+switch the domain field off. The dropdown admits only the listed domains, so
+list every domain your users log in from, `Default` and every LDAP-backed
+domain included. The field's rules are in the
+[`ServiceHorizonSpec` reference](../reference/c5c3/controlplane-crd.md#servicehorizonspec).
 
 LDAP authentication alone is not enough to get a scoped token: a fresh domain
 carries no role assignments, and Keystone answers `401` for a scope the user
