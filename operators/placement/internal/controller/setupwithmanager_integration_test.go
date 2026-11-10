@@ -84,6 +84,8 @@ func TestSetupWithManager_StartsManagerWithAllWatches(t *testing.T) {
 		"SetupWithManager must detect the Gateway API HTTPRoute CRD served from fake_crds/gateway-api")
 	g.Expect(r.vpaAvailable).To(BeTrue(),
 		"SetupWithManager must detect the VerticalPodAutoscaler CRD served from fake_crds/vertical-pod-autoscaler")
+	g.Expect(r.memcachedAvailable).To(BeTrue(),
+		"SetupWithManager must detect the Memcached CRD served from fake_crds/memcached-operator")
 
 	ns := createTestNamespace(t, ctx, c)
 

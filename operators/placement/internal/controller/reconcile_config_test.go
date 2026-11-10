@@ -7,7 +7,9 @@ package controller
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -19,7 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
@@ -391,7 +395,7 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 		PerLoggerLevels: map[string]string{"placement": "DEBUG"},
 	}
 
-	defaults := operatorDefaults(placement)
+	defaults := operatorDefaults(placement, cache.ResolveServers(&placement.Spec.Cache, nil))
 	defaults = config.InjectOsloPolicyConfig(defaults, policyFilePath)
 
 	registered := make(map[[2]string]struct{}, len(placementv1alpha1.OwnedConfigKeys))
@@ -491,4 +495,90 @@ func TestRenderLoggingConf(t *testing.T) {
 	}
 	g.Expect(conf).To(ContainSubstring("\nlevel = WARNING\nhandlers = stderr\n"))
 	g.Expect(strings.Count(conf, "level = NOTSET")).To(Equal(1))
+}
+
+// TestReconcileConfig_CacheServers covers the server list placement.conf
+// renders into [keystone_authtoken] memcached_servers: the sorted
+// status.serverList of the referenced Memcached, the Service name while there
+// is none, a brownfield list without a Memcached read, and no ConfigMap with
+// SecretsReady=False on a failed read.
+func TestReconcileConfig_CacheServers(t *testing.T) {
+	entries := []string{
+		"memcached-0.memcached.default.svc:11211",
+		"memcached-1.memcached.default.svc:11211",
+		"memcached-2.memcached.default.svc:11211",
+	}
+	managed := func() *placementv1alpha1.Placement {
+		placement := placementForConfig()
+		placement.Spec.Cache = commonv1.CacheSpec{
+			Backend: "dogpile.cache.pymemcache", ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
+		}
+		return placement
+	}
+
+	tests := []struct {
+		name      string
+		placement *placementv1alpha1.Placement
+		objs      []client.Object
+		want      string
+		wantGets  int32
+	}{
+		{
+			name:      "managed with a server list renders the sorted entries",
+			placement: managed(),
+			objs:      []client.Object{testutil.MemcachedWithServerList("default", "memcached", entries[1], entries[2], entries[0])},
+			want:      strings.Join(entries, ","),
+			wantGets:  1,
+		},
+		{
+			name:      "managed without a Memcached renders the Service name",
+			placement: managed(),
+			want:      "memcached:11211",
+			wantGets:  1,
+		},
+		{
+			name:      "brownfield renders servers without a Memcached read",
+			placement: placementForConfig(),
+			objs:      []client.Object{testutil.MemcachedWithServerList("default", "memcached", entries...)},
+			want:      "mc:11211",
+			wantGets:  0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			c := placementFakeClientBuilder(append(tc.objs, tc.placement)...).
+				WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, nil)).Build()
+			r := &PlacementReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
+
+			_, name, err := r.reconcileConfig(context.Background(), r.Client, tc.placement)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			g.Expect(renderedConfig(t, r, name)).To(MatchRegexp(`(?m)^memcached_servers = %s$`, regexp.QuoteMeta(tc.want)))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
+	}
+
+	t.Run("a failed Memcached read writes no ConfigMap", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var gets atomic.Int32
+		placement := managed()
+		c := placementFakeClientBuilder(placement).
+			WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, context.DeadlineExceeded)).Build()
+		r := &PlacementReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
+
+		_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err).To(MatchError(ContainSubstring("resolving cache servers")))
+		g.Expect(name).To(BeEmpty())
+
+		var cms corev1.ConfigMapList
+		g.Expect(r.List(context.Background(), &cms, client.InNamespace("default"))).To(Succeed())
+		g.Expect(cms.Items).To(BeEmpty())
+		cond := meta.FindStatusCondition(placement.Status.Conditions, "SecretsReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	})
 }

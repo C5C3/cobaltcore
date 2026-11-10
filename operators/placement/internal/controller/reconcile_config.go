@@ -68,7 +68,16 @@ func (r *PlacementReconciler) reconcileConfig(ctx context.Context, children clie
 	config.RecordExtraConfigHealth(r.Recorder, placement, &placement.Status.Conditions, placement.Generation,
 		config.FindOwnedOverrides(placement.Spec.ExtraConfig, placementv1alpha1.OwnedConfigKeys))
 
-	merged := operatorDefaults(placement)
+	// A failed read of the managed cache's server list writes no ConfigMap: the
+	// running pods keep their configuration and the next pass retries.
+	managed, err := cache.ManagedServers(ctx, children, placement.Namespace, &placement.Spec.Cache)
+	if err != nil {
+		err = fmt.Errorf("resolving cache servers: %w", err)
+		markConfigFailed(placement, err)
+		return ctrl.Result{}, "", err
+	}
+
+	merged := operatorDefaults(placement, cache.ResolveServers(&placement.Spec.Cache, managed))
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// logging.conf data-key decision below.
@@ -125,14 +134,15 @@ func (r *PlacementReconciler) reconcileConfig(ctx context.Context, children clie
 // operatorDefaults builds the operator-owned placement.conf sections from the
 // CRD spec: the static [DEFAULT]/[api]/[placement_database]/[keystone_authtoken]
 // scaffolding plus the per-logger-level and json-logging conditionals. It is a
-// pure function of the spec (no cluster access), so the registry drift-guard
-// test can call it directly to assert the rendered defaults stay in lockstep
-// with placementv1alpha1.OwnedConfigKeys.
+// pure function of the spec and cacheServers, the list cache.ResolveServers
+// returned (no cluster access), so the registry drift-guard test can call it
+// directly to assert the rendered defaults stay in lockstep with
+// placementv1alpha1.OwnedConfigKeys.
 //
 // Nothing here depends on spec.openStackRelease: placement has shipped the same
 // WSGI application and the same option names across the supported releases, so
 // two CRs differing only in their release render byte-identical files.
-func operatorDefaults(placement *placementv1alpha1.Placement) map[string]map[string]string {
+func operatorDefaults(placement *placementv1alpha1.Placement, cacheServers string) map[string]map[string]string {
 	logging := effectiveLogging(placement.Spec.Logging)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
@@ -165,7 +175,7 @@ func operatorDefaults(placement *placementv1alpha1.Placement) map[string]map[str
 			UserDomainName:     placement.Spec.ServiceUser.UserDomainName,
 			ProjectDomainName:  placement.Spec.ServiceUser.ProjectDomainName,
 			RegionName:         placement.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&placement.Spec.Cache, nil),
+			MemcachedServers:   cacheServers,
 		}),
 	}
 
