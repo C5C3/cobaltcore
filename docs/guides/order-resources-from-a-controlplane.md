@@ -530,7 +530,7 @@ vhost=$(kubectl get rabbitmqvhost workflow-bus -n workflow -o jsonpath='{.status
 user=$(kubectl get secret workflow-bus-credentials -n workflow -o jsonpath='{.data.username}' | base64 -d)
 password=$(kubectl get secret workflow-bus-credentials -n workflow -o jsonpath='{.data.password}' | base64 -d)
 kubectl exec -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
-  rabbitmqctl authenticate_user "$user" "$password"
+  rabbitmqctl authenticate_user -- "$user" "$password"
 kubectl exec -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
   rabbitmqctl list_user_permissions "$user"
 ```
