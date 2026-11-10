@@ -7,6 +7,7 @@ package v1alpha1
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -410,11 +411,12 @@ func validateExtraConfigOwnership(cp, old *ControlPlane) (admission.Warnings, fi
 			// Every Rejected Horizon setting (SECRET_KEY and the websso /
 			// multi-domain settings) is forbidden UNCONDITIONALLY — stricter than
 			// the child webhook, which gates the websso/multiDomain collisions on
-			// the typed blocks being present. The ControlPlane projects
-			// services.websso / services.multiDomain dynamically from the attached
-			// identity backends, so whether a collision materializes is not
-			// decidable at admission; admitting the key would plant a runtime
-			// HorizonProjectionRejected wedge.
+			// the typed blocks being present. The ControlPlane projects the
+			// child's websso block from the attached identity backends, and its
+			// multiDomain block from services.horizon.multiDomain or, while that
+			// is unset or disabled, from the attached LDAP backends, so whether a
+			// collision materializes is not decidable at admission; admitting the
+			// key would plant a runtime HorizonProjectionRejected wedge.
 			if owned.Rejected {
 				errs = append(errs, field.Forbidden(settingPath, rejectedHorizonMessage(owned)))
 				continue
@@ -523,15 +525,22 @@ func novaSiblingSectionOwner(cp *ControlPlane, section string) (string, bool) {
 }
 
 // rejectedHorizonMessage renders the Forbidden detail for a Rejected Horizon
-// setting: SECRET_KEY is managed via services.horizon.secretKeyRef, and the
-// websso / multi-domain settings are owned by the identity-backend projection.
+// setting: SECRET_KEY is managed via services.horizon.secretKeyRef, the
+// multi-domain settings via services.horizon.multiDomain, and the websso
+// settings are owned by the identity-backend projection.
 func rejectedHorizonMessage(owned config.OwnedKey) string {
 	if owned.Key == "SECRET_KEY" {
 		return "SECRET_KEY is managed via services.horizon.secretKeyRef and must not be set in extraConfig"
 	}
+	if slices.Contains(horizonv1alpha1.MultiDomainSettingNames, owned.Key) {
+		return fmt.Sprintf("%s is managed via services.horizon.multiDomain and must not be set in extraConfig "+
+			"(the ControlPlane projects the Horizon child's multiDomain block from that field, or from the "+
+			"attached LDAP identity backends while it is unset or disabled, so the override cannot be "+
+			"reconciled)", owned.Key)
+	}
 	return fmt.Sprintf("%s is owned by the ControlPlane's identity-backend projection and must not be set in "+
-		"extraConfig (services.websso and services.multiDomain are projected dynamically from the attached "+
-		"identity backends, so the override cannot be reconciled)", owned.Key)
+		"extraConfig (the Horizon child's websso block is projected dynamically from the attached identity "+
+		"backends, so the override cannot be reconciled)", owned.Key)
 }
 
 // carriedRejectedINIWarning renders the admission warning for a Rejected INI key
