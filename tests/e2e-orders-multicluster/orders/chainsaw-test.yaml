@@ -611,11 +611,13 @@ spec:
             "connected: True" "the delivered bus credentials connect"
           # The broker's own answer for the delivered user. Neither value is
           # printed, and the password goes in on stdin, which keeps it out of
-          # argv and the API server's audit log.
+          # argv and the API server's audit log. The "--" ends rabbitmqctl's
+          # options: the password is base64url, and one that starts with "-"
+          # is otherwise read as an option and rejected.
           BUS_USER="$(base64 -d <<<"$(ON=target secret_key "${BUS_SECRET}" "${TENANT_NS}" username)")"
           BUS_PASSWORD="$(base64 -d <<<"$(ON=target secret_key "${BUS_SECRET}" "${TENANT_NS}" password)")"
           if ! printf '%s\n' "${BUS_PASSWORD}" | kubectl exec -i -n "${CP_NS}" "${BUS}-server-0" -c rabbitmq -- \
-            sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user "$1" "$pw"' _ "${BUS_USER}" >/dev/null 2>&1; then
+            sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user -- "$1" "$pw"' _ "${BUS_USER}" >/dev/null 2>&1; then
             echo "ERROR: the broker does not authenticate the delivered user"; exit 1
           fi
           unset BUS_USER BUS_PASSWORD

@@ -479,9 +479,11 @@ spec:
             kubectl exec -n "${CP_NS}" "${BUS}-server-0" -c rabbitmq -- rabbitmqctl "$@"
           }
           # authenticates reports whether the broker accepts the user and
-          # password. Nothing of either is printed.
+          # password. Nothing of either is printed. The "--" ends rabbitmqctl's
+          # options: the password is base64url, and one that starts with "-"
+          # is otherwise read as an option and rejected.
           authenticates() { # <username> <password>
-            broker_ctl authenticate_user "$1" "$2" >/dev/null 2>&1
+            broker_ctl authenticate_user -- "$1" "$2" >/dev/null 2>&1
           }
           # The vhost names the broker lists, one per line.
           broker_vhosts() {

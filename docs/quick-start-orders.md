@@ -521,7 +521,7 @@ kubectl wait --for=condition=Ready rabbitmqvhost/workflow-bus -n workflow --time
 user=$(kubectl get secret workflow-bus-credentials -n workflow -o jsonpath='{.data.username}' | base64 -d)
 password=$(kubectl get secret workflow-bus-credentials -n workflow -o jsonpath='{.data.password}' | base64 -d)
 printf '%s\n' "$password" | kubectl exec -i -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
-  sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user "$1" "$pw"' _ "$user"
+  sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user -- "$1" "$pw"' _ "$user"
 ```
 
 The broker reports `Success`. The password goes in on standard input, because
@@ -1008,7 +1008,7 @@ user=$(kubectl --context kind-cobaltcore-target get secret workflow-bus-credenti
 password=$(kubectl --context kind-cobaltcore-target get secret workflow-bus-credentials -n workflow \
   -o jsonpath='{.data.password}' | base64 -d)
 printf '%s\n' "$password" | kubectl exec -i -n openstack openstack-rabbitmq-server-0 -c rabbitmq -- \
-  sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user "$1" "$pw"' _ "$user"
+  sh -c 'IFS= read -r pw; rabbitmqctl authenticate_user -- "$1" "$pw"' _ "$user"
 ```
 
 ### Step 10: Tear Part 2 down {#tc-teardown}
