@@ -1619,6 +1619,30 @@ condition using these typed reasons:
 | `clusterRef` | `*corev1.LocalObjectReference` | No | Reference to a Memcached CR (managed mode). |
 | `backend` | `string` | Yes | Cache backend (e.g., `dogpile.cache.pymemcache`). |
 | `servers` | `[]string` | No | Cache server endpoints (brownfield mode). |
+| `replicas` | `int32` | No | Number of Memcached pods (managed mode, minimum 1). The ControlPlane sizes the Memcached it owns with it. The service operators ignore it and read the server list from the Memcached status. |
+
+In managed mode a service renders the `status.serverList` of the Memcached
+that `clusterRef` names, read on the cluster the service's children are
+written to. memcached-operator 0.5.0 and later publish one
+`<pod>.<name>.<namespace>.svc:11211` entry per pod. The operator checks each
+entry, sorts and deduplicates the list, and renders it comma-joined, so
+pymemcache and keystonemiddleware hash each key to one pod and every service
+lists the pods in one order. While the Memcached is missing, its kind is not
+served, or its list is empty, the service renders `<clusterRef.name>:11211`
+instead and does not wait for the cache. The operators watch the Memcached:
+the first list it publishes, and every later change of its replica count,
+rolls each service that references it once.
+
+In brownfield mode `servers` needs one entry per Memcached server. A name that
+resolves to several servers is one server to the clients, which open
+connections to whichever address it resolves to, so each server holds its own
+copy of an entry and an invalidation reaches one of them.
+
+The per-pod list keeps the clients consistent while every cache pod answers.
+While a cache pod fails or comes back, each pymemcache client tracks dead
+servers on its own and drops a `set` or `delete` it cannot deliver, so a
+revoked token can keep validating on some requests until its cache entry
+expires (`[cache] expiration_time`, 600 s by default).
 
 > **Warning — one memcached per Keystone.** Keystone instances backed by
 > *different* databases must not share a memcached: oslo.cache/dogpile keys

@@ -1400,8 +1400,9 @@ and asserts that:
 - the `metadata.generation` of neither CR moves over the next 60 s, so the
   backing operators and the c5c3-operator do not take turns rewriting the
   contexts it projected;
-- pod `openstack-db-0` and the pods of `deployment/openstack-memcached` are
-  `Running`;
+- pod `openstack-db-0` and the pods labelled
+  `app.kubernetes.io/name=memcached,app.kubernetes.io/instance=openstack-memcached`
+  are `Running`;
 - no event in the namespace carries `violates PodSecurity "restricted:latest"`.
 
 The suite does not require every pod to be `Running` or `Succeeded`: a

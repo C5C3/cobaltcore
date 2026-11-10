@@ -23,7 +23,7 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **59 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **60 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
@@ -113,6 +113,7 @@ Deployment rollout, bootstrap Job).
 | [config-pruning](#config-pruning) | `keystone-pruning` | Immutable ConfigMap pruning — stale ConfigMaps removed after multiple config changes, retain+1 cap, Ready=True preserved |
 | [events](#events) | `keystone-events` | Kubernetes event emission for BootstrapComplete, DatabaseSynced, FernetKeysGenerated, CredentialKeysGenerated |
 | [graceful-shutdown](#graceful-shutdown) | `keystone-graceful-shutdown` | Deployment configured with `terminationGracePeriodSeconds=30`, preStop sleep hook, startup probe; an in-flight slow token request answers 401 across SIGTERM and uWSGI exits with `goodbye to uWSGI.` |
+| [cache-ring](#cache-ring) | `keystone-cache-ring` | Three Keystone API pods on a three-pod Memcached: `memcache_servers` lists the per-pod `status.serverList` entries in index order, a revoked token answers 404 on 24 of 24 validations at once and 20 s later, a cache pod restart rolls nothing, and a scale-down to two cache pods mounts the two-entry list within 120 s |
 | [healthcheck](#healthcheck) | `keystone-healthcheck` | Post-Deployment HTTP health check gates `KeystoneAPIReady=True` with reason `APIHealthy` before aggregate `Ready` flips |
 | [policy-validation](#policy-validation) | `keystone-policy-validation` | `PolicyValidReady` gates the Deployment; validation Job lifecycle on `policyOverrides` add/remove |
 | [priority-class](#priority-class) | `keystone-pc` | `spec.deployment.priorityClassName` propagation: unset → empty, set → applied to the Deployment, the db-sync Job and the fernet-rotate CronJob, `spec.jobs.priorityClassName: ""` → removed from the Jobs only, patched empty → removed |
@@ -692,6 +693,52 @@ finishes it before it exits
 | 4 | Drain an in-flight token request | `script` (5m) | Picks a Ready API pod that is not terminating and follows its `keystone` log. The Job `keystone-graceful-shutdown-slow-client` connects to the pod IP, sends the headers of `POST /v3/auth/tokens` with `Content-Length: 400`, then the body for the unknown user `graceful-shutdown-probe` at 20 bytes per second. Once the Job logs `HEADERS-SENT`, the step deletes the pod, so SIGTERM arrives about 13 s before the body ends. The Job must log `STATUS HTTP/1.1 401`; the pod log must contain `graceful shutdown triggered`, a 401 line for the token request after it, and `goodbye to uWSGI.`, and no `binary reloading uWSGI`. Fails at once with `FAIL: no keystone-graceful-shutdown API pod` when no pod matches. A step `cleanup` deletes the Job |
 
 **Fixtures:** `00-keystone-cr.yaml`; step 4 applies its Job inline.
+
+---
+
+### cache-ring
+
+**File:** `tests/e2e/keystone/cache-ring/chainsaw-test.yaml`
+
+**Purpose:** Proves that Keystone renders the per-pod server list of its
+Memcached and that a token revocation then reaches every Keystone process
+([CacheSpec](../keystone/keystone-crd.md#cachespec)). With one Service name in
+`memcache_servers`, each process spreads its connections over the cache pods,
+and a revoke invalidates the entry on one of them only. Every request of steps
+3 to 6 runs inside a Keystone API pod; the admin password crosses into the pod
+over stdin, and the tokens never leave it.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | The Memcached publishes one entry per pod | `apply` + `assert` (5m) + `script` (2m) | Applies `00-memcached.yaml` (Memcached `keystone-cache-ring-memcached`, three replicas), asserts `Ready=True`, and polls until `status.serverList` is the three `keystone-cache-ring-memcached-<i>.keystone-cache-ring-memcached.openstack.svc:11211` entries in index order |
+| 2 | Keystone Ready | `apply` + `assert` (5m) | Applies `01-keystone-cr.yaml` (Keystone `keystone-cache-ring`, three API replicas, database `keystone_cache_ring`) and asserts `Ready=True/AllReady` |
+| 3 | keystone.conf renders the three entries | `script` (30s) | Reads the ConfigMap the Deployment mounts as volume `config`; `memcache_servers` must equal the three entries, comma-joined in index order |
+| 4 | A revoked token fails on every Keystone process | `script` (3m) | A Python program in one API pod issues the admin token A and the token T, then sends `GET /v3/auth/tokens` with A and T eight times to each API pod IP on port 5000 (24 times `200`). `DELETE /v3/auth/tokens` must answer `204`; the 24 validations then answer `404` at once and again after 20 s |
+| 5 | A cache pod restart keeps the config | `script` (4m) | Records the mounted ConfigMap name and the Deployment generation, deletes pod `keystone-cache-ring-memcached-1`, waits until a pod of that name with a new UID is back, the Memcached is `Ready` and three cache pods are `Ready`, waits 30 s, and requires both values unchanged |
+| 6 | A scale-down mounts the shorter list | `script` (3m) + `assert` (5m) | Patches the Memcached to `replicas: 2`; within 120 s the mounted ConfigMap must render the entries of index 0 and 1, and the Keystone must report `Ready=True` |
+
+**Fixtures:** `00-memcached.yaml`, `01-keystone-cr.yaml`.
+
+**Design notes:**
+
+- The suite brings its own Memcached. kind runs `openstack-memcached` with one
+  replica, and Keystone's cache keys carry no instance identity, so a Keystone
+  on a shared cache reads the entries of every other Keystone on it (see the
+  warning under [CacheSpec](../keystone/keystone-crd.md#cachespec)).
+- The Memcached is named `keystone-cache-ring-memcached`. memcached-operator
+  names its headless Service after the Memcached, and the keystone-operator
+  names the API Service after the Keystone, so one name for both would claim
+  one Service.
+- Step 5 holds the consumer side of the list contract: memcached-operator
+  keeps a restarted pod's entry, so a cache pod restart must not roll the
+  API pods.
+- Step 6 proves the re-render and `Ready=True`, not the Memcached watch. The
+  health re-probe requeues a Ready Keystone every 30 s and every pass reads the
+  list, so the 120 s bound holds without the watch. The keystone-operator's
+  multicluster envtest (`TestIntegration_Multicluster_KeystoneTargetCluster`)
+  proves the watch with the re-probe turned off.
 
 ---
 
@@ -1330,6 +1377,10 @@ tests/e2e/keystone/
 │   ├── chainsaw-test.yaml              External database mode
 │   ├── 00-brownfield-db-setup.yaml     External database setup
 │   └── 00-keystone-cr.yaml             Keystone CR with database.host
+├── cache-ring/
+│   ├── chainsaw-test.yaml              Token revocation across a three-pod cache
+│   ├── 00-memcached.yaml               Memcached with three replicas
+│   └── 01-keystone-cr.yaml             Keystone CR with three API replicas
 ├── concurrent-cr-conflicts/
 │   ├── chainsaw-test.yaml              Concurrent CR conflict handling
 │   ├── 00-keystone-cr-a.yaml           Keystone CR fixture A (keystone-concurrent-a)
