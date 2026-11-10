@@ -5587,6 +5587,21 @@ func TestValidateCreate_ForbidsHorizonRejectedSettings(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.extraConfig[SECRET_KEY]"))
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.extraConfig[WEBSSO_ENABLED]"))
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.extraConfig[OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT]"))
+	g.Expect(err.Error()).To(ContainSubstring("managed via services.horizon.multiDomain"))
+	g.Expect(err.Error()).To(ContainSubstring("identity-backend projection"))
+
+	// The WebSSO denial alone names the identity-backend projection and no
+	// longer mentions multi-domain, which services.horizon.multiDomain owns.
+	websso := validControlPlane()
+	websso.Spec.Services.Horizon = &ServiceHorizonSpec{
+		ExtraConfig: map[string]apiextensionsv1.JSON{"WEBSSO_ENABLED": jsonSetting("true")},
+	}
+	_, err = w.ValidateCreate(context.Background(), websso)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("identity-backend projection"))
+	g.Expect(err.Error()).To(ContainSubstring("websso block"))
+	g.Expect(strings.ToLower(err.Error())).NotTo(ContainSubstring("multidomain"))
+	g.Expect(strings.ToLower(err.Error())).NotTo(ContainSubstring("multi-domain"))
 }
 
 // TestValidateCreate_RejectsMalformedExtraConfigShape pins the shape checks on
