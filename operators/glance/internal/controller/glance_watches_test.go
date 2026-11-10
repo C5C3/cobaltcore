@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
@@ -140,4 +142,35 @@ func TestGlanceToGlanceBackendsMapper_ListErrorReturnsNil(t *testing.T) {
 
 	reqs := glanceToGlanceBackendsMapper(c)(context.Background(), testGlance())
 	g.Expect(reqs).To(BeEmpty(), "a List error logs and returns nil")
+}
+
+// TestMemcachedToGlanceMapper verifies a Memcached event enqueues exactly the
+// Glance CRs in its namespace whose spec.cache.clusterRef names it, and leaves
+// brownfield caches, other namespaces and other names alone.
+func TestMemcachedToGlanceMapper(t *testing.T) {
+	withCache := func(name, namespace string, spec commonv1.CacheSpec) *glancev1alpha1.Glance {
+		cr := testGlance()
+		cr.Name, cr.Namespace = name, namespace
+		cr.Spec.Cache = spec
+		return cr
+	}
+	managed := func(name string) commonv1.CacheSpec {
+		return commonv1.CacheSpec{ClusterRef: &corev1.LocalObjectReference{Name: name}}
+	}
+	c := glanceFakeClientBuilder(
+		withCache("match", "default", managed("mc")),
+		withCache("brownfield", "default", commonv1.CacheSpec{Servers: []string{"mc:11211"}}),
+		withCache("other-ns", "elsewhere", managed("mc")),
+		withCache("other-name", "default", managed("other-mc")),
+	).Build()
+	mc := cache.NewMemcached()
+	mc.SetNamespace("default")
+	mc.SetName("mc")
+
+	reqs := memcachedToGlanceMapper(c)(context.Background(), mc)
+
+	g := NewGomegaWithT(t)
+	g.Expect(reqs).To(ConsistOf(reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "match"},
+	}))
 }

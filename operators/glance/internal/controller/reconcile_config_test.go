@@ -8,6 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,7 +24,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
@@ -713,7 +718,7 @@ func TestOperatorDefaults_ImportFilteringRendering(t *testing.T) {
 		DisallowedSchemes: []string{"http"},
 	}
 
-	section := operatorDefaults(glance, validProjection())["import_filtering_opts"]
+	section := operatorDefaults(glance, validProjection(), cache.ResolveServers(&glance.Spec.Cache, nil))["import_filtering_opts"]
 	g.Expect(section).To(HaveKeyWithValue("allowed_hosts", "[mirror.example.com,images.example.org]"))
 	g.Expect(section).To(HaveKeyWithValue("allowed_ports", "[80,443]"))
 	g.Expect(section).To(HaveKeyWithValue("disallowed_schemes", "[http]"))
@@ -773,7 +778,7 @@ func TestOperatorDefaults_ImportFilteringIsBracketBounded(t *testing.T) {
 			glance := glanceForConfig()
 			glance.Spec.ImportFiltering = spec
 
-			section := operatorDefaults(glance, validProjection())["import_filtering_opts"]
+			section := operatorDefaults(glance, validProjection(), cache.ResolveServers(&glance.Spec.Cache, nil))["import_filtering_opts"]
 			for _, key := range keys {
 				value, ok := section[key]
 				g.Expect(ok).To(BeTrue(), "[import_filtering_opts] %s must always render", key)
@@ -942,7 +947,7 @@ func TestOperatorDefaults_ImportPluginsRendering(t *testing.T) {
 	defaultsFor := func(spec *glancev1alpha1.ImportPluginsSpec) map[string]map[string]string {
 		glance := glanceForConfig()
 		glance.Spec.ImportPlugins = spec
-		return operatorDefaults(glance, validProjection())
+		return operatorDefaults(glance, validProjection(), cache.ResolveServers(&glance.Spec.Cache, nil))
 	}
 	injectProperties := map[string]string{"hw_disk_bus": "scsi"}
 
@@ -1088,7 +1093,7 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 				Properties: map[string]string{"hw_disk_bus": "scsi"},
 			},
 		}
-		defaults := operatorDefaults(glance, validProjection())
+		defaults := operatorDefaults(glance, validProjection(), cache.ResolveServers(&glance.Spec.Cache, nil))
 		return config.InjectOsloPolicyConfig(defaults, policyFilePath)
 	}
 
@@ -1255,7 +1260,7 @@ func TestOperatorDefaults_ImageCacheKeys(t *testing.T) {
 		glance := glanceForConfig()
 		glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
 
-		section := operatorDefaults(glance, validProjection())["DEFAULT"]
+		section := operatorDefaults(glance, validProjection(), cache.ResolveServers(&glance.Spec.Cache, nil))["DEFAULT"]
 		g.Expect(section).To(HaveKeyWithValue("image_cache_dir", "/var/lib/glance/image-cache"))
 		// sqlite, not glance's default centralized_db, which would key the cache
 		// state in the database per worker_self_reference_url and strand a dead
@@ -1271,7 +1276,7 @@ func TestOperatorDefaults_ImageCacheKeys(t *testing.T) {
 		glance := glanceForConfig()
 		glance.Spec.ImageCache = nil
 
-		section := operatorDefaults(glance, validProjection())["DEFAULT"]
+		section := operatorDefaults(glance, validProjection(), cache.ResolveServers(&glance.Spec.Cache, nil))["DEFAULT"]
 		g.Expect(section).NotTo(HaveKey("image_cache_dir"))
 		g.Expect(section).NotTo(HaveKey("image_cache_driver"))
 		g.Expect(section).NotTo(HaveKey("image_cache_max_size"))
@@ -1395,6 +1400,92 @@ func TestRenderPasteINI_DuplicateCacheName(t *testing.T) {
 
 		// The Config→SecretsReady mapping: a render failure must not leave the
 		// aggregate Ready stale-True at the new generation.
+		cond := meta.FindStatusCondition(glance.Status.Conditions, "SecretsReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	})
+}
+
+// TestReconcileConfig_CacheServers covers the server list glance-api.conf
+// renders into [keystone_authtoken] memcached_servers: the sorted
+// status.serverList of the referenced Memcached, the Service name while there
+// is none, a brownfield list without a Memcached read, and no ConfigMap with
+// SecretsReady=False on a failed read.
+func TestReconcileConfig_CacheServers(t *testing.T) {
+	entries := []string{
+		"memcached-0.memcached.default.svc:11211",
+		"memcached-1.memcached.default.svc:11211",
+		"memcached-2.memcached.default.svc:11211",
+	}
+	managed := func() *glancev1alpha1.Glance {
+		glance := glanceForConfig()
+		glance.Spec.Cache = commonv1.CacheSpec{
+			Backend: "dogpile.cache.pymemcache", ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
+		}
+		return glance
+	}
+
+	tests := []struct {
+		name     string
+		glance   *glancev1alpha1.Glance
+		objs     []client.Object
+		want     string
+		wantGets int32
+	}{
+		{
+			name:     "managed with a server list renders the sorted entries",
+			glance:   managed(),
+			objs:     []client.Object{testutil.MemcachedWithServerList("default", "memcached", entries[2], entries[0], entries[1])},
+			want:     strings.Join(entries, ","),
+			wantGets: 1,
+		},
+		{
+			name:     "managed without a Memcached renders the Service name",
+			glance:   managed(),
+			want:     "memcached:11211",
+			wantGets: 1,
+		},
+		{
+			name:     "brownfield renders servers without a Memcached read",
+			glance:   glanceForConfig(),
+			objs:     []client.Object{testutil.MemcachedWithServerList("default", "memcached", entries...)},
+			want:     "mc:11211",
+			wantGets: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			c := glanceFakeClientBuilder(append(tc.objs, tc.glance)...).
+				WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, nil)).Build()
+			r := &GlanceReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+			_, art, err := r.reconcileConfig(context.Background(), r.Client, tc.glance, validProjection())
+			g.Expect(err).NotTo(HaveOccurred())
+
+			g.Expect(renderedConfig(t, r, art)).To(MatchRegexp(`(?m)^memcached_servers = %s$`, regexp.QuoteMeta(tc.want)))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
+	}
+
+	t.Run("a failed Memcached read writes no ConfigMap", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var gets atomic.Int32
+		glance := managed()
+		c := glanceFakeClientBuilder(glance).
+			WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, context.DeadlineExceeded)).Build()
+		r := &GlanceReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+		_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err).To(MatchError(ContainSubstring("resolving cache servers")))
+		g.Expect(art).To(Equal(configArtifacts{}))
+
+		var cms corev1.ConfigMapList
+		g.Expect(r.List(context.Background(), &cms, client.InNamespace("default"))).To(Succeed())
+		g.Expect(cms.Items).To(BeEmpty())
 		cond := meta.FindStatusCondition(glance.Status.Conditions, "SecretsReady")
 		g.Expect(cond).NotTo(BeNil())
 		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
