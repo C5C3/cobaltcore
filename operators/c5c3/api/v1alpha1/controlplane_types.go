@@ -15,6 +15,7 @@ import (
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 // +kubebuilder:object:root=true
@@ -929,6 +930,34 @@ type ServiceHorizonSpec struct {
 	// services — never applies to it.
 	// +optional
 	ExtraConfig map[string]apiextensionsv1.JSON `json:"extraConfig,omitempty"`
+
+	// Design note, kept out of the CRD description by the blank line below:
+	// MultiDomain is typed as the horizon module's own MultiDomainSpec (see the
+	// DECISION AMENDED above), as ImportFiltering is for Glance. The bounds and
+	// the CEL rules stay single-source, and the webhook validates through
+	// horizonv1alpha1.ValidateMultiDomain, not a copy. It needs no External-mode
+	// forbid-rule: the validating webhook forbids services.horizon entirely in
+	// External mode.
+
+	// MultiDomain turns on the login form's domain field, or a domain dropdown,
+	// so users of Keystone domains other than "Default" can log in to the
+	// dashboard, local SQL-backed domains included.
+	//
+	// Only an ENABLED block is projected: the reconciler writes it as written
+	// onto the Horizon child's spec.multiDomain, with an empty defaultDomain
+	// resolved to "Default", and it then replaces the block the reconciler
+	// derives from Ready LDAP identity backends. An absent block, or one with
+	// enabled false, leaves that LDAP derivation in place and cannot switch the
+	// domain field off.
+	//
+	// A dropdown restricts logins to the listed domains, so domainChoices must
+	// list every domain users log in from, "Default" and every LDAP-backed
+	// domain included.
+	//
+	// The schema is copied from the horizon-operator's CRD, so roll the
+	// c5c3-operator and horizon-operator charts together.
+	// +optional
+	MultiDomain *horizonv1alpha1.MultiDomainSpec `json:"multiDomain,omitempty"`
 
 	// DedicatedBackingServices opts the dashboard OUT of the ControlPlane-wide
 	// shared cache declared in spec.infrastructure and gives it a cache of its

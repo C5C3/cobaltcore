@@ -11,7 +11,8 @@ package v1alpha1
 import (
 	"github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanapiv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
-	apiv1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	glanceapiv1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	apiv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -2958,22 +2959,22 @@ func (in *ServiceGlanceSpec) DeepCopyInto(out *ServiceGlanceSpec) {
 	}
 	if in.ImportFiltering != nil {
 		in, out := &in.ImportFiltering, &out.ImportFiltering
-		*out = new(apiv1alpha1.ImportFilteringSpec)
+		*out = new(glanceapiv1alpha1.ImportFilteringSpec)
 		(*in).DeepCopyInto(*out)
 	}
 	if in.Staging != nil {
 		in, out := &in.Staging, &out.Staging
-		*out = new(apiv1alpha1.StagingSpec)
+		*out = new(glanceapiv1alpha1.StagingSpec)
 		(*in).DeepCopyInto(*out)
 	}
 	if in.ImageCache != nil {
 		in, out := &in.ImageCache, &out.ImageCache
-		*out = new(apiv1alpha1.ImageCacheSpec)
+		*out = new(glanceapiv1alpha1.ImageCacheSpec)
 		(*in).DeepCopyInto(*out)
 	}
 	if in.ImportPlugins != nil {
 		in, out := &in.ImportPlugins, &out.ImportPlugins
-		*out = new(apiv1alpha1.ImportPluginsSpec)
+		*out = new(glanceapiv1alpha1.ImportPluginsSpec)
 		(*in).DeepCopyInto(*out)
 	}
 	if in.ExtraConfig != nil {
@@ -3045,6 +3046,11 @@ func (in *ServiceHorizonSpec) DeepCopyInto(out *ServiceHorizonSpec) {
 		for key, val := range *in {
 			(*out)[key] = *val.DeepCopy()
 		}
+	}
+	if in.MultiDomain != nil {
+		in, out := &in.MultiDomain, &out.MultiDomain
+		*out = new(apiv1alpha1.MultiDomainSpec)
+		(*in).DeepCopyInto(*out)
 	}
 	if in.DedicatedBackingServices != nil {
 		in, out := &in.DedicatedBackingServices, &out.DedicatedBackingServices

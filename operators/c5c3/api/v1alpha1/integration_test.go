@@ -27,6 +27,7 @@ import (
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/operators/c5c3/internal/testutil"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 // --- Helpers ---
@@ -385,6 +386,50 @@ func TestIntegration_CRD_CELOnly_ControlPlaneGlanceBackends(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cp := stamp(glanceControlPlane(), "cp", newNamespace(t, ctx, c, "celonly-glance-"))
 			tc.mutate(cp.Spec.Services.Glance)
+			expectAdmission(t, c.Create(ctx, cp), tc.wantSub)
+		})
+	}
+}
+
+// TestIntegration_CRD_CELOnly_ControlPlaneHorizonMultiDomain pins the two CEL
+// rules of the horizon MultiDomainSpec that controller-gen copies into the
+// ControlPlane CRD on services.horizon.multiDomain. It mirrors the four cases
+// of the Horizon twin, TestIntegration_CRD_CELOnly_MultiDomain.
+//
+// Rules: horizon_types.go:395, 396
+func TestIntegration_CRD_CELOnly_ControlPlaneHorizonMultiDomain(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	defaultDomain := []horizonv1alpha1.DomainChoice{{Name: "Default", Label: "Default"}}
+
+	for _, tc := range []struct {
+		name    string
+		md      *horizonv1alpha1.MultiDomainSpec
+		wantSub string // empty: the object must be admitted
+	}{
+		{
+			name:    "dropdown-without-enabled",
+			md:      &horizonv1alpha1.MultiDomainSpec{Enabled: false, DomainDropdown: true, DomainChoices: defaultDomain},
+			wantSub: "multiDomain.domainDropdown requires multiDomain.enabled",
+		},
+		{
+			name:    "dropdown-without-choices",
+			md:      &horizonv1alpha1.MultiDomainSpec{Enabled: true, DomainDropdown: true},
+			wantSub: "multiDomain.domainChoices must contain at least one choice when multiDomain.domainDropdown is true",
+		},
+		{
+			name: "dropdown-with-a-choice",
+			md:   &horizonv1alpha1.MultiDomainSpec{Enabled: true, DomainDropdown: true, DomainChoices: defaultDomain},
+		},
+		{
+			name: "enabled-without-dropdown",
+			md:   &horizonv1alpha1.MultiDomainSpec{Enabled: true},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := stamp(validControlPlane(), "cp", newNamespace(t, ctx, c, "celonly-hz-multidomain-"))
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{MultiDomain: tc.md}
 			expectAdmission(t, c.Create(ctx, cp), tc.wantSub)
 		})
 	}
