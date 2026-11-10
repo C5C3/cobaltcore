@@ -155,9 +155,19 @@ func (r *CinderReconciler) reconcileConfig(ctx context.Context, children client.
 	config.RecordExtraConfigHealth(r.Recorder, cinder, &cinder.Status.Conditions, cinder.Generation,
 		config.FindOwnedOverrides(cinder.Spec.ExtraConfig, cinderv1alpha1.OwnedConfigKeys))
 
+	// A failed read of the managed cache's server list writes no ConfigMap: the
+	// running pods keep their configuration and the next pass retries.
+	managed, err := cache.ManagedServers(ctx, children, cinder.Namespace, &cinder.Spec.Cache)
+	if err != nil {
+		err = fmt.Errorf("resolving cache servers: %w", err)
+		markConfigFailed(cinder, err)
+		return ctrl.Result{}, configArtifacts{}, err
+	}
+
 	// extraConfig overrides the operator defaults (the true escape hatch); the
 	// ownership guard above reports what it took over.
-	merged := config.MergeDefaults(cinder.Spec.ExtraConfig, operatorDefaults(cinder))
+	merged := config.MergeDefaults(cinder.Spec.ExtraConfig,
+		operatorDefaults(cinder, cache.ResolveServers(&cinder.Spec.Cache, managed)))
 
 	// PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
 	var policyYAML string
@@ -225,15 +235,15 @@ func (r *CinderReconciler) reconcileConfig(ctx context.Context, children client.
 // operatorDefaults builds the operator-owned cinder.conf sections from the CRD
 // spec: the static [DEFAULT]/[database]/[oslo_*] scaffolding plus the Keystone,
 // key-manager, image-service and logging conditionals. It is a pure function of
-// the spec (no cluster access), so the registry drift-guard test can call it
-// directly to assert the rendered defaults stay in lockstep with
-// cinderv1alpha1.OwnedConfigKeys.
+// the spec and cacheServers, the list cache.ResolveServers returned (no cluster
+// access), so the registry drift-guard test can call it directly to assert the
+// rendered defaults stay in lockstep with cinderv1alpha1.OwnedConfigKeys.
 //
 // [DEFAULT] enabled_backends is deliberately absent. Each cinder-volume serves
 // exactly one backend and gets a per-backend overlay naming it
 // (reconcile_backends.go), so the key never belongs in the document the API and
 // the scheduler read.
-func operatorDefaults(cinder *cinderv1alpha1.Cinder) map[string]map[string]string {
+func operatorDefaults(cinder *cinderv1alpha1.Cinder, cacheServers string) map[string]map[string]string {
 	logging := effectiveLogging(cinder.Spec.Logging)
 
 	// The WSGI pipeline api-paste.ini serves the API through. keystone is the
@@ -315,7 +325,7 @@ func operatorDefaults(cinder *cinderv1alpha1.Cinder) map[string]map[string]strin
 			UserDomainName:     serviceUser.UserDomainName,
 			ProjectDomainName:  serviceUser.ProjectDomainName,
 			RegionName:         cinder.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&cinder.Spec.Cache, nil),
+			MemcachedServers:   cacheServers,
 		}
 		defaults["keystone_authtoken"] = keystoneauth.Section(params)
 		// The same account, sending a token of cinder's own alongside the user's,
