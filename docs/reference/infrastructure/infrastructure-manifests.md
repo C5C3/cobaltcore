@@ -522,7 +522,7 @@ The figure shows both stores and the paths that run through them.
 | --- | --- |
 | Target namespace | `memcached-system` |
 | Chart | `memcached-operator` |
-| Version constraint | `>=0.1.0 <1.0.0` |
+| Version constraint | `>=0.5.0 <1.0.0` (0.5.0 is the first chart that publishes one `status.serverList` entry per pod) |
 | Source | `c5c3-charts` HelmRepository (shared OCI registry) |
 | Dependencies | `cert-manager` in `cert-manager` namespace, `prometheus-operator-crds` in `monitoring` namespace |
 

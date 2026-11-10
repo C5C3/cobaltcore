@@ -1039,7 +1039,7 @@ kubelet's non-root check, and a cache on another image needs a different uid. An
 adopted instance is never written. On upgrade every owned instance is updated
 once and rolls: a single-replica MariaDB restarts, a Galera cluster rolls
 `ReplicasFirstPrimaryLast`, and the memcached-operator rolls the cache
-Deployment. Where OpenShift SecurityContextConstraints exist, the
+StatefulSet. Where OpenShift SecurityContextConstraints exist, the
 mariadb-operator builder drops both MariaDB contexts, so the projection has no
 effect on the database there. Rolling the operator back leaves
 `spec.podSecurityContext`, `spec.securityContext` and both Memcached contexts on
