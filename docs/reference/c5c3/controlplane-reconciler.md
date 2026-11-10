@@ -1602,14 +1602,26 @@ services:
   has entered their corporate credentials, and no `keystonePublicEndpoint(cp)`
   means the redirect targets a cluster-local DNS name the browser cannot
   resolve. Both are logged.
-- **MultiDomain:** `enabled` with `defaultDomain: Default` once any LDAP backend
-  is Ready, so the login form gains a domain field. `domainChoices` /
-  `domainDropdown` are deliberately **not** projected: upstream `openstack_auth`
-  turns the domain field into a select bounded by
-  `OPENSTACK_KEYSTONE_DOMAIN_CHOICES`, and the operator only ever sees the
-  LDAP-backed domains — a dropdown built from them would lock out every user of
-  a domain it cannot enumerate (a SQL-backed domain populated out-of-band, or
-  the domain an OIDC backend targets). `nil` when no LDAP backend is attached.
+- **MultiDomain:** an enabled `services.horizon.multiDomain` comes first and is
+  projected as written, with an empty `defaultDomain` resolved to `Default`
+  (`controlPlaneMultiDomain`); it replaces the LDAP-derived block. A dropdown
+  that omits the domain of a Ready LDAP backend is projected anyway. Django
+  rejects a domain outside the dropdown, so the backend's users cannot log in
+  to the dashboard. Once the child is Ready, `HorizonReady` stays `True` with
+  reason `HorizonDomainNotListed` and names those domains
+  (`unlistedLDAPDomains`), and a `Warning` event of the same reason names them
+  when that message is new, not on every pass. Otherwise the
+  block is `enabled` with `defaultDomain: Default` once any LDAP backend is
+  Ready, so the login form gains a domain field. An absent block and one with
+  `enabled: false` both leave this derivation in place. The derivation does not
+  project `domainChoices` / `domainDropdown`: upstream `openstack_auth` turns
+  the domain field into a select bounded by `OPENSTACK_KEYSTONE_DOMAIN_CHOICES`,
+  and the operator only ever sees the LDAP-backed domains. A dropdown built from
+  them would lock out every user of a domain it cannot enumerate (a SQL-backed
+  domain populated out-of-band, or the domain an OIDC backend targets). An
+  operator who knows every domain declares the dropdown on
+  `services.horizon.multiDomain`. `nil` when the ControlPlane declares no
+  enabled block and no LDAP backend is attached.
 - **Detached vs. unhealthy.** Detaching the last backend of a type clears its
   block, so the login page reverts to local credentials. A backend that is
   attached but **not Ready** retains the previously-projected block instead
@@ -1618,7 +1630,10 @@ services:
   provisioned are untouched, so the SSO button keeps working. Rebuilding the
   block from that view would re-render `local_settings.py`, roll the dashboard
   Deployment, and roll it back on recovery — twice, for a login page that was
-  never broken. The retention is logged.
+  never broken. The retention is logged. The retained multi-domain block is the
+  LDAP-derived one, kept only while the child carries an enabled block, and
+  never a ControlPlane block that was removed: retaining that one would pin its
+  dropdown on the child for as long as the LDAP backend stays unhealthy.
 
 A failure to list the backends surfaces as `HorizonReady=False` with reason
 `IdentityBackendsUnavailable` and returns the error — joined into the tail
@@ -1633,6 +1648,7 @@ an empty websso block, which would silently remove a working SSO button.
 | Projected spec rejected (HTTP 422 Invalid) | False | `HorizonProjectionRejected` | returns the error; the projection violates a Horizon CRD/webhook rule — reconcile the ControlPlane spec to a valid projection to recover |
 | Horizon child not yet Ready | False | `WaitingForHorizon` | requeue 15s |
 | Horizon child Ready | True | `HorizonReady` | — |
+| Horizon child Ready, the `services.horizon.multiDomain` dropdown omits the domain of a Ready LDAP backend | True | `HorizonDomainNotListed` | the message names the omitted domains; a `Warning` `HorizonDomainNotListed` event is emitted when the message changes |
 
 ### Built-in service registrations
 
