@@ -17,7 +17,7 @@ spec:
   chart:
     spec:
       chart: memcached-operator
-      version: ">=0.1.0 <1.0.0"
+      version: ">=0.5.0 <1.0.0"
       sourceRef:
         kind: HelmRepository
         name: c5c3-charts
