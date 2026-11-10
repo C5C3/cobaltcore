@@ -79,6 +79,22 @@ func mariaDBToBarbicanMapper(c client.Reader) handler.MapFunc {
 		})
 }
 
+// memcachedToBarbicanMapper returns a MapFunc that maps Memcached events to
+// reconcile requests for Barbican CRs whose spec.cache.clusterRef targets the
+// Memcached by name in the same namespace. It binds the shared
+// watch.ClusterRefMapper to the Barbican list type and its cache clusterRef.
+func memcachedToBarbicanMapper(c client.Reader) handler.MapFunc {
+	return watch.ClusterRefMapper(c,
+		func() client.ObjectList { return &barbicanv1alpha1.BarbicanList{} },
+		func(o client.Object) string {
+			cr, ok := o.(*barbicanv1alpha1.Barbican)
+			if !ok || cr.Spec.Cache.ClusterRef == nil {
+				return ""
+			}
+			return cr.Spec.Cache.ClusterRef.Name
+		})
+}
+
 // esoStoreToBarbicanMapper returns a MapFunc that enqueues the Barbican CRs
 // whose effective secret store reference resolves to the changed External
 // Secrets store object. watchedKind selects which store scope this mapper is

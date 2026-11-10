@@ -92,7 +92,16 @@ func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, children clien
 		return r.lastGoodConfigSecret(ctx, children, barbican)
 	}
 
-	merged := operatorDefaults(barbican, projection)
+	// A failed read of the managed cache's server list writes no Secret: the
+	// running pods keep their configuration and the next pass retries.
+	managed, err := cache.ManagedServers(ctx, children, barbican.Namespace, &barbican.Spec.Cache)
+	if err != nil {
+		err = fmt.Errorf("resolving cache servers: %w", err)
+		markConfigFailed(barbican, err)
+		return ctrl.Result{}, "", err
+	}
+
+	merged := operatorDefaults(barbican, projection, cache.ResolveServers(&barbican.Spec.Cache, managed))
 
 	// Merge plugin config (operator defaults win over plugin sections that
 	// collide, then user extraConfig wins over both).
@@ -158,10 +167,11 @@ func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, children clien
 }
 
 // operatorDefaults builds the operator-owned barbican.conf sections from the CRD
-// spec and the secret-store projection. It is a pure function of the spec and
-// the projection (no cluster access), so it can be called directly to assert the
-// rendered defaults stay in lockstep with barbicanv1alpha1.OwnedConfigKeys.
-func operatorDefaults(barbican *barbicanv1alpha1.Barbican, projection secretStoreProjection) map[string]map[string]string {
+// spec and the secret-store projection. It is a pure function of the spec, the
+// projection and cacheServers, the list cache.ResolveServers returned (no
+// cluster access), so it can be called directly to assert the rendered defaults
+// stay in lockstep with barbicanv1alpha1.OwnedConfigKeys.
+func operatorDefaults(barbican *barbicanv1alpha1.Barbican, projection secretStoreProjection, cacheServers string) map[string]map[string]string {
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
 			// Barbican defaults this to true and creates its tables from the models
@@ -192,7 +202,7 @@ func operatorDefaults(barbican *barbicanv1alpha1.Barbican, projection secretStor
 			UserDomainName:     barbican.Spec.ServiceUser.UserDomainName,
 			ProjectDomainName:  barbican.Spec.ServiceUser.ProjectDomainName,
 			RegionName:         barbican.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&barbican.Spec.Cache, nil),
+			MemcachedServers:   cacheServers,
 		}),
 		// Barbican's asynchronous order processing. The queue only moves work to a
 		// barbican-worker process, and this operator projects no worker Deployment,
