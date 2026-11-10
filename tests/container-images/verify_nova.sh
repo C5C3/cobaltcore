@@ -752,6 +752,55 @@ with mock.patch("time.sleep"), \
   assert_eq "nova-compute waits for Keystone and Placement" "True True 3" "${output##*$'\n'}"
 }
 
+# --- Test 20: a failed start clears its task state after a lost database ---
+test_failed_start_reverts_task_state_after_a_lost_database() {
+  echo "Test: reverts_task_state retries the revert of a failed start after a lost database"
+  # patches/nova/<release>/0005-retry-the-revert-of-the-task-state-when-the-database-is-lost.patch.
+  # start_instance fails on its first read through nova-conductor, and the
+  # revert of the task state meets the lost database twice before it
+  # persists. set_admin_password, an RPC call, still reverts once. Without
+  # the patch every revert is a single write and the server keeps
+  # powering-on: the published image prints "RemoteError 1 RuntimeError 1".
+  local output="" exit_code=0
+  output=$(run_python_in_image \
+    'from unittest import mock
+
+import oslo_messaging
+from nova.compute import manager
+from nova import objects
+from nova import safe_utils
+
+objects.register_all()
+compute = manager.ComputeManager.__new__(manager.ComputeManager)
+compute._update_resource_tracker = mock.Mock()
+compute._notify_about_instance_usage = mock.Mock(
+    side_effect=oslo_messaging.RemoteError("DBConnectionError", "gone", ""))
+
+
+def set_admin_password(self, context, instance, new_pass):
+    raise RuntimeError("call failed")
+
+
+start = safe_utils.get_wrapped_function(manager.ComputeManager.start_instance)
+result = []
+for function, args in ((start, ()), (set_admin_password, ("secret",))):
+    instance = objects.Instance(uuid="5e0c1a7b-2d4f-4c3e-8b6a-9f1d2e3c4b5a",
+                                vm_state="stopped", task_state="powering-on")
+    lost = oslo_messaging.RemoteError("DBConnectionError", "gone", "")
+    with mock.patch("time.sleep"), \
+            mock.patch.object(objects.Instance, "save",
+                              side_effect=[lost, lost, None]) as save:
+        try:
+            manager.reverts_task_state(function)(
+                compute, mock.MagicMock(), instance, *args)
+        except Exception as exc:
+            result += [type(exc).__name__, str(save.call_count)]
+print(" ".join(result))' 2>&1) || exit_code=$?
+  assert_eq "the driven start and password change exit 0" "0" "$exit_code"
+  # The start's revert persists on its third write; the RPC call keeps one.
+  assert_eq "a failed start reverts its task state after a lost database" "RemoteError 3 RuntimeError 1" "${output##*$'\n'}"
+}
+
 # --- Run all tests ---
 echo "=== nova container verification tests ==="
 echo "Image: $IMAGE"
@@ -793,6 +842,8 @@ echo ""
 test_failed_delete_survives_a_lost_database
 echo ""
 test_start_waits_for_keystone_and_placement
+echo ""
+test_failed_start_reverts_task_state_after_a_lost_database
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

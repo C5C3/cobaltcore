@@ -1235,6 +1235,38 @@ old construction, and `verify_nova.sh` starts a `ComputeManager`
 through a refused Keystone and a Placement without versions in the built
 image. Upstream status: not yet proposed.
 
+**Source patch:**
+`patches/nova/2026.1/0005-retry-the-revert-of-the-task-state-when-the-database-is-lost.patch`
+and its 2026.2 twin keep a server usable after an operation failed on
+nova-compute during a database outage. nova-api sets a task state such as
+`powering-on` before it hands an operation to nova-compute, and upstream's
+`reverts_task_state` decorator clears it once the operation has failed. That
+revert is a single write through nova-conductor. In an outage it fails like
+the operation, and the server keeps the task state until nova-compute
+restarts, because `_sync_power_states` skips an instance with a pending task.
+Until then nova-api answers a start, a volume detach and an interface attach
+of the server with a 409. The patch runs the revert through
+`compute_utils.call_with_db_retries` from patch 0003, so it waits out a lost
+database for up to 254 seconds, with no wait longer than 16 seconds, and
+passes every other error on at the first attempt. Seven methods keep the
+single revert, named in `_REVERTS_TASK_STATE_ONCE`: the six RPC calls among
+the wrapped methods, whose caller waits for the answer, and
+`terminate_instance`, whose retried ERROR write from patch 0003 already clears
+its task state. The other 26 wrapped methods retry, among them the start, the
+stop and the build. The nightly random chaos run 42752982735 found the defect
+(issue #1652): dizzy started a server one second before `mariadb-pod-kill`,
+both the start and its revert failed, and nova-api refused 245 actions on
+that server with a 409 in the quiet tail after the last recovery.
+The patch adds
+`test_start_instance_reverts_task_state_after_lost_database`,
+`test_start_instance_revert_gives_up_after_lost_database`,
+`test_reverts_task_state_once_for_the_named_methods` and
+`test_reverts_task_state_once_names_methods_of_the_manager`.
+`test_reverts_task_state_instance_not_found`, `test_state_revert` and the
+terminate tests of patch 0003 pass unchanged, and `verify_nova.sh` drives a
+failed start through a lost database in the built image. Upstream status: not
+yet proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
