@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 )
 
 // pinNeutronConfGolden is the neutron.conf rendered for the neutronForConfig
@@ -231,7 +233,7 @@ func TestOperatorDefaults_IsAPureFunction(t *testing.T) {
 	g := NewGomegaWithT(t)
 	neutron := neutronForConfig()
 
-	defaults := operatorDefaults(neutron, resolvedForConfig())
+	defaults := operatorDefaults(neutron, resolvedForConfig(), cache.ResolveServers(&neutron.Spec.Cache, nil))
 	neutronConf, ml2Conf := splitML2Sections(defaults)
 
 	g.Expect(neutronConf).To(HaveKey("DEFAULT"))
@@ -239,5 +241,5 @@ func TestOperatorDefaults_IsAPureFunction(t *testing.T) {
 	g.Expect(defaults["ovn"]["ovn_nb_connection"]).To(Equal(testNorthboundAddress))
 	// Nothing in the renderer reaches the API server, so a second call over the
 	// same inputs produces the same map.
-	g.Expect(operatorDefaults(neutron, resolvedForConfig())).To(Equal(defaults))
+	g.Expect(operatorDefaults(neutron, resolvedForConfig(), cache.ResolveServers(&neutron.Spec.Cache, nil))).To(Equal(defaults))
 }

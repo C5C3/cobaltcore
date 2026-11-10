@@ -108,6 +108,8 @@ func TestSetupWithManager_AllControllersStart(t *testing.T) {
 		"SetupWithManager must detect the Gateway API HTTPRoute CRD served from fake_crds/gateway-api")
 	g.Expect(neutron.vpaAvailable).To(BeTrue(),
 		"SetupWithManager must detect the VerticalPodAutoscaler CRD served from fake_crds/vertical-pod-autoscaler")
+	g.Expect(neutron.memcachedAvailable).To(BeTrue(),
+		"SetupWithManager must detect the Memcached CRD served from fake_crds/memcached-operator")
 	g.Expect(agent.vpaAvailable).To(BeTrue(),
 		"the NeutronMetadataAgent SetupWithManager must detect the VerticalPodAutoscaler CRD served from fake_crds/vertical-pod-autoscaler")
 
