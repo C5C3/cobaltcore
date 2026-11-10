@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
@@ -149,4 +150,35 @@ func TestStoreToPlacementMapper_NamespacedKindScopesToStoreNamespace(t *testing.
 	g.Expect(reqs).To(ConsistOf(
 		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "tenant-a", Name: "pl-pinned"}},
 	), "a namespaced SecretStore change must enqueue only the pinned Placement in its own namespace")
+}
+
+// TestMemcachedToPlacementMapper verifies a Memcached event enqueues exactly the
+// Placement CRs in its namespace whose spec.cache.clusterRef names it, and leaves
+// brownfield caches, other namespaces and other names alone.
+func TestMemcachedToPlacementMapper(t *testing.T) {
+	withCache := func(name, namespace string, spec commonv1.CacheSpec) *placementv1alpha1.Placement {
+		cr := testPlacement()
+		cr.Name, cr.Namespace = name, namespace
+		cr.Spec.Cache = spec
+		return cr
+	}
+	managed := func(name string) commonv1.CacheSpec {
+		return commonv1.CacheSpec{ClusterRef: &corev1.LocalObjectReference{Name: name}}
+	}
+	c := newMapperFakeClient(
+		withCache("match", "default", managed("mc")),
+		withCache("brownfield", "default", commonv1.CacheSpec{Servers: []string{"mc:11211"}}),
+		withCache("other-ns", "elsewhere", managed("mc")),
+		withCache("other-name", "default", managed("other-mc")),
+	)
+	mc := cache.NewMemcached()
+	mc.SetNamespace("default")
+	mc.SetName("mc")
+
+	reqs := memcachedToPlacementMapper(c)(context.Background(), mc)
+
+	g := NewGomegaWithT(t)
+	g.Expect(reqs).To(ConsistOf(reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "match"},
+	}))
 }
