@@ -268,7 +268,7 @@ func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints
 			UserDomainName:     neutron.Spec.ServiceUser.UserDomainName,
 			ProjectDomainName:  neutron.Spec.ServiceUser.ProjectDomainName,
 			RegionName:         neutron.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&neutron.Spec.Cache),
+			MemcachedServers:   cache.ResolveServers(&neutron.Spec.Cache, nil),
 		}),
 		// Versioned notifications have no consumer in this control plane, so they
 		// are dropped at the source rather than accumulating in a queue.

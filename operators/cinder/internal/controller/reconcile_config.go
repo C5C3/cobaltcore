@@ -315,7 +315,7 @@ func operatorDefaults(cinder *cinderv1alpha1.Cinder) map[string]map[string]strin
 			UserDomainName:     serviceUser.UserDomainName,
 			ProjectDomainName:  serviceUser.ProjectDomainName,
 			RegionName:         cinder.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&cinder.Spec.Cache),
+			MemcachedServers:   cache.ResolveServers(&cinder.Spec.Cache, nil),
 		}
 		defaults["keystone_authtoken"] = keystoneauth.Section(params)
 		// The same account, sending a token of cinder's own alongside the user's,

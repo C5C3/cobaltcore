@@ -544,7 +544,7 @@ func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, children 
 // resolveCacheServers returns the memcache server list based on the cache
 // spec, delegating to the shared cache resolver.
 func resolveCacheServers(keystone *keystonev1alpha1.Keystone) string {
-	return cache.ResolveServers(&keystone.Spec.Cache)
+	return cache.ResolveServers(&keystone.Spec.Cache, nil)
 }
 
 // resolveDatabaseHost returns the database host:port based on the database

@@ -249,7 +249,7 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 			UserDomainName:     glance.Spec.ServiceUser.UserDomainName,
 			ProjectDomainName:  glance.Spec.ServiceUser.ProjectDomainName,
 			RegionName:         glance.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&glance.Spec.Cache),
+			MemcachedServers:   cache.ResolveServers(&glance.Spec.Cache, nil),
 		}),
 		"glance_store": {
 			"default_backend": projection.defaultBackend,

@@ -340,7 +340,7 @@ func operatorDefaults(nova *novav1alpha1.Nova) map[string]map[string]string {
 		"cache": {
 			"enabled":          "true",
 			"backend":          spec.Cache.Backend,
-			"memcache_servers": cache.ResolveServers(&spec.Cache),
+			"memcache_servers": cache.ResolveServers(&spec.Cache, nil),
 		},
 		// The periodic pass that maps a newly registered compute node into the
 		// cell. Without it a hypervisor that joined the bus stays invisible to
@@ -401,7 +401,7 @@ func clientSectionParams(spec *novav1alpha1.NovaSpec) keystoneauth.SectionParams
 		UserDomainName:     spec.ServiceUser.UserDomainName,
 		ProjectDomainName:  spec.ServiceUser.ProjectDomainName,
 		RegionName:         spec.Region,
-		MemcachedServers:   cache.ResolveServers(&spec.Cache),
+		MemcachedServers:   cache.ResolveServers(&spec.Cache, nil),
 	}
 }
 
