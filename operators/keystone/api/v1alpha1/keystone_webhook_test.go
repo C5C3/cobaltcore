@@ -1988,10 +1988,12 @@ func TestValidateCreate_RejectsDynamicCredentialsWithoutClusterRef(t *testing.T)
 }
 
 // TestValidateCreate_RejectsCacheControlChars verifies that both CacheSpec
-// shapes are guarded against control characters. resolveCacheServers renders
-// spec.cache into [cache].memcache_servers and [memcache].servers, and the INI
-// renderer writes the value verbatim — so a newline injects an additional
-// keystone.conf line, bypassing the (section, key)-keyed extraConfig gates.
+// shapes are guarded against control characters. cache.ResolveServers renders
+// spec.cache.servers, or "<clusterRef.name>:11211" while a managed Memcached
+// publishes no status.serverList, into [cache].memcache_servers and
+// [memcache].servers, and the INI renderer writes the value verbatim — so a
+// newline injects an additional keystone.conf line, bypassing the
+// (section, key)-keyed extraConfig gates.
 // Neither field carries a pattern marker, so the webhook is the enforcement
 // point for objects that reach etcd without schema validation.
 func TestValidateCreate_RejectsCacheControlChars(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -762,6 +763,48 @@ func TestReconcile_ConfigFailureDoesNotLeaveReadyTrue(t *testing.T) {
 	g.Expect(readyCond.Status).To(Equal(metav1.ConditionFalse),
 		"Ready must be False when reconcileConfig fails, not stale-True (issue #467)")
 	g.Expect(readyCond.ObservedGeneration).To(Equal(updated.Generation))
+}
+
+// TestReconcile_MemcachedReadErrorMarksSecretsReadyFalse verifies that a
+// failed read of the managed cache's Memcached takes the config-failure path:
+// SecretsReady=False with reason ConfigError and Ready=False, no ConfigMap.
+func TestReconcile_MemcachedReadErrorMarksSecretsReadyFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Spec.Cache = commonv1.CacheSpec{
+		Backend:    "dogpile.cache.pymemcache",
+		ClusterRef: &corev1.LocalObjectReference{Name: "mc"},
+	}
+	for _, ct := range subConditionTypes {
+		meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+			Type: ct, Status: metav1.ConditionTrue, Reason: "Seeded",
+		})
+	}
+	r := newTestReconciler(append([]runtime.Object{ks, testDBCredentialsSecret(), testAdminCredentialsSecret()},
+		testReadyExternalSecrets()...)...)
+	var gets atomic.Int32
+	r.Client = interceptor.NewClient(r.Client.(client.WithWatch),
+		testutil.MemcachedGetInterceptor(&gets, context.DeadlineExceeded))
+
+	ctx := context.Background()
+	key := types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}
+	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	g.Expect(err).To(MatchError(ContainSubstring("resolving cache servers")))
+	g.Expect(gets.Load()).To(BeNumerically(">=", 1))
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, key, &updated)).To(Succeed())
+	secretsCond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
+	g.Expect(secretsCond).NotTo(BeNil())
+	g.Expect(secretsCond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(secretsCond.Reason).To(Equal(conditionReasonConfigError))
+	g.Expect(meta.IsStatusConditionFalse(updated.Status.Conditions, "Ready")).To(BeTrue())
+
+	var cms corev1.ConfigMapList
+	g.Expect(r.List(ctx, &cms, client.InNamespace(ks.Namespace))).To(Succeed())
+	for _, cm := range cms.Items {
+		g.Expect(cm.Name).NotTo(HavePrefix(ks.Name+"-config-"), "a failed read must write no config ConfigMap")
+	}
 }
 
 func TestReconcile_SequentialProgression(t *testing.T) {

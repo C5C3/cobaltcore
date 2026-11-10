@@ -60,6 +60,22 @@ func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
 		})
 }
 
+// memcachedToKeystoneMapper returns a MapFunc that maps Memcached events to
+// reconcile requests for Keystone CRs whose spec.cache.clusterRef targets the
+// Memcached by name in the same namespace. It binds the shared
+// watch.ClusterRefMapper to the Keystone list type and its cache clusterRef.
+func memcachedToKeystoneMapper(c client.Reader) handler.MapFunc {
+	return watch.ClusterRefMapper(c,
+		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} },
+		func(o client.Object) string {
+			ks, ok := o.(*keystonev1alpha1.Keystone)
+			if !ok || ks.Spec.Cache.ClusterRef == nil {
+				return ""
+			}
+			return ks.Spec.Cache.ClusterRef.Name
+		})
+}
+
 // storeToKeystoneMapper returns a MapFunc that enqueues the Keystone CRs whose
 // effective secret store reference resolves to the changed store object.
 // watchedKind selects which store scope this mapper is registered against — a

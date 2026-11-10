@@ -35,7 +35,9 @@ import (
 // attaching or detaching a backend flips the [identity]
 // domain-specific-driver options (LDAP) or the [auth]/[openid]/[federation]
 // sections (OIDC) without bumping the Keystone generation, so both must
-// invalidate the cache.
+// invalidate the cache. cacheServers is the rendered memcache server list: the
+// Memcached spec.cache.clusterRef names publishes it in its status, which
+// changes without a Keystone generation bump.
 type configRenderCacheEntry struct {
 	uid                     types.UID
 	generation              int64
@@ -45,6 +47,7 @@ type configRenderCacheEntry struct {
 	remoteIDAttribute       string
 	samlProtocolID          string
 	samlRemoteIDAttribute   string
+	cacheServers            string
 	configMapName           string
 }
 
@@ -135,16 +138,23 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children clien
 
 	// Cache short-circuit: the rendered ConfigMap is content-addressed and
 	// immutable, and every spec input to the render bumps the CR generation, so
-	// a matching (uid, generation, policy-ConfigMap ResourceVersion,
-	// projection-state) tuple means the last rendered ConfigMap is still
-	// current. Skip the INI/paste/policy rendering and the immutable-ConfigMap
+	// a matching (uid, generation, policy-ConfigMap ResourceVersion, cache
+	// server list, projection-state) tuple means the last rendered ConfigMap is
+	// still current. Skip the INI/paste/policy rendering and the immutable-ConfigMap
 	// write; the extraConfig ownership guard above already ran, so it needs no
 	// re-run here.
 	policyCMRV, err := r.policyConfigMapResourceVersion(ctx, children, keystone)
 	if err != nil {
 		return "", err
 	}
-	if name, ok := r.configRenderCacheHit(keystone, policyCMRV, domainsProjected, fed); ok {
+	// The managed server list lives in the Memcached status, outside the
+	// Keystone generation, so it is read on every pass and joins the cache key.
+	managed, err := cache.ManagedServers(ctx, children, keystone.Namespace, &keystone.Spec.Cache)
+	if err != nil {
+		return "", fmt.Errorf("resolving cache servers: %w", err)
+	}
+	cacheServers := cache.ResolveServers(&keystone.Spec.Cache, managed)
+	if name, ok := r.configRenderCacheHit(keystone, policyCMRV, cacheServers, domainsProjected, fed); ok {
 		// Confirm the cached ConfigMap still exists: an out-of-band delete must
 		// fall through to a full render/recreate. Owns(ConfigMap) enqueues us on
 		// the delete, but the cache would otherwise hand back a deleted name.
@@ -160,7 +170,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children clien
 	}
 
 	// Step 1: Build the operator-owned keystone.conf defaults from the spec.
-	defaults := operatorDefaults(keystone, domainsProjected, fed)
+	defaults := operatorDefaults(keystone, domainsProjected, fed, cacheServers)
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// later logging.conf data-key decisions below.
@@ -270,9 +280,9 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children clien
 	}
 
 	// Memoize the render so a subsequent pass at the same generation, policy
-	// ConfigMap ResourceVersion, and projection state returns this name
-	// without re-rendering.
-	r.storeConfigRender(keystone, policyCMRV, configMapName, domainsProjected, fed)
+	// ConfigMap ResourceVersion, cache server list, and projection state
+	// returns this name without re-rendering.
+	r.storeConfigRender(keystone, policyCMRV, cacheServers, configMapName, domainsProjected, fed)
 
 	return configMapName, nil
 }
@@ -280,10 +290,11 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children clien
 // operatorDefaults builds the operator-owned keystone.conf sections from the
 // CRD spec: the static [DEFAULT]/[token]/… scaffolding plus the
 // domain-projection, federation, per-logger-level, json-logging, and cache
-// server conditionals. It is a pure function of the spec (no cluster access),
-// so the registry drift-guard test can call it directly to assert the rendered
-// defaults stay in lockstep with keystonev1alpha1.OwnedConfigKeys.
-func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool, fed *federationProjection) map[string]map[string]string {
+// server conditionals. It is a pure function of the spec and cacheServers, the
+// list cache.ResolveServers returned (no cluster access), so the registry
+// drift-guard test can call it directly to assert the rendered defaults stay
+// in lockstep with keystonev1alpha1.OwnedConfigKeys.
+func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool, fed *federationProjection, cacheServers string) map[string]map[string]string {
 	logging := effectiveLogging(keystone.Spec.Logging)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
@@ -397,11 +408,9 @@ func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool
 		defaults["DEFAULT"]["log_config_append"] = loggingConfFilePath
 	}
 
-	// Resolve cache servers.
-	serverList := resolveCacheServers(keystone)
-	defaults["cache"]["memcache_servers"] = serverList
+	defaults["cache"]["memcache_servers"] = cacheServers
 	defaults["memcache"] = map[string]string{
-		"servers": serverList,
+		"servers": cacheServers,
 	}
 
 	return defaults
@@ -467,9 +476,9 @@ func federationCacheKeyOf(fed *federationProjection) (projected bool, remoteIDAt
 }
 
 // configRenderCacheHit reports whether the memoized render for this CR is still
-// valid: matching UID, generation, policy-ConfigMap ResourceVersion, and
-// identity-backend projection state (domains and federation).
-func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV string, domainsProjected bool, fed *federationProjection) (name string, ok bool) {
+// valid: matching UID, generation, policy-ConfigMap ResourceVersion, cache
+// server list, and identity-backend projection state (domains and federation).
+func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Keystone, policyCMRV, cacheServers string, domainsProjected bool, fed *federationProjection) (name string, ok bool) {
 	federationProjected, remoteIDAttribute, samlProtocolID, samlRemoteIDAttribute := federationCacheKeyOf(fed)
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
@@ -478,7 +487,8 @@ func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Key
 		return "", false
 	}
 	if entry.uid != keystone.UID || entry.generation != keystone.Generation ||
-		entry.policyCMResourceVersion != policyCMRV || entry.domainsProjected != domainsProjected ||
+		entry.policyCMResourceVersion != policyCMRV || entry.cacheServers != cacheServers ||
+		entry.domainsProjected != domainsProjected ||
 		entry.federationProjected != federationProjected || entry.remoteIDAttribute != remoteIDAttribute ||
 		entry.samlProtocolID != samlProtocolID || entry.samlRemoteIDAttribute != samlRemoteIDAttribute {
 		return "", false
@@ -487,7 +497,7 @@ func (r *KeystoneReconciler) configRenderCacheHit(keystone *keystonev1alpha1.Key
 }
 
 // storeConfigRender memoizes a successful render.
-func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, configMapName string, domainsProjected bool, fed *federationProjection) {
+func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keystone, policyCMRV, cacheServers, configMapName string, domainsProjected bool, fed *federationProjection) {
 	federationProjected, remoteIDAttribute, samlProtocolID, samlRemoteIDAttribute := federationCacheKeyOf(fed)
 	r.configRenderCacheMu.Lock()
 	defer r.configRenderCacheMu.Unlock()
@@ -498,6 +508,7 @@ func (r *KeystoneReconciler) storeConfigRender(keystone *keystonev1alpha1.Keysto
 		uid:                     keystone.UID,
 		generation:              keystone.Generation,
 		policyCMResourceVersion: policyCMRV,
+		cacheServers:            cacheServers,
 		domainsProjected:        domainsProjected,
 		federationProjected:     federationProjected,
 		remoteIDAttribute:       remoteIDAttribute,
@@ -539,12 +550,6 @@ func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, children 
 		CurrentName: configMapName,
 		Retain:      defaultConfigMapRetainCount,
 	})
-}
-
-// resolveCacheServers returns the memcache server list based on the cache
-// spec, delegating to the shared cache resolver.
-func resolveCacheServers(keystone *keystonev1alpha1.Keystone) string {
-	return cache.ResolveServers(&keystone.Spec.Cache, nil)
 }
 
 // resolveDatabaseHost returns the database host:port based on the database

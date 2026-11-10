@@ -6,7 +6,9 @@ package controller
 
 import (
 	"context"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
@@ -23,7 +26,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
@@ -758,76 +763,6 @@ func TestDBPort(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 			result := dbPort(tt.keystone)
-			g.Expect(result).To(Equal(tt.expected))
-		})
-	}
-}
-
-func TestResolveCacheServers(t *testing.T) {
-	tests := []struct {
-		name     string
-		keystone *keystonev1alpha1.Keystone
-		expected string
-	}{
-		{
-			name: "brownfield with multiple servers",
-			keystone: &keystonev1alpha1.Keystone{
-				Spec: keystonev1alpha1.KeystoneSpec{
-					Cache: commonv1.CacheSpec{
-						Servers: []string{"mc-0:11211", "mc-1:11211"},
-					},
-				},
-			},
-			expected: "mc-0:11211,mc-1:11211",
-		},
-		{
-			name: "brownfield with single server",
-			keystone: &keystonev1alpha1.Keystone{
-				Spec: keystonev1alpha1.KeystoneSpec{
-					Cache: commonv1.CacheSpec{
-						Servers: []string{"mc:11211"},
-					},
-				},
-			},
-			expected: "mc:11211",
-		},
-		{
-			name: "managed mode uses service DNS name",
-			keystone: &keystonev1alpha1.Keystone{
-				Spec: keystonev1alpha1.KeystoneSpec{
-					Cache: commonv1.CacheSpec{
-						ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
-					},
-				},
-			},
-			expected: "memcached:11211",
-		},
-		{
-			name: "managed mode with different cluster name",
-			keystone: &keystonev1alpha1.Keystone{
-				Spec: keystonev1alpha1.KeystoneSpec{
-					Cache: commonv1.CacheSpec{
-						ClusterRef: &corev1.LocalObjectReference{Name: "mc"},
-					},
-				},
-			},
-			expected: "mc:11211",
-		},
-		{
-			name: "neither ClusterRef nor Servers set",
-			keystone: &keystonev1alpha1.Keystone{
-				Spec: keystonev1alpha1.KeystoneSpec{
-					Cache: commonv1.CacheSpec{},
-				},
-			},
-			expected: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			result := resolveCacheServers(tt.keystone)
 			g.Expect(result).To(Equal(tt.expected))
 		})
 	}
@@ -1908,7 +1843,7 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 		RemoteIDAttribute:     "HTTP_OIDC_ISS",
 		SAMLProtocolID:        "saml2",
 		SAMLRemoteIDAttribute: "HTTP_MELLON_IDP",
-	})
+	}, cache.ResolveServers(&ks.Spec.Cache, nil))
 	defaults = config.InjectOsloPolicyConfig(defaults, "/etc/keystone/keystone.conf.d/policy.yaml")
 
 	registered := make(map[[2]string]struct{}, len(keystonev1alpha1.OwnedConfigKeys))
@@ -1977,4 +1912,138 @@ func TestOwnedSectionsMatchPreviousSAMLReservedSections(t *testing.T) {
 	for _, name := range want {
 		g.Expect(sections).To(HaveKey(name))
 	}
+}
+
+// managedCacheKeystone returns configTestKeystone in managed cache mode,
+// referencing the Memcached "mc" in its namespace.
+func managedCacheKeystone() *keystonev1alpha1.Keystone {
+	ks := configTestKeystone()
+	ks.Spec.Cache = commonv1.CacheSpec{
+		Backend:    "dogpile.cache.pymemcache",
+		ClusterRef: &corev1.LocalObjectReference{Name: "mc"},
+	}
+	return ks
+}
+
+// newMemcachedConfigTestReconciler is newConfigTestReconciler with the
+// Memcached Get interceptor of testutil.MemcachedGetInterceptor.
+func newMemcachedConfigTestReconciler(gets *atomic.Int32, getErr error, objs ...client.Object) *KeystoneReconciler {
+	s := configTestScheme()
+	return &KeystoneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
+			WithStatusSubresource(&keystonev1alpha1.Keystone{}).
+			WithInterceptorFuncs(testutil.MemcachedGetInterceptor(gets, getErr)).Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+}
+
+// TestReconcileConfig_CacheServers covers the server list keystone.conf
+// renders into [cache] memcache_servers and [memcache] servers: the sorted
+// status.serverList of the referenced Memcached, the Service name while there
+// is none, a brownfield list without a Memcached read, and no ConfigMap on a
+// failed read.
+func TestReconcileConfig_CacheServers(t *testing.T) {
+	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
+	threeEntries := []string{
+		"mc-0.mc.default.svc:11211", "mc-1.mc.default.svc:11211", "mc-2.mc.default.svc:11211",
+	}
+
+	tests := []struct {
+		name     string
+		keystone *keystonev1alpha1.Keystone
+		objs     []client.Object
+		getErr   error
+		want     string
+		wantGets int32
+	}{
+		{
+			name:     "managed with a server list renders the sorted entries",
+			keystone: managedCacheKeystone(),
+			objs: []client.Object{testutil.MemcachedWithServerList("default", "mc",
+				threeEntries[2], threeEntries[0], threeEntries[1])},
+			want:     strings.Join(threeEntries, ","),
+			wantGets: 1,
+		},
+		{
+			name:     "managed without a Memcached renders the Service name",
+			keystone: managedCacheKeystone(),
+			want:     "mc:11211",
+			wantGets: 1,
+		},
+		{
+			name:     "brownfield renders servers without a Memcached read",
+			keystone: configTestKeystone(),
+			objs:     []client.Object{testutil.MemcachedWithServerList("default", "mc", threeEntries...)},
+			want:     "mc-0:11211,mc-1:11211",
+			wantGets: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			r := newMemcachedConfigTestReconciler(&gets, nil, append(tc.objs, tc.keystone, secret)...)
+
+			name, err := r.reconcileConfig(context.Background(), r.Client, tc.keystone, false, nil)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", name)
+			g.Expect(err).NotTo(HaveOccurred())
+			conf := cm.Data["keystone.conf"]
+			g.Expect(conf).To(MatchRegexp(`(?m)^memcache_servers = %s$`, regexp.QuoteMeta(tc.want)))
+			g.Expect(conf).To(MatchRegexp(`(?m)^servers = %s$`, regexp.QuoteMeta(tc.want)))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
+	}
+
+	t.Run("a failed Memcached read writes no ConfigMap", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var gets atomic.Int32
+		ks := managedCacheKeystone()
+		r := newMemcachedConfigTestReconciler(&gets, context.DeadlineExceeded, ks, secret)
+
+		_, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err.Error()).To(HavePrefix("resolving cache servers: getting Memcached default/mc: "))
+
+		var cms corev1.ConfigMapList
+		g.Expect(r.Client.List(context.Background(), &cms, client.InNamespace("default"))).To(Succeed())
+		g.Expect(cms.Items).To(BeEmpty(), "a failed read must leave the running configuration alone")
+	})
+}
+
+// TestReconcileConfig_CacheServerListChangeReRenders verifies that a changed
+// status.serverList invalidates the render cache at the same generation, and
+// that an unchanged list keeps returning the cached name.
+func TestReconcileConfig_CacheServerListChangeReRenders(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	var gets atomic.Int32
+	ks := managedCacheKeystone()
+	mc := testutil.MemcachedWithServerList("default", "mc",
+		"mc-0.mc.default.svc:11211", "mc-1.mc.default.svc:11211", "mc-2.mc.default.svc:11211")
+	r := newMemcachedConfigTestReconciler(&gets, nil, ks, mc,
+		dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass"))
+
+	firstName, err := r.reconcileConfig(ctx, r.Client, ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	sameName, err := r.reconcileConfig(ctx, r.Client, ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(sameName).To(Equal(firstName), "an unchanged list must return the cached name")
+
+	// Scale the Memcached down to two entries; the Keystone generation stays.
+	live := cache.NewMemcached()
+	g.Expect(r.Client.Get(ctx, client.ObjectKeyFromObject(mc), live)).To(Succeed())
+	g.Expect(unstructured.SetNestedStringSlice(live.Object,
+		[]string{"mc-0.mc.default.svc:11211", "mc-1.mc.default.svc:11211"}, "status", "serverList")).To(Succeed())
+	g.Expect(r.Client.Update(ctx, live)).To(Succeed())
+
+	newName, err := r.reconcileConfig(ctx, r.Client, ks, false, nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(newName).NotTo(Equal(firstName), "a changed list must re-render at the same generation")
+	cm, err := getCreatedConfigMap(ctx, r.Client, "default", newName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cm.Data["keystone.conf"]).To(ContainSubstring(
+		"memcache_servers = mc-0.mc.default.svc:11211,mc-1.mc.default.svc:11211\n"))
 }
