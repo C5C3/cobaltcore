@@ -163,6 +163,14 @@ rules:
   - get
   - patch
 - apiGroups:
+  - memcached.c5c3.io
+  resources:
+  - memcacheds
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - networking.k8s.io
   resources:
   - networkpolicies

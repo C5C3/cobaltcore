@@ -224,9 +224,19 @@ func (r *NovaReconciler) reconcileConfig(ctx context.Context, children client.Cl
 	config.RecordExtraConfigHealth(r.Recorder, nova, &nova.Status.Conditions, nova.Generation,
 		config.FindOwnedOverrides(nova.Spec.ExtraConfig, novav1alpha1.OwnedConfigKeys))
 
+	// A failed read of the managed cache's server list writes no ConfigMap: the
+	// running pods keep their configuration and the next pass retries.
+	managed, err := cache.ManagedServers(ctx, children, nova.Namespace, &nova.Spec.Cache)
+	if err != nil {
+		err = fmt.Errorf("resolving cache servers: %w", err)
+		markConfigFailed(nova, err)
+		return ctrl.Result{}, configArtifacts{}, err
+	}
+
 	// extraConfig overrides the operator defaults (the true escape hatch); the
 	// ownership guard above reports what it took over.
-	merged := config.MergeDefaults(nova.Spec.ExtraConfig, operatorDefaults(nova))
+	merged := config.MergeDefaults(nova.Spec.ExtraConfig,
+		operatorDefaults(nova, cache.ResolveServers(&nova.Spec.Cache, managed)))
 
 	// Last line of defense behind the validating webhook: a newline in an option
 	// name or value injects further INI lines into the rendered section, and the
@@ -284,18 +294,22 @@ func (r *NovaReconciler) reconcileConfig(ctx context.Context, children client.Cl
 // spec: the static [DEFAULT]/[api]/[oslo_*] scaffolding, the two placeholder
 // connection strings, the Keystone sections, the client sections of the services
 // nova calls, and the console-proxy switch. It is a pure function of the spec
-// (no cluster access), so the registry drift-guard test can call it directly to
-// assert the rendered defaults stay in lockstep with
-// novav1alpha1.OwnedConfigKeys.
+// and cacheServers, the list cache.ResolveServers returned (no cluster access),
+// so the registry drift-guard test can call it directly to assert the rendered
+// defaults stay in lockstep with novav1alpha1.OwnedConfigKeys.
 //
 // [DEFAULT] host is deliberately absent. Every process registers under its own
 // pod name, which is what lets the scheduler and conductor replicas hold
 // separate service records and elect a leader among themselves; one shared
 // identity would collapse the fleet into a single record.
-func operatorDefaults(nova *novav1alpha1.Nova) map[string]map[string]string {
+func operatorDefaults(nova *novav1alpha1.Nova, cacheServers string) map[string]map[string]string {
 	spec := &nova.Spec
 	logging := effectiveLogging(spec.Logging)
 	params := clientSectionParams(spec)
+	// Only the token middleware caches in memcached; the client sections and
+	// the compute fragment render from params without it.
+	tokenParams := params
+	tokenParams.MemcachedServers = cacheServers
 
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
@@ -316,7 +330,7 @@ func operatorDefaults(nova *novav1alpha1.Nova) map[string]map[string]string {
 		// and OS_DATABASE__CONNECTION.
 		"api_database":       {"connection": dbConnectionPlaceholder},
 		"database":           {"connection": dbConnectionPlaceholder},
-		"keystone_authtoken": keystoneauth.Section(params),
+		"keystone_authtoken": keystoneauth.Section(tokenParams),
 		// The same account, sending a token of nova's own alongside the user's, so
 		// a boot that outlives the user token still reaches Placement, Neutron,
 		// Glance and Cinder.
@@ -340,7 +354,7 @@ func operatorDefaults(nova *novav1alpha1.Nova) map[string]map[string]string {
 		"cache": {
 			"enabled":          "true",
 			"backend":          spec.Cache.Backend,
-			"memcache_servers": cache.ResolveServers(&spec.Cache, nil),
+			"memcache_servers": cacheServers,
 		},
 		// The periodic pass that maps a newly registered compute node into the
 		// cell. Without it a hypervisor that joined the bus stays invisible to
@@ -391,7 +405,9 @@ func operatorDefaults(nova *novav1alpha1.Nova) map[string]map[string]string {
 //
 // The password is absent by construction: keystoneauth renders none of the
 // sections with one, and each is injected at runtime through its own
-// OS_<SECTION>__PASSWORD env override.
+// OS_<SECTION>__PASSWORD env override. MemcachedServers is absent too: only
+// the control plane's token middleware caches, and operatorDefaults sets it
+// there from the resolved server list.
 func clientSectionParams(spec *novav1alpha1.NovaSpec) keystoneauth.SectionParams {
 	return keystoneauth.SectionParams{
 		AuthURL:            spec.KeystoneEndpoint,
@@ -401,7 +417,6 @@ func clientSectionParams(spec *novav1alpha1.NovaSpec) keystoneauth.SectionParams
 		UserDomainName:     spec.ServiceUser.UserDomainName,
 		ProjectDomainName:  spec.ServiceUser.ProjectDomainName,
 		RegionName:         spec.Region,
-		MemcachedServers:   cache.ResolveServers(&spec.Cache, nil),
 	}
 }
 
