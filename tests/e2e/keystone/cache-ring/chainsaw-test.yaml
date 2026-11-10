@@ -1,0 +1,292 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the per-pod Memcached server list (issue #1656).
+# Verifies, for a Keystone with three API pods on a Memcached with three pods:
+#   - the Memcached publishes one status.serverList entry per pod, and
+#     keystone.conf renders exactly those entries in index order into
+#     [cache] memcache_servers;
+#   - a revoked token answers 404 on all 24 validations spread over the three
+#     API pods, directly after the revoke and 20 s later, so every Keystone
+#     process reads the token's cache entry from the one pod the revoke
+#     invalidated;
+#   - a cache pod restart leaves the mounted config ConfigMap and the
+#     Deployment generation alone, so the list does not follow readiness;
+#   - a scale-down to two cache pods mounts a two-entry list within 120 s,
+#     and Keystone reports Ready=True again.
+# Every request runs inside a Keystone API pod. The admin password crosses
+# into the pod over stdin, and the tokens never leave it.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-cache-ring
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: The Memcached publishes one entry per pod ──────────────────
+  - name: keystone-cache-ring-memcached-publishes-per-pod-list
+    try:
+    - apply:
+        file: 00-memcached.yaml
+    - assert:
+        resource:
+          apiVersion: memcached.c5c3.io/v1beta1
+          kind: Memcached
+          metadata:
+            name: keystone-cache-ring-memcached
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          WANT='["keystone-cache-ring-memcached-0.keystone-cache-ring-memcached.openstack.svc:11211","keystone-cache-ring-memcached-1.keystone-cache-ring-memcached.openstack.svc:11211","keystone-cache-ring-memcached-2.keystone-cache-ring-memcached.openstack.svc:11211"]'
+          HAVE=""
+          for _ in $(seq 1 60); do
+            HAVE=$(kubectl get memcached keystone-cache-ring-memcached -n openstack -o json | jq -c '.status.serverList')
+            [ "$HAVE" = "$WANT" ] && break
+            sleep 2
+          done
+          if [ "$HAVE" != "$WANT" ]; then
+            echo "FAIL: status.serverList is $HAVE, want $WANT"
+            exit 1
+          fi
+          echo "OK: status.serverList is $HAVE"
+    catch: &dump
+    - script:
+        content: |
+          echo "=== Memcached ==="
+          kubectl get memcached keystone-cache-ring-memcached -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone ==="
+          kubectl get keystone keystone-cache-ring -n $NAMESPACE -o yaml 2>&1 | sed -n '/^status:/,$p' || true
+          echo "=== Pods ==="
+          kubectl get pods -n $NAMESPACE -o wide \
+            -l 'app.kubernetes.io/instance in (keystone-cache-ring,keystone-cache-ring-memcached)' 2>&1 || true
+          echo "=== keystone-operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=80 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Keystone Ready ─────────────────────────────────────────────
+  - name: keystone-cache-ring-ready
+    try:
+    - apply:
+        file: 01-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-cache-ring
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *dump
+  # ── Step 3: keystone.conf renders the three entries ────────────────────
+  - name: keystone-cache-ring-renders-per-pod-list
+    try:
+    - script:
+        timeout: 30s
+        content: |
+          set -eu
+          WANT="keystone-cache-ring-memcached-0.keystone-cache-ring-memcached.openstack.svc:11211,keystone-cache-ring-memcached-1.keystone-cache-ring-memcached.openstack.svc:11211,keystone-cache-ring-memcached-2.keystone-cache-ring-memcached.openstack.svc:11211"
+          CM=$(kubectl get deployment keystone-cache-ring -n openstack \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          HAVE=$(kubectl get configmap "$CM" -n openstack -o jsonpath='{.data.keystone\.conf}' \
+            | sed -n 's/^memcache_servers = //p')
+          if [ "$HAVE" != "$WANT" ]; then
+            echo "FAIL: $CM renders memcache_servers = $HAVE, want $WANT"
+            exit 1
+          fi
+          echo "OK: $CM renders memcache_servers = $HAVE"
+    catch: *dump
+  # ── Step 4: A revoked token fails on every Keystone process ────────────
+  # The program runs in one API pod and sends every request to the pod IPs on
+  # port 5000, eight validations per pod. It issues the admin token A and the
+  # token T, validates T with A 24 times, revokes T, and validates it 24 times
+  # at once and 24 times after 20 s. With one Service name in memcache_servers
+  # each process spread its connections over the cache pods, and 16 to 20 of
+  # 24 validations answered 200 after the revoke.
+  - name: keystone-cache-ring-revoked-token-fails-everywhere
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          ADMIN_PASS=$(kubectl get secret keystone-admin -n openstack \
+            -o jsonpath='{.data.password}' | base64 -d)
+          if [ -z "$ADMIN_PASS" ]; then
+            echo "FAIL: keystone-admin Secret has empty or missing password field"
+            exit 1
+          fi
+          PODS=$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-cache-ring,app.kubernetes.io/component=api \
+            -o json \
+            | jq -r '.items[] | select(.metadata.deletionTimestamp == null)
+                | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+                | "\(.metadata.name) \(.status.podIP)"')
+          if [ "$(wc -l <<<"$PODS")" -ne 3 ]; then
+            echo "FAIL: want three Ready API pods, have:"
+            echo "${PODS:-<none>}"
+            exit 1
+          fi
+          POD=$(head -n1 <<<"$PODS" | cut -d' ' -f1)
+          read -r -a IPS <<<"$(cut -d' ' -f2 <<<"$PODS" | tr '\n' ' ')"
+          echo "Requests from $POD to ${IPS[*]}"
+          PROG=$(cat <<'PY'
+          import json, sys, time, urllib.error, urllib.request
+
+          password = sys.stdin.read()
+          ips = sys.argv[1:]
+
+          def call(method, url, headers, body=None):
+              req = urllib.request.Request(url, data=body, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return r.status, r.headers
+              except urllib.error.HTTPError as e:
+                  return e.code, e.headers
+
+          def issue():
+              body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"}, "password": password}}}}}).encode()
+              status, headers = call("POST", "http://localhost:5000/v3/auth/tokens",
+                                     {"Content-Type": "application/json"}, body)
+              if status != 201:
+                  sys.exit("issuing a token answered %d" % status)
+              return headers["X-Subject-Token"]
+
+          admin, subject = issue(), issue()
+          auth = {"X-Auth-Token": admin, "X-Subject-Token": subject}
+
+          def validate_all():
+              codes = {}
+              for ip in ips:
+                  for _ in range(8):
+                      status = str(call("GET", "http://%s:5000/v3/auth/tokens" % ip, auth)[0])
+                      codes[status] = codes.get(status, 0) + 1
+              return codes
+
+          result = {"before": validate_all()}
+          result["revoke"], _ = call("DELETE", "http://localhost:5000/v3/auth/tokens", auth)
+          result["after_0s"] = validate_all()
+          time.sleep(20)
+          result["after_20s"] = validate_all()
+          print(json.dumps(result, sort_keys=True))
+          PY
+          )
+          RESULT=$(printf '%s' "$ADMIN_PASS" \
+            | kubectl exec -i -n openstack "$POD" -c keystone -- python3 -c "$PROG" "${IPS[@]}")
+          echo "Result: $RESULT"
+          if ! jq -e '.before == {"200": 24} and .revoke == 204
+              and .after_0s == {"404": 24} and .after_20s == {"404": 24}' <<<"$RESULT" >/dev/null; then
+            echo "FAIL: want 24 times 200 before the revoke, 204 for it, and 24 times 404 at once and after 20 s"
+            exit 1
+          fi
+          echo "OK: the revoked token answers 404 on every validation"
+    catch: *dump
+  # ── Step 5: A cache pod restart does not roll Keystone ─────────────────
+  # The list follows the replica count, not readiness, so a restarted cache
+  # pod keeps its name and its entry. A Keystone that rolled on it would
+  # restart every API pod on every cache pod hiccup.
+  - name: keystone-cache-ring-cache-pod-restart-keeps-config
+    try:
+    - script:
+        timeout: 4m
+        shell: bash
+        content: |
+          set -euo pipefail
+          config_cm() {
+            kubectl get deployment keystone-cache-ring -n openstack \
+              -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}'
+          }
+          generation() {
+            kubectl get deployment keystone-cache-ring -n openstack -o jsonpath='{.metadata.generation}'
+          }
+          ready_cache_pods() {
+            kubectl get pods -n openstack \
+              -l app.kubernetes.io/name=memcached,app.kubernetes.io/instance=keystone-cache-ring-memcached \
+              -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+              | grep -c '^True$' || true
+          }
+          CM_BEFORE=$(config_cm)
+          GEN_BEFORE=$(generation)
+          UID_BEFORE=$(kubectl get pod keystone-cache-ring-memcached-1 -n openstack -o jsonpath='{.metadata.uid}')
+          echo "Before: ConfigMap $CM_BEFORE, generation $GEN_BEFORE, cache pod uid $UID_BEFORE"
+          kubectl delete pod keystone-cache-ring-memcached-1 -n openstack --wait=false
+          DEADLINE=$((SECONDS + 150))
+          while :; do
+            UID_NOW=$(kubectl get pod keystone-cache-ring-memcached-1 -n openstack \
+              -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+            MC_READY=$(kubectl get memcached keystone-cache-ring-memcached -n openstack \
+              -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
+            if [ -n "$UID_NOW" ] && [ "$UID_NOW" != "$UID_BEFORE" ] && [ "$MC_READY" = "True" ] \
+                && [ "$(ready_cache_pods)" -eq 3 ]; then
+              break
+            fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "FAIL: the cache pod did not come back Ready within 150 s (uid ${UID_NOW:-<none>}, Memcached Ready ${MC_READY:-<none>})"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Cache pod keystone-cache-ring-memcached-1 is back as $UID_NOW; waiting 30 s"
+          sleep 30
+          CM_AFTER=$(config_cm)
+          GEN_AFTER=$(generation)
+          if [ "$CM_AFTER" != "$CM_BEFORE" ] || [ "$GEN_AFTER" != "$GEN_BEFORE" ]; then
+            echo "FAIL: the cache pod restart rolled Keystone: ConfigMap $CM_BEFORE -> $CM_AFTER, generation $GEN_BEFORE -> $GEN_AFTER"
+            exit 1
+          fi
+          echo "OK: ConfigMap $CM_AFTER and generation $GEN_AFTER are unchanged"
+    catch: *dump
+  # ── Step 6: A scale-down mounts the shorter list ───────────────────────
+  # The step proves the re-render and Ready=True, not the Memcached watch: the
+  # health re-probe requeues a Ready Keystone every 30 s and every pass reads
+  # the list, so the 120 s bound holds without the watch. The keystone-operator
+  # multicluster envtest proves the watch with the re-probe turned off.
+  - name: keystone-cache-ring-scale-down-rerenders
+    try:
+    - script:
+        timeout: 3m
+        shell: bash
+        content: |
+          set -euo pipefail
+          WANT="keystone-cache-ring-memcached-0.keystone-cache-ring-memcached.openstack.svc:11211,keystone-cache-ring-memcached-1.keystone-cache-ring-memcached.openstack.svc:11211"
+          kubectl patch memcached keystone-cache-ring-memcached -n openstack --type merge -p '{"spec":{"replicas":2}}'
+          DEADLINE=$((SECONDS + 120))
+          HAVE=""
+          while :; do
+            CM=$(kubectl get deployment keystone-cache-ring -n openstack \
+              -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+            HAVE=$(kubectl get configmap "$CM" -n openstack -o jsonpath='{.data.keystone\.conf}' \
+              | sed -n 's/^memcache_servers = //p')
+            if [ "$HAVE" = "$WANT" ]; then
+              echo "OK: $CM renders memcache_servers = $HAVE after $((120 - DEADLINE + SECONDS)) s"
+              break
+            fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              echo "FAIL: after 120 s the mounted ConfigMap $CM renders memcache_servers = $HAVE, want $WANT"
+              exit 1
+            fi
+            sleep 2
+          done
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-cache-ring
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    catch: *dump
