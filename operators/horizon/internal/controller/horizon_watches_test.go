@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
@@ -188,4 +189,35 @@ func TestStoreToHorizonMapper_ListErrorEnqueuesNothing(t *testing.T) {
 	store := &esov1.ClusterSecretStore{ObjectMeta: metav1.ObjectMeta{Name: openBaoClusterStoreName}}
 	g.Expect(storeToHorizonMapper(c, commonv1.SecretStoreKindCluster)(context.Background(), store)).
 		To(BeEmpty(), "a List error logs and returns nil")
+}
+
+// TestMemcachedToHorizonMapper verifies a Memcached event enqueues exactly the
+// Horizon CRs in its namespace whose spec.cache.clusterRef names it, and leaves
+// brownfield caches, other namespaces and other names alone.
+func TestMemcachedToHorizonMapper(t *testing.T) {
+	withCache := func(name, namespace string, spec commonv1.CacheSpec) *horizonv1alpha1.Horizon {
+		cr := testHorizon()
+		cr.Name, cr.Namespace = name, namespace
+		cr.Spec.Cache = spec
+		return cr
+	}
+	managed := func(name string) commonv1.CacheSpec {
+		return commonv1.CacheSpec{ClusterRef: &corev1.LocalObjectReference{Name: name}}
+	}
+	c := newMapperFakeClient(
+		withCache("match", "default", managed("mc")),
+		withCache("brownfield", "default", commonv1.CacheSpec{Servers: []string{"mc:11211"}}),
+		withCache("other-ns", "elsewhere", managed("mc")),
+		withCache("other-name", "default", managed("other-mc")),
+	)
+	mc := cache.NewMemcached()
+	mc.SetNamespace("default")
+	mc.SetName("mc")
+
+	reqs := memcachedToHorizonMapper(c)(context.Background(), mc)
+
+	g := NewGomegaWithT(t)
+	g.Expect(reqs).To(ConsistOf(reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "match"},
+	}))
 }

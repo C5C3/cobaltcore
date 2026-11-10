@@ -40,6 +40,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/gateway"
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
@@ -157,6 +158,14 @@ type HorizonReconciler struct {
 	// opt-in on a cluster without the VPA.
 	vpaAvailable bool
 
+	// memcachedAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and reports whether it serves the
+	// memcached.c5c3.io/v1beta1 Memcached kind. It gates the Memcached watch,
+	// which re-renders local_settings.py when status.serverList changes.
+	// Without the kind no leg is registered, and a managed cache renders the
+	// Service name until a Memcached publishes a list.
+	memcachedAvailable bool
+
 	// MaxConcurrentReconciles bounds how many Horizon CRs reconcile
 	// concurrently. It is threaded from the --max-concurrent-reconciles flag
 	// (see internal/common/bootstrap) and applied to the controller's
@@ -217,6 +226,10 @@ var HorizonRemoteChildKinds = []schema.GroupVersionKind{
 // The Django SECRET_KEY Secret is ESO-managed; the operator only reads it to
 // gate readiness and digest the key material for the rollout annotation.
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+// Required to read status.serverList of the Memcached spec.cache.clusterRef
+// names (an uncached Get) and to re-render local_settings.py when the list
+// changes.
+// +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch
 // Unexercised by the e2e suites; used by internal/common/config/ownership.go:154 (RecordExtraConfigHealth) to patch events.
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // Unexercised by the e2e suites; used by operators/horizon/internal/controller/reconcile_deployment.go:130 (reconcileDeployment) to delete poddisruptionbudgets.
@@ -546,6 +559,19 @@ func (r *HorizonReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		setupLog.Info("VerticalPodAutoscaler CRD not installed; VPA watch disabled, verticalAutoscaling will be reported through VPAReady")
 	}
 
+	// Detect the Memcached CRD: memcached-operator is optional, so the
+	// operator must run on clusters without it, where an unconditional watch
+	// would fail the controller at Start.
+	r.memcachedAvailable, err = gateway.IsGVKAvailable(local.GetRESTMapper(), cache.MemcachedGVK)
+	if err != nil {
+		return err
+	}
+	if r.memcachedAvailable {
+		setupLog.Info("Memcached CRD detected; enabling the Memcached watch")
+	} else {
+		setupLog.Info("Memcached CRD not installed; Memcached watch disabled, managed caches render the Service name")
+	}
+
 	// Register the Horizon field indexer before Watches so
 	// secretToHorizonMapper can rely on it for its MatchingFields lookup. The
 	// index goes on the LOCAL field indexer, not mgr's: with a provider
@@ -623,6 +649,17 @@ func (r *HorizonReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		secretToHorizonMapper(local.GetClient()))
 	if err != nil {
 		return err
+	}
+
+	// Watch the Memcached referenced by spec.cache.clusterRef so a changed
+	// status.serverList re-renders local_settings.py at watch latency. No
+	// predicate: the list lives in status, which a generation predicate drops.
+	if r.memcachedAvailable {
+		b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, cache.NewMemcached(),
+			memcachedToHorizonMapper(local.GetClient()))
+		if err != nil {
+			return err
+		}
 	}
 
 	// Watch both the cluster-scoped ClusterSecretStore and the namespaced

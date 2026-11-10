@@ -33,6 +33,22 @@ func secretToHorizonMapper(c client.Reader) handler.MapFunc {
 	})
 }
 
+// memcachedToHorizonMapper returns a MapFunc that maps Memcached events to
+// reconcile requests for Horizon CRs whose spec.cache.clusterRef targets the
+// Memcached by name in the same namespace. It binds the shared
+// watch.ClusterRefMapper to the Horizon list type and its cache clusterRef.
+func memcachedToHorizonMapper(c client.Reader) handler.MapFunc {
+	return watch.ClusterRefMapper(c,
+		func() client.ObjectList { return &horizonv1alpha1.HorizonList{} },
+		func(o client.Object) string {
+			cr, ok := o.(*horizonv1alpha1.Horizon)
+			if !ok || cr.Spec.Cache.ClusterRef == nil {
+				return ""
+			}
+			return cr.Spec.Cache.ClusterRef.Name
+		})
+}
+
 // storeToHorizonMapper returns a MapFunc that enqueues the Horizon CRs whose
 // effective secret store reference resolves to the changed store object.
 // watchedKind selects which store scope this mapper is registered against — a

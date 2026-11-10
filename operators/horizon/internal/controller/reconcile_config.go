@@ -70,7 +70,14 @@ func (r *HorizonReconciler) reconcileConfig(ctx context.Context, children client
 	config.RecordExtraConfigHealth(r.Recorder, horizon, &horizon.Status.Conditions, horizon.Generation,
 		config.FindOwnedSettingOverrides(names, horizonv1alpha1.OwnedConfigKeys))
 
-	rendered, err := renderLocalSettings(horizon)
+	// A failed read of the managed cache's server list writes no ConfigMap: the
+	// running pods keep their configuration and the next pass retries.
+	managed, err := cache.ManagedServers(ctx, children, horizon.Namespace, &horizon.Spec.Cache)
+	if err != nil {
+		return "", fmt.Errorf("resolving cache servers: %w", err)
+	}
+
+	rendered, err := renderLocalSettings(horizon, cache.ResolveServers(&horizon.Spec.Cache, managed))
 	if err != nil {
 		return "", fmt.Errorf("rendering local_settings.py: %w", err)
 	}
@@ -97,9 +104,10 @@ func (r *HorizonReconciler) reconcileConfig(ctx context.Context, children client
 // then rendered via the shared pysettings renderer. SECRET_KEY never enters
 // the rendered file: the preamble reads it from the HORIZON_SECRET_KEY env
 // var sourced from spec.secretKeyRef (the webhook rejects a SECRET_KEY
-// extraConfig override).
-func renderLocalSettings(horizon *horizonv1alpha1.Horizon) (string, error) {
-	settings, err := defaultSettings(horizon)
+// extraConfig override). cacheServers is the list cache.ResolveServers
+// returned.
+func renderLocalSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (string, error) {
+	settings, err := defaultSettings(horizon, cacheServers)
 	if err != nil {
 		return "", err
 	}
@@ -129,14 +137,14 @@ func renderLocalSettings(horizon *horizonv1alpha1.Horizon) (string, error) {
 }
 
 // defaultSettings returns the operator-managed Django settings.
-func defaultSettings(horizon *horizonv1alpha1.Horizon) (map[string]apiextensionsv1.JSON, error) {
+func defaultSettings(horizon *horizonv1alpha1.Horizon, cacheServers string) (map[string]apiextensionsv1.JSON, error) {
 	logging := effectiveLogging(horizon.Spec.Logging)
 
 	backend := effectiveCacheBackend(horizon)
 	cacheDefault := map[string]any{
 		"BACKEND":    backend,
 		"KEY_PREFIX": cacheKeyPrefix(horizon),
-		"LOCATION":   cacheLocations(horizon),
+		"LOCATION":   cacheLocations(cacheServers),
 	}
 	// Django passes the OPTIONS of a PyMemcacheCache to pymemcache's
 	// HashClient. Without them a cache call against a Memcached that stops
@@ -443,15 +451,13 @@ func effectiveCacheBackend(horizon *horizonv1alpha1.Horizon) string {
 	return horizonv1alpha1.DefaultCacheBackend
 }
 
-// cacheLocations resolves the Memcached endpoint list for the Django CACHES
-// LOCATION entry, delegating to the shared cache resolver and splitting its
-// comma-joined form into the list Django expects.
-func cacheLocations(horizon *horizonv1alpha1.Horizon) []any {
-	joined := cache.ResolveServers(&horizon.Spec.Cache, nil)
-	if joined == "" {
+// cacheLocations splits the comma-joined server list cache.ResolveServers
+// returned into the list the Django CACHES LOCATION entry expects.
+func cacheLocations(cacheServers string) []any {
+	if cacheServers == "" {
 		return nil
 	}
-	servers := strings.Split(joined, ",")
+	servers := strings.Split(cacheServers, ",")
 	locations := make([]any, 0, len(servers))
 	for _, s := range servers {
 		locations = append(locations, s)

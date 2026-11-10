@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -156,6 +157,29 @@ func TestReconcile_TargetClusterUnavailableGatesReconcile(t *testing.T) {
 	var secrets corev1.SecretList
 	g.Expect(r.List(ctx, &secrets)).To(Succeed())
 	g.Expect(secrets.Items).To(HaveLen(1), "only the seeded SECRET_KEY Secret may exist")
+}
+
+// TestReconcile_MemcachedReadErrorMarksConfigReadyFalse verifies that a
+// failed read of the managed cache's Memcached takes the config-failure path:
+// ConfigReady=False with reason ConfigError and no config ConfigMap.
+func TestReconcile_MemcachedReadErrorMarksConfigReadyFalse(t *testing.T) {
+	g := NewGomegaWithT(t)
+	var gets atomic.Int32
+	r := newMemcachedTestReconciler(&gets, context.DeadlineExceeded, testHorizon(),
+		readyClusterSecretStore(openBaoClusterStoreName),
+		secretKeySecret("horizon-secret-key", "default", "secret-key", "django-key"))
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: horizonKey})
+	g.Expect(err).To(MatchError(ContainSubstring("resolving cache servers")))
+	g.Expect(gets.Load()).To(BeNumerically(">=", 1))
+
+	cond := conditions.GetCondition(getHorizon(t, r).Status.Conditions, conditionTypeConfigReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(context.Background(), &configMaps)).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
 }
 
 // TestReconcile_SuspendedCRTouchesNothing pins where the suspend gate sits:
