@@ -19,13 +19,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	commoncache "github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -98,18 +98,6 @@ const (
 	// creating a zero-replica broker.
 	infraRabbitMQReplicasDefault = commonv1.DefaultReplicas
 )
-
-// memcachedGVK is the GroupVersionKind of the Memcached CR projected in managed
-// cache mode. DECISION memcached.c5c3.io publishes NO Go
-// module, so the Memcached child is built and applied as an
-// unstructured.Unstructured rather than a typed client object. The fake client
-// and the real apiserver both accept an unstructured object carrying this GVK;
-// no scheme registration is required.
-var memcachedGVK = schema.GroupVersionKind{
-	Group:   "memcached.c5c3.io",
-	Version: "v1beta1",
-	Kind:    "Memcached",
-}
 
 // messagingRecreateAllowedAnnotation, when set to a truthy value on a
 // ControlPlane, opts that ControlPlane in to the DESTRUCTIVE convergence of a
@@ -902,7 +890,7 @@ func mariaDBSecurityMatches(m *mariadbv1alpha1.MariaDB, galeraEnabled bool) bool
 // instance — the shared spec.infrastructure.cache or a per-service dedicated one
 // (see ensureMariaDB). The Memcached CR is handled as an
 // unstructured.Unstructured because memcached.c5c3.io ships no Go module (see
-// memcachedGVK).
+// commoncache.MemcachedGVK).
 //
 // Like ensureMariaDB it stays read-modify-write: the write is gated on the LIVE
 // object's ownership through isControlPlaneChild, the same test ensureMariaDB
@@ -960,8 +948,7 @@ func (r *ControlPlaneReconciler) ensureMemcached(
 		return nil
 	}
 
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u := commoncache.NewMemcached()
 	err := c.Get(ctx, key, u)
 	switch {
 	case apierrors.IsNotFound(err):

@@ -54,6 +54,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
@@ -423,8 +424,8 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		// while either is converging, so nothing below runs until they report.
 		mcEventuallyExists(t, ctx, targetClient, mariadbKey, &mariadbv1alpha1.MariaDB{}, "MariaDB")
 		mcExpectAbsent(t, ctx, mgmtClient, mariadbKey, &mariadbv1alpha1.MariaDB{}, "MariaDB")
-		mcEventuallyExists(t, ctx, targetClient, memcachedKey, mcMemcached(), "Memcached")
-		mcExpectAbsent(t, ctx, mgmtClient, memcachedKey, mcMemcached(), "Memcached")
+		mcEventuallyExists(t, ctx, targetClient, memcachedKey, cache.NewMemcached(), "Memcached")
+		mcExpectAbsent(t, ctx, mgmtClient, memcachedKey, cache.NewMemcached(), "Memcached")
 
 		simulateMariaDBReadyWhenPresent(t, ctx, targetClient, mariadbKey)
 		simulateMemcachedReadyWhenPresent(t, ctx, targetClient, memcachedKey)
@@ -495,7 +496,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			what string
 		}{
 			{mariadbKey, &mariadbv1alpha1.MariaDB{}, "MariaDB"},
-			{memcachedKey, mcMemcached(), "Memcached"},
+			{memcachedKey, cache.NewMemcached(), "Memcached"},
 			{tenantSAKey, &corev1.ServiceAccount{}, "tenant ServiceAccount"},
 			{tenantCertKey, mcCertificate(), "tenant Certificate"},
 			{tenantStoreKey, &esov1.SecretStore{}, "tenant SecretStore"},
@@ -909,8 +910,8 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		}
 		mcEventuallyExists(t, ctx, targetClient, cinderMariaDBKey, &mariadbv1alpha1.MariaDB{}, "block-side MariaDB")
 		mcExpectAbsent(t, ctx, mgmtClient, cinderMariaDBKey, &mariadbv1alpha1.MariaDB{}, "block-side MariaDB")
-		mcEventuallyExists(t, ctx, targetClient, cinderMemcachedKey, mcMemcached(), "block-side Memcached")
-		mcExpectAbsent(t, ctx, mgmtClient, cinderMemcachedKey, mcMemcached(), "block-side Memcached")
+		mcEventuallyExists(t, ctx, targetClient, cinderMemcachedKey, cache.NewMemcached(), "block-side Memcached")
+		mcExpectAbsent(t, ctx, mgmtClient, cinderMemcachedKey, cache.NewMemcached(), "block-side Memcached")
 		simulateMariaDBReadyWhenPresent(t, ctx, targetClient, cinderMariaDBKey)
 		simulateMemcachedReadyWhenPresent(t, ctx, targetClient, cinderMemcachedKey)
 
@@ -1035,8 +1036,8 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		}
 		mcEventuallyExists(t, ctx, targetClient, novaMariaDBKey, &mariadbv1alpha1.MariaDB{}, "compute-side MariaDB")
 		mcExpectAbsent(t, ctx, mgmtClient, novaMariaDBKey, &mariadbv1alpha1.MariaDB{}, "compute-side MariaDB")
-		mcEventuallyExists(t, ctx, targetClient, novaMemcachedKey, mcMemcached(), "compute-side Memcached")
-		mcExpectAbsent(t, ctx, mgmtClient, novaMemcachedKey, mcMemcached(), "compute-side Memcached")
+		mcEventuallyExists(t, ctx, targetClient, novaMemcachedKey, cache.NewMemcached(), "compute-side Memcached")
+		mcExpectAbsent(t, ctx, mgmtClient, novaMemcachedKey, cache.NewMemcached(), "compute-side Memcached")
 		simulateMariaDBReadyWhenPresent(t, ctx, targetClient, novaMariaDBKey)
 		simulateMemcachedReadyWhenPresent(t, ctx, targetClient, novaMemcachedKey)
 
@@ -2058,7 +2059,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			what string
 		}{
 			{mariadbKey, &mariadbv1alpha1.MariaDB{}, "MariaDB"},
-			{memcachedKey, mcMemcached(), "Memcached"},
+			{memcachedKey, cache.NewMemcached(), "Memcached"},
 			{tenantSAKey, &corev1.ServiceAccount{}, "tenant ServiceAccount"},
 			{tenantCertKey, mcCertificate(), "tenant Certificate"},
 			{tenantStoreKey, &esov1.SecretStore{}, "tenant SecretStore"},
@@ -2144,18 +2145,8 @@ func mcMarkRegistrationConverged(t testing.TB, ctx context.Context, c client.Cli
 	g.Expect(c.Status().Update(ctx, ks)).To(Succeed(), "report the registration as converged")
 }
 
-// mcMemcached returns an empty Memcached carrier: the memcached.c5c3.io CRD
-// ships no Go module, so the reconciler creates it — and this test reads it —
-// as an *unstructured.Unstructured carrying memcachedGVK. A fresh object per
-// call, because every Get populates the one it is handed.
-func mcMemcached() *unstructured.Unstructured {
-	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
-	return u
-}
-
-// mcCertificate returns an empty cert-manager Certificate carrier, for the same
-// reason as mcMemcached: no Go type ships for it, so it is handled unstructured.
+// mcCertificate returns an empty cert-manager Certificate carrier. The operator
+// takes no cert-manager Go dependency, so the kind is handled unstructured.
 func mcCertificate() *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(certificateGVK)

@@ -46,6 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	"github.com/c5c3/cobaltcore/internal/common/apply"
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
@@ -160,7 +161,7 @@ func startControlPlaneEnvTest(
 			}
 
 			memcached := &unstructured.Unstructured{}
-			memcached.SetGroupVersionKind(memcachedGVK)
+			memcached.SetGroupVersionKind(cache.MemcachedGVK)
 
 			if err := ctrl.NewControllerManagedBy(mgr).
 				For(&c5c3v1alpha1.ControlPlane{}).
@@ -530,13 +531,13 @@ func simulateMariaDBReadyWhenPresent(t testing.TB, ctx context.Context, c client
 
 // simulateMemcachedReadyWhenPresent waits for the projected (unstructured)
 // Memcached child, then sets its status Ready=True via the shared simulator
-// (which targets the same memcachedGVK the reconciler uses).
+// (which targets the same cache.MemcachedGVK the reconciler uses).
 func simulateMemcachedReadyWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
 	t.Helper()
 	g := NewGomegaWithT(t)
 
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Eventually(func() error {
 		return c.Get(ctx, key, u)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Memcached child should be created")
@@ -6209,7 +6210,7 @@ func TestIntegration_ExternalMode_ConvergesToReadyWithNoWorkloads(t *testing.T) 
 	g.Expect(mariadbList.Items).To(BeEmpty(), "External mode must create no MariaDB")
 
 	memcachedList := &unstructured.UnstructuredList{}
-	memcachedList.SetGroupVersionKind(memcachedGVK)
+	memcachedList.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.List(ctx, memcachedList, client.InNamespace(ns.Name))).To(Succeed())
 	g.Expect(memcachedList.Items).To(BeEmpty(), "External mode must create no Memcached")
 
@@ -6895,7 +6896,7 @@ func TestIntegration_DedicatedBackingServices(t *testing.T) {
 
 	for _, cacheName := range []string{"cp-keystone-cache", "cp-horizon-cache"} {
 		u := &unstructured.Unstructured{}
-		u.SetGroupVersionKind(memcachedGVK)
+		u.SetGroupVersionKind(cache.MemcachedGVK)
 		g.Eventually(func() error {
 			return c.Get(ctx, client.ObjectKey{Name: cacheName, Namespace: ns.Name}, u)
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Memcached %q must be provisioned", cacheName)
@@ -6909,7 +6910,7 @@ func TestIntegration_DedicatedBackingServices(t *testing.T) {
 	g.Consistently(func() bool {
 		dbErr := c.Get(ctx, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name}, &mariadbv1alpha1.MariaDB{})
 		sharedCache := &unstructured.Unstructured{}
-		sharedCache.SetGroupVersionKind(memcachedGVK)
+		sharedCache.SetGroupVersionKind(cache.MemcachedGVK)
 		cacheErr := c.Get(ctx, client.ObjectKey{Name: "openstack-memcached", Namespace: ns.Name}, sharedCache)
 		return apierrors.IsNotFound(dbErr) && apierrors.IsNotFound(cacheErr)
 	}, 2*time.Second, itPollInterval).Should(BeTrue(),
@@ -7191,7 +7192,7 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 	g.Expect(mariadb.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
 
 	memcached := &unstructured.Unstructured{}
-	memcached.SetGroupVersionKind(memcachedGVK)
+	memcached.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Eventually(func() error {
 		return c.Get(ctx, client.ObjectKey{Name: "openstack-memcached", Namespace: keystoneNS}, memcached)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),

@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -110,12 +111,12 @@ func TestReconcileInfrastructure_ManagedProjectsChildren(t *testing.T) {
 
 	// Memcached child: unstructured GVK + name + replicas.
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name:      "openstack-memcached",
 		Namespace: childNamespace(cp),
 	}, u)).To(Succeed(), "Memcached CR must be created in the openstack namespace")
-	g.Expect(u.GroupVersionKind()).To(Equal(memcachedGVK))
+	g.Expect(u.GroupVersionKind()).To(Equal(cache.MemcachedGVK))
 
 	replicas, found, err := unstructured.NestedInt64(u.Object, "spec", "replicas")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -164,7 +165,7 @@ func TestReconcileInfrastructure_ManagedReadyWhenChildrenReady(t *testing.T) {
 		},
 	}
 	readyMemcached := &unstructured.Unstructured{}
-	readyMemcached.SetGroupVersionKind(memcachedGVK)
+	readyMemcached.SetGroupVersionKind(cache.MemcachedGVK)
 	readyMemcached.SetName("openstack-memcached")
 	readyMemcached.SetNamespace(childNamespace(cp))
 	_ = unstructured.SetNestedSlice(readyMemcached.Object, []interface{}{
@@ -208,7 +209,7 @@ func TestReconcileInfrastructure_ManagedAdoptsExistingWithoutMutating(t *testing
 		},
 	}
 	existingMemcached := &unstructured.Unstructured{}
-	existingMemcached.SetGroupVersionKind(memcachedGVK)
+	existingMemcached.SetGroupVersionKind(cache.MemcachedGVK)
 	existingMemcached.SetName("openstack-memcached")
 	existingMemcached.SetNamespace(childNamespace(cp))
 	_ = unstructured.SetNestedField(existingMemcached.Object, int64(1), "spec", "replicas")
@@ -234,7 +235,7 @@ func TestReconcileInfrastructure_ManagedAdoptsExistingWithoutMutating(t *testing
 
 	// Memcached: replicas untouched, NOT adopted for GC.
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: "openstack-memcached", Namespace: childNamespace(cp),
 	}, u)).To(Succeed())
@@ -429,7 +430,7 @@ func TestEnsureMemcached_OwnedReconcilesReplicas(t *testing.T) {
 	cp := managedInfraControlPlane() // Cache.Replicas = 3
 
 	ownedMemcached := &unstructured.Unstructured{}
-	ownedMemcached.SetGroupVersionKind(memcachedGVK)
+	ownedMemcached.SetGroupVersionKind(cache.MemcachedGVK)
 	ownedMemcached.SetName("openstack-memcached")
 	ownedMemcached.SetNamespace(childNamespace(cp))
 	_ = unstructured.SetNestedField(ownedMemcached.Object, int64(1), "spec", "replicas") // drifted
@@ -442,7 +443,7 @@ func TestEnsureMemcached_OwnedReconcilesReplicas(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: "openstack-memcached", Namespace: childNamespace(cp),
 	}, u)).To(Succeed())
@@ -488,7 +489,7 @@ func TestReconcileInfrastructure_BrownfieldSkipsChildren(t *testing.T) {
 
 	// No Memcached child must exist.
 	memcachedList := &unstructured.UnstructuredList{}
-	memcachedList.SetGroupVersionKind(memcachedGVK)
+	memcachedList.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(client.IgnoreNotFound(c.List(context.Background(), memcachedList))).To(Succeed())
 	g.Expect(memcachedList.Items).To(BeEmpty(), "brownfield cache must not create a Memcached CR")
 
@@ -546,7 +547,7 @@ func TestReconcileInfrastructure_ExternalModeReportsExternallyManaged(t *testing
 	g.Expect(mariadbList.Items).To(BeEmpty(), "External mode must not create a MariaDB CR")
 
 	memcachedList := &unstructured.UnstructuredList{}
-	memcachedList.SetGroupVersionKind(memcachedGVK)
+	memcachedList.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
 	g.Expect(memcachedList.Items).To(BeEmpty(), "External mode must not create a Memcached CR")
 }
@@ -620,7 +621,7 @@ func dedicatedInfraControlPlane() *c5c3v1alpha1.ControlPlane {
 // can gate readiness on exactly the instances it wants still converging.
 func readyMemcached(name, namespace string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u.SetGroupVersionKind(cache.MemcachedGVK)
 	u.SetName(name)
 	u.SetNamespace(namespace)
 	_ = unstructured.SetNestedSlice(u.Object, []interface{}{
@@ -675,7 +676,7 @@ func TestReconcileInfrastructure_DedicatedProjectsChildren(t *testing.T) {
 		{name: "cp-horizon-cache", replicas: 2},
 	} {
 		u := &unstructured.Unstructured{}
-		u.SetGroupVersionKind(memcachedGVK)
+		u.SetGroupVersionKind(cache.MemcachedGVK)
 		g.Expect(c.Get(context.Background(), types.NamespacedName{
 			Name: tc.name, Namespace: childNamespace(cp),
 		}, u)).To(Succeed(), "Memcached %q must be provisioned", tc.name)
@@ -713,7 +714,7 @@ func TestReconcileInfrastructure_SkipsSharedInstancesNoServiceResolvesTo(t *test
 		"the shared MariaDB has no consumer left and must not be provisioned")
 
 	memcachedList := &unstructured.UnstructuredList{}
-	memcachedList.SetGroupVersionKind(memcachedGVK)
+	memcachedList.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
 	var names []string
 	for _, item := range memcachedList.Items {
@@ -749,7 +750,7 @@ func TestReconcileInfrastructure_PartialOptOutKeepsConsumedSharedCache(t *testin
 	g.Expect(mariadbList.Items[0].Name).To(Equal("cp-keystone-db"))
 
 	memcachedList := &unstructured.UnstructuredList{}
-	memcachedList.SetGroupVersionKind(memcachedGVK)
+	memcachedList.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
 	g.Expect(memcachedList.Items).To(HaveLen(1))
 	g.Expect(memcachedList.Items[0].GetName()).To(Equal("openstack-memcached"),
@@ -790,7 +791,7 @@ func TestManagedInfraInstances_DeduplicatesOnChildIdentity(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: "openstack-memcached", Namespace: childNamespace(cp),
 	}, u)).To(Succeed())
@@ -923,7 +924,7 @@ func TestReconcileInfrastructure_DedicatedBrownfieldProvisionsNothing(t *testing
 	// separate namespaces — hold InfrastructureReady behind a cache for a service
 	// that does not exist; see the Horizon gate in managedInfraInstances.)
 	memcachedList := &unstructured.UnstructuredList{}
-	memcachedList.SetGroupVersionKind(memcachedGVK)
+	memcachedList.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.List(context.Background(), memcachedList)).To(Succeed())
 	g.Expect(memcachedList.Items).To(BeEmpty(),
 		"a brownfield dedicated cache provisions nothing, and no declared service resolves to the shared cache")
@@ -1086,7 +1087,7 @@ func TestEnsureMariaDB_RefusesToReshapeAForeignInstance(t *testing.T) {
 // can seed an unlabelled instance or one whose replica count is absent.
 func seedMemcached(namespace string, labels map[string]string, replicas *int64) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u.SetGroupVersionKind(cache.MemcachedGVK)
 	u.SetName("openstack-memcached")
 	u.SetNamespace(namespace)
 	if replicas != nil {
@@ -1103,7 +1104,7 @@ func seedMemcached(namespace string, labels map[string]string, replicas *int64) 
 // no Memcached pass ever deletes the instance it compares.
 func getMemcached(g Gomega, c client.Client, namespace string) (*unstructured.Unstructured, int64, bool) {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(memcachedGVK)
+	u.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: "openstack-memcached", Namespace: namespace,
 	}, u)).To(Succeed(), "the Memcached in %q must still exist", namespace)
@@ -2034,7 +2035,7 @@ func TestReconcileInfrastructure_PlacedBackingServicesLandOnTheTarget(t *testing
 
 	// The dashboard's cache is on the target, recognizable by its labels alone.
 	remote := &unstructured.Unstructured{}
-	remote.SetGroupVersionKind(memcachedGVK)
+	remote.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(target.Get(ctx, types.NamespacedName{
 		Name: "openstack-memcached", Namespace: "dashboard",
 	}, remote)).To(Succeed(), "the placed service's cache must be provisioned on its own cluster")
@@ -2043,7 +2044,7 @@ func TestReconcileInfrastructure_PlacedBackingServicesLandOnTheTarget(t *testing
 		"an owner reference on the target cluster names a UID that cluster cannot resolve")
 
 	athome := &unstructured.Unstructured{}
-	athome.SetGroupVersionKind(memcachedGVK)
+	athome.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
 		Name: "openstack-memcached", Namespace: "dashboard",
 	}, athome)).NotTo(Succeed(), "a placed instance must not be provisioned at home as well")
@@ -2090,7 +2091,7 @@ func TestReconcileInfrastructure_PlacedCacheReplicasReprojectOnTheTarget(t *test
 		"an owner reference on the target cluster names a UID that cluster cannot resolve")
 
 	athome := &unstructured.Unstructured{}
-	athome.SetGroupVersionKind(memcachedGVK)
+	athome.SetGroupVersionKind(cache.MemcachedGVK)
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
 		Name: "openstack-memcached", Namespace: "dashboard",
 	}, athome)).NotTo(Succeed(), "a placed instance must not be provisioned at home as well")
@@ -2157,7 +2158,7 @@ func TestReconcileInfrastructure_UnresolvableTargetProvisionsNothing(t *testing.
 		g.Expect(databases.Items).To(BeEmpty(), "no database may be provisioned on the %s cluster", name)
 
 		caches := &unstructured.UnstructuredList{}
-		caches.SetGroupVersionKind(memcachedGVK)
+		caches.SetGroupVersionKind(cache.MemcachedGVK)
 		g.Expect(c.List(ctx, caches)).To(Succeed())
 		g.Expect(caches.Items).To(BeEmpty(), "no cache may be provisioned on the %s cluster", name)
 	}

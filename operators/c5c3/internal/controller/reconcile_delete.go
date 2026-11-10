@@ -35,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -1473,7 +1474,7 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 				ObjectMeta: metav1.ObjectMeta{Name: inst.name, Namespace: namespace},
 			})
 		case "Memcached":
-			objs = append(objs, unstructuredIn(memcachedGVK, inst.name))
+			objs = append(objs, unstructuredIn(cache.MemcachedGVK, inst.name))
 		}
 	}
 	// The credential material, which follows the Keystone service.

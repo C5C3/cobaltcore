@@ -217,7 +217,7 @@ func callerDir() string {
 //
 // DECISION Memcached (memcached.c5c3.io) is deliberately NOT
 // registered — it ships no Go module, so the reconciler handles it as an
-// *unstructured.Unstructured carrying memcachedGVK (see reconcile_infrastructure.go).
+// *unstructured.Unstructured carrying cache.MemcachedGVK (see internal/common/cache).
 // Its CRD is still loaded into envtest via the memcached-operator fake CRD dir so
 // the apiserver can serve the unstructured object, but no scheme registration is
 // required.
