@@ -125,9 +125,10 @@ spec:
           echo "OK: the Memcached partition is lifted"
   # ── Step 4: Hold the partition for 120 s, no condition may regress ────────
   # The conditions alone read the same with no fault at all, so the script
-  # first connects from the Keystone API pod to openstack-memcached:11211, the
-  # address Keystone's [cache] names: the partition must leave that connect
-  # unanswered. A single assert passes on the first read, so the script then
+  # first connects from the Keystone API pod to openstack-memcached:11211; the
+  # headless Service resolves to the cache pods whose per-pod names Keystone's
+  # [cache] lists, so the partition must leave that connect unanswered. A
+  # single assert passes on the first read, so the script then
   # reads every 10 s for the whole 120 s and fails on the first miss. Each read
   # first GETs the endpoint the operator probes (status.endpoint, /v3) from the
   # API pod with the operator's 10 s timeout, because the operator re-probes

@@ -452,6 +452,7 @@ resources and their dependencies:
 | `cert-manager.io` | `certificates` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch |
+| `memcached.c5c3.io` | `memcacheds` | get, list, watch |
 | `external-secrets.io` | `externalsecrets` | get, list, watch, create, update, patch |
 | `external-secrets.io` | `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores` | get, list, watch |

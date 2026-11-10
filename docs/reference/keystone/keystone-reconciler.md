@@ -77,6 +77,7 @@ The controller watches the primary Keystone CR and all owned resources:
 | `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. A probe the API server does not answer (anything but a no-match) fails the operator's start after three attempts, so the operator never starts without the watch for a kind its cluster serves at that moment. As with the HTTPRoute leg, that detection gates the local watch and answers for CRs without a target cluster, while a CR that names one is probed against its target per pass. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
 | `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` |
+| `Memcached` | `Watches()` (optional) | Registered only when the cluster serves the `memcached.c5c3.io/v1beta1` Memcached kind, detected at startup via the manager's `RESTMapper`. `memcachedToKeystoneMapper` enqueues the Keystone CRs whose `spec.cache.clusterRef` names the Memcached; a changed `status.serverList` re-renders `keystone.conf`. No predicate, because the list lives in status |
 | `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady`; per-ref fan-out via `storeToKeystoneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind) enqueues only the Keystone CRs whose effective `spec.secretStoreRef` resolves to the changed cluster store. Not registered when the operator runs with `--namespace`: a `Role` cannot grant the cluster-scoped kind, and the Secrets step refuses a cluster store with `ClusterSecretStoreUnsupported` instead |
 | `SecretStore` | `Watches()` | The namespaced twin of the store watch, scoped to the store's own namespace, so a Keystone CR pinned to a per-tenant `SecretStore` still reacts immediately to its backend health (`storeToKeystoneMapper` for the namespaced kind) |
 | `KeystoneIdentityBackend` | `Watches()` | Maps backend events to the attached Keystone (`identityBackendToKeystoneMapper`), with no generation predicate: `DomainReady` status flips trigger projection and `DeletionTimestamp` flips trigger de-projection |
@@ -226,6 +227,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch |
+| `memcached.c5c3.io` | `memcacheds` | get, list, watch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `policy` | `poddisruptionbudgets` | get, list, watch, create, update, patch, delete |
@@ -2063,7 +2065,15 @@ The following INI sections are generated from CRD spec fields:
 | Mode | Source | Format |
 | --- | --- | --- |
 | Brownfield | `spec.cache.servers` | Comma-joined list |
-| Managed | `spec.cache.clusterRef.name` | `memcached-0.{name}:11211,memcached-1.{name}:11211,memcached-2.{name}:11211` |
+| Managed | `status.serverList` of the Memcached `spec.cache.clusterRef.name` names | Checked, sorted, deduplicated and comma-joined, for example `{name}-0.{name}.{namespace}.svc:11211,{name}-1.{name}.{namespace}.svc:11211` |
+| Managed, no list | `spec.cache.clusterRef.name` | `{name}:11211` while the Memcached is missing, its kind is not served, or its list is empty |
+
+`cache.ManagedServers` reads the Memcached on every pass, before the render
+cache check, because the list changes without a Keystone generation bump. The
+rendered list is part of the render cache key. A list entry that is not a
+`<dns-name>:<port>` pair, or a read that fails for another reason than a
+missing object or kind, fails the step with `resolving cache servers` and
+`SecretsReady=False` (reason `ConfigError`); no ConfigMap is written.
 
 **Step 3: Resolve database connection string**
 

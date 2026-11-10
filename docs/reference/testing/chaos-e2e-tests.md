@@ -1024,7 +1024,7 @@ test asserts that all 6 conditions remain `True` while Memcached is down.
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml`: Keystone CR `keystone-chaos-mc` with database `keystone_chaos_mc` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady. `workload.sh start` then starts the workload and waits for `READY`. |
 | 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-memcached` targeting `app.kubernetes.io/name: memcached` in `openstack`. `workload.sh mark fault-start` runs right before it. |
-| 4 | Verify chaos effect and assert no-regression | `script` (150s) + `assert` (5m) | Reads desired replica count from Deployment `.spec.replicas`, polls Memcached Deployment `readyReplicas` to confirm chaos took effect (drop below desired replicas) and recovery completed (return to desired replicas), then asserts all 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
+| 4 | Verify chaos effect and assert no-regression | `script` (150s) + `assert` (5m) | Reads desired replica count from `.spec.replicas` of Memcached `openstack-memcached`, counts its pods with condition `Ready=True` by the labels `app.kubernetes.io/name=memcached,app.kubernetes.io/instance=openstack-memcached` to confirm chaos took effect (drop below desired replicas) and recovery completed (return to desired replicas), then asserts all 6 conditions: SecretsReady=True, FernetKeysReady=True, DatabaseReady=True, DeploymentReady=True, BootstrapReady=True, Ready=True (AllReady) |
 | 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached` to allow recovery. `workload.sh mark fault-end` runs right after it. |
 | 6 | Assert Ready=True after recovery | `assert` (5m) | Ready=True with reason AllReady |
 | 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
@@ -1037,13 +1037,14 @@ test asserts that all 6 conditions remain `True` while Memcached is down.
 Chaos Mesh experiment status, Keystone CR status, pod logs (including `--previous`), and
 namespace events.
 
-**Design note:** Step 4 uses Deployment-level `readyReplicas` polling instead of Pod-level
+**Design note:** Step 4 polls the ready pods by label instead of a Pod-level
 `kubectl wait` with label selectors. The original `kubectl wait` approach raced with pod
 deletion — when Chaos Mesh deletes a pod, the watch errors with `NotFound` because it
 resolves the label selector once and watches the specific pod object; it never
-re-resolves onto the replacement pod. Deployment-level polling
-watches the persistent Deployment object and is resilient to pod replacements, matching
-the pattern used by `operator-pod-crash` and `api-pod-kill-pdb`.
+re-resolves onto the replacement pod. Each poll resolves the selector again, so it is
+resilient to pod replacements. The pods are counted instead of `status.readyReplicas` of the
+Memcached, which lags them by one reconcile of memcached-operator, so a kill followed by
+a fast restart cannot pass unseen.
 
 ---
 
@@ -2192,7 +2193,7 @@ restarts.
 | 1 | Apply Horizon CR | `apply` | Applies `00-horizon-cr.yaml`: Horizon CR `horizon-chaos-mc` with one replica and cache `clusterRef` `openstack-memcached` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | `Ready=True` with reason `AllReady`. `workload.sh start` then starts the workload and waits for `READY`. |
 | 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml`: PodChaos `kill-memcached-horizon` (`action: pod-kill`, `mode: one`, `gracePeriod: 0`) targeting `app.kubernetes.io/name: memcached` in `openstack`. `workload.sh mark fault-start` runs right before it. |
-| 4 | Verify the kill took effect and Memcached recovered | `script` (150s) + `assert` (5m) | Reads `.spec.replicas` of Deployment `openstack-memcached`, polls `readyReplicas` up to 15 times at 2 s until it drops below that count, then up to 45 times at 2 s until it equals that count again. Then asserts `Ready=True` with reason `AllReady` |
+| 4 | Verify the kill took effect and Memcached recovered | `script` (150s) + `assert` (5m) | Reads `.spec.replicas` of Memcached `openstack-memcached` and counts its pods with condition `Ready=True` by the labels `app.kubernetes.io/name=memcached,app.kubernetes.io/instance=openstack-memcached`: up to 15 times at 2 s until the count drops below the desired count, then up to 45 times at 2 s until it equals that count again. Then asserts `Ready=True` with reason `AllReady` |
 | 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-memcached-horizon`. `workload.sh mark fault-end` runs right after it. |
 | 6 | Assert Ready held and zero dashboard pod restarts | `assert` (5m) + `script` | `Ready=True` with reason `AllReady`. The script reads the `restartCount` of every container in the pods labelled `app.kubernetes.io/name=horizon,app.kubernetes.io/instance=horizon-chaos-mc` and fails when one of them is not 0 |
 | 7 | Judge the workload | `script` (15m) | `workload.sh verify` waits out the recovery window, stops the workload and judges its records and consistency checks against the budget |
@@ -2210,10 +2211,12 @@ Steps 4 and 6 call `../diagnostics.sh chaos horizon-chaos-mc --cr-kind=horizon` 
 - The suite asserts no degraded condition. A degraded condition would need a
   cache-health probe, and the operator has none. Recovery without a restart is the
   contract the suite can observe.
-- Step 4 polls the Deployment's `readyReplicas`. A `kubectl wait` on single Pods
-  errors with `NotFound` when Chaos Mesh deletes the Pod (issue #214), and
-  Deployment-level polling is not affected by a Pod replacement.
-- Step 4 first requires `readyReplicas` to drop below the desired count. Without that
+- Step 4 polls the ready pods of the Memcached by label. A `kubectl wait` on single
+  Pods errors with `NotFound` when Chaos Mesh deletes the Pod (issue #214), and a
+  poll that resolves the selector each time is not affected by a Pod replacement.
+  The pods are counted instead of `status.readyReplicas` of the Memcached, which
+  lags them by one reconcile of memcached-operator.
+- Step 4 first requires the ready count to drop below the desired count. Without that
   check the recovery loop would pass even if the PodChaos selector matched no pod.
 - The 150s script timeout covers a worst case of 120 s (15 polls and 45 polls at 2 s)
   with a 30 s margin.
@@ -3578,9 +3581,10 @@ the NetworkChaos as YAML.
   every 10 seconds for the whole 120 seconds. A condition that turns `False` for one
   reconcile fails the step.
 - Conditions that stay `True` read the same with no fault at all, so step 4 first
-  proves the partition reached the cache path: the connect goes to the address
-  Keystone's `[cache]` names, from the API pod the partition targets, and only a
-  timeout counts.
+  proves the partition reached the cache path: the connect goes to
+  `openstack-memcached:11211` from the API pod the partition targets, and only a
+  timeout counts. The headless Service resolves to the cache pods whose per-pod
+  names Keystone's `[cache]` lists.
 - The target carries the instance label of this suite's Keystone. Every other client
   of `openstack-memcached` keeps its cache.
 
@@ -5205,8 +5209,8 @@ despite the outage.
 
 1. Apply Keystone CR and assert `Ready=True` (baseline)
 2. Apply PodChaos to kill a non-critical dependency pod
-3. Poll the dependency Deployment until `readyReplicas` drops below `spec.replicas` (confirms chaos took effect)
-4. Poll until `readyReplicas` equals `spec.replicas` again (confirms recovery)
+3. Poll the dependency's ready pods until their count drops below `spec.replicas` (confirms chaos took effect)
+4. Poll until the count of ready pods equals `spec.replicas` again (confirms recovery)
 5. Assert **all 6 conditions** remain `True` — no regression
 6. Delete PodChaos and assert `Ready=True` after recovery
 
