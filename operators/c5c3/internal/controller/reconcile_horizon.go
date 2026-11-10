@@ -7,7 +7,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -202,10 +204,12 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 	// This projection is deliberately read-modify-write (controllerutil.
 	// CreateOrUpdate) rather than the shared Server-Side Apply ProjectChild: the
 	// mutate closure READS the fetched child's spec.websso/spec.multiDomain and
-	// passes them to projectWebSSO/projectMultiDomain, which retain the current
-	// block while identity backends are attached but unhealthy. That retention
-	// cannot be expressed as a pure projection of cp.Spec, so this site keeps the
-	// read-modify-write client path.
+	// passes them to projectWebSSO/projectMultiDomain, which decide on them
+	// while identity backends are attached but unhealthy: projectWebSSO retains
+	// the current block, and projectMultiDomain keeps the LDAP-derived block
+	// when the child carries an enabled one. That decision cannot be expressed
+	// as a pure projection of cp.Spec, so this site keeps the read-modify-write
+	// client path.
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, horizon, func() error {
 		horizon.Spec.Image = image
 
@@ -290,9 +294,11 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		// Detaching the last backend clears the block so the login page reverts
 		// to local credentials rather than keeping a dead SSO button pinned on
 		// the child; a backend that is merely unhealthy retains it (see
-		// projectWebSSO / projectMultiDomain).
+		// projectWebSSO / projectMultiDomain). An enabled
+		// services.horizon.multiDomain is projected first and replaces the
+		// LDAP-derived multiDomain block.
 		horizon.Spec.WebSSO = projectWebSSO(ctx, cp, backends, horizon.Spec.WebSSO)
-		horizon.Spec.MultiDomain = projectMultiDomain(ctx, backends, horizon.Spec.MultiDomain)
+		horizon.Spec.MultiDomain = projectMultiDomain(ctx, cp, backends, horizon.Spec.MultiDomain)
 
 		return claimChildOwnership(r.Client, cp, horizon, r.Scheme)
 	}); err != nil {
@@ -330,12 +336,27 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
 	}
 
+	// A dropdown that omits the domain of a Ready LDAP backend locks that
+	// backend's users out of a dashboard that is otherwise Ready. HorizonReady
+	// stays True and names the domains, and a Warning event is emitted only when
+	// that message is new: a repeat on every pass would spend the ControlPlane's
+	// Warning event budget that the other Warnings on it share.
+	reason, message := "HorizonReady", "Projected Horizon CR is ready"
+	if unlisted := unlistedLDAPDomains(horizon.Spec.MultiDomain, backends); len(unlisted) > 0 {
+		reason = "HorizonDomainNotListed"
+		message = fmt.Sprintf("Projected Horizon CR is ready, but the services.horizon.multiDomain dropdown "+
+			"omits the domain(s) %s of Ready LDAP identity backends; their users cannot log in to the dashboard",
+			strings.Join(unlisted, ", "))
+		if prev := conditions.GetCondition(cp.Status.Conditions, conditionTypeHorizonReady); prev == nil || prev.Message != message {
+			r.Recorder.Event(cp, "Warning", reason, message)
+		}
+	}
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeHorizonReady,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: cp.Generation,
-		Reason:             "HorizonReady",
-		Message:            "Projected Horizon CR is ready",
+		Reason:             reason,
+		Message:            message,
 	})
 	return ctrl.Result{}, nil
 }
@@ -369,23 +390,93 @@ func projectWebSSO(
 }
 
 // projectMultiDomain decides what to write onto the Horizon child's
-// spec.multiDomain, retaining the previously-projected block while LDAP
-// backends are attached but unhealthy — same reasoning as projectWebSSO.
+// spec.multiDomain. current is the block already carried by the fetched child.
+//
+// An enabled services.horizon.multiDomain wins and is projected as written
+// (controlPlaneMultiDomain), even as a dropdown that omits the domain of a
+// Ready LDAP backend; reconcileHorizon reports such domains on HorizonReady
+// (unlistedLDAPDomains). Otherwise
+// Ready LDAP backends produce the derived block (horizonMultiDomain). While
+// LDAP backends are attached but none is Ready, the derived block is kept when
+// the child carries an enabled block (same reasoning as projectWebSSO), and nil
+// is projected otherwise.
+//
+// The kept block is the derived one, never current verbatim: current may be a
+// ControlPlane block the user has just removed, and retaining it would pin its
+// dropdown and choices on the child for as long as the LDAP backend stays
+// unhealthy.
 func projectMultiDomain(
 	ctx context.Context,
+	cp *c5c3v1alpha1.ControlPlane,
 	backends []keystonev1alpha1.KeystoneIdentityBackend,
 	current *horizonv1alpha1.MultiDomainSpec,
 ) *horizonv1alpha1.MultiDomainSpec {
+	if md := controlPlaneMultiDomain(cp); md != nil {
+		return md
+	}
 	if md := horizonMultiDomain(backends); md != nil {
 		return md
 	}
 	if backendsAwaitingReady(backends, keystonev1alpha1.IdentityBackendTypeLDAP) {
+		keepDerived := current != nil && current.Enabled
 		log.FromContext(ctx).Info("LDAP identity backends are attached but none is Ready; "+
-			"retaining the dashboard's multiDomain block rather than rolling the Horizon Deployment",
-			"retained", current != nil)
-		return current
+			"keeping the LDAP-derived multiDomain block while the child carries an enabled one",
+			"keptDerivedBlock", keepDerived)
+		if keepDerived {
+			return ldapDerivedMultiDomain()
+		}
 	}
 	return nil
+}
+
+// unlistedLDAPDomains returns the domains of the Ready LDAP backends that the
+// projected block's dropdown does not list, sorted and without duplicates. It
+// returns nil when md is nil or has no dropdown. The dropdown replaces the
+// LDAP-derived free-text field, and Django rejects a domain outside
+// OPENSTACK_KEYSTONE_DOMAIN_CHOICES, so the users of such a backend cannot log
+// in to the dashboard. The validating webhook cannot catch this: backends
+// attach after the ControlPlane is admitted.
+func unlistedLDAPDomains(
+	md *horizonv1alpha1.MultiDomainSpec,
+	backends []keystonev1alpha1.KeystoneIdentityBackend,
+) []string {
+	if md == nil || !md.DomainDropdown {
+		return nil
+	}
+	var unlisted []string
+	for i := range backends {
+		b := &backends[i]
+		if b.Spec.Type != keystonev1alpha1.IdentityBackendTypeLDAP || !conditions.IsReady(b.Status.Conditions) {
+			continue
+		}
+		listed := slices.ContainsFunc(md.DomainChoices, func(c horizonv1alpha1.DomainChoice) bool {
+			return c.Name == b.Spec.Domain.Name
+		})
+		if !listed {
+			unlisted = append(unlisted, b.Spec.Domain.Name)
+		}
+	}
+	slices.Sort(unlisted)
+	return slices.Compact(unlisted)
+}
+
+// controlPlaneMultiDomain returns the ControlPlane's own
+// services.horizon.multiDomain block when it is enabled, and nil when it is
+// absent or disabled: a disabled block equals no block and leaves the LDAP
+// derivation in place.
+//
+// The block is deep-copied so the child never aliases cp.Spec. An empty
+// defaultDomain is resolved by the Horizon defaulter's own
+// DefaultMultiDomain, so CreateOrUpdate does not rewrite the child on every
+// pass.
+func controlPlaneMultiDomain(cp *c5c3v1alpha1.ControlPlane) *horizonv1alpha1.MultiDomainSpec {
+	hz := cp.Spec.Services.Horizon
+	if hz == nil || hz.MultiDomain == nil || !hz.MultiDomain.Enabled {
+		return nil
+	}
+	md := hz.MultiDomain.DeepCopy()
+	horizonv1alpha1.DefaultMultiDomain(md)
+	return md
 }
 
 // maxProjectedFederationChoices bounds the federated entries the projection
@@ -487,11 +578,19 @@ func horizonWebSSO(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, backends 
 // domains, so a dropdown built from them would lock out every user of a domain
 // it cannot enumerate — a SQL-backed domain populated out-of-band, or the
 // domain an OIDC backend targets. Attaching one LDAP backend must not take
-// those users' logins away, so the form keeps its free-text domain field.
+// those users' logins away, so the form keeps its free-text domain field. An
+// operator who has enumerated every domain declares a dropdown on
+// services.horizon.multiDomain instead.
 func horizonMultiDomain(backends []keystonev1alpha1.KeystoneIdentityBackend) *horizonv1alpha1.MultiDomainSpec {
 	if !hasReadyDomainBackend(backends) {
 		return nil
 	}
+	return ldapDerivedMultiDomain()
+}
+
+// ldapDerivedMultiDomain is the block the LDAP derivation projects: the free-text
+// domain field, defaulting to the domain "Default".
+func ldapDerivedMultiDomain() *horizonv1alpha1.MultiDomainSpec {
 	return &horizonv1alpha1.MultiDomainSpec{
 		Enabled:       true,
 		DefaultDomain: horizonv1alpha1.DefaultMultiDomainDefaultDomain,

@@ -7,9 +7,12 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/go-logr/logr/funcr"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -17,9 +20,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -818,6 +824,311 @@ func TestReconcileHorizon_MultiDomainKeepsTheDomainFieldFreeText(t *testing.T) {
 	g.Expect(h.Spec.MultiDomain.DomainDropdown).To(BeFalse(),
 		"a fixed dropdown would reject every domain the operator does not back with LDAP")
 	g.Expect(h.Spec.MultiDomain.DomainChoices).To(BeEmpty())
+}
+
+// controlPlaneDropdownBlock is a fully populated ControlPlane multiDomain
+// block: a dropdown over two domains, defaulting to the second. It returns a
+// fresh value on every call so a test can compare against an untouched copy.
+func controlPlaneDropdownBlock() *horizonv1alpha1.MultiDomainSpec {
+	return &horizonv1alpha1.MultiDomainSpec{
+		Enabled:        true,
+		DefaultDomain:  "playground",
+		DomainDropdown: true,
+		DomainChoices: []horizonv1alpha1.DomainChoice{
+			{Name: "Default", Label: "Default"},
+			{Name: "playground", Label: "Playground"},
+		},
+	}
+}
+
+// TestProjectMultiDomain pins the order projectMultiDomain decides in: an
+// enabled ControlPlane block wins as written, a disabled or absent one leaves
+// the LDAP derivation in place, and while LDAP backends are attached but none
+// is Ready only the LDAP-derived block is kept, never a removed ControlPlane
+// block the child still carries.
+func TestProjectMultiDomain(t *testing.T) {
+	derived := &horizonv1alpha1.MultiDomainSpec{Enabled: true, DefaultDomain: horizonv1alpha1.DefaultMultiDomainDefaultDomain}
+	none := []keystonev1alpha1.KeystoneIdentityBackend(nil)
+	ready := []keystonev1alpha1.KeystoneIdentityBackend{
+		*horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", true),
+	}
+	notReady := []keystonev1alpha1.KeystoneIdentityBackend{
+		*horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", false),
+	}
+
+	tests := []struct {
+		name                  string
+		noHorizon             bool // services.horizon itself is nil
+		block                 *horizonv1alpha1.MultiDomainSpec
+		backends              []keystonev1alpha1.KeystoneIdentityBackend
+		current               *horizonv1alpha1.MultiDomainSpec
+		want                  *horizonv1alpha1.MultiDomainSpec
+		wantDropdownUnaliased bool // the result must equal controlPlaneDropdownBlock and share no slice with cp
+	}{
+		{name: "no block, no backend", backends: none},
+		{name: "no block, no backend, child carries a removed block", backends: none, current: controlPlaneDropdownBlock()},
+		{name: "no block, Ready LDAP backend", backends: ready, want: derived},
+		{name: "no block, unhealthy LDAP backend, child never carried a block", backends: notReady},
+		{name: "no block, unhealthy LDAP backend, child carries the derived block", backends: notReady, current: derived, want: derived},
+		{name: "no block, unhealthy LDAP backend, child carries a removed block", backends: notReady, current: controlPlaneDropdownBlock(), want: derived},
+		{name: "no block, unhealthy LDAP backend, child carries a disabled block", backends: notReady, current: &horizonv1alpha1.MultiDomainSpec{}},
+		{name: "services.horizon unset", noHorizon: true, backends: none},
+		{name: "empty block, no backend", block: &horizonv1alpha1.MultiDomainSpec{}, backends: none},
+		{name: "empty block, Ready LDAP backend", block: &horizonv1alpha1.MultiDomainSpec{}, backends: ready, want: derived},
+		{name: "disabled block with a defaultDomain, no backend", block: &horizonv1alpha1.MultiDomainSpec{DefaultDomain: "playground"}, backends: none},
+		{name: "disabled block with a defaultDomain, Ready LDAP backend", block: &horizonv1alpha1.MultiDomainSpec{DefaultDomain: "playground"}, backends: ready, want: derived},
+		{name: "disabled block, Ready LDAP backend", block: &horizonv1alpha1.MultiDomainSpec{Enabled: false}, backends: ready, want: derived},
+		{name: "enabled block resolves an empty defaultDomain", block: &horizonv1alpha1.MultiDomainSpec{Enabled: true}, backends: none, want: derived},
+		{name: "enabled dropdown block, no backend", block: controlPlaneDropdownBlock(), backends: none, wantDropdownUnaliased: true},
+		{
+			name:     "enabled block wins over a Ready LDAP backend",
+			block:    &horizonv1alpha1.MultiDomainSpec{Enabled: true, DefaultDomain: "playground"},
+			backends: ready,
+			current:  derived,
+			want:     &horizonv1alpha1.MultiDomainSpec{Enabled: true, DefaultDomain: "playground"},
+		},
+		{name: "enabled dropdown block, unhealthy LDAP backend", block: controlPlaneDropdownBlock(), backends: notReady, current: derived, wantDropdownUnaliased: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := horizonControlPlane()
+			if tc.noHorizon {
+				cp.Spec.Services.Horizon = nil
+			} else {
+				cp.Spec.Services.Horizon.MultiDomain = tc.block
+			}
+
+			got := projectMultiDomain(context.Background(), cp, tc.backends, tc.current)
+
+			if !tc.wantDropdownUnaliased {
+				if tc.want == nil {
+					g.Expect(got).To(BeNil())
+				} else {
+					g.Expect(got).To(Equal(tc.want))
+				}
+				return
+			}
+			g.Expect(got).To(Equal(controlPlaneDropdownBlock()))
+			got.DomainChoices[0].Label = "mutated"
+			g.Expect(cp.Spec.Services.Horizon.MultiDomain).To(Equal(controlPlaneDropdownBlock()),
+				"the projected block must not share its choices with the ControlPlane")
+		})
+	}
+}
+
+// TestProjectMultiDomain_Logs pins the operator log line of the unhealthy-LDAP
+// branch: it says it keeps the LDAP-derived block rather than the child's.
+func TestProjectMultiDomain_Logs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	backends := []keystonev1alpha1.KeystoneIdentityBackend{
+		*horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", false),
+	}
+	var logs []string
+	logger := funcr.New(func(prefix, args string) { logs = append(logs, prefix+" "+args) }, funcr.Options{})
+
+	projectMultiDomain(log.IntoContext(context.Background(), logger), cp, backends, controlPlaneDropdownBlock())
+
+	combined := strings.Join(logs, "\n")
+	g.Expect(combined).To(ContainSubstring("keeping the LDAP-derived multiDomain block"))
+	g.Expect(combined).To(ContainSubstring(`"keptDerivedBlock"=true`))
+}
+
+// TestUnlistedLDAPDomains pins which domains count as locked out by a
+// dropdown: those of Ready LDAP backends the choices do not name, sorted and
+// without duplicates. Unhealthy and OIDC backends do not count, and a block
+// without a dropdown keeps the free-text field that accepts every domain.
+func TestUnlistedLDAPDomains(t *testing.T) {
+	ldap := func(name, domain string, ready bool) keystonev1alpha1.KeystoneIdentityBackend {
+		return *horizonBackend(name, keystonev1alpha1.IdentityBackendTypeLDAP, domain, ready)
+	}
+
+	tests := []struct {
+		name     string
+		block    *horizonv1alpha1.MultiDomainSpec
+		backends []keystonev1alpha1.KeystoneIdentityBackend
+		want     []string
+	}{
+		{
+			name:     "dropdown omits a Ready LDAP domain",
+			block:    controlPlaneDropdownBlock(),
+			backends: []keystonev1alpha1.KeystoneIdentityBackend{ldap("openldap", "planetexpress", true), ldap("listed", "playground", true)},
+			want:     []string{"planetexpress"},
+		},
+		{
+			name:  "dropdown omits several Ready LDAP domains",
+			block: controlPlaneDropdownBlock(),
+			backends: []keystonev1alpha1.KeystoneIdentityBackend{
+				ldap("zeta", "zeta", true), ldap("alpha", "alpha", true), ldap("alpha-replica", "alpha", true),
+			},
+			want: []string{"alpha", "zeta"},
+		},
+		{
+			name:     "dropdown omits the domain of an unhealthy LDAP backend",
+			block:    controlPlaneDropdownBlock(),
+			backends: []keystonev1alpha1.KeystoneIdentityBackend{ldap("openldap", "planetexpress", false)},
+		},
+		{
+			name:  "dropdown omits the domain of a Ready OIDC backend",
+			block: controlPlaneDropdownBlock(),
+			backends: []keystonev1alpha1.KeystoneIdentityBackend{
+				*horizonBackend("keycloak", keystonev1alpha1.IdentityBackendTypeOIDC, "federated", true),
+			},
+		},
+		{
+			name:     "free-text block with a Ready LDAP backend",
+			block:    &horizonv1alpha1.MultiDomainSpec{Enabled: true},
+			backends: []keystonev1alpha1.KeystoneIdentityBackend{ldap("openldap", "planetexpress", true)},
+		},
+		{
+			name:     "no block with a Ready LDAP backend",
+			backends: []keystonev1alpha1.KeystoneIdentityBackend{ldap("openldap", "planetexpress", true)},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			got := unlistedLDAPDomains(tc.block, tc.backends)
+			if tc.want == nil {
+				g.Expect(got).To(BeEmpty())
+				return
+			}
+			g.Expect(got).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestReconcileHorizon_ReportsDomainsTheDropdownOmits covers the lockout the
+// operator can see but not prevent: a ControlPlane dropdown that omits the
+// domain of a Ready LDAP backend. HorizonReady stays True but names the
+// domain, a Warning event names it once, and listing the domain clears both.
+func TestReconcileHorizon_ReportsDomainsTheDropdownOmits(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.MultiDomain = controlPlaneDropdownBlock()
+	ldap := horizonBackend("openldap", keystonev1alpha1.IdentityBackendTypeLDAP, "planetexpress", true)
+	r := newHorizonTestReconciler(t, cp, ldap)
+	recorder := record.NewFakeRecorder(10)
+	r.Recorder = recorder
+	ctx := context.Background()
+
+	// The first pass creates the child; mark it Ready so the next pass mirrors it.
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	h := getProjectedHorizon(t, r.Client, cp)
+	conditions.SetCondition(&h.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: h.Generation, Reason: "AllReady", Message: "ready",
+	})
+	g.Expect(r.Client.Status().Update(ctx, h)).To(Succeed())
+
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeHorizonReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("HorizonDomainNotListed"))
+	g.Expect(cond.Message).To(ContainSubstring("omits the domain(s) planetexpress of Ready LDAP identity backends"))
+	g.Expect(recorder.Events).To(Receive(And(
+		HavePrefix("Warning HorizonDomainNotListed "),
+		ContainSubstring("planetexpress"),
+	)))
+
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(recorder.Events).NotTo(Receive(), "an unchanged omission must not emit the Warning again")
+
+	cp.Spec.Services.Horizon.MultiDomain.DomainChoices = append(cp.Spec.Services.Horizon.MultiDomain.DomainChoices,
+		horizonv1alpha1.DomainChoice{Name: "planetexpress", Label: "Planet Express"})
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	cond = conditions.GetCondition(cp.Status.Conditions, conditionTypeHorizonReady)
+	g.Expect(cond.Reason).To(Equal("HorizonReady"))
+	g.Expect(recorder.Events).NotTo(Receive())
+}
+
+// TestReconcileHorizon_MultiDomainProjectedFromControlPlane covers a
+// ControlPlane with local users outside Default and no identity backend: its
+// own enabled block reaches the child with defaultDomain resolved, and
+// removing the block clears the child's.
+func TestReconcileHorizon_MultiDomainProjectedFromControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.MultiDomain = &horizonv1alpha1.MultiDomainSpec{
+		Enabled:        true,
+		DomainDropdown: true,
+		DomainChoices: []horizonv1alpha1.DomainChoice{
+			{Name: "Default", Label: "Default"},
+			{Name: "playground", Label: "Playground"},
+		},
+	}
+	r := newHorizonTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.MultiDomain).To(Equal(&horizonv1alpha1.MultiDomainSpec{
+		Enabled:        true,
+		DefaultDomain:  horizonv1alpha1.DefaultMultiDomainDefaultDomain,
+		DomainDropdown: true,
+		DomainChoices: []horizonv1alpha1.DomainChoice{
+			{Name: "Default", Label: "Default"},
+			{Name: "playground", Label: "Playground"},
+		},
+	}))
+
+	cp.Spec.Services.Horizon.MultiDomain = nil
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.MultiDomain).To(BeNil(),
+		"removing the block without an LDAP backend must clear the child's")
+}
+
+// TestReconcileHorizon_IdentityBackendListErrorKeepsChild pins that the
+// identity-backend List still runs before the multiDomain projection: when it
+// fails, the reconcile stops with the error and HorizonReady=False, and the
+// child keeps its block even though the ControlPlane's block changed.
+func TestReconcileHorizon_IdentityBackendListErrorKeepsChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.MultiDomain = &horizonv1alpha1.MultiDomainSpec{Enabled: true}
+
+	boom := errors.New("boom")
+	failList := false
+	s := horizonTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &horizonv1alpha1.Horizon{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*keystonev1alpha1.KeystoneIdentityBackendList); ok && failList {
+					return boom
+				}
+				return cl.List(ctx, list, opts...)
+			},
+		}).
+		Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+	ctx := context.Background()
+
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	before := getProjectedHorizon(t, c, cp).Spec.MultiDomain
+	g.Expect(before).NotTo(BeNil())
+
+	failList = true
+	cp.Spec.Services.Horizon.MultiDomain.DefaultDomain = "playground"
+	_, err = r.reconcileHorizon(ctx, cp)
+
+	g.Expect(err).To(MatchError(boom))
+	g.Expect(err.Error()).To(ContainSubstring("listing identity backends for Keystone cp-keystone"))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeHorizonReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("IdentityBackendsUnavailable"))
+	g.Expect(getProjectedHorizon(t, c, cp).Spec.MultiDomain).To(Equal(before),
+		"a failed backend List must leave the child's block untouched")
 }
 
 // TestReconcileHorizon_WebSSOOmittedWithoutBrowserFacingEndpoints is the
