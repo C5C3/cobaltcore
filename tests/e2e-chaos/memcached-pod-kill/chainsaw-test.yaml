@@ -71,12 +71,12 @@ spec:
     catch:
     - *workload-dump
   # ── Step 4: Verify Memcached pod kill and recovery, assert Ready=True maintained ─
-  # Polls the Memcached Deployment's readyReplicas instead of using kubectl wait
+  # Polls the ready pods of the Memcached by label instead of using kubectl wait
   # on individual Pods. kubectl wait resolves the label selector once at query
   # time and watches the specific Pod object — when Chaos Mesh deletes the Pod,
   # the watch errors with NotFound instead of re-resolving onto the replacement
-  # Pod (issue #214). Deployment-level polling is resilient to Pod
-  # replacement, following the operator-pod-crash and api-pod-kill-pdb pattern.
+  # Pod (issue #214). Each poll resolves the selector again, so it is resilient
+  # to Pod replacement.
   - try:
     - script:
         # Timeout budget: Phase 1 (15×2s=30s) + Phase 2 (45×2s=90s) = 120s
@@ -88,42 +88,53 @@ spec:
           # when kubectl returns empty output, and the loop's exit condition
           # is checked explicitly rather than relying on exit codes.
 
-          # Read desired replica count from Deployment spec so the test remains
-          # valid if the memcached replica count changes (review #1).
-          DESIRED=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.spec.replicas}')
+          # Read desired replica count from the Memcached spec so the test
+          # remains valid if the memcached replica count changes (review #1).
+          DESIRED=$(kubectl get memcached openstack-memcached -n $NAMESPACE -o jsonpath='{.spec.replicas}')
           if [ -z "$DESIRED" ] || [ "$DESIRED" -lt 1 ]; then
-            echo "ERROR: could not determine desired replica count from openstack-memcached Deployment"
+            echo "ERROR: could not determine desired replica count from openstack-memcached Memcached"
             exit 1
           fi
           echo "Desired replicas: ${DESIRED}"
 
-          # Phase 1: poll until readyReplicas drops below DESIRED (chaos took effect).
+          # ready_pods counts the pods of the Memcached whose Ready condition
+          # is True, by the labels memcached-operator sets on them. The pods
+          # are read rather than status.readyReplicas of the Memcached, which
+          # lags them by one reconcile of memcached-operator.
+          ready_pods() {
+            kubectl get pods -n $NAMESPACE \
+              -l app.kubernetes.io/name=memcached,app.kubernetes.io/instance=openstack-memcached \
+              -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+              | grep -c '^True$'
+          }
+
+          # Phase 1: poll until the ready pod count drops below DESIRED (chaos took effect).
           # 15 iterations × 2s = 30s max. Pod kill with gracePeriod=0 is near-instant,
           # so 30s is generous (review #1).
           for i in $(seq 1 15); do
-            READY=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
+            READY=$(ready_pods)
             if [ "${READY:-0}" -lt "$DESIRED" ]; then
               break
             fi
             sleep 2
           done
           if [ "${READY:-0}" -ge "$DESIRED" ]; then
-            echo "ERROR: readyReplicas never dropped below ${DESIRED} — pod kill did not take effect"
+            echo "ERROR: the ready Memcached pods never dropped below ${DESIRED} — pod kill did not take effect"
             exit 1
           fi
-          echo "Pod kill confirmed: readyReplicas=${READY:-0}"
+          echo "Pod kill confirmed: ${READY:-0} ready pods"
 
-          # Phase 2: poll until readyReplicas returns to DESIRED (memcached recovered).
+          # Phase 2: poll until the ready pod count returns to DESIRED (memcached recovered).
           # 45 iterations × 2s = 90s max (review #1).
           for i in $(seq 1 45); do
-            READY=$(kubectl get deployment openstack-memcached -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
+            READY=$(ready_pods)
             if [ "${READY:-0}" -eq "$DESIRED" ]; then
-              echo "Memcached recovered: readyReplicas=${DESIRED}"
+              echo "Memcached recovered: ${DESIRED} ready pods"
               exit 0
             fi
             sleep 2
           done
-          echo "ERROR: memcached did not recover — readyReplicas=${READY:-0}, expected ${DESIRED}"
+          echo "ERROR: memcached did not recover — ${READY:-0} ready pods, expected ${DESIRED}"
           exit 1
     - assert:
         resource:
