@@ -93,7 +93,7 @@ func (w *HorizonWebhook) Default(_ context.Context, obj *Horizon) error {
 			field.ErrorList{err},
 		)
 	}
-	defaultMultiDomain(obj.Spec.MultiDomain)
+	DefaultMultiDomain(obj.Spec.MultiDomain)
 	return nil
 }
 
@@ -148,10 +148,13 @@ func defaultWebSSO(fldPath *field.Path, websso *WebSSOSpec) *field.Error {
 	return nil
 }
 
-// defaultMultiDomain materializes the default Keystone domain on an enabled
+// DefaultMultiDomain materializes the default Keystone domain on an enabled
 // multi-domain block so the login form has a domain to fall back to when the
 // user supplies none.
-func defaultMultiDomain(md *MultiDomainSpec) {
+//
+// It is exported for the ControlPlane projection, which must resolve an
+// empty defaultDomain exactly as this defaulter does.
+func DefaultMultiDomain(md *MultiDomainSpec) {
 	if md == nil || !md.Enabled {
 		return
 	}
@@ -609,17 +612,34 @@ func validateWebSSO(specPath *field.Path, h *Horizon) field.ErrorList {
 	return errs
 }
 
-// validateMultiDomain mirrors the MultiDomainSpec CEL rules as
-// defense-in-depth, rejects duplicate domain names, and guards the same
-// extraConfig collision validateWebSSO does.
+// validateMultiDomain runs ValidateMultiDomain on spec.multiDomain and guards
+// the same extraConfig collision validateWebSSO does.
 func validateMultiDomain(specPath *field.Path, h *Horizon) field.ErrorList {
-	var errs field.ErrorList
-	md := h.Spec.MultiDomain
-	if md == nil {
-		return errs
+	if h.Spec.MultiDomain == nil {
+		return nil
 	}
-	fldPath := specPath.Child("multiDomain")
+	errs := ValidateMultiDomain(specPath.Child("multiDomain"), h.Spec.MultiDomain)
+	errs = append(errs, validateExtraConfigCollision(specPath, h, MultiDomainSettingNames, "spec.multiDomain")...)
+	return errs
+}
 
+// ValidateMultiDomain mirrors the two MultiDomainSpec CEL rules as defense in
+// depth behind the CRD layer and additionally rejects duplicate domain names,
+// the one check with no schema counterpart. It is nil-safe: an unset block
+// carries nothing to validate.
+//
+// It is exported for the ControlPlane webhook, which carries this very type on
+// services.horizon.multiDomain and must admit exactly what the Horizon CRD
+// admits: a hand-kept mirror there would let the two drift, and the
+// ControlPlane would start admitting values its projected Horizon child then
+// rejects. The caller supplies its own field path, so the errors name the CR
+// under admission.
+func ValidateMultiDomain(fldPath *field.Path, md *MultiDomainSpec) field.ErrorList {
+	if md == nil {
+		return nil
+	}
+
+	var errs field.ErrorList
 	if md.DomainDropdown && !md.Enabled {
 		errs = append(errs, field.Forbidden(
 			fldPath.Child("domainDropdown"),
@@ -641,8 +661,6 @@ func validateMultiDomain(specPath *field.Path, h *Horizon) field.ErrorList {
 		}
 		names[c.Name] = struct{}{}
 	}
-
-	errs = append(errs, validateExtraConfigCollision(specPath, h, MultiDomainSettingNames, "spec.multiDomain")...)
 	return errs
 }
 
