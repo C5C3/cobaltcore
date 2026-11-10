@@ -35,6 +35,9 @@
 #     Keystone matches verbatim is the one the browser really sends
 #   - An LDAP-domain user logs in through that field
 #   - Detaching the backends removes both surfaces again
+#   - With no backend attached, the ControlPlane's own
+#     services.horizon.multiDomain block turns on a domain dropdown through
+#     which a SQL-backed user outside Default logs in
 #
 # ── DECISION: the browser runs IN-CLUSTER, not on the chainsaw host ──────────
 # Unlike the gateway-quick-start smokes (which curl from the CI host through
@@ -783,5 +786,289 @@ spec:
           echo "=== c5c3 operator logs ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 2>&1 || true
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+
+  # ── Step 7: The ControlPlane's own multi-domain block ──────────────────
+  # With every backend detached nothing derives a multiDomain block any more.
+  # The ControlPlane declares one itself: a dropdown over Default and a
+  # SQL-backed domain no backend names. The projection writes it onto the
+  # Horizon child as written, and a user of that domain logs in through it.
+  - name: controlplane-multi-domain
+    try:
+    # defaultDomain is left out on purpose: the projection resolves it to
+    # Default, the value the Horizon defaulting webhook would materialize, so
+    # the child does not flap between the two on every reconcile.
+    - patch:
+        resource:
+          apiVersion: c5c3.io/v1alpha1
+          kind: ControlPlane
+          metadata:
+            name: controlplane-sso
+            namespace: openstack
+          spec:
+            services:
+              horizon:
+                multiDomain:
+                  enabled: true
+                  domainDropdown: true
+                  domainChoices:
+                  - name: Default
+                    label: Default
+                  - name: cobaltcore-local
+                    label: CobaltCore local
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: controlplane-sso-horizon
+            namespace: openstack
+          spec:
+            (websso == `null`): true
+            multiDomain:
+              enabled: true
+              defaultDomain: Default
+              domainDropdown: true
+              domainChoices:
+              - name: Default
+                label: Default
+              - name: cobaltcore-local
+                label: CobaltCore local
+    # The four waits of step 5, for the same reasons: the new block re-renders
+    # local_settings.py and rolls the Horizon Deployment, and the detach above
+    # rolled the Keystone Deployment, which serves the admin calls below.
+    - assert:
+        resource:
+          apiVersion: horizon.openstack.c5c3.io/v1alpha1
+          kind: Horizon
+          metadata:
+            name: controlplane-sso-horizon
+            namespace: openstack
+          (metadata.generation == status.observedGeneration): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: controlplane-sso-horizon
+            namespace: openstack
+          (metadata.generation == status.observedGeneration): true
+          (spec.replicas == status.replicas): true
+          (spec.replicas == status.updatedReplicas): true
+          (spec.replicas == status.readyReplicas): true
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: controlplane-sso-keystone
+            namespace: openstack
+          (metadata.generation == status.observedGeneration): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: controlplane-sso-keystone
+            namespace: openstack
+          (metadata.generation == status.observedGeneration): true
+          (spec.replicas == status.replicas): true
+          (spec.replicas == status.updatedReplicas): true
+          (spec.replicas == status.readyReplicas): true
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # 7a: the block reaches the RENDERED settings module, resolved the
+          # same way step 4 resolves it.
+          CM=$(kubectl get deployment controlplane-sso-horizon -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          if [[ -z "${CM}" ]]; then
+            echo "ERROR: could not resolve the rendered local_settings.py ConfigMap"; exit 1
+          fi
+          SETTINGS=$(kubectl get configmap "$CM" -n "$NAMESPACE" -o jsonpath='{.data.local_settings\.py}')
+          if [[ -z "${SETTINGS}" ]]; then
+            echo "ERROR: ConfigMap ${CM} carries no local_settings.py"; exit 1
+          fi
+          fail=0
+          expect() {
+            if printf '%s' "$SETTINGS" | grep -qF "$1"; then
+              echo "OK: $1"
+            else
+              echo "ERROR: missing from local_settings.py: $1"; fail=1
+            fi
+          }
+          reject() {
+            if printf '%s' "$SETTINGS" | grep -F "$1"; then
+              echo "ERROR: must not appear in local_settings.py: $1"; fail=1
+            else
+              echo "OK: absent: $1"
+            fi
+          }
+          expect 'OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True'
+          expect 'OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"'
+          expect 'OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN = True'
+          expect 'OPENSTACK_KEYSTONE_DOMAIN_CHOICES'
+          expect 'cobaltcore-local'
+          reject 'WEBSSO_ENABLED'
+          if [[ "$fail" -ne 0 ]]; then exit 1; fi
+
+          # The admin password and the browser pod, as in step 5.
+          ADMIN_SECRET=$(kubectl get keystone controlplane-sso-keystone -n "$NAMESPACE" \
+            -o jsonpath='{.spec.bootstrap.adminPasswordSecretRef.name}')
+          ADMIN_SECRET_KEY=$(kubectl get keystone controlplane-sso-keystone -n "$NAMESPACE" \
+            -o jsonpath='{.spec.bootstrap.adminPasswordSecretRef.key}')
+          if [[ -z "${ADMIN_SECRET}" || -z "${ADMIN_SECRET_KEY}" ]]; then
+            echo "ERROR: Keystone child carries no bootstrap.adminPasswordSecretRef"; exit 1
+          fi
+          ADMIN_PASSWORD_B64=$(kubectl get secret "${ADMIN_SECRET}" \
+            -n "$NAMESPACE" -o jsonpath="{.data.${ADMIN_SECRET_KEY}}") || {
+            echo "ERROR: could not read the projected admin-credentials Secret ${ADMIN_SECRET}"; exit 1; }
+          if [[ -z "${ADMIN_PASSWORD_B64}" ]]; then
+            echo "ERROR: Secret ${ADMIN_SECRET} has no ${ADMIN_SECRET_KEY} key"; exit 1
+          fi
+          ADMIN_PASSWORD=$(printf '%s' "$ADMIN_PASSWORD_B64" | base64 --decode)
+
+          POD=$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/name=keystone,app.kubernetes.io/instance=controlplane-sso-keystone,pod-template-hash \
+            --sort-by=.metadata.creationTimestamp -o name | tail -1 | cut -d/ -f2)
+          if [[ -z "${POD}" ]]; then
+            echo "ERROR: no Keystone pod to run the browser from"; exit 1
+          fi
+
+          # NOTE: single-quoted `python3 -c` string — no apostrophes inside.
+          kubectl exec -n "$NAMESPACE" "$POD" -c keystone -- \
+            python3 -c '
+          import http.client, http.cookiejar, json, re, sys, time
+          import urllib.error, urllib.parse, urllib.request
+
+          admin_password = sys.argv[1]
+          DOMAIN = "cobaltcore-local"
+          USER, PASSWORD = "leela", "leela-e2e"
+          BASE = "http://controlplane-sso-horizon.openstack.svc:8080"
+
+          # 7b: a SQL-backed domain outside Default with one user holding the
+          #     member role on it, the way step 5c grants professor. Admin
+          #     traffic goes over localhost. A 409 means an earlier attempt
+          #     created the object, so its id is read back instead.
+          def admin_call(path, data=None, method=None, headers=None):
+              conn = http.client.HTTPConnection("localhost", 5000, timeout=30)
+              h = {"Content-Type": "application/json"}
+              h.update(headers or {})
+              conn.request(method or ("POST" if data else "GET"), path, body=data, headers=h)
+              resp = conn.getresponse()
+              payload = resp.read()
+              conn.close()
+              return resp, payload
+
+          auth = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {
+              "name": "admin", "domain": {"id": "default"}, "password": admin_password}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          resp, _ = admin_call("/v3/auth/tokens", data=auth)
+          assert resp.status == 201, f"admin auth failed: {resp.status}"
+          admin = {"X-Auth-Token": resp.getheader("X-Subject-Token")}
+
+          resp, payload = admin_call(
+              "/v3/domains", data=json.dumps({"domain": {"name": DOMAIN}}).encode(), headers=admin)
+          if resp.status == 201:
+              domain_id = json.loads(payload)["domain"]["id"]
+          elif resp.status == 409:
+              resp, payload = admin_call(f"/v3/domains?name={DOMAIN}", headers=admin)
+              domain_id = json.loads(payload)["domains"][0]["id"]
+          else:
+              raise AssertionError(f"creating domain {DOMAIN} returned {resp.status}: {payload[:300]}")
+
+          user = {"user": {"name": USER, "domain_id": domain_id, "password": PASSWORD, "enabled": True}}
+          resp, payload = admin_call("/v3/users", data=json.dumps(user).encode(), headers=admin)
+          if resp.status == 201:
+              user_id = json.loads(payload)["user"]["id"]
+          elif resp.status == 409:
+              resp, payload = admin_call(f"/v3/users?domain_id={domain_id}&name={USER}", headers=admin)
+              user_id = json.loads(payload)["users"][0]["id"]
+          else:
+              raise AssertionError(f"creating user {USER} returned {resp.status}: {payload[:300]}")
+
+          resp, payload = admin_call("/v3/roles?name=member", headers=admin)
+          role_id = json.loads(payload)["roles"][0]["id"]
+          resp, _ = admin_call(f"/v3/domains/{domain_id}/users/{user_id}/roles/{role_id}",
+                               method="PUT", headers=admin)
+          assert resp.status == 204, f"granting member on {DOMAIN} returned {resp.status}"
+          print(f"OK: {USER} of the SQL-backed domain {DOMAIN} holds the member role on it")
+
+          # 7c: the login form offers the dropdown, and the user logs in
+          #     through it, over the cluster-local Service like the dashboard
+          #     login of full-controlplane-keystone.
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          jar = http.cookiejar.CookieJar()
+          opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar), NoRedirect())
+          login_url = BASE + "/auth/login/"
+
+          # The rollout has landed (asserted above), but the Service can still
+          # route the first request to the replica that just went away. Retry
+          # until the login page carries the domain select, bounded.
+          deadline = time.monotonic() + 90
+          while True:
+              try:
+                  html = opener.open(login_url, timeout=30).read().decode(errors="replace")
+                  if re.search(r"<select[^>]*name=\"domain\"", html):
+                      break
+                  last = "the login page carries no domain select"
+              except OSError as err:
+                  last = f"login page fetch failed: {err}"
+              if time.monotonic() > deadline:
+                  raise AssertionError(last)
+              print(f"retrying: {last}")
+              time.sleep(3)
+          assert re.search(r"<option[^>]*value=\"cobaltcore-local\"", html), (
+              "the domain select offers no cobaltcore-local option")
+          print("OK: the login page offers the domain select with cobaltcore-local")
+
+          m = re.search(r"name=\"csrfmiddlewaretoken\"[^>]*value=\"([^\"]+)\"", html)
+          assert m, "no CSRF token on the login page"
+          form = urllib.parse.urlencode({
+              "csrfmiddlewaretoken": m.group(1),
+              "region": "default", "domain": DOMAIN,
+              "username": USER, "password": PASSWORD,
+          }).encode()
+          req = urllib.request.Request(login_url, data=form, headers={"Referer": login_url})
+          try:
+              resp = opener.open(req, timeout=60)
+              status, body = resp.status, resp.read()
+          except urllib.error.HTTPError as err:
+              status, body = err.code, err.read()
+          body = body.decode(errors="replace")
+          assert "Invalid credentials" not in body, f"login of {USER} in {DOMAIN} rejected the credentials"
+          assert any(c.name == "sessionid" for c in jar), f"login of {USER} in {DOMAIN} established no session"
+          assert status == 302, f"login POST returned HTTP {status}, expected the 302 after a login"
+          print(f"OK: {USER} of {DOMAIN} logged in through the domain dropdown")
+          ' "$ADMIN_PASSWORD"
+    catch:
+    - script:
+        content: |
+          echo "=== ControlPlane CR ==="
+          kubectl get controlplane controlplane-sso -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Backend CRs (if still present) ==="
+          kubectl get keystoneidentitybackend -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Horizon child ==="
+          kubectl get horizon controlplane-sso-horizon -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Keystone child ==="
+          kubectl get keystone controlplane-sso-keystone -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== c5c3 operator logs ==="
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== horizon pod logs ==="
+          kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=controlplane-sso-horizon --all-containers --tail=100 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
