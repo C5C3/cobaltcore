@@ -147,3 +147,17 @@ tests:
               - get
               - create
               - update
+
+  - it: should grant read-only on memcached cluster CRs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - memcached.c5c3.io
+            resources:
+              - memcacheds
+            verbs:
+              - get
+              - list
+              - watch

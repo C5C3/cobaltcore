@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -18,9 +19,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
@@ -363,7 +367,7 @@ func webssoTestHorizon() *horizonv1alpha1.Horizon {
 // the test survives unrelated settings being added.
 func TestRenderLocalSettings_NoWebSSOOmitsAllWebSSOSettings(t *testing.T) {
 	g := NewGomegaWithT(t)
-	rendered, err := renderLocalSettings(testHorizon())
+	rendered, err := renderLocalSettingsWithoutList(testHorizon())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	for _, name := range horizonv1alpha1.WebSSOSettingNames {
@@ -383,7 +387,7 @@ func TestRenderLocalSettings_DisabledWebSSOOmitsAllWebSSOSettings(t *testing.T) 
 	h.Spec.WebSSO.Enabled = false
 	h.Spec.MultiDomain = &horizonv1alpha1.MultiDomainSpec{Enabled: false, DomainDropdown: true}
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	for _, name := range horizonv1alpha1.WebSSOSettingNames {
 		g.Expect(rendered).NotTo(ContainSubstring(name))
@@ -398,7 +402,7 @@ func TestRenderLocalSettings_DisabledWebSSOOmitsAllWebSSOSettings(t *testing.T) 
 // choice order (credentials first).
 func TestRenderLocalSettings_WebSSORendersChoicesMappingAndInitialChoice(t *testing.T) {
 	g := NewGomegaWithT(t)
-	rendered, err := renderLocalSettings(webssoTestHorizon())
+	rendered, err := renderLocalSettingsWithoutList(webssoTestHorizon())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(rendered).To(ContainSubstring(`WEBSSO_ENABLED = True`))
@@ -418,7 +422,7 @@ func TestRenderLocalSettings_WebSSORendersChoicesMappingAndInitialChoice(t *test
 // gateway URL from inside the pod.
 func TestRenderLocalSettings_WebSSOForcesUseHTTPRefererFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
-	rendered, err := renderLocalSettings(webssoTestHorizon())
+	rendered, err := renderLocalSettingsWithoutList(webssoTestHorizon())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`WEBSSO_USE_HTTP_REFERER = False`))
 }
@@ -437,7 +441,7 @@ func TestRenderLocalSettings_WebSSOOmitsEmptyOptionalSettings(t *testing.T) {
 		},
 	}
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`WEBSSO_ENABLED = True`))
 	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingWebSSOIDPMapping))
@@ -460,7 +464,7 @@ func TestRenderLocalSettings_MultiDomainRendersDropdownAndChoices(t *testing.T) 
 		},
 	}
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True`))
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_DEFAULT_DOMAIN = "Default"`))
@@ -481,7 +485,7 @@ func TestRenderLocalSettings_MultiDomainDropdownOffOmitsChoices(t *testing.T) {
 		DomainChoices: []horizonv1alpha1.DomainChoice{{Name: "planetexpress", Label: "planetexpress"}},
 	}
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT = True`))
 	// defaultDomain falls back to "Default" for a CR that bypassed the webhook.
@@ -501,7 +505,7 @@ func TestRenderLocalSettings_ExtraConfigOverridesWebSSOChoices(t *testing.T) {
 		horizonv1alpha1.SettingWebSSOChoices: {Raw: []byte(`[["custom", "Custom"]]`)},
 	}
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`WEBSSO_CHOICES = [["custom", "Custom"]]`))
 	g.Expect(rendered).NotTo(ContainSubstring(`["keycloak_openid", "keycloak"]`))
@@ -519,7 +523,7 @@ func TestRenderLocalSettings_GatewaySetsSecureProxySSLHeader(t *testing.T) {
 		ParentRef: horizonv1alpha1.GatewayParentRefSpec{Name: "openstack-gw"},
 	}
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`SECURE_PROXY_SSL_HEADER = ["HTTP_X_FORWARDED_PROTO", "https"]`))
 }
@@ -529,7 +533,7 @@ func TestRenderLocalSettings_GatewaySetsSecureProxySSLHeader(t *testing.T) {
 // so a direct client could forge an https:// scheme.
 func TestRenderLocalSettings_NoGatewayOmitsSecureProxySSLHeader(t *testing.T) {
 	g := NewGomegaWithT(t)
-	rendered, err := renderLocalSettings(testHorizon())
+	rendered, err := renderLocalSettingsWithoutList(testHorizon())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).NotTo(ContainSubstring(horizonv1alpha1.SettingSecureProxySSLHeader))
 }
@@ -618,7 +622,7 @@ func TestDefaultSettings_RegistryDriftGuard(t *testing.T) {
 		},
 	}
 
-	settings, err := defaultSettings(h)
+	settings, err := defaultSettings(h, cache.ResolveServers(&h.Spec.Cache, nil))
 	if err != nil {
 		t.Fatalf("defaultSettings returned an error: %v", err)
 	}
@@ -782,7 +786,7 @@ func TestRenderLocalSettings_EmptyCacheSpecRendersLocationNoneWithKeyPrefix(t *t
 	h := testHorizon()
 	h.Spec.Cache = commonv1.CacheSpec{Backend: horizonv1alpha1.DefaultCacheBackend}
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": None, "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
 }
@@ -796,7 +800,7 @@ func TestRenderLocalSettings_EmptyBackendRendersTimeoutOptions(t *testing.T) {
 	h := testHorizon()
 	h.Spec.Cache.Backend = ""
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"], "OPTIONS": {"connect_timeout": 1, "ignore_exc": True, "timeout": 1}}}`))
 }
@@ -809,8 +813,103 @@ func TestRenderLocalSettings_OtherCacheBackendRendersNoOptions(t *testing.T) {
 	h := testHorizon()
 	h.Spec.Cache.Backend = "django.core.cache.backends.memcached.PyLibMCCache"
 
-	rendered, err := renderLocalSettings(h)
+	rendered, err := renderLocalSettingsWithoutList(h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(`CACHES = {"default": {"BACKEND": "django.core.cache.backends.memcached.PyLibMCCache", "KEY_PREFIX": "horizon-e3b48cc65c6f", "LOCATION": ["memcached:11211"]}}`))
 	g.Expect(rendered).NotTo(ContainSubstring(`"OPTIONS"`))
+}
+
+// renderLocalSettingsWithoutList renders local_settings.py with the server
+// list cache.ResolveServers returns while no Memcached publishes one.
+func renderLocalSettingsWithoutList(h *horizonv1alpha1.Horizon) (string, error) {
+	return renderLocalSettings(h, cache.ResolveServers(&h.Spec.Cache, nil))
+}
+
+// newMemcachedTestReconciler is newTestReconciler with the Memcached Get
+// interceptor of testutil.MemcachedGetInterceptor.
+func newMemcachedTestReconciler(gets *atomic.Int32, getErr error, objs ...client.Object) *HorizonReconciler {
+	s := testScheme()
+	return &HorizonReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).
+			WithStatusSubresource(&horizonv1alpha1.Horizon{}).
+			WithInterceptorFuncs(testutil.MemcachedGetInterceptor(gets, getErr)).Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(50),
+	}
+}
+
+// TestReconcileConfig_CacheServers covers the CACHES LOCATION list
+// local_settings.py renders: the sorted status.serverList of the referenced
+// Memcached, the Service name while there is none, a brownfield list without a
+// Memcached read, and no ConfigMap on a failed read.
+func TestReconcileConfig_CacheServers(t *testing.T) {
+	brownfield := testHorizon()
+	brownfield.Spec.Cache = commonv1.CacheSpec{
+		Backend: horizonv1alpha1.DefaultCacheBackend, Servers: []string{"mc-0:11211", "mc-1:11211"},
+	}
+	list := testutil.MemcachedWithServerList("default", "memcached",
+		"memcached-2.memcached.default.svc:11211",
+		"memcached-0.memcached.default.svc:11211",
+		"memcached-1.memcached.default.svc:11211")
+
+	tests := []struct {
+		name     string
+		horizon  *horizonv1alpha1.Horizon
+		objs     []client.Object
+		want     string
+		wantGets int32
+	}{
+		{
+			name:    "managed with a server list renders the sorted entries",
+			horizon: testHorizon(),
+			objs:    []client.Object{list},
+			want: `"LOCATION": ["memcached-0.memcached.default.svc:11211", ` +
+				`"memcached-1.memcached.default.svc:11211", "memcached-2.memcached.default.svc:11211"]`,
+			wantGets: 1,
+		},
+		{
+			name:     "managed without a Memcached renders the Service name",
+			horizon:  testHorizon(),
+			want:     `"LOCATION": ["memcached:11211"]`,
+			wantGets: 1,
+		},
+		{
+			name:     "brownfield renders servers without a Memcached read",
+			horizon:  brownfield,
+			objs:     []client.Object{list},
+			want:     `"LOCATION": ["mc-0:11211", "mc-1:11211"]`,
+			wantGets: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			h := tc.horizon.DeepCopy()
+			r := newMemcachedTestReconciler(&gets, nil, append([]client.Object{h}, tc.objs...)...)
+
+			name, err := r.reconcileConfig(context.Background(), r.Client, h)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var cm corev1.ConfigMap
+			g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, &cm)).To(Succeed())
+			g.Expect(cm.Data["local_settings.py"]).To(ContainSubstring(tc.want))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
+	}
+
+	t.Run("a failed Memcached read writes no ConfigMap", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var gets atomic.Int32
+		h := testHorizon()
+		r := newMemcachedTestReconciler(&gets, context.DeadlineExceeded, h)
+
+		_, err := r.reconcileConfig(context.Background(), r.Client, h)
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err.Error()).To(HavePrefix("resolving cache servers: getting Memcached default/memcached: "))
+
+		var cms corev1.ConfigMapList
+		g.Expect(r.List(context.Background(), &cms, client.InNamespace("default"))).To(Succeed())
+		g.Expect(cms.Items).To(BeEmpty())
+	})
 }
