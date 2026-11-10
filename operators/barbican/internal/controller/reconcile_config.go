@@ -192,7 +192,7 @@ func operatorDefaults(barbican *barbicanv1alpha1.Barbican, projection secretStor
 			UserDomainName:     barbican.Spec.ServiceUser.UserDomainName,
 			ProjectDomainName:  barbican.Spec.ServiceUser.ProjectDomainName,
 			RegionName:         barbican.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&barbican.Spec.Cache),
+			MemcachedServers:   cache.ResolveServers(&barbican.Spec.Cache, nil),
 		}),
 		// Barbican's asynchronous order processing. The queue only moves work to a
 		// barbican-worker process, and this operator projects no worker Deployment,

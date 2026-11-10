@@ -447,7 +447,7 @@ func effectiveCacheBackend(horizon *horizonv1alpha1.Horizon) string {
 // LOCATION entry, delegating to the shared cache resolver and splitting its
 // comma-joined form into the list Django expects.
 func cacheLocations(horizon *horizonv1alpha1.Horizon) []any {
-	joined := cache.ResolveServers(&horizon.Spec.Cache)
+	joined := cache.ResolveServers(&horizon.Spec.Cache, nil)
 	if joined == "" {
 		return nil
 	}

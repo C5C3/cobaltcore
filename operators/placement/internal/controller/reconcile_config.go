@@ -165,7 +165,7 @@ func operatorDefaults(placement *placementv1alpha1.Placement) map[string]map[str
 			UserDomainName:     placement.Spec.ServiceUser.UserDomainName,
 			ProjectDomainName:  placement.Spec.ServiceUser.ProjectDomainName,
 			RegionName:         placement.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&placement.Spec.Cache),
+			MemcachedServers:   cache.ResolveServers(&placement.Spec.Cache, nil),
 		}),
 	}
 
