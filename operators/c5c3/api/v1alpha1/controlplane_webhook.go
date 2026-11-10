@@ -31,6 +31,7 @@ import (
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
@@ -3499,6 +3500,15 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 				"must be set when secretKeyRef is configured",
 			))
 		}
+
+		// services.horizon.multiDomain carries the horizon module's own
+		// MultiDomainSpec, so its defense-in-depth checks come from that
+		// module's exported validator rather than a mirror maintained here:
+		// the rules have exactly one source, and this webhook cannot start
+		// admitting a block the projected Horizon child would reject.
+		allErrs = append(allErrs, horizonv1alpha1.ValidateMultiDomain(
+			specPath.Child("services", "horizon", "multiDomain"), hz.MultiDomain,
+		)...)
 	}
 
 	// Reject empty policy rule names and values on both the global policy and the

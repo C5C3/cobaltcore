@@ -30,6 +30,7 @@ import (
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
@@ -1567,6 +1568,70 @@ func TestValidateCreate_RejectsHorizonEmptySecretKeyRefName(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("services.horizon.secretKeyRef.name"))
+}
+
+// TestValidateCreate_HorizonMultiDomain covers services.horizon.multiDomain,
+// which carries the horizon module's own MultiDomainSpec: the webhook delegates
+// to horizonv1alpha1.ValidateMultiDomain, so each rule reports under the
+// ControlPlane's own path with the Horizon webhook's message.
+func TestValidateCreate_HorizonMultiDomain(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	tests := []struct {
+		name     string
+		md       *horizonv1alpha1.MultiDomainSpec
+		wantPath string
+		wantSub  string
+	}{
+		{name: "no block", md: nil},
+		{name: "empty block", md: &horizonv1alpha1.MultiDomainSpec{}},
+		{name: "enabled without a dropdown", md: &horizonv1alpha1.MultiDomainSpec{Enabled: true}},
+		{
+			name: "enabled dropdown with two distinct choices",
+			md: &horizonv1alpha1.MultiDomainSpec{Enabled: true, DomainDropdown: true, DomainChoices: []horizonv1alpha1.DomainChoice{
+				{Name: "Default", Label: "Default"},
+				{Name: "playground", Label: "Playground"},
+			}},
+		},
+		{
+			name: "dropdown without enabled",
+			md: &horizonv1alpha1.MultiDomainSpec{DomainDropdown: true, DomainChoices: []horizonv1alpha1.DomainChoice{
+				{Name: "Default", Label: "Default"},
+			}},
+			wantPath: "spec.services.horizon.multiDomain.domainDropdown",
+			wantSub:  "domainDropdown requires multiDomain.enabled",
+		},
+		{
+			name:     "dropdown without choices",
+			md:       &horizonv1alpha1.MultiDomainSpec{Enabled: true, DomainDropdown: true},
+			wantPath: "spec.services.horizon.multiDomain.domainChoices",
+			wantSub:  "at least one domain choice must be declared when multiDomain.domainDropdown is true",
+		},
+		{
+			name: "duplicate choice name",
+			md: &horizonv1alpha1.MultiDomainSpec{Enabled: true, DomainDropdown: true, DomainChoices: []horizonv1alpha1.DomainChoice{
+				{Name: "Default", Label: "Default"},
+				{Name: "Default", Label: "Default again"},
+			}},
+			wantPath: "spec.services.horizon.multiDomain.domainChoices[1].name",
+			wantSub:  "Duplicate value",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := validControlPlane()
+			cp.Spec.Services.Horizon = &ServiceHorizonSpec{MultiDomain: tc.md}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			if tc.wantPath == "" {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
+		})
+	}
 }
 
 // --- External-mode validation matrix ---

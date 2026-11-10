@@ -3657,6 +3657,82 @@ spec:
                         - message: exactly one of image.tag or image.digest must be
                             set
                           rule: has(self.tag) != has(self.digest)
+                      multiDomain:
+                        description: |-
+                          MultiDomain turns on the login form's domain field, or a domain dropdown,
+                          so users of Keystone domains other than "Default" can log in to the
+                          dashboard, local SQL-backed domains included.
+
+                          Only an ENABLED block is projected: the reconciler writes it as written
+                          onto the Horizon child's spec.multiDomain, with an empty defaultDomain
+                          resolved to "Default", and it then replaces the block the reconciler
+                          derives from Ready LDAP identity backends. An absent block, or one with
+                          enabled false, leaves that LDAP derivation in place and cannot switch the
+                          domain field off.
+
+                          A dropdown restricts logins to the listed domains, so domainChoices must
+                          list every domain users log in from, "Default" and every LDAP-backed
+                          domain included.
+
+                          The schema is copied from the horizon-operator's CRD, so roll the
+                          c5c3-operator and horizon-operator charts together.
+                        properties:
+                          defaultDomain:
+                            description: |-
+                              DefaultDomain is the domain assumed for users who do not supply one
+                              (OPENSTACK_KEYSTONE_DEFAULT_DOMAIN). The defaulting webhook materializes
+                              "Default" when empty.
+                            maxLength: 64
+                            type: string
+                          domainChoices:
+                            description: |-
+                              DomainChoices are the ordered entries of the domain dropdown
+                              (OPENSTACK_KEYSTONE_DOMAIN_CHOICES). Rendered only when DomainDropdown
+                              is true.
+                            items:
+                              description: DomainChoice is one entry of the login
+                                page's domain dropdown.
+                              properties:
+                                label:
+                                  description: Label is the human-readable text rendered
+                                    for this domain.
+                                  maxLength: 128
+                                  minLength: 1
+                                  type: string
+                                name:
+                                  description: Name is the Keystone domain name submitted
+                                    with the login form.
+                                  maxLength: 64
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - label
+                              - name
+                              type: object
+                            maxItems: 32
+                            type: array
+                          domainDropdown:
+                            default: false
+                            description: |-
+                              DomainDropdown replaces the free-text domain field with a select
+                              populated from DomainChoices (OPENSTACK_KEYSTONE_DOMAIN_DROPDOWN), so
+                              users need not know how to spell their domain.
+                            type: boolean
+                          enabled:
+                            default: false
+                            description: |-
+                              Enabled turns on multi-domain login
+                              (OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT), adding a domain input to the
+                              login form.
+                            type: boolean
+                        type: object
+                        x-kubernetes-validations:
+                        - message: multiDomain.domainDropdown requires multiDomain.enabled
+                          rule: '!self.domainDropdown || self.enabled'
+                        - message: multiDomain.domainChoices must contain at least
+                            one choice when multiDomain.domainDropdown is true
+                          rule: '!self.domainDropdown || (has(self.domainChoices)
+                            && size(self.domainChoices) > 0)'
                       namespace:
                         description: |-
                           Namespace places the dashboard — and the cache and secret store that follow
