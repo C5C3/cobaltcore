@@ -42,6 +42,14 @@ resource name in the examples below is one that devstack produces.
   second bucket the credentials can read and write — the devstack pre-creates
   `glance-images-2` for this.
 
+The host-side `openstack` commands reuse the admin `OS_*` exports from the
+Quick Start. They include `--insecure` because the devstack Gateway's TLS
+certificate is not trusted by the host by default. This flag disables server
+certificate verification and avoids `CERTIFICATE_VERIFY_FAILED` when requesting
+a Keystone token. For verified TLS, set `OS_CACERT` to the deployment's CA bundle
+and omit `--insecure` from the commands below; use this approach outside the
+devstack.
+
 ## Step 1 — The Garage devstack pieces
 
 The ControlPlane devstack ships an in-cluster, S3-compatible
@@ -91,11 +99,45 @@ spec:
       write: true
 ```
 
-The garage-operator reconciles the bucket and materializes the key's S3
-credentials into a Secret in `shared-services`. A backend resolves
-`credentialsSecretRef` in the Glance service's own namespace, so the credentials
-have to reach `openstack` as well; the devstack does that with a second
-`ExternalSecret` reading the same OpenBao path.
+The garage-operator generates this key's S3 credentials in the Secret
+`shared-services/glance-archive-s3`. Creating a `GarageKey` does not write those
+credentials to OpenBao. The devstack's existing `ExternalSecret` reads the
+pre-seeded key used by `glance-s3`; it does not synchronize this new key.
+
+A backend resolves `credentialsSecretRef` in the Glance service's own namespace.
+For this devstack example, wait for the bucket and key, then copy the two
+required credential fields into a separate Secret in `openstack`:
+
+```bash
+kubectl wait -n shared-services --for=condition=Ready --timeout=120s \
+  garagebucket/glance-archive garagekey/glance-archive-s3
+kubectl get secret glance-archive-s3 -n shared-services -o json \
+  | jq '{
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {name: "glance-archive-s3", namespace: "openstack"},
+      type: "Opaque",
+      data: {
+        "access-key-id": .data["access-key-id"],
+        "secret-access-key": .data["secret-access-key"]
+      }
+    }' \
+  | kubectl apply --server-side --field-manager=glance-s3-guide -f -
+```
+
+The pipe transfers the credentials without printing them or placing them in
+command arguments. It creates fresh metadata for the destination, so the
+source Secret's owner references are not copied across namespaces.
+
+When following Step 2 with this custom bucket, set the `secondary` entry's
+`s3.bucket` to `glance-archive` and `s3.credentialsSecretRef.name` to
+`glance-archive-s3`. The `default` entry continues using `garage-s3-credentials`.
+
+This is a snapshot of the generated credentials: repeat the copy after a key
+rotation. For continuous synchronization, arrange for the new credentials to
+be published to their own OpenBao path and create an `ExternalSecret` in
+`openstack` that reads that path into the same two data keys. The built-in
+OpenBao path belongs to the existing devstack key.
 
 ## Step 2 — Attach the second store
 
@@ -291,13 +333,13 @@ Create the service user and grant it the `service` role, then register the image
 service in the catalog:
 
 ```bash
-openstack user create --domain Default --project service \
+openstack --insecure user create --domain Default --project service \
   --password-prompt glance
-openstack role add --user glance --project service service
+openstack --insecure role add --user glance --project service service
 
-openstack service create --name glance image
-openstack endpoint create glance public   http://glance.openstack.svc.cluster.local:9292
-openstack endpoint create glance internal http://glance.openstack.svc.cluster.local:9292
+openstack --insecure service create --name glance image
+openstack --insecure endpoint create glance public   http://glance.openstack.svc.cluster.local:9292
+openstack --insecure endpoint create glance internal http://glance.openstack.svc.cluster.local:9292
 ```
 
 Store the service user's password in a Secret the Glance CR reads:
