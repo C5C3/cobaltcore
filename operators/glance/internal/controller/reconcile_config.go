@@ -117,7 +117,16 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 		return r.lastGoodArtifacts(ctx, children, glance)
 	}
 
-	defaults := operatorDefaults(glance, projection)
+	// A failed read of the managed cache's server list writes no ConfigMap: the
+	// running pods keep their configuration and the next pass retries.
+	managed, err := cache.ManagedServers(ctx, children, glance.Namespace, &glance.Spec.Cache)
+	if err != nil {
+		err = fmt.Errorf("resolving cache servers: %w", err)
+		markConfigFailed(glance, err)
+		return ctrl.Result{}, configArtifacts{}, err
+	}
+
+	defaults := operatorDefaults(glance, projection, cache.ResolveServers(&glance.Spec.Cache, managed))
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// later logging.conf data-key decision below.
@@ -195,10 +204,11 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 // CRD spec and the backends projection: the static
 // [DEFAULT]/[database]/[keystone_authtoken]/… scaffolding plus the
 // per-logger-level and json-logging conditionals. It is a pure
-// function of the spec (no cluster access), so the registry drift-guard test
-// can call it directly to assert the rendered defaults stay in lockstep with
+// function of the spec and cacheServers, the list cache.ResolveServers returned
+// (no cluster access), so the registry drift-guard test can call it directly
+// to assert the rendered defaults stay in lockstep with
 // glancev1alpha1.OwnedConfigKeys. It mirrors keystone's operatorDefaults.
-func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjection) map[string]map[string]string {
+func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjection, cacheServers string) map[string]map[string]string {
 	logging := effectiveLogging(glance.Spec.Logging)
 	filtering := effectiveImportFiltering(glance.Spec.ImportFiltering)
 	// The image-import plugins. (The variable is not named `plugins` — that is
@@ -249,7 +259,7 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 			UserDomainName:     glance.Spec.ServiceUser.UserDomainName,
 			ProjectDomainName:  glance.Spec.ServiceUser.ProjectDomainName,
 			RegionName:         glance.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&glance.Spec.Cache, nil),
+			MemcachedServers:   cacheServers,
 		}),
 		"glance_store": {
 			"default_backend": projection.defaultBackend,
