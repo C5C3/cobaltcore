@@ -147,7 +147,16 @@ func (r *NeutronReconciler) reconcileConfig(ctx context.Context, children client
 	config.RecordExtraConfigHealth(r.Recorder, neutron, &neutron.Status.Conditions, neutron.Generation,
 		config.FindOwnedOverrides(neutron.Spec.ExtraConfig, neutronv1alpha1.OwnedConfigKeys))
 
-	merged := operatorDefaults(neutron, ovn)
+	// A failed read of the managed cache's server list writes no ConfigMap: the
+	// running pods keep their configuration and the next pass retries.
+	managed, err := cache.ManagedServers(ctx, children, neutron.Namespace, &neutron.Spec.Cache)
+	if err != nil {
+		err = fmt.Errorf("resolving cache servers: %w", err)
+		markConfigFailed(neutron, err)
+		return ctrl.Result{}, "", err
+	}
+
+	merged := operatorDefaults(neutron, ovn, cache.ResolveServers(&neutron.Spec.Cache, managed))
 
 	// logging is re-derived here (operatorDefaults keeps its own copy) for the
 	// logging.conf data-key decision below.
@@ -205,14 +214,15 @@ func splitML2Sections(merged map[string]map[string]string) (neutronConf, ml2Conf
 }
 
 // operatorDefaults builds the operator-owned sections of both rendered files
-// from the CRD spec and the resolved OVN endpoints. It is a pure function of the
-// two (no cluster access), so it can be called directly to assert the rendered
-// defaults stay in lockstep with neutronv1alpha1.OwnedConfigKeys.
+// from the CRD spec, the resolved OVN endpoints and cacheServers, the list
+// cache.ResolveServers returned. It is a pure function of the three (no cluster
+// access), so it can be called directly to assert the rendered defaults stay in
+// lockstep with neutronv1alpha1.OwnedConfigKeys.
 //
 // Nothing here depends on spec.openStackRelease: the option names neutron reads
 // have not moved across the supported releases, so two CRs differing only in
 // their release render byte-identical files.
-func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints) map[string]map[string]string {
+func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints, cacheServers string) map[string]map[string]string {
 	logging := effectiveLogging(neutron.Spec.Logging)
 	notifyNova := fmt.Sprintf("%t", neutron.Spec.Nova != nil)
 	defaults := map[string]map[string]string{
@@ -268,7 +278,7 @@ func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints
 			UserDomainName:     neutron.Spec.ServiceUser.UserDomainName,
 			ProjectDomainName:  neutron.Spec.ServiceUser.ProjectDomainName,
 			RegionName:         neutron.Spec.Region,
-			MemcachedServers:   cache.ResolveServers(&neutron.Spec.Cache, nil),
+			MemcachedServers:   cacheServers,
 		}),
 		// Versioned notifications have no consumer in this control plane, so they
 		// are dropped at the source rather than accumulating in a queue.

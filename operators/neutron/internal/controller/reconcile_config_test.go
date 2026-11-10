@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -20,7 +22,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
@@ -479,7 +483,7 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 		PerLoggerLevels: map[string]string{"neutron": "DEBUG"},
 	}
 
-	defaults := operatorDefaults(neutron, resolvedForConfig())
+	defaults := operatorDefaults(neutron, resolvedForConfig(), cache.ResolveServers(&neutron.Spec.Cache, nil))
 
 	registered := make(map[[2]string]struct{}, len(neutronv1alpha1.OwnedConfigKeys))
 	for _, o := range neutronv1alpha1.OwnedConfigKeys {
@@ -531,7 +535,7 @@ func TestOperatorDefaults_NovaBlockNilRendersFlagsFalse(t *testing.T) {
 	neutron := neutronForConfig()
 	g.Expect(neutron.Spec.Nova).To(BeNil(), "the fixture must carry no spec.nova")
 
-	defaults := operatorDefaults(neutron, resolvedForConfig())
+	defaults := operatorDefaults(neutron, resolvedForConfig(), cache.ResolveServers(&neutron.Spec.Cache, nil))
 
 	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_status_changes", "false"))
 	g.Expect(defaults["DEFAULT"]).To(HaveKeyWithValue("notify_nova_on_port_data_changes", "false"))
@@ -549,7 +553,7 @@ func TestOperatorDefaults_NovaBlockOmitsRegionWhenEmpty(t *testing.T) {
 	neutron.Spec.Nova = novaNotifierSpec()
 	neutron.Spec.Nova.Region = ""
 
-	defaults := operatorDefaults(neutron, resolvedForConfig())
+	defaults := operatorDefaults(neutron, resolvedForConfig(), cache.ResolveServers(&neutron.Spec.Cache, nil))
 
 	g.Expect(defaults["nova"]).NotTo(HaveKey("region_name"))
 	g.Expect(defaults["nova"]).NotTo(HaveKey("password"))
@@ -580,4 +584,91 @@ func TestEffectiveLogging(t *testing.T) {
 	g.Expect(resolved.Level).To(Equal("WARNING"))
 	g.Expect(partial.Format).To(BeEmpty(), "the input spec must be left untouched")
 	g.Expect(partial.Debug).To(BeNil(), "the input spec must be left untouched")
+}
+
+// TestReconcileConfig_CacheServers covers the server list neutron.conf renders
+// into [keystone_authtoken] memcached_servers: the sorted status.serverList of
+// the referenced Memcached, the Service name while there is none, a brownfield
+// list without a Memcached read, and no ConfigMap with SecretsReady=False on a
+// failed read.
+func TestReconcileConfig_CacheServers(t *testing.T) {
+	entries := []string{
+		"memcached-0.memcached.openstack.svc:11211",
+		"memcached-1.memcached.openstack.svc:11211",
+		"memcached-2.memcached.openstack.svc:11211",
+	}
+	managed := func() *neutronv1alpha1.Neutron {
+		neutron := neutronForConfig()
+		neutron.Spec.Cache = commonv1.CacheSpec{
+			Backend: "dogpile.cache.pymemcache", ClusterRef: &corev1.LocalObjectReference{Name: "memcached"},
+		}
+		return neutron
+	}
+
+	tests := []struct {
+		name     string
+		neutron  *neutronv1alpha1.Neutron
+		objs     []client.Object
+		want     string
+		wantGets int32
+	}{
+		{
+			name:     "managed with a server list renders the sorted entries",
+			neutron:  managed(),
+			objs:     []client.Object{testutil.MemcachedWithServerList(testNamespace, "memcached", entries[2], entries[1], entries[0])},
+			want:     strings.Join(entries, ","),
+			wantGets: 1,
+		},
+		{
+			name:     "managed without a Memcached renders the Service name",
+			neutron:  managed(),
+			want:     "memcached:11211",
+			wantGets: 1,
+		},
+		{
+			name:     "brownfield renders servers without a Memcached read",
+			neutron:  neutronForConfig(),
+			objs:     []client.Object{testutil.MemcachedWithServerList(testNamespace, "memcached", entries...)},
+			want:     "mc:11211",
+			wantGets: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			c := neutronFakeClientBuilder(append(tc.objs, tc.neutron)...).
+				WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, nil)).Build()
+			r := &NeutronReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+			_, name, err := r.reconcileConfig(context.Background(), r.Client, tc.neutron, resolvedForConfig())
+			g.Expect(err).NotTo(HaveOccurred())
+
+			conf := renderedConfigMap(t, r, name).Data[neutronConfDataKey]
+			g.Expect(conf).To(MatchRegexp(`(?m)^memcached_servers = %s$`, regexp.QuoteMeta(tc.want)))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
+	}
+
+	t.Run("a failed Memcached read writes no ConfigMap", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var gets atomic.Int32
+		neutron := managed()
+		c := neutronFakeClientBuilder(neutron).
+			WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, context.DeadlineExceeded)).Build()
+		r := &NeutronReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(50)}
+
+		_, name, err := r.reconcileConfig(context.Background(), r.Client, neutron, resolvedForConfig())
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err).To(MatchError(ContainSubstring("resolving cache servers")))
+		g.Expect(name).To(BeEmpty())
+
+		var cms corev1.ConfigMapList
+		g.Expect(r.List(context.Background(), &cms, client.InNamespace(testNamespace))).To(Succeed())
+		g.Expect(cms.Items).To(BeEmpty())
+		cond := neutronCondition(neutron, "SecretsReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	})
 }

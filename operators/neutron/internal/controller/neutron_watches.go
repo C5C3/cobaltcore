@@ -153,6 +153,22 @@ func mariaDBToNeutronMapper(c client.Reader) handler.MapFunc {
 		})
 }
 
+// memcachedToNeutronMapper returns a MapFunc that maps Memcached events to
+// reconcile requests for Neutron CRs whose spec.cache.clusterRef targets the
+// Memcached by name in the same namespace. It binds the shared
+// watch.ClusterRefMapper to the Neutron list type and its cache clusterRef.
+func memcachedToNeutronMapper(c client.Reader) handler.MapFunc {
+	return watch.ClusterRefMapper(c,
+		func() client.ObjectList { return &neutronv1alpha1.NeutronList{} },
+		func(o client.Object) string {
+			cr, ok := o.(*neutronv1alpha1.Neutron)
+			if !ok || cr.Spec.Cache.ClusterRef == nil {
+				return ""
+			}
+			return cr.Spec.Cache.ClusterRef.Name
+		})
+}
+
 // esoStoreToNeutronMapper returns a MapFunc that enqueues the Neutron CRs whose
 // effective secret store reference resolves to the changed External Secrets store
 // object. watchedKind selects which store scope this mapper is registered
