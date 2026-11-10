@@ -49,6 +49,7 @@ import (
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -268,7 +269,7 @@ func (r *ControlPlaneReconciler) apiReader() client.Reader {
 // so no PushSecret is left for the SecretStore entry to outrun.
 var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 	mariadbv1alpha1.GroupVersion.WithKind("MariaDB"),
-	memcachedGVK,
+	cache.MemcachedGVK,
 	esov1.SchemeGroupVersion.WithKind("SecretStore"),
 	certificateGVK,
 	corev1.SchemeGroupVersion.WithKind("ServiceAccount"),
@@ -1465,9 +1466,9 @@ func (r *ControlPlaneReconciler) setupWithOptions(mgr mcmanager.Manager, opts cr
 // once the CRD appears (see crd_presence.go).
 //
 // DECISION (Memcached Owns): memcached.c5c3.io ships no Go module (see
-// memcachedGVK in reconcile_infrastructure.go), so the Memcached child is owned
+// cache.MemcachedGVK), so the Memcached child is owned
 // as an *unstructured.Unstructured carrying that shared GVK rather than a typed
-// client object — exactly how ensureMemcached creates it. The same memcachedGVK
+// client object — exactly how ensureMemcached creates it. The same cache.MemcachedGVK
 // constant is reused so the watch and the create-or-update agree on the kind.
 //
 // DECISION (ESO Owns): the ExternalSecret and PushSecret children are owned via
@@ -1525,8 +1526,7 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		return served[gvk]
 	}
 
-	memcached := &unstructured.Unstructured{}
-	memcached.SetGroupVersionKind(memcachedGVK)
+	memcached := cache.NewMemcached()
 
 	// The per-ControlPlane mTLS client Certificate is Owned as an
 	// *unstructured.Unstructured carrying certificateGVK (mirroring the Memcached

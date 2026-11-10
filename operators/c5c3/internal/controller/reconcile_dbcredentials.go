@@ -104,7 +104,7 @@ const dbCredentialRefreshInterval = 24 * time.Hour
 
 // certificateGVK is the cert-manager Certificate GroupVersionKind. The
 // per-ControlPlane client Certificate is built and Owned as an
-// *unstructured.Unstructured (mirroring memcachedGVK) so the c5c3 operator does
+// *unstructured.Unstructured (mirroring cache.MemcachedGVK) so the c5c3 operator does
 // not take a cert-manager Go dependency.
 var certificateGVK = schema.GroupVersionKind{
 	Group:   "cert-manager.io",
