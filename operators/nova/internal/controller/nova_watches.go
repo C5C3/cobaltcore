@@ -145,6 +145,22 @@ func novaClusterRefMapper(c client.Reader,
 		})
 }
 
+// memcachedToNovaMapper returns a MapFunc that maps Memcached events to
+// reconcile requests for Nova CRs whose spec.cache.clusterRef targets the
+// Memcached by name in the same namespace. It binds the shared
+// watch.ClusterRefMapper to the Nova list type and its cache clusterRef.
+func memcachedToNovaMapper(c client.Reader) handler.MapFunc {
+	return watch.ClusterRefMapper(c,
+		func() client.ObjectList { return &novav1alpha1.NovaList{} },
+		func(o client.Object) string {
+			cr, ok := o.(*novav1alpha1.Nova)
+			if !ok || cr.Spec.Cache.ClusterRef == nil {
+				return ""
+			}
+			return cr.Spec.Cache.ClusterRef.Name
+		})
+}
+
 // storeToNovaMapper returns a MapFunc that enqueues the Nova CRs whose effective
 // secret store reference resolves to the changed store object. watchedKind
 // selects which store scope this mapper is registered against, a cluster-scoped

@@ -19,6 +19,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	"github.com/c5c3/cobaltcore/internal/common/cache"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -309,8 +310,9 @@ func TestPinNovaOverlays(t *testing.T) {
 // API database and dials the host "placeholder" on every console token.
 func TestConsoleProxyReachesNoAPIDatabase(t *testing.T) {
 	g := NewGomegaWithT(t)
+	nova := validNova()
 
-	g.Expect(operatorDefaults(validNova())[apiDatabaseSection]["connection"]).To(
+	g.Expect(operatorDefaults(nova, cache.ResolveServers(&nova.Spec.Cache, nil))[apiDatabaseSection]["connection"]).To(
 		Equal(dbConnectionPlaceholder), "the shared document carries the placeholder")
 	g.Expect(envNames(novaWorkloadEnv(validNova(), roleConsoleProxy))).NotTo(
 		ContainElement("OS_API_DATABASE__CONNECTION"), "the proxy gets no override for it")
@@ -328,10 +330,11 @@ func TestOperatorDefaults_IsAPureFunction(t *testing.T) {
 	nova := validNova()
 	before := nova.DeepCopy()
 
-	defaults := operatorDefaults(nova)
+	cacheServers := cache.ResolveServers(&nova.Spec.Cache, nil)
+	defaults := operatorDefaults(nova, cacheServers)
 
 	g.Expect(defaults).To(HaveKey("DEFAULT"))
-	g.Expect(operatorDefaults(nova)).To(Equal(defaults),
+	g.Expect(operatorDefaults(nova, cacheServers)).To(Equal(defaults),
 		"nothing in the renderer reaches the API server, so a second call over the same input repeats itself")
 	g.Expect(nova).To(Equal(before), "operatorDefaults must not write back into the spec it reads")
 }

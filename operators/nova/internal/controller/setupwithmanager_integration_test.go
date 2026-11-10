@@ -109,6 +109,8 @@ func TestSetupWithManager_AllControllersStart(t *testing.T) {
 		"SetupWithManager must detect the Gateway API HTTPRoute CRD served from fake_crds/gateway-api")
 	g.Expect(nova.vpaAvailable).To(BeTrue(),
 		"SetupWithManager must detect the VerticalPodAutoscaler CRD served from fake_crds/vertical-pod-autoscaler")
+	g.Expect(nova.memcachedAvailable).To(BeTrue(),
+		"SetupWithManager must detect the Memcached CRD served from fake_crds/memcached-operator")
 	g.Expect(compute.vpaAvailable).To(BeTrue(),
 		"the NovaCompute SetupWithManager must detect the VerticalPodAutoscaler CRD served from fake_crds/vertical-pod-autoscaler")
 

@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
@@ -935,4 +936,29 @@ func TestReconcileComputeConfig_ControlCharInRemoteKeystoneEndpointKeepsThePubli
 	live := publishedRemoteComputeConfig(t, r.Client, nova)
 	g.Expect(live.Data).To(Equal(published.Data), "the injected section must never reach the Secret")
 	expectComputeConfigCondition(g, nova, metav1.ConditionFalse, conditionReasonComputeConfigError)
+}
+
+// TestReconcileComputeConfig_NoMemcachedServersForAManagedList verifies that
+// the per-pod server list of the managed cache reaches the control plane's
+// token middleware but not the compute fragment: a compute runs without the
+// token cache, and the cache pods' names do not resolve on another cluster.
+func TestReconcileComputeConfig_NoMemcachedServersForAManagedList(t *testing.T) {
+	g := NewGomegaWithT(t)
+	nova := validNova()
+	r := newNovaTestReconciler(nova, testutil.MemcachedWithServerList(testNamespace, testMemcachedName,
+		"memcached-0.memcached.openstack.svc:11211", "memcached-1.memcached.openstack.svc:11211"))
+
+	_, art, err := r.reconcileConfig(context.Background(), r.Client, nova)
+	g.Expect(err).NotTo(HaveOccurred())
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: art.configMapName}, &cm)).To(Succeed())
+	g.Expect(cm.Data[novaConfDataKey]).To(ContainSubstring(
+		"memcached_servers = memcached-0.memcached.openstack.svc:11211,memcached-1.memcached.openstack.svc:11211\n"))
+
+	_, err = r.reconcileComputeConfig(context.Background(), r.Client, nova,
+		testComputeTransportURL, computeSecretValues())
+	g.Expect(err).NotTo(HaveOccurred())
+	fragment := string(publishedComputeConfig(t, r.Client, nova).Data[computeConfigFragmentKey])
+	g.Expect(fragment).NotTo(ContainSubstring("memcache"))
+	g.Expect(fragment).To(Equal(pinComputeConfigGolden))
 }

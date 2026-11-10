@@ -8,8 +8,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -22,6 +24,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/testutil"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	novav1alpha1 "github.com/c5c3/cobaltcore/operators/nova/api/v1alpha1"
 )
 
@@ -845,8 +849,8 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 
 	rendered := map[string]map[string]map[string]string{
 		// The maximal CR, so the forward check covers the conditional keys too.
-		"novaMaximal": operatorDefaults(novaMaximal()),
-		"novaMinimal": operatorDefaults(novaMinimal()),
+		"novaMaximal": operatorDefaults(novaMaximal(), "mc:11211"),
+		"novaMinimal": operatorDefaults(novaMinimal(), "mc:11211"),
 	}
 	overlays := map[string]string{
 		metadataConfDataKey:   metadataOverlay,
@@ -882,4 +886,90 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestReconcileConfig_CacheServers covers the server list nova.conf renders
+// into [cache] memcache_servers and [keystone_authtoken] memcached_servers:
+// the sorted status.serverList of the referenced Memcached, the Service name
+// while there is none, a brownfield list without a Memcached read, and no
+// ConfigMap with SecretsReady=False on a failed read.
+func TestReconcileConfig_CacheServers(t *testing.T) {
+	entries := []string{
+		"memcached-0.memcached.openstack.svc:11211",
+		"memcached-1.memcached.openstack.svc:11211",
+		"memcached-2.memcached.openstack.svc:11211",
+	}
+	brownfield := func() *novav1alpha1.Nova {
+		nova := validNova()
+		nova.Spec.Cache = commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend, Servers: []string{"mc-0:11211", "mc-1:11211"}}
+		return nova
+	}
+
+	tests := []struct {
+		name     string
+		nova     *novav1alpha1.Nova
+		objs     []client.Object
+		want     string
+		wantGets int32
+	}{
+		{
+			name:     "managed with a server list renders the sorted entries",
+			nova:     validNova(),
+			objs:     []client.Object{testutil.MemcachedWithServerList(testNamespace, testMemcachedName, entries[1], entries[2], entries[0])},
+			want:     strings.Join(entries, ","),
+			wantGets: 1,
+		},
+		{
+			name:     "managed without a Memcached renders the Service name",
+			nova:     validNova(),
+			want:     testMemcachedName + ":11211",
+			wantGets: 1,
+		},
+		{
+			name:     "brownfield renders servers without a Memcached read",
+			nova:     brownfield(),
+			objs:     []client.Object{testutil.MemcachedWithServerList(testNamespace, testMemcachedName, entries...)},
+			want:     "mc-0:11211,mc-1:11211",
+			wantGets: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var gets atomic.Int32
+			c := novaFakeClientBuilder(append(tc.objs, tc.nova)...).
+				WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, nil)).Build()
+			r := &NovaReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
+
+			_, art, err := r.reconcileConfig(context.Background(), r.Client, tc.nova)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			conf := renderedConfigMap(t, r, art.configMapName).Data[novaConfDataKey]
+			g.Expect(conf).To(MatchRegexp(`(?m)^memcache_servers = %s$`, regexp.QuoteMeta(tc.want)))
+			g.Expect(conf).To(MatchRegexp(`(?m)^memcached_servers = %s$`, regexp.QuoteMeta(tc.want)))
+			g.Expect(gets.Load()).To(Equal(tc.wantGets))
+		})
+	}
+
+	t.Run("a failed Memcached read writes no ConfigMap", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		var gets atomic.Int32
+		nova := validNova()
+		c := novaFakeClientBuilder(nova).
+			WithInterceptorFuncs(testutil.MemcachedGetInterceptor(&gets, context.DeadlineExceeded)).Build()
+		r := &NovaReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
+
+		_, art, err := r.reconcileConfig(context.Background(), r.Client, nova)
+		g.Expect(err).To(MatchError(context.DeadlineExceeded))
+		g.Expect(err).To(MatchError(ContainSubstring("resolving cache servers")))
+		g.Expect(art).To(Equal(configArtifacts{}))
+
+		var cms corev1.ConfigMapList
+		g.Expect(r.List(context.Background(), &cms, client.InNamespace(testNamespace))).To(Succeed())
+		g.Expect(cms.Items).To(BeEmpty())
+		cond := novaCondition(nova, "SecretsReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	})
 }
