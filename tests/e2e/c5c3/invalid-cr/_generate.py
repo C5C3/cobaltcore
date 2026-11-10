@@ -3199,6 +3199,45 @@ FIXTURES: tuple[Fixture, ...] = (
             )
         ),
     ),
+    Fixture(
+        filename="160-horizon-multidomain-dropdown-without-choices.yaml",
+        comment=(
+            "services.horizon.multiDomain turns on a domain dropdown without any\n"
+            "domainChoices, which would render an empty select. The CEL rule of the\n"
+            "embedded horizon MultiDomainSpec, copied into the ControlPlane CRD, answers\n"
+            "at the CRD schema layer before the webhook's delegated mirror runs."
+        ),
+        name="cp-horizon-multidomain-no-choices",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      multiDomain:\n"
+            "        enabled: true\n"
+            "        domainDropdown: true\n"
+        ),
+    ),
+    Fixture(
+        filename="161-horizon-multidomain-duplicate-choice.yaml",
+        comment=(
+            "services.horizon.multiDomain lists the same domain name twice. No schema\n"
+            "rule sees duplicates; the webhook's delegated ValidateMultiDomain rejects it."
+        ),
+        name="cp-horizon-multidomain-duplicate-choice",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      multiDomain:\n"
+            "        enabled: true\n"
+            "        domainDropdown: true\n"
+            "        domainChoices:\n"
+            "        - name: Default\n"
+            "          label: Default\n"
+            "        - name: Default\n"
+            "          label: Default again\n"
+        ),
+    ),
     # --- transition wave H: Cinder entry type freeze
     #     (Test: c5c3-invalid-cr-cinder-type-freeze) ---
     Fixture(
