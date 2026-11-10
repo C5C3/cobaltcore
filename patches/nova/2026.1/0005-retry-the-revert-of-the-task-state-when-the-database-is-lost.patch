@@ -1,0 +1,303 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Retry the revert of the task state when the database is lost
+
+The `reverts_task_state` decorator (nova/compute/manager.py) clears the
+task state that nova-api set before it handed an operation to
+nova-compute, once the operation has failed. The revert is a single write,
+an RPC call to nova-conductor, which answers a lost database with an
+`oslo_messaging.RemoteError` of exc_type DBConnectionError. When an
+operation fails while the database is gone, the revert fails as well and
+only logs "Failed to revert task state for instance". The server then
+keeps the task state until nova-compute restarts: `_sync_power_states`
+skips an instance with a pending task, and only `_init_instance` resumes a
+powering-on or powering-off at service start. Until then nova-api answers
+a start, a volume detach and an interface attach of the server with a
+409, because their `check_instance_state` allows no task state.
+
+The nightly random chaos run 42752982735 (#1652) hit this. dizzy started
+server d0b6ff17-3aaf-4ea5-baa1-2739f9032ea0 at 05:08:59, and
+s06-mariadb-pod-kill began at 05:09:00. `start_instance` failed in its
+first step, `_notify_about_instance_usage`, whose lazy load of the flavor
+went through nova-conductor, and the revert failed at 05:09:01. The server
+stayed stopped with the task state powering-on until dizzy's teardown
+deleted it at 05:28:48. In the 11 minutes after the last fault had been
+lifted and had recovered, nova-api answered 99 starts, 95 volume detaches
+and 51 interface attaches of that server with a 409. In the same run the
+revert of a failed build met s08-mariadb-pod-failure at 05:14:07; that
+server did no harm only because dizzy deleted it two minutes later, which
+the API allows in any task state.
+
+The revert now goes through `compute_utils.call_with_db_retries` from
+patch 0003. It retries a RemoteError of exc_type DBConnectionError with
+waits that stop growing at 16 seconds and add up to 254 seconds, and gives
+every other error one attempt as before, InstanceNotFound included. Once
+the write succeeds, the server keeps its vm_state with no task state, its
+instance fault records the error of the operation, and the next action of
+the API reaches nova-compute again. When the 254 seconds run out, the
+revert logs its failure and the server keeps the task state, as it does
+without the patch. The NOTE above `call_with_db_retries` names the new
+caller.
+
+Seven methods keep the single revert; `_REVERTS_TASK_STATE_ONCE` names
+them. Six are RPC calls, not casts, so a caller waits for their answer:
+nova-api for set_admin_password, nova-conductor for
+reserve_block_device_name and for the four steps of a cross-cell resize. A
+revert that waited would hold that caller as well, and the caller of
+set_admin_password gives up after rpc_response_timeout. terminate_instance
+already clears its task state in the retried write of its ERROR state
+(patch 0003), so a second round of waits would only hold its RPC worker
+twice as long. The other 26 wrapped methods retry: 23 RPC casts, among
+them start_instance and stop_instance, `_do_build_and_run_instance`, which
+runs in the build's own thread, `_snapshot_instance` and power_update.
+snapshot_instance and backup_instance wrap `_snapshot_instance`, so a
+database that stays away for longer than 254 seconds holds them for a
+second round.
+
+During an outage each failed operation holds the worker of nova-compute
+that ran it until its revert succeeds or gives up: an RPC executor worker
+for a cast. Once failed operations fill the pool
+(executor_thread_pool_size, 64 by default), every other RPC to that
+nova-compute queues behind them until the database is back, as patch 0003
+describes for failed deletes. A worker frees within 16 seconds of the
+database's return.
+
+Tests: four new tests in nova/tests/unit/compute/test_compute_mgr.py fail
+without the patch. test_start_instance_reverts_task_state_after_lost_database
+replays the night: the start fails on a lost database, two reverts meet
+it, and the third persists stopped with no task state.
+test_start_instance_revert_gives_up_after_lost_database pins 19 writes,
+waits of 254 seconds in all and the logged failure.
+test_reverts_task_state_once_for_the_named_methods pins one attempt for
+set_admin_password and 19 for any other method.
+test_reverts_task_state_once_names_methods_of_the_manager walks the
+decorators of every name in the set, so a rename upstream that leaves a
+name wrapping nothing fails it. The upstream tests of the decorator,
+test_reverts_task_state_instance_not_found and test_state_revert in
+nova/tests/unit/compute/test_compute.py, revert on a reachable database
+and pass unchanged, as do the three terminate tests of patch 0003.
+
+Proof: tests/container-images/verify_nova.sh asserts in the built image
+that the revert of a failed start persists on its third write after two
+lost databases, and that set_admin_password still reverts once.
+
+Applies to nova 33.0.0 (2026.1), on top of patch 0003, whose helper it
+calls.
+
+Upstream status: not yet proposed.
+
+diff --git a/nova/compute/manager.py b/nova/compute/manager.py
+index e6de3ea..57a8d56 100644
+--- a/nova/compute/manager.py
++++ b/nova/compute/manager.py
+@@ -145,9 +145,35 @@ def errors_out_migration(function):
+     return decorated_function
+ 
+ 
++# NOTE: reverts_task_state waits out a lost database before it gives up the
++# revert of the task state, except for the methods named here, which revert
++# once. Six of them are RPC calls, not casts, so a caller waits for their
++# answer: nova-api for set_admin_password, nova-conductor for
++# reserve_block_device_name and for the four steps of a cross-cell resize. A
++# revert that waited would hold that caller as well, and set_admin_password's
++# caller gives up after rpc_response_timeout. terminate_instance clears its
++# task state in the retried write of its ERROR state, so a second wait would
++# only hold its RPC worker longer.
++_REVERTS_TASK_STATE_ONCE = frozenset([
++    'terminate_instance',
++    'set_admin_password',
++    'reserve_block_device_name',
++    'prep_snapshot_based_resize_at_source',
++    'finish_snapshot_based_resize_at_dest',
++    'revert_snapshot_based_resize_at_dest',
++    'finish_revert_snapshot_based_resize_at_source',
++])
++
++
+ @utils.expects_func_args('instance')
+ def reverts_task_state(function):
+-    """Decorator to revert task_state on failure."""
++    """Decorator to revert task_state on failure.
++
++    A revert that meets a lost database is retried with
++    compute_utils.call_with_db_retries, unless the method is in
++    _REVERTS_TASK_STATE_ONCE.
++    """
++    revert_once = function.__name__ in _REVERTS_TASK_STATE_ONCE
+ 
+     @functools.wraps(function)
+     def decorated_function(self, context, *args, **kwargs):
+@@ -171,7 +197,13 @@ def reverts_task_state(function):
+                 instance = keyed_args['instance']
+                 original_task_state = instance.task_state
+                 try:
+-                    self._instance_update(context, instance, task_state=None)
++                    if revert_once:
++                        self._instance_update(context, instance,
++                                              task_state=None)
++                    else:
++                        compute_utils.call_with_db_retries(
++                            self._instance_update, context, instance,
++                            task_state=None)
+                     LOG.info("Successfully reverted task state from %s on "
+                              "failure for instance.",
+                              original_task_state, instance=instance)
+diff --git a/nova/compute/utils.py b/nova/compute/utils.py
+index 16db8a9..5c09fd2 100644
+--- a/nova/compute/utils.py
++++ b/nova/compute/utils.py
+@@ -1686,11 +1686,14 @@ def _is_lost_database(exc):
+ 
+ 
+ # NOTE: The waits add up to 254 seconds, the bound of call_cinder_with_retries,
+-# which outlasts a database failover. The caller is
+-# ComputeManager.terminate_instance, whose write of the ERROR state after a
+-# failed delete is the one that ends the task state deleting: the API ignores
+-# every later delete while the server keeps it. Each wait holds the instance
+-# lock and one RPC worker of nova-compute, so the waits stop growing at 16
++# which outlasts a database failover. ComputeManager.terminate_instance writes
++# the ERROR state of a failed delete with it, which ends the task state
++# deleting: the API ignores every later delete while the server keeps it.
++# reverts_task_state writes the revert of the task state of another failed
++# operation with it: while the server keeps that task state, the API answers
++# a start, a stop, a volume detach or an interface attach with a 409. Each
++# wait holds the worker of nova-compute that runs the operation, and in
++# terminate_instance also the instance lock, so the waits stop growing at 16
+ # seconds: once the database is back, the next attempt follows within 16
+ # seconds.
+ @retrying.retry(retry_on_exception=_is_lost_database,
+diff --git a/nova/tests/unit/compute/test_compute_mgr.py b/nova/tests/unit/compute/test_compute_mgr.py
+index 9c8b54e..1ee6d69 100644
+--- a/nova/tests/unit/compute/test_compute_mgr.py
++++ b/nova/tests/unit/compute/test_compute_mgr.py
+@@ -16,6 +16,7 @@ import contextlib
+ import copy
+ import datetime
+ import fixtures as std_fixtures
++import inspect
+ import threading
+ import time
+ from unittest import mock
+@@ -7899,6 +7900,121 @@ class ComputeManagerUnitTestCase(test.NoDBTestCase,
+ 
+         self.assertFalse(log_mock.called)
+ 
++    @staticmethod
++    def _lost_database():
++        return messaging.RemoteError('DBConnectionError', 'gone', '')
++
++    @staticmethod
++    def _waits(mock_sleep):
++        # The patch replaces time.sleep, which other code calls with 0.
++        return [c.args[0] for c in mock_sleep.call_args_list if c.args[0]]
++
++    @mock.patch('retrying.time.sleep')
++    @mock.patch('nova.compute.utils.add_instance_fault_from_exc')
++    @mock.patch('nova.objects.Instance.save')
++    @mock.patch.object(manager.ComputeManager, '_notify_about_instance_usage')
++    def test_start_instance_reverts_task_state_after_lost_database(
++            self, mock_notify, mock_save, mock_fault, mock_sleep):
++        # Tests that a start which fails while nova-conductor lost its
++        # database clears the task state powering-on once the database is
++        # back, so the API accepts the next start of the server.
++        instance = fake_instance.fake_instance_obj(
++            self.context, vm_state=vm_states.STOPPED,
++            task_state=task_states.POWERING_ON)
++        mock_notify.side_effect = self._lost_database()
++        saved = []
++
++        def fake_save(*args, **kwargs):
++            saved.append((instance.vm_state, instance.task_state))
++            if len(saved) < 3:
++                raise self._lost_database()
++
++        mock_save.side_effect = fake_save
++        with mock.patch.object(manager.LOG, 'warning') as mock_warning:
++            self.assertRaises(
++                messaging.RemoteError, self.compute.start_instance,
++                self.context, instance)
++        # Two reverts meet the lost database, the third one persists.
++        self.assertEqual([(vm_states.STOPPED, None)] * 3, saved)
++        self.assertEqual([2.0, 4.0], self._waits(mock_sleep))
++        self.assertNotIn('Failed to revert task state for instance. '
++                         'Error: %s',
++                         [c.args[0] for c in mock_warning.call_args_list])
++
++    @mock.patch('retrying.time.sleep')
++    @mock.patch('nova.compute.utils.add_instance_fault_from_exc')
++    @mock.patch('nova.objects.Instance.save')
++    @mock.patch.object(manager.ComputeManager, '_notify_about_instance_usage')
++    def test_start_instance_revert_gives_up_after_lost_database(
++            self, mock_notify, mock_save, mock_fault, mock_sleep):
++        # Tests that a database lost for longer than the retries leaves the
++        # task state as it is and logs the failed revert, as before.
++        instance = fake_instance.fake_instance_obj(
++            self.context, vm_state=vm_states.STOPPED,
++            task_state=task_states.POWERING_ON)
++        mock_notify.side_effect = test.TestingException()
++        mock_save.side_effect = self._lost_database()
++        with mock.patch.object(manager.LOG, 'warning') as mock_warning:
++            self.assertRaises(
++                test.TestingException, self.compute.start_instance,
++                self.context, instance)
++        self.assertEqual(19, mock_save.call_count)
++        # 254 seconds in all, and no wait longer than 16 seconds.
++        self.assertEqual([2.0, 4.0, 8.0] + [16.0] * 15,
++                         self._waits(mock_sleep))
++        self.assertIn('Failed to revert task state for instance. '
++                      'Error: %s',
++                      [c.args[0] for c in mock_warning.call_args_list])
++
++    @mock.patch('retrying.time.sleep')
++    def test_reverts_task_state_once_for_the_named_methods(self, mock_sleep):
++        # Tests that the methods of _REVERTS_TASK_STATE_ONCE give up the
++        # revert on the first lost database, so the caller of an RPC call
++        # gets its answer without waiting for the database.
++        instance = objects.Instance(uuid=uuids.instance, task_state="FAKE")
++
++        def set_admin_password(self, context, instance):
++            raise test.TestingException()
++
++        def fake_function(self, context, instance):
++            raise test.TestingException()
++
++        for function, attempts in ((set_admin_password, 1),
++                                   (fake_function, 19)):
++            instance_update = mock.Mock(side_effect=self._lost_database())
++            self.compute._instance_update = instance_update
++            self.assertRaises(test.TestingException,
++                              manager.reverts_task_state(function),
++                              self.compute, self.context, instance)
++            self.assertEqual(attempts, instance_update.call_count,
++                             function.__name__)
++
++    def test_reverts_task_state_once_names_methods_of_the_manager(self):
++        # Tests that every name of _REVERTS_TASK_STATE_ONCE is a method of
++        # the compute manager that reverts_task_state wraps, so a rename
++        # does not turn the revert of an RPC call into a retried one.
++        # Not every decorator sets __wrapped__ (messaging.expected_exceptions
++        # does not), so the walk follows the closures, as
++        # safe_utils.get_wrapped_function does.
++        def revert_once_of(function):
++            found = []
++            closure = getattr(function, '__closure__', None) or ()
++            names = function.__code__.co_freevars if closure else ()
++            for name, cell in zip(names, closure):
++                if name == 'revert_once':
++                    found.append(cell.cell_contents)
++                elif inspect.isfunction(cell.cell_contents):
++                    found.extend(revert_once_of(cell.cell_contents))
++            return found
++
++        for name in manager._REVERTS_TASK_STATE_ONCE:
++            method = getattr(manager.ComputeManager, name, None)
++            self.assertTrue(inspect.isfunction(method), name)
++            self.assertEqual([True], revert_once_of(method), name)
++        # The walk finds the flag of a method that retries its revert.
++        self.assertEqual(
++            [False], revert_once_of(manager.ComputeManager.start_instance))
++
+     @mock.patch.object(nova.scheduler.client.query.SchedulerQueryClient,
+                        'update_instance_info')
+     def test_update_scheduler_instance_info(self, mock_update):
