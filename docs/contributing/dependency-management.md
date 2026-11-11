@@ -27,16 +27,17 @@ regex managers and package rules. The high-level split is:
 
 | What Renovate does on its own                                                    | What needs a human                                            |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| Opens PRs for every dependency it understands (Go, Docker, GitHub Actions, npm). | **Merging** native-manager PRs — Go/Docker/Actions/npm bumps are opened but not auto-merged. |
-| Auto-merges the custom-regex–managed pins and the `gateway-helm` and `headlamp` chart floors (patch/minor) after a 3-day cooldown, see below. | Reviewing major-version bumps.                |
+| Opens PRs for every dependency it understands (Go, Docker, GitHub Actions, npm). | **Merging** native-manager PRs: Go/Docker/Actions/npm bumps are opened but not auto-merged. |
+| Auto-merges selected custom-regex updates and the `gateway-helm` and `headlamp` chart floors (patch/minor) after a 3-day cooldown, as detailed below. | Reviewing major-version bumps.                |
 | Maintains Docker image digests (`@sha256:…`) alongside floating tags.            | Reviewing anything touching coupled stacks (k8s).             |
 | Pins GitHub Actions to commit SHAs (annotated with a `# vX.Y` tag).              | Updating the Go workspace / `go.mod` directives; triaging CVEs. |
 
-Renovate combines the `config:recommended` native managers (Go modules,
-GitHub Actions, npm), the native `flux` manager over the Flux manifests, and the
-custom regex managers (`jq '.customManagers | length' renovate.json` counts them) that
-track pins those native managers cannot see. Auto-merge (patch/minor, 3-day cooldown)
-is wired onto the custom-regex managers and, among the native managers, **only** onto
+Renovate combines the `config:recommended` native managers for Go modules,
+Docker, GitHub Actions, and npm; the native `flux` manager for Flux manifests;
+the native `nix` manager for flake lock maintenance; and the custom regex
+managers (`jq '.customManagers | length' renovate.json` counts them) that track
+pins those native managers cannot see. Auto-merge (patch/minor, 3-day cooldown)
+is enabled for selected custom-regex updates and, among the native managers, **only** for
 the two floor-tracked Flux charts,
 `gateway-helm` and `headlamp` (see [Flux HelmRelease chart versions](#flux-helmrelease-chart-versions)).
 Every other native-manager PR waits for a human merge (`config:recommended` does not
@@ -51,28 +52,28 @@ repository-settings change and cannot be made from files in this repository.
 
 The custom managers cover:
 
-- **OpenStack release refs** — git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
-- **Test tooling in `hack/`** — Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` and `ENVOY_GATEWAY_VERSION` (the Envoy Gateway CRD pin, grouped with the `gateway-helm` chart) in `hack/deploy-infra.sh`.
-- **kind deploy components** — `flux-web.yaml` under `deploy/kind/base/`.
-- **K-ORC main-line pins** — the source `ref.commit` in `deploy/flux-system/sources/k-orc.yaml` follows upstream `main` via `git-refs`. The image digest in `deploy/flux-system/releases/k-orc.yaml` follows `branch-main` via `docker`. Both share one `k-orc` group. Renovate updates these pins and automerges digest updates after required CI, with no release-age delay for the moving branch. CI checks every image platform's build provenance against the source pin before deploying. Go API dependencies remain managed separately, so routine source/image updates require no manual Go or Nix refresh. Updates must merge before old images are garbage-collected; grouping cannot extend upstream retention.
-- **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
-- **Helm CLI of the `setup-helm` jobs** — `HELM_VERSION` in the `env:` block of `.github/workflows/ci.yaml` (github-releases on `helm/helm`), the version every `azure/setup-helm` step installs. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged: `helm-push` runs only on a push to `main`, so no pull request run pushes a chart with the new Helm before it merges. `tests/unit/renovate/workflow_pins_custommanager_test.sh` pins the manager and both rules.
-- **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
-- **OVN image pin** — the `version` and `rev` keys of `images/ovn/source.json` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the hashes and the OVS commit of the `ovs` gitlink (see [Derived keys of the image pins](#derived-keys-of-the-image-pins)). Digest updates are disabled, as for noVNC. A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesSourcePin` fails when they diverge.
-- **openstack-hypervisor-operator image pin** — the `rev` key of `images/openstack-hypervisor-operator/source.json` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source); `make nix-lock` then writes its `hash` and `vendorHash`. The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: a downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed patch phase in `build-hvo` means that patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
-- **kvm-node-agent image pin** — the `rev` key of `images/kvm-node-agent/source.json` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown, `make nix-lock` step and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed patch phase in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
-- **noVNC console assets** — the `version` and `rev` keys of `images/nova/novnc.json` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Nix locks](#nix-locks)). Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
-- **mod_auth_openidc of the federation proxy** — the `version` and `rev` keys of `images/keystone-federation-proxy/source.json` (github-tags on `OpenIDC/mod_auth_openidc`, regex versioning because the tags carry a `v` prefix and a fourth component). Renovate reads the fourth component as a build number, so every `2.4.x.y` release is a patch. One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Derived keys of the image pins](#derived-keys-of-the-image-pins)). Majors are disabled; minors and patches wait the 3-day cooldown in the group `mod_auth_openidc releases` and are **not** automerged. The module authenticates every federated login in front of Keystone, and a reviewer reads upstream's ChangeLog: 2.4.20, for one, changed the key derivation of the session cookies. Digest updates are disabled, as for noVNC. The PR rebuilds the image through the `proxy` filter of the build-images workflow and runs the keystone `e2e-operator` job through the `image_proxy` filter of the CI workflow.
-- **Lab libvirt image** — the eight `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` image lines of the metal-stack lab in `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml`, `probe/nfs-module-load.yaml`, `nfs/client-modules-daemonset.yaml` and `chaos-mesh/modules-daemonset.yaml` (docker datasource, `deb` versioning). The tag is a keeper tag. `hack/ci-tag-libvirt-keeper.sh` creates `<libvirt-version>-r<N>`, such as `12.2.0-r57`, once on `main` for the Nix-built image; `N` counts the commits under `images/libvirt`, `nix/pkgs/libvirt.nix`, `nix/lib/image-defaults.nix` and `flake.lock`, so a `nixpkgs-images` re-lock that rebuilds QEMU while libvirt keeps its version still gets a new tag. The `<libvirt-package-version>-r<N>` keepers of the Docker-built image, such as `10.0.0-2ubuntu8.19-r2`, stay in GHCR as the lab's rollback target. `deb` reads `12.2.0-r57` as upstream `12.2.0` and revision `r57` and compares both; `docker` versioning would read `-r57` as a compatibility suffix and never offer another. `deb` also parses `latest` and a commit SHA and sorts both above `12.x`, so `allowedVersions` admits the Nix keeper shape alone, which also keeps out the Docker-built keepers. Every update type, majors included, moves all eight lines in one PR (`metal-stack lab libvirt image`): a pin on a Docker-built keeper moves to the newest Nix keeper as a major (10 to 12), and a libvirt major that a `nixpkgs-images` re-lock brings is one too. The lab never pins a branch build, because `cleanup-images.yaml` removes a branch's `<sha>` tag after 24 hours, so a pull request that changes the image leaves the pins alone and Renovate proposes the keeper `main` mints after the merge. The PR has no cooldown, since this repository's own `main` builds the image from a reviewed commit. It is **not** automerged: the image runs privileged as root on the lab's nodes, and the reviewed bump, rolled node by node as [libvirt 12 on the lab](../reference/infrastructure/infrastructure-manifests.md#libvirt-12-on-the-lab) describes, is what the pin is for.
-- **Lab Ceph image** — the `quay.io/ceph/ceph:<tag>@sha256:<digest>` image lines of the lab Ceph in `deploy/lab/metal-stack/ceph/cluster/cluster.yaml`, the CephCluster, and `toolbox.yaml`, the toolbox that runs the same image (docker datasource, `docker` versioning). Majors are disabled. Minor, patch and digest updates move both lines in one PR (`ceph image`) after the 3-day cooldown and are **not** automerged: a Ceph minor is a question of the versions the pinned Rook operator supports. `tests/unit/renovate/ceph_image_custommanager_test.sh` pins the manager and both rules.
-- **Lab soak runner image** — the `docker.io/alpine/k8s:<tag>@sha256:<digest>` image line of the dizzy soak's runner in `deploy/lab/metal-stack/dizzy-soak/job.yaml` (docker datasource, `docker` versioning). The tag is the kubectl release, and it stays on the lab's Kubernetes minor, so major and minor updates are disabled. Patch and digest updates are automerged after the 3-day cooldown in the group `dizzy soak runner image`; `tests/unit/renovate/dizzy_soak_runner_image_custommanager_test.sh` pins the manager and both rules. The dizzy image of the same Job carries no tag of its own: `hack/dizzy-soak.sh start` takes it from the one `DIZZY_VERSION` pin in `hack/dizzy.sh`.
+- **OpenStack release refs**: git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
+- **Test tooling in `hack/`**: Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` and `ENVOY_GATEWAY_VERSION` (the Envoy Gateway CRD pin, grouped with the `gateway-helm` chart) in `hack/deploy-infra.sh`.
+- **kind deploy components**: `flux-web.yaml` under `deploy/kind/base/`.
+- **K-ORC Flux source**: the `ref.commit` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (git-refs on upstream `main`, digest updates). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the `k-orc/openstack-resource-controller` Go module the operator compiles against. A commit bump is not complete on its own: the `commit-<short sha>` image tag and digest in `deploy/flux-system/releases/k-orc.yaml` and the Go pseudo-version in `operators/c5c3/go.mod` move in the same change, and the `hack/ci-deploy-korc.sh` drift guard fails CI until the image is re-pinned.
+- **Go build tooling in `Makefile` / `.github/workflows/*.yaml`**: `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
+- **Helm CLI of the `setup-helm` jobs**: `HELM_VERSION` in the `env:` block of `.github/workflows/ci.yaml` (github-releases on `helm/helm`), the version every `azure/setup-helm` step installs. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged: `helm-push` runs only on a push to `main`, so no pull request run pushes a chart with the new Helm before it merges. `tests/unit/renovate/workflow_pins_custommanager_test.sh` pins the manager and both rules.
+- **`renovate-config-validator` pin**: the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
+- **OVN image pin**: the `version` and `rev` keys of `images/ovn/source.json` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the hashes and the OVS commit of the `ovs` gitlink (see [Derived keys of the image pins](#derived-keys-of-the-image-pins)). Digest updates are disabled, as for noVNC. A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesSourcePin` fails when they diverge.
+- **openstack-hypervisor-operator image pin**: the `rev` key of `images/openstack-hypervisor-operator/source.json` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source); `make nix-lock` then writes its `hash` and `vendorHash`. The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: a downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed patch phase in `build-hvo` means that patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
+- **kvm-node-agent image pin**: the `rev` key of `images/kvm-node-agent/source.json` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown, `make nix-lock` step and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed patch phase in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
+- **noVNC console assets**: the `version` and `rev` keys of `images/nova/novnc.json` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Nix locks](#nix-locks)). Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
+- **mod_auth_openidc of the federation proxy**: the `version` and `rev` keys of `images/keystone-federation-proxy/source.json` (github-tags on `OpenIDC/mod_auth_openidc`, regex versioning because the tags carry a `v` prefix and a fourth component). Renovate reads the fourth component as a build number, so every `2.4.x.y` release is a patch. One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Derived keys of the image pins](#derived-keys-of-the-image-pins)). Majors are disabled; minors and patches wait the 3-day cooldown in the group `mod_auth_openidc releases` and are **not** automerged. The module authenticates every federated login in front of Keystone, and a reviewer reads upstream's ChangeLog: 2.4.20, for one, changed the key derivation of the session cookies. Digest updates are disabled, as for noVNC. The PR rebuilds the image through the `proxy` filter of the build-images workflow and runs the keystone `e2e-operator` job through the `image_proxy` filter of the CI workflow.
+- **Lab libvirt image**: the eight `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` image lines of the metal-stack lab in `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml`, `probe/nfs-module-load.yaml`, `nfs/client-modules-daemonset.yaml` and `chaos-mesh/modules-daemonset.yaml` (docker datasource, `deb` versioning). The tag is a keeper tag. `hack/ci-tag-libvirt-keeper.sh` creates `<libvirt-version>-r<N>`, such as `12.2.0-r57`, once on `main` for the Nix-built image; `N` counts the commits under `images/libvirt`, `nix/pkgs/libvirt.nix`, `nix/lib/image-defaults.nix` and `flake.lock`, so a `nixpkgs-images` re-lock that rebuilds QEMU while libvirt keeps its version still gets a new tag. The `<libvirt-package-version>-r<N>` keepers of the Docker-built image, such as `10.0.0-2ubuntu8.19-r2`, stay in GHCR as the lab's rollback target. `deb` reads `12.2.0-r57` as upstream `12.2.0` and revision `r57` and compares both; `docker` versioning would read `-r57` as a compatibility suffix and never offer another. `deb` also parses `latest` and a commit SHA and sorts both above `12.x`, so `allowedVersions` admits the Nix keeper shape alone, which also keeps out the Docker-built keepers. Every update type, majors included, moves all eight lines in one PR (`metal-stack lab libvirt image`): a pin on a Docker-built keeper moves to the newest Nix keeper as a major (10 to 12), and a libvirt major that a `nixpkgs-images` re-lock brings is one too. The lab never pins a branch build, because `cleanup-images.yaml` removes a branch's `<sha>` tag after 24 hours, so a pull request that changes the image leaves the pins alone and Renovate proposes the keeper `main` mints after the merge. The PR has no cooldown, since this repository's own `main` builds the image from a reviewed commit. It is **not** automerged: the image runs privileged as root on the lab's nodes, and the reviewed bump, rolled node by node as [libvirt 12 on the lab](../reference/infrastructure/infrastructure-manifests.md#libvirt-12-on-the-lab) describes, is what the pin is for.
+- **Lab Ceph image**: the `quay.io/ceph/ceph:<tag>@sha256:<digest>` image lines of the lab Ceph in `deploy/lab/metal-stack/ceph/cluster/cluster.yaml`, the CephCluster, and `toolbox.yaml`, the toolbox that runs the same image (docker datasource, `docker` versioning). Majors are disabled. Minor, patch and digest updates move both lines in one PR (`ceph image`) after the 3-day cooldown and are **not** automerged: a Ceph minor is a question of the versions the pinned Rook operator supports. `tests/unit/renovate/ceph_image_custommanager_test.sh` pins the manager and both rules.
+- **Lab soak runner image**: the `docker.io/alpine/k8s:<tag>@sha256:<digest>` image line of the dizzy soak's runner in `deploy/lab/metal-stack/dizzy-soak/job.yaml` (docker datasource, `docker` versioning). The tag is the kubectl release, and it stays on the lab's Kubernetes minor, so major and minor updates are disabled. Patch and digest updates are automerged after the 3-day cooldown in the group `dizzy soak runner image`; `tests/unit/renovate/dizzy_soak_runner_image_custommanager_test.sh` pins the manager and both rules. The dizzy image of the same Job carries no tag of its own: `hack/dizzy-soak.sh start` takes it from the one `DIZZY_VERSION` pin in `hack/dizzy.sh`.
 
-Major updates are **disabled** for all custom-regex managers — these touch deploy-time
+Major updates are **disabled** for all custom-regex managers: these touch deploy-time
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
 human-driven coordination. The `renovate-config-validator` pin is one exception: it
 has to follow the major the hosted bot runs, or the validator silently stops checking
 `renovate.json` against the schema that bot enforces. That pin is never automerged
-either — the validator run is the only check that exercises the new release, so a bump
+either: the validator run is the only check that exercises the new release, so a bump
 must not be able to approve itself into a `test-shell` job that runs on `main` and on
 `v*` tag pushes. The lab libvirt image is the other exception: `main` mints every keeper it
 offers, and a pin left on an older major could only move by a digest copied by hand.
@@ -104,11 +105,11 @@ and `pyproject-nix`, `uv2nix` and `pyproject-build-systems` build the Python
 environments of those images. The `nix flake inputs` package rule re-locks all five on
 the Monday schedule of the uv bump and opens one grouped PR. That PR is
 **not** automerged: the refs are rolling branches, so the re-lock is not a version
-bump and the 3-day cooldown cannot gate it — a reviewer confirms the base-runtime bump
+bump and the 3-day cooldown cannot gate it: a reviewer confirms the base-runtime bump
 instead. A re-lock of
 `nixpkgs-images` rebuilds the Nix-built images on its pull request. The Nix devshell re-reads the canonical tool pins
 (`ci.yaml`, the `Makefile`, `hack/install-test-deps.sh`) on entry, so a tool-version
-bump needs **no** flake edit — see [Nix Development Environment](./nix-dev-environment.md).
+bump needs **no** flake edit: see [Nix Development Environment](./nix-dev-environment.md).
 The spike under `nix/spike/` is outside every manager: a `packageRules` entry with
 `matchFileNames: ["nix/spike/**"]` sets `enabled: false`, so its `flake.lock` and the generated
 locks under `nix/spike/locks/` are pinned by hand and re-locked by whoever edits them.
@@ -407,61 +408,60 @@ The Go team ships a new minor release roughly every six months and supports the
 
 - Stay on a supported minor at all times.
 - Pick up patch releases (`1.X.Y` → `1.X.(Y+1)`) within the regular Renovate
-  flow — these are low-risk and grouped with other patch bumps.
+  flow: these are low-risk and grouped with other patch bumps.
 - Plan minor upgrades (`1.X` → `1.(X+1)`) within roughly one month of GA so
   the deprecation window before the *previous* minor falls out of support is
   comfortable.
 
 ### Where the Go version lives
 
-A minor upgrade must touch **every** location in the same PR — partial bumps
-fail CI because `go.work` and the per-module `go.mod` directives must agree.
+A minor upgrade must update `go.work` and every module's `go` directive in the
+same PR. The workspace currently has `internal/common` and ten operator
+modules; partial bumps fail because all module directives must agree.
 
-| File                               | What to update                       | Notes                                                                        |
-| ---------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------- |
-| `go.work`                          | `go 1.X.Y`                           | Single source of truth used by `actions/setup-go` in CI.                     |
-| `internal/common/go.mod`           | `go 1.X.Y`                           | Shared library module.                                                       |
-| `operators/keystone/go.mod`        | `go 1.X.Y`                           | Keystone operator module.                                                    |
-| `operators/c5c3/go.mod`            | `go 1.X.Y`                           | C5C3 ControlPlane orchestrator module.                                       |
-| `flake.lock`                       | *No change* for a patch bump.        | The operator images build with `go_1_27` of the locked `nixpkgs-images`; `nix eval --raw .#packages.x86_64-linux.keystone-operator-image.manager.go.version` prints its version. |
-| `.github/workflows/ci.yaml`        | *No change.*                         | All `actions/setup-go` steps use `go-version-file: go.work`.                 |
+| File | What to update | Notes |
+| --- | --- | --- |
+| `go.work` | `go 1.X.Y` | `actions/setup-go` in CI reads this file. |
+| `internal/common/go.mod` | `go 1.X.Y` | Shared library module. |
+| `operators/*/go.mod` | `go 1.X.Y` in every module listed in `go.work` | There are ten operator modules today; `make build` and `make test` use the `OPERATORS` list. |
+| `nix/lib/operator-image.nix` and `flake.nix` | For a minor bump, move `buildGo127Module` and the `go_1_27` check to the new minor. | The operator images build with the Go package from the locked `nixpkgs-images`. `nix eval --raw .#packages.x86_64-linux.keystone-operator-image.manager.go.version` prints its version. |
+| `flake.lock` | No change for a patch bump; update the lock when the `nixpkgs-images` channel must advance to provide the target minor. | |
+| `.github/workflows/ci.yaml` | No change. | All `actions/setup-go` steps use `go-version-file: go.work`. |
 
 There is **no `toolchain` directive** anywhere in the workspace. We rely on
 the directive in `go.mod`/`go.work` plus the toolchain that ships with the CI
-runner and the `go_1_27` the operator images build with. If the team ever needs to support contributors
-on an older local Go, add a `toolchain go1.X.Y` line to `go.work` rather than
-to individual `go.mod` files.
+runner and the `go_1_27` the operator images build with. If the team ever needs
+to support contributors on an older local Go, add a `toolchain go1.X.Y` line to
+`go.work`. Keep it out of individual `go.mod` files.
 
 ### Worked example: 1.25.10 → 1.26.3
 
-An illustrative past minor upgrade (the workspace has since moved on — at the time of
-writing all four files are on `go 1.27.3`). Substitute the current and target versions
-for your own bump; the mechanics below are unchanged.
+An illustrative past minor upgrade. The workspace currently uses `go 1.27.3` in
+`go.work` and every module. Substitute the current and target versions for your
+own bump; the mechanics below are unchanged.
 
 ```bash
-# 1. Bump the version in all four files. Each file has exactly one
+# 1. Bump go.work and every module directive. Each file has exactly one
 #    `go 1.25.10` line; replace with `go 1.26.3`.
 sed -i.bak 's/^go 1\.25\.10$/go 1.26.3/' \
   go.work \
   internal/common/go.mod \
-  operators/keystone/go.mod \
-  operators/c5c3/go.mod
+  operators/*/go.mod
 rm -f go.work.bak internal/common/go.mod.bak operators/*/go.mod.bak
 
 # 2. Resync the workspace. This refreshes the indirect requirement lists
 #    in each `go.mod`.
 go work sync
 
-# 3. Build every module from its own directory (the workspace cannot be
-#    built from the repository root because the modules are independent).
-(cd internal/common         && go build ./... && go vet ./...)
-(cd operators/keystone      && go build ./... && go vet ./...)
-(cd operators/c5c3          && go build ./... && go vet ./...)
+# 3. Build all modules, then vet each module from its own root.
+make build
+for module in internal/common operators/*; do
+  [ -f "$module/go.mod" ] || continue
+  (cd "$module" && go vet ./...)
+done
 
-# 4. Run unit tests for all three modules — each has its own suite.
-(cd internal/common    && go test -short -timeout 5m ./...)
-(cd operators/keystone && go test -short -timeout 5m ./...)
-(cd operators/c5c3     && go test -short -timeout 5m ./...)
+# 4. Run unit tests for all workspace modules.
+make test
 ```
 
 The operator images build with `go_1_27` of the locked `nixpkgs-images`, and
@@ -480,14 +480,14 @@ SAP AI-assisted / On-behalf-of / Signed-off-by trailers).
 
 Required CI checks gate the upgrade:
 
-- `lint` — `make lint` via `golangci-lint`. New analyzers may light up after
+- `lint`: `make lint` via `golangci-lint`. New analyzers may light up after
   a minor bump; fix in the same PR or temporarily disable the offending
   linter in `.golangci.yml` with a TODO referencing the upgrade PR.
-- `format-check` — `gofumpt -l` must be silent.
-- `test` — per-module `go test ./...`.
-- `govulncheck` — runs against the new toolchain.
+- `format-check`: `gofumpt -l` must be silent.
+- `test`: `go test ./...` for the shared module and every operator module.
+- `govulncheck`: runs against the new toolchain.
 - `e2e-operator (keystone)` / `e2e-operator (c5c3)`, `e2e-infra`, `e2e-prometheus`,
-  `e2e-chaos` — Chainsaw suites against a kind cluster (e2e runs as a per-operator
+  `e2e-chaos`: Chainsaw suites against a kind cluster (e2e runs as a per-operator
   matrix); these catch runtime regressions that pure Go-level tests miss.
 
 For local pre-flight, the minimal smoke is `go work sync && (cd internal/common && go test -short -timeout 5m ./...)`.
@@ -504,8 +504,8 @@ notes for:
   exclusion in `.golangci.yml`.
 - **`stdlib` deprecations.** Search for newly-deprecated stdlib symbols
   (`grep -rn 'pkg.OldFunc\|pkg.OldType' --include='*.go'`) and replace them.
-  Avoid making this part of the upgrade PR if the replacement is invasive —
-  open a follow-up.
+  Avoid making this part of the upgrade PR if the replacement is invasive.
+  Open a follow-up.
 - **Toolchain selection changes.** `go.work` and `go.mod` only set the
   *minimum* required Go. They do not pin the toolchain that builds the
   binary. Production builds use the `go_1_27` of `nixpkgs-images`, with
@@ -517,9 +517,9 @@ If a minor upgrade lands on `main` and a regression surfaces in CI or
 production:
 
 1. Revert the single upgrade commit (`git revert <sha>`); the revert is
-   self-contained because all four files moved together.
+  self-contained because `go.work` and every module directive moved together.
 2. If the regression is from a *new vet analyzer*, prefer adding the
-   analyzer exclusion to `.golangci.yml` and rolling forward — revert is
+   analyzer exclusion to `.golangci.yml` and rolling forward: revert is
    cheap, but the deprecation window of the previous minor will eventually
    force the upgrade.
 3. Record the regression in the upgrade issue with a reproducer; do not
@@ -534,7 +534,7 @@ production:
 
 | Type  | Renovate behaviour                                      | Reviewer depth                                                            |
 | ----- | ------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Patch | Grouped into a PR; **not** auto-merged — a human merges. | Skim the diff for unexpected indirect bumps, then merge once green.       |
+| Patch | Grouped into a PR; **not** auto-merged: a human merges. | Skim the diff for unexpected indirect bumps, then merge once green.       |
 | Minor | Grouped into a PR; **not** auto-merged.                  | Confirm the CHANGELOG mentions no behavior change in modules we depend on, then merge. |
 | Major | Always opened, never auto-merged.                       | Read full upstream release notes; check for migrations; run e2e locally.  |
 
@@ -557,8 +557,8 @@ Kubernetes Go packages are versioned in lockstep. **Never** bump just one of:
 
 …without bumping the others to the **same** `v0.X.Y`. Renovate groups these
 under a single PR, but if you cherry-pick from a Renovate PR or open a
-manual bump, keep them aligned. The same applies to `sigs.k8s.io/controller-runtime`
-— it has a hard compatibility matrix with the `k8s.io/*` packages; consult the
+manual bump, keep them aligned. The same applies to `sigs.k8s.io/controller-runtime`.
+It has a hard compatibility matrix with the `k8s.io/*` packages. Consult the
 [controller-runtime release notes](https://github.com/kubernetes-sigs/controller-runtime/releases)
 for the supported pairing before bumping either side.
 
@@ -606,20 +606,20 @@ human-readable tag for review:
 
 The tag in the trailing comment is for humans. The SHA is what GitHub
 resolves. Renovate keeps both in sync. Never replace a SHA with a
-floating tag — supply-chain integrity for third-party actions depends on
+floating tag: supply-chain integrity for third-party actions depends on
 the SHA pin.
 
 ### Security updates (CVEs)
 
-CVE-driven bumps bypass the 3-day Renovate cooldown — merge as soon as CI
+CVE-driven bumps bypass the 3-day Renovate cooldown: merge as soon as CI
 is green. Triage order:
 
 1. **CVEs in our direct dependencies** (anything listed in a `go.mod`'s
-   direct `require ( … )` block) — top priority. Renovate flags these with
+   direct `require ( … )` block): top priority. Renovate flags these with
    a high-priority label.
-2. **CVEs in indirect dependencies** that affect us — confirm via
+2. **CVEs in indirect dependencies** that affect us: confirm via
    `govulncheck` (run automatically in CI) before deciding urgency.
-3. **CVEs in base images** — bump the image digest and re-trigger the
+3. **CVEs in base images**: bump the image digest and re-trigger the
    image-build pipeline.
 
 If `govulncheck` reports a vulnerable indirect dependency that has no
@@ -634,8 +634,8 @@ Major bumps always need human review. Take a hypothetical
 `controller-runtime` v0.23 → v1.0 PR:
 
 1. **Read the upstream release notes** in full. controller-runtime
-   typically gates Kubernetes API compatibility on its minor versions —
-   confirm the supported k8s.io pairing matches the version we ship.
+  typically gates Kubernetes API compatibility on its minor versions.
+  Confirm the supported k8s.io pairing matches the version we ship.
 2. **Confirm the API surface we touch.** Search the codebase:
 
    ```bash
@@ -646,9 +646,14 @@ Major bumps always need human review. Take a hypothetical
 3. **Run the upgrade locally**, mirroring what Renovate would do:
 
    ```bash
-   (cd operators/keystone && go get sigs.k8s.io/controller-runtime@v1.0.0 && go mod tidy)
-   (cd operators/c5c3      && go get sigs.k8s.io/controller-runtime@v1.0.0 && go mod tidy)
-   (cd internal/common     && go get sigs.k8s.io/controller-runtime@v1.0.0 && go mod tidy)
+   for module in internal/common operators/*; do
+     [ -f "$module/go.mod" ] || continue
+     (
+       cd "$module"
+       go get sigs.k8s.io/controller-runtime@v1.0.0
+       go mod tidy
+     )
+   done
    go work sync
    ```
 
@@ -656,9 +661,9 @@ Major bumps always need human review. Take a hypothetical
    feedback; for behavior changes, read the controller-runtime CHANGELOG
    for the entries between the two versions.
 5. **Run unit tests and the keystone e2e suite locally** (`make test`,
-   `make e2e`) before pushing — major operator-framework bumps regularly
-   surface only at reconcile-time, not at compile-time.
-6. **Open a dedicated PR**, not a Renovate edit. Link the upstream
+   `make e2e`) before pushing. Major operator-framework bumps can surface
+   during reconciliation after compilation.
+6. **Open a dedicated PR for the major bump.** Link the upstream
    release notes, the list of API surfaces touched, and the e2e run
    evidence.
 
@@ -689,27 +694,27 @@ waits until every check on the PR has succeeded. The checks below are the
 ones to watch when merging a dependency PR by hand:
 
 - `lint`, `format-check`, `govulncheck`
-- `test` (all three modules)
+- `test` (all workspace modules)
 - `e2e-operator (keystone)` / `e2e-operator (c5c3)`, `e2e-infra` (and `e2e-prometheus`,
   `e2e-chaos` when their path filters trigger)
 - `helm-validate` (when chart files change)
 - `build-e2e-images` (when image or workflow files change)
 
 Renovate's gate covers every check that runs on the PR. A path filter
-can keep a job from starting at all; a manual merge holds itself to the
-same bar and treats such a job as unverified, not as passed.
+can keep a job from starting at all. A manual merge holds itself to the
+same bar and treats such a job as unverified.
 
 ---
 
 ## See also
 
-- [`renovate.json`](https://github.com/c5c3/cobaltcore/blob/main/renovate.json) — the
+- [`renovate.json`](https://github.com/c5c3/cobaltcore/blob/main/renovate.json): the
   authoritative Renovate configuration with all custom managers and rules.
-- [Renovate documentation](https://docs.renovatebot.com/) — for general
+- [Renovate documentation](https://docs.renovatebot.com/): for general
   Renovate concepts referenced in `renovate.json`.
-- [Go release notes](https://go.dev/doc/devel/release) — minor-version
+- [Go release notes](https://go.dev/doc/devel/release): minor-version
   changelog and deprecation announcements.
-- [CI Workflow](../reference/ci-cd/ci-workflow.md) — what each required
+- [CI Workflow](../reference/ci-cd/ci-workflow.md): what each required
   check actually runs.
-- [Nix Development Environment](./nix-dev-environment.md) — the flake that
+- [Nix Development Environment](./nix-dev-environment.md): the flake that
   provisions the CI toolchain and how it stays in sync with these pins.
