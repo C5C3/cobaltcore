@@ -276,14 +276,15 @@ The semantics that matter:
 
   Setting `account.adopt: true` is explicit consent to take over such a user.
   The operator then owns and deletes that user at teardown. The ControlPlane's
-  admin identity cannot be adopted; the reconciler rejects it.
+  admin identity cannot be adopted, and neither can a user the plane already
+  manages for a built-in service, another registration or a `KeystoneUser`
+  order; the reconciler rejects both.
 
-  With the currently pinned K-ORC, a newly adopted user keeps its existing
-  password on the first pass, even though the registration reports
-  `AccountReady=True` and its consumer Secret contains the generated password.
-  Rotate the account once with a `CredentialRotation` to write the new password.
-  This is tracked in
-  [#920](https://github.com/C5C3/cobaltcore/issues/920).
+  Adoption applies the generated password in Keystone before the account
+  reports Ready: the operator moves the adopted user to password generation 2,
+  and `AccountReady` holds at `WaitingForServiceAccounts` until K-ORC has
+  written it. A user adopted by an operator version without this takeover keeps
+  its old password until one `CredentialRotation` rotates it.
 - `account.roles` are projected. Each becomes an unmanaged K-ORC `Role`
   import plus a managed `RoleAssignment` binding the role to the user on the
   project,   and the account is not Ready until Keystone confirms every assignment.

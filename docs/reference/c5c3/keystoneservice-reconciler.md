@@ -278,11 +278,43 @@ collision message points at `create: false`, not at adopt: project takeover is
 expressed as referencing.
 
 **(4) User.** A probe decides exists/absent before any managed User is created;
-`account.adopt` is the consent that skips it. The managed User then carries a
+`account.adopt` is the consent that skips it. Under that consent the gate first
+lists the managed Users in the ControlPlane's namespace, and refuses with
+`ServiceAccountCollision` a user that one owned by anything else already holds:
+a built-in service's registration, another registration, or a `KeystoneUser`
+order. The password takeover would otherwise overwrite that account's password
+and deliver it into this CR's namespace. User names compare through
+`keystoneNameKey`, and domains by the name their Domain import filters on,
+because two registrations outside the admin domain each import it under a CR
+name of their own. The managed User then carries a
 **generation-scoped** password Secret (`…-password-v<N>`). K-ORC's user actuator
 re-applies a password only when the reference *name* changes, so a rotation is
 a Secret-name flip and never an in-place edit. The password value is generated
 once per generation and preserved across passes.
+
+A User created while `account.adopt` is true goes through a **password
+takeover**. K-ORC records the first password reference of a user it matched in
+Keystone without writing the password, and it does not report whether it
+matched or created the user. So the create sets the annotation
+`cobaltcore.c5c3.io/password-takeover: pending` on the User, and the reconciler
+emits an `AccountPasswordTakeover` Normal event. While the live User carries
+the annotation, the generation engine holds the password reference at its
+current generation until K-ORC has recorded it as applied: a reference changed
+before that record would be recorded unwritten as well. Once K-ORC has recorded
+generation 1, the engine moves the User to generation 2 and removes the
+annotation in the same update; K-ORC then writes the password. The move is a
+rotation, so it sets the generation annotation and `lastPasswordRotation`. A
+rotation nudge that a `CredentialRotation` left during the takeover is served
+by the same move, so the account still ends at generation 2.
+
+The readiness check waits on the annotation too, beside the project, the user
+and the applied password reference. The engine decides from its own read of the
+User, and the User it returns comes from a later read, on which generation 1
+can already show as applied. Holding while the returned User still carries the
+annotation keeps such a pass from publishing a generation K-ORC never wrote to
+the adopted user. Only the value `pending` counts. The reconciler reads the
+annotation off the User, so toggling `account.adopt` after the User exists
+neither starts nor cancels a takeover.
 
 A registration created with `rotation.mode: Scheduled` emits a
 `ScheduledRotationDeferred` Normal event: the mode is accepted by the schema
@@ -320,9 +352,9 @@ error it relays rather than reporting it under a second reason. See
 
 The bounded waits in steps 3 through 6 all report
 `WaitingForServiceAccounts`, with a message naming the stuck dependency in
-dependency order (project, then user, then the password application), so the
-condition points at the real blocker instead of at whatever is merely waiting
-behind it.
+dependency order (project, then user, then a pending password takeover, then
+the password application), so the condition points at the real blocker instead
+of at whatever is merely waiting behind it.
 
 ### External-mode failure classification
 
