@@ -23,10 +23,10 @@ authoritative rule table, failure modes, and schema contract, see
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy Keystone Locally](../../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
-KIND_HOST_PORT=8443 make deploy-infra
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=false WITH_CONTROLPLANE_CR=false make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step, so the keystone-operator

@@ -336,11 +336,22 @@ test_the_first_controlplane_block() {
   echo "Test: of two # controlplane.yaml blocks the first is applied"
   skip_without_yq 3 || return
 
-  awk '/^# controlplane.yaml$/ { n++ } n == 2 && /^  name: controlplane$/ { $0 = "  name: second" } { print }' \
-    "$QUICK_START_DOC_REAL" >"$TMP_DIR/second.md"
-  assert_eq "the page's second block is renamed" "1" "$(grep -c '^  name: second$' "$TMP_DIR/second.md")"
+  cp "$QUICK_START_DOC_REAL" "$TMP_DIR/second.md"
+  cat >>"$TMP_DIR/second.md" <<'MARKDOWN'
+
+```yaml
+# controlplane.yaml
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: second
+  namespace: openstack
+```
+MARKDOWN
   run_qs QUICK_START_DOC="$TMP_DIR/second.md" up
   assert_eq "up exits 0" "0" "$RC"
+  assert_eq "the extracted manifest contains one ControlPlane" "1" \
+    "$(grep -c '^kind: ControlPlane$' "$STATE/controlplane.yaml")"
   assert_eq "the copy is the first block's ControlPlane" "controlplane" \
     "$(yq '.metadata.name' "$STATE/controlplane.yaml")"
 }

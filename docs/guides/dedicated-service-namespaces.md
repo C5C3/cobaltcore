@@ -22,7 +22,7 @@ without extra configuration.
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the [Quick Start (ControlPlane)](../quick-start-controlplane.md) devstack. Stand it up first:
+This guide is written against the [Deploy a ControlPlane](../quick-start-controlplane.md) devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -431,7 +431,7 @@ distributes the secret stores, and keys the OpenBao paths on the namespace. A
 standalone Keystone has nothing that does this for it. The Keystone CR lives in
 whatever namespace you create it in, and everything it consumes (the MariaDB, the
 Memcached, the admin and DB Secrets, an ESO store) must be provisioned in that
-same namespace by hand, as the [Quick Start](../quick-start.md) does for
+same namespace by hand, as [Deploy Keystone Locally](../quick-start-extended.md) does for
 `openstack`. There is no `Managed`/`External` distinction and no
 cross-namespace teardown. You own the namespace and its contents end to end.
 
@@ -448,7 +448,7 @@ cross-namespace teardown. You own the namespace and its contents end to end.
   by side. The c5c3-operator chart does not support namespace-scoped RBAC: it
   refuses `rbac.namespaceScoped=true`, because the operator needs
   cluster-scoped namespace and cross-namespace child access.
-- [Quick Start (ControlPlane)](../quick-start-controlplane.md): the devstack
+- [Deploy a ControlPlane](../quick-start-controlplane.md): the devstack
   this guide builds on.
 
 ## Tested by

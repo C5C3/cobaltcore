@@ -18,7 +18,7 @@ reconciliation of one service.
 
 ::: info Devstack
 This guide is written against the
-**[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack. Stand
+**[Deploy a ControlPlane](../quick-start-controlplane.md)** devstack. Stand
 it up first:
 
 ```bash
@@ -385,8 +385,8 @@ describe where the pass stops.
 
 ## Standalone Keystone, without a ControlPlane
 
-On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
-devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
+In the [Deploy Keystone Locally](../quick-start-extended.md)
+guide, a standalone Keystone CR named `keystone` runs with no ControlPlane
 projecting it. Drive these operations directly on that CR.
 
 **Scale** by patching `spec.deployment.replicas`:
@@ -420,7 +420,7 @@ docker pull ghcr.io/c5c3/keystone:2026.1
 kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name cobaltcore
 ```
 
-On the [Quick Start (Extended)](../quick-start-extended.md) local-build path,
+On the [Deploy Keystone Locally](../quick-start-extended.md) local-build path,
 rebuild the service image with `RELEASE=2026.1` per that tutorial's Step 6
 instead of pulling it.
 

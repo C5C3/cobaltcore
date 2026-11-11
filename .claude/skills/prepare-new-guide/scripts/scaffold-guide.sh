@@ -31,7 +31,7 @@
 #                         keystone
 #   --title <title>       guide title (default: title-cased slug)
 #   --opt-in WITH_X=true  compose a WITH_* opt-in flag onto the bring-up command
-#                         (repeatable; WITH_CONTROLPLANE is a devstack, not an opt-in)
+#                         (repeatable; ControlPlane mode is set by --devstack)
 #   --suite <path>        tests/e2e/... suite for '## Tested by' (default: TODO placeholder)
 
 set -euo pipefail
@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       if [[ "$2" == WITH_CONTROLPLANE=* ]]; then
-        echo "error: WITH_CONTROLPLANE is not an opt-in — use --devstack quick-start-controlplane" >&2
+        echo "error: ControlPlane mode is set by --devstack, not --opt-in" >&2
         exit 2
       fi
       OPT_INS="${OPT_INS}${OPT_INS:+ }$2"
@@ -111,6 +111,21 @@ case "${DEVSTACK}" in
   quick-start | quick-start-extended | quick-start-controlplane | quick-start-metal-stack) ;;
   *) usage ;;
 esac
+
+# Quick Start always applies its ControlPlane CR. Other deployment guides may
+# opt into automatic CR creation instead of their manual application step.
+if [[ "${DEVSTACK}" == "quick-start" && " ${OPT_INS} " == *" WITH_CONTROLPLANE_CR="* ]]; then
+  echo "error: Quick Start already sets WITH_CONTROLPLANE_CR=true" >&2
+  exit 2
+fi
+
+# The Quick Start deploys Keystone and Horizon. Other services need the full
+# ControlPlane tutorial before a guide can rely on their projected children.
+if [[ "${DEVSTACK}" == "quick-start" && -n "${SERVICE}" &&
+      "${SERVICE}" != "keystone" && "${SERVICE}" != "horizon" ]]; then
+  echo "error: Quick Start deploys Keystone and Horizon only; use --devstack quick-start-controlplane for ${SERVICE}" >&2
+  exit 2
+fi
 
 # The metal-stack bring-up sets WITH_CEPH=true itself, and
 # preflight_external_cluster in hack/deploy-infra.sh refuses the kind-only
@@ -166,19 +181,18 @@ OPT_SUFFIX=""
 case "${DEVSTACK}" in
   quick-start)
     DEVSTACK_LABEL="Quick Start"
-    BRING_UP="KIND_HOST_PORT=8443 ${OPT_SUFFIX}make deploy-infra"
+    BRING_UP="EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=true ${OPT_SUFFIX}make deploy-infra"
     ;;
   quick-start-extended)
-    DEVSTACK_LABEL="Quick Start (Extended)"
-    BRING_UP="kind create cluster --name cobaltcore --config hack/kind-config.yaml
-${OPT_SUFFIX}make deploy-infra"
+    DEVSTACK_LABEL="Deploy Keystone Locally"
+    BRING_UP="EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=false WITH_CONTROLPLANE_CR=false ${OPT_SUFFIX}make deploy-infra"
     ;;
   quick-start-controlplane)
-    DEVSTACK_LABEL="Quick Start (ControlPlane)"
-    BRING_UP="KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true ${OPT_SUFFIX}make deploy-infra"
+    DEVSTACK_LABEL="Deploy a ControlPlane"
+    BRING_UP="EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true ${OPT_SUFFIX}make deploy-infra"
     ;;
   quick-start-metal-stack)
-    DEVSTACK_LABEL="Quick Start (metal-stack)"
+    DEVSTACK_LABEL="Deploy on Bare Metal (Gardener / metal-stack)"
     BRING_UP="EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true ${OPT_SUFFIX}make deploy-infra"
     ;;
 esac
@@ -213,7 +227,7 @@ ${BRING_UP}
 EOF
 
 case "${DEVSTACK}" in
-  quick-start-controlplane | quick-start-metal-stack)
+  quick-start | quick-start-controlplane | quick-start-metal-stack)
     THROUGH="through to its final **Verify** step,"
     [[ "${DEVSTACK}" == "quick-start-metal-stack" ]] &&
       THROUGH="through Part 1, and Part 2 when this guide needs servers,"
@@ -241,14 +255,6 @@ resource name in the examples below is one that devstack produces.
 :::
 EOF
     ;;
-  quick-start)
-    cat <<'EOF'
-Follow that tutorial through to its final **Verify** step, so a Keystone CR named
-`keystone` is `Ready` in the `openstack` namespace. Every resource name in the
-examples below is one that devstack produces.
-:::
-EOF
-    ;;
 esac
 
 cat <<'EOF'
@@ -270,7 +276,7 @@ produces (see the devstack table in docs/contributing/guide-conventions.md).
 TODO: how the reader confirms the change took effect.
 EOF
 
-if [[ "${DEVSTACK}" == "quick-start-controlplane" || "${DEVSTACK}" == "quick-start-metal-stack" ]]; then
+if [[ "${DEVSTACK}" == "quick-start" || "${DEVSTACK}" == "quick-start-controlplane" || "${DEVSTACK}" == "quick-start-metal-stack" ]]; then
   cat <<EOF
 
 ## Standalone ${SUBJECT_KIND}, without a ControlPlane

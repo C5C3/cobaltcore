@@ -25,7 +25,7 @@ For the full field reference, see the
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start (ControlPlane)](../../quick-start-controlplane.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy a ControlPlane](../../quick-start-controlplane.md)** devstack. Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra

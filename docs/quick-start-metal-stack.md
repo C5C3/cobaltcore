@@ -1,5 +1,5 @@
 ---
-title: Quick Start (metal-stack)
+title: Deploy on Bare Metal
 ---
 
 <!--
@@ -7,36 +7,27 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Quick Start (metal-stack): ControlPlane and KVM hypervisors on a metal-stack cluster
+<span id="quick-start-metal-stack-controlplane-and-kvm-hypervisors-on-a-metal-stack-cluster"></span>
 
-This guide builds the metal-stack devstack of the
-[guide conventions](./contributing/guide-conventions.md#one-devstack-per-guide)
-on a Gardener shoot with two or more workers. Part 1 deploys the infrastructure
-stack, a Ceph for Cinder and the full ControlPlane, and publishes every API and
-Horizon over HTTPS on the address the shoot's load balancer hands the Gateway,
-under hostnames like `keystone.<a-b-c-d>.nip.io`, so the cloud is used from
-anywhere. Part 2 turns every worker into a KVM hypervisor of that
-ControlPlane and boots a server on each. One server gets a Cinder volume on
-Ceph and keeps it through a live migration and the eviction of its node. The
-volume is backed up after the detach and restored into a new volume, and the
-key of the Ceph user is rotated under the running servers. With the optional
-lab NFS stack, Part 3 adds an NFS volume backend beside Ceph. The teardown
-leaves the cluster as bare as it was. The ControlPlane CR is the one of the
-[Quick Start (ControlPlane)](./quick-start-controlplane.md) with its
-block-storage block on Ceph and three lab settings; read Steps 3 and 4 there
-for its anatomy.
+# Deploy on Bare Metal
 
-On the map of the five quick starts this page is the box Quick Start
-(metal-stack): the ControlPlane of the Quick Start (ControlPlane) on a cluster
-you bring, with servers on KVM.
+Deploy an OpenStack cloud on an existing Gardener cluster backed by
+metal-stack, then run virtual machines on its KVM workers. Gardener manages
+Kubernetes and metal-stack provides the machines. CobaltCore manages OpenStack
+on that cluster.
 
-![A map of the five quick starts. Two of them run one standalone Keystone on a kind cluster on the workstation. The Quick Start deploys the infrastructure stack, the keystone-operator and one Keystone resource, and ends with an authenticated token. The Quick Start (Extended) is the same devstack in more depth, with the UIs, the opt-ins, local builds, the E2E suite and Tempest, and going there from the Quick Start needs make teardown-infra first, because its Step 2 creates the same cobaltcore cluster on port 443. The other three run a whole control plane from one ControlPlane resource. The Quick Start (ControlPlane) runs on a fresh kind cluster and ends with a token, an image, a secret, a network and the Horizon dashboard. The Quick Start (metal-stack) runs the same ControlPlane resource on a Gardener shoot on metal-stack, turns every worker into a KVM hypervisor, and ends with a server on every worker, a volume, a live migration, an eviction and a backup. The Quick Start (Orders) extends the ControlPlane devstack without a teardown: a second kind cluster joins it as a registered target, a service owner orders seven pieces from an assigned namespace on each cluster, and it ends with four Secrets on the target and four Jobs that use them. Going from a standalone Keystone to a ControlPlane is a mode change that needs make teardown-infra and a fresh cluster. Four of them begin at git clone; the Quick Start (Orders) begins on the ControlPlane devstack.](./diagrams/quickstart-map.svg)
+This lab uses at least two workers. Follow the parts in order:
 
-The figure shows the lab after both parts: what runs once per cluster, what
-runs on every worker, the Gateway's public address as the way in, and the
-traffic between the workers.
+1. [Deploy the control plane](#control-plane), including Ceph block storage.
+2. [Connect compute hosts](#hypervisors), boot virtual machines, and verify storage and migration.
+3. Add the optional NFS backend if you need to test another storage option.
 
-![The metal-stack lab after both parts of the quick start. One Gardener shoot holds everything. Cluster-wide, built by Part 1: the Envoy proxy of the Gateway openstack-gw, the ControlPlane controlplane with its eight OpenStack services, the OVNCentral controlplane-ovn, the backing services, the lab Ceph for Cinder, and the hypervisor operator. Built by Part 2: the resources OVNChassis lab-chassis, NeutronMetadataAgent lab-metadata-agent and NovaCompute lab, which put one pod of each of their DaemonSets on every labelled worker. Every worker is a Kubernetes node, a KVM hypervisor and an OVN chassis at once: it runs Open vSwitch, ovn-controller, the metadata agent, nova-compute, libvirt with QEMU, kvm-node-agent and the reservation of the migration ports, and it hosts servers. The figure draws worker 1 and worker N and a box for more. Between any two workers run Geneve tunnels on UDP 6081, libvirt with TLS on TCP 16514, and QEMU migrations with TLS on TCP 49152 to 49215. Each worker reaches the bus, the Southbound database, the metadata API and the Ceph inside the cluster. The way in from outside is the public address the shoot's load balancer hands the Envoy proxy: every API, Horizon and the console proxy answer there on port 443, under the hostnames {service}.{a-b-c-d}.nip.io, with a certificate of the lab CA.](./diagrams/compute-metal-stack-lab.svg)
+The Gateway publishes the APIs and Horizon on the load balancer’s address over HTTPS. The configuration is for
+evaluation, with single-instance backing services and lab certificates. Review
+[Configure Your Deployment](./guides/advanced-configuration.md) before planning
+availability, capacity, and public access for your own environment.
+
+![One Gardener cluster runs the OpenStack control plane and Ceph. Each worker runs KVM compute and OVN networking. The Gateway serves APIs and Horizon on the load balancer’s address over HTTPS on port 443.](./diagrams/compute-metal-stack-lab.svg)
 
 ## Prerequisites
 
@@ -45,30 +36,43 @@ The lab assumes a cluster of this shape:
 | The lab assumes | Where it shows |
 | --- | --- |
 | A Gardener shoot on metal-stack with two or more Ready workers that carry the same `topology.kubernetes.io/zone` label | `kubectl get nodes -L topology.kubernetes.io/zone` |
-| `/dev/kvm` on every worker and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
-| The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
-| Only with the optional `WITH_NFS=true` of Part 3: the module files `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
-| Only with the optional `WITH_CHAOS_MESH=true`: the module files `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` for the running kernel | probe, `== module files for <kernel>` |
-| No `/var/lib/rook` on any node, which a Ceph deployed there before leaves behind | probe, `== rook` |
-| cgroup v2 | probe, `== cgroup` |
-| `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe, `== disks` |
-| No `libvirtd`, `qemu-system-x86_64` or `ovs-vswitchd` on the host | probe, `== host os / binaries` |
-| A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe, `== nics`, the `cali*` lines |
-| A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | Step 1 of `EXTERNAL_CLUSTER=true make deploy-infra` exits 1 otherwise |
-| Room in that class for three 100Gi raw block volumes and one 10Gi volume of the Ceph, from a provisioner that serves `volumeMode: Block` | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
+| `/dev/kvm` on every worker and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe: KVM, CPU and cross-node checks; review Nova CPU configuration |
+| The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel, or built-in equivalents; Part 2 loads them | probe: KVM / OVN modules |
+| Only with the optional `WITH_NFS=true` of Part 3: the module files `nfs` and `nfsv4`, or built-in equivalents; deployment loads them | probe with `WITH_NFS=true`: NFS client modules |
+| Only with the optional `WITH_CHAOS_MESH=true`: the module files `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf`, or built-in equivalents; deployment loads them | probe with `WITH_CHAOS_MESH=true`: Chaos Mesh modules and runtime socket |
+| Before a fresh Ceph install, no stale `/var/lib/rook` from a previous cluster; this directory is expected after deployment | probe: Ceph host data; review existing data before reuse |
+| cgroup v2 | probe: cgroup v2 |
+| `/var/lib` on a volume with room for the instance disks (192 GiB on the surveyed node) | probe: Capacity shows RAM and available disk space for review |
+| No conflicting host libvirt, QEMU or OVS services; their binaries are supplied in Part 2's containers | probe: Host binaries flags installed binaries for review, without assuming a service is running |
+| A pod-network MTU of 1460 or more, the value of `global_physnet_mtu` | probe: Pod MTU checks the observed `cali*` interfaces; other CNIs need review |
+| A default StorageClass, which every volume of the stack binds to, and no DaemonSet `kube-system/node-local-dns` | probe: StorageClass and Node-local DNS; deploy checks them again |
+| Room in that class for one 100Gi raw block volume per OSD and one 10Gi monitor volume, from a provisioner that serves `volumeMode: Block`; the manifest starts with nine OSDs, and Step 3 describes fresh two-worker sizing | the Ceph wait of the deploy in Step 3, which exits 1 otherwise |
 | Only with the optional `WITH_NFS=true` of Part 3: room in that class for a 100Gi volume, the claim `nfs-server-exports` of the NFS server | the `nfs-server` rollout wait of the deploy, which exits 1 otherwise |
 | Egress on TCP 443 to `ghcr.io`, the Helm repositories and the cirros download | the shoot's firewall |
 | An address from the shoot's load balancer for a Service of type `LoadBalancer`, which metal-stack's cloud controller takes from the project's internet network, reachable on TCP 443 from where you work | the address wait of Step 3, which exits 1 otherwise |
 | TCP 16514 and 49152 to 49215 open between the workers | `hack/lab-node-ports.sh` |
 
 The shoot's kubeconfig is saved as `kubeconfig` in the root of the clone;
-`.gitignore` keeps that file out of git. The workstation needs `kubectl`, `jq`,
-[`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer, `make`, and the
+`.gitignore` keeps that file out of git. The workstation needs Git, `kubectl`, `jq`,
+[`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer, `make`, Bash,
+the GNU coreutils commands `timeout` and `sha256sum`, and the
 OpenStack CLI
 ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/))
 with the [`osc-placement`](https://docs.openstack.org/osc-placement/latest/)
 plugin. Neither Docker nor kind is needed: the deploy creates no cluster and
 loads no image.
+
+Check the workstation commands before deploying. On macOS, install GNU
+coreutils and put its commands on `PATH`; the system tools do not include
+`timeout`.
+
+```bash
+(
+for tool in git make bash kubectl jq yq timeout sha256sum openstack; do
+  command -v "$tool" || { echo "Install $tool before continuing"; exit 1; }
+done
+)
+```
 
 ## Part 1: The control plane {#control-plane}
 
@@ -92,31 +96,78 @@ directory with `KUBECONFIG` set this way.
 
 ### Step 2: Probe the nodes {#cp-probe}
 
-The [node probe](./reference/infrastructure/infrastructure-manifests.md#node-probe)
-is a read-only Job that prints the node facts the lab depends on under
-thirteen fixed headers. The loop pins it to each node in turn, under a `=== <node>`
-line, and deletes it before and after every run: a Job's pod template is
-immutable, so a Job left over from an interrupted run would make the apply
-fail and print another node's facts:
+Run the complete probe workflow from the repository:
 
 ```bash
-for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-  echo "=== ${node}"
-  kubectl delete job -n default node-probe --ignore-not-found
-  yq ".spec.template.spec.nodeName = \"${node}\"" deploy/lab/metal-stack/probe/node-probe.yaml | kubectl apply -f - || continue
-  kubectl wait --for=condition=complete job/node-probe -n default --timeout=5m
-  kubectl logs -n default job/node-probe
-  kubectl delete job -n default node-probe
-done
+hack/lab-node-probe.sh
 ```
 
-Compare each node's output with the [Prerequisites](#prerequisites) table and
-with the expected output in the header of
-`deploy/lab/metal-stack/probe/node-probe.yaml`, which a lab-ready node printed
-on 2026-10-04. The probe completes whatever it finds, so a missing piece shows
-up as `absent`, `none` or `NOT FOUND` in the output and not as a failed Job.
+The script checks the cluster and each worker, prints a table with findings
+and next steps, and removes its temporary Jobs, including on interruption.
+Each Job reads host data without changing it. The script uses the current
+kubeconfig context and excludes nodes labelled as control-plane or master by
+default. No manual comparison with another page is needed.
+
+A shortened example for a worker before deployment:
+
+```text
+STATUS  CHECK                   FINDING / NEXT STEP
+PASS    /dev/kvm                KVM character device present.
+AUTO    KVM / OVN modules       Available, not loaded: vhost_net openvswitch. Part 2 loads them.
+AUTO    Host binaries          libvirt, QEMU and OVS run in Part 2 containers; absent host binaries are expected.
+SKIP    NFS                    Optional; enable checks with WITH_NFS=true if deploying Part 3.
+PASS    Ceph host data         No existing /var/lib/rook; make deploy-infra WITH_CEPH=true installs Rook/Ceph.
+WARN    Capacity               32.0 GiB RAM; 180G free / 192G total at /var/lib. Size VM disks and workload requests.
+```
+
+`PASS` is green, `BLOCK`/`ERROR` red, `WARN` yellow and `AUTO` cyan in a
+terminal. Labels also appear in plain logs; `NO_COLOR=1` disables colors.
+Resolve `BLOCK` rows before proceeding, and review `WARN` rows. `AUTO` names
+the later step that supplies a component or loads an available module;
+`SKIP` means an optional feature is not selected. The command exits **1** for
+prerequisite blockers, **2** for probe/API/cleanup errors, and **0** when it
+finds no blockers. Exit 0 still requires reviewing the warnings.
+
+Use the same optional flags you plan to give the deploy command. For example,
+if enabling both NFS and Chaos Mesh:
+
+```bash
+WITH_NFS=true WITH_CHAOS_MESH=true hack/lab-node-probe.sh
+```
+
+`make deploy-infra` installs shared infrastructure and operators, Rook/Ceph
+with `WITH_CEPH=true`, and the NFS server/CSI or Chaos Mesh with their flags.
+The NFS and Chaos Mesh stacks also load their kernel modules. **Module files
+must already exist on the host** (or be built into its kernel); deployment
+cannot install missing host kernel packages. Unregistered NFS filesystems
+before deployment are expected. Part 2 supplies libvirt/QEMU, the OVN chassis
+and nova-compute, and loads `vhost_net`, `openvswitch` and `geneve`. Host
+`rpc.nfsd` is not required: the optional NFS server uses Ganesha.
+
+The probe prints the directory containing `summary.txt`, `summary.tsv`, raw
+per-node logs, Job manifests and command/error logs. Use `--verbose` to also
+print the raw survey, or `--help` for node selection, namespace, timeout and
+output-directory settings. Its checks do not prove storage provisioning,
+workload capacity, libvirt CPU-model compatibility or end-to-end connectivity;
+the table identifies the remaining checks and when to run them. Existing
+`/var/lib/rook` needs review before a fresh install and is expected on an
+already deployed cluster; the probe never deletes host data.
+
+Read the [complete runner source](https://github.com/C5C3/cobaltcore/blob/main/hack/lab-node-probe.sh)
+for the checks and cleanup behavior.
+
+The [node probe reference](./reference/infrastructure/infrastructure-manifests.md#node-probe)
+describes the read-only Job and its raw survey fields.
 
 ### Step 3: Deploy the stack {#cp-deploy}
+
+Choose the Ceph OSD count **before the first deployment**. The checked-in
+`deploy/lab/metal-stack/ceph/cluster/cluster.yaml` has a fixed count of `9`
+for three workers; deployment does not calculate it from the node count.
+For a fresh two-worker cluster, set
+`spec.storage.storageClassDeviceSets[0].count` to `6` (three per worker).
+If Ceph is already deployed, preserve its existing count and storage settings;
+do not reduce the count when retrying the installer.
 
 ```bash
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra
@@ -161,7 +212,7 @@ port-forward on local port 443, which needs root:
 `WITH_CEPH=true` deploys the
 [Lab Ceph](./reference/infrastructure/infrastructure-manifests.md#lab-ceph)
 that holds Cinder's volumes and backups: the Rook operator and a Ceph with
-three OSDs per worker on raw block volumes of the default class, the RBD pools
+the configured OSD count on raw block volumes of the default class, the RBD pools
 `volumes` and `backups`, and the users `cinder` and `cinder-backup`, whose keys
 reach the Secrets `ceph-client-cinder` and `ceph-client-cinder-backup` in
 `openstack` through OpenBao. The deploy waits until the Ceph reports
@@ -170,6 +221,11 @@ status command, `kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph status
 Without the flag the script exits 1 before it applies anything, because the
 ControlPlane of Step 4 puts Cinder's volume backend and backup target on that
 Ceph.
+
+On a Ceph timeout, check `ceph health detail` in the toolbox and
+`kubectl -n rook-ceph get pods -l app=rook-ceph-osd -o wide`.
+The pools need OSDs on two hosts. The spread rule does not move existing
+pinned OSDs; recover their placement before retrying deployment.
 
 `WITH_NFS=true` is optional, and only [Part 3](#nfs) needs it. Added to the
 deploy command, it deploys the
@@ -240,8 +296,7 @@ kubectl wait ovncentral/controlplane-ovn -n openstack --for=condition=Ready --ti
 
 The echo prints the suffix of the `Access:` lines of Step 3, such as
 `154-41-192-90.nip.io`. The directory holds the `OVNCentral`
-`controlplane-ovn` and the ControlPlane `controlplane` of the Quick Start
-(ControlPlane). The ControlPlane carries that page's block-storage block with
+`controlplane-ovn` and the ControlPlane `controlplane` from the local ControlPlane guide. The ControlPlane carries that page's block-storage block with
 the Ceph of Step 3 in place of its NFS shares: the RBD volume backend `ceph1`
 on the pool `volumes` and the RBD backup target `cephbk` on the pool
 `backups`, each with the key Secret of its Ceph user. Its services set no
@@ -288,7 +343,7 @@ unset BAO_TOKEN
 The first wait gives the c5c3-operator time to create the MariaDB: without it
 the Ready wait fails at once with `Error from server (NotFound)` while the
 MariaDB is missing.
-Step 5 of the [Quick Start (ControlPlane)](./quick-start-controlplane.md)
+Step 5 of [Deploy a ControlPlane](./quick-start-controlplane.md)
 explains what the script sets up.
 
 ### Step 6: Wait for the chain {#cp-access}
@@ -298,13 +353,13 @@ kubectl wait controlplane/controlplane -n openstack --for=condition=Ready --time
 ```
 
 The wait covers the twenty-one conditions of the figure.
-[Step 6 of the Quick Start (ControlPlane)](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
+[Step 6 of Deploy a ControlPlane](./quick-start-controlplane.md#step-6-—-watch-the-chain-reconcile)
 lists what each one waits for.
 
 ![The conditions of a ControlPlane as a gate graph. A blocking prefix runs one step after another and ends the pass at the first step that is not done: SizingReady, NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, AdminPasswordReady, KeystoneReady. DBCredentialsReady waits for a step done by hand, the tenant onboarding with setup-database-tenant.sh. Once the prefix has passed, the fourteen members of the tail group all run on every pass and each gates itself. KORCReady gates AdminCredentialReady, which gates CatalogReady and the KeystoneService registrations. KeystoneReady gates HorizonReady and the six service legs GlanceReady, PlacementReady, BarbicanReady, NeutronReady, CinderReady and NovaReady, and each leg also waits for the AccountReady of its own registration. NeutronReady also waits for OVNReady, which mirrors an OVNCentral the ControlPlane references and does not own, and NovaReady for PlacementReady. ServiceAccountsReady folds the registrations. RegistrationTenantStoresReady and NamespaceAssignmentsReady have no gate.](./diagrams/controlplane-gate-graph.svg)
 
 No image is preloaded on the lab, so the wait allows 30 minutes, twice the
-15 of the Quick Start (ControlPlane).
+15 minutes in the local ControlPlane guide.
 
 ### Step 7: Verify {#cp-verify}
 
@@ -339,8 +394,8 @@ and the admin password goes only to the Gateway. A `certificate verify failed`
 error means the file holds the CA of an earlier deploy; write it again. The
 same variables work on any host that reaches the address, with `lab-ca.pem`
 copied there. On a host that cannot resolve `*.nip.io`, add each hostname with
-the Gateway's address to `/etc/hosts`, as the tip in Step 7 of the
-[Quick Start (ControlPlane)](./quick-start-controlplane.md) does with
+the Gateway's address to `/etc/hosts`, as the tip in Step 7 of
+[Deploy a ControlPlane](./quick-start-controlplane.md) does with
 `127.0.0.1`. Then list the catalog, the compute services and the hypervisors:
 
 ```bash
@@ -656,11 +711,18 @@ volume. Leave the console with `Ctrl+]`.
 
 ```bash
 openstack server migrate --live-migration --wait lab-0
+timeout 300 bash -c 'until openstack server migration list --server lab-0 -f json | jq -e "max_by(.Id) | .Status == \"completed\"" >/dev/null; do sleep 5; done'
 openstack server show lab-0 -c OS-EXT-SRV-ATTR:host -f value
 openstack server migration list --server lab-0
 ```
 
-`lab-0` now runs on another node, which the second command prints, and the
+The server can return to `ACTIVE` before Nova finishes migration cleanup, so
+`--wait` may return while the migration row still says `running`. The bounded
+wait checks the latest migration of `lab-0`; continue only once it completes.
+If the wait times out, inspect the migration list before starting another
+migration or eviction.
+
+`lab-0` now runs on another node, which the host lookup prints, and the
 migration list shows the migration `completed`. libvirt carried it over TLS
 between the nodes, with the CPU model that `cpuModels` names in
 `deploy/lab/metal-stack/hypervisor/compute.yaml`, which every node provides.
@@ -1315,5 +1377,5 @@ the shoot's pod and node networks were in the list.
   and `make teardown-infra`, with every variable.
 - [NovaCompute CRD](./reference/nova/novacompute-crd.md): the compute pool, its
   aggregates, live migration and the node drain.
-- [Quick Start (ControlPlane)](./quick-start-controlplane.md): the same
+- [Deploy a ControlPlane](./quick-start-controlplane.md): the same
   ControlPlane on kind, with every block of the CR explained.

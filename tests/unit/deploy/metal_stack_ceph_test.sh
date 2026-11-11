@@ -283,6 +283,11 @@ test_cephcluster() {
   # A portable OSD's CRUSH host is its claim's name, which voids the pools'
   # host failure domain; a pinned OSD carries its node's name.
   assert_eq "an OSD is pinned to its node, which names its CRUSH host" "false" "$(val CephCluster rook-ceph "$set.portable")"
+  local spread="$set.placement.topologySpreadConstraints[0]"
+  assert_eq "OSD preparation and daemons both count toward host spreading" "rook-ceph-osd rook-ceph-osd-prepare" \
+    "$(val CephCluster rook-ceph "$spread.labelSelector.matchExpressions[] | select(.key == \"app\" and .operator == \"In\") | .values | sort | join(\" \")")"
+  assert_eq "host spreading is required during preparation" "kubernetes.io/hostname 1 DoNotSchedule" \
+    "$(val CephCluster rook-ceph "$spread | .topologyKey + \" \" + (.maxSkew | tostring) + \" \" + .whenUnsatisfiable")"
   assert_eq "the device set has one claim template" "1" "$(val CephCluster rook-ceph "$set.volumeClaimTemplates | length")"
   assert_eq "the OSD claim is a raw block volume" "Block" \
     "$(val CephCluster rook-ceph "$set.volumeClaimTemplates[0].spec.volumeMode")"

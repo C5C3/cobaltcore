@@ -4,8 +4,10 @@
 
 # Read-only node probe for metal-stack clusters, the survey of #1138 (work
 # package 0) as a reusable Job. It is the prerequisite check of the CobaltCore
-# lab: run it against a metal-stack cluster before anything of the lab is
-# deployed. It prints the node facts the lab depends on under thirteen fixed
+# lab: run hack/lab-node-probe.sh against a metal-stack cluster before
+# deployment. The runner prints actionable tables, distinguishes prerequisites
+# from components installed later, saves logs and cleans up its own Jobs.
+# This underlying survey prints node facts under thirteen fixed
 # headers and exits 0 whatever it finds, so a node that lacks something
 # prints `absent`, `none` or `NOT FOUND` and the Job still completes.
 #
@@ -42,19 +44,13 @@
 # has created `openstack` or `shared-services`, and the metal-stack shoot
 # enforces no PodSecurity level on `default`.
 #
-# Run it, read it and remove it:
-#   kubectl apply -k deploy/lab/metal-stack/probe
-#   kubectl wait --for=condition=complete job/node-probe -n default --timeout=5m
-#   kubectl logs -n default job/node-probe
-#   kubectl delete job -n default node-probe
-#
-# The Job runs on the node the scheduler picks. A cluster with more than one
-# worker is probed one node at a time by pinning the pod, followed by the same
-# wait, logs and delete (node-probe.yaml holds the one Job and nothing else):
-#   yq '.spec.template.spec.nodeName = "<node>"' deploy/lab/metal-stack/probe/node-probe.yaml | kubectl apply -f -
-# Delete the Job between runs: its pod template is immutable, so a second
-# apply with another nodeName is rejected. ttlSecondsAfterFinished removes the
-# Job, and its logs with it, one hour after it completes.
+# Run the complete workflow from the repository root:
+#   hack/lab-node-probe.sh
+# Optional stacks use the same flags as deployment:
+#   WITH_NFS=true WITH_CHAOS_MESH=true hack/lab-node-probe.sh
+# Use --verbose to print raw surveys too, or --help for settings. The runner
+# assigns a unique name, target node and active deadline to each Job, waits,
+# saves logs and deletes it. ttlSecondsAfterFinished is a cleanup fallback.
 #
 # A DaemonSet would cover every node at once, but it never completes, has to
 # be deleted by hand, and its pods' logs are read one at a time anyway. The

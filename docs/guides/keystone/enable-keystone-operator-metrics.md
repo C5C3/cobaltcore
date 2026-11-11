@@ -19,10 +19,10 @@ For the controller-side instrumentation contract, see
 ## Prerequisites
 
 ::: info Devstack
-This guide is written against the **[Quick Start](../../quick-start.md)** devstack. Stand it up first:
+This guide is written against the **[Deploy Keystone Locally](../../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
-KIND_HOST_PORT=8443 WITH_PROMETHEUS=true make deploy-infra
+EXTERNAL_CLUSTER=false KIND_HOST_PORT=8443 WITH_CONTROLPLANE=false WITH_CONTROLPLANE_CR=false WITH_PROMETHEUS=true make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step, so the keystone-operator
@@ -39,7 +39,7 @@ Step 1 describes the CRD and selector requirements for that setup.
 
 ### 1. Enable the ServiceMonitor via Helm
 
-On the Quick Start devstack, `WITH_PROMETHEUS=true` installs Prometheus,
+On the standalone Keystone devstack, `WITH_PROMETHEUS=true` installs Prometheus,
 Grafana, and the bundled `Keystone Operator` dashboard, and sets
 `monitoring.serviceMonitor.enabled=true` on the keystone-operator
 HelmRelease. Once that release reconciles, the ServiceMonitor is already
@@ -75,7 +75,7 @@ kubectl get prometheus -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.
 Grafana needs a Prometheus data source with network access to that instance.
 :::
 
-The Quick Start manages the operator through a Flux `HelmRelease`.
+The standalone walkthrough manages the operator through a Flux `HelmRelease`.
 If monitoring is not enabled, patch that resource; Flux's helm-controller
 reverts out-of-band Helm changes on its next reconcile:
 
@@ -131,7 +131,7 @@ keystone-operator   3s
 
 ### 2. Import the reference Grafana dashboard
 
-On the Quick Start devstack, open Grafana by keeping this command running
+On the standalone Keystone devstack, open Grafana by keeping this command running
 in a separate terminal:
 
 ```bash
@@ -150,7 +150,7 @@ kubectl -n monitoring get secret kube-prometheus-stack-grafana \
 
 Use those credentials only for the local devstack. For a non-kind Grafana,
 use its configured URL and credentials. See
-[Quick Start (Extended): Grafana UI](../../quick-start-extended.md#step-4c-grafana-ui)
+[Deploy Keystone Locally, Grafana UI](../../quick-start-extended.md#step-4c-grafana-ui)
 for the local stack's access and target checks.
 
 On the devstack, select **Dashboards → Keystone Operator**: the dashboard is

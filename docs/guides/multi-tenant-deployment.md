@@ -44,7 +44,7 @@ namespace-scoped installs are still defaulted and validated at admission (see
 ## Prerequisites
 
 ::: info Devstack
-This guide builds on the **[Quick Start (ControlPlane)](../quick-start-controlplane.md)** devstack for the cluster, CRDs, and shared infrastructure (MariaDB, Memcached, External Secrets Operator). Stand it up first:
+This guide builds on the **[Deploy a ControlPlane](../quick-start-controlplane.md)** devstack for the cluster, CRDs, and shared infrastructure (MariaDB, Memcached, External Secrets Operator). Stand it up first:
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
