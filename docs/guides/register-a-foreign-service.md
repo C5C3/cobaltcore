@@ -177,7 +177,7 @@ kubectl get secretstore,serviceaccount,certificate -n workflow \
 The eight K-ORC children sit in the ControlPlane's namespace:
 
 ```bash
-KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud
+KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud
 
 kubectl get "$KORC_KINDS" -n openstack \
   -l c5c3.io/keystoneservice-name=workflow,c5c3.io/keystoneservice-namespace=workflow
@@ -417,6 +417,48 @@ never limited. An entry whose `targetClusterRef` names a cluster that is not
 registered turns the ControlPlane's `Ready` False through
 `NamespaceAssignmentsReady=False/TargetClusterUnavailable`. See
 [NamespaceAssignmentSpec](../reference/c5c3/controlplane-crd.md#namespaceassignmentspec).
+
+## Declare registered limits and system roles
+
+A service that enforces Keystone unified limits needs a default for each
+resource it counts. `spec.catalog.registeredLimits` declares them on the
+registration's catalog entry, one Keystone registered limit per entry, in the
+ControlPlane's `spec.region`, where the endpoints are registered too:
+
+```bash
+kubectl patch keystoneservice workflow -n workflow --type merge \
+  -p '{"spec":{"catalog":{"registeredLimits":[{"resourceName":"workflow_executions","defaultLimit":10}]}}}'
+openstack --insecure registered limit list --service workflow --region RegionOne
+```
+
+A per-project override stays Keystone data: create it with
+`openstack limit create --service workflow --project <project> --region RegionOne
+--resource-limit <n> workflow_executions`. A changed `defaultLimit` is updated in
+place, and an entry dropped from the list is deleted; Keystone refuses both
+while a project limit of that resource exists. `defaultLimit` 0 is rejected at
+admission.
+
+`spec.account.systemRoles` grants roles on the system scope, which reaches every
+project. It is honored only for a registration in one of the ControlPlane's own
+namespaces, so the `workflow` registration here is refused and frozen like a
+refused project role:
+
+```bash
+kubectl patch keystoneservice workflow -n workflow --type merge \
+  -p '{"spec":{"account":{"systemRoles":["reader"]}}}'
+kubectl get keystoneservice workflow -n workflow \
+  -o jsonpath='{.status.conditions[?(@.type=="AccountReady")].reason}{"\n"}'
+```
+
+The reason reads `SystemRoleNotAllowed`. Remove the field again to recover:
+
+```bash
+kubectl patch keystoneservice workflow -n workflow --type merge \
+  -p '{"spec":{"account":{"systemRoles":null},"catalog":{"registeredLimits":null}}}'
+```
+
+See [KeystoneServiceRegisteredLimitSpec](../reference/c5c3/keystoneservice-crd.md#keystoneserviceregisteredlimitspec)
+and [Role allowlist](../reference/c5c3/keystoneservice-crd.md#role-allowlist).
 
 ## Removing consent freezes the registration
 

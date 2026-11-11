@@ -1885,6 +1885,7 @@ func (r *ControlPlaneReconciler) releaseStalledRegistrationChildren(
 		korcLists := []client.ObjectList{
 			&orcv1alpha1.RoleAssignmentList{},
 			&orcv1alpha1.RoleList{},
+			&orcv1alpha1.RegisteredLimitList{},
 			&orcv1alpha1.EndpointList{},
 			&orcv1alpha1.RegionList{},
 			&orcv1alpha1.ServiceList{},

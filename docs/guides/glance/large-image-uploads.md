@@ -157,7 +157,7 @@ fills the CPU and memory defaults per resource, so they stay beside it.
 Finally, it does not meter tenants. It caps how much local disk the imports on
 one pod may consume before the kubelet steps in, and says nothing about how many
 images a project may create or how much it may keep in the backend. Those are
-Glance quotas.
+[Glance quotas](./enforce-glance-image-quotas.md).
 
 ## When an import breaches the bound
 

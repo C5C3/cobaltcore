@@ -1,0 +1,71 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Invalidate assignment cache on modify operations
+
+Backport of upstream commit b5abcae8e9 (master, 2026-07-15, Change-Id
+I94b1b9a725575735cceac0c470168fa7d2a1f4e9). Keystone 30.0.0 contains
+it, 29.0.0 does not, and no 29.0.x tag exists that could be pinned
+instead.
+
+Keystone 29.0.0 memoizes list_role_assignments in
+COMPUTED_ASSIGNMENTS_REGION (keystone/assignment/core.py), but
+create_system_grant_for_user and create_system_grant_for_group do not
+invalidate it, and neither does the domain-deletion callback after
+delete_domain_assignments. The keystone operator renders
+[cache] enabled = true, so a listing cached before the grant answers
+until [cache] expiration_time passes (oslo.cache default 600 s). K-ORC
+lists a RoleAssignment before it creates it and reads it back after the
+create, so a system-scoped RoleAssignment stays unavailable for up to
+ten minutes. That holds AccountReady on the KeystoneService that asks
+for a system role, and with it GlanceReady on a ControlPlane that
+enforces Glance quotas (#732): the glance service user needs reader on
+the system to read every project's limits.
+
+The patch adds COMPUTED_ASSIGNMENTS_REGION.invalidate() after the
+driver call in both create_system_grant_for_* methods and after
+delete_domain_assignments, as upstream does.
+
+Upstream added no test, and no upstream unit test pins the missing
+invalidation. The patch therefore carries no test hunk.
+
+tests/container-images/verify_keystone.sh (test_system_grant_patch_applied)
+asserts against the built image that each system grant invalidates the
+region once.
+
+No 2026.2 twin: 30.0.0 carries upstream change 997392.
+
+Applies to keystone 29.0.0 (2026.1).
+
+Upstream status: merged on master as
+https://review.opendev.org/c/openstack/keystone/+/997392; not
+backported to stable/2026.1.
+
+diff --git a/keystone/assignment/core.py b/keystone/assignment/core.py
+index bbc12eefd..a88c872ec 100644
+--- a/keystone/assignment/core.py
++++ b/keystone/assignment/core.py
+@@ -84,6 +84,7 @@ class Manager(manager.Manager):
+     ):
+         domain_id = payload['resource_info']
+         self.driver.delete_domain_assignments(domain_id)
++        COMPUTED_ASSIGNMENTS_REGION.invalidate()
+ 
+     def _get_group_ids_for_user_id(self, user_id):
+         # TODO(morganfainberg): Implement a way to get only group_ids
+@@ -1377,6 +1378,7 @@ class Manager(manager.Manager):
+         self.driver.create_system_grant(
+             role_id, user_id, target_id, assignment_type, inherited
+         )
++        COMPUTED_ASSIGNMENTS_REGION.invalidate()
+ 
+     def delete_system_grant_for_user(self, user_id, role_id):
+         """Remove a system grant from a user.
+@@ -1448,6 +1450,7 @@ class Manager(manager.Manager):
+         self.driver.create_system_grant(
+             role_id, group_id, target_id, assignment_type, inherited
+         )
++        COMPUTED_ASSIGNMENTS_REGION.invalidate()
+ 
+     def delete_system_grant_for_group(self, group_id, role_id):
+         """Remove a system grant from a group.

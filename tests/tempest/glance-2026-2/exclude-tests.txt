@@ -8,4 +8,11 @@
 # Blank lines are ignored. Patterns are matched against test IDs.
 # Follows the same format as the per-release test-excludes lists.
 #
-# No exclusions yet — the full tempest.api.image suite runs against Glance.
+# The two unified-limits tests that stage an image through the glance-direct
+# import method. The glance-operator pins [DEFAULT] enabled_import_methods to
+# web-download and copy-image, so Glance answers PUT /v2/images/{id}/stage with
+# 404 "'glance-direct' method is not available at this site". Tempest skips them
+# only when [image-feature-enabled] import_image is false, and that flag would
+# also skip the web-download and copy-image import tests this leg runs.
+tempest\.scenario\.test_unified_limits\.ImageQuotaTest\.test_image_count_uploading_quota
+tempest\.scenario\.test_unified_limits\.ImageQuotaTest\.test_image_stage_quota

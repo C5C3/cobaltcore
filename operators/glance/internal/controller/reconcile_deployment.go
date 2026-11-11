@@ -168,6 +168,23 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, children cli
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
 
+	// Stamp the generation whose pod template every replica now runs. The
+	// surge-tolerant DeploymentReady turns True while old-template pods still
+	// serve, so a consumer that must know no pod of an older template remains
+	// (the ControlPlane's hold on Glance's registered limits after
+	// spec.keystoneLimits is dropped) reads status.rolledOutGeneration instead.
+	// TemplateConverged ignores readiness, so a replica pending on resources
+	// does not strand the signal. It also counts no terminating pod, and an
+	// old-template pod still serves through its preStop sleep and graceful
+	// shutdown, so the stamp waits for status.terminatingReplicas to reach 0 as
+	// well. A cluster without the DeploymentReplicaSetTerminatingReplicas
+	// feature leaves that field nil and stamps on convergence alone. An
+	// unconverged pass leaves the previous value.
+	converged := deployment.TemplateConverged(deploy)
+	if converged && ptr.Deref(deploy.Status.TerminatingReplicas, 0) == 0 {
+		glance.Status.RolledOutGeneration = glance.Generation
+	}
+
 	// Narrow the Service selector to the API component only once every live pod
 	// carries that label. EnsureDeployment is a Server-Side Apply: it returns as
 	// soon as the API server accepts the pod template, long before the rollout
@@ -188,7 +205,7 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, children cli
 	// fresh write exactly like the local one, and a latch decided from it would
 	// re-widen the selector. The reader is nil only in unit tests, whose fake
 	// client is read-your-writes anyway.
-	narrowSelector := deployment.TemplateConverged(deploy)
+	narrowSelector := converged
 	if !narrowSelector {
 		reader, err := commonmulticluster.ResolveChildrenAPIReader(
 			ctx, r.Resolver, r.apiReader, glance.Spec.TargetClusterRef)
@@ -341,6 +358,12 @@ func effectiveStagingSizeLimit(glance *glancev1alpha1.Glance) *resource.Quantity
 // glanceImageCachePath, and the cacheMaintenanceContainer sidecar that prunes
 // and cleans it. With the cache off the pod template is byte-identical to the
 // one built before the cache existed.
+//
+// spec.keystoneLimits adds the [oslo_limit] password env var, read from the
+// service-user Secret key the [keystone_authtoken] password comes from, to the
+// glance-api container alone: the db-sync Job, the purge CronJob and the cache
+// sidecar enforce no quota. The authtoken digest annotation already rolls the
+// pods on a rotation of that key.
 func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, dsnDigest, authtokenDigest string) *appsv1.Deployment {
 	selector := selectorLabels(glance)
 	labels := componentLabels(glance, naming.ComponentAPI)
@@ -352,6 +375,14 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 	var tasksLimit *resource.Quantity
 	if stagingLimit != nil {
 		tasksLimit = ptr.To(stagingLimit.DeepCopy())
+	}
+
+	env := append([]corev1.EnvVar{
+		database.ConnectionEnvVar(glance.Name),
+		keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
+	}, database.SocketTimeoutEnvVars(glance.Spec.ExtraConfig, "database")...)
+	if glance.Spec.KeystoneLimits != nil {
+		env = append(env, keystoneauth.LimitPasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)))
 	}
 
 	deploy := deployment.BuildWorkload(deployment.WorkloadParams{
@@ -368,10 +399,7 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 			Image:           glance.Spec.Image.Reference(),
 			ImagePullPolicy: glance.Spec.Image.EffectivePullPolicy(),
 			Command:         glanceUWSGICommand(glance.Spec.APIServer),
-			Env: append([]corev1.EnvVar{
-				database.ConnectionEnvVar(glance.Name),
-				keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
-			}, database.SocketTimeoutEnvVars(glance.Spec.ExtraConfig, "database")...),
+			Env:             env,
 			Ports: []corev1.ContainerPort{{
 				Name:          "glance-api",
 				ContainerPort: glanceAPIPort,

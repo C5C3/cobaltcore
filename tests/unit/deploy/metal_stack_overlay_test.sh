@@ -11,15 +11,17 @@
 #      overlay (../../../kind/infrastructure), envoy-public.yaml and
 #      lab-ca.yaml, and not the template gateway-certificate.yaml.
 #   2. The base render carries the OpenBao HelmRelease in standalone mode
-#      with no storage class, the envoy-gateway HelmRelease, the nine
-#      suspended service-operator releases, no metrics-server or
-#      vertical-pod-autoscaler release (the platform runs both), and the
-#      Gardener apiserver-proxy opt-out label and the chaos-mesh.org/inject:
-#      enabled annotation on every rendered Namespace, none of which is a
-#      platform namespace, flux-system or chaos-mesh. The GatewayClass envoy
-#      names the EnvoyProxy envoy-public, and openstack-gw has one HTTPS
-#      listener on 443 for *.nip.io that terminates with the Secret
-#      openstack-gw-tls and admits routes from openstack and dizzy alone.
+#      with no storage class, the envoy-gateway HelmRelease, no kind
+#      EnvoyProxy envoy-nodeport (the kind base carries it, the lab base
+#      drops it), the nine suspended service-operator releases, no
+#      metrics-server or vertical-pod-autoscaler release (the platform runs
+#      both), and the Gardener apiserver-proxy opt-out label and the
+#      chaos-mesh.org/inject: enabled annotation on every rendered Namespace,
+#      none of which is a platform namespace, flux-system or chaos-mesh. The
+#      GatewayClass envoy names the EnvoyProxy envoy-public, and openstack-gw
+#      has one HTTPS listener on 443 for *.nip.io that terminates with the
+#      Secret openstack-gw-tls and admits routes from openstack and dizzy
+#      alone.
 #   3. The infrastructure render carries MariaDB and both Garage volumes at
 #      one replica with no storage class, the paused proving OpenBaoCluster
 #      without egress fields (hack/deploy-infra.sh patches those in) and the
@@ -137,6 +139,8 @@ test_base_render() {
     "$(joined Gateway openstack-gw '.spec.listeners[0].allowedRoutes.namespaces | [.from, .selector.matchExpressions[0].operator, (.selector.matchExpressions[0].values | join(","))] | join(" ")')"
   assert_eq "the selector matches on the namespace name alone" "kubernetes.io/metadata.name 1" \
     "$(joined Gateway openstack-gw '.spec.listeners[0].allowedRoutes.namespaces.selector | [.matchExpressions[0].key, (.matchExpressions | length | tostring)] | join(" ")')"
+  assert_eq "the kind EnvoyProxy envoy-nodeport is not rendered" "0" \
+    "$(count_named EnvoyProxy envoy-nodeport)"
 
   local svc
   for svc in $SERVICE_OPERATORS; do

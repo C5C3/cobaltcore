@@ -77,6 +77,18 @@ The v1 operator resolves the onboarding decisions as follows:
   `lhafile`, the two the conversion and decompression plugins shell out to and
   import at run time. See
   [ImportPluginsSpec](./glance-crd.md#importpluginsspec).
+- **Quotas: Keystone unified limits behind an opt-in block.**
+  `spec.keystoneLimits` turns on `use_keystone_limits` and renders an
+  `[oslo_limit]` section; nil renders neither, so an existing Glance does not
+  roll on an operator upgrade. The limits live in Keystone, a registered limit
+  per resource for every project and a project limit for an override, so the
+  block carries no values. oslo.limit authenticates as the service user with a
+  system-scoped token, because Keystone answers the service and endpoint lookups
+  it makes only to an admin or to a reader on the system; the service user needs
+  a role on the system for that. The
+  section names the `internal` interface and `spec.region`, which is where a
+  ControlPlane registers Glance's endpoints. See
+  [KeystoneLimitsSpec](./glance-crd.md#keystonelimitsspec).
 - **`isDefault` lives on the backend CR.** Exactly one attached,
   credential-ready `GlanceBackend` must be marked `isDefault`; that backend
   becomes the `[glance_store] default_backend`. The glance-side sub-reconciler

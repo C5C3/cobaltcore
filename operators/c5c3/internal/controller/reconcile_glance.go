@@ -121,6 +121,14 @@ func glanceBackendChildren(cp *c5c3v1alpha1.ControlPlane, namespace string, keep
 // resolved backing services, the Keystone endpoint derived top-down
 // (glanceKeystoneEndpoint) — and folds both children's readiness into
 // GlanceReady.
+//
+// services.glance.quotas adds Keystone unified limits: the registration carries
+// the four registered limits and reader on the system, and the child gets
+// spec.keystoneLimits only once the registration reports both ready for its
+// current spec (GlanceReady=False/WaitingForGlanceQuotas until then). Removing
+// the block drops spec.keystoneLimits first and holds the registered limits
+// until the child reports every replica on a template without it; see
+// reconcile_glance_quotas.go.
 func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -192,15 +200,56 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 		return ctrl.Result{RequeueAfter: keystoneInfraGateRequeueAfter}, nil
 	}
 
+	// The quota gate and the disable hold decide on the live Glance child and the
+	// live registration, read before either is written in this pass.
+	fail := conditionFailer(cp, conditionTypeGlanceReady)
+	glanceKey := client.ObjectKey{Namespace: cp.GlanceNamespace(), Name: glanceName(cp)}
+	liveGlance := &glancev1alpha1.Glance{}
+	if err := r.Get(ctx, glanceKey, liveGlance); err != nil {
+		if !apierrors.IsNotFound(err) {
+			fail("GlanceError", fmt.Sprintf("reading the Glance child: %v", err))
+			return ctrl.Result{}, fmt.Errorf("reading Glance %q: %w", glanceKey.Name, err)
+		}
+		liveGlance = nil
+	}
+	liveRegistration := &c5c3v1alpha1.KeystoneService{}
+	if err := r.Get(ctx, glanceKey, liveRegistration); err != nil {
+		if !apierrors.IsNotFound(err) {
+			err = fmt.Errorf("reading the glance KeystoneService child: %w", err)
+			fail(reasonServiceRegistrationError, err.Error())
+			return ctrl.Result{}, err
+		}
+		liveRegistration = nil
+	}
+
+	// services.glance.quotas becomes the registration's registered limits and
+	// system role. With the block removed, the hold keeps the limits the live
+	// registration carries until no glance-api pod enforces any more.
+	quotas := cp.Spec.Services.Glance.Quotas
+	limits, err := glanceQuotaRegisteredLimits(quotas)
+	if err != nil {
+		fail("GlanceError", fmt.Sprintf("services.glance.quotas: %v", err))
+		return ctrl.Result{}, fmt.Errorf("resolving services.glance.quotas: %w", err)
+	}
+	if quotas == nil && glanceQuotaHoldRequired(liveRegistration, liveGlance) {
+		limits = glanceQuotaHeldLimits(liveRegistration)
+	}
+
 	// Register Glance against the identity plane: one KeystoneService child
 	// carrying the image catalog entry and the service account Glance
 	// authenticates as, mirrored onto a placed Glance's cluster and gated on the
 	// account it provisions.
-	child, regRes, halt, err := r.reconcileBuiltinRegistration(ctx, cp, desiredGlanceRegistration(cp),
+	child, regRes, halt, err := r.reconcileBuiltinRegistration(ctx, cp,
+		withGlanceQuotaRegistration(desiredGlanceRegistration(cp), limits),
 		"Glance", conditionTypeGlanceReady)
 	if halt {
 		return regRes, err
 	}
+
+	// Enforcement opens once the registration reports the limits and the system
+	// role ready for its current spec, and stays open once the child enforces.
+	enforce := quotas != nil &&
+		(glanceQuotaRegistrationReady(child) || (liveGlance != nil && liveGlance.Spec.KeystoneLimits != nil))
 
 	// The EFFECTIVE credentials mode of the database Glance connects to, resolved
 	// once so the credential projection below, its readiness gate, and the mode
@@ -352,6 +401,14 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	// instead of keeping the last projected selection pinned.
 	glance.Spec.ImportPlugins = cp.Spec.Services.Glance.ImportPlugins.DeepCopy()
 
+	// Unified-limits enforcement. The field stays out of the apply while
+	// services.glance.quotas is unset or the enforcement gate is still closed, so
+	// the apply removes it from the child and the glance operator renders no
+	// [oslo_limit] section.
+	if enforce {
+		glance.Spec.KeystoneLimits = &glancev1alpha1.KeystoneLimitsSpec{}
+	}
+
 	// Project the resolved spec.sizing.glance onto the API Deployment, the
 	// autoscaling block and the Job pods. The process and thread counts land in
 	// spec.apiServer.uwsgi (glanceAPIServer). What stays unprojected is the
@@ -421,6 +478,21 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	})
 	if err != nil || !res.IsZero() {
 		return res, err
+	}
+
+	// Quotas are set but the child does not enforce them yet. This runs before the
+	// registration fold below: the fold would relay a CatalogReady=False as the
+	// registration's own reason, while the reason here is that the limits are not
+	// registered yet. The first blocking sub-condition is named, so a collision
+	// stays readable.
+	if quotas != nil && !enforce {
+		message := fmt.Sprintf("services.glance.quotas is set; enforcement waits for KeystoneService %q to "+
+			"report CatalogReady and AccountReady for generation %d", child.Name, child.Generation)
+		if cond := glanceQuotaBlockingCondition(child); cond != nil {
+			message += "; " + builtinRegistrationConditionMessage(child, cond)
+		}
+		fail(reasonWaitingForGlanceQuotas, message)
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
 	// The Glance child is ready. GlanceReady still folds in the registration: a

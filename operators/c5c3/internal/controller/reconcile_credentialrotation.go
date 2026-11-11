@@ -330,6 +330,13 @@ func (r *CredentialRotationReconciler) rotateServiceAccountPassword(
 			namespaceAssignmentRoleMessage(cp, entry, refused)+
 				"; its KeystoneService reconciler is frozen on the account and cannot rotate")
 	}
+	// So does a system role outside the ControlPlane's own namespaces.
+	if keystoneServiceSystemRoleRefusal(cp, ks) {
+		return r.finish(ctx, cr, ctrl.Result{RequeueAfter: credentialRotationRequeueAfter},
+			metav1.ConditionFalse, reasonKeystoneServiceSystemRoleNotAllowed,
+			keystoneServiceSystemRoleMessage(cp, ks)+
+				"; its KeystoneService reconciler is frozen on the account and cannot rotate")
+	}
 
 	// Locate the owned managed User via the keystoneservice_controller.go naming
 	// helpers so both reconcilers agree on the object identity.

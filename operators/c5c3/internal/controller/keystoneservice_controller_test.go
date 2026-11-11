@@ -708,6 +708,123 @@ func TestKeystoneService_RoleRefusalIsNotMaskedBySweep(t *testing.T) {
 	g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
 }
 
+// ksSystemRolePlane returns a ControlPlane that admits registrations from
+// tenant-a without limiting their project roles.
+func ksSystemRolePlane() *c5c3v1alpha1.ControlPlane {
+	cp := ksControlPlane()
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: []string{"tenant-a"},
+	}
+	return cp
+}
+
+// TestKeystoneServiceSystemRoleRefusal pins which registrations may hold a role
+// on the system: only those in a namespace the ControlPlane occupies.
+func TestKeystoneServiceSystemRoleRefusal(t *testing.T) {
+	ksIn := func(namespace string, systemRoles ...string) *c5c3v1alpha1.KeystoneService {
+		ks := keystoneServiceCR()
+		ks.Namespace = namespace
+		ks.Spec.Account = ksAccountSpec()
+		ks.Spec.Account.SystemRoles = systemRoles
+		return ks
+	}
+	cases := []struct {
+		name      string
+		ks        *c5c3v1alpha1.KeystoneService
+		dedicated string
+		want      bool
+	}{
+		{name: "the ControlPlane's own namespace", ks: ksIn(ksTestNamespace, "reader")},
+		{name: "a dedicated service namespace", ks: ksIn("tenant-a", "reader"), dedicated: "tenant-a"},
+		{name: "an allowlisted foreign namespace", ks: ksIn("tenant-a", "reader"), want: true},
+		{name: "a foreign namespace without system roles", ks: ksIn("tenant-a")},
+		{name: "a foreign catalog-only registration", ks: func() *c5c3v1alpha1.KeystoneService {
+			ks := ksIn("tenant-a")
+			ks.Spec.Account = nil
+			return ks
+		}()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := ksSystemRolePlane()
+			if tc.dedicated != "" {
+				cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+					Name: tc.dedicated, Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+				}
+			}
+			g.Expect(keystoneServiceSystemRoleRefusal(cp, tc.ks)).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestKeystoneService_SystemRoleOutsideTheControlPlaneNamespacesIsRefused pins
+// that an allowlisted registration in a foreign namespace may not hold a role
+// on the system: AccountReady=False/SystemRoleNotAllowed, nothing projected for
+// the account, the declared children kept, and the catalog block unaffected.
+func TestKeystoneService_SystemRoleOutsideTheControlPlaneNamespacesIsRefused(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksSystemRolePlane()
+	ks := ksForeignCR(cp)
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+	childNS := keystoneServiceChildNamespace(cp)
+
+	// A User from before the field was added: the freeze keeps it.
+	user := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{
+		Name: keystoneServiceUserRef(ks), Namespace: childNS, Labels: keystoneServiceChildLabels(ks),
+	}}
+
+	got, c := reconcileForeignKS(t, cp, ks, user, readyTenantStoreFor(cp))
+
+	account := ksAccountCondition(got)
+	g.Expect(account.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(account.Reason).To(Equal(reasonKeystoneServiceSystemRoleNotAllowed))
+	g.Expect(account.Message).To(Equal(`ControlPlane default/cp honors spec.account.systemRoles only from its own ` +
+		`namespaces (["default"]); namespace "tenant-a" is not one of them`))
+	g.Expect(ksCatalogCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceSystemRoleNotAllowed),
+		"the catalog block keeps reconciling")
+
+	err := c.Get(context.Background(), types.NamespacedName{
+		Namespace: childNS, Name: keystoneServiceSystemRoleAssignmentRef(ks, "reader"),
+	}, &orcv1alpha1.RoleAssignment{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a refused system role is never assigned")
+	var roles orcv1alpha1.RoleList
+	g.Expect(c.List(context.Background(), &roles)).To(Succeed())
+	g.Expect(roles.Items).To(BeEmpty(), "a refused account projects nothing")
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(user), &orcv1alpha1.User{})).To(Succeed(),
+		"the freeze keeps every child the spec still declares")
+}
+
+// TestKeystoneService_RoleRefusalTakesPrecedenceOverSystemRoleRefusal pins the
+// reason a registration refused on both counts reports.
+func TestKeystoneService_RoleRefusalTakesPrecedenceOverSystemRoleRefusal(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksRoleLimitedPlane("member")
+	ks := ksForeignAccountCR(cp, "service")
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+
+	got, _ := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonKeystoneServiceRoleNotAllowed))
+}
+
+// TestKeystoneService_SystemRoleInADedicatedServiceNamespaceIsHonored pins that
+// a namespace the ControlPlane places a service in counts as its own.
+func TestKeystoneService_SystemRoleInADedicatedServiceNamespaceIsHonored(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := ksControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "tenant-a", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	ks := ksForeignCR(cp)
+	ks.Spec.Account.SystemRoles = []string{"reader"}
+
+	got, _ := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksAccountCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceSystemRoleNotAllowed))
+	g.Expect(ksAccountCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceNamespaceNotAllowed))
+}
+
 // TestKeystoneService_AllowlistedForeignNamespaceIsAdmitted pins the widened
 // gate: a listed namespace passes and the catalog block projects. The observable
 // is the collision PROBE, not the managed Service row — ensureCatalog probes
@@ -962,6 +1079,66 @@ func TestKeystoneService_PrunesARemovedEndpointInterface(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring("still being removed"))
 }
 
+// A registered limit dropped from the spec is deleted on the next pass, before
+// any Endpoint, and holds CatalogReady until K-ORC has removed the Keystone row
+// and released its finalizer.
+func TestKeystoneService_PrunesARemovedRegisteredLimit(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := keystoneServiceCR()
+	ks.Spec.Catalog = ksCatalogSpec()
+	ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+		{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/public"},
+	}
+
+	staleLimit := ksRegisteredLimit(ks, "r1", 0, 0)
+	staleLimit.Finalizers = []string{"openstack.k-orc.cloud/registeredlimit"}
+	staleEndpoint := &orcv1alpha1.Endpoint{ObjectMeta: metav1.ObjectMeta{
+		Name:      keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypeInternal),
+		Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
+	}}
+
+	var order []string
+	s := korcTestScheme(t)
+	seeded := append(ksConvergedCatalog(ks), cp, ks, readyTenantStoreFor(cp), staleLimit, staleEndpoint,
+		ksAvailableEndpoint(ks, c5c3v1alpha1.ExternalEndpointTypePublic, "ep-public-id"))
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+		WithStatusSubresource(&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				order = append(order, obj.GetName())
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &KeystoneServiceReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ksTestNamespace, Name: ksTestName}}
+
+	_, err := r.Reconcile(context.Background(), req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(order).To(Equal([]string{staleLimit.Name, staleEndpoint.Name}),
+		"the registered limit is deleted before any Endpoint")
+
+	got := &c5c3v1alpha1.KeystoneService{}
+	g.Expect(c.Get(context.Background(), req.NamespacedName, got)).To(Succeed())
+	cond := ksCatalogCondition(got)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+	g.Expect(cond.Message).To(ContainSubstring("still being removed"))
+
+	// K-ORC removes the Keystone row and releases its finalizer.
+	live := &orcv1alpha1.RegisteredLimit{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(staleLimit), live)).To(Succeed())
+	g.Expect(live.DeletionTimestamp).NotTo(BeNil())
+	live.Finalizers = nil
+	g.Expect(c.Update(context.Background(), live)).To(Succeed())
+
+	_, err = r.Reconcile(context.Background(), req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(c.Get(context.Background(), req.NamespacedName, got)).To(Succeed())
+	g.Expect(ksCatalogCondition(got).Status).To(Equal(metav1.ConditionTrue))
+}
+
 func TestKeystoneService_PrunesUndeclaredRoleChildren(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -1158,6 +1335,12 @@ func TestKeystoneService_DeleteRemovesDependentsFirst(t *testing.T) {
 		&orcv1alpha1.Service{ObjectMeta: metav1.ObjectMeta{
 			Name: keystoneServiceCatalogServiceRef(ks), Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
 		}},
+		&orcv1alpha1.Region{ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneServiceCatalogRegionRef(ks), Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
+		}},
+		&orcv1alpha1.RegisteredLimit{ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneServiceRegisteredLimitRef(ks, "r1"), Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
+		}},
 		&orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{
 			Name: keystoneServiceUserRef(ks), Namespace: ks.Namespace, OwnerReferences: ownedByKS(ks),
 		}},
@@ -1185,8 +1368,8 @@ func TestKeystoneService_DeleteRemovesDependentsFirst(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// A dependent must be deleted before the object it references: an assignment
-	// before its role, an endpoint before the service it hangs off, and both
-	// before the user and project they bind.
+	// before its role, an endpoint and a registered limit before the service and
+	// region they hang off, and all of them before the user and project they bind.
 	indexOf := func(suffix string) int {
 		for i, name := range order {
 			if strings.HasSuffix(name, suffix) {
@@ -1199,12 +1382,17 @@ func TestKeystoneService_DeleteRemovesDependentsFirst(t *testing.T) {
 	role := indexOf(keystoneServiceRoleImportRef(ks, "member"))
 	endpoint := indexOf(keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic))
 	service := indexOf(keystoneServiceCatalogServiceRef(ks))
+	region := indexOf(keystoneServiceCatalogRegionRef(ks))
+	limit := indexOf(keystoneServiceRegisteredLimitRef(ks, "r1"))
 	user := indexOf(keystoneServiceUserRef(ks))
 	project := indexOf(keystoneServiceProjectRef(ks))
 
 	g.Expect(order).To(HaveLen(len(children)))
 	g.Expect(assignment).To(BeNumerically("<", role))
 	g.Expect(endpoint).To(BeNumerically("<", service))
+	g.Expect(limit).To(BeNumerically(">=", 0))
+	g.Expect(limit).To(BeNumerically("<", service), "a registered limit goes before the Service it references")
+	g.Expect(limit).To(BeNumerically("<", region), "a registered limit goes before the Region it references")
 	g.Expect(assignment).To(BeNumerically("<", user))
 	g.Expect(user).To(BeNumerically("<", project))
 }

@@ -9,15 +9,19 @@
 # `extraPortMappings` maps host :443 to this port
 # (hack/kind-config.yaml).
 #
-# Lives in the infrastructure overlay (Phase 2 of hack/deploy-infra.sh)
-# rather than the base overlay because the
-# `gateway.envoyproxy.io/v1alpha1` EnvoyProxy CRD is installed by the
-# `envoy-gateway` HelmRelease in Phase 1; applying this resource before
-# Phase 4 ("wait HelmReleases Ready") would fail with
-# `no matches for kind "EnvoyProxy"`. The `GatewayClass/envoy`
-# `parametersRef` that points here is resolved lazily by the
-# envoy-gateway controller, so leaving the GatewayClass in the base
-# overlay is safe.
+# Lives in the base overlay, beside the GatewayClass that references it.
+# hack/deploy-infra.sh registers the `gateway.envoyproxy.io` CRDs in Step 2
+# (install_envoy_gateway_crds), before the base overlay, so the CR applies
+# there, and it then exists before the envoy-gateway controller first renders
+# the Gateway. Applied later, with the infrastructure overlay, it raced that
+# render: the controller logs "failed to find envoyproxy" and creates the
+# proxy Service with its defaults, `type: LoadBalancer` with
+# `externalTrafficPolicy: Local`, which allocates a random
+# healthCheckNodePort. When that port happened to be 31443, the switch to
+# `nodePort: 31443` this CR asks for failed on every retry with
+# `spec.ports[0].nodePort: Invalid value: 31443: provided port is already
+# allocated`, and the Gateway stayed at `AddressNotAssigned` until
+# hack/deploy-infra.sh timed out.
 #
 # DECISION: patch type
 # gateway-helm@1.7.2 rejects `JSONPatch` for `envoyService.patch` with

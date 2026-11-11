@@ -800,6 +800,36 @@ FIXTURES: tuple[Fixture, ...] = (
         name="glance-invalid-release-floor",
         release="2025.2",
     ),
+    Fixture(
+        filename="43-extraconfig-owned-use-keystone-limits.yaml",
+        comment=(
+            "spec.extraConfig setting [DEFAULT] use_keystone_limits is rejected by the\n"
+            "validating webhook. It is a Rejected registry entry owned by\n"
+            "spec.keystoneLimits: turned on without the four registered limits it\n"
+            "refuses every image create with 413, and turned off it drops the quotas."
+        ),
+        name="glance-invalid-extraconfig-use-keystone-limits",
+        extra=(
+            "  extraConfig:\n"
+            "    DEFAULT:\n"
+            '      use_keystone_limits: "true"\n'
+        ),
+    ),
+    Fixture(
+        filename="44-extraconfig-owned-oslo-limit-system-scope.yaml",
+        comment=(
+            "spec.extraConfig setting [oslo_limit] system_scope is rejected by the\n"
+            "validating webhook. The rendered [oslo_limit] auth and endpoint keys are\n"
+            "Rejected registry entries owned by spec.keystoneLimits: a wrong value\n"
+            "fails every quota check, and every image create answers 500."
+        ),
+        name="glance-invalid-extraconfig-oslo-limit-system-scope",
+        extra=(
+            "  extraConfig:\n"
+            "    oslo_limit:\n"
+            "      system_scope: all\n"
+        ),
+    ),
 )
 
 

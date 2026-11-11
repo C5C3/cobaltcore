@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR fixture for the keystone-limits E2E test (2026.1 release).
+#
+# keystoneLimits: {} turns on Keystone unified limits: the operator renders
+# [DEFAULT] use_keystone_limits = true and a system-scoped [oslo_limit]
+# section, and injects the service user's password as
+# OS_OSLO_LIMIT__PASSWORD into the glance-api container. region is set so
+# the section names it (endpoint_region_name); without it oslo.limit would
+# match the image endpoints of every region.
+#
+# The glance e2e leg deploys no Keystone, and glance asks Keystone only when
+# it checks a quota, on an image create, upload or import. This suite makes
+# no image API call, so the API starts and serves /healthcheck like any other
+# Glance, and the suite asserts the rendered config, the env var and the
+# revert. The live quota checks run in the ControlPlane's
+# full-controlplane-keystone suite and the glance tempest legs.
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so every object this suite owns carries the `glance-keystone-limits` prefix
+# and the database schema is `glance_keystone_limits`. Nothing here can
+# collide with the sibling glance suites sharing the `openstack` namespace and
+# its backing services.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-keystone-limits
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    # One replica: every assertion reads the Deployment's config volume or its
+    # pod template, and a single pod keeps the revert leg's rollout short.
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_keystone_limits
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  region: RegionOne
+  keystoneLimits: {}
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

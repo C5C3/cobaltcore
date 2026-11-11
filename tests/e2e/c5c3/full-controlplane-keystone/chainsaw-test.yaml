@@ -397,6 +397,7 @@ spec:
             endpoints.openstack.k-orc.cloud \
             roleassignments.openstack.k-orc.cloud \
             regions.openstack.k-orc.cloud \
+            registeredlimits.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             vaultdynamicsecrets.generators.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
@@ -765,6 +766,16 @@ spec:
               || { echo "ERROR: the signed metadata request did not answer 200 with the server's uuid, or a wrong signature was not refused"; exit 1; }
             grep -q "OK: compute round-trip" <<<"${VERIFY_LOGS}" \
               || { echo "ERROR: the compute round-trip did not boot and remove a server"; exit 1; }
+            # services.glance.quotas in Keystone: the four registered limits, the
+            # system role, and an override that refuses a create.
+            grep -q "OK: the four registered limits are in RegionOne" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the glance registered limits are not in RegionOne"; exit 1; }
+            grep -q "OK: glance holds reader on the system" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: the glance user holds no reader role on the system"; exit 1; }
+            grep -q "OK: the override refused the create" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: an image_count_total=0 override did not refuse an image create"; exit 1; }
+            grep -q "OK: Glance quotas round-trip" <<<"${VERIFY_LOGS}" \
+              || { echo "ERROR: an image create did not succeed again once the override was gone"; exit 1; }
           }
 
           # Link 7c's port-event check, run again by Link 8e after the release hop.
@@ -1018,8 +1029,8 @@ spec:
           # ownership labels rather than by name: a registration's K-ORC children
           # carry a prefix hashed over its namespace and name, which nothing outside
           # the operator can compute.
-          assert_registration() { # <keystoneservice name> <label selector>
-            local ks="$1" sel="$2" ra
+          assert_registration() { # <keystoneservice name> <label selector> [role assignments, default 1]
+            local ks="$1" sel="$2" assignments="${3:-1}" ra
             wait_ready_condition keystoneservice "${ks}" "${CP_NS}" 900
             assert_eq "registration ${ks} aggregates to AllReady" "AllReady" \
               "$(kubectl get keystoneservice "${ks}" -n "${CP_NS}" \
@@ -1030,7 +1041,7 @@ spec:
             assert_eq "registration ${ks} provisioned its account" "AccountProvisioned" \
               "$(kubectl get keystoneservice "${ks}" -n "${CP_NS}" \
                 -o "jsonpath={.status.conditions[?(@.type=='AccountReady')].reason}")"
-            assert_eq "registration ${ks} projected exactly one RoleAssignment" "1" \
+            assert_eq "registration ${ks} projected ${assignments} RoleAssignment(s)" "${assignments}" \
               "$(count_of roleassignments.openstack.k-orc.cloud "${CP_NS}" "${sel}")"
             for ra in $(kubectl get roleassignments.openstack.k-orc.cloud -n "${CP_NS}" -l "${sel}" \
               -o jsonpath='{.items[*].metadata.name}'); do
@@ -1039,7 +1050,9 @@ spec:
                   -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
             done
           }
-          assert_registration "${GLANCE_KS}" "${GLANCE_SELECTOR}"
+          # Glance carries services.glance.quotas, so its account also holds
+          # reader on the system: the service role plus the system assignment.
+          assert_registration "${GLANCE_KS}" "${GLANCE_SELECTOR}" 2
           assert_registration "${PLACEMENT_KS}" "${PLACEMENT_SELECTOR}"
           assert_registration "${BARBICAN_KS}" "${BARBICAN_SELECTOR}"
           assert_registration "${NEUTRON_KS}" "${NEUTRON_SELECTOR}"
@@ -1110,6 +1123,36 @@ spec:
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
           assert_eq "Glance CR owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of glances.glance.openstack.c5c3.io "${GLANCE_CR}")"
+
+          # services.glance.quotas: the registration carries the four registered
+          # limits in the plane's region, and the child enforces them. The
+          # Keystone side (the limits, the system role, a refused create) is
+          # proven by the verify Job in link 7b.
+          assert_eq "Glance child enforces unified limits" "{}" \
+            "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneLimits}')"
+          assert_eq "the glance registration projected four RegisteredLimits" "4" \
+            "$(count_of registeredlimits.openstack.k-orc.cloud "${CP_NS}" "${GLANCE_SELECTOR}")"
+          assert_eq "the RegisteredLimits carry the declared defaults" \
+            "image_count_total=1000 image_count_uploading=100 image_size_total=51200 image_stage_total=51200" \
+            "$(kubectl get registeredlimits.openstack.k-orc.cloud -n "${CP_NS}" -l "${GLANCE_SELECTOR}" \
+              -o jsonpath='{range .items[*]}{.spec.resource.resourceName}={.spec.resource.defaultLimit}{"\n"}{end}' \
+              | sort | paste -sd' ' -)"
+          for rl in $(kubectl get registeredlimits.openstack.k-orc.cloud -n "${CP_NS}" -l "${GLANCE_SELECTOR}" \
+            -o jsonpath='{.items[*].metadata.name}'); do
+            assert_eq "RegisteredLimit ${rl} Available" "True" \
+              "$(kubectl get registeredlimits.openstack.k-orc.cloud "${rl}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+            # The limit lives in the region the registration's endpoints use.
+            RL_REGION="$(kubectl get registeredlimits.openstack.k-orc.cloud "${rl}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.resource.regionRef}')"
+            case "${RL_REGION}" in
+              "${GLANCE_KS}"-*-registration-region) echo "OK: RegisteredLimit ${rl} names the registration's Region import" ;;
+              *) echo "ERROR: RegisteredLimit ${rl} names region ${RL_REGION:-<none>}"; exit 1 ;;
+            esac
+            assert_eq "RegisteredLimit ${rl} owned by the glance registration" "${GLANCE_KS}" \
+              "$(kubectl get registeredlimits.openstack.k-orc.cloud "${rl}" -n "${CP_NS}" \
+                -o "jsonpath={.metadata.ownerReferences[?(@.controller==true)].name}")"
+          done
 
           # The projected GlanceBackend for the single "default" entry.
           GLANCE_BACKEND="${GLANCE_CR}-default"
@@ -2336,7 +2379,7 @@ spec:
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== Projected child CRs ==="
           kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
-          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud -n openstack 2>&1 || true
+          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,registeredlimits.openstack.k-orc.cloud -n openstack 2>&1 || true
           echo "=== Service registrations (KeystoneService children) ==="
           kubectl get keystoneservice -n openstack -o yaml 2>&1 || true
           echo "=== K-ORC children the registrations own ==="

@@ -14,8 +14,7 @@ kind: Kustomization
 resources:
   - ../../flux-system/infrastructure
   # Gateway API Quick Start: CRD-dependent CRs whose CRDs are shipped
-  # by the cert-manager / envoy-gateway HelmReleases in Phase 1.
-  - envoy-nodeport.yaml
+  # by the cert-manager HelmRelease in Phase 1.
   - keystone-nip-io-tls-certificate.yaml
   # TLS for the second Gateway listener the ControlPlane Quick Start's Horizon
   # dashboard is exposed through (deploy/kind/base/openstack-gateway.yaml).

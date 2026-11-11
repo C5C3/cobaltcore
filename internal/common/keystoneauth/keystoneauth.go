@@ -3,9 +3,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package keystoneauth renders the [keystone_authtoken] and [service_user]
-// sections of an OpenStack service's oslo.config INI file and the client
-// sections it calls other services through, such as [placement], together with
-// the passwords the service account authenticates with. Every OpenStack service
+// sections of an OpenStack service's oslo.config INI file, the client sections
+// it calls other services through, such as [placement], and the [oslo_limit]
+// section it reads Keystone unified limits with, together with the passwords
+// the service account authenticates with. Every OpenStack service
 // other than Keystone validates incoming API tokens through
 // [keystone_authtoken]; services that call other services on a user's behalf
 // additionally send their own token from [service_user] and authenticate each
@@ -183,4 +184,53 @@ func ClientPasswordEnvVar(section, secretName, key string) corev1.EnvVar {
 			},
 		},
 	}
+}
+
+// LimitPasswordEnvVarName is the oslo.config env override for [oslo_limit] password.
+const LimitPasswordEnvVarName = "OS_OSLO_LIMIT__PASSWORD" //nolint:gosec // G101 false positive: env var name, not a credential.
+
+// LimitSection returns the [oslo_limit] section oslo.limit authenticates with:
+// the service account, system-scoped, discovering the service's own endpoint by
+// type on the internal interface in p.RegionName. endpoint_override pins the
+// SDK's identity calls to AuthURL with its /v3 path, the Keystone URL the
+// service's pods reach.
+//
+// The token is system-scoped because oslo.limit looks the endpoint up through
+// GET /v3/services and GET /v3/endpoints, which Keystone allows a service
+// account only as admin or as reader on the system. Reading the limits needs no
+// system scope: since 29.0.0 Keystone lists every project's limits to a token
+// with the admin or service role in any scope, and a service account holds
+// service. keystoneauth refuses a project scope together with a system scope,
+// so the map carries neither project_name nor project_domain_name. It carries
+// no region_name either: the endpoint_override replaces the catalog lookup that
+// option would steer. endpoint_region_name is emitted only when p.RegionName is
+// non-empty; without it oslo.limit matches the service's endpoints of every
+// region. The password arrives through LimitPasswordEnvVar, never through the
+// map.
+func LimitSection(p SectionParams, serviceType string) map[string]string {
+	override := strings.TrimRight(p.AuthURL, "/")
+	if !strings.HasSuffix(override, "/v3") {
+		override += "/v3"
+	}
+	section := map[string]string{
+		"auth_type":             "password",
+		"auth_url":              p.AuthURL,
+		"username":              p.Username,
+		"user_domain_name":      p.UserDomainName,
+		"system_scope":          "all",
+		"endpoint_service_type": serviceType,
+		"endpoint_interface":    "internal",
+		"endpoint_override":     override,
+	}
+	if p.RegionName != "" {
+		section["endpoint_region_name"] = p.RegionName
+	}
+	return section
+}
+
+// LimitPasswordEnvVar returns the EnvVar that overrides [oslo_limit] password
+// by sourcing the value from key within the named Secret, so the service
+// account's password never lands in the rendered ConfigMap.
+func LimitPasswordEnvVar(secretName, key string) corev1.EnvVar {
+	return ClientPasswordEnvVar("oslo_limit", secretName, key)
 }

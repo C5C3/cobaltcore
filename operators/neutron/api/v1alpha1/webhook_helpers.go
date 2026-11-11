@@ -57,8 +57,8 @@ func validateImage(fldPath *field.Path, image commonv1.ImageSpec) field.ErrorLis
 //
 // carried is the extraConfig the stored object already holds, or nil where there
 // is none to honor. A
-// Rejected key an update carries over unchanged is let through here and reported
-// by carriedRejectedKeyWarnings instead: a key joins the Rejected list when the
+// CarryOver key an update carries over unchanged is let through here and reported
+// by config.CarriedRejectedKeyWarnings instead: a key joins the Rejected list when the
 // operator starts owning it, and failing every later update of a CR admitted
 // before then, the finalizer removal on delete included, would leave that CR
 // with no update left to remove the key through.
@@ -110,7 +110,7 @@ func validateExtraConfigShape(
 			continue
 		}
 		if value, ok := extraConfig[e.Section][e.Key]; ok {
-			if carriedOver(carried, e.Section, e.Key, value) {
+			if e.CarryOver && config.CarriedOver(carried, e.Section, e.Key, value) {
 				continue
 			}
 			msg := fmt.Sprintf("%s is managed via %s and must not be set in extraConfig", e.Key, e.OwnedBy)
@@ -125,33 +125,6 @@ func validateExtraConfigShape(
 	}
 
 	return errs
-}
-
-// carriedOver reports whether the stored extraConfig already held section/key
-// with this same value.
-func carriedOver(carried map[string]map[string]string, section, key, value string) bool {
-	stored, ok := carried[section][key]
-	return ok && stored == value
-}
-
-// carriedRejectedKeyWarnings reports every Rejected key validateExtraConfigShape
-// let through because the update carried it over unchanged, so the override
-// stays visible to whoever applies the object while the object stays updatable.
-func carriedRejectedKeyWarnings(
-	specPath *field.Path, extraConfig, carried map[string]map[string]string, registry []config.OwnedKey,
-) admission.Warnings {
-	var warnings admission.Warnings
-	for _, e := range registry {
-		value, ok := extraConfig[e.Section][e.Key]
-		if !e.Rejected || !ok || !carriedOver(carried, e.Section, e.Key, value) {
-			continue
-		}
-		warnings = append(warnings, fmt.Sprintf("%s: %s is managed via %s and is no longer accepted in "+
-			"extraConfig; the value this object was admitted with is kept so the object stays updatable, but "+
-			"a new or changed value is rejected, so move it to %s and remove the override",
-			specPath.Child("extraConfig").Key(e.Section).Key(e.Key), e.Key, e.OwnedBy, e.OwnedBy))
-	}
-	return warnings
 }
 
 // validateExtraConfigOptions validates the option names in extraConfig against

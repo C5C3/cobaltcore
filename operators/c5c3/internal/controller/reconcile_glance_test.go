@@ -18,6 +18,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -2456,4 +2457,558 @@ func TestReconcileGlance_ProjectsImagePullPolicy(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Image.PullPolicy).To(BeEmpty())
 	})
+}
+
+// --- services.glance.quotas ---
+
+// quotaValues is the services.glance.quotas block the full-chain suite declares.
+func quotaValues() *c5c3v1alpha1.GlanceQuotasSpec {
+	return &c5c3v1alpha1.GlanceQuotasSpec{
+		ImageSizeTotal:      ptr.To(resource.MustParse("50Gi")),
+		ImageStageTotal:     ptr.To(resource.MustParse("50Gi")),
+		ImageCountTotal:     ptr.To(int32(1000)),
+		ImageCountUploading: ptr.To(int32(100)),
+	}
+}
+
+// glanceQuotaLimits builds the four registered limits in the projected order.
+func glanceQuotaLimits(size, stage, count, uploading int32) []c5c3v1alpha1.KeystoneServiceRegisteredLimitSpec {
+	return []c5c3v1alpha1.KeystoneServiceRegisteredLimitSpec{
+		{ResourceName: "image_size_total", DefaultLimit: size},
+		{ResourceName: "image_stage_total", DefaultLimit: stage},
+		{ResourceName: "image_count_total", DefaultLimit: count},
+		{ResourceName: "image_count_uploading", DefaultLimit: uploading},
+	}
+}
+
+func TestGlanceQuotaRegisteredLimits(t *testing.T) {
+	t.Run("a nil block registers nothing", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		limits, err := glanceQuotaRegisteredLimits(nil)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(limits).To(BeNil())
+	})
+	t.Run("an empty block registers four unbounded defaults", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		limits, err := glanceQuotaRegisteredLimits(&c5c3v1alpha1.GlanceQuotasSpec{})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(limits).To(Equal(glanceQuotaLimits(2147483647, 2147483647, 2147483647, 2147483647)))
+	})
+	t.Run("sizes register in MiB, counts as given, in the fixed order", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		limits, err := glanceQuotaRegisteredLimits(quotaValues())
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(limits).To(Equal(glanceQuotaLimits(51200, 51200, 1000, 100)))
+	})
+	t.Run("a size the webhook refuses is an error, answered at once", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		huge := resource.MustParse("1e2000000000")
+		start := time.Now()
+		_, err := glanceQuotaRegisteredLimits(&c5c3v1alpha1.GlanceQuotasSpec{ImageStageTotal: &huge})
+		g.Expect(time.Since(start)).To(BeNumerically("<", time.Second))
+		g.Expect(err).To(MatchError(ContainSubstring("imageStageTotal")))
+		g.Expect(err).To(MatchError(ContainSubstring("must be at most 2147483647Mi")))
+	})
+}
+
+// glanceQuotaRegistration builds the registration child as the quota projection
+// writes it, carrying the given conditions at the given generation.
+func glanceQuotaRegistration(
+	cp *c5c3v1alpha1.ControlPlane, limits []c5c3v1alpha1.KeystoneServiceRegisteredLimitSpec,
+	generation int64, catalog, account metav1.ConditionStatus,
+) *c5c3v1alpha1.KeystoneService {
+	ks := readyGlanceRegistration(cp)
+	ks.Spec = withGlanceQuotaRegistration(desiredGlanceRegistration(cp), limits).Spec
+	ks.Generation = generation
+	for i := range ks.Status.Conditions {
+		ks.Status.Conditions[i].ObservedGeneration = generation
+		switch ks.Status.Conditions[i].Type {
+		case conditionTypeKeystoneServiceCatalogReady:
+			ks.Status.Conditions[i].Status = catalog
+			if catalog != metav1.ConditionTrue {
+				ks.Status.Conditions[i].Reason = conditionReasonWaitingForCatalog
+			}
+		case conditionTypeKeystoneServiceAccountReady:
+			ks.Status.Conditions[i].Status = account
+			if account != metav1.ConditionTrue {
+				ks.Status.Conditions[i].Reason = reasonWaitingForServiceAccounts
+			}
+		case conditionTypeReady:
+			if catalog != metav1.ConditionTrue || account != metav1.ConditionTrue {
+				ks.Status.Conditions[i].Status = metav1.ConditionFalse
+				ks.Status.Conditions[i].Reason = "NotAllReady"
+			}
+		}
+	}
+	return ks
+}
+
+// readyGlanceChild seeds the Glance child as the glance operator leaves it once
+// every replica runs its current template: Ready, and rolled out for its
+// generation.
+func readyGlanceChild(cp *c5c3v1alpha1.ControlPlane, keystoneLimits bool, generation, rolledOut int64) *glancev1alpha1.Glance {
+	gl := &glancev1alpha1.Glance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: glanceName(cp), Namespace: cp.GlanceNamespace(), Generation: generation,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: c5c3v1alpha1.GroupVersion.String(), Kind: "ControlPlane", Name: cp.Name,
+				UID: cp.UID, Controller: ptr.To(true), BlockOwnerDeletion: ptr.To(true),
+			}},
+		},
+		Status: glancev1alpha1.GlanceStatus{RolledOutGeneration: rolledOut},
+	}
+	if keystoneLimits {
+		gl.Spec.KeystoneLimits = &glancev1alpha1.KeystoneLimitsSpec{}
+	}
+	conditions.SetCondition(&gl.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: generation,
+		Reason: "AllReady", Message: "ready",
+	})
+	return gl
+}
+
+// TestReconcileGlance_NilQuotasChangeNothing pins the upgrade path: without
+// services.glance.quotas the registration carries neither new field and the
+// Glance child no keystoneLimits, so an existing deployment's two children keep
+// their spec, and with it their generation, across the operator upgrade.
+func TestReconcileGlance_NilQuotasChangeNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	ks := getProjectedRegistration(t, r.Client, cp)
+	g.Expect(ks.Spec.Catalog.RegisteredLimits).To(BeNil())
+	g.Expect(ks.Spec.Account.SystemRoles).To(BeNil())
+	g.Expect(ks.Spec).To(Equal(desiredGlanceRegistration(cp).Spec))
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Spec.KeystoneLimits).To(BeNil())
+
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedRegistration(t, r.Client, cp).Generation).To(Equal(ks.Generation))
+	again := getProjectedGlance(t, r.Client, cp)
+	g.Expect(again.Generation).To(Equal(gl.Generation))
+	g.Expect(again.Spec).To(Equal(gl.Spec))
+}
+
+func TestReconcileGlance_QuotasProjectRegisteredLimitsAndTheSystemRole(t *testing.T) {
+	for name, tc := range map[string]struct {
+		quotas *c5c3v1alpha1.GlanceQuotasSpec
+		want   []c5c3v1alpha1.KeystoneServiceRegisteredLimitSpec
+	}{
+		"an empty block":  {quotas: &c5c3v1alpha1.GlanceQuotasSpec{}, want: glanceQuotaLimits(2147483647, 2147483647, 2147483647, 2147483647)},
+		"declared values": {quotas: quotaValues(), want: glanceQuotaLimits(51200, 51200, 1000, 100)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.Quotas = tc.quotas
+			r := newGlanceTestReconciler(t, cp)
+
+			_, err := r.reconcileGlance(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			ks := getProjectedRegistration(t, r.Client, cp)
+			g.Expect(ks.Spec.Catalog.RegisteredLimits).To(Equal(tc.want))
+			g.Expect(ks.Spec.Account.SystemRoles).To(Equal([]string{"reader"}))
+			g.Expect(ks.Spec.Account.Roles).To(Equal([]string{"service"}))
+		})
+	}
+}
+
+// TestReconcileGlance_QuotaEnforcementWaitsForTheRegistration pins the enable
+// gate: the child enforces only once the registration reports CatalogReady and
+// AccountReady for its current generation. Until then the child is projected
+// without keystoneLimits and GlanceReady names the wait and the first blocking
+// sub-condition.
+func TestReconcileGlance_QuotaEnforcementWaitsForTheRegistration(t *testing.T) {
+	limits := glanceQuotaLimits(51200, 51200, 1000, 100)
+	for name, tc := range map[string]struct {
+		registration func(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService
+		wantEnforce  bool
+		wantBlocking string
+	}{
+		"CatalogReady False": {registration: func(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+			return glanceQuotaRegistration(cp, limits, 2, metav1.ConditionFalse, metav1.ConditionTrue)
+		}, wantBlocking: "; KeystoneService child cp-glance: CatalogReady=False/" + conditionReasonWaitingForCatalog + ": "},
+		"a condition for an older generation": {registration: func(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+			ks := glanceQuotaRegistration(cp, limits, 2, metav1.ConditionTrue, metav1.ConditionTrue)
+			ks.Generation = 3
+			return ks
+		}, wantBlocking: "; KeystoneService child cp-glance: CatalogReady=True/"},
+		"CatalogReady not reported yet": {registration: func(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+			ks := glanceQuotaRegistration(cp, limits, 2, metav1.ConditionTrue, metav1.ConditionTrue)
+			apimeta.RemoveStatusCondition(&ks.Status.Conditions, conditionTypeKeystoneServiceCatalogReady)
+			return ks
+		}, wantBlocking: "; KeystoneService child cp-glance: CatalogReady=Unknown/NotReported: the condition has not been reported yet"},
+		"both True for the current generation": {registration: func(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+			return glanceQuotaRegistration(cp, limits, 2, metav1.ConditionTrue, metav1.ConditionTrue)
+		}, wantEnforce: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.Quotas = quotaValues()
+			r := newGlanceTestReconciler(t, cp, tc.registration(cp), readyGlanceChild(cp, false, 1, 1))
+
+			res, err := r.reconcileGlance(ctx, cp)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			gl := getProjectedGlance(t, r.Client, cp)
+			cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+			if tc.wantEnforce {
+				g.Expect(gl.Spec.KeystoneLimits).To(Equal(&glancev1alpha1.KeystoneLimitsSpec{}))
+				g.Expect(cond.Reason).NotTo(Equal(reasonWaitingForGlanceQuotas))
+				return
+			}
+			g.Expect(gl.Spec.KeystoneLimits).To(BeNil(), "the child must not enforce against limits that are not registered")
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(reasonWaitingForGlanceQuotas))
+			g.Expect(cond.Message).To(ContainSubstring(`services.glance.quotas is set; enforcement waits for KeystoneService "cp-glance"`))
+			g.Expect(cond.Message).To(ContainSubstring(tc.wantBlocking))
+			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+		})
+	}
+}
+
+// TestReconcileGlance_QuotaEnforcementHaltsOnTheAccount pins that the account
+// gate answers first: while AccountReady is False the pass halts at
+// WaitingForServiceRegistration and writes no Glance child at all.
+func TestReconcileGlance_QuotaEnforcementHaltsOnTheAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Quotas = quotaValues()
+	registration := glanceQuotaRegistration(cp, glanceQuotaLimits(51200, 51200, 1000, 100), 1,
+		metav1.ConditionTrue, metav1.ConditionFalse)
+	r := newGlanceTestReconciler(t, cp, registration)
+
+	res, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	err = r.Get(context.Background(), types.NamespacedName{Name: glanceName(cp), Namespace: cp.GlanceNamespace()},
+		&glancev1alpha1.Glance{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the halted pass leaves the child untouched")
+}
+
+// TestReconcileGlance_QuotaEnforcementLatches pins that a child already enforcing
+// keeps enforcing while the registration reconverges, as it does after a value
+// change, so Glance is not rolled off and on again.
+func TestReconcileGlance_QuotaEnforcementLatches(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Quotas = quotaValues()
+	registration := glanceQuotaRegistration(cp, glanceQuotaLimits(51200, 51200, 500, 100), 3,
+		metav1.ConditionFalse, metav1.ConditionTrue)
+	r := newGlanceTestReconciler(t, cp, registration, readyGlanceChild(cp, true, 2, 2))
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.KeystoneLimits).To(Equal(&glancev1alpha1.KeystoneLimitsSpec{}))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Reason).NotTo(Equal(reasonWaitingForGlanceQuotas))
+}
+
+// TestReconcileGlance_QuotaDisableHoldsTheLimits pins the disable hold: with
+// services.glance.quotas removed, the registration keeps its four limits and
+// reader while a glance-api pod may still enforce, and drops both on the first
+// pass after the child reports every replica on a template without
+// keystoneLimits. Ready alone is not enough: it is surge-tolerant.
+//
+// The passes run in sequence from an enforcing state the projection wrote
+// itself, because only fields this ControlPlane applied are ones its apply can
+// take back.
+func TestReconcileGlance_QuotaDisableHoldsTheLimits(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	limits := glanceQuotaLimits(51200, 51200, 1000, 100)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Quotas = quotaValues()
+	registration := glanceQuotaRegistration(cp, limits, 2, metav1.ConditionTrue, metav1.ConditionTrue)
+	r := newGlanceTestReconciler(t, cp, registration, readyGlanceChild(cp, false, 1, 1))
+	r.Recorder = record.NewFakeRecorder(10)
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.KeystoneLimits).NotTo(BeNil(), "the child enforces")
+
+	expectHeld := func(why string) {
+		t.Helper()
+		ks := getProjectedRegistration(t, r.Client, cp)
+		g.Expect(ks.Spec.Catalog.RegisteredLimits).To(Equal(limits), why)
+		g.Expect(ks.Spec.Account.SystemRoles).To(Equal([]string{"reader"}), why)
+	}
+
+	// Pass 2: the block is gone, the live child still enforces.
+	cp.Spec.Services.Glance.Quotas = nil
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Spec.KeystoneLimits).To(BeNil(), "the child stops enforcing first")
+	expectHeld("the child still set keystoneLimits when the pass read it")
+
+	// Pass 3: the child no longer sets keystoneLimits and reports Ready, but a pod
+	// of the enforcing template is left.
+	conditions.SetCondition(&gl.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: gl.Generation,
+		Reason: "AllReady", Message: "ready",
+	})
+	gl.Status.RolledOutGeneration = gl.Generation - 1
+	g.Expect(r.Status().Update(ctx, gl)).To(Succeed())
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	expectHeld("status.rolledOutGeneration is below metadata.generation")
+
+	// Pass 4: every replica runs the template without keystoneLimits.
+	gl = getProjectedGlance(t, r.Client, cp)
+	gl.Status.RolledOutGeneration = gl.Generation
+	g.Expect(r.Status().Update(ctx, gl)).To(Succeed())
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	ks := getProjectedRegistration(t, r.Client, cp)
+	g.Expect(ks.Spec.Catalog.RegisteredLimits).To(BeEmpty(), "the hold releases once the child is rolled out")
+	g.Expect(ks.Spec.Account.SystemRoles).To(BeEmpty())
+}
+
+// TestGlanceQuotaHoldRequired pins the hold decision on its own: the live
+// registration has to carry one of the four limits, and the live child has to
+// still enforce or still run a pod of an older template.
+func TestGlanceQuotaHoldRequired(t *testing.T) {
+	cp := glanceControlPlane()
+	withLimits := glanceQuotaRegistration(cp, glanceQuotaLimits(1, 1, 1, 1), 1, metav1.ConditionTrue, metav1.ConditionTrue)
+	without := readyGlanceRegistration(cp)
+	without.Spec = desiredGlanceRegistration(cp).Spec
+	for name, tc := range map[string]struct {
+		registration *c5c3v1alpha1.KeystoneService
+		child        *glancev1alpha1.Glance
+		want         bool
+	}{
+		"enforcing child":                  {registration: withLimits, child: readyGlanceChild(cp, true, 2, 2), want: true},
+		"Ready child of an older template": {registration: withLimits, child: readyGlanceChild(cp, false, 3, 2), want: true},
+		"rolled-out child":                 {registration: withLimits, child: readyGlanceChild(cp, false, 3, 3)},
+		"no child":                         {registration: withLimits},
+		"no limits to hold":                {registration: without, child: readyGlanceChild(cp, false, 3, 2)},
+		"no registration":                  {child: readyGlanceChild(cp, true, 2, 2)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(glanceQuotaHoldRequired(tc.registration, tc.child)).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestGlanceQuotaRegistrationReady pins the enable gate on its own: both
+// conditions True for the registration's generation are not enough while the
+// spec the read returned does not yet declare all four limits and reader on the
+// system, as on a read that has not caught up with the apply. A child enforcing
+// against that registration would refuse every image create.
+func TestGlanceQuotaRegistrationReady(t *testing.T) {
+	cp := glanceControlPlane()
+	limits := glanceQuotaLimits(1, 1, 1, 1)
+	ready := func(mutate func(*c5c3v1alpha1.KeystoneService)) *c5c3v1alpha1.KeystoneService {
+		ks := glanceQuotaRegistration(cp, limits, 2, metav1.ConditionTrue, metav1.ConditionTrue)
+		mutate(ks)
+		return ks
+	}
+	for name, tc := range map[string]struct {
+		registration *c5c3v1alpha1.KeystoneService
+		want         bool
+	}{
+		"declared and ready": {registration: ready(func(*c5c3v1alpha1.KeystoneService) {}), want: true},
+		"ready for a spec without the limits": {registration: ready(func(ks *c5c3v1alpha1.KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = nil
+		})},
+		"three of the four limits": {registration: ready(func(ks *c5c3v1alpha1.KeystoneService) {
+			ks.Spec.Catalog.RegisteredLimits = limits[:3]
+		})},
+		"no reader on the system": {registration: ready(func(ks *c5c3v1alpha1.KeystoneService) {
+			ks.Spec.Account.SystemRoles = nil
+		})},
+		"no catalog": {registration: ready(func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Catalog = nil })},
+		"no account": {registration: ready(func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Account = nil })},
+		"declared but AccountReady False": {
+			registration: glanceQuotaRegistration(cp, limits, 2, metav1.ConditionTrue, metav1.ConditionFalse),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(glanceQuotaRegistrationReady(tc.registration)).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestGlanceQuotaHeldLimits pins that the disable hold keeps only the four
+// Glance resources: a registered limit the projection does not own is left to
+// the foreign-field reclaim.
+func TestGlanceQuotaHeldLimits(t *testing.T) {
+	g := NewGomegaWithT(t)
+	live := readyGlanceRegistration(glanceControlPlane())
+	live.Spec.Catalog = &c5c3v1alpha1.KeystoneServiceCatalogSpec{
+		RegisteredLimits: []c5c3v1alpha1.KeystoneServiceRegisteredLimitSpec{
+			{ResourceName: "image_count_total", DefaultLimit: 5},
+			{ResourceName: "other", DefaultLimit: 7},
+		},
+	}
+	g.Expect(glanceQuotaHeldLimits(live)).To(Equal([]c5c3v1alpha1.KeystoneServiceRegisteredLimitSpec{
+		{ResourceName: "image_count_total", DefaultLimit: 5},
+	}))
+	live.Spec.Catalog = nil
+	g.Expect(glanceQuotaHeldLimits(live)).To(BeNil())
+	g.Expect(glanceQuotaHeldLimits(nil)).To(BeNil())
+}
+
+// TestReconcileGlance_QuotaHoldNeverAddsLimits pins that the hold only keeps
+// what the live registration already carries: an unconverged child alone adds
+// no registered limit.
+func TestReconcileGlance_QuotaHoldNeverAddsLimits(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp, readyGlanceChild(cp, false, 3, 2))
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	ks := getProjectedRegistration(t, r.Client, cp)
+	g.Expect(ks.Spec.Catalog.RegisteredLimits).To(BeEmpty())
+	g.Expect(ks.Spec.Account.SystemRoles).To(BeEmpty())
+}
+
+func TestReconcileGlance_QuotaPreReadErrorsSurface(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fail       func(obj client.Object) bool
+		wantReason string
+		wantErr    string
+	}{
+		"the Glance child": {
+			fail:       func(obj client.Object) bool { _, ok := obj.(*glancev1alpha1.Glance); return ok },
+			wantReason: "GlanceError",
+			wantErr:    `reading Glance "cp-glance": `,
+		},
+		"the registration": {
+			fail:       func(obj client.Object) bool { _, ok := obj.(*c5c3v1alpha1.KeystoneService); return ok },
+			wantReason: reasonServiceRegistrationError,
+			wantErr:    "reading the glance KeystoneService child: ",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			s := glanceTestScheme(t)
+			boom := apierrors.NewInternalError(errors.New("etcd is unavailable"))
+			c := fake.NewClientBuilder().WithScheme(s).
+				WithObjects(withReadyGlanceRegistration(withReadyGlanceDBCred([]client.Object{cp}))...).
+				WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &glancev1alpha1.Glance{},
+					&c5c3v1alpha1.KeystoneService{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+						if tc.fail(obj) {
+							return boom
+						}
+						return cl.Get(ctx, key, obj, opts...)
+					},
+				}).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			_, err := r.reconcileGlance(context.Background(), cp)
+
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(errors.Is(err, boom)).To(BeTrue())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantErr))
+			cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(tc.wantReason))
+		})
+	}
+}
+
+// TestReconcileGlance_BypassedQuotaSizeIsAnError pins that a size the webhook
+// would have refused, reaching the reconciler on a webhook-bypassed write, ends
+// the pass with GlanceError instead of registering a limit, and without
+// computing the value.
+func TestReconcileGlance_BypassedQuotaSizeIsAnError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	huge := resource.MustParse("1e2000000000")
+	cp.Spec.Services.Glance.Quotas = &c5c3v1alpha1.GlanceQuotasSpec{ImageSizeTotal: &huge}
+	r := newGlanceTestReconciler(t, cp)
+
+	start := time.Now()
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(time.Since(start)).To(BeNumerically("<", 5*time.Second))
+	g.Expect(err).To(MatchError(ContainSubstring("resolving services.glance.quotas")))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Reason).To(Equal("GlanceError"))
+	g.Expect(cond.Message).To(ContainSubstring("services.glance.quotas: imageSizeTotal"))
+}
+
+// TestBuiltinRegistrationForeignFields_NamesForeignQuotaFields covers the two
+// quota fields the apply cannot take back: a registered limit another manager
+// added (registeredLimits is a listType=map) and system roles the projection
+// does not assert at all.
+func TestBuiltinRegistrationForeignFields_NamesForeignQuotaFields(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	projected := desiredGlanceRegistration(cp).Spec
+
+	child := desiredGlanceRegistration(cp)
+	child.Spec.Catalog.RegisteredLimits = []c5c3v1alpha1.KeystoneServiceRegisteredLimitSpec{
+		{ResourceName: "image_count_total", DefaultLimit: 1},
+	}
+	child.Spec.Account.SystemRoles = []string{"admin"}
+	g.Expect(builtinRegistrationForeignFields(&projected, child)).To(ConsistOf(
+		"spec.catalog.registeredLimits[resourceName=image_count_total]", "spec.account.systemRoles"))
+
+	// What the projection asserts is the apply's to take back.
+	withQuotas := withGlanceQuotaRegistration(desiredGlanceRegistration(cp), glanceQuotaLimits(1, 1, 1, 1)).Spec
+	g.Expect(builtinRegistrationForeignFields(&withQuotas, child)).To(BeEmpty())
+}
+
+// TestReclaimBuiltinRegistrationFields_ResetsTheQuotaFields covers the reclaim of
+// both quota fields; the pass-level announcement is covered by
+// TestReconcileGlance_ReclaimsForeignSystemRoles.
+func TestReclaimBuiltinRegistrationFields_ResetsTheQuotaFields(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := glanceControlPlane()
+
+	tampered := desiredGlanceRegistration(cp)
+	tampered.Spec.Catalog.RegisteredLimits = glanceQuotaLimits(1, 1, 1, 1)
+	tampered.Spec.Account.SystemRoles = []string{"admin"}
+	s := glanceTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tampered).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	projected := desiredGlanceRegistration(cp).Spec
+	g.Expect(r.reclaimBuiltinRegistrationFields(ctx, &projected, tampered)).To(Succeed())
+
+	var live c5c3v1alpha1.KeystoneService
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: glanceName(cp), Namespace: cp.GlanceNamespace()}, &live)).To(Succeed())
+	g.Expect(live.Spec.Catalog.RegisteredLimits).To(BeEmpty())
+	g.Expect(live.Spec.Account.SystemRoles).To(BeEmpty())
+	g.Expect(builtinRegistrationForeignFields(&projected, &live)).To(BeEmpty())
+}
+
+// TestReconcileGlance_ReclaimsForeignSystemRoles drives the reclaim through a
+// pass: system roles another manager wrote on a registration without quotas are
+// reset and announced with the ServiceRegistrationFieldsReclaimed event.
+func TestReconcileGlance_ReclaimsForeignSystemRoles(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	tampered := readyGlanceRegistration(cp)
+	tampered.Spec = desiredGlanceRegistration(cp).Spec
+	tampered.Spec.Account.SystemRoles = []string{"admin"}
+	r := newGlanceTestReconciler(t, cp, tampered)
+	rec := record.NewFakeRecorder(10)
+	r.Recorder = rec
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	events := strings.Join(drainEvents(rec), "\n")
+	g.Expect(events).To(ContainSubstring("ServiceRegistrationFieldsReclaimed"))
+	g.Expect(events).To(ContainSubstring("spec.account.systemRoles"))
+	g.Expect(getProjectedRegistration(t, r.Client, cp).Spec.Account.SystemRoles).To(BeEmpty())
 }

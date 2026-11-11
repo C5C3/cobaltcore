@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The lab's EnvoyProxy, which ../base/kustomization.yaml names in the
-# GatewayClass envoy in place of the kind overlay's envoy-nodeport (the
-# patch of kustomization.yaml removes that one from the render). It makes the
+# GatewayClass envoy in place of the kind overlay's envoy-nodeport (another
+# patch there removes that one from the render). It makes the
 # proxy Service of openstack-gw a Service of type LoadBalancer. On a Gardener
 # shoot on metal-stack, the cloud controller takes an address of the
 # project's internet network for it and MetalLB announces it over BGP from
