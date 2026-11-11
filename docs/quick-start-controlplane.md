@@ -29,10 +29,9 @@ ControlPlane provisions its own MariaDB and Memcached.
 
 The figure shows the cluster this page builds, from the one `ControlPlane` CR
 to the running services. Target clusters, the dashed box, are not part of this
-page. [Architecture](./architecture/index.md#implemented-topology) describes
-the whole picture.
+page.
 
-![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](./diagrams/cobaltcore-management-cluster.svg)
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. The service operators for Keystone, Horizon, Glance, Placement, Barbican, Neutron, Cinder, and Nova manage those OpenStack services, which are exposed via the Gateway API. The OVN operator manages the OVN central and chassis layer. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](./diagrams/cobaltcore-management-cluster.svg)
 
 ## Prerequisites
 
@@ -40,7 +39,7 @@ Same toolchain as the [Quick Start](./quick-start.md), plus:
 
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
 - The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 7, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands.
-- A host with 4 CPU cores, 16 GB of memory for the container runtime, and 10 GB of free disk. On the `Minimal` sizing profile the full stack requests at most 4 CPU and 16 GiB; the [node budget gate](./reference/testing/controlplane-e2e-tests.md#node-budget-link-6z) of the e2e-controlplane CI job enforces that budget on the CI stack. The optional compute leg of Step 7 (the fake compute, the OVN chassis, and the metadata agent) runs beside that budget
+- A host with 4 CPU cores, 16 GB of memory for the container runtime, and 10 GB of free disk. On the `Minimal` sizing profile the full stack requests at most 4 CPU and 16 GiB. The [node budget gate](./reference/testing/controlplane-e2e-tests.md#node-budget-link-6z) of the e2e-controlplane CI job enforces that budget on the CI stack. Step 7's optional compute path (fake compute, OVN chassis, and metadata agent) runs alongside the rest of the stack.
 - [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
 Docker Desktop and Podman are both valid kind providers. When using Podman,
 ensure its machine is already running and select it explicitly before running
@@ -69,14 +68,14 @@ make install-test-deps
 export PATH="${HOME}/.local/bin:${PATH}"
 ```
 
-## Step 1 — Clone
+## Step 1: Clone
 
 ```bash
 git clone https://github.com/c5c3/cobaltcore.git
 cd cobaltcore
 ```
 
-## Step 2 — Cluster + ControlPlane stack
+## Step 2: Cluster + ControlPlane stack
 
 ```bash
 KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
@@ -99,16 +98,15 @@ drop the override and use port `443`. Expect 5 to 10 minutes.
 
 If a download or image pull fails, run `make teardown-infra` and repeat Step 2.
 
-::: tip Fresh operator images after a merge
-The operator images are published under the mutable `:latest` tag, so
+After a feature merges to `main`, refresh the operator digests. The images use
+the mutable `:latest` tag, so
 deploy-infra pins them to the digest current at deploy time (per-operator
 image-digest ConfigMaps consumed by the HelmReleases via `valuesFrom`). After
-a feature merges to `main`, run `make refresh-operator-digests` against the
-running cluster: it re-resolves the digests, updates the ConfigMaps, and
+run `make refresh-operator-digests` against the running cluster. It re-resolves
+the digests, updates the ConfigMaps, and
 requests a Flux reconcile so the operators roll to the freshly built images.
 You do not need to redeploy. The helper prefers `docker buildx`, but falls back
 to `curl` if Docker is unavailable.
-:::
 
 Block storage is an opt-in. If you want the Cinder block of Step 4, run Step 2
 with the NFS overlay instead:
@@ -125,7 +123,7 @@ Desktop runs. The
 [NFS storage stack](./reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-opt-in)
 reference describes the overlay.
 
-## Step 3 — Deploy the OVN control plane
+## Step 3: Deploy the OVN control plane
 
 The network service in the CR below programs an OVN control plane that the
 ControlPlane references. Setting up the service first:
@@ -169,7 +167,7 @@ and deletes nothing on it. The CR stays yours: `kubectl delete controlplane`
 leaves the central running, and only the Teardown at the end of this page takes
 it down with the cluster.
 
-## Step 4 — Create the ControlPlane CR
+## Step 4: Create the ControlPlane CR
 
 Then apply a `ControlPlane` CR. You only supply `openStackRelease` and the
 `services.keystone` block; the defaulting webhook fills the infrastructure and
@@ -184,7 +182,7 @@ The c5c3-operator seeds the K-ORC bootstrap `clouds.yaml` per CR and derives
 the in-cluster Keystone auth URL from the CR name. To use a different name, pass
 `CONTROLPLANE_NAME=foo` to Step 2; it renames the bundled CR and seeds the
 matching admin password. The defaulting only fills the names and references;
-the operator still consumes the pre-seeded Secret content and materialises the
+the operator still reads the pre-seeded Secret content and creates the
 bootstrap `clouds.yaml` itself.
 
 ```yaml
@@ -305,7 +303,7 @@ kubectl apply -f controlplane.yaml
 
 The `horizon` block makes the reconciler project the OpenStack Dashboard once
 its Keystone child is Ready. Everything else is derived: the image tag from
-`spec.openStackRelease`, the Memcached wiring from `spec.infrastructure.cache`,
+`spec.openStackRelease`, the Memcached settings from `spec.infrastructure.cache`,
 and the Keystone endpoint from the Keystone child's naming convention. The
 Django `SECRET_KEY` defaults to the kind-only `horizon-secret-key` Secret
 (seeded per the default ControlPlane identity); a second ControlPlane must set
@@ -585,7 +583,7 @@ spec:
 
 </details>
 
-## Step 5 — Onboard the OpenBao database-engine tenant
+## Step 5: Onboard the OpenBao database-engine tenant
 
 In managed mode the ControlPlane defaults to engine-issued (`Dynamic`) Keystone
 DB credentials: ESO draws short-lived MySQL users from the OpenBao
@@ -649,16 +647,15 @@ logs `unknown role: keystone-<namespace>`. Nothing is lost: run the onboarding
 script and ESO syncs the credential on its next retry.
 :::
 
-::: tip A per-tenant OpenBao identity is the default
-This ControlPlane reaches OpenBao through a store of its own. The c5c3-operator
+The default is a per-tenant OpenBao identity. This ControlPlane reaches OpenBao
+through a store of its own. The c5c3-operator
 provisions the `SecretStore` `openbao-tenant-store` in the `openstack` namespace
 and routes the ControlPlane and its children through it, so OpenBao itself
 isolates it from other tenants. There is nothing to run. `spec.secretStoreRef`
 is the override for a store you manage yourself. See the
 [multi-tenant deployment guide](./guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities).
-:::
 
-## Step 6 — Watch the chain reconcile
+## Step 6: Watch the chain reconcile
 
 The aggregate `Ready` flips to `True` once all 21 sub-conditions are met. They
 do not form one line. The first seven are a blocking prefix, and each waits for
@@ -710,7 +707,7 @@ kubectl wait controlplane/controlplane -n openstack \
   --for=condition=Ready --timeout=15m
 ```
 
-## Step 7 — Verify
+## Step 7: Verify
 
 The ControlPlane exposes the projected Keystone through the shared Envoy Gateway
 at `https://keystone.127-0-0-1.nip.io:8443/v3`, the same path as the per-service
@@ -728,9 +725,8 @@ each hop and where a first run stops.
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
 ```
 
-::: tip If your host cannot resolve `*.nip.io`
-On some local setups that filter or block this specific DNS pattern, the
-following command fails:
+If your host cannot resolve `*.nip.io`, a local DNS filter or router may block
+the following request:
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
@@ -782,7 +778,6 @@ curl -k --resolve keystone.127-0-0-1.nip.io:8443:127.0.0.1 \
 If you'd rather fix it at the network level, most routers let you exempt
 specific domains from rebind protection, or you can add a public resolver
 (e.g. `1.1.1.1`) ahead of the router in your machine's network settings.
-:::
 
 Then issue a token with the admin password:
 
@@ -847,12 +842,10 @@ A run aborted before the final `delete` leaves `first-image` behind; delete it
 (`openstack --insecure image delete first-image`) before retrying, or the next
 `image create` fails on a name collision.
 
-::: tip OS_REGION_NAME is optional
-Every catalog row the ControlPlane registers sits in its `spec.region`
+OS_REGION_NAME is optional. Every catalog row the ControlPlane registers sits in its `spec.region`
 (`RegionOne` here), beside the identity rows Keystone's bootstrap inserted, so
 the `openstack` commands on this page work with `OS_REGION_NAME=RegionOne`
 exported and without it.
-:::
 
 ### List placement resource classes
 
@@ -903,7 +896,7 @@ test "$(openstack --insecure secret get -p "$HREF" -f value -c Payload)" = "$PAY
 openstack --insecure secret delete "$HREF"
 ```
 
-A payload that survives the round-trip covers the whole key-manager chain in two
+A payload returned unchanged covers the whole key-manager chain in two
 calls: the catalog row resolves the endpoint, Barbican validates the admin token
 against Keystone, and the payload travels through castellan's vault plugin into
 the dedicated `controlplane-barbican-bao` instance and out again. The
@@ -914,9 +907,9 @@ command.
 ::: warning Do not substitute real key material into `--payload`
 The literal above is a throwaway, and this snippet is written for the ControlPlane devstack. A
 value passed to `--payload` sits in the process argument vector, where any local
-user reads it out of `ps` or `/proc/<pid>/cmdline` for the life of the call, and
-typing it directly rather than through a variable also leaves it in your shell
-history. Feed real material in from a file or from standard input instead.
+user reads it out of `ps` or `/proc/<pid>/cmdline` for the life of the call.
+Typing the payload directly also leaves it in your shell history. Feed real
+material in from a file or from standard input.
 `--insecure` belongs to this ControlPlane devstack for the same reason, and it reaches
 further than the payload: the flag disables certificate verification for the
 whole invocation, including the Keystone call that sends `OS_PASSWORD`. Anything
@@ -989,7 +982,7 @@ service wrote a `volume-<id>` file into the export. That file sits at the md5
 mount point `/var/lib/cinder/mnt/<md5>`, owned `42424:42424` with mode `660`.
 These are core `python-openstackclient` commands, so no plugin is needed here.
 
-Clean the volume up when you are done:
+If you are done with the volume check, delete the volume:
 
 ```bash
 openstack --insecure volume delete demo-vol
@@ -1147,23 +1140,23 @@ make teardown-infra
 
 ## Related references
 
-- [ControlPlane CRD API Reference](./reference/c5c3/controlplane-crd.md) — every
+- [ControlPlane CRD API Reference](./reference/c5c3/controlplane-crd.md): every
   `spec.*` field, the webhooks, and the status conditions.
-- [ControlPlane Reconciler](./reference/c5c3/controlplane-reconciler.md) — the
+- [ControlPlane Reconciler](./reference/c5c3/controlplane-reconciler.md): the
   sub-reconciler ordering and gating semantics.
-- [Glance Operator](./reference/glance/index.md) — the projected Image service,
+- [Glance Operator](./reference/glance/index.md): the projected Image service,
   its `GlanceBackend` stores, and the reconciler chain.
-- [Placement Operator](./reference/placement/index.md) — the projected Placement
+- [Placement Operator](./reference/placement/index.md): the projected Placement
   service, its CRD surface, and the reconciler chain.
-- [Barbican Operator](./reference/barbican/index.md) — the projected Key Manager
+- [Barbican Operator](./reference/barbican/index.md): the projected Key Manager
   service, its `BarbicanSecretStore` attachment, and the reconciler chain.
-- [Neutron Operator](./reference/neutron/index.md) — the projected network
+- [Neutron Operator](./reference/neutron/index.md): the projected network
   service, its ML2/OVN posture, and the reconciler chain.
-- [Cinder Operator](./reference/cinder/index.md) — the projected block-storage
+- [Cinder Operator](./reference/cinder/index.md): the projected block-storage
   service, its `CinderBackend` and `CinderBackupBackend` satellites, and the
   reconciler chain.
-- [Nova Operator](./reference/nova/index.md) — the projected compute service,
+- [Nova Operator](./reference/nova/index.md): the projected compute service,
   its cells, the compute contract, and the reconciler chain.
-- [OVN Operator](./reference/ovn/index.md) — the referenced `OVNCentral`, the
+- [OVN Operator](./reference/ovn/index.md): the referenced `OVNCentral`, the
   `OVNChassis` node layer, and the reconciler chain.
-- [Quick Start](./quick-start.md) — the compact per-service Keystone path.
+- [Quick Start](./quick-start.md): the compact per-service Keystone path.

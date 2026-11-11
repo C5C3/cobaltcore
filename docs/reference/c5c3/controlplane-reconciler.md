@@ -39,7 +39,7 @@ The figure places the operator among what it creates and what it relies on: the
 `ControlPlane` CR, the infrastructure CRs, service CRs and K-ORC resources it
 projects, and the service operators that turn those CRs into workloads.
 
-![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../../diagrams/cobaltcore-management-cluster.svg)
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. The service operators for Keystone, Horizon, Glance, Placement, Barbican, Neutron, Cinder, and Nova manage those OpenStack services, which are exposed via the Gateway API. The OVN operator manages the OVN central and chassis layer. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../../diagrams/cobaltcore-management-cluster.svg)
 
 ## Controller Registration
 
@@ -1675,8 +1675,8 @@ catalog migration is needed. `spec.account` carries the service's user with a
 project of its own and `create: true`, plus the roles the caller passes: every
 service needs `service`, the role the OpenStack policy files reserve for
 service-to-service calls, and Cinder and Nova name `admin` on top. Each service
-creates its own project (`service-placement`, `service-barbican`,
-`service-neutron`, `service-cinder`, `service-nova`), because two registrations
+creates its own project (`service-glance`, `service-placement`,
+`service-barbican`, `service-neutron`, `service-cinder`, `service-nova`), because two registrations
 creating one project would each adopt the other's Keystone row.
 
 Two registrations reach past `service`. Cinder deletes the Barbican secret of an
