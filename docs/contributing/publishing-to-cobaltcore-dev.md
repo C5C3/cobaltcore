@@ -9,26 +9,29 @@ SPDX-License-Identifier: Apache-2.0
 
 # Publishing to cobaltcore.dev
 
-[cobaltcore.dev](https://cobaltcore.dev) builds its OpenStack section from the
-pages in this directory. The build of
-[cobaltcore-dev/docs](https://github.com/cobaltcore-dev/docs) checks out
-`docs/`, `tests/` and `deploy/` of this repository and renders a subset of the
-pages below `/openstack/`, with the theme and navigation of cobaltcore.dev. It
-rebuilds every night from `main`. The pages stay here, and
-[c5c3.github.io/cobaltcore](https://c5c3.github.io/cobaltcore/) keeps rendering
-all of them.
+The OpenStack pages configured for [cobaltcore.dev](https://cobaltcore.dev)
+remain in this repository. The publishing contract is intended for the
+separate [cobaltcore-dev/docs](https://github.com/cobaltcore-dev/docs)
+repository, which builds the site with its own theme and navigation. That
+repository does not yet contain `docs/.vitepress/overlay.ts`, so the
+`docs-overlay` pull-request job in this repository currently skips its build.
+The consumer repository deploys its site on pushes to `main`; its Pages
+workflow has no nightly schedule. Meanwhile,
+[c5c3.github.io/cobaltcore](https://c5c3.github.io/cobaltcore/) continues to
+render all pages in this repository.
 
-Two files in `docs/.vitepress/` are the contract between the two sites:
+The planned publishing integration uses two files in `docs/.vitepress/`:
 
 | File | What it holds | Read by |
 | --- | --- | --- |
-| `publish.json` | The patterns of the pages cobaltcore.dev publishes, the canonical address of this site, and the repository | cobaltcore.dev |
-| `sidebar.ts` | The sidebar | this site and cobaltcore.dev |
+| `publish.json` | The patterns, canonical address, and repository for the planned publishing integration | cobaltcore.dev, when its overlay is enabled |
+| `sidebar.ts` | The sidebar | this site and cobaltcore.dev, when its overlay is enabled |
 
-## What is published
+## Publish patterns
 
-`publish.json` lists glob patterns relative to `docs/`. A `*` matches within
-one path segment, a `**` across segments:
+`publish.json` lists the pages the integration will publish, using glob
+patterns relative to `docs/`. A `*` matches within one path segment, a `**`
+across segments:
 
 | Pattern | Pages | Path on cobaltcore.dev |
 | --- | --- | --- |
@@ -38,15 +41,14 @@ one path segment, a `**` across segments:
 | `guides/**` | Every guide | `/openstack/guides/` |
 | `reference/*/index.md` | The overview page of each service operator | `/openstack/<service>` |
 
-No other page is published: the rest of `reference/`, `contributing/` and
-`future/` stays on this site. A new guide appears on cobaltcore.dev with the
-next nightly build. A new top-level section does not appear until a pattern
-covers it.
+With the integration enabled, pages outside these patterns, including the
+rest of `reference/`, `contributing/` and `future/`, stay on this site. A new
+guide matches `guides/**`; a new top-level section needs a pattern of its own.
 
 ## Links from a published page
 
-Write links as everywhere else, relative to the page. cobaltcore.dev resolves
-each link of a published page against the page's file in this repository:
+When the integration is enabled, write links as everywhere else, relative to
+the page. The intended resolution for links from a published page is:
 
 - A link to another published page stays on cobaltcore.dev.
 - A link to a page that is not published goes to that page on this site, the
@@ -54,44 +56,44 @@ each link of a published page against the page's file in this repository:
 - A link to a file outside `docs/`, such as a Chainsaw test, goes to the file
   on GitHub.
 
-Images and diagrams need no rule, because both builds resolve them relative to
-the page.
+Images and diagrams in this site's build resolve relative to the page. The
+consumer build should preserve those paths. Its link resolver is not present
+yet, so the pull-request job cannot currently verify the expected routing.
 
 ## Code imports
 
 A code import names its file relative to the page, as the
 [guide conventions](./guide-conventions.md#single-source-of-truth-for-manifests)
-describe:
+describe. The unit test below checks these paths. After the consumer adds its
+overlay, the `docs-overlay` job also builds the published pages:
 
 ```md
 <<< ../../../tests/e2e/keystone/<suite>/00-keystone-cr.yaml#<region>
 ```
 
-A path that starts with `@/` breaks the cobaltcore.dev build. VitePress
-resolves `@` against the source root of the site that renders the page, and on
-cobaltcore.dev that is a different directory. A published page imports only
-from `docs/`, `tests/` and `deploy/`, because cobaltcore.dev checks out no
-other directory.
+A path that starts with `@/` is not portable between the two site roots. A
+published page should import only from `docs/`, `tests/` and `deploy/`, the
+directories the `docs-overlay` job checks out for the consumer build.
 
 ## The sidebar
 
-cobaltcore.dev imports `sidebar.ts`, keeps the entries whose page is published,
-and drops the groups that are left empty. A guide registered in the `Guides`
-group therefore appears in both sidebars. Keep the module free of logic and of
-imports other than types: cobaltcore.dev loads it with Node, outside the build
-of this site.
+When the consumer overlay is enabled, it imports `sidebar.ts`, keeps entries
+whose pages are published, and drops groups left empty. A guide registered in
+the `Guides` group will then appear in both sidebars. Keep the module free of
+logic and of imports other than types so the consumer can load it with Node.
 
 ## Checks
 
 | Check | What it catches |
 | --- | --- |
 | `tests/unit/docs/cobaltcore_dev_publish_test.sh`, part of `make test-shell` | A `publish.json` that does not parse, a pattern that matches no page, an `@/` import, and an import of a published page that resolves outside `docs/`, `tests/` and `deploy/` |
-| The [`docs-overlay`](../reference/ci-cd/ci-workflow.md#docs-overlay) job on a pull request | Anything else that breaks the cobaltcore.dev build, such as a link that resolves on neither site: the job builds cobaltcore-dev/docs with the docs of the pull request. It does not block a merge, and it skips the build while cobaltcore-dev/docs does not read these docs |
+| The [`docs-overlay`](../reference/ci-cd/ci-workflow.md#docs-overlay) job on a pull request | When the consumer has `docs/.vitepress/overlay.ts`, the job builds cobaltcore-dev/docs with the pull request's docs. It does not block a merge. Until the overlay exists, the job reports a notice and skips the build |
 
 ## Preview a change on cobaltcore.dev
 
-Clone cobaltcore-dev/docs next to this checkout, copy the three directories into
-`docs/_upstream/cobaltcore/`, and start its development server:
+After cobaltcore-dev/docs adds its overlay, clone it next to this checkout,
+copy the three directories into `docs/_upstream/cobaltcore/`, and start its
+development server:
 
 ```bash
 git clone https://github.com/cobaltcore-dev/docs.git cobaltcore-dev-docs
