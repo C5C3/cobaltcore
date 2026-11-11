@@ -47,7 +47,7 @@ on, the images input adds these outputs:
 | `packages.<system>.<name>-image` | a `dockerTools.streamLayeredImage`, a script that writes the image as a tar stream (`backup-shifter-image`, `keystone-federation-proxy-image`, `ovn-image`, `openstack-hypervisor-operator-image`, `kvm-node-agent-image`, `libvirt-image`) |
 | `packages.<system>.<name>-<rel_>-image` | the image of a Python service or of tempest for one release, built from the lock `nix/locks/<release>/<name>/` (`keystone-2026_1-image`) |
 | `packages.<system>.nova-compute-<rel_>-image` | the compute image for each nova lock, built from that lock with its `nova-compute` dependency group ([Hypervisor images](#hypervisor-images)) |
-| `packages.<system>.<op>-operator-image` | the image of a CobaltCore operator, built from `nix/lib/operator-image.nix` for every `operators/<op>/go.mod` (`keystone-operator-image`, [Operator images](#operator-images)) |
+| `packages.<system>.<op>-operator-image` | the image of a CobaltCore OpenStack operator, built from `nix/lib/operator-image.nix` for every `operators/<op>/go.mod` (`keystone-operator-image`, [Operator images](#operator-images)) |
 | `packages.<system>.<op>-operator-cover-image` | the coverage-instrumented variant of that image, tagged `cover`, which only the e2e builds use ([Operator images](#operator-images)) |
 | `packages.<system>.<name>-<rel_>-test-run` | the unit tests of a service lock, a build that succeeds whenever the suite ran ([Unit tests](#unit-tests)) |
 | `checks.<system>.<name>-<rel_>-tests` | fails unless that run passed |
@@ -90,7 +90,7 @@ sdist asks for before uv can read its metadata.
 | `nix/lib/python-env.nix` | the uv2nix environment of one lock: the venv, `venvWith`, the venv with named dependency groups (`test`, `nova-compute`), and the patched source |
 | `nix/lib/service-image.nix` | the image of a Python service or of tempest around that venv ([Service images](#service-images)) |
 | `nix/lib/static-image.nix` | the image of a static Go binary, the stand-in for the distroless base of the Docker builds ([Source-built images](#source-built-images)) |
-| `nix/lib/operator-image.nix` | the image of one CobaltCore operator: the manager built from the operator's Go module, on the image of `nix/lib/static-image.nix` ([Operator images](#operator-images)) |
+| `nix/lib/operator-image.nix` | the image of one CobaltCore OpenStack operator: the manager built from the operator's Go module, on the image of `nix/lib/static-image.nix` ([Operator images](#operator-images)) |
 | `nix/lib/service-tests.nix` | the unit-test run and check of a lock |
 | `nix/lib/subunit-crc.py` | recomputes the packet checksums of a subunit stream after `nuke-refs` |
 | `nix/lib/rootwrap-conf.nix` | the text of nova-compute's `/etc/nova/rootwrap.conf`, with the image's store bin directories as `exec_dirs` |
@@ -342,11 +342,11 @@ nix log .#openstack-hypervisor-operator-image.manager   # the PASS lines of the 
 
 ## Operator images
 
-`nix/lib/operator-image.nix` builds the image of every CobaltCore operator.
-`flake.nix` reads `operators/` and calls it for each directory with a
-`go.mod`, so a new operator gets its `<op>-operator-image` without a flake
-edit. The function builds the manager with `buildGo127Module`, the `go_1_27`
-of `nixpkgs-images`, and puts it on the image of `nix/lib/static-image.nix`.
+`nix/lib/operator-image.nix` builds the image of every CobaltCore OpenStack
+operator. `flake.nix` reads `operators/` and calls it for each directory with a
+`go.mod`, so a new operator gets its `<op>-operator-image` without a flake edit.
+The function builds the manager with `buildGo127Module`, the `go_1_27` of
+`nixpkgs-images`, and puts it on the image of `nix/lib/static-image.nix`.
 
 The build runs one operator as its own Go module with `GOWORK=off`.
 `buildGoModule` has no `go.work` support, so `operators/<op>/go.mod` and its
@@ -410,8 +410,8 @@ Bump the directive after the locked channel carries that Go
 The manager is built with `CGO_ENABLED=0` and the ldflags `-s -w`, and sits at
 `/usr/bin/manager`, the `Entrypoint` of the image. The image runs as
 `65532:65532` and carries the four static labels with the description
-`CobaltCore <op> operator`, without a version or an upstream commit. The unit
-tests need envtest and run under `make test`, so the build runs none.
+`CobaltCore OpenStack <op> operator`, without a version or an upstream commit.
+The unit tests need envtest and run under `make test`, so the build runs none.
 
 `build-and-push` of the CI workflow builds `<op>-operator-image` for each
 platform through the `build-nix-image` action and pushes it by digest as an
@@ -437,7 +437,7 @@ so its counters cover the operator's module and the shared library. A
 `buildGoModule` reads no `buildFlags` and replaces an `env.GOFLAGS` the
 caller passes. The flags change neither the source nor the module download,
 so `vendor.json`'s `vendorHash` holds for both variants. The image is tagged
-`cover` and its description is `CobaltCore <op> operator, coverage-instrumented`;
+`cover` and its description is `CobaltCore OpenStack <op> operator, coverage-instrumented`;
 the layout, the user, the entrypoint and the other three labels are those of
 `<op>-operator-image`. With `GOCOVERDIR` set, the manager writes its counters
 to that directory every minute and on exit (`internal/common/bootstrap/coverage.go`).

@@ -25,7 +25,8 @@ The load exists for the downstream Keystone and keystonemiddleware patches of
 #1456 and #1462. Each patch is proven the same way: run one scenario with one
 seed against a build without the patch (the base) and a build with it (the
 patched build), and compare the two run records with
-`dizzy keystone report --compare`. CobaltCore does that in three places:
+`dizzy keystone report --compare`. CobaltCore OpenStack does that in three
+places:
 
 | Where | Command | Keystone | Use it for |
 | --- | --- | --- | --- |

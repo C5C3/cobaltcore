@@ -6,7 +6,7 @@
 # gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 # base the Dockerfiles of these images ran on. images/<name>/image.nix calls
 # it with the manager its manager.nix builds, and nix/lib/operator-image.nix
-# with the manager of each CobaltCore operator.
+# with the manager of each CobaltCore OpenStack operator.
 #
 # The image carries what the distroless base gave a static binary: the
 # base's /etc/passwd and /etc/group (root with the home /root, nobody and

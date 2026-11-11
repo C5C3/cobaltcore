@@ -1,16 +1,17 @@
 ---
 name: debug-e2e-failure
 description: >-
-  Diagnose a failing e2e or Tempest job in the CobaltCore CI — resolve the
-  failed run, pull the job logs, annotations and JUnit/diagnostic evidence,
+  Diagnose a failing e2e or Tempest job in the CobaltCore OpenStack CI — resolve
+  the failed run, pull the job logs, annotations and JUnit/diagnostic evidence,
   scan them for the known failure signatures, decide whether the fault is
   infrastructure or the change, map the failure back to the suite directory
   under tests/, and reproduce it locally against a kind cluster. Use when a CI
   e2e job fails (build-e2e-images, e2e-infra, e2e-operator, e2e-chaos,
   e2e-chaos-random, e2e-prometheus, e2e-controlplane, e2e-controlplane-sso,
   e2e-external-keystone, e2e-autoscaling, e2e-operator-upgrade,
-  e2e-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest), when a job died without logs, when asked to
-  debug a chainsaw suite, or when reproducing an e2e failure locally.
+  e2e-multicluster, e2e-ovn-overlay, e2e-nova-libvirt, tempest), when a job died
+  without logs, when asked to debug a chainsaw suite, or when reproducing an e2e
+  failure locally.
 ---
 
 # Debug an e2e failure
@@ -189,17 +190,17 @@ What a laptop can host decides the method:
   `e2e-ovn-overlay`, port binding, metadata-agent namespaces) runs only on a
   CI leg. `hack/deploy-infra.sh` skips the modprobe off Linux.
 - **Narrow throw-away kind repro (~10 min).** `kind create cluster` on its
-  own `--kubeconfig` (other projects' kind clusters are not CobaltCore dev
-  clusters; never point a suite at the current context blindly), the
-  cert-manager static manifest, one operator via `kubectl apply -k` on a
-  local kustomization pinned to the repo's Flux ref, one CR. Shape timing
-  with `docker exec <node> kill -STOP <pid>` or `docker update --cpus`. For
-  chainsaw assert logic, apply only the CRD and simulate the operator's
-  status with `kubectl patch --subresource=status --type=merge`. K-ORC alone:
-  a throw-away cluster + `hack/ci-deploy-korc.sh` (~4 min). A Keystone-level
-  race can be cheaper still in plain docker (two `ghcr.io/c5c3/keystone`
-  containers on sqlite + one memcached reproduced `shared-memcached-401` in
-  ~2 min). Delete the cluster afterwards.
+  own `--kubeconfig` (other projects' kind clusters are not CobaltCore OpenStack
+  dev clusters; never point a suite at the current context blindly), the
+  cert-manager static manifest, one operator via `kubectl apply -k` on a local
+  kustomization pinned to the repo's Flux ref, one CR. Shape timing with `docker
+  exec <node> kill -STOP <pid>` or `docker update --cpus`. For chainsaw assert
+  logic, apply only the CRD and simulate the operator's status with `kubectl
+  patch --subresource=status --type=merge`. K-ORC alone: a throw-away cluster +
+  `hack/ci-deploy-korc.sh` (~4 min). A Keystone-level race can be cheaper still
+  in plain docker (two `ghcr.io/c5c3/keystone` containers on sqlite + one
+  memcached reproduced `shared-memcached-401` in ~2 min). Delete the cluster
+  afterwards.
 - **When the leg cannot run locally**, verify statically
   (`make chainsaw-lint`, extract the suite's scripts and `bash -n` /
   `shellcheck` them, run the presence-guard path) and say plainly that the

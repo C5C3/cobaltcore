@@ -1,22 +1,21 @@
 ---
 name: check-doc-drift
 description: >-
-  Audit the CobaltCore documentation for drift against the implementation —
-  the docs/reference/ pages vs the operator code, the guides and
-  quick-starts vs the deploy/ infrastructure stack. Use when
-  asked to check documentation drift, after adding or
-  removing a sub-reconciler, status condition, operator binary, or
-  infrastructure component, or before tagging a release.
+  Audit the CobaltCore OpenStack documentation for drift against the
+  implementation — the docs/reference/ pages vs the operator code, the guides
+  and quick-starts vs the deploy/ infrastructure stack. Use when asked to check
+  documentation drift, after adding or removing a sub-reconciler, status
+  condition, operator binary, or infrastructure component, or before tagging a
+  release.
 ---
 
 # Check documentation drift
 
-This skill verifies that the CobaltCore documentation still **describes what
-the code actually does**: every sub-reconciler, status condition,
-operator binary, CRD field, and FluxCD component
-named in `docs/` (and `README.md`) is checked
-against its source of truth, so a reader is never handed a reference
-page that contradicts the implementation.
+This skill verifies that the CobaltCore OpenStack documentation still
+**describes what the code actually does**: every sub-reconciler, status
+condition, operator binary, CRD field, and FluxCD component named in `docs/`
+(and `README.md`) is checked against its source of truth, so a reader is never
+handed a reference page that contradicts the implementation.
 
 It is repeatable — run it any time, especially after shipping a feature
 that touched a documented surface, or before cutting a release.

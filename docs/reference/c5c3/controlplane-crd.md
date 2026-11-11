@@ -90,7 +90,7 @@ metadata:
 spec:
   openStackRelease: "2026.1"
   region: RegionOne
-  regionDescription: CobaltCore region
+  regionDescription: CobaltCore OpenStack region
   infrastructure:
     database:
       clusterRef:
@@ -2919,9 +2919,9 @@ this level.
 
 The `ControlPlane` reuses the canonical `commonv1` shapes imported from
 `github.com/c5c3/cobaltcore/internal/common/types`. These are shared across all
-CobaltCore operator CRDs and are documented in full in the Keystone reference;
-this section links rather than re-documents them to keep a single source of
-truth.
+CobaltCore OpenStack operator CRDs and are documented in full in the Keystone
+reference; this section links rather than re-documents them to keep a single
+source of truth.
 
 | Type | Used by | Reference |
 | --- | --- | --- |

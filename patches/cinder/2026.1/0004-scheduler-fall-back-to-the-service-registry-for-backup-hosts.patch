@@ -23,7 +23,7 @@ leave the scheduler without a usable entry until the next report:
 Either way `SchedulerManager.create_backup` answers every backup in that
 window with "Service not found for creating backup": the backup goes to
 `error` and the volume back to `available`, although the service is up
-and its heartbeat is in the registry. CobaltCore's e2e suite
+and its heartbeat is in the registry. CobaltCore OpenStack's e2e suite
 cinder-backup-nfs hit the window on CI run 39046784189, 21 s after the
 processes started, and a user who backs up a volume in the first minute
 after a cold start of the control plane hits it the same way. The

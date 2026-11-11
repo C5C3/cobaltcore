@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package database manages MariaDB database resources for CobaltCore operators.
+// Package database manages MariaDB database resources for CobaltCore OpenStack
+// operators.
 //
 // It provides both the low-level primitives — ensuring Database, User, and
 // Grant CRs exist (EnsureDatabase/EnsureDatabaseUser), assembling the pymysql

@@ -21,16 +21,16 @@ What the failed lock leaves behind depends on where the handler stood.
 create fails, and with no other backend to reschedule to the volume ends
 in `error`; a delete ends in `error_deleting`. The API refuses to delete
 an `error_deleting` volume again, and no startup cleanup revisits it,
-because the failed delete released its worker row. CobaltCore's chaos
-suite cinder-upgrade-broker-pod-kill hit this on CI run 40409391608: a
-delete the API accepted 13.5 s after the broker came back left its
-volume undeletable (HTTP 400 for 176 s) and outside every transitional
-status, which `error_deleting` alone fits. The log of the volume service
-went with its pod, but the delete fell into the window in which the
-upgrade's Recreate rollout stops the 2026.1 cinder-volume (a local rerun
-puts that stop 18 s after the broker returns). A local rerun of that
-upgrade with four create/delete loops caught a create dispatched 4.4 s
-after the SIGTERM of the 2026.1 cinder-volume failing with that
+because the failed delete released its worker row. CobaltCore
+OpenStack's chaos suite cinder-upgrade-broker-pod-kill hit this on CI
+run 40409391608: a delete the API accepted 13.5 s after the broker came
+back left its volume undeletable (HTTP 400 for 176 s) and outside every
+transitional status, which `error_deleting` alone fits. The log of the
+volume service went with its pod, but the delete fell into the window in
+which the upgrade's Recreate rollout stops the 2026.1 cinder-volume (a
+local rerun puts that stop 18 s after the broker returns). A local rerun
+of that upgrade with four create/delete loops caught a create dispatched
+4.4 s after the SIGTERM of the 2026.1 cinder-volume failing with that
 exception.
 
 The coordinator now stops in `Service.wait()`, after the three

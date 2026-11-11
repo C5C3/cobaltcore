@@ -38,7 +38,7 @@ INFRA_ONLY=true CLUSTER_NAME=cobaltcore-target KIND_HOST_PORT=9443 make deploy-i
 ```
 
 Follow that tutorial through its **Step 2 — Cluster + infrastructure stack** and
-stop there. `INFRA_ONLY=true` keeps every CobaltCore operator off this cluster, which
+stop there. `INFRA_ONLY=true` keeps every CobaltCore OpenStack operator off this cluster, which
 is what the two-cluster split is for, so the tutorial's operator and CR steps do
 not apply here. Host port 9443 leaves 8443 free for a `cobaltcore` devstack you may
 already be running, and overriding `KIND_HOST_PORT` needs
@@ -67,7 +67,7 @@ the examples below resolve on the target: `openstack-db`,
    a ControlPlane's shared message bus is provisioned in the ControlPlane's own
    namespace on this cluster, so the controller that turns a `RabbitmqCluster`
    into running RabbitMQ pods has to run here too.
-   The script installs no CobaltCore operator, and it leaves the kubectl context on
+   The script installs no CobaltCore OpenStack operator, and it leaves the kubectl context on
    the cluster it created:
 
    ```bash

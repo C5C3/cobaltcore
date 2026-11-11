@@ -96,9 +96,9 @@ stable field-manager name shared by all `Ensure*` helpers.
 
 ## Package: `config`
 
-Implements the INI configuration rendering pipeline for CobaltCore operators.
-The `CreateImmutableConfigMap` function provides Kubernetes-interacting config
-management.
+Implements the INI configuration rendering pipeline for CobaltCore OpenStack
+operators. The `CreateImmutableConfigMap` function provides
+Kubernetes-interacting config management.
 
 ### CreateImmutableConfigMap
 
@@ -247,7 +247,7 @@ err := config.PruneImmutableConfigMaps(ctx, client, keystoneCR,
 
 ## Package: `database`
 
-Manages MariaDB database resources for CobaltCore operators. Uses typed structs from
+Manages MariaDB database resources for CobaltCore OpenStack operators. Uses typed structs from
 `github.com/mariadb-operator/mariadb-operator/api/v1alpha1`.
 
 ### EnsureDatabase
@@ -305,7 +305,7 @@ Creates or updates a MariaDB User CR and a Grant CR in a single call.
 
 ## Package: `deployment`
 
-Manages Kubernetes Deployments and Services for CobaltCore operators.
+Manages Kubernetes Deployments and Services for CobaltCore OpenStack operators.
 
 ### EnsureDeployment
 
@@ -380,7 +380,7 @@ Pure function. Returns `true` when both conditions are met:
 
 ## Package: `job`
 
-Manages Kubernetes Jobs and CronJobs for CobaltCore operators.
+Manages Kubernetes Jobs and CronJobs for CobaltCore OpenStack operators.
 
 ### RunJob
 
@@ -693,7 +693,7 @@ Turns a parent's list of attached satellites into one pass's view of them.
 
 ## Package: `secrets`
 
-Manages External Secrets Operator resources and Kubernetes Secrets for CobaltCore
+Manages External Secrets Operator resources and Kubernetes Secrets for CobaltCore OpenStack
 operators. Uses typed structs from `github.com/external-secrets/external-secrets`.
 
 ### WaitForExternalSecret
@@ -822,7 +822,7 @@ ExternalSecrets and PushSecrets through the store it selects (a cluster-scoped
 
 ## Package: `tls`
 
-Manages TLS certificates and secrets for CobaltCore operators. Uses typed structs from
+Manages TLS certificates and secrets for CobaltCore OpenStack operators. Uses typed structs from
 `github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1`.
 
 ### EnsureCertificate

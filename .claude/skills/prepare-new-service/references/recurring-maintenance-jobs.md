@@ -8,13 +8,12 @@ Every OpenStack service that soft-deletes rows, caches artefacts, or ages
 out records assumes an operator sweeps up on a schedule. Upstream ships
 the commands and documents the cadence; scheduling them is the deployer's
 job. Package deployments answer that with a cron entry on the controller
-node — CobaltCore has no such place, so a maintenance task that the service
-operator does not project simply never runs. That failure is invisible by
-construction: the deployment stays Ready, every probe passes, and the
-only symptom is a table, a cache, or a disk that keeps growing until it
-becomes an incident: unless the operator projects a CronJob, no run ever
-happens, and no probe, condition, or metric observes a purge that was
-never scheduled.
+node — CobaltCore OpenStack has no such place, so a maintenance task that the
+service operator does not project simply never runs. That failure is invisible
+by construction: the deployment stays Ready, every probe passes, and the only
+symptom is a table, a cache, or a disk that keeps growing until it becomes an
+incident: unless the operator projects a CronJob, no run ever happens, and no
+probe, condition, or metric observes a purge that was never scheduled.
 
 Treat this as part of the initial implementation. Glance is the
 cautionary tale: it onboarded without one, and adding `db purge` later

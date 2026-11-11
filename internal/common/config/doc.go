@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package config implements the INI configuration rendering pipeline for
-// CobaltCore operators. It provides pure functions for rendering structured
-// configuration data into INI format, merging defaults, injecting secrets,
-// and configuring oslo.policy integration.
+// CobaltCore OpenStack operators. It provides pure functions for rendering
+// structured configuration data into INI format, merging defaults, injecting
+// secrets, and configuring oslo.policy integration.
 package config

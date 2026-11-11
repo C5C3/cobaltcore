@@ -279,7 +279,7 @@ artifact. All other repositories use standard HTTPS Helm registries.
 ## HelmRelease Operators
 
 Nineteen HelmRelease CRs deploy the CRD charts, the infrastructure operators and the
-CobaltCore operators (K-ORC and the RabbitMQ Cluster Operator are applied separately, each via a Flux `Kustomization` — see
+CobaltCore OpenStack operators (K-ORC and the RabbitMQ Cluster Operator are applied separately, each via a Flux `Kustomization` — see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller) and
 [RabbitMQ Cluster Operator](#rabbitmq-cluster-operator)). All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
@@ -1970,14 +1970,14 @@ or the flux-operator applies to the rendered Deployment:
 2. A chart value the shipped release sets can be removed only by setting it to
    `null` in the patch; omitting the key keeps the shipped value.
 3. The `nodeSelector`, `tolerations` and `priorityClassName` keys of the
-   CobaltCore operator charts need operator-library 0.9.0: keystone-operator
-   0.11.0, c5c3-operator 0.14.0, horizon-operator 0.4.0, cinder-operator and
-   nova-operator 0.2.0, the other five charts 0.3.0, or later. An older chart
-   rejects the keys through its values schema, and the HelmRelease reports the
-   failure in its `Ready` condition. The shipped releases'
-   `spec.chart.spec.version` floors still admit such a chart, so a patch that
-   sets the keys raises the floor to the version above as well, as the
-   example does for keystone-operator with `>=0.11.0 <1.0.0`.
+   CobaltCore OpenStack operator charts need operator-library 0.9.0:
+   keystone-operator 0.11.0, c5c3-operator 0.14.0, horizon-operator 0.4.0,
+   cinder-operator and nova-operator 0.2.0, the other five charts 0.3.0, or
+   later. An older chart rejects the keys through its values schema, and the
+   HelmRelease reports the failure in its `Ready` condition. The shipped
+   releases' `spec.chart.spec.version` floors still admit such a chart, so a
+   patch that sets the keys raises the floor to the version above as well, as
+   the example does for keystone-operator with `>=0.11.0 <1.0.0`.
 
 ## Extensibility
 
@@ -2840,30 +2840,29 @@ the Glance CR the suite applies, and deletes it again when the suite cleans up.
 
 ## Metal-stack lab
 
-`deploy/lab/metal-stack/` holds the manifests of the CobaltCore lab on a
-metal-stack cluster, planned in
+`deploy/lab/metal-stack/` holds the manifests of the CobaltCore OpenStack lab on
+a metal-stack cluster, planned in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138).
 `deploy/flux-system/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
 `EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `ceph/` and
 `ceph/cluster/` when `WITH_CEPH=true` is set (see [Lab Ceph](#lab-ceph)), its
 `nfs/` when `WITH_NFS=true` is set (see [Lab NFS stack](#lab-nfs-stack)), its
-`chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see
-[Lab Chaos Mesh](#lab-chaos-mesh)), its `dizzy/` when `WITH_DIZZY=true`
-is set (see [Lab dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
-`WITH_PROMETHEUS=true` is set (see
-[Lab Prometheus stack](#lab-prometheus-stack)); `make dizzy-soak-start` applies
-its `dizzy-soak/` (see [Lab dizzy soak](#lab-dizzy-soak)); the probe is applied by hand, and so is `controlplane/`, once the deploy has
-finished (see [Lab ControlPlane](#lab-controlplane)), and after it
-`hypervisor-fixtures/` and `hypervisor/` (see
-[Lab hypervisors](#lab-hypervisors)); on a lab deployed with `WITH_NFS=true`
-as well, Part 3 of the quick start applies `controlplane-nfs/` by hand after
-those (see [Lab ControlPlane](#lab-controlplane)). The ControlPlane's opt-in
-autoscaling blocks use the VPA and the metrics-server of the platform (see
-[Lab autoscaling](#lab-autoscaling)). The
-[Quick Start (metal-stack)](../../quick-start-metal-stack.md) is the
-walkthrough that runs them in order, from a bare cluster to a migrated server
-and back.
+`chaos-mesh/` when `WITH_CHAOS_MESH=true` is set (see [Lab Chaos
+Mesh](#lab-chaos-mesh)), its `dizzy/` when `WITH_DIZZY=true` is set (see [Lab
+dizzy stack](#lab-dizzy-stack)), and its `prometheus/` when
+`WITH_PROMETHEUS=true` is set (see [Lab Prometheus
+stack](#lab-prometheus-stack)); `make dizzy-soak-start` applies its
+`dizzy-soak/` (see [Lab dizzy soak](#lab-dizzy-soak)); the probe is applied by
+hand, and so is `controlplane/`, once the deploy has finished (see [Lab
+ControlPlane](#lab-controlplane)), and after it `hypervisor-fixtures/` and
+`hypervisor/` (see [Lab hypervisors](#lab-hypervisors)); on a lab deployed with
+`WITH_NFS=true` as well, Part 3 of the quick start applies `controlplane-nfs/`
+by hand after those (see [Lab ControlPlane](#lab-controlplane)). The
+ControlPlane's opt-in autoscaling blocks use the VPA and the metrics-server of
+the platform (see [Lab autoscaling](#lab-autoscaling)). The [Quick Start
+(metal-stack)](../../quick-start-metal-stack.md) is the walkthrough that runs
+them in order, from a bare cluster to a migrated server and back.
 
 The figure shows what those manifests add up to: the cluster-wide parts of
 `base/`, `infrastructure/`, `ceph/` and `controlplane/`, and the parts
@@ -5441,9 +5440,9 @@ because its release reads the ControlPlane's auth Secret through `valuesFrom`,
 which reads only Secrets of the release's own namespace. The CA, its
 Issuer, the per-node Certificates `libvirt-<node>` with their Secrets
 `tls-libvirt-<node>`, and kna live in `hypervisor-system`: every CobaltCore
-operator reads Secrets in `openstack`, and a `tls-libvirt-<node>` Secret is
-root on its node's libvirtd (see
-[Live migration](../nova/novacompute-crd.md#live-migration)).
+OpenStack operator reads Secrets in `openstack`, and a `tls-libvirt-<node>`
+Secret is root on its node's libvirtd (see [Live
+migration](../nova/novacompute-crd.md#live-migration)).
 
 | Release | Setting | Value | Why |
 | --- | --- | --- | --- |

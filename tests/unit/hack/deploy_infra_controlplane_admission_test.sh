@@ -654,7 +654,7 @@ test_preflight_refuses_infra_only_with_the_bundled_cr() {
   exit_code=$?
   assert_nonzero_exit "the combination fails preflight" "$exit_code"
   assert_contains "the refusal names both flags and the reason" "$output" \
-    "ERROR: INFRA_ONLY=true does not support WITH_CONTROLPLANE_CR=true: this cluster runs no CobaltCore operator to admit or reconcile the ControlPlane CR."
+    "ERROR: INFRA_ONLY=true does not support WITH_CONTROLPLANE_CR=true: this cluster runs no CobaltCore OpenStack operator to admit or reconcile the ControlPlane CR."
 
   output="$(run_preflight "$tmp" INFRA_ONLY=true WITH_CONTROLPLANE=true WITH_CONTROLPLANE_CR=false)"
   exit_code=$?

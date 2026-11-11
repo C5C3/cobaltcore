@@ -5,7 +5,7 @@ import { defineConfig } from 'vitepress'
 import sidebar from './sidebar'
 
 export default defineConfig({
-  title: 'CobaltCore',
+  title: 'CobaltCore OpenStack',
   description: 'A Kubernetes-native OpenStack distribution — reference documentation',
   base: '/cobaltcore/',
   // Port-forward URLs (e.g. http://localhost:9080 for Flux Web UI) are

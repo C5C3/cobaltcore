@@ -174,17 +174,17 @@ func TestManagedCatalogRegion_Shape(t *testing.T) {
 		{
 			name:        "unadopted region drops the description",
 			region:      "RegionOne",
-			description: "CobaltCore e2e region",
+			description: "CobaltCore OpenStack e2e region",
 			adopted:     false,
 			wantRegion:  "RegionOne",
 		},
 		{
 			name:            "adopted region carries the description",
 			region:          "eu-de-1",
-			description:     "CobaltCore e2e region",
+			description:     "CobaltCore OpenStack e2e region",
 			adopted:         true,
 			wantRegion:      "eu-de-1",
-			wantDescription: "CobaltCore e2e region",
+			wantDescription: "CobaltCore OpenStack e2e region",
 		},
 		{
 			name:       "adopted region without a description stays undescribed",

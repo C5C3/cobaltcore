@@ -52,16 +52,16 @@ this cluster is the one labelled OpenStack Compute.
 A hypervisor cluster is a registered target cluster
 ([Target Clusters](../reference/target-clusters.md)). `nova-compute` runs there
 as a `NovaCompute` pool, beside openstack-hypervisor-operator and
-kvm-node-agent, whose upstream charts CobaltCore runs with images it builds
-from pinned commits and its own patches. The
+kvm-node-agent, whose upstream charts CobaltCore OpenStack runs with images it
+builds from pinned commits and its own patches. The
 [Nova](../reference/nova/index.md) and [Neutron](../reference/neutron/index.md)
-control planes this cluster presumes are onboarded, and the
-[OVN operator](../reference/ovn/index.md) projects `ovs` and `ovn-controller`
-onto labelled nodes. What such a cluster reads from the control plane, and what
-it has to provide in return, is written down in
-[Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md). The
-dedicated bare-metal cluster of the original document, provisioned by IronCore
-and managed by Gardener, stays a sketch.
+control planes this cluster presumes are onboarded, and the [OVN
+operator](../reference/ovn/index.md) projects `ovs` and `ovn-controller` onto
+labelled nodes. What such a cluster reads from the control plane, and what it
+has to provide in return, is written down in [Connect a Compute
+Cluster](../guides/nova/connect-a-compute-cluster.md). The dedicated bare-metal
+cluster of the original document, provisioned by IronCore and managed by
+Gardener, stays a sketch.
 
 The figure shows the node layer as the Quick Start (metal-stack) builds it
 today: on the workers of the control-plane cluster, without a dedicated compute

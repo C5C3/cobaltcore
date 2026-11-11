@@ -120,7 +120,8 @@ For a managed database, replica count and volume size cannot be changed through
 the `ControlPlane` after creation. The MariaDB operator treats volume size as
 immutable. Set an adequate size before creating the control plane. For later
 growth, follow the MariaDB operator and storage provider's supported expansion
-or migration procedure. CobaltCore does not provide an in-place resize workflow.
+or migration procedure. CobaltCore OpenStack does not provide an in-place resize
+workflow.
 
 ---
 

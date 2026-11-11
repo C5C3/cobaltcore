@@ -4,10 +4,10 @@
 
 # Read-only node probe for metal-stack clusters, the survey of #1138 (work
 # package 0) as a reusable Job. It is the prerequisite check of the CobaltCore
-# lab: run it against a metal-stack cluster before anything of the lab is
-# deployed. It prints the node facts the lab depends on under thirteen fixed
-# headers and exits 0 whatever it finds, so a node that lacks something
-# prints `absent`, `none` or `NOT FOUND` and the Job still completes.
+# OpenStack lab: run it against a metal-stack cluster before anything of the lab
+# is deployed. It prints the node facts the lab depends on under thirteen fixed
+# headers and exits 0 whatever it finds, so a node that lacks something prints
+# `absent`, `none` or `NOT FOUND` and the Job still completes.
 #
 # IMAGE docker.io/library/debian:bookworm-slim, a Docker Official Image whose
 # util-linux and coreutils supply lscpu, lsblk, stat and df. Digest-pinned;
@@ -62,8 +62,8 @@
 #
 # EXPECTED OUTPUT of the 2026-10-04 run on
 # shoot--df33f0b4c1--forge-group-0-666b6-qmhrg, a lab-ready node, taken on a
-# bare cluster that carried no CobaltCore stack. The `== nics` section lists
-# one cali* interface per pod on the node (14 in this run, all mtu=1460
+# bare cluster that carried no CobaltCore OpenStack stack. The `== nics` section
+# lists one cali* interface per pod on the node (14 in this run, all mtu=1460
 # operstate=up); they are cut to one line here.
 #   == kvm device
 #   crw-rw---- 1 root 103 10, 232 Oct  4 15:06 /dev/kvm

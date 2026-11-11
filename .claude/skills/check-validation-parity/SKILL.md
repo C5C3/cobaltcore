@@ -13,12 +13,12 @@ description: >-
 
 # Check validation parity
 
-This skill verifies that the CobaltCore **CR validation logic stays in parity
-across its four representations**: every admission rule declared as a
+This skill verifies that the CobaltCore OpenStack **CR validation logic stays in
+parity across its four representations**: every admission rule declared as a
 kubebuilder marker or CEL `XValidation` has a coherent webhook twin (or a
-deliberate reason not to), every webhook-enforced rule is exercised by a
-unit test and a rejection fixture, and every error substring a rejection
-corpus asserts still anchors to a rule that exists today.
+deliberate reason not to), every webhook-enforced rule is exercised by a unit
+test and a rejection fixture, and every error substring a rejection corpus
+asserts still anchors to a rule that exists today.
 
 It is repeatable — run it any time, especially after editing a
 `*_types.go` validation marker, a `*_webhook.go` rule, or a rejection

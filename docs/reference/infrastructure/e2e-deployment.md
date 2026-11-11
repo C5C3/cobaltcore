@@ -359,13 +359,13 @@ before its delete. Then:
    writes its Lease again.
 8. The CRDs of the stack's API groups (the cert-manager, External Secrets,
    MariaDB, Memcached, OpenBao, Garage, RabbitMQ, Gateway API, Envoy Gateway,
-   Prometheus Operator, CobaltCore, K-ORC, Flux and flux-operator groups,
-   `kvm.cloud.sap`, whose CRDs the lab hypervisors' charts install and Helm
-   leaves behind, `chaos-mesh.org`, whose CRDs the Chaos Mesh chart
+   Prometheus Operator, CobaltCore OpenStack, K-ORC, Flux and flux-operator
+   groups, `kvm.cloud.sap`, whose CRDs the lab hypervisors' charts install and
+   Helm leaves behind, `chaos-mesh.org`, whose CRDs the Chaos Mesh chart
    installs from its `crds/` and Helm never deletes, and `ceph.rook.io`,
    `objectbucket.io` and `csi.ceph.io`: the `rook-ceph` chart marks its CRDs
-   `helm.sh/resource-policy: keep`, and `csi.ceph.io` holds the one CRD
-   `ceph/` applies for the operator's watch, which its uninstall leaves).
+   `helm.sh/resource-policy: keep`, and `csi.ceph.io` holds the one CRD `ceph/`
+   applies for the operator's watch, which its uninstall leaves).
 
 In `kube-system` it deletes only the `maint-<node>` objects of step 0, the
 `csi-driver-nfs` HelmRelease of step 2 with its chart, the Service and the

@@ -3,5 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package plugins provides pure functions for rendering OpenStack api-paste.ini
-// pipeline configurations and plugin INI sections for CobaltCore operators.
+// pipeline configurations and plugin INI sections for CobaltCore OpenStack
+// operators.
 package plugins

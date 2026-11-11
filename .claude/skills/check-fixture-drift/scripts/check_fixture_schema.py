@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validate every CobaltCore CR fixture under tests/ against its current CRD schema.
+"""Validate every CobaltCore OpenStack CR fixture under tests/ against its current CRD schema.
 
 This is the X1/X2 half of audit-fixture-drift.sh, factored out because the
 checks need a real YAML parser: fixtures are multi-document files (a Keystone CR
@@ -167,12 +167,12 @@ def main() -> int:
         "INFO",
         f"{len(crds)} CRD version(s) across {len(served)} kind(s) in "
         f"{len(repo_groups)} API group(s); "
-        f"{len(in_scope)} CobaltCore CR document(s) under {TEST_ROOT}/",
+        f"{len(in_scope)} CobaltCore OpenStack CR document(s) under {TEST_ROOT}/",
     )
-    emit("INFO", f"suite roots carrying CobaltCore CRs: {', '.join(suites)}")
+    emit("INFO", f"suite roots carrying CobaltCore OpenStack CRs: {', '.join(suites)}")
 
     # ---------------------------------------------------------------------
-    header("X1: every CobaltCore fixture names a known kind on a served apiVersion")
+    header("X1: every CobaltCore OpenStack fixture names a known kind on a served apiVersion")
     unknown = 0
     for group in sorted(undeclared):
         entries = undeclared[group]
@@ -212,10 +212,10 @@ def main() -> int:
         files = {str(f) for f in per_kind[kind]}
         emit("INFO", f"{kind}: {len(per_kind[kind])} document(s) in {len(files)} file(s)")
     if unknown == 0:
-        emit("PASS", f"all {len(in_scope)} CobaltCore CR document(s) use a known kind on a served apiVersion")
+        emit("PASS", f"all {len(in_scope)} CobaltCore OpenStack CR document(s) use a known kind on a served apiVersion")
 
     # ---------------------------------------------------------------------
-    header("X2: every spec field in a CobaltCore fixture exists in the CRD schema")
+    header("X2: every spec field in a CobaltCore OpenStack fixture exists in the CRD schema")
     checked = 0
     offenders = 0
     for rel, index, doc in in_scope:

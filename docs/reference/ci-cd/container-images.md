@@ -168,7 +168,7 @@ listing backs `GET /v3/role_assignments?effective`,
 `GET /v3/auth/domains`, and `add_implied_roles` also runs in every token's
 role resolution. Keystone caches the computed assignments until the next
 role grant, project change or group membership change flushes them, and
-CobaltCore creates role assignments from namespace orders (#1329), so
+CobaltCore OpenStack creates role assignments from namespace orders (#1329), so
 their number grows with every tenant. The patches keep the checked refs as
 a set of hashable keys, which takes the 4,000 assignments to 0.017 s with
 the same output in the same order, and call `get_role` once per distinct
@@ -2522,11 +2522,11 @@ accounts noble's libvirt packages created, with noble's IDs: the
 `images/openstack-hypervisor-operator/image.nix` creates no `openstack` user, and carries a `# DEVIATION`
 comment saying so. The operator is a static Go binary, so it runs on
 `nix/lib/static-image.nix`, the stand-in for the
-`gcr.io/distroless/static:nonroot` base and the image the CobaltCore operator
-images run on (`nix/lib/operator-image.nix`), as that base's `nonroot` user,
-UID 65532. Upstream's
-own image is Alpine with UID 4200. Its chart sets only `runAsNonRoot: true` and
-no command, which any non-root user and the image's `Entrypoint` satisfy.
+`gcr.io/distroless/static:nonroot` base and the image the CobaltCore OpenStack
+operator images run on (`nix/lib/operator-image.nix`), as that base's `nonroot`
+user, UID 65532. Upstream's own image is Alpine with UID 4200. Its chart sets
+only `runAsNonRoot: true` and no command, which any non-root user and the
+image's `Entrypoint` satisfy.
 
 **Distroless and UID 0 instead of the `openstack` user (kvm-node-agent):**
 

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# audit-fixture-drift.sh — mechanical fixture-drift checks for the CobaltCore repo.
+# audit-fixture-drift.sh — mechanical fixture-drift checks for the CobaltCore OpenStack repo.
 # Verifies that test fixtures still match the CRD they claim to instantiate:
 #   X1  every fixture document in an API group the repo's CRDs declare names a
 #       known kind on a served apiVersion; other *.c5c3.io groups (external
@@ -55,8 +55,8 @@ if ! compgen -G "operators/*/config/crd/bases/*.yaml" > /dev/null; then
 fi
 
 # ---------------------------------------------------------------------------
-# X1 + X2 — schema validation of every CobaltCore CR fixture (needs a YAML
-# parser: fixtures are multi-document and the CRD schema is deeply nested).
+# X1 + X2 — schema validation of every CobaltCore OpenStack CR fixture (needs a
+# YAML parser: fixtures are multi-document and the CRD schema is deeply nested).
 # ---------------------------------------------------------------------------
 SCHEMA_HELPER="${SCRIPT_DIR}/check_fixture_schema.py"
 if ! command -v python3 > /dev/null 2>&1; then

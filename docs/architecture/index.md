@@ -4,8 +4,9 @@ title: Architecture
 
 # Architecture
 
-CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating
-Hosted Control Planes. Its design originates in the
+CobaltCore OpenStack (C5C3 OpenStack) is a Kubernetes-native OpenStack
+distribution for operating Hosted Control Planes, and the OpenStack part of
+the parent project CobaltCore. Its design originates in the
 [C5C3 architecture document](https://c5c3.github.io/C5C3/), an early-concept
 sketch of the full multi-cluster system. This page describes the architecture
 as this repository implements it, and the implementation is authoritative
@@ -28,11 +29,11 @@ target clusters.
 
 ## A composable control plane
 
-CobaltCore does not run OpenStack as one deployment that carries every service
-and every backend. Each service is a custom resource of its own, reconciled by
-an operator of its own, and each backend a service uses is a custom resource as
-well. A control plane is the set of resources that exist, so adding, removing,
-or replacing one part is a change to one resource.
+CobaltCore OpenStack does not run OpenStack as one deployment that carries every
+service and every backend. Each service is a custom resource of its own,
+reconciled by an operator of its own, and each backend a service uses is a
+custom resource as well. A control plane is the set of resources that exist, so
+adding, removing, or replacing one part is a change to one resource.
 
 ![A ControlPlane and the parts it is assembled from. Through spec.services the ControlPlane creates one service resource per block: Keystone for identity, Barbican for secrets, Glance for images, Cinder for block storage, Nova for compute, and Neutron for the network, and a further service when one is added. Each service carries the backend resources that name it: KeystoneIdentityBackend for an LDAP domain, an OIDC provider or a SAML provider; BarbicanSecretStore for a dedicated or an external OpenBao; GlanceBackend for S3 stores, one of them the default; CinderBackend for NFS and RBD, and CinderBackupBackend for NFS or RBD; NovaCompute for a pool on labelled nodes or a pool on a compute cluster. Neutron names an OVNCentral with the OVN databases, and OVNChassis resources name that central for compute and gateway nodes. Dashed slots mark where more backends of a kind attach. Horizon and Placement attach no backends. Attach: apply a CR that names the service, or add an entry to the ControlPlane, and the service projects it into its config. Detach: delete the CR or drop the entry. Scale: spec.sizing sets replicas and resources per component and can autoscale the APIs, and more pools, backends, and ControlPlanes add capacity.](../diagrams/cobaltcore-building-blocks.svg)
 
@@ -85,10 +86,11 @@ hypervisors, and another `ControlPlane` in another namespace adds a whole
 control plane ([Several control planes](#several-control-planes)). A new
 service is an operator of its own and one more block in `spec.services`
 ([Adding a New Operator](../contributing/adding-a-new-operator.md)). A service
-that CobaltCore does not operate registers with a `KeystoneService` and orders
-its database, bus, and credentials from the ControlPlane
-([Register a Service the ControlPlane Does Not Manage](../guides/register-a-foreign-service.md),
-[Order Resources from a ControlPlane](../guides/order-resources-from-a-controlplane.md)).
+that CobaltCore OpenStack does not operate registers with a `KeystoneService`
+and orders its database, bus, and credentials from the ControlPlane ([Register a
+Service the ControlPlane Does Not
+Manage](../guides/register-a-foreign-service.md), [Order Resources from a
+ControlPlane](../guides/order-resources-from-a-controlplane.md)).
 
 ## Layering
 
@@ -186,15 +188,15 @@ from an open-source project of its own. IronCore provisions the servers,
 manages their lifecycle, and manages the switches, and metal-stack can take
 its place for the same three tasks. Garden Linux is the operating system on
 every node, and Gardener creates and manages the Kubernetes clusters through
-its provider extension for IronCore or for metal-stack. CobaltCore runs the
-OpenStack control planes on those clusters, with one `ControlPlane` resource
-per control plane, and OpenStack provides the VMs, the storage, and the
+its provider extension for IronCore or for metal-stack. CobaltCore OpenStack
+runs the OpenStack control planes on those clusters, with one `ControlPlane`
+resource per control plane, and OpenStack provides the VMs, the storage, and the
 network. On metal-stack, the nodes run one of the operating system images
-metal-stack builds, such as Debian or Ubuntu. The
-[Quick Start (metal-stack)](../quick-start-metal-stack.md) runs CobaltCore on
-such a Gardener shoot today.
+metal-stack builds, such as Debian or Ubuntu. The [Quick Start
+(metal-stack)](../quick-start-metal-stack.md) runs CobaltCore OpenStack on such
+a Gardener shoot today.
 
-![The stack layer by layer, with the project behind each layer: IronCore or metal-stack for server provisioning, server lifecycle, and switch management; Garden Linux as the operating system on every node; Gardener for the Kubernetes clusters, created and managed via the IronCore or metal-stack provider extension; CobaltCore for the OpenStack control planes, Kubernetes operators with one ControlPlane resource per control plane; OpenStack for VMs (Nova on KVM or Cloud Hypervisor), storage (Cinder on Ceph), and network (Neutron on OVN).](../diagrams/cobaltcore-stack.svg)
+![The stack layer by layer, with the project behind each layer: IronCore or metal-stack for server provisioning, server lifecycle, and switch management; Garden Linux as the operating system on every node; Gardener for the Kubernetes clusters, created and managed via the IronCore or metal-stack provider extension; CobaltCore OpenStack for the OpenStack control planes, Kubernetes operators with one ControlPlane resource per control plane; OpenStack for VMs (Nova on KVM or Cloud Hypervisor), storage (Cinder on Ceph), and network (Neutron on OVN).](../diagrams/cobaltcore-stack.svg)
 
 Laid out as clusters, the stack becomes five Kubernetes clusters. IronCore or
 metal-stack provisions every bare-metal node and manages it out of band (OOB),
@@ -277,10 +279,10 @@ changes of one team reach into the work of another: the servers of a
 hypervisor in maintenance have to move, and a rotated credential has to reach
 every compute node.
 
-CobaltCore turns the coordination between these teams into interfaces that
-operators act on. Each team changes its own resources, and an operator carries
-the change to the other side. A hypervisor goes into maintenance without a
-ticket to the control plane team, and a new credential reaches every compute
+CobaltCore OpenStack turns the coordination between these teams into interfaces
+that operators act on. Each team changes its own resources, and an operator
+carries the change to the other side. A hypervisor goes into maintenance without
+a ticket to the control plane team, and a new credential reaches every compute
 cluster without a hand-over between teams.
 
 ![One region with its teams and the interfaces between them. The control plane team runs the OpenStack Control Plane cluster with the ControlPlane, the OpenStack services, OpenBao, and the OVN databases; an ExternalSecret carries secrets from OpenBao to the services. A service team orders resources from the control plane and receives Secrets. At site A a compute team, a storage team, and a network team each run a cluster: Compute with the Hypervisor resource, hvo, nova-compute, and libvirt; Storage with Ceph and a PushSecret; Network with Open vSwitch and ovn-controller. Four interfaces cross between the site and the control plane: the ControlPlane delivers the compute contract to the compute cluster, hvo calls the Nova API for maintenance, eviction, and aggregates, the PushSecret writes the Ceph keys into OpenBao, and ovn-controller joins the Southbound database. Site B and more repeat the compute, storage, and network clusters, each run by a team of its own. A platform team provides the bare metal with IronCore or metal-stack and every Kubernetes cluster with Gardener. Three examples: the compute team labels a node, the pool registers it in Nova, and hvo adds it to the aggregate of its zone; the compute team sets spec.maintenance on the node's Hypervisor, and hvo disables the host in Nova and live-migrates its servers; the ControlPlane rewrites the compute contract on every compute cluster in place.](../diagrams/cobaltcore-team-interfaces.svg)
@@ -350,9 +352,10 @@ not as an operator. New services follow the onboarding path in
 OpenStack on Kubernetes is also deployed without operators, from Helm charts
 that a central CI renders and applies. Large OpenStack providers run this model
 in production across many regions. This chapter describes the model and sets
-CobaltCore beside it, so that a reader who knows one can place the other.
+CobaltCore OpenStack beside it, so that a reader who knows one can place the
+other.
 
-![Two ways to deploy OpenStack on Kubernetes. Left, charts, values, and a central CI: a charts repository with one chart per service, each with its own database, bus, and cache, several hundred charts in all, and a values repository with the differences per region, for example MariaDB and OVN on in region A and Galera and OVN off in region B, with secrets from a vault at deploy time. Both feed a central CI that runs one job per release and region: keystone, nova, neutron, cinder, and more for region A, the same again for region B, and a pipeline of its own for every further region. The CI pushes the releases with helm upgrade into each region, where every release, such as nova and neutron, brings its own database, bus, and cache. Right, CobaltCore: a Git repository holds one ControlPlane per region, for example sizing Standard in A and Minimal in B, with every field checked at admission. A CI builds and tests the operators and the images once. The operators carry the install order, the database migrations, the upgrades, and the key rotation, run in every region, and report the state of every resource as conditions. Flux in every region pulls its ControlPlane, and each region runs Flux, the ControlPlane, the operators, and one database, bus, and cache that all services share.](../diagrams/cobaltcore-deployment-models.svg)
+![Two ways to deploy OpenStack on Kubernetes. Left, charts, values, and a central CI: a charts repository with one chart per service, each with its own database, bus, and cache, several hundred charts in all, and a values repository with the differences per region, for example MariaDB and OVN on in region A and Galera and OVN off in region B, with secrets from a vault at deploy time. Both feed a central CI that runs one job per release and region: keystone, nova, neutron, cinder, and more for region A, the same again for region B, and a pipeline of its own for every further region. The CI pushes the releases with helm upgrade into each region, where every release, such as nova and neutron, brings its own database, bus, and cache. Right, CobaltCore OpenStack: a Git repository holds one ControlPlane per region, for example sizing Standard in A and Minimal in B, with every field checked at admission. A CI builds and tests the operators and the images once. The operators carry the install order, the database migrations, the upgrades, and the key rotation, run in every region, and report the state of every resource as conditions. Flux in every region pulls its ControlPlane, and each region runs Flux, the ControlPlane, the operators, and one database, bus, and cache that all services share.](../diagrams/cobaltcore-deployment-models.svg)
 
 ### Charts, values, and a central CI
 
@@ -385,17 +388,17 @@ cloud, such as registering its endpoints.
 
 ### One resource per region
 
-CobaltCore moves what the CI and the values repository hold into operators and
-one typed resource. The procedures, such as the install order, the database
-migrations, the upgrades, and the key rotation, are operator code. The CI of
-this repository builds and tests that code once for every region, from unit
-tests to end-to-end suites on kind. A region is one `ControlPlane`, and its
-differences are fields such as `spec.sizing` or the presence of a service
-block, which the API checks at admission through schema rules and webhooks.
-Free-form configuration stays possible through `extraConfig`, and admission
-warns when it sets a key an operator owns. The services of a ControlPlane share
-one database, cache, and bus, and a service gets its own only when its block
-asks for them ([A composable control plane](#a-composable-control-plane)).
+CobaltCore OpenStack moves what the CI and the values repository hold into
+operators and one typed resource. The procedures, such as the install order, the
+database migrations, the upgrades, and the key rotation, are operator code. The
+CI of this repository builds and tests that code once for every region, from
+unit tests to end-to-end suites on kind. A region is one `ControlPlane`, and its
+differences are fields such as `spec.sizing` or the presence of a service block,
+which the API checks at admission through schema rules and webhooks. Free-form
+configuration stays possible through `extraConfig`, and admission warns when it
+sets a key an operator owns. The services of a ControlPlane share one database,
+cache, and bus, and a service gets its own only when its block asks for them ([A
+composable control plane](#a-composable-control-plane)).
 
 Deployment runs in the region. Flux in each cluster applies the infrastructure
 stack from Git ([Layering](#layering)), and the operators reconcile the
@@ -407,7 +410,7 @@ of a region follows [Teams per region and site](#teams-per-region-and-site).
 
 ### Side by side
 
-| Aspect | Charts, values, and a central CI | CobaltCore |
+| Aspect | Charts, values, and a central CI | CobaltCore OpenStack |
 | --- | --- | --- |
 | Unit of deployment | One Helm release per service and region | One `ControlPlane` per region, from which the operators create the services |
 | Where a region differs | Any value of any chart, in the values repository | Typed fields of the ControlPlane, checked at admission, and `extraConfig` with a warning for keys an operator owns |

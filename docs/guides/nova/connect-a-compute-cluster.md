@@ -451,8 +451,8 @@ for the metadata agent. `certificateNamespace` and `certificateIssuerName`
 name the Issuer of the libvirt certificates of
 [Live migration](../../reference/nova/novacompute-crd.md#live-migration). That
 namespace is never one in the access chart's `namespaces`, because the
-CobaltCore operators read every Secret there, and these Secrets hold the node
-keys.
+CobaltCore OpenStack operators read every Secret there, and these Secrets hold
+the node keys.
 
 hvo reads two node labels. It creates a `Hypervisor` for every Node labelled
 `nova.openstack.cloud.sap/virt-driver`.

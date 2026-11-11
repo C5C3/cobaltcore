@@ -1,7 +1,7 @@
 ---
 name: prepare-new-service
 description: >-
-  Analyze and prepare the onboarding of a new OpenStack service into CobaltCore —
+  Analyze and prepare the onboarding of a new OpenStack service into CobaltCore OpenStack —
   inventory the five layers (container image, service operator, CI/e2e,
   ControlPlane integration, documentation) against the Keystone reference
   implementation and the services onboarded since, check what scaffolding
@@ -34,7 +34,7 @@ clusters). Read the ones matching the profile before drafting.
 
 ## The five layers
 
-Every service in CobaltCore threads through five layers. Keystone
+Every service in CobaltCore OpenStack threads through five layers. Keystone
 (`operators/keystone`) is the reference implementation for all of them.
 
 | Layer | Canonical locations | Auto-extends? |

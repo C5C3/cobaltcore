@@ -24,8 +24,8 @@ No upstream test covers a Hypervisor whose traits are in sync. The
 patch adds TestTraitsInSyncSetsTraitsUpdated, a plain Go test outside
 the Ginkgo suite with controller-runtime's fake client and no
 Placement client, so it runs without envtest and proves that no
-Placement call happens; the CobaltCore image build runs it and fails
-when it does not pass.
+Placement call happens; the CobaltCore OpenStack image build runs it and
+fails when it does not pass.
 
 Applies-to: cobaltcore-dev/openstack-hypervisor-operator main @ a2baf3f4002e39ff93f105fae9594b357ba55b21
 

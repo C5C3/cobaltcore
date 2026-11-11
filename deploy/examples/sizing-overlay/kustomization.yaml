@@ -13,10 +13,10 @@
 # docs/reference/infrastructure/infrastructure-manifests.md, section "Sizing
 # and placement overrides".
 #
-# Each patch shows one shape the stack uses: a CobaltCore operator HelmRelease,
-# a third-party HelmRelease, the two Git-sourced Flux Kustomizations and the
-# FluxInstance. The figures are illustrative; size them against the usage you
-# observe. The placement values are:
+# Each patch shows one shape the stack uses: a CobaltCore OpenStack operator
+# HelmRelease, a third-party HelmRelease, the two Git-sourced Flux
+# Kustomizations and the FluxInstance. The figures are illustrative; size them
+# against the usage you observe. The placement values are:
 #   node label     node.c5c3.io/role: platform
 #   toleration     node.c5c3.io/role=platform:NoSchedule
 #   PriorityClass  cobaltcore-platform (priorityclass.yaml, which only this
@@ -30,16 +30,16 @@ resources:
   - priorityclass.yaml
 
 patches:
-  # A CobaltCore operator chart: a merge patch on spec.chart.spec.version and
-  # spec.values. nodeSelector, tolerations and priorityClassName need
-  # keystone-operator chart 0.11.0 or later (operator-library 0.9.0); an older
-  # chart rejects them through its values schema, so the patch raises the
-  # release's version floor with them. The patch replaces the base's whole
-  # range, so it repeats the base's upper bound; re-check it whenever the
-  # base moves. A patch copied to one of the other nine operator releases
-  # raises that release's floor to its chart version of the same change:
-  # barbican, glance, neutron, ovn and placement 0.3.0, c5c3 0.14.0, horizon
-  # 0.4.0, cinder and nova 0.2.0.
+  # A CobaltCore OpenStack operator chart: a merge patch on
+  # spec.chart.spec.version and spec.values. nodeSelector, tolerations and
+  # priorityClassName need keystone-operator chart 0.11.0 or later
+  # (operator-library 0.9.0); an older chart rejects them through its values
+  # schema, so the patch raises the release's version floor with them. The patch
+  # replaces the base's whole range, so it repeats the base's upper bound;
+  # re-check it whenever the base moves. A patch copied to one of the other nine
+  # operator releases raises that release's floor to its chart version of the
+  # same change: barbican, glance, neutron, ovn and placement 0.3.0, c5c3
+  # 0.14.0, horizon 0.4.0, cinder and nova 0.2.0.
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2

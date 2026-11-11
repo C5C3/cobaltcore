@@ -3,17 +3,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify a CobaltCore operator image that nix/lib/operator-image.nix builds
-# Usage: bash tests/container-images/verify_operator_image.sh <image> <operator> [cover]
-# Example: bash tests/container-images/verify_operator_image.sh keystone-operator:latest keystone
-# The third argument, cover, verifies the coverage-instrumented variant
+# Verify a CobaltCore OpenStack operator image that nix/lib/operator-image.nix
+# builds Usage: bash tests/container-images/verify_operator_image.sh <image>
+# <operator> [cover] Example: bash
+# tests/container-images/verify_operator_image.sh keystone-operator:latest
+# keystone The third argument, cover, verifies the coverage-instrumented variant
 # (<op>-operator-cover-image), whose description says so; the rest is the same.
-# Requires: Docker daemon running
-# The image carries the layout of nix/lib/static-image.nix, runs
-# /usr/bin/manager as 65532:65532 and has the four static labels alone: the
-# version, the commit and the source are annotations of the index
-# merge-operator-images publishes, so the image digest moves only with an
-# input.
+# Requires: Docker daemon running The image carries the layout of
+# nix/lib/static-image.nix, runs /usr/bin/manager as 65532:65532 and has the
+# four static labels alone: the version, the commit and the source are
+# annotations of the index merge-operator-images publishes, so the image digest
+# moves only with an input.
 
 set -euo pipefail
 
@@ -23,8 +23,8 @@ OPERATOR="${2:?$USAGE}"
 VARIANT="${3:-}"
 
 case "$VARIANT" in
-"") DESCRIPTION="CobaltCore ${OPERATOR} operator" ;;
-cover) DESCRIPTION="CobaltCore ${OPERATOR} operator, coverage-instrumented" ;;
+"") DESCRIPTION="CobaltCore OpenStack ${OPERATOR} operator" ;;
+cover) DESCRIPTION="CobaltCore OpenStack ${OPERATOR} operator, coverage-instrumented" ;;
 *)
   echo "$USAGE" >&2
   exit 1

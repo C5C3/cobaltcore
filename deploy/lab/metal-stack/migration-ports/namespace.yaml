@@ -6,10 +6,10 @@
 # and of what ../hypervisor adds to it: the libvirt migration CA, its Issuer,
 # the per-node Certificates openstack-hypervisor-operator requests
 # (libvirt-<node>, Secret tls-libvirt-<node>) and kvm-node-agent. Every
-# CobaltCore operator reads Secrets in openstack, and a tls-libvirt-<node>
-# Secret is root on its node's libvirtd
-# (docs/reference/nova/novacompute-crd.md, Live migration), so the
-# certificates live here and not there.
+# CobaltCore OpenStack operator reads Secrets in openstack, and a
+# tls-libvirt-<node> Secret is root on its node's libvirtd
+# (docs/reference/nova/novacompute-crd.md, Live migration), so the certificates
+# live here and not there.
 #
 # The label and the annotation are the lab's rule for every namespace it
 # declares (see ../base/kustomization.yaml). The label keeps Gardener's

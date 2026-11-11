@@ -6,11 +6,11 @@ quadrant: backend
 # Helm Values Schema
 
 Reference documentation for the `values.schema.json` JSON Schema that validates
-the Helm chart values of every CobaltCore operator chart — keystone-operator,
-c5c3-operator, glance-operator, horizon-operator, placement-operator,
-barbican-operator, ovn-operator and neutron-operator. Helm enforces this schema
-automatically during `helm install`, `helm upgrade`, `helm lint`, and
-`helm template`.
+the Helm chart values of every CobaltCore OpenStack operator chart —
+keystone-operator, c5c3-operator, glance-operator, horizon-operator,
+placement-operator, barbican-operator, ovn-operator and neutron-operator. Helm
+enforces this schema automatically during `helm install`, `helm upgrade`, `helm
+lint`, and `helm template`.
 
 All charts share one schema source, so the value tables below apply to every
 operator unchanged. The few keys that exist on only some charts are called out

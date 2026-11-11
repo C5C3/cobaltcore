@@ -16,7 +16,7 @@ SPDX-License-Identifier: Apache-2.0
 <Subject: imperative, what the patch changes>
 
 <What upstream does, in which file and function, and how it breaks
-CobaltCore: the failure mode, the evidence (issue, spike, CI run).>
+CobaltCore OpenStack: the failure mode, the evidence (issue, spike, CI run).>
 
 <Why this change and not another; what it does not cover; any operator
 configuration it depends on.>

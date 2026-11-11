@@ -1,23 +1,22 @@
 ---
 name: check-doc-expressions
 description: >-
-  Audit documentation prose quality for the CobaltCore docs — sentence clarity,
-  active voice, terminology, ambiguity, tone, jargon control, adherence
-  to STYLE_GUIDE.md's rhetorical-device budget (em-dashes, italics,
-  antithesis, callouts, aphorisms, filler words, counted per page by a
-  script), and the readability of command examples and code-adjacent
-  explanations. Use when asked to improve writing quality, after drafting
-  or editing prose, when a page reads correctly but not clearly, or to
-  find the pages furthest over the style budget.
+  Audit documentation prose quality for the CobaltCore OpenStack docs — sentence
+  clarity, active voice, terminology, ambiguity, tone, jargon control, adherence
+  to STYLE_GUIDE.md's rhetorical-device budget (em-dashes, italics, antithesis,
+  callouts, aphorisms, filler words, counted per page by a script), and the
+  readability of command examples and code-adjacent explanations. Use when asked
+  to improve writing quality, after drafting or editing prose, when a page reads
+  correctly but not clearly, or to find the pages furthest over the style
+  budget.
 ---
 
 # Check documentation expressions
 
-This skill verifies that the CobaltCore documentation **reads cleanly and says
-exactly what it means**. It focuses on prose quality rather than page
-shape: sentences should be direct, terminology should be consistent,
-examples should be readable, and important claims should not be buried
-in vague language.
+This skill verifies that the CobaltCore OpenStack documentation **reads cleanly
+and says exactly what it means**. It focuses on prose quality rather than page
+shape: sentences should be direct, terminology should be consistent, examples
+should be readable, and important claims should not be buried in vague language.
 
 It is repeatable — run it any time text changes materially, especially in
 user-facing guides, tutorials, and reference prose.

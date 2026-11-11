@@ -16,12 +16,12 @@ unreachable: POST /v3/auth/tokens reads it through keystone/auth/core.py
 and the resource SQL backend, oslo.db raises DBConnectionError,
 Flask-RESTful 0.3.10's error_router re-raises it into Flask's
 handle_user_exception, and Flask finds no handler. In the
-e2e-chaos-random run 41903435759 of CobaltCore, Keystone logged
-"Unhandled error: oslo_db.exception.DBConnectionError" and
-"POST /v3/auth/tokens => generated 0 bytes in 79 msecs (HTTP/1.1 500)"
-after openstack-db-0 was killed, and a starting nova-compute got
-"Remote end closed connection without response" 60 seconds later.
-Token validation does not escape: middleware_exceptions in
+e2e-chaos-random run 41903435759 of CobaltCore OpenStack, Keystone
+logged "Unhandled error: oslo_db.exception.DBConnectionError" and "POST
+/v3/auth/tokens => generated 0 bytes in 79 msecs (HTTP/1.1 500)" after
+openstack-db-0 was killed, and a starting nova-compute got "Remote end
+closed connection without response" 60 seconds later. Token validation
+does not escape: middleware_exceptions in
 keystone/server/flask/request_processing/middleware/auth_context.py
 wraps AuthContextMiddleware.process_request and answers a JSON 500.
 

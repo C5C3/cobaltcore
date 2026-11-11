@@ -1979,7 +1979,7 @@ func TestReconcileCatalog_Idempotent(t *testing.T) {
 	// state, or reordered the read and the apply, would drop and re-add
 	// spec.resource.description on every pass, bumping the CR's generation and
 	// leaving K-ORC clearing and re-setting the Keystone description forever.
-	cp.Spec.RegionDescription = "CobaltCore e2e region"
+	cp.Spec.RegionDescription = "CobaltCore OpenStack e2e region"
 	setAdminCredentialReady(cp)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, availableCatalogRegion(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
@@ -1999,7 +1999,7 @@ func TestReconcileCatalog_Idempotent(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
 	}, region1)).To(Succeed())
-	g.Expect(region1.Spec.Resource.Description).To(HaveValue(Equal("CobaltCore e2e region")))
+	g.Expect(region1.Spec.Resource.Description).To(HaveValue(Equal("CobaltCore OpenStack e2e region")))
 
 	// Second reconcile must project a byte-identical spec (idempotent projection).
 	// The fake client bumps ResourceVersion on a no-op Server-Side Apply — a
@@ -2073,7 +2073,7 @@ func TestReconcileCatalog_RegionAdoptsBeforeDescribing(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
-	cp.Spec.RegionDescription = "CobaltCore e2e region"
+	cp.Spec.RegionDescription = "CobaltCore OpenStack e2e region"
 	setAdminCredentialReady(cp)
 	// The catalog rows are Available, so the pass turns on the Region alone.
 	c := fake.NewClientBuilder().WithScheme(s).
@@ -2112,7 +2112,7 @@ func TestReconcileCatalog_RegionAdoptsBeforeDescribing(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(c.Get(ctx, key, region)).To(Succeed())
-	g.Expect(region.Spec.Resource.Description).To(HaveValue(Equal("CobaltCore e2e region")),
+	g.Expect(region.Spec.Resource.Description).To(HaveValue(Equal("CobaltCore OpenStack e2e region")),
 		"the description is pushed on the pass after adoption")
 
 	// CatalogReady flips True in this same pass ONLY because the fake client leaves
@@ -2226,7 +2226,7 @@ func TestReconcileCatalog_RegionDescriptionClearWarns(t *testing.T) {
 	t.Run("a described region is silent", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		cp := korcControlPlane()
-		cp.Spec.RegionDescription = "CobaltCore e2e region"
+		cp.Spec.RegionDescription = "CobaltCore OpenStack e2e region"
 		setAdminCredentialReady(cp)
 		setCatalogReady(cp)
 		r, rec := newReconciler(cp)

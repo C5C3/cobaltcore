@@ -26,8 +26,8 @@ is returned unchanged.
 No upstream test covers the endpoint selection. The patch adds
 TestServiceClientInterface, a plain Go test outside the Ginkgo suite
 with an endpoint locator that records the options it gets, so it runs
-without envtest; the CobaltCore image build runs it and fails when it
-does not pass.
+without envtest; the CobaltCore OpenStack image build runs it and fails
+when it does not pass.
 
 Applies-to: cobaltcore-dev/openstack-hypervisor-operator main @ a2baf3f4002e39ff93f105fae9594b357ba55b21
 

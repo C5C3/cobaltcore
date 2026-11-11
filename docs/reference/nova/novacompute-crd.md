@@ -897,11 +897,11 @@ in the migration domain. `tls_allowed_dn_list` does not stop that, because the
 stolen certificate carries a node subject. In `--certificate-namespace`, only
 cert-manager, openstack-hypervisor-operator and kvm-node-agent read Secrets.
 kvm-node-agent reads them in every namespace, so a compromised node or agent
-token reaches every migration peer of that node. The CobaltCore operators read
-Secrets in every namespace the target-cluster-access chart's `namespaces` lists,
-so `--certificate-namespace` stays out of that list. A local pool cannot keep
-that boundary. It needs the nova chart installed cluster-scoped (see
-`NodesForbidden` under [Conditions](#conditions)), and every operator chart
+token reaches every migration peer of that node. The CobaltCore OpenStack
+operators read Secrets in every namespace the target-cluster-access chart's
+`namespaces` lists, so `--certificate-namespace` stays out of that list. A local
+pool cannot keep that boundary. It needs the nova chart installed cluster-scoped
+(see `NodesForbidden` under [Conditions](#conditions)), and every operator chart
 left at its default `rbac.namespaceScoped=false` reads Secrets in every
 namespace of the management cluster, so each of these operators can read every
 node key and the CA there.

@@ -1,11 +1,12 @@
 # Security Policy
 
-CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating
-Hosted Control Planes across a multi-cluster topology (Management, Control
-Plane, Hypervisor, Storage). This repository delivers everything needed to run
-that stack — from infrastructure deployment manifests through the service
-operators to the c5c3-operator orchestration layer — built with Operator SDK
-(Go), controller-runtime, and Kubebuilder.
+CobaltCore OpenStack (C5C3 OpenStack), the OpenStack part of the parent project
+CobaltCore, is a Kubernetes-native OpenStack distribution for operating Hosted
+Control Planes across a multi-cluster topology (Management, Control Plane,
+Hypervisor, Storage). This repository delivers everything needed to run that
+stack — from infrastructure deployment manifests through the service operators
+to the c5c3-operator orchestration layer — built with Operator SDK (Go),
+controller-runtime, and Kubebuilder.
 
 We take the security of these components seriously and appreciate the effort of
 anyone who reports a potential issue responsibly.

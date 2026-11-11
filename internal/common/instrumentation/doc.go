@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package instrumentation provides the shared sub-reconciler instrumentation
-// primitives used by every CobaltCore operator. It exposes a metric pair
-// (<prefix>_reconcile_duration_seconds histogram and
+// primitives used by every CobaltCore OpenStack operator. It exposes a metric
+// pair (<prefix>_reconcile_duration_seconds histogram and
 // <prefix>_reconcile_errors_total counter) and an Instrumenter that wraps a
 // sub-reconciler call, observing its duration on every path and attributing
 // errors to the condition type the sub-reconciler drives.

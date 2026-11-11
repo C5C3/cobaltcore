@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package webhook holds the scaffolding every CobaltCore admission webhook
-// repeats verbatim: the never-invoked ValidateDelete that satisfies the
+// Package webhook holds the scaffolding every CobaltCore OpenStack admission
+// webhook repeats verbatim: the never-invoked ValidateDelete that satisfies the
 // Validator interface. The defaulting and validation logic itself stays with
 // each operator's API package, where it genuinely differs.
 package webhook

@@ -11,7 +11,7 @@ logs `uwsgi_simple_wait_write_hook()/poll(): Interrupted system call`,
 the write fails with `OSError: write error`, and the worker drops the
 response.
 
-The CobaltCore API containers run uWSGI with
+The CobaltCore OpenStack API containers run uWSGI with
 `--hook-master-start "unix_signal:15 gracefully_kill_them_all"`
 (`UWSGIGracefulShutdownArgs` in internal/common/deployment/uwsgi.go).
 On SIGTERM the master sends SIGHUP to every worker, and each worker

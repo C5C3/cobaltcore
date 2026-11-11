@@ -1,20 +1,19 @@
 ---
 name: check-doc-consistency
 description: >-
-  Audit documentation consistency across the CobaltCore docs — terminology,
-  naming, release/version references, repeated examples, cross-page
+  Audit documentation consistency across the CobaltCore OpenStack docs —
+  terminology, naming, release/version references, repeated examples, cross-page
   claims, and alignment with code or configuration when docs describe
-  implementation details. Use when asked to check for contradictions,
-  after changing shared terminology, or when one doc seems to disagree
-  with another.
+  implementation details. Use when asked to check for contradictions, after
+  changing shared terminology, or when one doc seems to disagree with another.
 ---
 
 # Check documentation consistency
 
-This skill verifies that the CobaltCore documentation **agrees with itself and
-with the source of truth it describes**. It is the cross-document and
-cross-layer check: the same concept should keep the same name, version,
-shape, and meaning everywhere it appears.
+This skill verifies that the CobaltCore OpenStack documentation **agrees with
+itself and with the source of truth it describes**. It is the cross-document and
+cross-layer check: the same concept should keep the same name, version, shape,
+and meaning everywhere it appears.
 
 It is repeatable — run it after edits that touch shared terms, repeated
 examples, release references, or any doc section that states facts about
@@ -93,7 +92,7 @@ Check the places where the same fact is likely repeated:
 - repo docs versus deployment or release files
 - claims about an external API versus its upstream specification; verify the
   relevant operation, schema, or version instead of inferring the contract
-  from CobaltCore's integration code
+  from CobaltCore OpenStack's integration code
 
 ### 3. Check for contradictions and stale copies
 

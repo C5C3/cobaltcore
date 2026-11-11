@@ -122,7 +122,7 @@ test_metadata_annotations_go_onto_the_index() {
   assert_contains "the annotations are index annotations" "$meta" "DOCKER_METADATA_ANNOTATIONS_LEVELS: index"
   for line in \
     'org.opencontainers.image.title=${{ matrix.operator }}-operator' \
-    'org.opencontainers.image.description=CobaltCore ${{ matrix.operator }} operator' \
+    'org.opencontainers.image.description=CobaltCore OpenStack ${{ matrix.operator }} operator' \
     "org.opencontainers.image.licenses=Apache-2.0" \
     "org.opencontainers.image.vendor=SAP SE"; do
     assert_contains "the metadata step sets $line" "$meta" "$line"

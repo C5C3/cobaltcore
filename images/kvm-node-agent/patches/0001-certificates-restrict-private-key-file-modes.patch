@@ -53,9 +53,9 @@ invalid key groups, a missing key, an empty Secret and a failed
 rename. TestUpdateTLSCertificateKeyGroupNotPermitted runs as a user
 other than root and proves that a group the process does not belong
 to fails the update and leaves every file of the previous Secret in
-place and no temporary file behind; the CobaltCore image build runs it
-as a Nix build user, in a sandbox whose user namespace maps the build
-group only, where chown fails with "invalid argument".
+place and no temporary file behind; the CobaltCore OpenStack image build
+runs it as a Nix build user, in a sandbox whose user namespace maps the
+build group only, where chown fails with "invalid argument".
 
 Applies-to: cobaltcore-dev/kvm-node-agent main @ 1e4e4b8e7050bbfa2d5a990aa21b849ba7b51700
 

@@ -18,9 +18,9 @@
 # DEVIATION from the original build-pipeline design: the image creates no
 # 'openstack' user. The operator is a static Go
 # binary, so it runs on the image that stands in for the distroless base the
-# CobaltCore operator images use (nix/lib/operator-image.nix), as that base's
-# nonroot user, uid 65532. Upstream's own image is Alpine with uid 4200; its
-# chart only sets runAsNonRoot and no command, which any non-root user and
+# CobaltCore OpenStack operator images use (nix/lib/operator-image.nix), as that
+# base's nonroot user, uid 65532. Upstream's own image is Alpine with uid 4200;
+# its chart only sets runAsNonRoot and no command, which any non-root user and
 # the Entrypoint satisfy.
 { pkgs, staticImage, ... }:
 let
@@ -29,7 +29,7 @@ in
 staticImage {
   name = "openstack-hypervisor-operator";
   tag = manager.version;
-  description = "openstack-hypervisor-operator built from a pinned upstream main commit with CobaltCore patches";
+  description = "openstack-hypervisor-operator built from a pinned upstream main commit with CobaltCore OpenStack patches";
   inherit manager;
   upstreamCommit = manager.src.rev;
 }

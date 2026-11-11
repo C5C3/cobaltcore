@@ -6,12 +6,12 @@
 # hack/deploy-mgmt-cluster.sh — Bring up the management cluster of the
 # two-cluster devstack.
 #
-# The management cluster runs the CobaltCore operators and nothing else: the
-# Keystone, Barbican and ControlPlane CRs live here, while every child they
-# project lands on a registered target cluster. The target half is a second kind
-# cluster brought up with `INFRA_ONLY=true CLUSTER_NAME=cobaltcore-target
+# The management cluster runs the CobaltCore OpenStack operators and nothing
+# else: the Keystone, Barbican and ControlPlane CRs live here, while every child
+# they project lands on a registered target cluster. The target half is a second
+# kind cluster brought up with `INFRA_ONLY=true CLUSTER_NAME=cobaltcore-target
 # hack/deploy-infra.sh`, which installs the third-party infrastructure (MariaDB,
-# Memcached, OpenBao, ESO) and no CobaltCore operator.
+# Memcached, OpenBao, ESO) and no CobaltCore OpenStack operator.
 #
 # What this script installs:
 #   1. A kind cluster (no config file: no host ports, no NodePort mappings —

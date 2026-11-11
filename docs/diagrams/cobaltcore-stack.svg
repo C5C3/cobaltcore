@@ -13,7 +13,8 @@
 <text x="1390" y="96.24" font-size="34" font-weight="700" fill="#6F5600" text-anchor="middle">Network</text>
 <text x="1390" y="135.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Neutron on OVN</text>
 <rect x="40" y="192" width="220" height="130" rx="16" fill="#1E6B40"/>
-<text x="150" y="267.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">CobaltCore</text>
+<text x="150" y="250.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">CobaltCore</text>
+<text x="150" y="284.08" font-size="28" font-weight="700" fill="#FBFAF7" text-anchor="middle">OpenStack</text>
 <rect x="285.5" y="193.5" width="1313" height="127" rx="14.5" fill="#E6F1EA" stroke="#2F8A57" stroke-width="3"/>
 <text x="942" y="248.24" font-size="34" font-weight="700" fill="#1E6B40" text-anchor="middle">OpenStack control planes</text>
 <text x="942" y="287.64" font-size="24" font-weight="400" fill="#2B3440" text-anchor="middle">Kubernetes operators, one ControlPlane resource per control plane</text>

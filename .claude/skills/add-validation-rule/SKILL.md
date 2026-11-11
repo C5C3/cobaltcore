@@ -1,11 +1,11 @@
 ---
 name: add-validation-rule
 description: >-
-  Add or change a CR admission rule in a CobaltCore operator end to end:
-  choose the layer (kubebuilder marker, CEL XValidation, webhook-only, or
-  twinned), then move every representation together — the *_types.go marker
-  and the regenerated CRD plus its Helm copy, the validating webhook and its
-  unit tests, the CRD-only envtest, the invalid-cr rejection fixture with its
+  Add or change a CR admission rule in a CobaltCore OpenStack operator end to
+  end: choose the layer (kubebuilder marker, CEL XValidation, webhook-only, or
+  twinned), then move every representation together — the *_types.go marker and
+  the regenerated CRD plus its Helm copy, the validating webhook and its unit
+  tests, the CRD-only envtest, the invalid-cr rejection fixture with its
   generator, Chainsaw step and Makefile wiring, the ControlPlane mirror when
   operators/c5c3 projects the field, and the reference docs. Use when adding,
   tightening, loosening, or moving a validation rule or webhook check, when a

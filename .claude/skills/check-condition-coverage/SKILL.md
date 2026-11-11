@@ -1,27 +1,26 @@
 ---
 name: check-condition-coverage
 description: >-
-  Audit Status condition coverage end-to-end for every CobaltCore operator —
-  every condition type set by a sub-reconciler must appear in that
-  operator's subReconcilerConditionTypes map (so metrics labels
-  resolve), every sub-reconciler must have a unit test, and every
-  condition the operator's reference docs document must be set
-  somewhere in code. Use when asked to check condition coverage, after
-  adding or renaming a sub-reconciler or a condition type, or when a
-  Prometheus condition_type label suddenly shows up as UNKNOWN.
+  Audit Status condition coverage end-to-end for every CobaltCore OpenStack
+  operator — every condition type set by a sub-reconciler must appear in that
+  operator's subReconcilerConditionTypes map (so metrics labels resolve), every
+  sub-reconciler must have a unit test, and every condition the operator's
+  reference docs document must be set somewhere in code. Use when asked to check
+  condition coverage, after adding or renaming a sub-reconciler or a condition
+  type, or when a Prometheus condition_type label suddenly shows up as UNKNOWN.
 ---
 
 # Check condition coverage
 
-This skill verifies that each CobaltCore operator's **status conditions are
-wired end-to-end**: every condition type set in the sub-reconcilers is
-registered in that operator's `subReconcilerConditionTypes` map (so the
-`<op>_operator_reconcile_errors_total{condition_type=…}` Prometheus
-label resolves to a known value), every sub-reconciler has a unit
-test, and every condition type the reference docs name is set
-somewhere in code. Operators are discovered dynamically via
-`operators/*/internal/controller/instrumentation.go`, so a newly
-onboarded service operator is audited without touching this skill.
+This skill verifies that each CobaltCore OpenStack operator's **status
+conditions are wired end-to-end**: every condition type set in the
+sub-reconcilers is registered in that operator's `subReconcilerConditionTypes`
+map (so the `<op>_operator_reconcile_errors_total{condition_type=…}` Prometheus
+label resolves to a known value), every sub-reconciler has a unit test, and
+every condition type the reference docs name is set somewhere in code. Operators
+are discovered dynamically via
+`operators/*/internal/controller/instrumentation.go`, so a newly onboarded
+service operator is audited without touching this skill.
 
 It is repeatable — run it any time, especially after editing a
 `reconcile_*.go`, a `subReconcilerConditionTypes` map, or the
