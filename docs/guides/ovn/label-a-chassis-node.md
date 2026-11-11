@@ -140,8 +140,8 @@ kubectl get ovnchassis controlplane-chassis -n openstack \
 ```
 
 Expect one entry per labelled node, with `systemID` holding a UUID and
-`gateway: true` on the promoted one. `gateway` carries `omitempty`, so a compute
-node prints no key rather than `false`. The `systemID` is what the
+`gateway: true` on the promoted one. The `gateway` field uses `omitempty`, so a
+compute node has no `gateway` key when its value is false. The `systemID` is what the
 chassis-deletion Job addresses later, so a node without one is a registration
 nothing could remove.
 

@@ -63,8 +63,8 @@ the examples below resolve on the target: `openstack-db`,
    external-secrets, openbao-operator, and the Prometheus operator CRDs. Every
    controller-runtime watch registers against this cluster at builder time, so
    those kinds have to be installed here even though no child is written here.
-   The rabbitmq-cluster-operator goes in with its controller, not just its CRD:
-   a ControlPlane's shared message bus is provisioned in the ControlPlane's own
+  The rabbitmq-cluster-operator controller also runs here. A ControlPlane's
+  shared message bus is provisioned in the ControlPlane's own
    namespace on this cluster, so the controller that turns a `RabbitmqCluster`
    into running RabbitMQ pods has to run here too.
    The script installs no CobaltCore OpenStack operator, and it leaves the kubectl context on
@@ -117,8 +117,8 @@ helm install --kube-context kind-cobaltcore-target \
   --set createNamespaces=false
 ```
 
-`namespaces` is required; an install without it fails at render time rather than
-granting an account that reaches nothing. `createNamespaces=false` because the
+`namespaces` is required. An install without it fails at render time and grants
+no access. `createNamespaces=false` because the
 devstack bring-up already created `openstack`, and Helm refuses to adopt a
 namespace another install owns. Leave it at its `true` default when the
 namespaces are new.
@@ -256,9 +256,8 @@ spec:
     region: RegionOne
 ```
 
-There is no `gateway` block: the target is reached over its API server here, not
-over a published hostname, and a route would only add a Gateway API dependency
-to it.
+There is no `gateway` block. This guide reaches the target through its API
+server; a route would add a Gateway API dependency.
 
 ```bash
 kubectl --context kind-cobaltcore-mgmt apply -f keystone-target.yaml
@@ -299,7 +298,7 @@ Revoking the grants themselves is a `helm uninstall target-cluster-access -n
 c5c3-access` on the target, which takes the ServiceAccount and its token with
 it. Deleting the account is the part that revokes: the token it minted never
 expires, so deleting the token Secret alone leaves a leaked copy valid until an
-account of the same name is gone. The namespaces stay — they carry
+account of the same name is gone. The namespaces stay because they carry
 `helm.sh/resource-policy: keep`, so the uninstall takes the access away and not
 the workloads placed there. See
 [Rotating and revoking the target token](../reference/target-clusters.md#rotating-and-revoking-the-target-token)
@@ -478,7 +477,7 @@ done
 
 Both belong in the loop. The operator's secrets gate holds on `keystone-db` and
 `keystone-admin` alike, and a target restarted before ESO's first successful
-sync has no materialized `keystone-db` Secret to fall back on, so nudging only
+sync has no generated `keystone-db` Secret to fall back on, so nudging only
 one of the two leaves the CR parked on `WaitingForDBCredentials` until the wait
 below times out. Leave `openbao-instance-unseal-key` out of it: that Secret
 carries the proving instance's seal key, which is never re-synced against a live
@@ -508,7 +507,7 @@ covers the policy and the sanctioned way to restart a managed instance.
 ## See also
 
 - [Target Clusters](../reference/target-clusters.md): the registration Secret's
-  contract, what the chart grants and what it deliberately does not, the
+  contract, the chart's grants and omissions, the
   ownership labels, and ControlPlane placement.
 - [Keystone CRD](../reference/keystone/keystone-crd.md): `spec.targetClusterRef`
   and the rest of the Keystone spec.
@@ -522,8 +521,8 @@ chainsaw test --test-dir tests/e2e-multicluster/placed-services
 ```
 
 The suite applies its CRs on the management cluster and asserts on both, so it
-needs a kubeconfig for the target of its own. That one is chainsaw's credential
-rather than the operators', and the admin kubeconfig is the right choice for it:
+needs its own target kubeconfig. Use the target's admin kubeconfig. The
+operators authenticate with the chart-issued ServiceAccount credential:
 
 ```bash
 kind get kubeconfig --name cobaltcore-target > _output/cobaltcore-target.kubeconfig

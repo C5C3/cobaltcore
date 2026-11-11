@@ -58,12 +58,11 @@ clone that volume on the backend instead of pulling the image through Glance
 again. The bound is per backend, because the clone is a backend operation: a
 cached entry serves the backend it was written on and no other.
 
-The cached volume belongs to the deployment rather than to the tenant whose
-request populated it, so cinder creates it as the project and user
-`spec.internalTenant` names on the Cinder. On a ControlPlane that block is
-derived, not declared: the `KeystoneService` registration publishes the service
-account's `projectID` and `userID` on its `status.account`, and the reconciler
-copies both onto the child as soon as they are there. Read them back:
+The cached volume belongs to the deployment's internal tenant. Cinder creates
+it as the project and user named in `spec.internalTenant`. On a ControlPlane,
+the `KeystoneService` registration publishes the service account's `projectID`
+and `userID` on `status.account`, and the reconciler copies both to the child.
+Read them back:
 
 ```bash
 kubectl get cinder controlplane-cinder -n openstack \
@@ -153,9 +152,8 @@ openstack --insecure volume show demo-img-1 -c status -f value
 openstack --insecure volume list --all-projects -f value -c Name | grep -cx "image-$IMG"
 ```
 
-The count is `1`. `--all-projects` is what makes it visible: the cache volume
-belongs to the internal tenant, not to the project that issued the create, so a
-plain `volume list` never shows it.
+The count is `1`. Use `--all-projects` to see the cache volume. It belongs to
+the internal tenant, so the requesting project's `volume list` omits it.
 
 The second create clones it:
 
@@ -201,9 +199,9 @@ spec:
     userID: 3f9d2b7c1a8e4f60b5d3c7a9e2b6f841
 ```
 
-Both fields are required and both are IDs, not names. Cinder passes them to the
-volume API without resolving them through Keystone, so a name reaches the backend
-as a project that does not exist. Read the real values off Keystone:
+Provide both IDs. Cinder passes them to the volume API without resolving names
+through Keystone, so a name reaches the backend as a project that does not
+exist. Read the values from Keystone:
 
 ```bash
 openstack --insecure project show service -f value -c id
@@ -217,13 +215,13 @@ is there the cache stays inactive.
 
 ## See also
 
-- [CinderBackend CRD API Reference](../../reference/cinder/cinder-backend-crd.md#imagevolumecachespec) —
+- [CinderBackend CRD API Reference](../../reference/cinder/cinder-backend-crd.md#imagevolumecachespec):
   the three fields, the rendered keys, and the eviction rule.
-- [Cinder CRD](../../reference/cinder/cinder-crd.md#internaltenantspec) — why
+- [Cinder CRD](../../reference/cinder/cinder-crd.md#internaltenantspec): why
   both internal-tenant fields are IDs.
-- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md#cinderimagevolumecachespec) —
+- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md#cinderimagevolumecachespec):
   the curated `imageVolumeCache` entry and the derived `internalTenant`.
-- [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md) — the backend
+- [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md): the backend
   entry this block hangs off.
 
 ## Tested by

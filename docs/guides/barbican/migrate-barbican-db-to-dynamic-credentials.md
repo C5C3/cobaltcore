@@ -170,8 +170,8 @@ remove the old value before ESO syncs the engine-issued credential:
 kubectl delete secret <controlplane>-barbican-db-credentials -n <namespace>
 ```
 
-The ExternalSecret is updated in place (same name, same target Secret), so until
-Until ESO completes its first generator-backed sync, the Secret still holds
+The ExternalSecret is updated in place (same name, same target Secret). Until
+ESO completes its first generator-backed sync, the Secret still holds
 whatever the previous static sync wrote. Deleting it forces ESO to sync from the
 generator immediately instead of at the next refresh.
 

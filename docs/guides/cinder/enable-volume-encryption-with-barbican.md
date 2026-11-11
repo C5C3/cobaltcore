@@ -74,7 +74,7 @@ The roles that service user holds are the other half. The `KeystoneService`
 registration the ControlPlane projects for Cinder creates the account in a
 project of its own, `service-cinder`, with the roles `service` **and** `admin`.
 No peer registration takes the second one. Cinder deletes the Barbican secret of
-an encrypted volume as a fallback when the volume's owner cannot, and every
+an encrypted volume as a fallback when its owner cannot, and every
 Barbican the operator renders carries
 `[oslo_policy] enforce_new_defaults = true`, whose secure-RBAC defaults put
 `secret:get` and `secret:delete` across projects behind a bare `admin`. Without
@@ -83,11 +83,11 @@ that role the fallback fails and the key outlives the volume. The
 carries the same reasoning field by field.
 
 ::: warning What the `admin` role opens
-Across every project, not only Cinder's own. `secret:get` and `secret:delete`
-accept a bare `admin` wherever it is held, so anything that reaches this service
-user's credential — a compromised Cinder pod, which carries the password in its
-environment, or a reader of the `controlplane-cinder-credentials` Secret — can
-read and permanently delete every tenant's volume encryption key. A deleted key
+The role applies across every project. `secret:get` and `secret:delete`
+accept a bare `admin` wherever it is held. A compromised Cinder pod carries the
+password in its environment, and a reader of the
+`controlplane-cinder-credentials` Secret can access it too. Either can read and
+permanently delete every tenant's volume encryption key. A deleted key
 makes its LUKS volume unrecoverable; nothing else holds the passphrase.
 
 What the role buys is one fallback path: the key of a volume deleted by someone
@@ -98,7 +98,7 @@ ServiceAccount, and alert on a `secret:delete` this user issues against a
 project that is not its own.
 :::
 
-## Step 1 — Create an encrypted type and a volume
+## Step 1: Create an encrypted type and a volume
 
 Count the secrets first, so the next command has a baseline to move:
 
@@ -127,10 +127,10 @@ manager from a decorative one: the type and the volume are created just the same
 against a key manager that is never called, and only the secret proves cinder
 reached Barbican.
 
-## Step 2 — Where the LUKS format happens
+## Step 2: Where the LUKS format happens
 
-The format is the driver's work, not a later step's. For a volume whose type
-carries an `encryption_key_id`, the NFS driver's `_create_encrypted_volume_file`
+The NFS driver formats an encrypted volume while creating its file. When the
+volume type carries an `encryption_key_id`, the driver's `_create_encrypted_volume_file`
 in `cinder/volume/drivers/remotefs.py` fetches the key from the key manager,
 writes the passphrase to a temporary file, and creates the backing file itself:
 
@@ -150,7 +150,7 @@ The key itself is older than the file. It is created in the API, in the
 the user issuing the create. The volume service then fetches it back through
 castellan when it writes the file.
 
-## Step 3 — Delete the volume
+## Step 3: Delete the volume
 
 Deleting the volume is what returns the key:
 
@@ -159,9 +159,8 @@ openstack --insecure volume delete demo-enc
 openstack --insecure secret list -f value -c 'Secret href' | wc -l
 ```
 
-The count is back at the baseline from Step 1. A key still there after the volume
-is gone is the symptom the `admin` role exists to prevent, and it points at the
-service user's roles rather than at cinder.
+The count returns to the Step 1 baseline. A key remaining after volume deletion
+points to the service user's roles; the `admin` role prevents this orphan.
 
 Remove the type:
 
@@ -212,13 +211,13 @@ above, and scope who may read the Secret holding this password accordingly.
 
 ## See also
 
-- [Cinder CRD](../../reference/cinder/cinder-crd.md#keymanagerspec) — the
+- [Cinder CRD](../../reference/cinder/cinder-crd.md#keymanagerspec): the
   `KeyManagerSpec` union rule and the `keystoneEndpoint` dependency.
-- [Barbican Operator](../../reference/barbican/index.md#design-decisions) — why
+- [Barbican Operator](../../reference/barbican/index.md#design-decisions): why
   `enforce_new_defaults` is on for every Barbican and what the new rules grant.
-- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md#servicecinderspec) —
+- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md#servicecinderspec):
   the projected registration, its two roles, and the derived `keyManager`.
-- [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md) — the backend
+- [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md): the backend
   whose driver writes the LUKS container.
 
 ## Tested by

@@ -74,7 +74,7 @@ still has to be installed separately (kind needs a running daemon).
 
 ---
 
-## Step 1 — Clone the repository
+## Step 1: Clone the repository
 
 ```bash
 git clone https://github.com/c5c3/cobaltcore.git
@@ -90,8 +90,7 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 
 The project ships a helper script that downloads and verifies kind and kubectl with pinned
 SHA256 checksums. The authoritative versions are declared at the top of
-`hack/install-test-deps.sh`. Always use that script rather than installing these
-tools manually, so your versions stay in sync with what CI uses:
+`hack/install-test-deps.sh`. Use that script to keep your versions in sync with CI:
 
 ```bash
 make install-test-deps
@@ -111,7 +110,7 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 ---
 
-## Step 2 — Create the kind cluster
+## Step 2: Create the kind cluster
 
 The project provides a `hack/kind-config.yaml` with a single control-plane node configuration:
 
@@ -187,7 +186,7 @@ Free the port (or stop that process) before creating the cluster.
 
 ---
 
-## Step 3 — Deploy the infrastructure stack {#step-3-deploy-the-infrastructure-stack}
+## Step 3: Deploy the infrastructure stack {#step-3-deploy-the-infrastructure-stack}
 
 The `deploy-infra` target runs an 8-step deployment sequence that installs and configures all
 dependencies the Keystone operator needs:
@@ -261,12 +260,12 @@ flux-system           kustomize-controller-*         Ready
 flux-system           helm-controller-*              Ready
 flux-system           notification-controller-*      Ready
 flux-system           flux-web-*                     Ready (kind-only; see Step 4a)
-envoy-gateway-system  envoy-gateway-*                Ready (kind-only; provides openstack-gw — see Step 2b)
+envoy-gateway-system  envoy-gateway-*                Ready (kind-only; provides openstack-gw; see Step 2b)
 cert-manager          cert-manager-*         Ready
 mariadb-system        mariadb-operator-*     Ready
 memcached-system      memcached-operator-*   Ready
 external-secrets      external-secrets-*     Ready
-shared-services       openbao-0              Ready (unsealed; kind overlay enables the UI on :8200 — see Step 4b)
+shared-services       openbao-0              Ready (unsealed; kind overlay enables the UI on :8200; see Step 4b)
 openstack             openstack-db-*         Ready (MariaDB cluster)
 openstack             openstack-memcached-*  Ready (Memcached cluster)
 headlamp-system       headlamp-*             Starting (kind-only demo UI, not waited on)
@@ -350,7 +349,7 @@ This applies the kind-only overlay at `deploy/kind/prometheus/`, waits for the
 `kube-prometheus-stack` HelmRelease to become Ready, and patches the
 keystone-operator HelmRelease to enable its `ServiceMonitor`. Use it when you
 want to visualise the keystone-operator metrics live (reconcile p95,
-error rate); [Step 4c — Open the Grafana UI](#step-4c-grafana-ui) has the
+error rate); [Step 4c: Open the Grafana UI](#step-4c-grafana-ui) has the
 port-forward and the bundled `Keystone Operator` dashboard.
 :::
 
@@ -419,15 +418,14 @@ This starts one small [distribution registry](https://distribution.github.io/dis
 (`registry:2`) container per upstream registry, in pull-through proxy mode, on
 the `kind` Docker network, and wires every node's containerd at them via a
 registry mirror (`/etc/containerd/certs.d/<host>/hosts.toml`). Each registry is
-backed by a persistent Docker volume, so the cache survives `kind delete` and
+backed by a persistent Docker volume, so the cache persists through `kind delete` and
 recreate cycles. It is fully transparent: no `spec.image` or chart `image:`
 edits, no `localhost:5000/...` rewrites. A
 workload referencing `ghcr.io/c5c3/keystone:2026.1` is served from the local
 cache on the second pull, and the distribution proxy streams each blob from
 the upstream while caching it inline, so even the first (cold) pull runs at
 roughly origin speed. Mirror entries advertise `pull` + `resolve` capabilities,
-so containerd falls back to the origin registry whenever a cache is down. The
-cache can never hard-break a pull.
+so containerd falls back to the origin registry whenever a cache is down.
 
 This is **local-dev only**. The default `make deploy-infra` (flag unset) and
 every CI job are unaffected: the containerd mirror patch is injected only into
@@ -449,7 +447,7 @@ then `WITH_REGISTRY_CACHE=true make deploy-infra`).
 
 ---
 
-## Step 4 — Open the Headlamp UI
+## Step 4: Open the Headlamp UI
 
 The kind overlay ships [Headlamp](https://headlamp.dev/) with the Flux plugin preloaded, so
 you can watch Steps 5 to 9 reconcile live (and, if you enabled `WITH_PROMETHEUS=true`, jump to
@@ -475,16 +473,16 @@ bound to a read-only ClusterRole covering Flux toolkit API groups and the Cobalt
 The Headlamp Flux plugin is the primary Flux UI used by this project. The `flux-operator`
 also ships an embedded Flux Web UI ([fluxoperator.dev/web-ui](https://fluxoperator.dev/web-ui/))
 that the kind overlay turns on as a demo addon;
-[Step 4a — Open the Flux Web UI](#step-4a-flux-web-ui) covers how to reach it.
+[Step 4a: Open the Flux Web UI](#step-4a-flux-web-ui) covers how to reach it.
 Once Headlamp is open and you are authenticated, click **Flux** in the left sidebar
 to switch into the Flux views:
 
 | Pane | Shows |
 |------|-------|
 | **Helm Releases** | Every `HelmRelease` with reconciliation status, last applied revision, and the values that were rendered |
-| **Kustomizations** | `Kustomization` objects (empty in the kind Quick Start — the `FluxInstance` here has no `spec.sync` block) |
+| **Kustomizations** | `Kustomization` objects (empty in the kind Quick Start because `FluxInstance` has no `spec.sync` block) |
 | **Sources** | `HelmRepository` objects (and `GitRepository`/`OCIRepository` if present) with the last successful fetch and artifact revision |
-| **Flux Runtime** | The flux-operator's `FluxInstance/flux` and `FluxReport/flux` — controller versions, reconciliation state, entitlement status |
+| **Flux Runtime** | The flux-operator's `FluxInstance/flux` and `FluxReport/flux`, which report controller versions, reconciliation state, and entitlement status |
 
 Use this instead of the legacy `flux get` / `flux logs` CLI. All state the CLI would
 print is rendered live here, and every resource row links to the controller logs and
@@ -492,7 +490,7 @@ Kubernetes events that produced it.
 
 ---
 
-## Step 4a — Open the Flux Web UI {#step-4a-flux-web-ui}
+## Step 4a: Open the Flux Web UI {#step-4a-flux-web-ui}
 
 The kind overlay also ships the flux-operator's own
 [Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface (and, alongside it,
@@ -516,7 +514,7 @@ and `ResourceSetInputProvider` (the operator's templating primitives) and `FluxR
 
 ---
 
-## Step 4b — Open the OpenBao UI {#step-4b-openbao-ui}
+## Step 4b: Open the OpenBao UI {#step-4b-openbao-ui}
 
 The kind overlay enables the OpenBao web UI as a demo surface (the optional
 Grafana UI is covered separately in [Step 4c](#step-4c-grafana-ui)). This is a
@@ -584,11 +582,11 @@ Open `https://localhost:8200/ui/`. Firefox asks which client certificate to send
 
 For the full token lifecycle, secret engines, auth methods, and the bootstrap sequence that
 produced this token, see
-[OpenBao Bootstrap Procedure — Running the Full Bootstrap](./reference/infrastructure/openbao-bootstrap.md#running-the-full-bootstrap).
+[OpenBao Bootstrap Procedure: Running the Full Bootstrap](./reference/infrastructure/openbao-bootstrap.md#running-the-full-bootstrap).
 
 ---
 
-## Step 4c — Open the Grafana UI {#step-4c-grafana-ui}
+## Step 4c: Open the Grafana UI {#step-4c-grafana-ui}
 
 The kind overlay can ship a slimmed-down `kube-prometheus-stack` (Prometheus +
 Grafana + the prometheus-operator) under the `monitoring` namespace. This is a
@@ -640,17 +638,17 @@ keystone-operator HelmRelease has not been patched yet. Re-run
 For non-kind clusters (production overlays, shared dev clusters, anything that
 already runs Prometheus), follow
 [Enable Keystone Operator Metrics](./guides/keystone/enable-keystone-operator-metrics.md)
-instead. That guide covers wiring an externally-managed Prometheus to the
+instead. That guide covers connecting an externally managed Prometheus to the
 operator's ServiceMonitor and is the canonical non-kind path.
 
 ---
 
-## Step 5 — Deploy the Keystone operator
+## Step 5: Deploy the Keystone operator
 
 The Keystone operator is distributed as a Helm chart. There are two ways to deploy it depending on
 your goal.
 
-### Option A — From GHCR (recommended for users)
+### Option A: From GHCR (recommended for users)
 
 Install the published chart directly from the GHCR OCI registry. Flux reconciles updates
 automatically:
@@ -672,7 +670,7 @@ kubectl wait helmrelease/keystone-operator \
 The `HelmRelease` references chart version `>=0.1.0 <1.0.0` from the `c5c3-charts` repository and
 deploys 2 replicas with leader election enabled.
 
-### Option B — From the local Helm chart (recommended for development)
+### Option B: From the local Helm chart (recommended for development)
 
 Build the operator image, load it into kind, and install the chart directly from the repository.
 Step 1 builds the image with Nix, so it needs Nix with flakes on a Linux host; on macOS, use
@@ -716,7 +714,7 @@ keystone-operator-6d7f9f4d5b-xyz99   1/1     Running   0          30s
 
 ---
 
-## Step 6 — Prepare and load the Keystone service image
+## Step 6: Prepare and load the Keystone service image
 
 The `Keystone` CR references a service image that runs the actual OpenStack Keystone API. Either
 pull the pre-built image from GHCR or build it locally. Run **one option only**; both options
@@ -726,10 +724,10 @@ Set the release you want to work with. The default is the most recent release; u
 whenever a new release is available:
 
 ```bash
-RELEASE=2026.1   # update to the target release
+RELEASE=2026.2   # update to the target release
 ```
 
-### Option A — Pull from GHCR (recommended)
+### Option A: Pull from GHCR (recommended)
 
 ```bash
 docker pull ghcr.io/c5c3/keystone:"${RELEASE}"
@@ -744,7 +742,7 @@ podman pull ghcr.io/c5c3/keystone:"${RELEASE}"
 kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name cobaltcore
 ```
 
-### Option B — Build locally
+### Option B: Build locally
 
 The keystone image is a flake attribute of the repository
 ([Nix Image Build](./reference/ci-cd/nix-image-build.md)). The build needs Nix
@@ -765,7 +763,7 @@ kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name cobaltcore
 
 ---
 
-## Step 7 — Create a Keystone CR
+## Step 7: Create a Keystone CR
 
 Apply the following manifest to deploy a Keystone instance in **managed mode**. In this mode the
 operator creates and manages the MariaDB database (via `clusterRef`) and configures Memcached
@@ -825,7 +823,7 @@ the `hostPort: 443 → containerPort: 31443` mapping in `hack/kind-config.yaml`.
 kubectl apply -f keystone.yaml
 ```
 
-::: details Variant — when `KIND_HOST_PORT=8443` was used in Step 2
+::: details Variant: when `KIND_HOST_PORT=8443` was used in Step 2
 If you exported `KIND_HOST_PORT=8443` before `make deploy-infra`, the
 endpoint is reachable at `https://keystone.127-0-0-1.nip.io:8443/v3`
 instead of the default `:443`. The Gateway API `hostname` field stays
@@ -890,7 +888,7 @@ admission time.
 
 ---
 
-## Step 8 — Wait for Keystone to become Ready
+## Step 8: Wait for Keystone to become Ready
 
 The operator reconciles the CR through sixteen sub-conditions before the
 aggregate `Ready` condition is set. All are always reported; conditions tied to
@@ -939,7 +937,7 @@ keystone.keystone.openstack.c5c3.io/keystone condition met
 
 ---
 
-## Step 9 — Verify the deployment
+## Step 9: Verify the deployment
 
 ### Check all owned resources
 
@@ -999,7 +997,7 @@ extracted CA from Option B are unchanged; only the port differs. The matching
 block at the end of Step 7.
 :::
 
-### Step 1 — Export OpenStack credentials
+### Step 1: Export OpenStack credentials
 
 Read the admin password directly from the cluster and set the standard OpenStack
 environment variables against the nip.io endpoint:
@@ -1013,7 +1011,7 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 ```
 
-### Step 2 — Verify access
+### Step 2: Verify access
 
 Check that the API responds and that authentication works:
 
@@ -1039,7 +1037,7 @@ A successful `curl` response begins with `{"version": {"id": "v3", ...}}`. A suc
 The Gateway terminates TLS with a certificate issued by the in-cluster
 `selfsigned-cluster-issuer`, which is not in any OS trust store. Pick one of:
 
-**Option A — quick, one-off runs:** pass `-k` / `--insecure` on the CLI.
+**Option A: quick, one-off runs.** Pass `-k` / `--insecure` on the CLI.
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io/v3
@@ -1048,7 +1046,7 @@ openstack --insecure token issue
 export OS_INSECURE=true
 ```
 
-**Option B — trust the issuer (recommended for repeated use):** extract the
+**Option B: trust the issuer (recommended for repeated use).** Extract the
 self-signed CA from the cluster and point OpenStack tooling at it.
 
 ```bash
@@ -1062,7 +1060,7 @@ curl --cacert "$OS_CACERT" https://keystone.127-0-0-1.nip.io/v3
 openstack token issue
 ```
 
-### Fallback — `kubectl port-forward` {#fallback-kubectl-port-forward}
+### Fallback: `kubectl port-forward` {#fallback-kubectl-port-forward}
 
 If the Gateway is unavailable (Envoy still reconciling, nip.io blocked by a corporate
 resolver, or you are debugging the in-cluster Service directly), fall back to
@@ -1087,12 +1085,12 @@ The numbers are those of the figure at the top of this section.
 1. Name resolution. `keystone.127-0-0-1.nip.io` resolves to `127.0.0.1` through
    the public nip.io service. A resolver with DNS rebind protection drops that
    answer, and `curl` fails with `Could not resolve host`. The tip in
-   [Step 7 of the Quick Start (ControlPlane)](./quick-start-controlplane.md#step-7-—-verify)
+  [Step 7 of the Quick Start (ControlPlane)](./quick-start-controlplane.md#step-7-verify)
    has the `/etc/hosts` entries and the `--resolve` form.
 2. Host port. The client connects to `127.0.0.1` on port `443`, or on the port
    `KIND_HOST_PORT` names. kind binds that port when it creates the cluster, so
    a host that may not bind a port below 1024 fails in
-   [Step 2](#step-2-—-create-the-kind-cluster) already, with
+  [Step 2](#step-2-create-the-kind-cluster) already, with
    `bind: permission denied` or a missing `vmnetd` socket.
 3. Port mapping and NodePort. The `extraPortMappings` entry of
    `hack/kind-config.yaml` forwards the host port to port `31443` of the kind
@@ -1118,9 +1116,9 @@ The catalog decides where the request after the token goes. Keystone hands the
 client the public URL of each service, and for the identity service that is
 `spec.bootstrap.publicEndpoint`. With `KIND_HOST_PORT=8443` it has to carry
 `:8443`, as in the variant at the end of
-[Step 7](#step-7-—-create-a-keystone-cr). The CR of Step 7 itself sets no
+[Step 7](#step-7-create-a-keystone-cr). The CR of Step 7 itself sets no
 `publicEndpoint`, so its catalog holds the cluster-internal URL that the note
-in [Verify access](#step-2-—-verify-access) describes. A
+in [Verify access](#step-2-verify-access) describes. A
 `ControlPlane` service block without `publicEndpoint` advertises
 `https://<hostname>` on port `443`, which is why the CR of the
 [Quick Start (ControlPlane)](./quick-start-controlplane.md) carries a
@@ -1141,7 +1139,7 @@ follow-up guides below cover everything you will actually do with the CR:
 
 | Guide | When to read it |
 |-------|-----------------|
-| [Observability & Diagnostics](./guides/observability.md) | First stop when something is not `Ready` — how to read conditions, events, and status fields |
+| [Observability & Diagnostics](./guides/observability.md) | First stop when something is not `Ready`: how to read conditions, events, and status fields |
 | [Day 2 Operations](./guides/day-2-operations.md) | Scale, upgrade the OpenStack release, rotate Fernet keys manually |
 | [Advanced Configuration](./guides/advanced-configuration.md) | Brownfield database, autoscaling, network policy, free-form INI, and pointers to every other `spec.*` option |
 | [Attach an OIDC Federation Backend](./guides/keystone/oidc-federation.md) | Federate Keystone with an OpenID Connect identity provider (Keycloak walkthrough) |
@@ -1157,8 +1155,7 @@ The project ships a full [Chainsaw](https://kyverno.github.io/chainsaw/) test su
 all operator behaviour. With the cluster running from the steps above, execute:
 
 ```bash
-# The entire tests/e2e/ tree — 45 suites across keystone, keystone-operator,
-# c5c3 (ControlPlane), and infrastructure — up to 4 in parallel
+# Chainsaw discovers every suite under tests/e2e/ and runs up to 4 in parallel.
 make e2e
 
 # Or target a specific suite
@@ -1191,33 +1188,47 @@ JUnit XML reports are written to `_output/reports/` after each run.
 
 ## Running Tempest API tests
 
-With the Keystone CR Ready from Step 8, validate the identity API with the OpenStack Tempest
-test suite:
+With the Keystone CR Ready from Step 8, validate the identity API with the
+OpenStack Tempest test suite. This runner uses Docker to run the test container.
+It does not invoke Podman directly; a Podman setup needs a Docker-compatible
+CLI and daemon endpoint.
+
+On Linux x86_64 or aarch64 with Nix and Docker, build the image from the
+`2026.2` pins and run the matching tests:
 
 ```bash
-SERVICE=keystone hack/run-tempest.sh
+RELEASE=2026.2 SERVICE=keystone hack/run-tempest.sh
 ```
 
-The script handles everything automatically:
+On macOS, use the published Tempest image instead. The local image build
+supports Linux x86_64 and aarch64 only:
 
-1. Builds the Tempest container image from the pinned versions in `releases/2026.1/test-refs.yaml`
+```bash
+RELEASE=2026.2 BUILD_IMAGE=false \
+  TEMPEST_IMAGE=ghcr.io/c5c3/tempest:2026.2 SERVICE=keystone \
+  hack/run-tempest.sh
+```
+
+The script then:
+
+1. Builds the Tempest container image from the pinned versions in `releases/2026.2/test-refs.yaml`, unless `BUILD_IMAGE=false`
 2. Establishes a port-forward to the Keystone API (skipped if one is already running)
-3. Runs the identity tests defined in `tests/tempest/keystone-2026-1/`
+3. Runs the identity tests defined in `tests/tempest/keystone-2026-2/`
 
-Results land in `_output/tempest/`:
+Results are written to `_output/tempest/`:
 
 | File | Content |
 |------|---------|
-| `tempest-results.xml` | JUnit XML — open in your IDE or import into a CI viewer |
+| `tempest-results.xml` | JUnit XML, which you can open in your IDE or import into a CI viewer |
 | `tempest.subunit` | Raw subunit stream for further processing |
 
-::: tip Faster re-runs
-The image build is skipped when `BUILD_IMAGE=false`, which saves ~30 s on repeated runs:
+To skip the local image build on a supported Linux host, set `BUILD_IMAGE=false`:
 
 ```bash
-BUILD_IMAGE=false SERVICE=keystone hack/run-tempest.sh
+RELEASE=2026.2 BUILD_IMAGE=false \
+  TEMPEST_IMAGE=ghcr.io/c5c3/tempest:2026.2 SERVICE=keystone \
+  hack/run-tempest.sh
 ```
-:::
 
 ---
 

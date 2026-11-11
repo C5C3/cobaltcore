@@ -22,7 +22,7 @@ The component-by-component catalog, with CRDs and API groups, is on
 Everything runs on one management cluster. FluxCD applies the declarative
 infrastructure stack, the operators come up in dependency order, and a single
 `ControlPlane` resource then drives a complete OpenStack control plane.
-Service workloads either stay on the management cluster or land on registered
+Service workloads either stay on the management cluster or run on registered
 target clusters.
 
 ![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../diagrams/cobaltcore-management-cluster.svg)
@@ -342,9 +342,8 @@ onboarded yet: Valkey infrastructure, the optional Cortex scheduler and Tempest
 operator, and consumer self-service via Crossplane. The Nova operator, which
 the document pairs with Valkey, is onboarded on MariaDB, Memcached, and
 RabbitMQ instead.
-Tempest exists in this repository as a container image driven by the
-[e2e test infrastructure](../reference/testing/tempest-test-infrastructure.md),
-not as an operator. New services follow the onboarding path in
+The [e2e test infrastructure](../reference/testing/tempest-test-infrastructure.md)
+runs Tempest from a container image. New services follow the onboarding path in
 [Adding a New Operator](../contributing/adding-a-new-operator.md).
 
 ## Deployment models

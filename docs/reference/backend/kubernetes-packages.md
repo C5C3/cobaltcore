@@ -19,11 +19,14 @@ All packages share these conventions:
   or overwritten and a converged object is applied without a write. The apply is wrapped
   in `retry.RetryOnConflict`, so a benign field-manager conflict is absorbed as an internal
   retry rather than surfacing as condition noise.
-- **Owner references** — `controllerutil.SetControllerReference` is called on every apply
-  (not only on create) so the resource is garbage-collected when the owning CR is deleted
-  and the reference is re-enforced if it drifts.
-- **Readiness reporting** — Functions that create resources return `(bool, error)`, where
-  `true` means the resource is ready and `false` means it exists but is not yet ready.
+- **Ownership claims** — Local children carry a controller owner reference, re-enforced
+  on every apply. Children written to a target cluster carry the three ownership
+  labels instead, because that cluster cannot resolve an owner on the management
+  cluster. The remote-child finalizer sweeps those labels on deletion.
+- **Readiness reporting** — Helpers that gate reconciliation on a resource's readiness
+  return `(bool, error)`: `true` means it is ready, and `false` means it exists but is
+  not yet ready. Helpers that only apply or create an object return an `error`, or the
+  created object's name and an `error` when callers need that name.
 - **Error wrapping** — All errors include context via `fmt.Errorf` with `%w` for
   `errors.Is`/`errors.As` compatibility.
 
@@ -36,6 +39,7 @@ All packages share these conventions:
 | `database` | `github.com/c5c3/cobaltcore/internal/common/database` |
 | `deployment` | `github.com/c5c3/cobaltcore/internal/common/deployment` |
 | `job` | `github.com/c5c3/cobaltcore/internal/common/job` |
+| `multicluster` | `github.com/c5c3/cobaltcore/internal/common/multicluster` |
 | `policy` | `github.com/c5c3/cobaltcore/internal/common/policy` |
 | `satellite` | `github.com/c5c3/cobaltcore/internal/common/satellite` |
 | `secrets` | `github.com/c5c3/cobaltcore/internal/common/secrets` |
@@ -74,13 +78,16 @@ func EnsureObject[T client.Object](
 ) error
 ```
 
-Creates or updates `obj` via Server-Side Apply under `fieldManager` and sets `owner` as
-the controller reference.
+Creates or updates `obj` via Server-Side Apply under `fieldManager` and claims it for
+`owner`: a controller reference for a local child, or ownership labels for a child on a
+target cluster.
 
 **Behavior:**
 
-- Sets the controller owner reference and stamps the object's GVK (objects built in-code
-  carry an empty `TypeMeta`, which Server-Side Apply requires).
+- Claims the object through `multicluster.Claim` and stamps its GVK (objects built
+  in-code carry an empty `TypeMeta`, which Server-Side Apply requires). A same-named
+  object on a target cluster that carries neither the owner labels nor the owner's
+  controller reference is refused rather than adopted.
 - Applies the object with `client.FieldOwner(fieldManager)` and `client.ForceOwnership`,
   wrapped in `retry.RetryOnConflict` so a benign field-manager conflict is retried
   internally rather than surfaced.
@@ -123,8 +130,8 @@ pod restarts when the ConfigMap is referenced in a Deployment's volume spec.
 | --- | --- | --- |
 | `ctx` | `context.Context` | Request context |
 | `c` | `client.Client` | Kubernetes API client |
-| `scheme` | `*runtime.Scheme` | Scheme for owner reference resolution |
-| `owner` | `client.Object` | Owning CR for garbage collection |
+| `scheme` | `*runtime.Scheme` | Scheme for GVK and ownership-label resolution |
+| `owner` | `client.Object` | Owning CR; local children use a controller reference and target-cluster children use ownership labels |
 | `baseName` | `string` | Base name for the ConfigMap (hash is appended as `-<hash>`) |
 | `namespace` | `string` | Namespace for the ConfigMap |
 | `data` | `map[string]string` | ConfigMap data entries |
@@ -134,18 +141,20 @@ pod restarts when the ConfigMap is referenced in a Deployment's volume spec.
 | Value | Description |
 | --- | --- |
 | `string` | Actual ConfigMap name including the 8-character SHA256 hash suffix |
-| `error` | Non-nil on owner reference or API server failure |
+| `error` | Non-nil on ownership claim/refusal or API server failure |
 
 **Behavior:**
 
 - Computes a deterministic SHA256 hash from sorted `data` keys and values.
 - Truncates the hash to 8 hex characters and appends it as `baseName-<hash>`.
 - Sets `Immutable: true` on the ConfigMap.
-- Sets a controller owner reference on the ConfigMap.
-- If a ConfigMap with the same name already exists (`AlreadyExists` error), returns the
-  name without error (idempotent).
+- Claims the ConfigMap for its owner: a controller reference locally or ownership
+  labels on a target cluster.
+- If a ConfigMap with the same name already exists, verifies that it belongs to the
+  owner and returns the name. A foreign same-name ConfigMap is refused.
 - Same data always produces the same hash (deterministic).
-- Different data always produces a different hash.
+- Different data normally produces a different hash. The eight-hex-character suffix
+  has a collision probability of about 1 in 4 billion per base name.
 
 **Example:**
 
@@ -181,7 +190,7 @@ cycles.
 | --- | --- | --- |
 | `ctx` | `context.Context` | Request context |
 | `c` | `client.Client` | Kubernetes API client |
-| `owner` | `client.Object` | Owning CR — only ConfigMaps with a controller owner reference matching this object's UID are considered |
+| `owner` | `client.Object` | Owning CR — local controller references or target-cluster ownership labels are checked through `multicluster.Controls` |
 | `baseName` | `string` | Base name prefix for candidate ConfigMaps (matches `baseName-*`) |
 | `namespace` | `string` | Namespace to list ConfigMaps in |
 | `currentName` | `string` | Name of the currently active ConfigMap (never deleted, even with `retain=0`) |
@@ -198,7 +207,7 @@ cycles.
 1. Lists ConfigMaps matching the `cobaltcore.c5c3.io/config-base` label in the namespace.
 2. Filters to ConfigMaps matching the `baseName + "-"` prefix.
 3. Excludes the ConfigMap named `currentName` (the active one).
-4. Excludes ConfigMaps without a controller owner reference matching `owner.GetUID()`.
+4. Excludes ConfigMaps that `multicluster.Controls` does not identify as owned by `owner`.
 5. Sorts remaining candidates by `CreationTimestamp` descending (newest first).
 6. If the number of candidates is less than or equal to `retain`, returns `nil` (no-op).
 7. Deletes candidates from index `retain` onwards (oldest first).
@@ -216,11 +225,10 @@ cycles.
 
 | ConfigMap State | Included in Candidates? |
 | --- | --- |
-| Name matches `baseName-*` prefix, owned by `owner` | Yes |
+| Name matches `baseName-*` prefix, owned by `owner` through a local owner reference or remote labels | Yes |
 | Name equals `currentName` | No (always excluded) |
 | Name does not match `baseName-*` prefix | No |
-| No owner reference | No |
-| Owner reference UID does not match `owner` | No |
+| Neither a matching local owner reference nor remote ownership labels | No |
 
 **Edge cases:**
 
@@ -231,7 +239,7 @@ cycles.
 | `retain=0` | All historical ConfigMaps deleted, only `currentName` survives |
 | ConfigMap deleted between list and delete | `NotFound` silently ignored |
 | Overlapping prefix (e.g., `test-config-` vs `test-config-extra-`) | Strict `baseName + "-"` prefix prevents false matches |
-| Pre-existing ConfigMaps without `cobaltcore.c5c3.io/config-base` label | Not pruned — invisible to server-side selector. Bounded in number and GC'd on CR deletion via owner reference. |
+| Pre-existing ConfigMaps without `cobaltcore.c5c3.io/config-base` label | Not pruned — invisible to the server-side selector. Local objects with owner references are garbage-collected with the CR; recognized remote children are handled by the remote-child sweep. |
 
 **Example:**
 
@@ -297,7 +305,7 @@ Creates or updates a MariaDB User CR and a Grant CR in a single call.
 **Behavior:**
 
 - Processes User first, then Grant. If User creation/update fails, Grant is not attempted.
-- Both resources receive controller owner references.
+- Both resources are claimed for the owner: local resources receive controller owner references, while target-cluster resources carry ownership labels.
 - Readiness of the User and Grant is determined by the package-internal
   `isUserReady` and `isGrantReady` helpers.
 
@@ -391,22 +399,23 @@ func RunJob(
     scheme *runtime.Scheme,
     owner client.Object,
     job *batchv1.Job,
-) (bool, error)
+  ) (bool, *batchv1.Job, error)
 ```
 
-Creates a Job if it does not already exist and reports completion status.
+  Creates a Job if it does not already exist and reports completion status. The
+  second return value is the Job observed at the start of the pass, which lets
+  callers record terminal metrics without an extra `Get`.
 
-**Returns:** `(true, nil)` when the Job has a `Complete` condition with status `True`
-and its re-run key is unchanged;
-`(false, nil)` when the Job exists but is still running, or was deleted and
-re-created because its re-run key changed;
-`(false, error)` wrapping `ErrJobFailed` when the Job has permanently failed (e.g.
-exceeded backoffLimit) and its re-run key is unchanged;
-`(false, error)` on unexpected API failures.
+  **Returns:** `(true, observed, nil)` when the Job has a `Complete` condition with
+  status `True` and its re-run key is unchanged; `(false, observed, nil)` when the
+  Job exists but is still running, or was deleted and re-created because its re-run
+  key changed; `(false, observed, error)` wrapping `ErrJobFailed` when the Job has
+  permanently failed (e.g. exceeded `backoffLimit`) and its re-run key is unchanged;
+  `(false, nil, error)` on unexpected API failures.
 
 **Behavior:**
 
-- If the Job does not exist: creates it with a controller owner reference, returns
+- If the Job does not exist: claims it with a local controller reference or remote ownership labels, then returns
   `(false, nil)` (newly created Jobs are never immediately complete).
 - If the Job already exists: checks completion via the package-internal
   `isJobComplete` helper and permanent failure via `isJobFailed`. A completed
@@ -433,7 +442,8 @@ func EnsureCronJob(
 ) error
 ```
 
-Creates or updates a CronJob with a controller owner reference.
+Creates or updates a CronJob, claimed locally with a controller owner reference or
+on a target cluster with ownership labels.
 
 **Behavior:**
 
@@ -792,7 +802,8 @@ func EnsurePushSecret(
 ) error
 ```
 
-Creates or updates a PushSecret CR with a controller owner reference.
+Creates or updates a PushSecret CR, claimed locally with a controller owner reference
+or on a target cluster with ownership labels.
 
 **Behavior:**
 
@@ -844,7 +855,8 @@ Creates or updates a cert-manager Certificate CR.
 
 **Behavior:**
 
-- On create: sets controller owner reference, creates the resource, returns `(false, nil)`.
+- On create: claims the Certificate locally with a controller owner reference or on a
+  target cluster with ownership labels, creates it, and returns `(false, nil)`.
 - On update: overwrites `existing.Spec` with the provided spec.
 - Readiness is determined by the package-internal `isCertificateReady` helper on
   the existing resource.
@@ -854,9 +866,9 @@ Creates or updates a cert-manager Certificate CR.
 
 ## Cross-Package Dependencies
 
-These `internal/common` packages are independent of each other; reconcilers
-compose them directly (for example a Keystone sub-reconciler calls
-`job.RunJob` and `database.EnsureDatabase` side by side).
+These are reusable helpers, not dependency-free packages: higher-level helpers
+such as `database.ReconcileProvision` and `deployment.EnsureDeployment` compose
+lower-level packages, and reconcilers compose those helpers in their pipelines.
 
 ## Reconciler Integration Pattern
 

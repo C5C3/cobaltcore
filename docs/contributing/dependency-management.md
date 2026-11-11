@@ -495,13 +495,13 @@ For local pre-flight, the minimal smoke is `go work sync && (cd internal/common 
 ### Deprecated APIs and new vet checks
 
 Each Go minor release adds analyzers and may flip previously-warned APIs to
-errors. After `go vet ./...` runs clean from each module, check the release
+errors. After `go vet ./...` reports no findings from each module, check the release
 notes for:
 
 - **New `vet` analyzers.** A minor bump may add an analyzer that triggers on
-  patterns the codebase has tolerated for years. If the warning is
-  load-bearing, fix it; if it is noise on the path the project has chosen,
-  add a targeted exclusion in `.golangci.yml`.
+  patterns the codebase has tolerated for years. Fix warnings on code paths
+  the project uses; for warnings limited to unused paths, add a targeted
+  exclusion in `.golangci.yml`.
 - **`stdlib` deprecations.** Search for newly-deprecated stdlib symbols
   (`grep -rn 'pkg.OldFunc\|pkg.OldType' --include='*.go'`) and replace them.
   Avoid making this part of the upgrade PR if the replacement is invasive —

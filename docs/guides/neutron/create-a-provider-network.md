@@ -80,8 +80,8 @@ patch ports to a bridge but never creates one, so a mapping pointing at a
 missing bridge drops every packet on that physical network while the CR and the
 mapping still read correctly.
 
-On a kind node `br-ex` has no uplink. Nothing leaves the host, which is why the
-checks below stop at the port binding rather than at a ping.
+On a kind node `br-ex` has no uplink, so traffic stays on the host. The checks
+below verify OVN port binding only.
 
 ### 2. Create the network and its subnet
 
@@ -137,8 +137,8 @@ done
 openstack --insecure port show smoke0 -c status -f value
 ```
 
-The interface is `type=internal` because nothing has to carry traffic through
-it. The binding is the assertion.
+The interface is `type=internal` because no traffic needs to pass through it;
+the port's `ACTIVE` status confirms that OVN bound it to the chassis.
 
 ### 5. Clean up
 
@@ -194,9 +194,9 @@ chainsaw test --test-dir tests/e2e/neutron/provider-network-smoke
 ```
 
 The suite proves the bridge mapping on the node and the Southbound binding of
-the port; it runs none of the `openstack` commands and asserts no `ACTIVE`
-status, because its leg carries no Keystone and writes the logical model straight
-into the Northbound database.
+the port. It does not run the `openstack` commands or assert `ACTIVE` status:
+the suite runs without Keystone and writes the logical model directly into the
+Northbound database.
 
 ::: details The OVNChassis the suite applies
 The suite shares the `openstack` namespace with every other neutron suite, so

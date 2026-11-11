@@ -58,7 +58,7 @@ kubectl get cm -n openstack "$(kubectl get deploy controlplane-glance -n opensta
   -o 'jsonpath={.data.glance-api\.conf}' | grep -A6 '^\[import_filtering_opts\]'
 ```
 
-With `importFiltering` unset — the devstack's state — that is the operator's
+With `importFiltering` unset, as in the devstack, the operator applies this
 restrictive default:
 
 ```
@@ -77,21 +77,21 @@ buys:
 **An allow-list disables its deny-list.** Glance evaluates one half of each
 allow/deny pair: whenever the allow-list is non-empty it ignores the matching
 deny-list entirely. Setting both halves of one pair is therefore rejected at
-admission rather than silently half-applied, and a deny-list only becomes
-authoritative once its sibling allow-list is explicitly emptied — see
+admission. A deny-list becomes authoritative only when its matching allow-list
+is explicitly empty; see
 [Making a deny-list authoritative](#making-a-deny-list-authoritative).
 
 **The port pin only bites on URIs that spell the port out.** Glance checks the
-port it parsed from the URI, and a URI without one carries no port to check —
-no default is derived from the scheme. So `https://mirror.example.com/img.raw`
+port it parsed from the URI. A URI without a port carries no port to check, and
+Glance derives no port from the scheme. `https://mirror.example.com/img.raw`
 passes the `[443]` pin, `https://mirror.example.com:8443/img.raw` does not, and
 the scheme pin is what actually keeps an import off plaintext transport.
 
 **A host must resolve, and encoded spellings are refused.** Before matching,
 Glance normalizes the host: an IP literal is canonicalized, a decimal, hex, or
 shorthand encoding of one is refused outright, and a name is accepted only if
-it resolves as an absolute FQDN. That last point matters in-cluster — the
-lookup appends a trailing dot, which defeats the pod's `resolv.conf` search
+it resolves as an absolute FQDN. In-cluster lookups append a trailing dot,
+which defeats the pod's `resolv.conf` search
 list, so an in-cluster mirror must be named in full
 (`garage.shared-services.svc.cluster.local`, not `garage`).
 
@@ -102,7 +102,7 @@ is claimed.
 ## Pin imports to a known mirror
 
 The tightest posture names the mirrors imports may use and refuses every other
-host. It is a ControlPlane knob, projected onto the Glance child:
+host. Set it on the ControlPlane; the operator projects it onto the Glance child:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
@@ -111,12 +111,12 @@ kubectl rollout status deploy/controlplane-glance -n openstack
 ```
 
 Substitute the mirrors the deployment imports from; the list holds up to 64
-entries, each spelled exactly as an import URI would spell it.
+entries, each using the host spelling in its import URI.
 
 ::: warning Set the filter on the ControlPlane, never on the projected child
 The `controlplane-glance` Glance CR is **projected** by the c5c3-operator, so a
 `spec.importFiltering` you patch onto the child is reverted on the next
-reconcile. The projection is unconditional in the other direction too: clearing
+reconcile. Clearing
 `services.glance.importFiltering` on the `ControlPlane` removes the child's
 field, which restores the operator defaults on the next rollout and is how you
 revert this guide:
@@ -136,7 +136,7 @@ disallowed_hosts = []
 ```
 
 Changing the filter rewrites the content-hashed config ConfigMap, and the new
-hash rolls the Deployment — one rollout per change. Confirm the service is
+hash rolls the Deployment, once per change. Confirm the service is
 healthy again on the ControlPlane's per-service condition; its aggregate `Ready`
 also covers every other service, so it answers a different question:
 
@@ -167,18 +167,18 @@ endpoints with spec.networkPolicy.additionalEgress, or pin allowedHosts to the m
 are supposed to use.
 ```
 
-The warning is the whole point of the two knobs being separate: `disallowedHosts`
-survives the widening — an unset field keeps resolving to the operator baseline,
-and an entry you add is unioned onto it rather than replacing it — but it is now
-the only control left, and it matches host strings literally. Pair a widened
+The warning explains why the controls are separate. Widening the scheme and
+port leaves `disallowedHosts` in place: an unset field resolves to the operator
+baseline, and added entries are unioned with that baseline. Host matching is
+literal, so pair a widened
 allow-list with `allowedHosts`, an egress restriction, or both.
 
 ## Making a deny-list authoritative
 
 `disallowedSchemes` and `disallowedPorts` are inert on their own: Glance
 evaluates a deny-list only while the matching allow-list is empty, and an unset
-allow-list resolves to a non-empty operator default. Admission warns rather than
-rejects, because the shape is legal, only ineffective:
+allow-list resolves to a non-empty operator default. Admission permits this
+shape but warns because the deny-list is ineffective:
 
 ```
 Warning: spec.services.glance.importFiltering.disallowedSchemes is set while
@@ -188,11 +188,9 @@ empty, so this list is inert; set spec.services.glance.importFiltering.allowedSc
 explicitly empty list ([]) to make the deny-list authoritative.
 ```
 
-The empty-list opt-out the warning names does not survive the ControlPlane,
-though: the lists serialize with `omitempty`, so an explicitly empty one reaches
-the Glance child as unset and resolves straight back to the operator default.
-The projection can only ever land more restrictively than asked, never less —
-which means this shape is expressible on a `Glance` CR you own, and only there.
+The ControlPlane projection cannot preserve this empty-list opt-out. The lists
+serialize with `omitempty`, so the Glance child receives an unset field and
+uses the operator default. Only a `Glance` CR you own can express this opt-out.
 See [Standalone Glance, without a ControlPlane](#standalone-glance-without-a-controlplane).
 
 `disallowedHosts` is the exception: `allowedHosts` has no operator default, so a
@@ -208,8 +206,8 @@ record serves every attempt:
 openstack --insecure image create --disk-format qcow2 --container-format bare filter-demo
 ```
 
-The devstack's Garage object store answers on plaintext HTTP on port 3900, which
-is exactly what the default posture is there to refuse:
+The devstack's Garage object store answers over plaintext HTTP on port 3900.
+The default posture refuses that endpoint:
 
 ```bash
 openstack --insecure image import --method web-download \
@@ -220,8 +218,8 @@ openstack --insecure image import --method web-download \
 URI for web-download does not pass filtering: http://garage.shared-services.svc.cluster.local:3900/glance-images/demo.img
 ```
 
-The call fails synchronously with `400` — a filter rejection, not a network or
-mirror fault. The link-local metadata endpoint and the in-cluster API server are
+The call fails synchronously with `400` because the filter rejects the URI.
+This is not a network or mirror fault. The link-local metadata endpoint and the in-cluster API server are
 refused by the host denylist even when the scheme and port pass:
 
 ```bash
@@ -246,8 +244,8 @@ openstack --insecure image show filter-demo -f value -c status -c size
 
 The status reaches `active`. Redirects along the way are re-checked against the
 same six lists, so a mirror that redirects into a denied host fails the import
-asynchronously — the record does not reach `active` and the failure surfaces on
-the import task, not as the synchronous `400` above.
+asynchronously. The record does not reach `active`; the failure appears on the
+import task instead of as the synchronous `400` above.
 
 Clean up:
 
@@ -257,15 +255,15 @@ openstack --insecure image delete filter-demo
 
 ## Containing what a widened filter can reach
 
-Host matching is literal string membership. Glance supports no CIDR ranges, no
+Host matching uses literal string membership. Glance supports no CIDR ranges, no
 wildcards, and no resolution-based blocking, so the denylist covers the
 spellings it lists and nothing else: a raw ClusterIP, a trailing-dot FQDN, an
 IPv4-mapped IPv6 form, or an in-cluster HTTPS service whose name is absent all
-reach their endpoint under a name no list can enumerate. Two controls hold where
-the denylist cannot:
+reach their endpoints under names no list can enumerate. Two controls apply
+where the denylist does not:
 
-- **`allowedHosts`** turns the question around — an allow-list refuses every
-  host it does not name, including the spellings nobody thought to deny.
+- **`allowedHosts`** permits only named hosts, including when a URI uses an
+  unexpected spelling of a blocked address.
 - **`spec.networkPolicy.additionalEgress`** bounds where the API pods may
   connect at all. The auto-derived egress opens the ports of DNS, the database,
   the cache and the S3 backends, to any destination. A per-CR NetworkPolicy
@@ -273,17 +271,17 @@ the denylist cannot:
   port, and lets one on those ports through. See
   [Enable the Glance Operator NetworkPolicy](./enable-glance-operator-networkpolicy.md).
 
-Neither of these is reachable through `spec.extraConfig`: all six
+You cannot configure these controls through `spec.extraConfig`. All six
 `[import_filtering_opts]` keys are operator-owned and **rejected** at admission
-when set there, because an override would skip the exclusivity rules and the
-warnings above and leave an audit reading `spec.importFiltering` with the
+when set there. An override would skip the exclusivity rules and warnings, and
+leave an audit reading `spec.importFiltering` with the
 restrictive default while the rendered config says otherwise.
 
 ## Standalone Glance, without a ControlPlane
 
-Without a ControlPlane nothing projects the Glance child, so the same block sits
-on the `Glance` CR you own — including the explicitly empty allow-list the
-projection cannot carry:
+Without a ControlPlane nothing projects the Glance child, so set the block on
+the `Glance` CR you own. This supports an explicitly empty allow-list, which the
+ControlPlane projection cannot carry:
 
 ```yaml
 apiVersion: glance.openstack.c5c3.io/v1alpha1
@@ -304,38 +302,36 @@ operator defaults.
 
 ## See also
 
-- [Glance CRD API Reference](../../reference/glance/glance-crd.md#importfilteringspec) —
+- [Glance CRD API Reference](../../reference/glance/glance-crd.md#importfilteringspec):
   the full `ImportFilteringSpec` contract, how every unset field resolves, and
   the upgrade note for a deployment that ran before the operator rendered this
   group.
-- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md) —
+- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md):
   `services.glance.importFiltering` and the rest of the projected Glance surface.
-- [Enable the Glance Operator NetworkPolicy](./enable-glance-operator-networkpolicy.md) —
+- [Enable the Glance Operator NetworkPolicy](./enable-glance-operator-networkpolicy.md):
   the egress layer a widened filter should be paired with.
-- [Large Image Uploads through the Gateway](./large-image-uploads.md) — the
+- [Large Image Uploads through the Gateway](./large-image-uploads.md): the
   staging bound an accepted import consumes while it downloads.
 
 ## Tested by
 
-The restrictive default posture a CR without `spec.importFiltering` renders, and
-the admission rules that keep the block honest — the three mutually exclusive
-allow/deny pairs, the item bounds, the host INI guard, and the rejection of the
-six keys through `extraConfig` — are asserted end-to-end on the CI e2e kind
-cluster by these chainsaw suites:
+The suites assert the restrictive defaults for a CR without
+`spec.importFiltering`, the three mutually exclusive allow/deny pairs, item
+bounds, the host INI guard, and rejection of the six keys through `extraConfig`:
 
 ```bash
 chainsaw test --test-dir tests/e2e/glance/basic-deployment
 chainsaw test --test-dir tests/e2e/glance/invalid-cr
 ```
 
-A widened filter is exercised by the Glance Tempest legs instead, which run the
+A widened filter is exercised by the Glance Tempest matrix entries, which run the
 upstream `tempest.api.image` import tests against a Glance that opts back into
 plaintext HTTP on port 80 — the only place CI imports over a widened filter.
 
 ::: details The widened filter the Tempest leg applies
-The leg isolates its Glance from the parallel suite pool, so the CR name
-(`glance-tempest-2026-1`) and its database and Keystone endpoint are the leg's
-own rather than the `controlplane-glance` devstack names used above. Its
+The matrix entry isolates its Glance from the parallel suite pool. Its CR name
+(`glance-tempest-2026-1`), database, and Keystone endpoint are dedicated to the
+entry; the walkthrough above uses the `controlplane-glance` devstack names. Its
 `disallowedHosts` stays unset, so the operator's host denylist keeps applying
 behind the widened scheme and port:
 

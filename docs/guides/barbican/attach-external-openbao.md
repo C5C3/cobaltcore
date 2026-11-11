@@ -18,10 +18,10 @@ the production shape of the service: the operator reads two Secrets, verifies th
 credentials in them, and renders the store configuration. It creates no mount, no
 policy, and no AppRole on your server, and it never writes to it.
 
-That read-only posture is what turns the rest of this page into a contract. The
-server side has to be provisioned out of band, in a specific shape, before a
-`ControlPlane` referencing it can converge. Sections 1 and 2 below are that
-shape; sections 3 to 5 attach the service to it on the devstack.
+Because the operator is read-only, the server must be provisioned out of band
+before a `ControlPlane` referencing it can converge. Sections 1 and 2 specify
+the required server configuration; sections 3 to 5 attach the service on the
+devstack.
 
 The right panel of the figure shows this mode. The left panel is the mode of
 [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md). The
@@ -49,7 +49,7 @@ which stands in below for the server you already run.
    and every secret Barbican stores travel that URL. On the devstack the stand-in
    is `https://openbao-instance.openstack.svc:8200`.
 2. **A token with write access to that server**, for the provisioning in
-   section 1. The operator never has one.
+  section 1. The operator reads its AppRole credentials from the referenced Secrets.
 3. **`jq` on `PATH`** for the condition readouts in section 5.
 
 ::: warning Not the shared management OpenBao
@@ -104,12 +104,12 @@ bao write auth/approle/role/barbican \
 ```
 
 `secret_id_num_uses` is left unset on purpose. castellan re-logs in whenever its
-cached token ages out after `token_ttl`, so a use cap would expire the credential
-mid-operation rather than bound it. That leaves `secret_id_ttl` as the only bound
-on a leaked secret ID, and 30 days as a fuse on the credential in use: the plugin
-holds one process-global AppRole session, so an expired secret ID surfaces as
-every secret-store operation failing at once. Nothing re-mints it for a store in
-this mode. The re-mint procedure, under the AppRole Auth heading of the
+cached token ages out after `token_ttl`, so a use cap could invalidate the
+credential during an operation without providing a useful bound. The
+`secret_id_ttl` limits the lifetime of a leaked secret ID to 30 days. The plugin
+holds one process-global AppRole session, so an expired secret ID causes every
+secret-store operation to fail. The store controller does not issue replacement
+IDs in this mode. The replacement procedure, under the AppRole Auth heading of the
 [OpenBao Bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#approle-auth),
 is the control: it reads the stable role ID, mints a replacement secret ID
 straight into the Secret, and destroys the accessor of the one it replaced.
@@ -117,8 +117,7 @@ straight into the Secret, and destroys the accessor of the one it replaced.
 ## 2. The two Secrets
 
 The operator resolves both by name in the namespace the Barbican service is
-placed in, and their data keys are fixed by contract rather than selectable per
-CR.
+placed in. The operator expects fixed data keys for both Secrets.
 
 | Secret | Data keys | Required |
 | --- | --- | --- |
@@ -171,23 +170,23 @@ spec:
 ```
 
 On a ControlPlane that already ran the dedicated mode, this edit changes the
-store's mode, a field the `BarbicanSecretStore` CRD freezes. The reconciler
-answers that by deleting `controlplane-barbican-store` and recreating it against
-the external server on the next pass, and reports `BarbicanReady=False` with
+store's mode. The `BarbicanSecretStore` CRD freezes that field, so the reconciler
+deletes `controlplane-barbican-store` and recreates it against the external
+server on the next pass. It reports `BarbicanReady=False` with
 reason `RecreatingBarbicanSecretStore` in between. The dedicated instance
 `controlplane-barbican-bao` is left in place: nothing in the switch tears it
-down, and the c5c3-operator only removes it when `services.barbican` is dropped
+down, and the c5c3-operator removes it only when `services.barbican` is dropped
 under both deletion annotations. It keeps running, with the material Barbican
 wrote through the old store, until you delete it by hand. What that deletion
 destroys is spelled out in step 6 of
 [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
 
 `external` and `dedicated` are mutually exclusive, and a block naming neither is
-rejected at admission. Two fields are worth setting deliberately:
+rejected at admission. Set these two fields with care:
 
 - **`kvMountpoint`** is frozen on the projected store: secret material written
   under one mount is not reachable under another, so the `BarbicanSecretStore`
-  CRD refuses the update rather than re-pointing a live store at material it
+  CRD refuses the update to prevent a live store from pointing at material it
   cannot read. Changing it on the ControlPlane makes the reconciler delete the
   store and recreate it on the next pass, and everything written under the old
   mount stays where it is.
@@ -220,8 +219,8 @@ Barbican's metadata schema is reached with, the other holds the secret material.
 
 ## 5. Watch the store validate
 
-Watch the service's own condition, `BarbicanReady`, rather than the
-ControlPlane-wide `Ready`, which also covers every other service:
+Watch the service's own `BarbicanReady` condition. The ControlPlane-wide
+`Ready` condition covers every other service too:
 
 ```bash
 kubectl wait controlplane/controlplane -n openstack \
@@ -235,11 +234,10 @@ kubectl get barbicansecretstore controlplane-barbican-store -n openstack \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\n"}{end}'
 ```
 
-Two conditions, not three. `CredentialsReady` reports the login and the
-capability probe; `ConfigProjected` reports that the rendered `barbican.conf` in
-the running Deployment carries this store's section. `ProvisioningReady` is
-removed rather than reported `False`: it belongs to a store the operator
-provisions, and reporting it here would claim a step that never ran.
+The external store reports two conditions. `CredentialsReady` reports the login
+and capability probe; `ConfigProjected` reports that the rendered
+`barbican.conf` in the running Deployment carries this store's section. The
+operator omits `ProvisioningReady` because this store is provisioned out of band.
 
 The figure shows the order the two conditions turn `True` in, and
 [The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
@@ -251,9 +249,9 @@ lists its five steps with what differs per kind.
 the referenced role ID and secret ID and confirmed, through
 `sys/capabilities-self` on `<mount>/data/probe`, that the policy grants all five
 of `create`, `read`, `update`, `delete`, and `list`. The probe path is never
-written to. The check re-runs every 15 minutes, so a secret ID that expires under
-a running deployment surfaces on the store's status rather than only in the API's
-error rate.
+written to. The check re-runs every 15 minutes. If a secret ID expires while the
+deployment is running, the store status reports it and API operations can also
+fail.
 
 ### HashiCorp Vault
 
@@ -314,13 +312,13 @@ for the full field surface.
 
 ## See also
 
-- [BarbicanSecretStore CRD](../../reference/barbican/barbican-secret-store-crd.md) —
+- [BarbicanSecretStore CRD](../../reference/barbican/barbican-secret-store-crd.md):
   both store modes, the credential contract, and the condition catalog.
-- [OpenBao Bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#approle-auth) —
-  the AppRole role, its policy, and the secret-ID re-mint procedure.
-- [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md) — the
+- [OpenBao Bootstrap reference](../../reference/infrastructure/openbao-bootstrap.md#approle-auth):
+  the AppRole role, its policy, and the secret-ID replacement procedure.
+- [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md): the
   self-service mode, for a cluster with no server to attach to.
-- [Barbican Controller Events](../../reference/barbican/barbican-events.md) — the
+- [Barbican Controller Events](../../reference/barbican/barbican-events.md): the
   events the store controller emits alongside these conditions.
 
 ## Tested by
@@ -335,10 +333,10 @@ chainsaw test --test-dir tests/e2e/barbican/secretstore-brownfield
 ```
 
 ::: details The store CR the secretstore-brownfield suite applies
-The suite isolates its Barbican from the parallel suite pool, so its CR names are
-the suite's isolation identifiers (Barbican `barbican-store-brownfield`, store
-`barbican-store-brownfield-store`) rather than the `controlplane-barbican` names
-the walkthrough above uses. The server, the two Secrets, and the default
+The suite isolates its Barbican from the parallel suite pool. Its CR names are
+Barbican `barbican-store-brownfield` and store
+`barbican-store-brownfield-store`. The walkthrough above uses the
+`controlplane-barbican` names. The server, the two Secrets, and the default
 `kvMountpoint` are the ones from sections 2 and 3.
 
 <<< ../../../tests/e2e/barbican/secretstore-brownfield/01-barbican-secretstore.yaml#brownfield-store

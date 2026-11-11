@@ -149,9 +149,10 @@ Point the admin ExternalSecret at the per-CR path. The ExternalSecret feeding
 the admin Secret must read the same per-CR path this rotation writes, or the
 rotated password never reaches Keystone. On the kind Quick Start the admin Secret
 `keystone-admin` is fed by the shim ExternalSecret
-`deploy/kind/infrastructure/keystone-admin-externalsecret.yaml`, which reads the
-default-identity path `bootstrap/openstack/controlplane-keystone/admin`, not
-the standalone CR's per-CR path. Repoint it:
+`deploy/kind/infrastructure/keystone-admin-externalsecret.yaml`. Its
+`remoteRef.key` is `bootstrap/openstack/controlplane-keystone/admin`, the path
+seeded for the default ControlPlane identity. For this standalone CR, change it
+to `bootstrap/openstack/keystone/admin`:
 
 ```bash
 kubectl -n openstack patch externalsecret keystone-admin --type merge -p '

@@ -55,7 +55,7 @@ series in Step 3 requires a reconciled `Placement` CR. On the devstack that is
 `controlplane-placement`, projected when the ControlPlane declares
 `spec.services.placement`.
 
-## Step 1 — Enable the ServiceMonitor
+## Step 1: Enable the ServiceMonitor
 
 On the ControlPlane devstack, `WITH_PROMETHEUS=true` installs Prometheus and
 Grafana and sets `monitoring.serviceMonitor.enabled=true` on the
@@ -104,7 +104,7 @@ Flux-owned, and the helm-controller reverts out-of-band revisions on its next
 reconcile. Use the HelmRelease patch above instead.
 :::
 
-## Step 2 — Import the Grafana dashboard
+## Step 2: Import the Grafana dashboard
 
 On the devstack, follow the
 [Grafana access instructions](../keystone/enable-keystone-operator-metrics.md#_2-import-the-reference-grafana-dashboard)

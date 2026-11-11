@@ -14,7 +14,7 @@ verifying that scrape targets transition to `Up`.
 For the authoritative metric catalogue (names, labels, buckets), see
 [Keystone Operator Prometheus Metrics](../../reference/keystone-operator-metrics.md).
 For the controller-side instrumentation contract, see
-[Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
+[Keystone Reconciler: Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation).
 
 ## Prerequisites
 
@@ -288,8 +288,8 @@ Operators with stricter cluster policies must take extra steps:
   `internal/common/bootstrap/manager.go` to the controller-runtime
   `SecureServing` configuration and bind a cert/key pair (for example by
   mounting a cert-manager-issued Secret on the operator Deployment). The chart
-  does not ship this configuration. It is a stack-wide bootstrap change rather
-  than a per-operator override.
+  does not ship this configuration. Implement it by changing the shared
+  controller-runtime bootstrap; no per-operator chart override exists.
 
 The metrics endpoint exposes **no credentials, secrets,
 or per-tenant payloads**. It serves Prometheus collector samples described
@@ -332,7 +332,7 @@ ServiceMonitor (and therefore the Prometheus scrape) is removed.
 ## See also
 
 - [Keystone Operator Prometheus Metrics](../../reference/keystone-operator-metrics.md): authoritative metric catalogue.
-- [Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation): how sub-reconcilers are instrumented.
+- [Keystone Reconciler: Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation): how sub-reconcilers are instrumented.
 - [Observability & Diagnostics](../observability.md): conditions, events, and logs.
 - [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/dashboards/keystone-operator.json): reference Grafana dashboard.
 

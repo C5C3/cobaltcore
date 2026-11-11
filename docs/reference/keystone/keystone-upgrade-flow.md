@@ -46,7 +46,7 @@ OpenStack releases follow a `YYYY.N` naming convention, with two releases per ye
 | Patch release | `YYYY.N-suffix` | `2026.1-p1`, `2026.1-hotfix` |
 
 The operator parses version strings using `ParseRelease()` in
-`operators/keystone/internal/controller/version.go`. Parsing rules:
+`internal/common/release/release.go`. Parsing rules:
 
 - The base part must be exactly two dot-separated integers (`YYYY.N`).
 - Year must be >= 2010.

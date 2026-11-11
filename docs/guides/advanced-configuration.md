@@ -13,9 +13,9 @@ SPDX-License-Identifier: Apache-2.0
 Beyond the minimal control plane from the
 [Quick Start (ControlPlane)](../quick-start-controlplane.md), the operators
 support a number of configuration options for real cluster deployments. This
-guide covers the ones the `ControlPlane` CR exposes and points to the reference
-for the rest. See [Standalone Keystone](#standalone-keystone-without-a-controlplane)
-for knobs that live only on a Keystone CR you own.
+guide covers the options the `ControlPlane` CR exposes and points to the
+reference for the rest. See [Standalone Keystone](#standalone-keystone-without-a-controlplane)
+for settings available only on a Keystone CR you own.
 
 ## Prerequisites
 
@@ -35,9 +35,9 @@ examples below is one that devstack produces.
 ::: warning The Keystone child is operator-owned
 On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
 **projected** by the c5c3-operator; the projected fields are re-asserted on every
-reconcile, so editing them on the child is reverted. Configure the knobs the
-`ControlPlane` CRD exposes on the `ControlPlane` CR. Set a knob the CRD does not
-expose on a Keystone CR you own, in the
+reconcile, so editing them on the child is reverted. Configure supported
+options on the `ControlPlane` CR. For an option the CRD does not expose, use a
+Keystone CR you own in the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section. See
 the [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for
 the projection contract.
@@ -129,11 +129,11 @@ workflow.
 
 The `ControlPlane` exposes the same free-form configuration escape hatch as the
 service CRs, at two levels. `spec.globalExtraConfig` applies to every declared
-INI-configured service, such as Keystone, Glance, Placement, Barbican, and
-Neutron. `spec.services.<svc>.extraConfig` sets one service's block. For INI
+INI-configured service, including Keystone, Glance, Placement, Barbican,
+Neutron, Cinder, and Nova. `spec.services.<svc>.extraConfig` sets one service's block. For INI
 services, the map shape is `map[section][key] = value`. Horizon uses a flat map
 of Django settings instead; see
-[Horizon settings are flat, not INI](#horizon-settings-are-flat-not-ini).
+[Horizon settings](#horizon-settings-are-flat-not-ini).
 
 ```yaml
 apiVersion: c5c3.io/v1alpha1
@@ -143,8 +143,8 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2026.1"
-  # Applied to every declared INI service (for example Keystone, Glance,
-  # Placement, Barbican, and Neutron):
+  # Applied to every declared INI service (Keystone, Glance, Placement,
+  # Barbican, Neutron, Cinder, and Nova):
   globalExtraConfig:
     database:
       pool_timeout: "30"
@@ -162,7 +162,7 @@ spec:
 
 The reconciler projects the merged INI result onto each INI service child's
 `spec.extraConfig`. It projects the Horizon block verbatim onto the dashboard
-child; see [Horizon settings are flat, not INI](#horizon-settings-are-flat-not-ini).
+child; see [Horizon settings](#horizon-settings-are-flat-not-ini).
 
 ### Merge semantics
 
@@ -226,8 +226,8 @@ A standalone service CR takes the same block under `spec.extraConfig`. The empty
 string, `connection_parameters: ""`, disables the bound: the key is present, so
 the variable disappears, and oslo.db applies nothing for an empty value. Nova
 bounds its `[database]` and `[api_database]` connections with one variable each,
-and each section opts out on its own. Set the key per service, not in
-`spec.globalExtraConfig.database`: the option catalog checks the merged result
+and each section opts out on its own. Put this option in the service-specific
+block. The option catalog checks the merged result
 for every declared INI service, and the Placement catalog has no `[database]`
 section, so a ControlPlane that declares Placement rejects any global
 `[database]` key. Placement reads its connection from `[placement_database]` and
@@ -241,12 +241,12 @@ Neutron RPC and maintenance workers) run their statements unbounded. pymysql's
 `read_timeout` caps the wait for a statement's first result packet, so a
 10-second bound would cut a long migration or bulk delete.
 
-### Horizon settings are flat, not INI
+### Horizon uses a flat settings map {#horizon-settings-are-flat-not-ini}
 
 The dashboard renders `local_settings.py`, so `spec.services.horizon.extraConfig`
 is a flat `map[setting] = value` of Django settings (`SESSION_TIMEOUT` above),
-projected verbatim onto the Horizon child. `spec.globalExtraConfig` is INI and
-never reaches the dashboard, and there is no merge for the Horizon block.
+projected verbatim onto the Horizon child. The dashboard ignores
+`spec.globalExtraConfig` and does not merge that INI block into its settings.
 
 ### External keystone mode
 
@@ -305,8 +305,8 @@ children on every reconcile. While no `ControlPlane` block is set the projection
 carries no `extraConfig`, so a value set directly on a child stays untouched. Once
 you set any `ControlPlane` block, the projection owns the child's field: a direct
 edit on the child is reverted on the next reconcile. Clearing every `ControlPlane`
-block projects nothing and the child's field reverts to unset. Configure the
-free-form config on the `ControlPlane`, not on the child.
+block projects nothing and the child's field reverts to unset. Set free-form
+config on the `ControlPlane`; direct child edits are reverted.
 :::
 
 ### Catalog skew across operator builds
@@ -472,7 +472,6 @@ spec:
               periodSeconds: 30
   ```
 - The generated HPA references `deploy/keystone` and uses the Kubernetes standard
-  The generated HPA references `deploy/keystone` and uses the Kubernetes standard
   `metrics-server`. The Quick Start kind cluster does **not** ship one by default.
   Without a resource-metrics API, the HPA reports `unknown/80%`.
 
@@ -496,10 +495,9 @@ spec:
   The overlay pins the chart to a single major range and enables
   `--kubelet-insecure-tls`, which kind requires.
 
-  On non-kind clusters, `metrics-server` is usually already present: most managed
-  Kubernetes distributions ship it. If yours does not, install it per the
-  [upstream project](https://github.com/kubernetes-sigs/metrics-server) rather
-  than copy-pasting an unpinned manifest.
+  On non-kind clusters, `metrics-server` is usually already present because most
+  managed Kubernetes distributions ship it. If yours does not, install a
+  version-pinned release from the [upstream project](https://github.com/kubernetes-sigs/metrics-server).
 
 Inspect the HPA:
 

@@ -35,9 +35,9 @@ examples below is one that devstack produces.
 On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
 **projected** by the c5c3-operator. It re-asserts the projected fields
 (image, database, cache, replicas, federation, policy overrides, gateway) on
-every reconcile, so a knob you set directly on the child is reverted. Set
-operational knobs on the `ControlPlane` CR and let the operator project them
-down. Where the `ControlPlane` CRD does not expose a knob, this guide points to
+every reconcile, so a setting you set directly on the child is reverted. Set
+operational settings on the `ControlPlane` CR and let the operator project them
+down. Where the `ControlPlane` CRD does not expose a setting, this guide points to
 the [Standalone Keystone](#standalone-keystone-without-a-controlplane) section,
 which drives a Keystone CR you own. See the
 [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for the
@@ -230,9 +230,9 @@ standalone-only (see the
 
 Rotation uses a split staging-to-production path: the CronJob writes the new key set
 to a *staging* Secret, and the operator validates it and applies it to the
-production `controlplane-keystone-fernet-keys` Secret on its next reconcile. So
-the right signal that a manual rotation landed is the operator's event on the
-child, not the production Secret's contents immediately after the Job finishes.
+production `controlplane-keystone-fernet-keys` Secret on its next reconcile.
+The operator's event on the child confirms a manual rotation. The production
+Secret may still contain the old key immediately after the Job finishes.
 Creating a Job from the CronJob is not a CR edit, so it is valid against the
 operator-owned child.
 

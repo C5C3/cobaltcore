@@ -67,7 +67,7 @@ series in Step 3 requires a reconciled `Barbican` CR. On the devstack that is
 `spec.services.barbican`. See
 [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
 
-## Step 1 — Enable the ServiceMonitor
+## Step 1: Enable the ServiceMonitor
 
 On the ControlPlane devstack, `WITH_PROMETHEUS=true` installs Prometheus and
 Grafana and sets `monitoring.serviceMonitor.enabled=true` on the
@@ -117,7 +117,7 @@ and the helm-controller reverts out-of-band revisions on its next reconcile. Use
 the HelmRelease patch above instead.
 :::
 
-## Step 2 — Import the Grafana dashboard
+## Step 2: Import the Grafana dashboard
 
 On the devstack, follow the
 [Grafana access instructions](../keystone/enable-keystone-operator-metrics.md#_2-import-the-reference-grafana-dashboard)

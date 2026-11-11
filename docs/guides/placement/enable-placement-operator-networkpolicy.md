@@ -46,7 +46,7 @@ is running (namespace `placement-system`) alongside the projected
    `controlplane-placement` child exists and the Step 2 verification has
    nothing to roll.
 
-## Step 1 — Enable the policy
+## Step 1: Enable the policy
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
@@ -137,7 +137,7 @@ Flux-owned, and the helm-controller reverts out-of-band revisions on its next
 reconcile. Use the HelmRelease patch above instead.
 :::
 
-## Step 2 — Verify
+## Step 2: Verify
 
 On the kind devstack this step checks the policy's shape, that the operator
 still reconciles under the enforced policy, and that a fresh connection from
@@ -214,10 +214,9 @@ rolled out at its old size, so a `rollout status` alone would pass at once. The
 new count is always one above the running one, so the patch changes the
 Deployment whatever size the API already runs at.
 
-Set the replica count on the `ControlPlane` CR, not on the projected
-`controlplane-placement` child: the c5c3-operator re-asserts the child's
-`spec.deployment.replicas` on every reconcile, so a direct edit of the child is
-reverted.
+Set the replica count on the `ControlPlane` CR. The c5c3-operator re-asserts the
+child's `spec.deployment.replicas` on every reconcile, so a direct child edit
+does not persist.
 
 Finally, check the `kubeApiServer` rule on a fresh connection, once the
 restarted pod has run for at least one minute. The block adds an ephemeral

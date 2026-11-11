@@ -54,7 +54,7 @@ beside it on the same pool, and `rbd1` as the same user.
 
 ---
 
-## Step 1 — What the lab Ceph provides
+## Step 1: What the lab Ceph provides
 
 `WITH_CEPH=true` deploys a Ceph through Rook in `rook-ceph`: the RBD pools
 `volumes` and `backups`, and the Ceph users `cinder` and `cinder-backup`, each
@@ -90,7 +90,7 @@ single monitor; its DNS name is
 The examples below use `10.244.0.0/16` and `10.96.0.0/12` in their place: write
 the two your shoot prints.
 
-## Step 2 — Attach rbd1 with the key Rook produces
+## Step 2: Attach rbd1 with the key Rook produces
 
 The backend names the pool, the user without its `client.` prefix, the monitor,
 the two networks and the Secret Rook's key arrives in:
@@ -145,7 +145,7 @@ beside `controlplane-cinder@ceph1`, and the pool `volumes` holds
 `volume-<id>` with the id of `rbd-vol-1`, beside the images of any volume on
 `ceph1`.
 
-## Step 3 — Rotate the Rook key
+## Step 3: Rotate the Rook key
 
 A raised `keyGeneration` has Rook rotate the user's key. Ceph accepts only the
 new key from then on, and the PushSecret and the ExternalSecret of the hand-off
@@ -191,7 +191,7 @@ openstack volume create --type rbd --size 1 rbd-vol-2
 timeout 120 bash -c 'until [ "$(openstack volume show rbd-vol-2 -c status -f value)" = available ]; do sleep 2; done'
 ```
 
-## Step 4 — Attach rbd2 with a Secret made by hand
+## Step 4: Attach rbd2 with a Secret made by hand
 
 A key Secret needs no Rook: any Secret in `openstack` with the user's key under
 `userKey` serves. Create a second Ceph user in the toolbox, limited to the
@@ -242,7 +242,7 @@ timeout 120 bash -c 'until [ "$(openstack volume show rbd-vol-3 -c status -f val
 
 Both backends share the pool, so `rbd ls volumes` lists all three volumes.
 
-## Step 5 — Rotate the hand-made key
+## Step 5: Rotate the hand-made key
 
 `ceph auth rotate` replaces the key, and Ceph stops accepting the old one at
 once. It takes `--key_type` as well, so the new key stays an `aes` one. Patch
@@ -268,7 +268,7 @@ timeout 120 bash -c 'until [ "$(openstack volume show rbd-vol-4 -c status -f val
 The volume service rolled onto a projection Secret of a new name, and the volume
 created afterwards reaches `available` with the rotated key.
 
-## Step 6 — Detach
+## Step 6: Detach
 
 Delete the volumes before their backends: a backend's volumes are keyed by its
 host identity, and nothing serves them once it is gone. Then delete the volume

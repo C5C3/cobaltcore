@@ -73,7 +73,7 @@ control plane depends on. Their configuration and the CRs built on top are
 documented per component in
 [Infrastructure Manifests](../reference/infrastructure/infrastructure-manifests.md):
 
-- **cert-manager** — the base layer of the dependency graph; issues webhook
+- **cert-manager:** the base layer of the dependency graph; it issues webhook
   and endpoint TLS certificates
   ([section](../reference/infrastructure/infrastructure-manifests.md#cert-manager)).
 - **mariadb-operator** with a Galera `MariaDB` CR as the shared database
@@ -114,11 +114,11 @@ Every operator exports Prometheus metrics
 reference set). The remaining pieces ship only with the kind overlay
 (`deploy/kind/`) for development and CI:
 
-- **kube-prometheus-stack** and **metrics-server** for local metrics, and
-  **Chaos Mesh** driving the
-  [chaos e2e suites](../reference/testing/chaos-e2e-tests.md) — all opt-in
-  addons documented in
-  [Infrastructure Manifests — Kind Overlay Demo Addons](../reference/infrastructure/infrastructure-manifests.md#kind-overlay-demo-addons).
+- **kube-prometheus-stack** and **metrics-server** for local metrics, plus
+  **Chaos Mesh**, which drives the
+  [chaos e2e suites](../reference/testing/chaos-e2e-tests.md). These opt-in
+  addons are documented in the
+  [Kind Overlay Demo Addons section](../reference/infrastructure/infrastructure-manifests.md#kind-overlay-demo-addons).
 - **dizzy**, the load/chaos stack around victoria-metrics, used by
   [dizzy chaos testing](../reference/testing/dizzy-chaos-testing.md).
 - **Envoy Gateway** as the demo Gateway API implementation

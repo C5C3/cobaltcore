@@ -287,7 +287,7 @@ The semantics that matter:
   its old password until one `CredentialRotation` rotates it.
 - `account.roles` are projected. Each becomes an unmanaged K-ORC `Role`
   import plus a managed `RoleAssignment` binding the role to the user on the
-  project,   and the account is not Ready until Keystone confirms every assignment.
+  project, and the account is not Ready until Keystone confirms every assignment.
 
 A registration in the ControlPlane's namespace or in one of its dedicated
 service namespaces is admitted. To register one in another namespace, first add
@@ -498,5 +498,5 @@ deletion.
 
 The suite runs in namespace `brownfield` with the ControlPlane
 `controlplane-external`, the names used in this walkthrough. This lets
-[step 2](#_2-apply-the-external-mode-controlplane) imports the suite's own
-manifest instead of keeping a second copy.
+[step 2](#_2-apply-the-external-mode-controlplane) import the suite's own
+manifest instead of maintaining a second copy.

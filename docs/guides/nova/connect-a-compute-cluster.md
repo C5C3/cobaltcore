@@ -223,7 +223,8 @@ kubectl patch ovncentral controlplane-ovn -n openstack --type merge \
 `storage` and `electionTimerMs` are frozen. A central that runs a relay
 (`spec.relay`) also sets `spec.relay.externallyReachable: true`, or a chassis on
 another cluster dials the Southbound node ports directly, which puts its
-connection on the Raft members. The quick start's central runs no relay.
+connection on the Raft members. The Quick Start central has no relay, so it
+needs no relay-specific patch.
 
 Label each hypervisor node on the compute cluster, then apply the chassis on
 the management cluster:
@@ -780,13 +781,13 @@ kubectl --context "$COMPUTE_CONTEXT" annotate secret "${NOVA}-compute-config" \
 ```
 
 Both commands keep the credentials out of the copy's metadata. A client-side
-`kubectl apply` stores the whole object, data included, in the
-`kubectl.kubernetes.io/last-applied-configuration` annotation, where tools that
-redact `data` but show annotations would print it. `--server-side` does not
-create that annotation, but once a client-side apply or a GitOps tool has left
-it on the copy, the API server rewrites it with every `kubectl apply
---server-side`, the new credentials included. The `annotate` command removes it;
-on a copy that never carried it, the command changes nothing.
+`kubectl apply` stores the whole object, including its data, in the
+`kubectl.kubernetes.io/last-applied-configuration` annotation. Tools that redact
+`data` but show annotations can print the credentials there. Server-side apply
+does not create that annotation. If client-side apply or a GitOps tool already
+added it, however, server-side apply updates it with each change, including new
+credentials. The `annotate` command removes the annotation and has no effect
+when it is absent.
 
 A copy made by hand carries no mirror label, so no pool teardown deletes it.
 It is a snapshot: repeat the copy after every change of the source, and the

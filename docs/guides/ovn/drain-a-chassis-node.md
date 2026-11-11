@@ -85,14 +85,14 @@ this chassis and drop them out of the logical router ports and HA groups holding
 them, in one `ovn-nbctl` call against the Northbound database. Running it the
 other way round would have the model hand the bindings straight back to a node
 that still claims the role. The Job then asks the Northbound what still names
-the chassis and fails when a row survives, so `gatewayEvacuated` only ever
+the chassis and fails if any matching row remains, so `gatewayEvacuated` only
 records a drain the database confirmed.
 
 `kubectl wait` fails outright on a Job that has not been created yet, so poll for
 its existence first if you run this immediately after the label change: the
 operator renders the Job on the pass that observes the change.
 
-The drain has landed when the evacuation's finding reaches the status:
+The drain is complete when the evacuation result reaches status:
 
 ```bash
 kubectl get ovnchassis controlplane-chassis -n openstack \
@@ -101,8 +101,8 @@ kubectl get ovnchassis controlplane-chassis -n openstack \
 
 Expect `true` followed by an empty string. `status.nodes[].gateway` reports what
 the node last applied, and it is held at `true` until the evacuation succeeds,
-so the pair flipping together is what says the drain finished rather than that
-the label vanished. Re-adding the label resets `gatewayEvacuated`, so a
+so the pair changing together confirms the drain completed. Removing the label
+alone does not confirm it. Re-adding the label resets `gatewayEvacuated`, so a
 re-promoted node is not treated as still drained.
 
 ### 2. Take the chassis role away
@@ -111,7 +111,8 @@ re-promoted node is not treated as still drained.
 kubectl label node "$NODE" openstack.c5c3.io/chassis-
 ```
 
-The node stops matching `spec.nodeSelector`, and its entry survives, re-rendered:
+The node stops matching `spec.nodeSelector`. Its entry remains in the ConfigMap
+with the updated state:
 
 ```bash
 kubectl get configmap controlplane-chassis-nodes -n openstack \
@@ -183,9 +184,9 @@ step finds no Job under that name, and it creates a fresh one.
 
 ## Deleting the CR is not a drain
 
-`kubectl delete ovnchassis controlplane-chassis` removes the configuration of a
-node, not the node itself. The DaemonSet pods go, and with them `ovn-controller`,
-while the Southbound `Chassis` rows they registered stay behind, the way
+`kubectl delete ovnchassis controlplane-chassis` removes the OVN configuration
+for a node. The node remains, but its DaemonSet pods and `ovn-controller` stop
+while the Southbound `Chassis` rows they registered remain, just as
 deleting a Deployment leaves the rows its pods wrote. A stale row keeps claiming
 the ports of workloads that have moved elsewhere. Drop the nodes out of
 `spec.nodeSelector` and let the `chassis-del` Jobs run, as above, before

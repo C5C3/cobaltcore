@@ -16,7 +16,7 @@ This guide adds the Key Manager service to a running ControlPlane in the mode
 that needs nothing from outside the cluster. With
 `services.barbican.secretStore.dedicated`, the c5c3-operator provisions an
 OpenBao instance for this one Barbican, attaches the secret store to it, and lets
-the barbican-operator mint the AppRole credentials the API pods authenticate
+the barbican-operator create the AppRole credentials the API pods authenticate
 with. The walkthrough ends with a secret stored and read back from the host, and
 with the teardown that removes the service again.
 
@@ -58,7 +58,7 @@ one this devstack produces.
    step 2. On kind it is read from the `openbao-init-keys` Secret, as in the
    tutorial's Step 5.
 
-## Step 1 — Declare the Barbican service
+## Step 1: Declare the Barbican service
 
 Barbican is one block on the `ControlPlane` CR. Edit the CR the tutorial created
 and add it beside the existing services:
@@ -101,7 +101,7 @@ Keystone user to validate tokens as. The database, the cache, and the Keystone
 endpoint are derived from `spec.infrastructure` and from the Keystone child's
 naming convention; none of them is set here.
 
-## Step 2 — Onboard the barbican database-engine tenant
+## Step 2: Onboard the barbican database-engine tenant
 
 On the managed shared database the Barbican DB credential is engine-issued, and
 `setup-database-tenant.sh` provisions one engine connection and one role per
@@ -121,14 +121,14 @@ The script is idempotent: every config and role write is an upsert, so a repeat
 refreshes the pairs of the other services in place and writes
 `database/mariadb/config/barbican-openstack` and
 `database/mariadb/roles/barbican-openstack`, new when the earlier run skipped
-Barbican. Without that pair the next step parks on `BarbicanReady=False` with
+Barbican. Without that pair the next step waits at `BarbicanReady=False` with
 reason `WaitingForBarbicanDBCredential`, and the message names the
 `database/mariadb/creds/barbican-openstack` path it is waiting for.
 
-## Step 3 — Watch BarbicanReady
+## Step 3: Watch BarbicanReady
 
-Watch the service's own condition, `BarbicanReady`, rather than the
-ControlPlane-wide `Ready`. The aggregate also covers Keystone, Horizon, Glance,
+Watch the service's own condition, `BarbicanReady`. The ControlPlane-wide
+`Ready` also covers Keystone, Horizon, Glance,
 and Placement, so it answers a broader question than the one this guide asks:
 
 ```bash
@@ -152,7 +152,7 @@ kubectl get controlplane controlplane -n openstack \
 | `WaitingForOpenBaoInstance` | The dedicated instance is not `Available`. The store and the child are projected once it serves requests. |
 | `WaitingForBarbican` | The Barbican child exists and is not `Ready` yet (db-sync, rollout, store projection). |
 
-## Step 4 — Inspect what the ControlPlane projected
+## Step 4: Inspect what the ControlPlane projected
 
 Three CRs carry the service. Their names are derived from the ControlPlane's:
 
@@ -181,9 +181,9 @@ lists the five steps and what differs per kind.
 
 `ProvisioningReady=True/Provisioned` means the barbican-operator logged in to the
 instance as its provisioner ServiceAccount and found the `barbican/` KV mount and
-the `barbican` AppRole the self-init created. The credentials it mints from that
-AppRole land in `controlplane-barbican-store-approle`, which is owned by the
-store rather than by the Barbican.
+the `barbican` AppRole the self-init created. The barbican-operator creates
+credentials from that AppRole and writes them to
+`controlplane-barbican-store-approle`, which is owned by the store CR.
 
 The left panel of the figure shows these resources and who talks to the
 instance. The right panel is the mode of
@@ -217,14 +217,14 @@ derive the same instance name and would otherwise collide on one binding.
 No `controlplane-barbican-bao-<hash>-tenant` appears on this devstack. The kind
 overlay already ships an `OpenBaoTenant` admitting `openstack`, and the operator
 skips a namespace some tenant already targets, because a namespace admitted twice
-carries two finalizers. A ControlPlane whose Barbican lands in a fresh service
+carries two finalizers. A ControlPlane whose Barbican runs in a fresh service
 namespace gets its own tenant in `openbao-operator-system`, with the spec of the
 kind overlay's tenant: a quota of 100 pods, and a LimitRange that gives a
 container without resources of its own default requests and no limit (see the
 Tenant table under
 [OpenBao Proving Instance](../../reference/infrastructure/infrastructure-manifests.md#openbao-proving-instance)).
 
-## Step 5 — Store and read a secret back
+## Step 5: Store and read a secret back
 
 The key-manager row is in the catalog once `BarbicanReady` is `True`, and the
 public endpoint is the gateway URL from step 1, so the round-trip runs from the
@@ -264,14 +264,14 @@ verification for the whole invocation, including the Keystone call above that
 sends `OS_PASSWORD`, so drop it wherever the gateway presents a certificate you
 trust.
 
-## Step 6 — Remove the service
+## Step 6: Remove the service
 
 Dropping the `services.barbican` block is not by itself enough to remove
 anything. Deletion takes an annotation, and destroying the stored secret material
 takes a second one.
 
 ::: warning Two opt-ins, and never edit the projected children
-The three CRs of step 4 are **projected** by the c5c3-operator. A knob you set on
+The three CRs of step 4 are **projected** by the c5c3-operator. A setting you apply to
 `controlplane-barbican`, `controlplane-barbican-store`, or
 `controlplane-barbican-bao` directly is reverted on the next reconcile, and a
 projected child you delete by hand is recreated. Drive every change from the
@@ -299,8 +299,8 @@ secrets.
 it before the teardown reaches the dedicated OpenBao instance. That instance
 carries `deletionPolicy: DeletePVCs`, and the teardown removes the static-seal
 Secret as well, so a recovered volume stays unreadable. There is no snapshot, no
-soft delete, and no grace period: every secret Barbican ever stored is gone the
-moment the delete lands. Set this one only when that is what you mean.
+soft delete, and no grace period: every secret Barbican ever stored is gone when
+the deletion completes. Set this one only when that is what you mean.
 :::
 
 To remove the service and keep the OpenBao instance, back the schema up first,
@@ -342,8 +342,8 @@ kubectl get openbaocluster controlplane-barbican-bao -n openstack   # expect Not
 kubectl get clusterrolebinding | grep controlplane-barbican-bao     # expect no output
 ```
 
-Both annotations survive the teardown on the `ControlPlane`, and nothing in the
-operator clears them: left in place, they authorise the next drop of the block
+Both annotations remain on the `ControlPlane` after teardown, and nothing in the
+operator clears them. If left in place, they authorize the next removal of the block
 without a further confirmation. Remove them once the sweep has finished:
 
 ```bash
@@ -352,12 +352,11 @@ kubectl annotate controlplane controlplane -n openstack \
   c5c3.io/allow-barbican-secret-store-data-deletion-
 ```
 
-On a `ControlPlane` reconciled from Git, set and clear both annotations in the
-manifest, not with `kubectl annotate`. Flux applies server-side and prunes only
-the fields it owns, so an annotation it never saw survives every reconcile:
-setting one out of band leaves a live authorisation on the CR that taking it out
-of Git cannot clear. If you already set one out of band, take it away the same
-way, with the `kubectl annotate ... -` above.
+On a `ControlPlane` reconciled from Git, declare and remove both annotations in
+the manifest. Flux applies server-side and prunes only fields it owns. An
+annotation applied out of band remains on the CR until explicitly removed, even
+after its declaration is removed from Git. If you already set one out of band,
+remove it with the `kubectl annotate ... -` command above.
 
 ## Standalone Barbican, without a ControlPlane
 
@@ -476,19 +475,19 @@ full standalone field surface.
 
 ## See also
 
-- [BarbicanSecretStore CRD](../../reference/barbican/barbican-secret-store-crd.md) —
+- [BarbicanSecretStore CRD](../../reference/barbican/barbican-secret-store-crd.md):
   both store modes, the credential contract, and the condition catalog.
-- [Barbican Reconciler Architecture](../../reference/barbican/barbican-reconciler.md) —
+- [Barbican Reconciler Architecture](../../reference/barbican/barbican-reconciler.md):
   the sub-reconciler pipeline behind the child's `Ready`.
-- [Attach an External OpenBao to Barbican](./attach-external-openbao.md) — the
+- [Attach an External OpenBao to Barbican](./attach-external-openbao.md): the
   same service against a server run outside this control plane.
-- [Migrate Barbican DB to Dynamic Credentials](./migrate-barbican-db-to-dynamic-credentials.md) —
+- [Migrate Barbican DB to Dynamic Credentials](./migrate-barbican-db-to-dynamic-credentials.md):
   the credential mode step 2 onboards.
 
 ## Tested by
 
 The projected chain this guide walks through (the `controlplane-barbican-bao`
-instance, the `controlplane-barbican-store` attachment, the minted AppRole
+instance, the `controlplane-barbican-store` attachment, the AppRole
 Secret, and a secret round-trip through the catalog) is asserted on the live CI
 e2e kind cluster by the first suite below. The second drives a managed store
 directly, without a ControlPlane.
@@ -499,10 +498,10 @@ chainsaw test --test-dir tests/e2e/barbican/secretstore-managed
 ```
 
 ::: details The store CR the secretstore-managed suite applies
-The suite isolates its Barbican from the parallel suite pool, so its CR names are
-the suite's isolation identifiers (Barbican `barbican-store-managed`, store
-`barbican-store-managed-store`, instance `openbao-instance`) rather than the
-`controlplane-barbican` names the walkthrough above uses.
+The suite isolates its Barbican from the parallel suite pool. It uses the CR
+names Barbican `barbican-store-managed`, store `barbican-store-managed-store`,
+and instance `openbao-instance`. The walkthrough above uses the
+`controlplane-barbican` names.
 
 <<< ../../../tests/e2e/barbican/secretstore-managed/01-barbican-secretstore.yaml#managed-store
 :::

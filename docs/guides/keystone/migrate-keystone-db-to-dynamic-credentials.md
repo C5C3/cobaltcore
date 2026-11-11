@@ -108,9 +108,9 @@ spec:
       credentialsMode: Static
 ```
 
-A ControlPlane pinned to `Static` has no automatic per-ControlPlane KV seed.
-Seed the path manually and keep the username aligned with the SQL user the
-Keystone operator manages. The old seed was retired.
+A ControlPlane pinned to `Static` has no automatic per-ControlPlane KV seed
+because the old seed was retired. Seed the path manually and keep the username
+aligned with the SQL user the Keystone operator manages.
 
 To reproduce a real Static-to-Dynamic migration on a fresh Quick Start
 devstack, seed the static credential before applying the ControlPlane in Quick
