@@ -7,7 +7,7 @@ Review each listed page from first line through its final section. For every pag
 - [ ] `docs/architecture/index.md` — full read complete; checked service/placement behavior against c5c3 reconcilers, Gateway API fields against service APIs, target-cluster test coverage against `tests/e2e-multicluster/`, diagram text against SVG sources, OpenBao flow against bootstrap manifests, and Cyberus claims against the cited pages. Corrected shared diagram alt text and controller agency. Pending needs-research/user decision: the unsourced comparison claims that large OpenStack providers run the chart/CI model in production across many regions and that it comprises "several hundred charts" (see Deployment models and its diagram).
 
 ## Contributing
-- [ ] `docs/contributing/adding-a-new-operator.md`
+- [x] `docs/contributing/adding-a-new-operator.md` — read all 301 lines; shared APIs checked against `internal/common/`, operator and build rules against `Makefile`, `flake.nix`, CI, cleanup, Codecov, and deploy scripts; node-level security checked against OVN/Neutron controllers and the target-cluster access chart; service endpoint convention checked against `internal/common/naming/doc.go`. Removed the stale five-suite count (nine current suites), documented `SYS_NICE` for `ovs-vswitchd`, scoped the API-Deployment claim to service operators, and replaced `pod-knob`. Structure and expression checks pass. Follow-up outside docs scope: `internal/common/deployment/security_context.go` says `PrivilegedSecurityContext` has one caller, but the Neutron metadata-agent controller also calls it.
 - [ ] `docs/contributing/adding-a-new-release.md`
 - [ ] `docs/contributing/architecture-diagrams.md`
 - [ ] `docs/contributing/claude-skills.md`

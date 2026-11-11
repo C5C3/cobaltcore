@@ -11,13 +11,13 @@ SPDX-License-Identifier: Apache-2.0
 
 This checklist captures everything a new service operator (e.g. Horizon)
 touches beyond its own `operators/<op>/` module. The generic controller
-scaffolding lives in `internal/common` — a new operator consumes it instead of
-copying the keystone implementation — and the remainder is a finite list of
-build/CI/config seams that are still enumerated per operator.
+scaffolding lives in `internal/common`. A new operator uses that scaffolding
+and the remainder is a finite list of build, CI, and configuration tasks
+enumerated per operator.
 
 ## Shared packages to consume
 
-Build the operator on the shared scaffolding rather than hand-rolling copies.
+Build the operator on the shared scaffolding.
 The keystone operator is the reference consumer for most packages listed (for
 `pysettings` it is the horizon operator).
 
@@ -31,7 +31,7 @@ The keystone operator is the reference consumer for most packages listed (for
 | `internal/common/satellite` | Satellite-CRD mechanics: `ResolveParentChildren` (parent Get plus target-cluster resolve, holding the pass on the satellite's gate condition), `SectionProjected`/`SecretNameForVolume`/`SectionPresent` (projection observation through the parent's Deployment), `Collect` (sort-skip-gate-default collection); `GlanceBackend` is the reference consumer, and Keystone's satellite controller stays in the keystone operator by design |
 | `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap and the `SetupOptions` its `SetupFunc` receives (register the reconcilers under `opts.Controllers`, the webhooks under `opts.Webhooks`), `NewScheme` scheme assembly (client-go baseline first, then the per-operator extras), `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
 | `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewSubReconcilerInstrumenter("<op>_operator", conditionTypes)` in the operator and pass its bound `Instrument` method to the reconcile pipeline, then register it from a `RegisterMetrics()` wired into `main.go` (registration returns an error instead of panicking) |
-| `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `BuildDaemonSet`/`EnsureDaemonSet` for node-level workloads, `RestrictedSecurityContext` beside the `CapabilitySecurityContext`/`PrivilegedSecurityContext` escapes, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
+| `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `BuildDaemonSet`/`EnsureDaemonSet` for node-level workloads, `RestrictedSecurityContext` beside the `CapabilitySecurityContext`/`PrivilegedSecurityContext` escapes, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-default helpers |
 | `internal/common/apply` | The SSA apply primitives under every ensure helper: `EnsureObject` (owner-referenced) and `EnsureUnownedObject` |
 | `internal/common/networkpolicy` | `Ensure`/`Delete`, the auto-derived egress rules (`DNSEgressRule`/`DatabaseEgressRule`/`CacheEgressRule`/`CacheEgressPorts`), `IngressPeers`, and the three-path `Reconcile` flow with the fail-closed empty-ingress guard |
 | `internal/common/gateway` | `IsGVKAvailable` CRD probe, HTTPRoute builder/acceptance/ensure/delete over the shared `GatewaySpec`, and the three-path `ReconcileHTTPRoute` flow |
@@ -73,17 +73,17 @@ block's OpenBao engine role is one row of `SERVICE_TENANTS` in
 Everything below is still enumerated per operator. Work through it top to
 bottom when scaffolding `operators/<op>/`:
 
-- **`go.work`** — add `./operators/<op>`; keep the Go directive and the
+- **`go.work`:** add `./operators/<op>`; keep the Go directive and the
   controller-runtime/k8s.io dependency versions in lockstep with the other
   modules (see [Dependency Management](./dependency-management.md)).
-- **`operators/<op>/vendor.json`** — run `make nix-lock` after the module
+- **`operators/<op>/vendor.json`:** run `make nix-lock` after the module
   builds and commit the file. The flake builds `<op>-operator-image` for every
   `operators/<op>/go.mod` and needs no edit
   ([Operator images](../reference/ci-cd/nix-image-build.md#operator-images)).
-- **`Makefile`** — append the operator to the `OPERATORS ?=` list; every
+- **`Makefile`:** append the operator to the `OPERATORS ?=` list; every
   build/test/generate/lint target iterates it, provided the chart lives at
   `operators/<op>/helm/<op>-operator/`.
-- **Helm chart** — scaffold `operators/<op>/helm/<op>-operator/` consuming the
+- **Helm chart:** scaffold `operators/<op>/helm/<op>-operator/` consuming the
   `operator-library` chart: every shared manifest (deployment, certificate,
   service, serviceaccount, rolebindings, PDB, ServiceMonitor,
   webhook-configuration) is a one-line `include`; per-operator content is
@@ -93,7 +93,7 @@ bottom when scaffolding `operators/<op>/`:
   in `roleName=<op>-webhook` beside the webhook, and `make sync-helm-rbac`
   turns those markers into `templates/_webhook-rbac-rules.tpl`, the
   ClusterRole of a `webhook.standalone` release.
-- **Option catalog** (oslo-INI services only) — map the service to its
+- **Option catalog** (oslo-INI services only): map the service to its
   upstream oslo-config-generator config in `hack/gen-option-catalog.sh`, add
   it to the service loops of the `gen-option-catalogs` and
   `verify-option-catalogs` Makefile targets, and commit the generated
@@ -101,7 +101,7 @@ bottom when scaffolding `operators/<op>/`:
   `go:embed` accessor. The validating webhook checks `spec.extraConfig`
   against these catalogs; both targets need docker and the published service
   images.
-- **`.github/workflows/ci.yaml`** — add three paths filters and their
+- **`.github/workflows/ci.yaml`:** add three paths filters and their
   `FILTER_<name>` env vars: `<op>` for `operators/<op>/**`, `tests_e2e_<op>` for
   the operator's suites, and, when the operator ships a service image,
   `image_<op>` for `images/<op>/**` and `patches/<op>/**`. Then add the operator
@@ -113,7 +113,7 @@ bottom when scaffolding `operators/<op>/`:
   `releases/*/source-refs.yaml` that name an operator in `ALL_OPERATORS`, so a
   service image landing a phase before its operator stays out of the list until
   the operator is added.
-- **`.github/workflows/build-images.yaml`** — nothing to do for the operator
+- **`.github/workflows/build-images.yaml`:** nothing to do for the operator
   image: it is a flake attribute, which the CI workflow builds. A new service
   image is an `images/<service>/image.nix` over `nix/lib/service-image.nix`,
   built from the locks `make nix-lock` writes under `nix/locks/`
@@ -123,43 +123,43 @@ bottom when scaffolding `operators/<op>/`:
   matrix itself still follows `releases/*/source-refs.yaml`.
   `tests/unit/ci/build_images_services_lockstep_test.sh` fails when one of the
   three is missed.
-- **`.github/workflows/cleanup-images.yaml`** — nothing to do. The GHCR
+- **`.github/workflows/cleanup-images.yaml`:** nothing to do. The GHCR
   cleanup jobs build their matrix from `hack/ci-generate-cleanup-matrix.sh`,
   which reads `images/` and `operators/`, so a new operator picks up its
   retention coverage from the directory you already created. The
   service-parity audit asserts the generator emits `<op>-operator` and
   `<op>`.
-- **`.codecov.yml`** — add the five per-operator flag blocks, `unit-<op>`,
+- **`.codecov.yml`:** add the five per-operator flag blocks, `unit-<op>`,
   `integration-<op>`, `e2e-<op>`, `chaos-<op>` and `tempest-<op>`, and the
   `unit-<op>` and `integration-<op>` names to the `flags` of the project and
   patch statuses. The `e2e-`, `chaos-` and `tempest-` flags only report; the
   components section auto-scales via `operators/*` globs.
-- **Dashboards** — ship `operators/<op>/dashboards/<op>-operator.json` with a
+- **Dashboards:** ship `operators/<op>/dashboards/<op>-operator.json` with a
   `dashboard_test.go` asserting the JSON parses and every metric a panel
   references is registered by the operator. Only the keystone dashboard is
-  staged into the kind Prometheus stack; no deploy wiring is needed.
-- **Tests** — `operators/<op>/internal/testutil/` wraps
+  staged into the kind Prometheus stack; no deploy change is needed.
+- **Tests:** `operators/<op>/internal/testutil/` wraps
   `internal/common/testutil/envtest` with the op-local CRD/webhook paths and
   scheme list; E2E suites live under `tests/e2e/<op>/` (one directory per
   feature, mirroring `tests/e2e/keystone/`), plus at least one chaos suite
   under `tests/e2e-chaos/`.
-- **Deploy stack** — a flux HelmRelease under `deploy/flux-system/releases/`
+- **Deploy stack:** a flux HelmRelease under `deploy/flux-system/releases/`
   with the matching kind-overlay suspend patch, plus the literal lists in
   `hack/deploy-infra.sh` (the un-suspend step and the ServiceMonitor toggle)
   and the target tuple in `hack/refresh-operator-image-digests.sh`. An
   operator missing from the un-suspend list wedges the ControlPlane cache
   sync.
-- **Docs** — a CRD reference and reconciler reference under
+- **Docs:** a CRD reference and reconciler reference under
   `docs/reference/<op>/`, wired into the sidebar in `docs/.vitepress/sidebar.ts`, and, for a
-  user-facing knob, a guide under `docs/guides/<op>/` per the
+  user-facing option, a guide under `docs/guides/<op>/` per the
   [guide conventions](./guide-conventions.md), plus a naming-convention test in
   `tests/unit/docs/` (discovered by glob, so nothing fails while it is
   missing).
 
 ## Design decisions the shared scaffolding encodes
 
-Five cross-service decisions were settled as the scaffolding grew; new
-operators build on them rather than reopening them:
+Five cross-service decisions were settled as the scaffolding grew. New
+operators inherit them:
 
 - **Cross-service endpoint discovery is convention-based.** Consumers derive a
   service URL from the naming convention (`internal/common/naming`):
@@ -167,10 +167,10 @@ operators build on them rather than reopening them:
   is named after the CR itself. Keystone publishes `Status.Endpoint` for human
   consumers only; no machine consumer reads it, and no status-based resolve
   helper or cross-CR watch exists. If a new operator needs endpoint shapes the
-  convention cannot express, build that helper then — not preemptively.
+  convention cannot express, add the helper when that need arises.
 - **Periodic maintenance belongs to the operator, from the first release
   on.** OpenStack services expect somebody to run their housekeeping
-  commands on a schedule — `glance-manage db purge`,
+  commands on a schedule: `glance-manage db purge`,
   `keystone-manage trust_flush`, cache pruning, expiry sweeps. A package
   deployment answers that with a cron entry on a controller node; a
   Kubernetes deployment has no such place, so a task the operator does not
@@ -179,17 +179,17 @@ operators build on them rather than reopening them:
   that keeps growing. Model each task in the spec (`spec.dbPurge` on
   Glance, `spec.trustFlush` on Keystone), project it from a sub-reconciler
   via `internal/common/job`'s `EnsureCronJob`, and give it a `<Task>Ready`
-  condition that reports the newest terminal run rather than the mere
-  existence of the CronJob. Scaffold this with the operator: the first
+  condition that reports the result of the newest terminal run. Scaffold this
+  with the operator: the first
   CronJob added later also has to bound `metadata.name`, since Kubernetes
   caps a CronJob name at 52 characters and an immutable field can only be
-  bounded on create — leaving the CRs admitted before the bound to a
+  bounded on create. Otherwise CRs admitted before the limit may collide on a
   hash-collapse fallback in the controller.
 - **Non-INI configuration rendering gets its own package.**
   `internal/common/config` renders oslo INI only and stays that way. A service
   that renders Python settings (e.g. Horizon's Django `local_settings.py`)
-  gets a separate shared renderer package rather than bolting Python emission
-  onto the INI renderer. `internal/common/pysettings` now exists, implemented
+  gets a separate shared renderer package for Python output.
+  `internal/common/pysettings` now exists, implemented
   with its first consumer, the horizon-operator.
 - **Multi-workload operators.** An operator may project more than one kind of
   Deployment. Every non-API pod template then takes its own
@@ -219,23 +219,24 @@ operators build on them rather than reopening them:
 
 ## Node-level workloads
 
-Every operator on this page projects API Deployments onto whatever node the
-scheduler picks. A node-level workload does not work that way: the OVN chassis
-(issue #903) runs one pod per node, needs kernel access the Restricted posture
-forbids, and reads part of its configuration off the node it landed on. Issues
-#903 and #905 implement against the rules below.
+Service operators normally project API Deployments onto nodes selected by the
+scheduler. A node-level workload works differently: the OVN chassis (issue
+#903) runs one pod per node, needs kernel access the Restricted posture forbids,
+and reads part of its configuration from the node. Issues #903 and #905
+implement against the rules below.
 
 ### Container posture
 
 `RestrictedSecurityContext` stays the posture for every API Deployment, Job and
-CronJob, guarded by the five `pod-security-restricted` suites under
+CronJob, guarded by the `pod-security-restricted` suites under
 `tests/e2e/<op>/`. `internal/common/deployment` has two escapes beside it,
 added with the OVN chassis (#903), and a container takes the weaker one that
 still works:
 
 - `CapabilitySecurityContext(caps...)` keeps the Restricted fields and adds
-  named capabilities. ovs-vswitchd and ovn-controller need `NET_ADMIN`;
-  ovsdb-server needs no capability and stays Restricted.
+  named capabilities. `ovn-controller` needs `NET_ADMIN`; `ovs-vswitchd` also
+  needs `SYS_NICE` to raise its polling-thread priority. `ovsdb-server` needs no
+  capability and stays Restricted.
 - `PrivilegedSecurityContext()` is for a container that cannot run any other
   way: the `SYS_MODULE` init container that loads modules from the host's
   module tree, and the metadata agent, which reaches into `/run/netns`.
@@ -272,8 +273,8 @@ image carries no HTTP client to make the call with. A changed value reaches a
 running pod anyway, because the kubelet refreshes a mounted ConfigMap within its
 sync period.
 
-Stable identity, the OVN `system-id`, has to survive the pod, so the operator
-persists it — into that same namespaced per-node object, and it reads it back on
+Stable identity, the OVN `system-id`, must persist across pod restarts, so the
+operator stores it in the same namespaced per-node object and reads it back on
 the next pass. A Node annotation would be the other candidate, and it is the
 wrong one: writing it needs `patch` on `nodes`, Kubernetes cannot narrow that
 verb to one annotation key, and the labels and taints it carries with it are
