@@ -25,7 +25,7 @@ infrastructure stack, the operators come up in dependency order, and a single
 Service workloads either stay on the management cluster or run on registered
 target clusters.
 
-![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. One service operator per service (keystone, horizon, glance, placement, barbican, neutron, cinder, nova, ovn) runs the OpenStack services, exposed via the Gateway API. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../diagrams/cobaltcore-management-cluster.svg)
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. The service operators for Keystone, Horizon, Glance, Placement, Barbican, Neutron, Cinder, and Nova manage those OpenStack services, which are exposed via the Gateway API. The OVN operator manages the OVN central and chassis layer. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../diagrams/cobaltcore-management-cluster.svg)
 
 ## A composable control plane
 
@@ -69,10 +69,11 @@ The ControlPlane projects the Glance, Barbican, and Cinder backends from
 entries in its own spec (`glance.backends`, `barbican.secretStore`,
 `cinder.backends`, `cinder.backupBackend`) and deletes a projected backend once
 its entry is gone. Identity backends, compute pools, chassis, and metadata
-agents are applied beside the ControlPlane. It watches three of them: an
-identity backend that turns `Ready` updates the login choices of Horizon, a
-compute pool on a compute cluster receives the compute contract there, and a
-metadata agent there receives a copy of the metadata shared secret. The OVN
+agents are applied beside the ControlPlane. It watches three of them. When an
+identity backend becomes `Ready`, the c5c3-operator updates Horizon's login
+choices. A compute pool on a compute cluster receives the compute contract
+there, and a metadata agent there receives a copy of the metadata shared
+secret. The OVN
 databases are an
 `OVNCentral` of their own, which the Neutron service reads through
 `services.neutron.ovn.centralRef`.
