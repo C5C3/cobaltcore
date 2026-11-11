@@ -23,7 +23,7 @@ resources, and aggregates their readiness.
 | --- | --- | --- |
 | `ControlPlane` | `c5c3.io/v1alpha1` | Top-level resource for a whole control plane: infrastructure, services, identity plane ([CRD reference](../reference/c5c3/controlplane-crd.md)) |
 | `CredentialRotation` | `c5c3.io/v1alpha1` | Rotates the admin application credential ([reconciler reference](../reference/c5c3/controlplane-reconciler.md)) |
-| `SecretAggregate` | `c5c3.io/v1alpha1` | Aggregates secrets from multiple sources into one consumer Secret |
+| `SecretAggregate` | `c5c3.io/v1alpha1` | Aggregates secrets from multiple sources into one consumer Secret ([CRD reference](../reference/c5c3/controlplane-crd.md#secretaggregate)) |
 | `KeystoneService` | `c5c3.io/v1alpha1` | Registers one service against a ControlPlane's identity plane: catalog entry and service account, from the service's own namespace ([CRD reference](../reference/c5c3/keystoneservice-crd.md)) |
 | `KeystoneUser` | `c5c3.io/v1alpha1` | Orders one Keystone user from a namespace a ControlPlane assigns, on the management cluster or a target cluster, and delivers its credentials as a Secret beside the order ([CRD reference](../reference/c5c3/keystoneuser-crd.md)) |
 | `KeystoneProject` | `c5c3.io/v1alpha1` | Orders one Keystone project in the ControlPlane's admin domain from an assigned namespace ([CRD reference](../reference/c5c3/keystoneproject-crd.md)) |
@@ -73,7 +73,7 @@ control plane depends on. Their configuration and the CRs built on top are
 documented per component in
 [Infrastructure Manifests](../reference/infrastructure/infrastructure-manifests.md):
 
-- **cert-manager** — the base layer of the dependency graph; issues webhook
+- **cert-manager:** the base layer of the dependency graph; it issues webhook
   and endpoint TLS certificates
   ([section](../reference/infrastructure/infrastructure-manifests.md#cert-manager)).
 - **mariadb-operator** with a Galera `MariaDB` CR as the shared database
@@ -114,11 +114,11 @@ Every operator exports Prometheus metrics
 reference set). The remaining pieces ship only with the kind overlay
 (`deploy/kind/`) for development and CI:
 
-- **kube-prometheus-stack** and **metrics-server** for local metrics, and
-  **Chaos Mesh** driving the
-  [chaos e2e suites](../reference/testing/chaos-e2e-tests.md) — all opt-in
-  addons documented in
-  [Infrastructure Manifests — Kind Overlay Demo Addons](../reference/infrastructure/infrastructure-manifests.md#kind-overlay-demo-addons).
+- **kube-prometheus-stack** and **metrics-server** for local metrics, plus
+  **Chaos Mesh**, which drives the
+  [chaos e2e suites](../reference/testing/chaos-e2e-tests.md). These opt-in
+  addons are documented in the
+  [Kind Overlay Demo Addons section](../reference/infrastructure/infrastructure-manifests.md#kind-overlay-demo-addons).
 - **dizzy**, the load/chaos stack around victoria-metrics, used by
   [dizzy chaos testing](../reference/testing/dizzy-chaos-testing.md).
 - **Envoy Gateway** as the demo Gateway API implementation

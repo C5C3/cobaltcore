@@ -3,7 +3,7 @@
 Review each listed page from first line through its final section. For every page, run the consistency, expression, and structure checks; run drift checks wherever the page describes code, CRDs, deployment, tests, CI, or release behavior. Record concrete source evidence for factual claims. Apply mechanical findings with `fix-docs`; pause for confirmation on judgment calls and research unresolved claims before editing. Re-run the originating checks after fixes. Commit the page changes and this task's completion record before checking it off.
 
 ## Architecture
-- [ ] `docs/architecture/core-components.md`
+- [x] `docs/architecture/core-components.md` — read all sections; service/CRD inventory checked against `ServicesSpec` and `operators/c5c3/api/v1alpha1/`; infrastructure names checked against `deploy/flux-system/`; metrics checked against operator instrumentation; database and vhost cadence checked against their API types; Cyberus approval and roadmap checked against the linked announcement. Added the missing `SecretAggregate` CRD link. Follow-up outside docs scope: `ControlPlane` type comment still says `today: keystone` while `ServicesSpec` has eight services.
 - [ ] `docs/architecture/index.md`
 
 ## Contributing
