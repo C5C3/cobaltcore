@@ -109,8 +109,8 @@ On a ControlPlane devstack the Keystone and Horizon CRs are **projected** by the
 ControlPlane operator; editing them by hand is reverted on the next reconcile.
 A guide sets an option on the `ControlPlane` CR, and lets the operator project it
 down. A field the `ControlPlane` CRD does not expose is documented in the
-guide's `## Standalone Keystone, without a ControlPlane` section, applied to a
-section, applied to a Keystone CR the reader owns.
+guide's `## Standalone Keystone, without a ControlPlane` section, where the
+reader applies it to a Keystone CR they own.
 
 ## Every guide is testable
 
