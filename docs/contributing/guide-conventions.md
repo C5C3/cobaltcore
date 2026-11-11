@@ -13,7 +13,7 @@ SPDX-License-Identifier: Apache-2.0
 The how-to guides under `docs/guides/` all lead an operator through a task on a
 running cluster. To keep them copy-pasteable, every guide must agree on the same
 few structural rules. Without them each guide re-derives its structure from a
-neighbour and inherits that neighbour's inconsistencies — most visibly, example
+neighbour and inherits that neighbour's inconsistencies, especially example
 names that name a resource the reader's cluster never created.
 
 This page is the contract. New guides follow it from the start; existing guides
@@ -21,9 +21,9 @@ are being brought into conformance.
 
 ## Placement: one subdirectory per service
 
-Mirroring the reference set, service-specific guides live in a per-service
-subdirectory — `docs/guides/keystone/`, `docs/guides/horizon/`,
-`docs/guides/glance/`, and so on — and register in the matching collapsed
+Mirroring the reference set, service-specific guides live in per-service
+subdirectories such as `docs/guides/keystone/`, `docs/guides/horizon/`, and
+`docs/guides/glance/`. Each registers in the matching collapsed
 service group of the `Guides` sidebar section in `docs/.vitepress/sidebar.ts`.
 Cross-service and general operational guides (observability, day-2 operations,
 tenancy, end-to-end SSO) sit flat under `docs/guides/` and register above the
@@ -40,7 +40,7 @@ gate does not cover (see
 
 ## One devstack per guide
 
-A reader arriving at a guide has to know exactly which cluster to build before
+A reader arriving at a guide must know which cluster to build before
 the first command runs. Every guide therefore opens with a standardized
 prerequisites block that names **exactly one** Getting-Started tutorial and its
 verbatim bring-up command.
@@ -51,13 +51,13 @@ The section is short and machine-checkable. It consists of:
 2. Whose first element is a `::: info Devstack` container that holds, in order:
    - exactly **one** link to a Getting-Started tutorial
      (`../quick-start.md`, `../quick-start-extended.md`,
-     `../quick-start-controlplane.md`, or `../quick-start-metal-stack.md` — one
+    `../quick-start-controlplane.md`, or `../quick-start-metal-stack.md`, one
      `../` deeper from a service subdirectory);
    - exactly **one** fenced ` ```bash ` block with the tutorial's verbatim
      bring-up command, including every `WITH_*` opt-in flag the guide depends
      on (a guide that needs Prometheus names `WITH_PROMETHEUS=true`, a guide
      that needs a ControlPlane names `WITH_CONTROLPLANE=true`, and so on);
-   - a completion pointer — how far the reader follows the tutorial (its final
+  - a completion pointer that states how far the reader follows the tutorial (its final
      **Verify** step, so the devstack is running).
 3. Followed by at most one prose paragraph of guide-specific prerequisites
   (an external LDAP server, a Keycloak realm, a CNI that enforces
@@ -86,7 +86,7 @@ names `KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_PROMETHEUS=true make depl
 ## ControlPlane-first naming
 
 The primary path of a guide uses the resource names its declared devstack
-actually produces — never a placeholder name that no tutorial creates. A reader
+actually produces. Do not use a placeholder name that no tutorial creates. A reader
 on that devstack must be able to copy a command and have it hit a resource that
 exists.
 
@@ -99,23 +99,23 @@ the ControlPlane devstack's real names: the projected Keystone child is
 [End-to-End SSO](../guides/end-to-end-sso.md). Do not interleave the two naming
 worlds in the primary walkthrough.
 
-Placeholder example names that no tutorial produces are banned. If a value
-genuinely varies per reader, express it as a substitution rule anchored on a
-concrete devstack name, not as an invented literal.
+Do not use placeholder example names that no tutorial produces. If a value
+varies per reader, express it as a substitution rule anchored on a concrete
+devstack name.
 
 ## Never edit operator-projected children
 
 On a ControlPlane devstack the Keystone and Horizon CRs are **projected** by the
 ControlPlane operator; editing them by hand is reverted on the next reconcile.
-A guide sets a knob on the `ControlPlane` CR, and lets the operator project it
-down. A knob the `ControlPlane` CRD does not expose is documented as
-standalone-only — in the guide's `## Standalone Keystone, without a ControlPlane`
-section, applied to a Keystone CR the reader owns.
+A guide sets an option on the `ControlPlane` CR, and lets the operator project it
+down. A field the `ControlPlane` CRD does not expose is documented in the
+guide's `## Standalone Keystone, without a ControlPlane` section, where the
+reader applies it to a Keystone CR they own.
 
 ## Every guide is testable
 
 A guide describes behaviour the project also asserts in an end-to-end suite.
-Every guide closes with a terminal section titled exactly `## Tested by` that
+Every guide closes with a terminal section titled `## Tested by` that
 names its mirroring suite(s) and the local invocation, so a reader can run the
 same flow the guide walks through. The invocation uses the `--test-dir` form,
 one line per suite:
@@ -130,8 +130,8 @@ the `## Tested by` section must exist, and every path it names with
 
 ## Single source of truth for manifests
 
-Where a guide mirrors an e2e suite, embed the fixture the suite applies rather
-than hand-maintaining a second copy that drifts. A VitePress snippet import
+Where a guide mirrors an e2e suite, embed its fixture to keep the rendered YAML
+in sync and avoid a second copy that can drift. A VitePress snippet import
 keeps the rendered YAML in lockstep with the tested fixture; mark the region to
 import with column-0 `# region <name>` / `# endregion <name>` YAML comments
 around the CR document in the fixture. The path is relative to the page, so a
@@ -147,11 +147,11 @@ of the site that renders the page, and
 [cobaltcore.dev](./publishing-to-cobaltcore-dev.md) renders the guides from
 another source root, where `@/../tests/` names no file.
 
-The fixture and the walkthrough serve different masters, so they carry different
-names. A suite fixture is **isolation-named** — a distinct CR name, its own
-logical database, `deletionPolicy: Delete`, dev-tag image pins — so the suite
-runs safely in the parallel suite pool. The walkthrough is **devstack-named** —
-it uses the resource names the guide's declared devstack actually produces (see
+The fixture and the walkthrough serve different purposes, so they use different
+names. A suite fixture is **isolation-named**: it has a distinct CR name, its
+own logical database, `deletionPolicy: Delete`, and dev-tag image pins. These
+names let the suite run safely in the parallel suite pool. The walkthrough is
+**devstack-named** and uses the resource names the guide's devstack produces (see
 [ControlPlane-first naming](#controlplane-first-naming)), so a reader can copy a
 command and have it hit a resource that exists. Reconcile the two by keeping the
 walkthrough YAML devstack-named and embedding the isolation-named fixture as a
@@ -165,6 +165,6 @@ names the reader's devstack can actually copy.
 - Frontmatter (`title`, `quadrant: operator`) starts on **line 1**. VitePress
   renders anything above the frontmatter as body text.
 - Register a new guide in the `Guides` sidebar in `docs/.vitepress/sidebar.ts`.
-- Source describes behaviour, not internal tracking. Do not put internal
-  feature or requirement IDs, or issue references, in a guide.
+- Keep guide prose focused on system behaviour. Omit internal feature or
+  requirement IDs and issue references.
 - Guides are written in English.
