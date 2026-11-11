@@ -155,7 +155,7 @@ own namespace is the delivery namespace.
 | --- | --- | --- | --- | --- |
 | `userName` | `string` | No | `metadata.name` | The OpenStack user managed in Keystone (pattern `^[^,]+$`, ≤ 255, mirroring K-ORC's `OpenStackName`). The defaulting webhook materializes the fallback onto the stored object. **Immutable**, compared by effective value. |
 | `domainName` | `string` | No | the ControlPlane's admin domain | The domain the user and project live in (pattern `^[^,]+$`, ≤ 255). The fallback resolves to `spec.korc.adminCredential.domainName` on the referenced plane. **Immutable**, compared as declared: resolving the fallback needs the referenced ControlPlane, which admission cannot read, so setting an explicit value is rejected even where it names that same domain. |
-| `adopt` | `bool` | No | `false` | Consent to take over a pre-existing Keystone user of this name, including a password takeover. See [Collision and adoption](#collision-and-adoption). Mutable. |
+| `adopt` | `bool` | No | `false` | Consent to take over a pre-existing Keystone user of this name, including a password takeover: the operator applies its generated password in Keystone before the account reports Ready. See [Collision and adoption](#collision-and-adoption). Mutable. |
 | `project` | [`ServiceAccountProjectSpec`](#serviceaccountprojectspec) | Yes | — | The project the service user is associated with, referenced or created. |
 | `roles` | `[]string` | No | — | Role names bound to the user on the project (≤ 32 entries, each `^[^,]+$` and ≤ 255). Each becomes one **unmanaged** K-ORC Role import (Keystone roles are global, so a role is referenced by name and never created or deleted) plus one **managed** RoleAssignment. A role that does not exist in Keystone never resolves, and the account holds at `AccountReady=False/WaitingForServiceAccounts` naming it. |
 | `rotation` | [`ServiceAccountRotationSpec`](#serviceaccountrotationspec) | No | `{mode: Manual}` | How the account's password is rotated. |
@@ -238,15 +238,40 @@ Adopting a user additionally means a **password takeover**: the operator
 overwrites the account's password with its generated one and delivers that
 password in the consumer Secret.
 
-::: warning Adoption does not apply the new password on the first pass
-With the currently pinned K-ORC, a newly adopted user keeps its pre-existing
-password even though the registration reports `AccountReady=True` and the
-consumer Secret carries the operator's generated one. K-ORC writes a password
-to Keystone only when the User already records an applied password reference,
-which an adopted user does not. Rotate the account once with a
-`CredentialRotation` to force the first real write. Tracked in
-[#920](https://github.com/C5C3/cobaltcore/issues/920).
-:::
+Consent never reaches a user the plane already manages for another owner. When
+a managed K-ORC User of a built-in service, of another registration or of a
+`KeystoneUser` order already holds the user in the ControlPlane's namespace,
+`adopt: true` is refused with `AccountReady=False/ServiceAccountCollision` and
+no managed User is created, since the takeover would overwrite that account's
+password and deliver it into this CR's namespace. User names are compared the
+way Keystone compares them, ignoring case and accents.
+
+K-ORC records the first password reference of a user it matched in Keystone
+without writing the password, and it does not report whether it matched or
+created the user. The operator therefore runs the takeover in two steps for
+every User it creates while `adopt` is true:
+
+1. The operator creates the User with the annotation
+   `cobaltcore.c5c3.io/password-takeover: pending` and a password reference to
+   generation 1, and emits an `AccountPasswordTakeover` event on the
+   KeystoneService.
+2. Once K-ORC has recorded generation 1, the operator moves the User to
+   password generation 2 and removes the annotation in the same update. K-ORC
+   writes generation 2 to Keystone.
+
+`AccountReady` holds at `WaitingForServiceAccounts` until K-ORC reports
+generation 2 as applied, and while the annotation is set the message names
+`account.adopt=true`. An account created under `adopt: true` therefore becomes
+Ready at `status.account.passwordGeneration` 2 with `lastPasswordRotation` set,
+whether or not the user existed before. Generation 1 is never published to
+OpenBao or the consumer Secret. The operator reads the annotation off the User,
+so setting or clearing `adopt` after the User exists neither starts nor cancels
+a takeover.
+
+**Upgrade note.** A user adopted by an operator version without the takeover
+keeps its old password in Keystone at generation 1, although the registration
+reports `AccountReady=True`. Rotate it once with a `CredentialRotation` to apply
+the generated password.
 
 Blind creation is not offered as an alternative. K-ORC's service actuator
 matches an existing row on name and type, so a managed create silently adopts
@@ -395,8 +420,8 @@ always the CR's own namespace, so it reports no Secret namespace.
 | `secretName` | `string` | Name of the materialized [consumer Secret](#consumer-secret-contract). |
 | `userID` | `string` | The OpenStack user id. Empty until the User is Available. |
 | `projectID` | `string` | The OpenStack project id. Empty until the Project is Available. |
-| `passwordGeneration` | `int64` | Generation of the password currently applied to the user. Increments on every rotation. |
-| `lastPasswordRotation` | `*metav1.Time` | Timestamp of the last successful rotation. Preserved across steady-state passes. |
+| `passwordGeneration` | `int64` | Generation of the password currently applied to the user. Increments on every rotation. An account created under `account.adopt: true` reads 1 while the password takeover waits and becomes Ready at 2 (see [Collision and adoption](#collision-and-adoption)). |
+| `lastPasswordRotation` | `*metav1.Time` | Timestamp of the last successful rotation. The password takeover under `account.adopt` sets it as well. Preserved across steady-state passes. |
 
 ### Conditions
 
@@ -422,10 +447,10 @@ idea.
 | `CatalogReady` | False | `CatalogError` | A Kubernetes-level failure applying a catalog child (not a K-ORC or OpenStack failure). |
 | `AccountReady` | True | `AccountNotDeclared` | No account block is declared. |
 | `AccountReady` | True | `AccountProvisioned` | The account exists in Keystone with its roles bound, and its credentials are materialized in the consumer Secret. |
-| `AccountReady` | False | `ServiceAccountCollision` | The user, or a `create: true` project, already exists without consent — or the registration resolves to the plane's [admin identity](#the-admin-identity-is-never-registrable). |
+| `AccountReady` | False | `ServiceAccountCollision` | The user, or a `create: true` project, already exists without consent — or the registration resolves to the plane's [admin identity](#the-admin-identity-is-never-registrable), or `account.adopt` names a user the plane already manages for another owner. |
 | `AccountReady` | False | `ProbingForCollision` | The user or project collision probe has not resolved yet. |
 | `AccountReady` | False | `SecretStoreNotReady` | The ControlPlane's secret store is not ready in this CR's namespace; the upstream secret backend is unreachable. |
-| `AccountReady` | False | `WaitingForServiceAccounts` | A project, user, Role import, or RoleAssignment is registered but not yet Available; K-ORC has not applied the current password yet; or the OpenBao round-trip has not materialized the Secret yet. The message names the blocking dependency. |
+| `AccountReady` | False | `WaitingForServiceAccounts` | A project, user, Role import, or RoleAssignment is registered but not yet Available; K-ORC has not applied the current password yet, or a password takeover is in progress; or the OpenBao round-trip has not materialized the Secret yet. The message names the blocking dependency. |
 | `AccountReady` | False | `ServiceAccountsFailed` | K-ORC reported a terminal error on the account or one of its roles. A latched transport error is cleared first, so K-ORC retries. |
 | `AccountReady` | False | `TransportErrorRetryFailed` | Clearing a latched transport error from the Project, the User or a role child failed, for example because the operator's RBAC lacks `patch` on the K-ORC status subresources. |
 | `AccountReady` | False | `ServiceAccountError` | A Kubernetes-level failure projecting or delivering the account. |

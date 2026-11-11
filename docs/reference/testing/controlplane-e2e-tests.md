@@ -1139,9 +1139,17 @@ Five legs run against the live stack:
    Nothing is taken over, re-checked after a 30 s settle. Patching
    `catalog.adopt: true` takes the row over at its seeded id, with no
    duplicate; the account half keeps holding; deleting the CR removes the adopted
-   row from Keystone while the never-adopted user stays. The suite stops short of
-   account adoption: with the pinned K-ORC an adopted user keeps its pre-existing
-   password at generation 1, tracked as #920.
+   row from Keystone while the never-adopted user stays. The suite then applies
+   `legacy` again, waits for the user collision (its message names
+   `set account.adopt=true`), and patches `account.adopt: true`. Within 600 s
+   `AccountReady` reports `AccountProvisioned` at the seeded user id, which the
+   admin Job finds once in Keystone. `passwordGeneration` is 2,
+   `lastPasswordRotation` is set, the User child's `appliedPasswordRef` ends in
+   `password-v2` with generation annotation 2 and no
+   `cobaltcore.c5c3.io/password-takeover` annotation, `…-password-v1` is pruned
+   and no probe is left. The `legacy-verify` Job authenticates with the
+   delivered password, which proves the takeover applied it. Deleting the CR
+   then removes the catalog row and the adopted user from Keystone.
 5. **Deletion**: deleting `workflow` leaves no K-ORC object under its labels, no
    consumer Secret, ExternalSecret, PushSecret, source Secret or password Secret,
    no live value at the OpenBao leaf, and no service or user row in Keystone. The
