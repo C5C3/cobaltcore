@@ -31,7 +31,7 @@ The keystone operator is the reference consumer for most packages listed (for
 | `internal/common/satellite` | Satellite-CRD mechanics: `ResolveParentChildren` (parent Get plus target-cluster resolve, holding the pass on the satellite's gate condition), `SectionProjected`/`SecretNameForVolume`/`SectionPresent` (projection observation through the parent's Deployment), `Collect` (sort-skip-gate-default collection); `GlanceBackend` is the reference consumer, and Keystone's satellite controller stays in the keystone operator by design |
 | `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap and the `SetupOptions` its `SetupFunc` receives (register the reconcilers under `opts.Controllers`, the webhooks under `opts.Webhooks`), `NewScheme` scheme assembly (client-go baseline first, then the per-operator extras), `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
 | `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewSubReconcilerInstrumenter("<op>_operator", conditionTypes)` in the operator and pass its bound `Instrument` method to the reconcile pipeline, then register it from a `RegisterMetrics()` wired into `main.go` (registration returns an error instead of panicking) |
-| `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `BuildDaemonSet`/`EnsureDaemonSet` for node-level workloads, `RestrictedSecurityContext` beside the `CapabilitySecurityContext`/`PrivilegedSecurityContext` escapes, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
+| `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `BuildDaemonSet`/`EnsureDaemonSet` for node-level workloads, `RestrictedSecurityContext` beside the `CapabilitySecurityContext`/`PrivilegedSecurityContext` escapes, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-default helpers |
 | `internal/common/apply` | The SSA apply primitives under every ensure helper: `EnsureObject` (owner-referenced) and `EnsureUnownedObject` |
 | `internal/common/networkpolicy` | `Ensure`/`Delete`, the auto-derived egress rules (`DNSEgressRule`/`DatabaseEgressRule`/`CacheEgressRule`/`CacheEgressPorts`), `IngressPeers`, and the three-path `Reconcile` flow with the fail-closed empty-ingress guard |
 | `internal/common/gateway` | `IsGVKAvailable` CRD probe, HTTPRoute builder/acceptance/ensure/delete over the shared `GatewaySpec`, and the three-path `ReconcileHTTPRoute` flow |
@@ -219,23 +219,24 @@ operators inherit them:
 
 ## Node-level workloads
 
-Every operator on this page projects API Deployments onto whatever node the
-scheduler picks. A node-level workload does not work that way: the OVN chassis
-(issue #903) runs one pod per node, needs kernel access the Restricted posture
-forbids, and reads part of its configuration off the node it landed on. Issues
-#903 and #905 implement against the rules below.
+Service operators normally project API Deployments onto nodes selected by the
+scheduler. A node-level workload works differently: the OVN chassis (issue
+#903) runs one pod per node, needs kernel access the Restricted posture forbids,
+and reads part of its configuration from the node. Issues #903 and #905
+implement against the rules below.
 
 ### Container posture
 
 `RestrictedSecurityContext` stays the posture for every API Deployment, Job and
-CronJob, guarded by the five `pod-security-restricted` suites under
+CronJob, guarded by the `pod-security-restricted` suites under
 `tests/e2e/<op>/`. `internal/common/deployment` has two escapes beside it,
 added with the OVN chassis (#903), and a container takes the weaker one that
 still works:
 
 - `CapabilitySecurityContext(caps...)` keeps the Restricted fields and adds
-  named capabilities. ovs-vswitchd and ovn-controller need `NET_ADMIN`;
-  ovsdb-server needs no capability and stays Restricted.
+  named capabilities. `ovn-controller` needs `NET_ADMIN`; `ovs-vswitchd` also
+  needs `SYS_NICE` to raise its polling-thread priority. `ovsdb-server` needs no
+  capability and stays Restricted.
 - `PrivilegedSecurityContext()` is for a container that cannot run any other
   way: the `SYS_MODULE` init container that loads modules from the host's
   module tree, and the metadata agent, which reaches into `/run/netns`.
