@@ -26,6 +26,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -56,8 +57,33 @@ import (
 // derives N from the User's passwordRef suffix and the annotation is the
 // rotation nudge marker: the CredentialRotation reconciler CLEARS it to "" to
 // request a rotation (mirroring adminPasswordHashAnnotation), and an empty value
-// drives a generation bump on the next pass.
+// drives a generation bump on the next pass. The operator also bumps the
+// generation on its own once, for a User created under adoption consent: that is
+// the password takeover serviceAccountPasswordTakeoverAnnotation defers until
+// K-ORC has recorded generation 1.
 const serviceAccountPasswordGenerationAnnotation = "cobaltcore.c5c3.io/password-generation" //nolint:gosec // G101 false positive: annotation key, not a credential.
+
+// serviceAccountPasswordTakeoverAnnotation marks a managed User created under
+// adoption consent whose password the operator has not applied yet. The user
+// actuator of the K-ORC build deploy/flux-system/sources/k-orc.yaml pins
+// (internal/controllers/user/actuator.go, reconcilePassword) calls UpdateUser
+// only once status.resource.appliedPasswordRef is set, so whichever passwordRef
+// it records first, it records without a write. A user K-ORC matched in Keystone
+// never passes through CreateResource either, so its first password is never
+// written. The operator therefore moves such a User to the next generation,
+// which K-ORC does write, and removes the marker in the same update. Only the
+// value serviceAccountPasswordTakeoverPending counts as a marker.
+const (
+	serviceAccountPasswordTakeoverAnnotation = "cobaltcore.c5c3.io/password-takeover" //nolint:gosec // G101 false positive: annotation key, not a credential.
+	serviceAccountPasswordTakeoverPending    = "pending"
+)
+
+// passwordTakeoverPending reports whether user carries the takeover marker. A nil
+// User, a missing key and any value other than
+// serviceAccountPasswordTakeoverPending read as no takeover.
+func passwordTakeoverPending(user *orcv1alpha1.User) bool {
+	return user != nil && user.Annotations[serviceAccountPasswordTakeoverAnnotation] == serviceAccountPasswordTakeoverPending
+}
 
 // serviceAccountPasswordKey is the Secret data key the generated password is
 // stored under. K-ORC's passwordRef reads exactly this key; it is also the key
@@ -605,7 +631,15 @@ type managedAccountUserInput struct {
 	// KeystoneService rotates. A positive value is the generation the User is
 	// moved to when it is above the current one, which is how a KeystoneUser's
 	// spec.passwordGeneration rotates; a lower value never moves it back.
-	desiredGeneration     int64
+	desiredGeneration int64
+	// takeover is set by an owner whose User is created under adoption consent:
+	// the create carries the serviceAccountPasswordTakeoverAnnotation marker, and
+	// the engine applies the next generation once K-ORC has recorded the first.
+	// It only stamps the marker on create; whether a takeover is pending is read
+	// off the live User, never off this field. It is only meaningful with a zero
+	// desiredGeneration, and a KeystoneUser order, which never adopts, leaves it
+	// unset.
+	takeover              bool
 	passwordSecretNameFor func(gen int64) string
 	ensurePasswordSecret  func(ctx context.Context, gen int64) error
 	// passwordSecretPrefix guards the superseded-generation prune: only Secrets
@@ -630,9 +664,19 @@ type managedAccountUserInput struct {
 // passwordRef NAME changes, so a rotation is a Secret-name flip, never a content
 // edit.
 //
+// With in.takeover, the create also stamps the password takeover marker (see
+// serviceAccountPasswordTakeoverAnnotation for why K-ORC never writes the first
+// generation). While the live User carries the marker the engine holds the
+// generation until K-ORC has recorded the current one, then flips to the next
+// generation and removes the marker in the same update. The flip is a rotation:
+// it stamps the new generation, which also serves a rotation nudge that arrived
+// during the takeover.
+//
 // It returns the applied User, the desired generation, whether the User was
-// created this pass (the one-shot deferral event both callers emit), and the
-// rotation timestamp — non-nil only when a nudge was consumed this pass.
+// created this pass (which drives the KeystoneService's one-shot
+// ScheduledRotationDeferred and AccountPasswordTakeover events), and the
+// rotation timestamp — non-nil only when a nudge or a takeover was consumed this
+// pass.
 //
 // This projection stays read-modify-write (not Server-Side Apply): the mutate
 // closure reads the LIVE User's CreationTimestamp and existing
@@ -658,6 +702,7 @@ func ensureManagedAccountUser(
 		currentGen = 1
 	}
 	rotating := false
+	takeoverFlip := false
 	desiredGen := currentGen
 	switch {
 	case in.desiredGeneration > 0:
@@ -668,6 +713,17 @@ func ensureManagedAccountUser(
 		rotating = exists && desiredGen > currentGen
 	case !exists:
 		desiredGen = 1
+	case passwordTakeoverPending(existing):
+		// K-ORC writes no reference it records first (see
+		// serviceAccountPasswordTakeoverAnnotation), so the generation moves only
+		// once K-ORC names the current one as applied. Until then nothing changes,
+		// and a cleared generation annotation stays for the flip to serve.
+		if existing.Status.Resource != nil &&
+			existing.Status.Resource.AppliedPasswordRef == in.passwordSecretNameFor(currentGen) {
+			rotating = true
+			takeoverFlip = true
+			desiredGen = currentGen + 1
+		}
 	default:
 		// The empty generation annotation is the CredentialRotation reconciler's
 		// rotation nudge.
@@ -707,10 +763,21 @@ func ensureManagedAccountUser(
 		if _, present := user.Annotations[serviceAccountPasswordGenerationAnnotation]; user.CreationTimestamp.IsZero() || rotating || !present {
 			user.Annotations[serviceAccountPasswordGenerationAnnotation] = strconv.FormatInt(desiredGen, 10)
 		}
+		// The create of a User under adoption consent stamps the takeover marker,
+		// and the update that applies the next generation removes it.
+		if takeoverFlip {
+			delete(user.Annotations, serviceAccountPasswordTakeoverAnnotation)
+		} else if in.takeover && user.CreationTimestamp.IsZero() {
+			user.Annotations[serviceAccountPasswordTakeoverAnnotation] = serviceAccountPasswordTakeoverPending
+		}
 		return in.claim(user)
 	})
 	if err != nil {
 		return nil, 0, false, nil, fmt.Errorf("registration managed User %q: %w", in.name, err)
+	}
+	if takeoverFlip {
+		log.FromContext(ctx).Info("applying the next password generation to an adopted user",
+			"user", in.name, "namespace", in.namespace, "generation", desiredGen)
 	}
 
 	// Record the rotation timestamp and prune superseded password Secrets once

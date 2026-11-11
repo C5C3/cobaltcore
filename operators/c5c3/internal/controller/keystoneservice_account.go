@@ -164,6 +164,12 @@ func (r *KeystoneServiceReconciler) ensureAccount(
 				"rotation.mode Scheduled is accepted but not yet implemented; rotate on demand via a CredentialRotation CR")
 		}
 	}
+	if created && account.Adopt && r.Recorder != nil {
+		r.Recorder.Event(ks, "Normal", "AccountPasswordTakeover",
+			"the service account's user was created under account.adopt=true; the operator applies password "+
+				"generation 2 once K-ORC has recorded generation 1, so a pre-existing user's password is overwritten "+
+				"before the account reports provisioned")
+	}
 
 	// A latched transport error is handed back to K-ORC first, so it retries the
 	// create it gave up on; korc_unlatch.go states the policy. Every latch this
@@ -184,9 +190,15 @@ func (r *KeystoneServiceReconciler) ensureAccount(
 		}
 	}
 
+	// A pending password takeover holds the account as well. The engine decides
+	// from its own read of the User, and the User it returns is a later one: on a
+	// pass whose first read predates K-ORC's record of generation 1, generation 1
+	// already reads as applied here, although K-ORC never wrote it to the adopted
+	// user.
 	passwordRefName := keystoneServicePasswordSecretName(ks, gen)
 	appliedCurrent := user.Status.Resource != nil && user.Status.Resource.AppliedPasswordRef == passwordRefName
-	if !korcAvailableUpToDate(project) || !orcv1alpha1.IsAvailable(user) || !appliedCurrent {
+	if !korcAvailableUpToDate(project) || !orcv1alpha1.IsAvailable(user) || !appliedCurrent ||
+		passwordTakeoverPending(user) {
 		r.keystoneServiceWaitOrClassify(ks, cp, conditionTypeKeystoneServiceAccountReady,
 			reasonWaitingForServiceAccounts, keystoneServiceAccountWaitMessage(project, user),
 			pendingServiceAccountObjs(project, user)...)
@@ -382,11 +394,34 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 // User is created.
 //
 // proceed is true when the managed User may be created: the operator already owns
-// it, adoption was requested, or the probe confirmed the user is absent.
+// it, adoption was requested for a user no other managed User holds, or the probe
+// confirmed the user is absent.
 func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 	credRef orcv1alpha1.CloudCredentialsReference, userName, domainRef string,
 ) (bool, error) {
+	// Adoption never reaches a user the plane already manages for another owner: a
+	// built-in service account, another registration's or a KeystoneUser order's.
+	// The password takeover would write this registration's password over that
+	// account's and deliver it into this CR's namespace, with the roles the other
+	// owner bound, and the teardown would delete the user from Keystone.
+	if ks.Spec.Account.Adopt {
+		holder, err := r.keystoneServiceUserHolder(ctx, ks, cp, userName, domainRef)
+		if err != nil {
+			return false, err
+		}
+		if holder != "" {
+			keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonServiceAccountCollision, fmt.Sprintf(
+				"the registration resolves to Keystone user %q in domain %q, which K-ORC User %s/%s already manages; "+
+					"account.adopt=true never takes over an account the plane manages, because the password "+
+					"takeover would overwrite its password — re-create the registration under a user name of its "+
+					"own, or remove the account block",
+				userName, keystoneServiceDomainName(cp, ks), keystoneServiceChildNamespace(cp), holder,
+			))
+			return false, nil
+		}
+	}
+
 	probe := unmanagedUserImport(keystoneServiceUserProbeRef(ks), keystoneServiceChildNamespace(cp),
 		userName, domainRef, credRef)
 	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, managedChildProbeInput{
@@ -421,11 +456,59 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 	return false, nil
 }
 
+// keystoneServiceUserHolder returns the name of a managed K-ORC User other than
+// ks's own that manages Keystone user userName in the registration's domain, or
+// "" when there is none. Every account the plane provisions keeps its managed
+// User in keystoneServiceChildNamespace, so one List sees them all. User names
+// compare through keystoneNameKey, as Keystone compares them. Domains compare by
+// the name their Domain import filters on, because two registrations outside the
+// admin domain each import the same domain under a CR name of their own.
+func (r *KeystoneServiceReconciler) keystoneServiceUserHolder(
+	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
+	userName, domainRef string,
+) (string, error) {
+	namespace := keystoneServiceChildNamespace(cp)
+	var domains orcv1alpha1.DomainList
+	if err := r.List(ctx, &domains, client.InNamespace(namespace)); err != nil {
+		return "", fmt.Errorf("listing the Domains in namespace %q: %w", namespace, err)
+	}
+	sameDomain := map[string]bool{domainRef: true}
+	domainKey := keystoneNameKey(keystoneServiceDomainName(cp, ks))
+	for i := range domains.Items {
+		if imp := domains.Items[i].Spec.Import; imp != nil && imp.Filter != nil && imp.Filter.Name != nil &&
+			keystoneNameKey(string(*imp.Filter.Name)) == domainKey {
+			sameDomain[domains.Items[i].Name] = true
+		}
+	}
+
+	var users orcv1alpha1.UserList
+	if err := r.List(ctx, &users, client.InNamespace(namespace)); err != nil {
+		return "", fmt.Errorf("listing the Users in namespace %q: %w", namespace, err)
+	}
+	for i := range users.Items {
+		user := &users.Items[i]
+		res := user.Spec.Resource
+		if ownsKeystoneServiceChild(ks, user) || user.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyManaged ||
+			res == nil || res.Name == nil || res.DomainRef == nil {
+			continue
+		}
+		if keystoneNameKey(string(*res.Name)) == keystoneNameKey(userName) && sameDomain[string(*res.DomainRef)] {
+			return user.Name, nil
+		}
+	}
+	return "", nil
+}
+
 // ensureKeystoneServiceUser create-or-updates the managed K-ORC User with the
 // current-generation password, and flips the passwordRef to a fresh generation
 // when a CredentialRotation has cleared the generation annotation. K-ORC's user
 // actuator re-applies the password only when the passwordRef NAME changes, so a
 // rotation is a Secret-name flip and never an in-place edit.
+//
+// A User created under account.adopt=true runs the password takeover: the engine
+// applies generation 2 once K-ORC has recorded generation 1 (see
+// serviceAccountPasswordTakeoverAnnotation for why the first generation is never
+// written).
 //
 // It stays read-modify-write rather than Server-Side Apply because the mutation
 // reads the LIVE User's CreationTimestamp and annotation to decide whether to
@@ -441,6 +524,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceUser(
 		domainRef:      domainRef,
 		projectRef:     keystoneServiceProjectRef(ks),
 		managedCredRef: managedCredRef,
+		takeover:       ks.Spec.Account.Adopt,
 		passwordSecretNameFor: func(gen int64) string {
 			return keystoneServicePasswordSecretName(ks, gen)
 		},
@@ -607,6 +691,9 @@ func keystoneServiceAccountWaitMessage(project *orcv1alpha1.Project, user *orcv1
 		return "the account's project is registered but not yet Available"
 	case !orcv1alpha1.IsAvailable(user):
 		return "the account's user is registered but not yet Available"
+	case passwordTakeoverPending(user):
+		return "account.adopt=true: awaiting K-ORC to record the first password reference, which it does not " +
+			"write to an adopted user, before the operator applies the next generation"
 	default:
 		return "awaiting K-ORC to apply the current password to the user"
 	}
