@@ -6,7 +6,6 @@ title: Adding a New Release
 SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
-`make chainsaw-lint` and the audit reports no findings.
 # Adding a New Release
 
 This checklist captures everything a new OpenStack release (e.g. `2026.2`)
@@ -80,9 +79,9 @@ file:
 `tests/container-images/verify_release_config.sh` validates the structure of
 all of these; run it locally before pushing. Then run `make nix-lock`, which
 writes the locks of the new release under `nix/locks/<version>/` (one per
-`source-refs.yaml` key plus tempest), and commit them: the flake builds one
-image and one unit-test run per lock, and the `nix-lock-check` job fails until
-the locks match the release files.
+`source-refs.yaml` key plus Tempest), and commit them: the flake builds one
+image per lock and one unit-test run per service lock. Tempest has no unit-test
+run. The `nix-lock-check` job fails until the locks match the release files.
 
 ## Build inputs outside `releases/`
 
@@ -127,9 +126,9 @@ Three more per-release inputs live elsewhere in the tree:
   catalogs, and the build-images workflow's "Verify option catalog" step
   diffs several services' catalogs against a fresh extraction (`--check`).
 
-  The seven `…EmbeddedReleasesParse` tests in
-  `operators/<op>/api/v1alpha1/option_catalog_test.go` pin the catalog count
-  (`HaveLen(N)`) and keys (`HaveKey`); raise them. Then diff the new catalog
+  Each of the seven operators with a catalog has an `…EmbeddedReleasesParse`
+  test in `operators/<op>/api/v1alpha1/option_catalog_test.go`; the tests pin
+  catalog counts (`HaveLen(N)`) and keys (`HaveKey`). Raise them. Then diff the new catalog
   against the previous release's (run
   `jq -r '.sections | to_entries[] | .key as $s | .value.opts[] | "[\($s)] \(.)"'`
   on both files and compare the sorted outputs with `comm -23`) and resolve
@@ -158,9 +157,10 @@ whole pipeline.
 
 For each service in `ALL_TEMPEST_SERVICES`, clone
 `tests/tempest/<svc>-<prev-slug>/` to `<svc>-<slug>/`. Each directory holds
-`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`, and a numbered stack
-of CR fixtures: one for keystone, sixteen for cinder, whose matrix entry deploys its
-own image, network, placement, and compute services. The previous release
+`tempest.conf`, `include-tests.txt`, `exclude-tests.txt`, and numbered fixture
+files: one Keystone CR for its test run, and fourteen files in the current
+Cinder stack, whose matrix entry deploys its own image, network, placement,
+and compute services. The previous release
 appears in three spellings, and every non-comment line must change:
 
 - `<prev-slug>` (`2026-1`): CR, Service, Secret, and ConfigMap names,
