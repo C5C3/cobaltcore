@@ -10,13 +10,13 @@ Connect identity provider using the `KeystoneIdentityBackend` CRD: create
 the client-secret Secret, apply one CR, watch the conditions converge, and
 verify a federated user can log in. The worked example uses the same Keycloak
 fixture the e2e suite deploys, and every value below is one that fixture
-produces — so the whole flow is reproducible on the kind devstack.
+produces. The whole flow is reproducible on the kind devstack.
 
 When at least one OIDC backend attaches, the operator injects an
 Apache/`mod_auth_openidc` reverse-proxy sidecar into the Keystone pod, binds
 uWSGI to localhost behind it, and switches the Service to the proxy port.
 Detaching the last federation backend, OIDC or SAML, restores the plain
-uWSGI-only pod — the sidecar costs nothing until federation is in use.
+uWSGI-only pod. The sidecar runs only while federation is in use.
 
 For the full field reference, see the
 [KeystoneIdentityBackend CRD API Reference](../../reference/keystone/identity-backend-crd.md).
@@ -41,7 +41,7 @@ On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
 **projected** by the c5c3-operator, which re-asserts the entire
 `spec.federation` block (proxy image and trusted dashboards) on every reconcile.
 Set the federation proxy image on the `ControlPlane` CR (Step 3), and the trusted
-dashboards flow from `spec.services.horizon` — see
+dashboards flow from `spec.services.horizon`; see
 [End-to-End SSO](../end-to-end-sso.md). The `KeystoneIdentityBackend` CR you apply
 in Step 4 is yours to own; only the projected Keystone child's `spec.federation`
 is operator-managed.
@@ -57,12 +57,13 @@ is operator-managed.
   (Step 3); standalone Keystone installations set `spec.federation.proxyImage`
   themselves (see the [Standalone Keystone](#standalone-keystone-without-a-controlplane)
   section). Without a proxy image, OIDC backends stay pending with a
-  `FederationProxyImageMissing` Warning — no hidden default is assumed.
+  `FederationProxyImageMissing` Warning because the operator does not set a
+  default proxy image.
 - **Service users stay SQL-backed.** Federated users are ephemeral shadow
   users; OpenStack service accounts and the bootstrap admin remain in the
   SQL-backed `Default` domain, which the CRD hard-rejects federating.
 
-## Step 1 — Deploy the fixture IdP (kind devstack)
+## Step 1: Deploy the fixture IdP (kind devstack)
 
 On the kind devstack, stand up the same Keycloak the e2e suite uses. It is a
 plain namespace-pinned manifest, so `kubectl apply` runs it verbatim:
@@ -91,12 +92,12 @@ introspection endpoint (mod_auth_openidc requires https there).
 ::: details Registering a client at your own IdP (non-kind)
 On a non-kind cluster, skip the fixture and use your own Keycloak (or any OIDC
 IdP): create (or pick) a realm, add a **confidential** client `keystone` with
-*Standard flow* enabled and a client secret, and note the realm's issuer URL —
-it must match the `iss` claim the IdP asserts, byte for byte. Substitute your
+*Standard flow* enabled and a client secret, and note the realm's issuer URL.
+It must match the `iss` claim the IdP asserts, byte for byte. Substitute your
 issuer, endpoints, and client secret for the fixture values below.
 :::
 
-## Step 2 — Create the client-secret Secret
+## Step 2: Create the client-secret Secret
 
 The projection reads one fixed data key, `clientSecret`:
 
@@ -105,21 +106,21 @@ kubectl create secret generic keycloak-cobaltcore-client -n openstack \
   --from-literal=clientSecret='<the client secret from Keycloak>'
 ```
 
-Rotating this Secret later re-renders the federation configuration
-automatically — the operator watches it.
+The operator watches this Secret and automatically re-renders the federation
+configuration when it changes.
 
 ::: tip On the kind devstack
 Step 1's fixture already ships the `keycloak-cobaltcore-client` Secret with the
-fixed `clientSecret: keystone-cobaltcore-secret` key, so you can skip this
-`kubectl create` — the backend CR in Step 4 references it as-is.
+fixed `clientSecret: keystone-cobaltcore-secret` key. Skip this
+`kubectl create`; the backend CR in Step 4 references that Secret.
 :::
 
-## Step 3 — Pin the federation proxy image (optional)
+## Step 3: Pin the federation proxy image (optional)
 
 On the ControlPlane path the c5c3-operator already projects
 `ghcr.io/c5c3/keystone-federation-proxy:latest` onto the `controlplane-keystone`
-child, so OIDC federation works out of the box — this step is only needed to pin
-an immutable digest for production or to test a locally built sidecar. Override
+child, so OIDC federation works out of the box. Use this step to pin an immutable
+digest for production or to test a locally built sidecar. Override
 the default on the `ControlPlane` CR:
 
 ```yaml
@@ -151,7 +152,7 @@ block from the ControlPlane. Set the override via
 
 The projected image is inert until a federation backend, OIDC or SAML, attaches.
 
-## Step 4 — Apply the backend CR
+## Step 4: Apply the backend CR
 
 ```yaml
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
@@ -177,7 +178,7 @@ spec:
     # Keycloak's private ClusterIP, so the .well-known auto-discovery
     # (bare `issuer:` alone) does not run here. Everything speaks the fixture's
     # plain-http :8080 listener EXCEPT introspection, which mod_auth_openidc
-    # requires to be https — the fixture serves it on the self-signed :8443
+    # requires HTTPS. The fixture serves it on the self-signed :8443
     # listener, and tlsVerify opts out of verifying that throwaway cert.
     # A publicly resolvable IdP can drop this block and rely on discovery.
     endpoints:
@@ -236,13 +237,13 @@ requests (in both dash and underscore spelling) so in-cluster clients cannot
 spoof claims past the module.
 
 The `{N}` placeholders in `local` index only the **value-producing** remote
-rules, in order — a rule carrying `anyOneOf`/`notAnyOf` is a pure condition
+rules, in order. A rule carrying `anyOneOf`/`notAnyOf` is a pure condition
 and is skipped. In the example above `HTTP_OIDC_ISS` only gates the rule, so
 `HTTP_OIDC_PREFERRED_USERNAME` is `{0}`. Referencing an index past the last
 value (e.g. `{1}` here) makes keystone reject the assertion with a
 `DirectMappingError`.
 
-## Step 5 — Watch the conditions converge
+## Step 5: Watch the conditions converge
 
 ```bash
 kubectl get keystoneidentitybackends -n openstack
@@ -264,18 +265,17 @@ lists the five steps and what differs per kind.
 
 ![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
 
-The Deployment now runs two containers (`keystone`, `federation-proxy`) and
-the Service's targetPort points at the proxy — the API endpoint itself is
-unchanged.
+The Deployment now runs two containers (`keystone`, `federation-proxy`). The
+Service's targetPort points at the proxy; the API endpoint remains unchanged.
 
-## Step 6 — Log in as a federated user {#step-6-log-in-as-a-federated-user}
+## Step 6: Log in as a federated user {#step-6-log-in-as-a-federated-user}
 
-### CLI (bearer token) — reproducible on the kind devstack
+### CLI (bearer token): reproducible on the kind devstack
 
 This flow needs `oauth2Introspection` enabled on exactly one backend (Step 4
 sets it). The fixture's `keystone` client has direct-access-grants enabled, so
-you can mint a token with a username/password and exchange it — no browser
-required. Port-forward Keycloak and obtain an access token:
+you can request a token with a username and password without a browser.
+Port-forward Keycloak and obtain an access token:
 
 ```bash
 kubectl -n openstack port-forward svc/keycloak 8080:8080 &
@@ -302,9 +302,8 @@ curl -sik -H "Authorization: Bearer $TOKEN" \
   | grep -i x-subject-token
 ```
 
-The unscoped token exchanges for a domain- or project-scoped one through the
-regular `POST /v3/auth/tokens` — authorized by the roles the mapped group
-carries.
+The unscoped token exchanges for a domain- or project-scoped token through
+`POST /v3/auth/tokens`, where the mapped group's roles authorize the request.
 
 ### Browser (WebSSO)
 
@@ -319,8 +318,8 @@ keystone answers with the auto-submitting token form that hands the token to
 the dashboard. The `origin` must be listed in keystone's
 `[federation] trusted_dashboard`. On a ControlPlane deployment the operator
 projects this onto the child's typed `spec.federation.trustedDashboards` from
-the dashboard's `spec.services.horizon` (`publicEndpoint` / `gateway`) — you do
-not set it by hand; see [End-to-End SSO](../end-to-end-sso.md). On a standalone
+the dashboard's `spec.services.horizon` (`publicEndpoint` and `gateway`). You
+do not set it by hand; see [End-to-End SSO](../end-to-end-sso.md). On a standalone
 Keystone, set `spec.federation.trustedDashboards` directly (see the
 [Standalone Keystone](#standalone-keystone-without-a-controlplane) section).
 
@@ -331,7 +330,7 @@ hop 2. [The hops of a login](../end-to-end-sso.md#login-hops) lists all eight.
 
 ::: warning The fixture IdP is not reachable from a host browser
 The fixture Keycloak issuer is a cluster-internal Service name, so a browser on
-your workstation cannot complete the login form against it — the browser
+your workstation cannot complete the login form against it. The browser
 WebSSO flow needs an **externally reachable** IdP (your production Keycloak, or
 a fixture published through the gateway with matching redirect URIs). The
 headless authorization-code round trip against the in-cluster fixture is
@@ -345,18 +344,18 @@ Attach one `KeystoneIdentityBackend` per realm/IdP; the shared sidecar
 serves all of them from one metadata directory, and each per-IdP websso path
 pins its own issuer. Two constraints apply across the OIDC backends of one
 Keystone (webhook-enforced): `remoteIDAttribute` must be uniform, and at
-most one backend may enable `oauth2Introspection` — the module's `OIDCOAuth*`
+most one backend may enable `oauth2Introspection`; the module's `OIDCOAuth*`
 resource-server directives are server-scoped. The global
 `/v3/auth/OS-FEDERATION/websso/<protocol>` path exists only for a protocol ID
-that one backend of this Keystone uses alone. Two backends with the same
+that one backend of this Keystone uses by itself. Two backends with the same
 protocol ID get none for it; use the per-IdP paths.
 
 ## Deleting a backend
 
 `kubectl delete keystoneidentitybackend keycloak-cobaltcore` de-projects the
-configuration first (with the last federation backend, OIDC or SAML, the sidecar
-disappears and the Service returns to uWSGI), then removes the protocol,
-mapping, and identity provider — always — and finally applies
+configuration first. With the last federation backend, OIDC or SAML, the sidecar
+disappears and the Service returns to uWSGI. The controller always removes the
+protocol, mapping, and identity provider, then applies
 `spec.domain.deletionPolicy` to the domain like the LDAP flow.
 Declarative groups live inside the domain and follow it.
 
@@ -365,8 +364,8 @@ Declarative groups live inside the domain and follow it.
 By default the operator's federation-metadata client is SSRF-guarded: it refuses
 to dial **any** non-public address when it fetches an OIDC discovery document (or
 SAML IdP metadata). Auto-discovery of `<issuer>/.well-known/openid-configuration`
-therefore cannot reach an IdP on a private in-cluster address — for example the
-fixture Keycloak's ClusterIP in the kind Service CIDR. That is why Step 4 spells
+therefore cannot reach an IdP on a private in-cluster address, such as the
+fixture Keycloak's ClusterIP in the kind Service CIDR. Step 4 spells
 out `spec.oidc.endpoints`: explicit endpoints skip the metadata fetch entirely
 and stay the recommended path for air-gapped setups and anywhere the allowlist is
 not wanted.
@@ -390,15 +389,15 @@ federation:
     - 10.96.0.0/12   # the cluster's Service CIDR
 ```
 
-With the Service CIDR allowlisted, an OIDC backend can drop `spec.oidc.endpoints`
-and rely on `issuer:` alone — the operator fetches the discovery document from the
-in-cluster IdP itself.
+With the Service CIDR allowlisted, an OIDC backend can omit
+`spec.oidc.endpoints` and rely on `issuer:`. The operator fetches the discovery
+document from the in-cluster IdP.
 
 ::: warning Scope the allowlist narrowly
-Allowlist the **smallest** range that reaches the IdP — the cluster's Service
+Allowlist the **smallest** range that reaches the IdP: the cluster's Service
 CIDR (e.g. `10.96.0.0/12`). A default route (`0.0.0.0/0`, `::/0`) is rejected at
-startup: the operator refuses to boot rather than lift the private-range guard
-wholesale. The allowlist is operator-level configuration and can never be set or
+startup. The operator will not start with a default route, so the private-range
+guard remains in force. The allowlist is operator-level configuration and cannot be set or
 widened from a `KeystoneIdentityBackend` CR, so a tenant cannot expand the
 operator's reachable surface. Only the private-range classes are liftable:
 loopback, link-local (including the cloud IMDS at `169.254.169.254`), multicast,
@@ -406,25 +405,25 @@ and unspecified addresses stay blocked even when an allowlist entry covers them.
 
 A tenant *can* still aim `spec.oidc.providerMetadataURL` at any address **inside**
 the range you allowlist, so keep the range to what the IdP actually needs. The
-operator does not help them read the result: every fetch failure — refused
-connection, timeout, HTTP status, unparseable body — collapses to the same
-tenant-visible message, and the underlying cause goes to the operator log only.
+Every fetch failure (refused connection, timeout, HTTP status, or unparseable
+body) produces the same tenant-visible message, and the operator log records
+the underlying cause.
 :::
 
 ::: warning The operator NetworkPolicy blocks metadata fetches outright
 The keystone-operator chart's opt-in NetworkPolicy (`networkPolicy.enabled=true`)
 default-denies egress except kube-apiserver and DNS, so it blocks **every**
-metadata fetch — public or allowlisted — at the network layer regardless of this
-allowlist. With that policy enabled, keep spelling out `spec.oidc.endpoints`;
+metadata fetch at the network layer, including public or allowlisted addresses.
+With that policy enabled, keep spelling out `spec.oidc.endpoints`;
 this was already the case for public IdPs.
 :::
 
 ## Security considerations
 
 - **Register an exact redirect URI at the IdP.** mod_auth_openidc derives the
-  absolute `redirect_uri` from the request URL, so a strictly-registered
-  client turns any host-header manipulation into a login failure rather than a
-  usable redirect. Avoid wildcard redirect URIs in production.
+  absolute `redirect_uri` from the request URL. With an exact registered URI,
+  host-header manipulation causes login to fail. Avoid wildcard redirect URIs
+  in production.
 - **Expose Keystone through `spec.gateway` when a proxy sits in front.** The
   sidecar honors inbound `X-Forwarded-Host` / `X-Forwarded-Proto` for URL
   computation only when `spec.gateway` is set; that Gateway is the trust
@@ -436,14 +435,14 @@ this was already the case for public IdPs.
 
 | Symptom | Likely cause |
 | --- | --- |
-| `IdentityBackendsReady=False` with a `FederationProxyImageMissing` Warning | The child Keystone CR has no `spec.federation.proxyImage`. On a ControlPlane deployment the operator always projects it, so this points to a **standalone** Keystone with no proxy image — set `spec.federation.proxyImage` on it (see the [Standalone Keystone](#standalone-keystone-without-a-controlplane) section). |
-| `IdentityBackendSkipped` Warning naming `provider metadata unavailable` (or the client `refusing to dial non-public address`) | The discovery document could not be fetched from the operator pod, or its `issuer` does not equal `spec.oidc.issuer`. The Event withholds the underlying cause on purpose (SSRF probe oracle) — read the **operator log** for the concrete failure. Check egress/DNS; spell out `spec.oidc.endpoints`; or — for a trusted in-cluster IdP — allowlist its CIDR via the operator's `federation.metadataAllowCidrs` chart value (see [Discovery against an in-cluster identity provider](#discovery-against-an-in-cluster-identity-provider)). |
-| `FederationObjectsReady=False/NoMappingRules` | `spec.mappings` is empty — keystone cannot represent a rule-less mapping; add at least one rule. |
+| `IdentityBackendsReady=False` with a `FederationProxyImageMissing` Warning | The child Keystone CR has no `spec.federation.proxyImage`. The ControlPlane always projects this field, so the issue points to a standalone Keystone. Set `spec.federation.proxyImage` on it (see the [Standalone Keystone](#standalone-keystone-without-a-controlplane) section). |
+| `IdentityBackendSkipped` Warning naming `provider metadata unavailable` (or the client `refusing to dial non-public address`) | The discovery document could not be fetched from the operator pod, or its `issuer` does not equal `spec.oidc.issuer`. The Event hides the underlying cause. Read the **operator log** for details. Check egress/DNS, spell out `spec.oidc.endpoints`, or allowlist a trusted in-cluster IdP's CIDR with the `federation.metadataAllowCidrs` chart value (see [Discovery against an in-cluster identity provider](#discovery-against-an-in-cluster-identity-provider)). |
+| `FederationObjectsReady=False/NoMappingRules` | `spec.mappings` is empty. Keystone cannot represent a rule-less mapping; add at least one rule. |
 | `MappingsReady=False/RoleOrProjectNotFound` | A role assignment references a role or project that does not exist (yet); the backend retries on a bounded poll. |
 | Federated login returns 401 with valid IdP credentials | The mapping did not match: compare the asserted claims (the sidecar logs them at debug) against your `remote[].type` matchers, and remember the issuer gate must equal the `iss` claim byte for byte. |
 | WebSSO ends in `401`/`403` at the final hop | The `origin` parameter is not listed in `[federation] trusted_dashboard`. |
 | Bearer-token auth returns non-2xx while browser login works | `oauth2Introspection` is not enabled on this backend, or another backend already holds the single introspection slot. |
-| Bearer-token auth returns 401 and introspection yields `active:false` for a fresh token | The IdP does not list the resource-server client in the token's `aud`. Recent Keycloak (>= 25) rejects introspection when the introspecting client is absent from the audience — add an audience mapper (or client scope) so the access token's `aud` includes the `clientID`. |
+| Bearer-token auth returns 401 and introspection yields `active:false` for a fresh token | The IdP does not list the resource-server client in the token's `aud`. Recent Keycloak (>= 25) rejects introspection when the introspecting client is absent from the audience. Add an audience mapper or client scope so the access token's `aud` includes the `clientID`. |
 | Bearer-token auth returns 401 with `Access token JWT check failed` in the IdP log | The token's `iss` differs from what the IdP computes at the introspection endpoint (e.g. tokens minted over one hostname/scheme, introspected over another). Pin a fixed frontend URL / hostname on the IdP so the issuer is stable across listeners. |
 | The backend is skipped with `is not https` in the Warning | The IdP publishes an http introspection endpoint, which mod_auth_openidc refuses. Point `endpoints.introspectionEndpoint` at an https listener (and set `oauth2Introspection.tlsVerify: false` if its certificate is not in the system trust store). |
 | Admission rejects the CR | The message names the exact rule: discovery-shape exclusivity, the fixed `clientSecret` data-key contract, mapping-rule completeness, identity-provider-name uniqueness, remote-id uniformity, or the single-introspection limit. |
@@ -451,9 +450,8 @@ this was already the case for public IdPs.
 ## Standalone Keystone, without a ControlPlane
 
 On the [Quick Start](../../quick-start.md) / [Quick Start (Extended)](../../quick-start-extended.md)
-devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
-projecting it, so there is no operator projecting the federation block onto it —
-you set it directly on the Keystone CR.
+devstacks a standalone Keystone CR named `keystone` runs without a ControlPlane
+projection. Set the federation block directly on the Keystone CR.
 
 **Proxy image.** A standalone Keystone assumes no hidden default, so set
 `spec.federation.proxyImage` yourself (mirroring the required `spec.image`).
@@ -474,8 +472,7 @@ spec:
 ```
 
 **Backend `keystoneRef`.** Point the `KeystoneIdentityBackend` from Step 4 at the
-standalone CR by name — `keystoneRef.name: keystone` instead of
-`controlplane-keystone`.
+standalone CR by name: set `keystoneRef.name: keystone`.
 
 **Trusted dashboards.** Without the ControlPlane there is nothing to project the
 WebSSO origin, so set `spec.federation.trustedDashboards` directly on the Keystone
@@ -495,9 +492,9 @@ chainsaw test --test-dir tests/e2e/keystone/oidc-federation
 
 ::: details The backend CR the suite applies
 The suite isolates its Keystone instance from the parallel suite pool, so its
-backend CR points `keystoneRef` at `keystone-oidc` (and enables
-`oauth2Introspection` for the CLI bearer flow) — differing from the
-`controlplane-keystone` reference used in the walkthrough above.
+backend CR points `keystoneRef` at `keystone-oidc` and enables
+`oauth2Introspection` for the CLI bearer flow. The walkthrough uses
+`controlplane-keystone`.
 
 <<< ../../../tests/e2e/keystone/oidc-federation/02-backend-cr.yaml#backend-cr
 :::

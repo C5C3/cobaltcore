@@ -48,7 +48,7 @@ it down; that block is the single source of truth for the projected storage.
 - The `OS_*` environment variables from the tutorial's token-issue step, so the
   `openstack` client reaches the ControlPlane's Keystone.
 
-## Step 1 — The kind NFS stack
+## Step 1: The kind NFS stack
 
 `WITH_NFS=true` adds an overlay the default `make deploy-infra` leaves out. It
 brings up two pieces:
@@ -82,7 +82,7 @@ The stack is kind-only and opt-in. For the chart pin, the server image, and the
 reasons it stays out of the default flow, see
 [NFS storage stack](../../reference/infrastructure/infrastructure-manifests.md#nfs-storage-stack-opt-in).
 
-## Step 2 — Read the attached backend
+## Step 2: Read the attached backend
 
 The devstack declares one volume backend, `nfs1`, on `/volumes`. The operator
 projected a `CinderBackend` carrying that bare name:
@@ -155,7 +155,7 @@ nfs-server.openstack.svc.cluster.local:/volumes /var/lib/cinder/mnt/6f3cb55ed3b4
 `nfs-server.openstack.svc.cluster.local:/volumes`. The `nfs-backend` suite
 asserts the same path on the Deployment's `volumeMounts`.
 
-## Step 3 — Attach a second backend
+## Step 3: Attach a second backend
 
 A second backend needs a second export. Create the directory on the server with
 the ownership and mode the driver needs:
@@ -236,7 +236,7 @@ cinder keeps its own `__DEFAULT__` type for a volume created without `--type`,
 and the scheduler places such a volume on whichever backend has room. A type
 like `to-nfs2` is what pins a volume to one of them.
 
-## Step 4 — Detach it again
+## Step 4: Detach it again
 
 Detaching starts at the volumes. A volume on a backend that leaves is keyed to a
 host identity nothing serves afterwards, and attach, extend, snapshot and delete
@@ -313,7 +313,7 @@ openstack --insecure volume service list
 ```
 
 `controlplane-cinder@nfs2` is gone from the output, which reads
-`GET /v3/os-services`. The row itself is only soft-deleted and survives in the
+`GET /v3/os-services`. The row is soft-deleted and remains in the
 table until the next db purge sweeps it; a backend attached again registers under
 a new row id.
 
@@ -330,7 +330,7 @@ restores the host identity they are keyed by.
 | `VolumeServicesReady=False`/`ServiceRemoveJobFailed` | The `<cinder>-<backend>-service-remove` Job failed permanently, and the message names it. The finalizer stays, because the registry entry is still there. Delete the Job to retry the removal once the cause is understood. |
 | Warning event `SharedExportMountOptionsIgnored` | Two volume backends serve the same export with different `mountOptions`. The backup pod mounts each export once, with the options of the backend projected first, so the second backend's are not applied there. Its own `cinder-volume` still mounts with its own. |
 | A backend rejected at admission with `metadata.name plus spec.cinderRef.name must not exceed 47 characters: detaching this backend runs the "<cinder>-<name>-service-remove" Job, whose name is copied into a label value Kubernetes caps at 63 characters` | The two names share one budget, because either of them may be the long one. Shorten the backend name, or the Cinder's. On a ControlPlane the Cinder child is `{controlplane}-cinder`, so the ControlPlane's own name spends the same budget. |
-| Every create ends in `error` while the CR reports `Ready=True`/`AllReady` | The export is gone or unreachable. Nothing in the API reports this: the operator never reads the mount, the volume service takes its readiness from the broker socket, and no mount probe and no `BackendsHealthy` condition exist, so a total storage outage leaves every readiness signal green while the write path fails closed. The CR is the wrong place to look for it — go to the mount, as [Step 2](#step-2-—-read-the-attached-backend) does, and read the `cinder-volume` log for the `EIO` the soft mount returns. Alert on the share itself, not on the conditions. |
+| Every create ends in `error` while the CR reports `Ready=True`/`AllReady` | The export is gone or unreachable. The operator never reads the mount, the volume service takes its readiness from the broker socket, and no mount probe or `BackendsHealthy` condition exists. A total storage outage can leave every readiness signal green while writes fail. Check the mount as [Step 2](#step-2-read-the-attached-backend) does, then read the `cinder-volume` log for the `EIO` the soft mount returns. Monitor the share because CR conditions do not expose this failure. |
 
 ## Standalone Cinder, without a ControlPlane
 
@@ -372,7 +372,7 @@ spec:
       key: password
 ```
 
-`messaging` is required rather than optional. A volume create travels from the
+`messaging` is required. A volume create travels from the
 API through the scheduler to the volume service and back, all of it over the
 bus, so a Cinder without a broker accepts requests nothing acts on.
 
@@ -413,14 +413,14 @@ through.
 
 ## See also
 
-- [CinderBackend CRD API Reference](../../reference/cinder/cinder-backend-crd.md) —
+- [CinderBackend CRD API Reference](../../reference/cinder/cinder-backend-crd.md):
   the rendered `[<name>]` section, the `extraOptions` denylist, the name rules,
   and the five caveats this driver ships with (no snapshots among them).
-- [Cinder Reconciler Architecture](../../reference/cinder/cinder-reconciler.md#volume-services-and-the-detach-sequence) —
+- [Cinder Reconciler Architecture](../../reference/cinder/cinder-reconciler.md#volume-services-and-the-detach-sequence):
   the four steps of the detach and what a failed Job leaves behind.
-- [Configure NFS Volume Backups](./configure-nfs-backups.md) — the backup
+- [Configure NFS Volume Backups](./configure-nfs-backups.md): the backup
   service that mounts every one of these exports beside its own target.
-- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md#servicecinderspec) —
+- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md#servicecinderspec):
   `services.cinder` and the rest of the projected block-storage surface.
 
 ## Tested by

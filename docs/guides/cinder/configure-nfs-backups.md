@@ -14,9 +14,8 @@ Backups are opt-in. A Cinder without a backup backend renders no backup
 Deployment at all and still serves volumes. This guide reads the backup target
 the ControlPlane devstack projects, runs a volume through a backup and a restore,
 and sizes the service for larger volumes. The target is a
-`CinderBackupBackend`: at most one may be attached to a Cinder, because the
-backup driver is a single property of the one `cinder-backup` Deployment rather
-than one of several stores.
+`CinderBackupBackend`. A Cinder accepts one target because its
+`cinder-backup` Deployment uses a single backup driver.
 
 For the full field reference, see the
 [CinderBackupBackend CRD API Reference](../../reference/cinder/cinder-backup-backend-crd.md)
@@ -50,7 +49,7 @@ it down; that block is the single source of truth for the projected storage.
 - The volume `demo-vol` that the tutorial's **Create a first volume** check
   leaves behind in Step 7.
 
-## Step 1 — Read the projected backup service
+## Step 1: Read the projected backup service
 
 The devstack's `backupBackend` entry is `nfsbk` on `/backups`, projected into one
 satellite and one Deployment:
@@ -112,9 +111,9 @@ with one pointing at the same export keeps the backups already written
 restorable. `backup_use_same_host = false` follows from that: the service owns
 its target through that identity and a backup is never handed to another host.
 
-`host` governs which backup service may serve a restore, not where the chunks
-are. `spec.nfs.server` and `spec.nfs.path` are mutable — only `cinderRef` and
-`type` carry transition rules — so repointing either at a different export is
+`host` identifies the backup service that may serve a restore. It does not
+identify the chunk location. `spec.nfs.server` and `spec.nfs.path` are mutable.
+Only `cinderRef` and `type` carry transition rules, so repointing either at a different export is
 admitted without a warning, the backup Deployment rolls, and
 `BackupBackendReady` and `BackupServiceReady` both stay `True` while every
 pre-existing backup fails to restore: its chunks are on the export that was left
@@ -126,10 +125,10 @@ each of them mounts.
 
 ![The Cinder processes with their NFS mounts. One Cinder resource runs four processes: the API {cinder} on port 8776, the scheduler {cinder}-scheduler, one cinder-volume Deployment {cinder}-volume-{backend} per CinderBackend, and the backup Deployment {cinder}-backup, which exists only while a CinderBackupBackend is attached. All four hold a connection to RabbitMQ and to MariaDB: the API hands a volume request to the scheduler over the bus, the scheduler hands it to a cinder-volume, and backup jobs travel the same way. Each cinder-volume mounts the NFS export of its own backend at /var/lib/cinder/mnt/{md5}, where {md5} is the MD5 of server:path. The backup pod mounts every volume export at that same path and its backup target at /var/lib/cinder/backup_mount/{md5}. Every export in a Cinder pod is an inline CSI volume of the driver nfs.csi.k8s.io. On a hypervisor node nova-compute mounts the export itself when a volume attaches, at /var/lib/nova/mnt/{md5}, and mount propagation carries that mount to QEMU on the host. Locks are files inside each pod, and Memcached holds the token cache only.](../../diagrams/service-cinder-nfs-mounts.svg)
 
-The pod mounts more than its own target. It carries every volume backend's export
+The pod also mounts every volume backend's export
 under `/var/lib/cinder/mnt/<md5>` beside `/var/lib/cinder/backup_mount/<md5>`,
-because a backup reads the source volume itself through os-brick rather than a
-copy the volume service hands over, and it needs that file at the path cinder
+because a backup reads the source volume itself through os-brick. It needs that
+file at the path Cinder
 resolved the volume's provider location to:
 
 ```bash
@@ -137,7 +136,7 @@ kubectl exec -n openstack deploy/controlplane-cinder-backup -- \
   grep /var/lib/cinder /proc/mounts
 ```
 
-## Step 2 — Back up and restore a volume
+## Step 2: Back up and restore a volume
 
 Back up the volume the tutorial created. `openstack volume backup create` returns
 before the chunks are written, so wait for `available` before going on:
@@ -179,7 +178,7 @@ openstack --insecure volume backup delete demo-bk
 openstack --insecure volume backup list
 ```
 
-## Step 3 — Size the backup service
+## Step 3: Size the backup service
 
 Two fields on the `backupBackend` entry shape what a backup costs. `fileSize` is
 the size in bytes of one chunk: cinder splits a volume into objects of that size
@@ -199,7 +198,7 @@ apply, `52428800` and `zlib`.
 The chunk size is also the memory rule. The backup process holds one object and
 its compressed form in memory at a time, so the footprint follows `fileSize`,
 and the reconciler renders `2Gi` as the backup container's memory request and
-limit to match. That limit has been reached on the CI tempest leg by a backup of
+limit to match. The CI Tempest suite reaches that limit while backing up a
 a 1 GiB volume, which is more than the chunk arithmetic alone accounts for.
 Treat `2Gi` as the budget for volumes of roughly that size, and raise it before
 a backup target takes larger ones.
@@ -264,14 +263,14 @@ Deployment on its next pass and `BackupServiceReady` returns to True under
 
 ## See also
 
-- [CinderBackupBackend CRD API Reference](../../reference/cinder/cinder-backup-backend-crd.md) —
+- [CinderBackupBackend CRD API Reference](../../reference/cinder/cinder-backup-backend-crd.md):
   the rendered keys, the `extraOptions` denylist, and the two gates behind the
   one-attachment rule.
-- [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md) — the volume
+- [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md): the volume
   backends whose exports this service mounts beside its own target.
-- [Cinder CRD](../../reference/cinder/cinder-crd.md#cinderbackupspec) — the
+- [Cinder CRD](../../reference/cinder/cinder-crd.md#cinderbackupspec): the
   backup Deployment's pod-level block and the two CEL rules that pin it.
-- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md#cinderbackupbackendentry) —
+- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md#cinderbackupbackendentry):
   the curated `backupBackend` entry and how its fields reach the satellite.
 
 ## Tested by

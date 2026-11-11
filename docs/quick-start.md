@@ -39,14 +39,14 @@ shortest path to one standalone Keystone.
 - [`yq`](https://github.com/mikefarah/yq) v4.40.1 or newer on `PATH` (only required because `KIND_HOST_PORT` is overridden)
 - A stable internet connection for the initial image pulls and package downloads
 
-## Step 1 — Clone
+## Step 1: Clone
 
 ```bash
 git clone https://github.com/c5c3/cobaltcore.git
 cd cobaltcore
 ```
 
-## Step 2 — Cluster + infrastructure stack
+## Step 2: Cluster + infrastructure stack
 
 When using Podman, ensure its machine is already running and select Podman as
 kind's provider:
@@ -83,7 +83,7 @@ uninstall that component. That is `make teardown-infra`'s job.
 If the first run fails because a download or image pull flakes out, run
 `make teardown-infra` and then repeat Step 2.
 
-## Step 3 — Keystone operator
+## Step 3: Keystone operator
 
 ```bash
 kubectl apply -f deploy/flux-system/sources/c5c3-charts.yaml
@@ -92,7 +92,7 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
   --for=condition=Ready --timeout=120s
 ```
 
-## Step 4 — Keystone service image
+## Step 4: Keystone service image
 
 > Note: the keystone-operator controller runs in `keystone-system`; the Keystone workload it manages runs in `openstack` (controller-vs-workload split).
 
@@ -116,7 +116,7 @@ podman pull ghcr.io/c5c3/keystone:${RELEASE}
 kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore
 ```
 
-## Step 5 — Keystone CR
+## Step 5: Keystone CR
 
 ```yaml
 # keystone.yaml
@@ -163,7 +163,7 @@ kubectl wait keystone/keystone -n openstack \
   --for=condition=Ready --timeout=5m
 ```
 
-## Step 6 — Verify
+## Step 6: Verify
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
@@ -202,7 +202,7 @@ Expected output:
 +------------+-------------------------------------------------------------------------------------------------------+
 ```
 
-## Optional — UIs
+## Optional: UIs
 
 **Headlamp** (Kubernetes + Flux dashboard):
 
@@ -226,10 +226,10 @@ kubectl port-forward svc/openbao -n shared-services 8200:8200
 The listener enforces mutual TLS, so the browser must present a client
 certificate before it reaches the UI. Build a PKCS#12 bundle from the
 `openbao-client-tls` Secret, import it into Firefox, and sign in with the
-token. [Extended Quick Start — Step 4b](./quick-start-extended.md#step-4b-openbao-ui)
+token. [Extended Quick Start: Step 4b](./quick-start-extended.md#step-4b-openbao-ui)
 has the commands, CA trust, and browser notes.
 
-> **Grafana (kind-only, opt-in):** for the keystone-operator metrics dashboard, run `WITH_PROMETHEUS=true make deploy-infra` and follow [Extended Quick Start — Step 4c](./quick-start-extended.md#step-4c-grafana-ui). The compact path stays Grafana-free by default.
+> **Grafana (kind-only, opt-in):** for the keystone-operator metrics dashboard, run `WITH_PROMETHEUS=true make deploy-infra` and follow [Extended Quick Start: Step 4c](./quick-start-extended.md#step-4c-grafana-ui). The compact path stays Grafana-free by default.
 
 ## Teardown
 

@@ -34,7 +34,7 @@ is running (namespace `horizon-system`) alongside the projected
 
 A running `horizon-operator` Helm release (namespace `horizon-system`) is required.
 
-## Step 1 — Enable the policy
+## Step 1: Enable the policy
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
@@ -113,7 +113,7 @@ Flux-owned, and the helm-controller reverts out-of-band revisions on its next
 reconcile. Use the HelmRelease patch above instead.
 :::
 
-## Step 2 — Verify
+## Step 2: Verify
 
 On the kind devstack this step checks the policy's shape, that the operator
 still reconciles under the enforced policy, and that a fresh connection from
@@ -160,10 +160,9 @@ kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"sizing":{"horizon":{"api":{"replicas":1}}}}}'
 ```
 
-Set the replica count on the `ControlPlane` CR, not on the projected
-`controlplane-horizon` child: the c5c3-operator re-asserts the child's
-`spec.deployment.replicas` on every reconcile, so a direct edit of the child is
-reverted.
+Set the replica count on the `ControlPlane` CR. The c5c3-operator re-asserts the
+child's `spec.deployment.replicas` on every reconcile, so a direct child edit
+does not persist.
 
 Finally, check the `kubeApiServer` rule on a fresh connection, once the
 restarted pod has run for at least one minute. The block adds an ephemeral
@@ -299,4 +298,4 @@ After the drop, the probe pod must resolve a cluster name and reach the API
 server endpoint and the `kubernetes` Service VIP on fresh connections, which only
 the policy's DNS and API server rules admit.
 
-This suite covers only the Horizon chart. It does not validate other operators.
+These assertions cover the Horizon chart; they do not exercise other operator charts.

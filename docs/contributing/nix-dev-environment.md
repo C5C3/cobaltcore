@@ -11,8 +11,8 @@ SPDX-License-Identifier: Apache-2.0
 
 The repository ships a Nix flake so that entering the development environment
 yields the same toolchain a CI run gets, pinned to the versions the pipeline
-pins. It is a second, equally complete entry point next to
-`make install-test-deps` — the dependency-installation script and the CI setup
+pins. It is a second, equally complete entry point beside
+`make install-test-deps`: the dependency-installation script and CI setup
 steps are unchanged. The same flake also builds the container images that no
 longer have a Dockerfile, and the build-images workflow builds them from it;
 see [Nix Image Build](../reference/ci-cd/nix-image-build.md).
@@ -28,13 +28,13 @@ gitignored `bin/`) at the versions CI uses.
 
 ## What you get
 
-- **Base runtimes** — Go, Node, Python 3, Helm, `shellcheck`, `yq`, `jq`, and a
-  GNU userland — come from the `nixpkgs` revision pinned in `flake.lock`. The
+- **Base runtimes:** Go, Node, Python 3, Helm, `shellcheck`, `yq`, `jq`, and GNU
+  userland all come from the `nixpkgs` revision pinned in `flake.lock`. The
   GNU userland is deliberate: it makes macOS behave like the Linux-only CI
   runner (for example, `make chainsaw-lint` relies on GNU `xargs`).
 - **Exact CI-pinned tools** are installed by `hack/nix-devshell-hook.sh`, which
-  the flake sources on entry. Rather than duplicate any version into the flake,
-  the hook reads each pin **where it already lives**, so a Renovate bump to a
+  the flake sources on entry. The hook reads each version from its canonical
+  file instead of duplicating pins in the flake, so a Renovate bump to a
   canonical file self-heals the shell on the next entry.
 
 Print the pins the hook resolves without installing anything:
@@ -80,8 +80,8 @@ pin them to an exact patch:
   nix --extra-experimental-features 'nix-command flakes' develop
   ```
 
-- **Docker** is deliberately **not** provided by the flake — a running daemon
-  cannot be nix-provisioned, and `kind` needs one. Install Docker separately
+- **Docker** is not provided by the flake because Nix cannot provision a running
+  daemon, and `kind` needs one. Install Docker separately
   (see the [Quick Start (Extended)](../quick-start-extended.md) prerequisites).
 
 ## First entry and offline behavior
@@ -92,7 +92,7 @@ tools, tarball downloads for `kustomize`/`chainsaw`/`kind`/`kubectl`/`flux`, the
 the same kind of work CI does per job. Subsequent entries skip anything already
 installed at the pinned version.
 
-If you enter the shell offline, provisioning **degrades loudly** — each tool
+If you enter the shell offline, provisioning reports every tool
 that could not be installed is listed in a warning summary and the shell still
 opens. Re-run `source hack/nix-devshell-hook.sh` once you are back online.
 
@@ -100,13 +100,13 @@ opens. Re-run `source hack/nix-devshell-hook.sh` once you are back online.
 
 - **Tool pins** are bumped by Renovate in their canonical files (`ci.yaml`, the
   `Makefile`, `hack/install-test-deps.sh`). The devshell re-reads those files on
-  entry, so it self-heals with no flake edit — see
+  entry and needs no flake edit. See
   [Dependency Management](./dependency-management.md).
 - **`flake.lock`** (the revisions of both inputs: `nixpkgs` on `nixos-unstable`
   for the devshell, `nixpkgs-images` on `nixos-26.05` for the images) is
   maintained by Renovate's native `nix` manager, which re-locks both on the
   Monday schedule and opens one grouped re-lock PR for review. The re-lock is
-  not automerged — a human confirms the base-runtime bump the devshell and the
+  not automerged. A human confirms the base-runtime bump the devshell and the
   images inherit.
 
 ## Optional: direnv
@@ -135,7 +135,7 @@ make test-integration OPERATOR=keystone   # uses the pinned envtest assets
 
 ## See also
 
-- [Dependency Management](./dependency-management.md) — how Renovate keeps the
+- [Dependency Management](./dependency-management.md): how Renovate keeps the
   pinned versions (and `flake.lock`) fresh.
-- [Quick Start (Extended)](../quick-start-extended.md) — the
+- [Quick Start (Extended)](../quick-start-extended.md): the
   `make install-test-deps` path and the full prerequisites.

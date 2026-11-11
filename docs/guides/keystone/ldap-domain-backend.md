@@ -34,13 +34,12 @@ The LDAP server must be reachable from the cluster, with a bind DN allowed to
 search the user/group trees. Step 1 deploys a seeded fixture directory on the
 kind devstack; for an existing LDAP server, use your own directory settings.
 
-## Step 1 — Set up the LDAP directory and bind credentials
+## Step 1: Set up the LDAP directory and bind credentials
 
 ::: info Service users stay SQL-backed
 OpenStack service accounts and the bootstrap admin must remain in the SQL-backed
-`Default` domain. The CRD rejects attaching a backend to `Default` for this
-reason. Use the LDAP domain for human users and `Default` for services.
-The LDAP backend is read-only by default.
+`Default` domain. The CRD rejects attaching a backend to `Default`. Use LDAP
+domains for human users; the backend is read-only by default.
 :::
 
 On the kind devstack, deploy the same OpenLDAP directory the e2e suite uses.
@@ -81,7 +80,7 @@ the LDAP URL, suffix, and user mappings with your directory's settings.
 The operator watches the referenced bind Secret. Rotating its credentials
 re-renders the per-domain config automatically.
 
-## Step 2 — Apply the backend CR
+## Step 2: Apply the backend CR
 
 ```yaml
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
@@ -125,7 +124,7 @@ For `ldaps://` endpoints, add certificate verification:
         name: corp-ldap-ca   # data key must be "ca.crt"
 ```
 
-## Step 3 — Watch the conditions converge
+## Step 3: Watch the conditions converge
 
 ```bash
 kubectl get keystoneidentitybackends -n openstack
@@ -152,7 +151,7 @@ The domains Secret is content-hashed, so the attach rolls the Keystone
 Deployment once; subsequent reconciles are no-ops until the spec or the bind
 credentials change.
 
-## Step 4 — Verify an LDAP user can authenticate
+## Step 4: Verify an LDAP user can authenticate
 
 Use the admin credentials from the Quick Start to list users and grant
 `professor` the `member` role on the LDAP domain. The role assignment is stored
@@ -192,7 +191,7 @@ applies `spec.domain.deletionPolicy`:
 | --- | --- |
 | `Manage` + `Retain` (default) | Domain stays, including its users' assignments. |
 | `Manage` + `Delete` | Domain is disabled, then deleted. |
-| `Adopt` (any policy) | Domain always stays — the operator never destroys what it did not create. |
+| `Adopt` (any policy) | The domain stays; the operator does not delete a domain it did not create. |
 
 `deletionPolicy` is mutable, so you can decide at teardown time.
 
@@ -200,12 +199,12 @@ applies `spec.domain.deletionPolicy`:
 
 | Symptom | Likely cause |
 | --- | --- |
-| `DomainReady=False/WaitingForKeystoneAPI` | The referenced Keystone is not serving yet — check its `KeystoneAPIReady` condition. |
+| `DomainReady=False/WaitingForKeystoneAPI` | The referenced Keystone is not serving yet. Check its `KeystoneAPIReady` condition. |
 | `DomainReady=False/DomainAlreadyExists` | A same-named domain exists that this CR did not create. The operator never seizes foreign domains; use `mode: Adopt` to attach to it. |
-| `DomainReady=False/DomainNotFound` | `mode: Adopt` but no domain with that name exists — Adopt never creates. |
+| `DomainReady=False/DomainNotFound` | `mode: Adopt` and no domain with that name exists. Adopt mode does not create domains. |
 | `IdentityBackendsReady=False/WaitingForBackends` with `IdentityBackendSkipped` Warning events | The bind Secret is missing or lacks the `username`/`password` keys; healthy sibling backends keep working. |
-| LDAP users not listed | Check the tree/attribute mapping against your directory (`user_tree_dn`, `user_objectclass`, `user_id_attribute`) — unset fields fall back to keystone's defaults, which may not match your schema. |
-| `GET /v3/users` returns HTTP 400 `'enabled' is a required property` | The projected `user_enabled_invert`/`user_enabled_default` fallback was suppressed by a `user_enabled_*` key in `extraOptions` that does not match the directory — with no matching attribute, keystone omits `enabled` from the user model and its own response validation rejects the reply. Align the `user_enabled_*` options with the directory schema (or drop them to restore the fallback). |
+| LDAP users not listed | Check the tree and attribute mapping against your directory (`user_tree_dn`, `user_objectclass`, `user_id_attribute`). Unset fields use Keystone defaults, which may not match your schema. |
+| `GET /v3/users` returns HTTP 400 `'enabled' is a required property` | A `user_enabled_*` key in `extraOptions` may suppress the projected fallback. If the configured attribute does not exist in the directory, Keystone omits `enabled` and its response validation rejects the reply. Align the options with the directory schema or remove them to restore the fallback. |
 | Admission rejects the CR | The message names the exact rule: Default-domain protection, domain-name uniqueness per Keystone, the `extraOptions` denylist, or the fixed Secret data-key contract. |
 
 ## Tested by

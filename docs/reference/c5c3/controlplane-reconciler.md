@@ -1675,8 +1675,8 @@ catalog migration is needed. `spec.account` carries the service's user with a
 project of its own and `create: true`, plus the roles the caller passes: every
 service needs `service`, the role the OpenStack policy files reserve for
 service-to-service calls, and Cinder and Nova name `admin` on top. Each service
-creates its own project (`service-placement`, `service-barbican`,
-`service-neutron`, `service-cinder`, `service-nova`), because two registrations
+creates its own project (`service-glance`, `service-placement`,
+`service-barbican`, `service-neutron`, `service-cinder`, `service-nova`), because two registrations
 creating one project would each adopt the other's Keystone row.
 
 Two registrations reach past `service`. Cinder deletes the Barbican secret of an

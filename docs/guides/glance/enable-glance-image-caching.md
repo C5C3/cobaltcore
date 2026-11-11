@@ -63,13 +63,13 @@ availability therefore costs cache efficiency.
 
 **Every rollout starts it cold.** The cache is an `emptyDir`, so a config
 change, a release upgrade, a node drain, or an eviction discards it. Nothing
-warms it in advance, and no CR field changes that. Enabling the cache is
-therefore not a way to survive an object-store outage; it shortens the repeat
-path while the pods live.
+warms it in advance, and no CR field changes that. The cache does not keep
+Glance available during an object-store outage. It shortens repeat reads while
+the pods are running.
 
 ## Enable it
 
-The cache is a ControlPlane knob, projected onto the Glance child. The block's
+The cache is a ControlPlane setting projected onto the Glance child. The block's
 presence is the switch, so an empty block is enough to turn it on at the
 operator defaults (`10Gi`, pruned every `5m`):
 
@@ -125,13 +125,13 @@ crossing the `emptyDir` bound and getting the pod evicted.
 
 Three numbers decide the value:
 
-- **The working set, not the catalog.** The cache is worth its disk for the
-  images a fleet boots repeatedly. Size it around those, and accept that a
+- **Size for the working set.** The cache is worth its disk for images a
+  fleet boots repeatedly. Size it around those, and accept that a
   rarely used image gets pruned out and re-fetched.
 - **Replicas multiply it.** Every replica holds its own copy, so
   `spec.sizing.glance.api.replicas` scales the node-disk cost linearly, and the
   scheduler is not told about it: the operator derives no
-  `resources.requests.ephemeral-storage` from this field, exactly as it derives
+  `resources.requests.ephemeral-storage` from this field, just as it derives
   none from `spec.staging`. Size nodes against
   `replicas × (2 × staging.sizeLimit + imageCache.sizeLimit)`.
 - **A large single image still fits.** An image bigger than
@@ -140,11 +140,10 @@ Three numbers decide the value:
   as it approaches `sizeLimit` itself, since that is the bound the kubelet
   enforces and glance knows nothing about.
 
-`maintenanceInterval` is the cadence for the passes that run while the cache is
-below the threshold — it is what bounds how long a stalled entry survives, not
-how far a download burst may overshoot. The headroom itself is defended by the
-sidecar's 30-second size poll, which prunes as soon as the cache crosses
-`image_cache_max_size` regardless of the interval. The interval's floor is `1m`,
+`maintenanceInterval` sets the cadence for passes while the cache is below the
+threshold. It bounds how long a stalled entry remains. The sidecar's 30-second
+size poll protects the headroom by pruning as soon as the cache crosses
+`image_cache_max_size` regardless of the interval. The interval's floor is `1m`
 because every scheduled tick walks the cache directory and its sqlite index.
 
 ## Verification
@@ -199,11 +198,10 @@ rm -f /tmp/cache-demo.img /tmp/cache-demo.out /tmp/cache-demo.again
 ## Reading the maintenance loop
 
 The `cache-maintenance` sidecar runs `glance-cache-pruner` and
-`glance-cache-cleaner` on two triggers: every `maintenanceInterval`, and — as
-soon as a 30-second size poll finds the cache above `image_cache_max_size` —
-without waiting for it. The second trigger is the one that keeps a burst of
-concurrent downloads from crossing the `emptyDir` bound between two scheduled
-passes, since glance itself never checks the size on the write path. Its logs
+`glance-cache-cleaner` on schedule and whenever its 30-second size poll finds
+the cache above `image_cache_max_size`. This size trigger keeps concurrent
+downloads from crossing the `emptyDir` bound between scheduled passes because
+Glance does not check the size on the write path. The sidecar logs
 are the only place either command's output appears:
 
 ```bash
@@ -213,11 +211,11 @@ kubectl logs -n openstack deploy/controlplane-glance -c cache-maintenance --tail
 No failure of a maintenance pass takes the pod down. The loop prints
 `glance-cache-maintenance failed: 1 consecutive, cache at <n> KiB of <m>` on
 stderr and tries again on the next pass, and it keeps doing that however long
-the failure lasts. The sidecar shares the pod with `glance-api`, so a loop that
-exited would crash-loop the container, make the pod `NotReady`, and drop that
-API replica from the Service — and because a broken pruner is a property of the
-image and the shared config, it fails on every replica at once. A degraded cache
-must not become an immediate Glance outage.
+the failure lasts. The sidecar shares the pod with `glance-api`. If it exits,
+the container restarts, the pod becomes `NotReady`, and the Service drops that
+API replica. A broken pruner comes from the image or shared config, so it can
+fail on every replica at once. A degraded cache must not become an immediate
+Glance outage.
 
 Watch the consecutive count, because absorbing the failure only delays the
 outage. `1 consecutive` on an otherwise quiet log is a transient, and the
@@ -226,15 +224,15 @@ line says it cleared. A count that keeps climbing is a pruner that can never
 run: nothing else enforces `image_cache_max_size`, so every replica's cache
 grows to the `emptyDir` bound and the kubelet evicts the pod on ephemeral-storage
 pressure. That eviction does not pass through the eviction API, so the
-`PodDisruptionBudget` does not stagger it — replicas under even traffic cross
-their identical bound at about the same time and go together, then refill and go
+`PodDisruptionBudget` does not stagger these evictions. Replicas under even
+traffic can cross their identical bound together, then refill and go
 again. Meanwhile the `Glance` CR shows only `DeploymentReady=False` with reason
 `WaitingForDeployment`; nothing in its status names the cache. **Alert on
 `glance-cache-maintenance failed`.** It is the only place this failure is
 visible before the evictions start.
 
-A `glance-cache-maintenance unmeasured` line means the size poll itself failed;
-the loop runs a pass anyway rather than read an unreadable directory as an empty
+A `glance-cache-maintenance unmeasured` line means the size poll failed. The
+loop still runs a pass and does not treat an unreadable directory as an empty
 cache. `du`'s own error is on the line above it.
 
 That is the whole observability story. The operator exports no Prometheus
@@ -267,25 +265,24 @@ block again disables the cache on the next rollout.
 
 ## See also
 
-- [Glance CRD API Reference](../../reference/glance/glance-crd.md#imagecachespec) —
+- [Glance CRD API Reference](../../reference/glance/glance-crd.md#imagecachespec):
   the full `ImageCacheSpec` contract, the rendered config keys, and the reserved
   `cache` middleware name.
-- [Glance Operator](../../reference/glance/index.md#design-decisions) — why the
-  driver is `sqlite` and the cache directory an `emptyDir` rather than a PVC.
-- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md) —
+- [Glance Operator](../../reference/glance/index.md#design-decisions): the
+  driver is `sqlite` and the cache directory is a pod-local `emptyDir` volume.
+- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md):
   `services.glance.imageCache` and the rest of the projected Glance surface.
-- [Large Image Uploads through the Gateway](./large-image-uploads.md) — the
+- [Large Image Uploads through the Gateway](./large-image-uploads.md): the
   staging bound the node-sizing formula above shares its node with.
 
 ## Tested by
 
-The cache shape, a download served off the cached copy (proved by glance's own
-`cached_images.hits` counter, not by the returned bytes, which match either
-way), a pruner pass that brings an over-threshold cache back under its bound
-without the kubelet evicting the pod, and the revert above — unsetting the block
-and watching the sidecar and volume leave the live Deployment — are asserted
-end-to-end on the CI e2e kind cluster by this chainsaw suite, which runs a
-`256Mi` bound with a `1m` interval so the arithmetic plays out inside a test:
+The suite asserts the cache shape, a cached download using Glance's
+`cached_images.hits` counter, a pruner pass that brings an over-threshold cache
+back under its bound without kubelet eviction, and the revert. Unsetting the
+block removes the sidecar and volume from the live Deployment. These checks run
+end-to-end on the CI e2e kind cluster with a `256Mi` bound and a `1m` interval,
+so the arithmetic plays out inside a test:
 
 ```bash
 chainsaw test --test-dir tests/e2e/glance/image-cache

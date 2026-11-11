@@ -177,7 +177,7 @@ for the CR's own topology. It owns the field and applies the computed figure on
 every reconcile, so a value edited on the `User` by hand is reset; the cap
 rises only with the counts in the formula below. The mariadb-operator default
 of 10 is too small for the default fleet: three 2026.1 pods of two uWSGI
-processes hold up to 30 connections. A cap below the fleet's demand does not
+processes hold up to 36 connections. A cap below the fleet's demand does not
 degrade gracefully. The process that opens the connection past it gets MySQL
 error 1226: at start-up its pod crash-loops, and under load the upload, import
 or snapshot it serves answers HTTP 500.

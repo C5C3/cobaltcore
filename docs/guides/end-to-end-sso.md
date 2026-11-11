@@ -16,8 +16,8 @@ LDAP-backed domain.
 
 It assumes you already know how to attach identity backends. If you do not,
 read [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) and
-[Attach an LDAP Domain Backend](./keystone/ldap-domain-backend.md) first — this guide
-picks up where they leave off and shows what the ControlPlane does with them.
+[Attach an LDAP Domain Backend](./keystone/ldap-domain-backend.md) first. This guide
+continues that workflow and shows what the ControlPlane does with those backends.
 
 ## Prerequisites
 
@@ -56,9 +56,9 @@ kubectl -n openstack rollout restart deploy/keycloak
 ```
 :::
 
-- [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) — how to stand up the
+- [Attach an OIDC Federation Backend](./keystone/oidc-federation.md): how to stand up the
   federation backend this guide projects onto the login page.
-- [Attach an LDAP Domain Backend](./keystone/ldap-domain-backend.md) — how to stand up the
+- [Attach an LDAP Domain Backend](./keystone/ldap-domain-backend.md): how to stand up the
   LDAP domain backend used in the multi-domain step.
 
 ## What the ControlPlane does for you
@@ -83,12 +83,12 @@ Detaching the last backend clears the block again, and the login page reverts to
 local credentials. An enabled `services.horizon.multiDomain` keeps its domain
 field after the detach.
 
-The SSO choices also need both services published (Step 1). Until then the
-operator projects no `spec.websso` at all, even for a `Ready` backend, and logs
-why — a button whose hand-off Keystone would reject only *after* the user has
-typed their corporate password is worse than no button.
+The SSO choices require both services to be published (Step 1). Until then the
+operator projects no `spec.websso`, even for a `Ready` backend, and logs why.
+The local login form stays available alongside federated choices for the
+bootstrap admin and LDAP-domain users.
 
-## Step 1 — Publish both services
+## Step 1: Publish both services
 
 The WebSSO hand-off is a browser flow, so both Keystone and the dashboard must
 be reachable under the names the browser uses.
@@ -107,7 +107,7 @@ spec:
         parentRef:
           name: openstack-gw
       # The browser follows the SSO redirect to this URL, so it must be the
-      # externally routable Keystone — never the cluster-local Service URL.
+      # Use the externally routable Keystone URL, not the cluster-local Service URL.
       publicEndpoint: https://keystone.example.com/v3
     horizon:
       gateway:
@@ -127,23 +127,22 @@ follow:
 - **`publicEndpoint` must include a non-default port.** If you publish the
   dashboard on `https://horizon.example.com:8443`, say so. When
   `publicEndpoint` is empty the operator derives
-  `https://{gateway.hostname}` — the default-443 form — and the hand-off is
-  rejected on any other port.
+  `https://{gateway.hostname}` on port 443. The hand-off is rejected on any
+  other port.
 - **`publicEndpoint` and `gateway.hostname` must name the same host.** Django
-  derives the origin it sends from the request's `Host` header, i.e. from the
-  gateway hostname, not from `publicEndpoint`. If the two disagree, Keystone
-  would reject an origin you never see in your configuration — so the
-  validating webhook rejects the ControlPlane instead. The port may still
+  derives the origin it sends from the request's `Host` header, which carries
+  the gateway hostname. If `publicEndpoint` names a different host, the
+  validating webhook rejects the ControlPlane. The port may still
   differ, since Gateway API hostnames carry none.
 - **`publicEndpoint` must use `https` behind a gateway.** The Gateway listener
   terminates TLS, and after every federated login the browser posts the
   unscoped WebSSO token to this origin, in a form Keystone hands it. Over `http`
-  that bearer token — good for the user's full API privileges — travels in
-  cleartext, so the validating webhook rejects it. Without a gateway the value
+  that bearer token carries the user's full API privileges. Over `http` it
+  travels in cleartext, so the validating webhook rejects it. Without a gateway the value
   is only warned about.
 :::
 
-## Step 2 — Attach a federation backend
+## Step 2: Attach a federation backend
 
 Apply an OIDC `KeystoneIdentityBackend` pointing at your ControlPlane's Keystone
 child. The child is named `{controlplane-name}-keystone`:
@@ -163,7 +162,7 @@ spec:
   oidc:
     # Fixture-true values from the two-fixture apply in Prerequisites. Explicit
     # endpoints are required because the operator's metadata-fetch SSRF guard
-    # blocks .well-known discovery against the in-cluster Keycloak — see
+    # blocks .well-known discovery against the in-cluster Keycloak. See
     # [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) Step 4 for the
     # full worked example (mappings, groups, and why introspection is https).
     issuer: http://keycloak.openstack:8080/realms/cobaltcore
@@ -212,16 +211,15 @@ kubectl get horizon controlplane-horizon -n openstack -o jsonpath='{.spec.websso
 }
 ```
 
-The `credentials` entry leads the list and is preselected. Enabling SSO must
-never lock out local accounts — including the bootstrap admin and every
-LDAP-domain user — so the operator always offers the local login form alongside
-the federated choices.
+The `credentials` entry leads the list and is preselected. The operator always
+offers it alongside federated choices, preserving local access for the bootstrap
+admin and LDAP-domain users.
 
-## Step 3 — Complete a login
+## Step 3: Complete a login
 
 Open `https://horizon.example.com/auth/login/`. The "Authenticate using"
 dropdown now offers your identity provider. Pick it, authenticate at the
-provider, and you land back on the dashboard with a session.
+provider, and return to the dashboard with a session.
 
 ### The hops of a login {#login-hops}
 
@@ -271,15 +269,15 @@ redirected to `http://keycloak.openstack:8080/...`, which the
 host cannot resolve. Clicking the SSO button through to a session needs an
 **externally reachable** IdP (your production Keycloak, or a fixture published
 through the gateway with matching redirect URIs and a host-resolvable issuer).
-The full WebSSO hand-off against the in-cluster fixture — including the
-Envoy-routed gateway redirect URIs this guide's fixtures register — is
+The full WebSSO hand-off against the in-cluster fixture, including the
+Envoy-routed gateway redirect URIs registered by these fixtures, is
 exercised headlessly by the mirroring e2e suite (see [Tested by](#tested-by)).
 
 For a copy-pasteable devstack login that does not need a browser, use the CLI
 bearer flow in [Attach an OIDC Federation Backend](./keystone/oidc-federation.md#step-6-log-in-as-a-federated-user).
 :::
 
-## Step 4 — Multi-domain login for LDAP users
+## Step 4: Multi-domain login for LDAP users
 
 Attach an LDAP `KeystoneIdentityBackend` the same way. Once it is `Ready`, the
 Horizon child gains:
@@ -295,15 +293,15 @@ kubectl get horizon controlplane-horizon -n openstack -o jsonpath='{.spec.multiD
 }
 ```
 
-The login page now shows a domain field, and users who leave it blank land in
-`Default` — so the bootstrap admin stays reachable.
+The login page now shows a domain field. Users who leave it blank authenticate
+in `Default`, keeping the bootstrap admin reachable.
 
-The field is free text rather than a dropdown. Horizon bounds a
+The field accepts free text. Horizon bounds a
 domain dropdown by `OPENSTACK_KEYSTONE_DOMAIN_CHOICES` and rejects every domain
 outside it, but the operator only sees the domains your LDAP backends declare.
-A dropdown built from those would lock out everyone in a domain it cannot
-enumerate — a SQL-backed domain you populated out-of-band, or the domain an OIDC
-backend targets.
+A dropdown built from LDAP backend domains could exclude users in domains the
+operator cannot enumerate, such as a SQL-backed domain populated out-of-band or
+the domain an OIDC backend targets.
 
 Once you have enumerated every domain your users live in, declare the dropdown
 on the ControlPlane yourself. The same block also turns on the domain field
@@ -331,6 +329,9 @@ list every domain your users log in from, `Default` and every LDAP-backed
 domain included. The field's rules are in the
 [`ServiceHorizonSpec` reference](../reference/c5c3/controlplane-crd.md#servicehorizonspec).
 
+For standalone Horizon, set `spec.multiDomain.domainDropdown` and `domainChoices`
+directly after enumerating every domain your users live in.
+
 LDAP authentication alone is not enough to get a scoped token: a fresh domain
 carries no role assignments, and Keystone answers `401` for a scope the user
 holds no role on. Grant the role before asking users to log in:
@@ -339,9 +340,8 @@ holds no role on. Grant the role before asking users to log in:
 openstack role add --domain corp --user alice member
 ```
 
-A `403` on `/project/` right after login is expected on this devstack — there
-are no compute or network services in the catalog for the project dashboard to
-render.
+A `403` on `/project/` right after login is expected on this devstack. The
+catalog has no compute or network services for the project dashboard to render.
 
 ## Standalone Keystone, without a ControlPlane
 
@@ -362,9 +362,8 @@ spec:
 ```
 
 The section renders as soon as an origin is declared, so you can prepare the
-trust relationship before the first backend attaches. You then configure the
-dashboard's `spec.websso` block on the Horizon CR yourself — the same shape the
-ControlPlane would have projected.
+trust relationship before the first backend attaches. Configure
+`spec.websso` on the Horizon CR using the shape the ControlPlane projects.
 
 ::: warning Do not also set it in `extraConfig`
 The typed list is written after the `spec.extraConfig` merge, so declaring
@@ -394,9 +393,9 @@ exists.
 ## Pinning the federation proxy image
 
 Attaching an OIDC backend makes the Keystone operator inject an Apache /
-`mod_auth_openidc` sidecar. The ControlPlane projects
-`ghcr.io/c5c3/keystone-federation-proxy:latest` by default — a mutable tag, so
-every node re-pulls it on each pod start. Pin it:
+`mod_auth_openidc` sidecar. The ControlPlane defaults to the mutable tag
+`ghcr.io/c5c3/keystone-federation-proxy:latest`; each node pulls it when the pod
+starts. Pin it:
 
 ```yaml
     keystone:
@@ -405,9 +404,8 @@ every node re-pulls it on each pod start. Pin it:
         digest: sha256:<digest>
 ```
 
-The same override takes a locally built tag, which is how the
-`federated-controlplane` e2e suite exercises the sidecar under review rather
-than the one already published.
+The override also accepts a locally built tag. The `federated-controlplane` e2e
+suite uses it to test the candidate sidecar before publication.
 
 ## Troubleshooting
 
@@ -440,10 +438,9 @@ cluster-local Service URL, when its `spec.websso.keystoneURL` is empty.
 
 ## Tested by
 
-The full ControlPlane-driven SSO chain — both services published through the
-shared gateway, the OIDC and LDAP backends attached, and a headless WebSSO
-hand-off — is asserted end-to-end on its own CI e2e kind cluster by this
-chainsaw suite:
+The suite asserts the full ControlPlane-driven SSO chain: both services
+published through the shared gateway, OIDC and LDAP backends attached, and a
+headless WebSSO hand-off. It runs on its own CI e2e kind cluster:
 
 ```bash
 chainsaw test --test-dir tests/e2e-controlplane-sso
@@ -459,8 +456,8 @@ walkthrough above.
 :::
 
 ::: details The identity backends the suite applies
-Both backends reference the suite's projected Keystone child
-(`controlplane-sso-keystone`) rather than the walkthrough's `controlplane-keystone`.
+Both fixture backends reference `controlplane-sso-keystone`. The walkthrough
+uses the `controlplane-keystone` child.
 
 <<< ../../tests/e2e-controlplane-sso/04-backends.yaml#backends
 :::

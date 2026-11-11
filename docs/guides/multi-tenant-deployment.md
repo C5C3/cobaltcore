@@ -89,15 +89,15 @@ needs cluster scope, which namespace-scoped mode cannot provide:
 - **Cross-namespace CR management:** a single operator instance reconciles
   `Keystone` (or `ControlPlane`) CRs in more than one namespace. A
   namespace-scoped operator only watches and reconciles its own namespace.
-- **Admission webhooks** — a namespace-scoped release renders no webhook
+- **Admission webhooks:** a namespace-scoped release renders no webhook
   configuration, so its CRs are admitted by a separate, cluster-wide standalone
   webhook release of the same chart (see
   [Admission webhooks: the standalone webhook release](#admission-webhooks-the-standalone-webhook-release)).
-- **`ClusterSecretStore` reads** — a CR reads its secrets through a
+- **`ClusterSecretStore` reads:** a CR reads its secrets through a
   `ClusterSecretStore`, such as the shared `openbao-cluster-store`. A
   namespace-scoped operator refuses such a CR (see
   [Secret stores in namespace-scoped mode](#secret-stores-in-namespace-scoped-mode)).
-- **The c5c3-operator, ovn-operator and neutron-operator charts** — these
+- **The c5c3-operator, ovn-operator and neutron-operator charts:** these
   charts refuse `rbac.namespaceScoped=true` at render time. The c5c3 and ovn
   operators watch cluster-scoped kinds, and the neutron operator reads across
   namespaces.
@@ -112,7 +112,7 @@ to a `ClusterRole`. Among its rules, that ClusterRole grants:
 - `get` / `list` / `watch` / `create` / `update` / `patch` / `delete` on
   `secrets` in every namespace, and
 - `create` on `serviceaccounts` plus full CRUD on `roles` and `rolebindings`,
-  which the operator needs to mint the per-CronJob rotation RBAC described
+  which the operator needs to create the per-CronJob rotation RBAC described
   [below](#contrast-the-per-cronjob-rotation-rbac).
 
 ### Privilege-escalation path
@@ -619,7 +619,7 @@ kubectl wait --for=condition=Ready secretstore/openbao-tenant-store \
 
 Then set `spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}`
 on each standalone service CR that uses OpenBao. The tenant store is provisioned
-per namespace, not per service.
+once in each namespace and shared by its services.
 
 A ControlPlane's fernet and credential keys are **irreplaceable**: the credential
 keys decrypt every application credential, EC2 credential, and TOTP secret, and

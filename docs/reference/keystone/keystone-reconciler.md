@@ -695,6 +695,7 @@ controller-runtime's retry semantics.
 ```go
 func (r *KeystoneReconciler) reconcileDelete(
     ctx context.Context,
+   children client.Client,
     keystone *keystonev1alpha1.Keystone,
 ) (ctrl.Result, error)
 ```
@@ -1062,6 +1063,7 @@ reconciles.
 ```go
 func (r *KeystoneReconciler) reconcileDeleteOpenBao(
     ctx context.Context,
+   children client.Client,
     keystone *keystonev1alpha1.Keystone,
 ) (ctrl.Result, error)
 ```
@@ -1434,7 +1436,7 @@ after a full reconcile loop, every condition in the status carries the correct
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required |
 | `PasswordRotationReady` | `reconcilePasswordRotation` | Model B admin-password rotation CronJob configured, or disabled/torn down |
-| `IdentityBackendsReady` | `reconcileIdentityBackends` | Every attached, `DomainReady` KeystoneIdentityBackend is projected into its type's Secret — the domains Secret (LDAP) or the federation Secret (OIDC) — **and** the Keystone Deployment has converged onto exactly that projection (every replica updated, ready, and counted). The gate holds in both directions: an attach and a detach each keep the condition False/`WaitingForRollout` until the rollout lands. True/`IdentityBackendsNotRequired` when none attach, likewise only once the Deployment carries no projection volumes anymore |
+| `IdentityBackendsReady` | `reconcileIdentityBackends` | Every attached, `DomainReady` KeystoneIdentityBackend is projected into its type's Secret — the domains Secret (LDAP) or the federation Secret (OIDC and SAML) — **and** the Keystone Deployment has converged onto exactly that projection (every replica updated, ready, and counted). The gate holds in both directions: an attach and a detach each keep the condition False/`WaitingForRollout` until the rollout lands. True/`IdentityBackendsNotRequired` when none attach, likewise only once the Deployment carries no projection volumes anymore |
 
 ---
 
@@ -1445,8 +1447,8 @@ after a full reconcile loop, every condition in the status carries the correct
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
 ```
 
 **Purpose:** Verify that ESO has synced credentials from OpenBao before proceeding.
@@ -1498,8 +1500,8 @@ namespaced stores via `IsSecretStoreReady`), `secrets.WaitForExternalSecret()`
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error)
 ```
 
 **Purpose:** Provision the Keystone database schema and verify schema integrity.
@@ -1538,7 +1540,7 @@ validation answers HTTP 500.
 | Field | Value |
 | --- | --- |
 | Name | `{name}-db-sync` |
-| Image | `{spec.image.repository}:{spec.image.tag}` |
+| Image | `spec.image.Reference()` (tag- or digest-pinned) |
 | Command | `/bin/sh -eu -c`: `scripts/db_sync_reset.py`, then `keystone-manage db_sync` |
 | BackoffLimit | 4 |
 | RestartPolicy | Never |
@@ -1619,8 +1621,8 @@ a downtime-free migration; retiring the static user is a documented migration st
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error)
 ```
 
 **Purpose:** Manage Fernet token signing keys — initial generation, rotation schedule,
@@ -1650,7 +1652,7 @@ and disaster recovery backup to OpenBao.
 | Property | Value |
 | --- | --- |
 | Algorithm | `crypto/rand` (32 bytes) |
-| Encoding | URL-safe base64 without padding (`base64.URLEncoding.WithPadding(base64.NoPadding)`) |
+| Encoding | URL-safe base64 with standard padding (`base64.URLEncoding.EncodeToString`), 44 characters |
 | Key count | `max(spec.fernet.maxActiveKeys, 3)` |
 | Secret data keys | String indices: `"0"`, `"1"`, `"2"`, ... |
 | Secret name | `{name}-fernet-keys` |
@@ -1672,6 +1674,7 @@ and disaster recovery backup to OpenBao.
 | Volume `fernet-keys` | emptyDir (writable working copy; the rotate script writes files with `install -m 0400`) |
 | Volume `credential-keys` | Secret `{name}-credential-keys` (read-only, required by config, `defaultMode: 0400`) |
 | Volume `config` | ConfigMap `{configMapName}` |
+| Volume `domains` | Content-hashed domain configuration Secret, mounted at `/etc/keystone/domains` when identity backends are projected |
 | Volume `scripts` | ConfigMap `{name}-fernet-rotate-script-{hash}` (`defaultMode: 0555`) |
 | Volume `rotation-state` | emptyDir at `/rotation-state` in the rotate container; holds the rotated key set and the digest of the production keys it came from across container restarts |
 | Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
@@ -1825,8 +1828,8 @@ exact verb split.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error)
 ```
 
 **Purpose:** Manage credential encryption keys — initial generation, rotation schedule
@@ -1878,6 +1881,7 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Volume `credential-keys` | emptyDir (writable working copy; the rotate script writes files with `install -m 0400`) |
 | Volume `fernet-keys` | Secret `{name}-fernet-keys` (read-only, required by config, `defaultMode: 0400`) |
 | Volume `config` | ConfigMap `{configMapName}` |
+| Volume `domains` | Content-hashed domain configuration Secret, mounted at `/etc/keystone/domains` when identity backends are projected |
 | Volume `scripts` | ConfigMap `{name}-credential-rotate-script-{hash}` (`defaultMode: 0555`) |
 | Volume `rotation-state` | emptyDir at `/rotation-state` in the rotate container; holds the rotated key set and the digest of the production keys it came from across container restarts |
 | Pod `fsGroup` | `42424` (openstack GID — grants the rotation Pod's UID 42424 group access to projected key files at mode `0400`) |
@@ -2015,8 +2019,9 @@ exact verb split.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileConfig(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone, domainsProjected bool) (string, error)
+func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, domainsProjected bool,
+   fed *federationProjection) (string, error)
 ```
 
 **Purpose:** Build the Keystone configuration files and store them in an immutable
@@ -2118,7 +2123,7 @@ operator defaults.
 | --- | --- |
 | Pipeline name | `public_api` |
 | App name | `admin_service` |
-| Base filters | `cors`, `sizelimit`, `http_proxy_to_wsgi`, `osprofiler`, `url_normalize`, `request_id`, `authtoken` |
+| Base filters | `cors`, `sizelimit`, `http_proxy_to_wsgi`, `url_normalize`, `request_id` |
 | Middleware | `spec.middleware` |
 
 **Step 8: Create immutable ConfigMap**
@@ -2127,7 +2132,7 @@ operator defaults.
 | --- | --- |
 | Base name | `keystone-config` |
 | Actual name | `keystone-config-{8-char-sha256}` |
-| Data keys | `keystone.conf`, `api-paste.ini`, `policy.yaml` (if `spec.policyOverrides` set), `logging.conf` (if `spec.logging.format == "json"`) |
+| Data keys | `keystone.conf`, `api-paste.ini`, `policy.yaml` (if `spec.policyOverrides` renders rules), `logging.conf` (if `spec.logging.format == "json"`), `sso_callback_template.html` (if an OIDC backend is projected) |
 | Immutable | `true` |
 
 When `spec.logging.format == "json"`, the `logging.conf` data key wires
@@ -2179,8 +2184,8 @@ are set by this sub-reconciler.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error)
 ```
 
 **Purpose:** Validate custom oslo.policy overrides via `oslopolicy-validator` before the
@@ -2188,7 +2193,8 @@ Deployment is updated. This sub-reconciler gates the Deployment rollout:
 invalid policy overrides are caught before reaching running pods. Two lifecycle paths:
 
 1. **No policy overrides** (`spec.policyOverrides` is nil): Delete any existing
-   validation Job and set `PolicyValidReady=True` with reason `NotRequired`.
+   validation Job and set `PolicyValidReady=True` with reason
+   `PolicyValidationNotRequired`.
 2. **Policy overrides set** (`spec.policyOverrides` is set): Build and run a validation
    Job via `job.RunJob()`. Track lifecycle through InProgress → Passed/Failed states.
 
@@ -2201,7 +2207,7 @@ invalid policy overrides are caught before reaching running pods. Two lifecycle 
 | Field | Value |
 | --- | --- |
 | Name | `{name}-policy-validation` |
-| Image | `{spec.image.repository}:{spec.image.tag}` |
+| Image | `spec.image.Reference()` (tag- or digest-pinned) |
 | Command | `oslopolicy-validator --namespace keystone --config-dir /etc/keystone/keystone.conf.d/` |
 | BackoffLimit | 2 |
 | TTLSecondsAfterFinished | not set |
@@ -2230,7 +2236,7 @@ failed Pod's termination message:
 
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
-| `True` | `NotRequired` | "No policy overrides configured" | — |
+| `True` | `PolicyValidationNotRequired` | "No policy overrides configured" | — |
 | `False` | `PolicyValidationInProgress` | "Policy validation job is running" | 15s |
 | `True` | `PolicyValidationPassed` | "Policy validation completed successfully" | — |
 | `False` | `PolicyValidationFailed` | Descriptive error from Pod termination message | — (error returned) |
@@ -2251,8 +2257,9 @@ before returning the error so that the failure reason is visible in the CR statu
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash,
+   domainsSecretName string, fed *federationProjection) (ctrl.Result, error)
 ```
 
 **Purpose:** Ensure the Keystone API Deployment and Service exist with the correct
@@ -2292,7 +2299,7 @@ preserving the no-rollout behavior.
 | Labels | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/managed-by=keystone-operator`, `app.kubernetes.io/component=api` (on the Deployment metadata and on the pod template) |
 | Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` (the component label is left out: a Deployment pod selector is immutable after creation) |
 | Container name | `keystone` |
-| Image | `{spec.image.repository}:{spec.image.tag}` |
+| Image | `spec.image.Reference()` (tag- or digest-pinned) |
 | Port | 5000 (named `keystone`) |
 
 **Probes (keystone container):**
@@ -2340,6 +2347,16 @@ its readiness probe, which traverses Apache and uWSGI, carries an explicit
 | `config` | `/etc/keystone/keystone.conf.d/` | ConfigMap `{configMapName}` | Yes |
 | `fernet-keys` | `/etc/keystone/fernet-keys/` | Secret `keystone-fernet-keys` (`defaultMode: 0400`) | Yes |
 | `credential-keys` | `/etc/keystone/credential-keys/` | Secret `keystone-credential-keys` (`defaultMode: 0400`) | Yes |
+| `db-tls` | `/etc/keystone/db-tls/` | Projected CA bundle and client keypair Secrets (`defaultMode: 0400`), when database TLS is enabled | Yes |
+| `domains` | `/etc/keystone/domains` | Content-hashed domain configuration Secret (`defaultMode: 0400`), when identity backends are projected | Yes |
+
+When federation is active, the `federation-proxy` sidecar has separate mounts:
+`federation-proxy-config` at `/etc/keystone-federation-proxy/conf.d`, plus a
+writable `emptyDir` at `/tmp`. It also mounts
+`federation-metadata` at `/etc/keystone-federation-proxy/metadata` when OIDC
+metadata is projected, and `federation-mellon` at
+`/etc/keystone-federation-proxy/mellon` when SAML files are projected. The
+Secret-backed mounts are read-only.
 
 **Pod-level Security:**
 
@@ -2496,8 +2513,8 @@ and returned.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone, configMapName string) error
+func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, configMapName string) error
 ```
 
 **Purpose:** Remove historical immutable ConfigMaps that exceed the retain count
@@ -2565,8 +2582,8 @@ so requeue after a pruning error is safe.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
 ```
 
 **Purpose:** Manage the optional Gateway API `HTTPRoute` that exposes the
@@ -2614,11 +2631,11 @@ route that attaches the Keystone Service to it. Four lifecycle paths:
    `CapabilityProbeFailed` and returns the wrapped error, so the pass is
    retried with backoff.
 
-**Placement rationale:** Runs after `reconcileDeployment` + `pruneStaleConfigMaps`
-so the backend Service (`{name}`) is guaranteed to exist before the HTTPRoute
-references it, and before `reconcileHealthCheck` reads `status.endpoint`. The
-route is deliberately not part of `reconcileParallelGroup` because it has a
-transitive dependency on the Service created by `reconcileDeployment`.
+**Placement rationale:** Runs in the second parallel group, after
+`reconcileDeployment` and `pruneStaleConfigMaps`, so the backend Service
+(`{name}`) exists before the route references it. `reconcileHealthCheck` runs
+in the same group and probes the internal Service URL; it does not depend on
+the HTTPRoute or its acceptance status.
 
 **HTTPRoute Construction (`buildKeystoneHTTPRoute`):**
 
@@ -2716,15 +2733,16 @@ func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context,
     keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
 ```
 
-**Purpose:** Perform an HTTP GET to the Keystone `/v3` endpoint after the Deployment
-reports ready, verifying that the API is actually responding to requests.
+**Purpose:** Perform an HTTP GET to the Keystone cluster-local `/v3` Service URL
+after the Deployment reports ready, verifying that the API is actually responding to requests.
 This catches cases where pods pass their readiness probe but the API is not
 functionally healthy.
 
-**Endpoint:** Uses `keystone.Status.Endpoint` which is set by `reconcileDeployment`
-(e.g., `http://keystone.{namespace}.svc.cluster.local:5000/v3`). If the endpoint
-is empty (not yet configured), the health check sets `KeystoneAPIReady=False` with
-reason `EndpointNotReady` and requeues.
+**Endpoint:** A non-empty `keystone.Status.Endpoint` is required before probing,
+but the GET uses `internalAPIURL()` (`http://{name}.{namespace}.svc.cluster.local:5000/v3`)
+even when `status.endpoint` advertises an external Gateway URL. If the status
+endpoint is empty, the health check sets `KeystoneAPIReady=False` with reason
+`EndpointNotReady` and requeues.
 
 **NetworkPolicy interaction:** The operator pod runs in a dedicated namespace
 (e.g. `keystone-system`) distinct from the workload namespace, so a
@@ -2822,9 +2840,10 @@ status code alone does not say which of the two clusters is unhealthy.
 resp.Body.Close()`, even on non-2xx responses. Go's `net/http` returns a non-nil
 `Body` for all responses regardless of status code.
 
-**Error handling:** Only the `http.NewRequestWithContext` error (malformed URL) is
-returned as a reconcile error. All HTTP transport errors and non-2xx responses set a
-condition and requeue — they are never returned as errors.
+**Error handling:** Errors resolving a target-cluster probe transport and errors
+from `http.NewRequestWithContext` (malformed URL) are returned as reconcile
+errors. HTTP transport errors and non-2xx responses set a condition and requeue;
+they are not returned as errors.
 
 ---
 
@@ -2835,8 +2854,8 @@ condition and requeue — they are never returned as errors.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileHPA(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
 ```
 
 **Purpose:** Manage the HorizontalPodAutoscaler for the Keystone API Deployment. Three lifecycle paths:
@@ -2944,8 +2963,8 @@ recommender's status writes do not wake the Keystone CR.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error)
 ```
 
 **Purpose:** Run the Keystone bootstrap Job that creates the initial admin user,
@@ -2956,8 +2975,8 @@ project, roles, and service catalog entries.
 | Field | Value |
 | --- | --- |
 | Name | `{name}-bootstrap` |
-| Image | `{spec.image.repository}:{spec.image.tag}` |
-| Command | `keystone-manage bootstrap` |
+| Image | `spec.image.Reference()` (tag- or digest-pinned) |
+| Command | `/bin/sh -eu -c` running the bootstrap script, which seeds the root domain and then executes `keystone-manage bootstrap` |
 | BackoffLimit | 4 |
 | TTLSecondsAfterFinished | not set |
 | RestartPolicy | OnFailure |
@@ -2975,8 +2994,12 @@ project, roles, and service catalog entries.
 | `--bootstrap-password` | `$(BOOTSTRAP_PASSWORD)` env var from `spec.bootstrap.adminPasswordSecretRef` Secret, key `password` |
 | `--bootstrap-admin-url` | `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
 | `--bootstrap-internal-url` | `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
-| `--bootstrap-public-url` | `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
+| `--bootstrap-public-url` | `spec.bootstrap.publicEndpoint` when set; otherwise `http://keystone.{namespace}.svc.cluster.local:5000/v3` |
 | `--bootstrap-region-id` | `spec.bootstrap.region` |
+
+The Job mounts the config ConfigMap and Fernet keys. It also mounts the DB-TLS
+volume when database TLS is enabled and the domain configuration Secret when
+identity backends are projected.
 
 **Admin-password rotation re-run:** Before building the Job,
 the reconciler reads the `password` key of the admin Secret named by
@@ -3031,8 +3054,8 @@ catalog entries.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone, configMapName string) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error)
 ```
 
 **Purpose:** Manage the trust flush CronJob that periodically purges expired trust
@@ -3075,7 +3098,7 @@ delegations from the Keystone database. Three lifecycle paths:
 | Schedule | `spec.trustFlush.schedule` |
 | Suspend | `&spec.trustFlush.suspend` (pointer to CRD bool) |
 | Container name | `trust-flush` |
-| Image | `{spec.image.repository}:{spec.image.tag}` |
+| Image | `spec.image.Reference()` (tag- or digest-pinned) |
 | Command | `["keystone-manage", "--config-dir=/etc/keystone/keystone.conf.d/", "trust_flush"]` + `spec.trustFlush.args` |
 | SecurityContext | `restrictedSecurityContext()` (PSS Restricted) |
 | RestartPolicy | `OnFailure` |
@@ -3087,6 +3110,7 @@ delegations from the Keystone database. Three lifecycle paths:
 | `config` | `/etc/keystone/keystone.conf.d/` | ConfigMap `{configMapName}` | Yes |
 | `fernet-keys` | `/etc/keystone/fernet-keys` | Secret `{name}-fernet-keys` | Yes |
 | `credential-keys` | `/etc/keystone/credential-keys` | Secret `{name}-credential-keys` | Yes |
+| `domains` | `/etc/keystone/domains` | Content-hashed domain configuration Secret, when identity backends are projected | Yes |
 
 **Deletion Helper (`deleteCronJob`):**
 
@@ -3119,8 +3143,8 @@ controller-runtime for exponential backoff.
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
-    keystone *keystonev1alpha1.Keystone, _ string) (ctrl.Result, error)
+func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context, children client.Client,
+   keystone *keystonev1alpha1.Keystone, _ string) (ctrl.Result, error)
 ```
 
 The third parameter is the shared config ConfigMap name. It is accepted only for
@@ -3210,7 +3234,7 @@ Two lifecycle paths:
 | Suspend | `&spec.passwordRotation.suspend` (pointer to CRD bool) |
 | ServiceAccount | `{name}-admin-password-rotate` |
 | Container name | `admin-password-rotate` |
-| Image | `{spec.image.repository}:{spec.image.tag}` |
+| Image | `spec.image.Reference()` (tag- or digest-pinned) |
 | Command | `["/scripts/admin_password_rotate.sh"]` |
 | SecurityContext | `restrictedSecurityContext()` (PSS Restricted) |
 | RestartPolicy | `OnFailure` |
@@ -3346,7 +3370,7 @@ apply it. See the [Labels and Annotations](#labels-and-annotations) entries for
 **Signature:**
 
 ```go
-func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keystone *keystonev1alpha1.Keystone) (identityBackendsProjection, error)
+func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (identityBackendsProjection, error)
 ```
 
 Aggregates every attached, `DomainReady`
@@ -3385,6 +3409,17 @@ condition:
   `reconcileNetworkPolicy`. A missing `spec.federation.proxyImage` parks
   every OIDC backend pending with a `FederationProxyImageMissing` Warning
   (no hidden image default).
+- **SAML** backends render into the same content-hashed `<name>-federation`
+   Secret, with the IdP metadata, SP keypair, and deterministic SP metadata
+   mounted into the `mod_auth_mellon` sidecar. The SP keypair comes from the
+   configured Secret or is generated once by the operator. A stable-named
+   `<name>-saml-sp` Secret exports the SP metadata for out-of-band IdP
+   registration. The federation `proxy.conf` protects the SAML WebSSO and
+   authentication paths and forwards configured assertion attributes. At most
+   one SAML backend is supported per Keystone; the reconciler also skips all
+   attached SAML backends if it encounters multiple ones despite admission.
+   SAML uses the same `spec.federation.proxyImage` requirement and projection
+   rollout gate as OIDC.
 
 **Contract — waiting states never short-circuit the pipeline.** Pending
 domains, missing bind/client Secrets and unreachable or issuer-mismatched
@@ -3482,8 +3517,9 @@ client. `FederationObjectsReady` covers the identity provider + protocol,
 
 `ConfigProjected` is derived from the single authoritative pointer — the
 Keystone Deployment's `domains` volume and the conf file inside the Secret it
-references (LDAP), or the `federation-metadata` volume and the backend's
-client document (OIDC) — with a `RequeueSecretPolling` safety net because a
+references (LDAP), the `federation-metadata` volume and the backend's client
+document (OIDC), or the `federation-mellon` volume and the backend's IdP
+metadata document (SAML) — with a `RequeueSecretPolling` safety net because a
 converged Keystone status emits no watch event. A config the pod template
 mounts but the Deployment has not finished rolling out reports
 False/`WaitingForRollout`, so the condition — in both the attach and the

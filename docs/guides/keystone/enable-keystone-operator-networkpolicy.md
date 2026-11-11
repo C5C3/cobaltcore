@@ -482,9 +482,9 @@ without a pod restart.
 
 ## See also
 
-- [Keystone Operator NetworkPolicy](../../reference/keystone/keystone-operator-networkpolicy.md) —
+- [Keystone Operator NetworkPolicy](../../reference/keystone/keystone-operator-networkpolicy.md):
   authoritative rule table and schema contract.
-- [Keystone Reconciler Architecture](../../reference/keystone/keystone-reconciler.md) —
+- [Keystone Reconciler Architecture](../../reference/keystone/keystone-reconciler.md):
   the CR-scoped `reconcileNetworkPolicy` sub-reconciler for the
   Keystone API pod NetworkPolicy (different scope from this guide).
 - [Kubernetes NetworkPolicy concepts](https://kubernetes.io/docs/concepts/services-networking/network-policies/).

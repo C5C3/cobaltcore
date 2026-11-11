@@ -586,60 +586,20 @@ that bounds a leaked one. On the `barbican` role it is 30 days rather than the y
 older `provisioner` role uses, matching the `barbican` role of the proving instance
 ([OpenBao Proving Instance](./infrastructure-manifests.md#openbao-proving-instance)).
 
-**Re-minting the barbican secret ID.**
-Nothing re-mints the secret ID automatically yet — that becomes runtime work of the
-barbican-operator. Until then the 30-day TTL is a fuse on a hand-minted credential, and it
-burns silently: Barbican's `vault_plugin` holds one process-global AppRole session, so an
-expired secret ID surfaces as every secret-store operation failing at once, with no metric
-that warns ahead of it. Re-mint before the 30 days elapse, and after any Barbican
-deployment that has been running against a hand-minted credential for a month:
+**Managed secret-ID rotation.** The `BarbicanSecretStore` controller generates
+the initial secret ID and records its issue time and TTL on the credentials
+Secret. For a finite TTL, it generates a replacement when the current ID reaches
+two-thirds of its lifetime. With the `barbican` role's 720-hour TTL, that is
+about 20 days. The controller also probes the credentials and can generate a
+replacement after OpenBao rejects them, subject to a 10-minute cooldown. Updating
+the Secret changes the Barbican pod-template digest, so the operator rolls API
+pods to load the new ID. Operators do not need to restart those pods by hand.
 
-```bash
-# BAO_TOKEN must be exported first — see Running the Full Bootstrap above.
-cd deploy/openbao/bootstrap
-source ./common.sh
-
-# The role ID is stable across re-mints; only the secret ID rotates.
-bao_exec bao read -field=role_id auth/approle/role/barbican/role-id
-
-# Mint a fresh secret ID straight into the Secret the deployment reads it from.
-# Replace <secret> and <namespace> with the Secret backing
-# vault_plugin.approle_secret_id. -force is required because the write carries
-# no data.
-kubectl create secret generic <secret> \
-  --namespace <namespace> \
-  --from-literal=approle_secret_id="$(bao_exec bao write \
-    -field=secret_id -force auth/approle/role/barbican/secret-id)" \
-  --dry-run=client -o yaml | kubectl apply -f -
-```
-
-The secret ID stays inside that pipeline on purpose. `bao_exec` is a `kubectl exec`, so
-printing the credential first would put it in the terminal's scrollback, in a recorded
-session, or — if the procedure is ever wrapped in automation — in job logs that outlive
-the 30-day TTL by a wide margin and are readable by everyone with access to them. The
-credential carries no use count and no CIDR bound, so that TTL is the only thing bounding
-a leaked copy.
-
-Restart the Barbican API pods afterwards: the plugin reads the credential once at process
-start.
-
-To see how much of the fuse is left, list the role's live secret-ID accessors and look one
-up — the response carries its `expiration_time`:
-
-```bash
-bao_exec bao list auth/approle/role/barbican/secret-id
-
-bao_exec bao write auth/approle/role/barbican/secret-id-accessor/lookup \
-  secret_id_accessor=<accessor-from-the-list-above>
-```
-
-Destroy the accessor of the credential the restarted pods no longer use, so a copy of the
-old secret ID cannot log in for the rest of its 30 days:
-
-```bash
-bao_exec bao write auth/approle/role/barbican/secret-id-accessor/destroy \
-  secret_id_accessor=<accessor-of-the-replaced-secret-id>
-```
+This automation applies to a managed store that names an `OpenBaoCluster`.
+External-server mode is read-only: rotate the AppRole secret ID on that server
+and update the referenced credentials Secret yourself. See
+[Attach an External OpenBao to Barbican](../../guides/barbican/attach-external-openbao.md#_2-the-two-secrets)
+for the external credential contract and replacement procedure.
 
 `secret_id_num_uses` is deliberately left unset on the role. castellan's Vault key manager
 re-logs in whenever its cached token ages out (`token_ttl` is 1h), so a use cap would

@@ -8,15 +8,16 @@ quadrant: backend
 Reference documentation for the `values.schema.json` JSON Schema that validates
 the Helm chart values of every CobaltCore OpenStack operator chart —
 keystone-operator, c5c3-operator, glance-operator, horizon-operator,
-placement-operator, barbican-operator, ovn-operator and neutron-operator. Helm
-enforces this schema automatically during `helm install`, `helm upgrade`, `helm
-lint`, and `helm template`.
+placement-operator, barbican-operator, ovn-operator, neutron-operator,
+cinder-operator and nova-operator. Helm enforces this schema automatically
+during `helm install`, `helm upgrade`, `helm lint`, and `helm template`.
 
-All charts share one schema source, so the value tables below apply to every
-operator unchanged. The few keys that exist on only some charts are called out
-in the [per-operator applicability matrix](#per-operator-applicability). Chart
-values themselves — the keystone-operator and c5c3-operator defaults, resource
-recommendations, and ready-to-use override snippets — are in
+All charts share one schema generator, so the constraints and field shapes
+below apply across the operator charts. The `image.repository` default is read
+from each chart's `values.yaml`; other keys that exist on only some charts are
+called out in the [per-operator applicability matrix](#per-operator-applicability).
+Chart values themselves — the keystone-operator and c5c3-operator defaults,
+resource recommendations, and ready-to-use override snippets — are in
 [Values by operator](#values-by-operator) at the end.
 
 ## File Location
@@ -97,7 +98,7 @@ ships, so they are present only where they apply:
 
 | Field | Type | Constraint | Default |
 | --- | --- | --- | --- |
-| `image.repository` | `string` | — | `ghcr.io/c5c3/keystone-operator` |
+| `image.repository` | `string` | — | Chart-specific; see its `values.yaml` |
 | `image.tag` | `string` | — | `""` |
 | `image.pullPolicy` | `string` | enum: `Always`, `IfNotPresent`, `Never` | `IfNotPresent` |
 

@@ -225,10 +225,9 @@ API, the scheduler, the conductor and the console proxy carry counts of their
 own under `spec.sizing.nova`, so this patch rolls `controlplane-nova` and leaves
 the other four untouched.
 
-Set the replica count on the `ControlPlane` CR, not on the projected
-`controlplane-nova` child: the c5c3-operator re-asserts the child's
-`spec.api.deployment.replicas` on every reconcile, so a direct edit of the child
-is taken back.
+Set the replica count on the `ControlPlane` CR. The c5c3-operator re-asserts the
+child's `spec.api.deployment.replicas` on every reconcile, so a direct child edit
+does not persist.
 
 Finally, check the `kubeApiServer` rule on a fresh connection, once the
 restarted pod has run for at least one minute. The block adds an ephemeral
