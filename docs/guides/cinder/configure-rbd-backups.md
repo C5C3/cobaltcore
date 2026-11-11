@@ -70,7 +70,7 @@ with the Keystone port-forward of Step 6 running.
 
 ---
 
-## Step 1 — Detach the projected target
+## Step 1: Detach the projected target
 
 Remove the entry from the `ControlPlane` CR. The c5c3-operator prunes the
 `CinderBackupBackend` it projected, and the Cinder deletes its backup
@@ -92,7 +92,7 @@ The last command prints `BackupBackendReady=True/NoBackupBackend` and
 `BackupServiceReady=True/BackupNotConfigured`: backups are opt-in, so a Cinder
 without a target reports both conditions `True`.
 
-## Step 2 — Attach rbdbk
+## Step 2: Attach rbdbk
 
 The lab Ceph has the pool `backups` and the Ceph user `cinder-backup`, whose key
 reaches `openstack` as the Secret `ceph-client-cinder-backup` with the raw key
@@ -163,7 +163,7 @@ user, and both backends are the user `cinder` with the Secret
 event arises. The service list shows `cinder-backup` on
 `controlplane-cinder-backup` `up`.
 
-## Step 3 — Back up an RBD volume twice
+## Step 3: Back up an RBD volume twice
 
 Create a volume on `rbd1` and take a full backup of it. The Ceph driver writes
 the backup into a base image named after the volume and the backup, and keeps a
@@ -204,7 +204,7 @@ timeout 300 bash -c 'until [ "$(openstack volume show rbdbk-vol -c status -f val
 
 The volume returns to `available`.
 
-## Step 4 — Back up an NFS volume
+## Step 4: Back up an NFS volume
 
 This step needs the NFS volume backend `nfs1`, which
 [Part 3](../../quick-start-metal-stack.md#nfs) of the quick start adds beside
@@ -242,7 +242,7 @@ The pool lists a second base image, `volume-<id>.backup.<id>` of the NFS volume
 and of `nfs-on-rbd`. The driver wrote it in pieces of `backup_ceph_chunk_size`,
 128 MiB by default, and the volume returns to `available` after the restore.
 
-## Step 5 — Rotate the backup key
+## Step 5: Rotate the backup key
 
 A raised `keyGeneration` has Rook rotate the key of `cinder-backup`. The
 PushSecret and the ExternalSecret of the lab's hand-off carry it to
@@ -284,7 +284,7 @@ A rotation of the volume key `cinder`, as Step 3 of the RBD backend guide runs
 it, rolls the backup pod as well, because that key's keyring is projected into
 it.
 
-## Step 6 — Detach rbdbk and restore the projected target
+## Step 6: Detach rbdbk and restore the projected target
 
 Delete every backup this guide wrote, newest first, because cinder refuses to
 delete a backup an incremental one still depends on; `nfs-on-rbd` exists only

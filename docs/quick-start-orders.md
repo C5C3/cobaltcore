@@ -64,7 +64,7 @@ up as below. A second kind cluster beside a full devstack fails at
 ### Point the shell at the devstack {#shell}
 
 The `openstack` calls below reach Keystone the way
-[Step 7 of the ControlPlane quick start](./quick-start-controlplane.md#step-7-—-verify)
+[Step 7 of the ControlPlane quick start](./quick-start-controlplane.md#step-7-verify)
 does: through the shared Envoy Gateway at `keystone.127-0-0-1.nip.io:8443`,
 with the admin password from the operator-owned Secret. Those settings live in
 the shell that ran that step. A new shell, a second terminal or a workstation

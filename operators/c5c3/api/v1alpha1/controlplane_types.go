@@ -164,7 +164,8 @@ type ControlPlaneSpec struct {
 	GlobalPolicyOverrides *commonv1.PolicySpec `json:"globalPolicyOverrides,omitempty"`
 
 	// GlobalExtraConfig is a free-form INI block applied to every INI-configured
-	// service the ControlPlane declares (Keystone and Glance today). It is merged
+	// service the ControlPlane declares: Keystone, Glance, Placement, Barbican,
+	// Neutron, Cinder, and Nova. It is merged
 	// key by key with each service's own extraConfig — sections are unioned, the
 	// per-service value wins per key, and a global key with no per-service
 	// counterpart stays effective — before the merged result is projected onto

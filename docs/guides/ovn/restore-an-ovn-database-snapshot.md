@@ -39,8 +39,8 @@ Step 7, so the `OVNCentral` `controlplane-ovn` is Ready in the `openstack`
 namespace and its logical model holds something worth snapshotting.
 :::
 
-1. A `ControlPlane` whose network service is Ready, if you intend to run the
-   drift check at the end. The replay itself needs the central alone.
+If you intend to run the drift check at the end, ensure the `ControlPlane`
+network service is Ready. The snapshot replay itself requires only the central.
 
 ## Where the snapshots live
 
@@ -61,10 +61,9 @@ like an empty one.
 
 ### 1. Take a snapshot of the state you are about to replace
 
-The replay in Step 3 replaces the Northbound database rather than merging into
-it, so snapshot the current state before you replay an older one and note the
-file name it lands under. It is the only way back from a replay of the wrong
-file.
+The replay in Step 3 replaces the Northbound database with the snapshot
+contents. Take a snapshot of the current state before replaying an older file,
+and record its name as recovery from an incorrect replay.
 
 Creating a Job from the CronJob runs the same pod template the schedule runs,
 so the on-demand snapshot is written by the code path the nightly one uses,
@@ -72,7 +71,7 @@ including the retention sweep that template ends with:
 
 ::: warning The on-demand run prunes the volume as well
 This Job deletes every `*.backup` file older than `spec.backup.retentionDays`
-(14 days unless you changed it) before it exits, exactly as a nightly run does.
+(14 days unless you changed it) before it exits, as a nightly run does.
 A snapshot one night short of the window is still on the volume when the
 incident starts and gone once this run finishes. That is the file Step 2 would
 have you pick.
@@ -150,8 +149,8 @@ a run that failed before its rename, and the next retention sweep deletes it.
 
 Choose the `nb-*.backup` file to replay out of that listing and keep its full
 path for Step 3. The newest file is rarely the one you want: the Step 1 snapshot
-sorts last by construction, and a nightly run that fired after the damage
-captured the damage. Read the timestamps against the last moment the logical
+is the newest when written, and a nightly run after the damage may capture the
+damaged model. Read the timestamps against the last moment the logical
 model was the one you want back.
 
 ### 3. Replay the Northbound snapshot
@@ -235,18 +234,17 @@ kubectl logs -n openstack job/controlplane-ovn-restore
 Four details of that Job carry weight. The pod-level `fsGroup: 42424` is what
 hands a freshly provisioned volume to the group the container runs as, and the
 container context is the Restricted one the backup run itself carries; without
-both, the replay cannot read the files the backup wrote. The snapshot is
-redirected as a regular file rather than piped, because `ovsdb-client restore`
-needs a seekable stdin. `--force` covers a snapshot taken from a clustered
+both, the replay cannot read the files the backup wrote. Redirect the snapshot
+to a regular file because `ovsdb-client restore` needs seekable stdin. `--force`
+covers a snapshot taken from a clustered
 database. And `$NB_ADDR` is one server:
 `status.northbound.internalDbAddress` lists one `ssl:<ip>:6641` entry per Raft
 member, and the ControlPlane devstack pins the Northbound to a single member, so
 the field holds one address. On a three-member cluster, pass one entry from the
 list.
 
-The replay **replaces** the database; it does not merge into it. The snapshot's
-rows come back under fresh UUIDs, so anything holding a reference to an old
-row's UUID is now pointing at a row that no longer exists, and every Northbound
+The replay **replaces** the database with the snapshot contents. Snapshot rows
+return under fresh UUIDs, so references to old row UUIDs become invalid. Every Northbound
 row created since the snapshot is deleted. A network a tenant created after the
 backup ran is gone from the logical model by the time the Job reports complete,
 and the Step 1 snapshot is what brings it back. northd recompiles the Southbound
@@ -277,10 +275,10 @@ snapshot or not at all, which is what the Step 1 file is for.
 
 ## Tested by
 
-The round trip a snapshot has to survive (seed a logical switch, snapshot it
-with the CronJob's own pod template, wipe the switch, replay the snapshot, find
-the switch again) is asserted on the CI e2e kind cluster by the suite below. It
-also creates a switch the snapshot predates and asserts the replay deleted it,
+The suite below asserts a full snapshot round trip on the CI e2e kind cluster:
+it seeds a logical switch, snapshots it with the CronJob's pod template, removes
+it, replays the snapshot, and finds the switch again. It also creates a switch
+the snapshot predates and asserts that replay removes it,
 which is the replacement half of the paragraph above. It runs the same
 `ovsdb-client` invocation this guide prints, against the one-member clustered
 Northbound the operator projects, which is the shape every deployment runs:

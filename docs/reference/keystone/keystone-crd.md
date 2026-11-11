@@ -77,7 +77,7 @@ spec:
     replicas: 3
   image:
     repository: c5c3/keystone
-    tag: "2025.1"
+    tag: "2026.1"
   database:
     clusterRef:
       name: mariadb
@@ -413,7 +413,7 @@ spec:
     replicas: 3
   image:
     repository: c5c3/keystone
-    tag: "2025.1"
+    tag: "2026.1"
   # ... other required fields ...
   autoscaling:
     minReplicas: 2
@@ -622,7 +622,7 @@ spec:
     replicas: 3
   image:
     repository: c5c3/keystone
-    tag: "2025.1"
+    tag: "2026.1"
   # ... other required fields ...
   uwsgi:
     processes: 4
@@ -751,7 +751,7 @@ spec:
         maxUnavailable: 0
   image:
     repository: c5c3/keystone
-    tag: "2025.1"
+    tag: "2026.1"
   # ... other required fields ...
   uwsgi:
     processes: 4
@@ -809,7 +809,7 @@ spec:
     replicas: 3
   image:
     repository: c5c3/keystone
-    tag: "2025.1"
+    tag: "2026.1"
   # ... other required fields ...
   logging:
     format: json
@@ -935,7 +935,7 @@ spec:
     replicas: 3
   image:
     repository: c5c3/keystone
-    tag: "2025.1"
+    tag: "2026.1"
   # ... other required fields ...
   trustFlush:
     schedule: "30 2 * * 0"
@@ -1203,7 +1203,7 @@ spec:
     replicas: 3
   image:
     repository: c5c3/keystone
-    tag: "2025.1"
+    tag: "2026.1"
   # ... other required fields ...
   gateway:
     parentRef:
@@ -1485,7 +1485,7 @@ name.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `repository` | `string` | Yes | Container image repository (e.g., `c5c3/keystone`). Must be non-empty (`MinLength=1`) and match a permissive OCI reference `Pattern` (`^[a-z0-9]+([._:/-][a-z0-9]+)*$`) that accepts registry-host and `host:port` forms. |
-| `tag` | `string` | No (exactly one of `tag`/`digest`) | Image tag (e.g., `2025.1`). When present, must match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). |
+| `tag` | `string` | No (exactly one of `tag`/`digest`) | Image tag (e.g., `2026.1`). When present, must match the OCI tag grammar `Pattern` (`^[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}$`). |
 | `digest` | `string` | No (exactly one of `tag`/`digest`) | Immutable content digest (e.g., `sha256:<64 hex>`). Must match `Pattern` (`^sha256:[a-f0-9]{64}$`). Pinning by digest disables release tracking/upgrades. |
 | `pullPolicy` | `corev1.PullPolicy` | No | `imagePullPolicy` of every container that runs this image. `Enum=Always;IfNotPresent;Never`, schema-only: a CRD older than the operator prunes the field before a webhook sees it, so no webhook twin exists. Empty resolves in the order below, and no webhook writes a default. |
 

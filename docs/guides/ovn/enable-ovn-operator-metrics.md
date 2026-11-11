@@ -57,7 +57,7 @@ Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
 in Step 3 requires a reconciled `OVNCentral`. On the devstack that is
 `controlplane-ovn`, applied before the `ControlPlane` CR.
 
-## Step 1 — Enable the ServiceMonitor
+## Step 1: Enable the ServiceMonitor
 
 On that devstack, Step 1 is already done for you. `WITH_PROMETHEUS=true` patches
 `monitoring.serviceMonitor.enabled=true` onto the ovn-operator HelmRelease at
@@ -107,7 +107,7 @@ and the helm-controller reverts out-of-band revisions on its next reconcile. Use
 the HelmRelease patch above instead.
 :::
 
-## Step 2 — Import the Grafana dashboard
+## Step 2: Import the Grafana dashboard
 
 On the devstack, follow the
 [Grafana access instructions](../keystone/enable-keystone-operator-metrics.md#_2-import-the-reference-grafana-dashboard)

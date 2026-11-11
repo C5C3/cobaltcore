@@ -48,7 +48,7 @@ is running (namespace `barbican-system`) alongside the projected
    to roll. See
    [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
 
-## Step 1 — Enable the policy
+## Step 1: Enable the policy
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
@@ -184,7 +184,7 @@ and the helm-controller reverts out-of-band revisions on its next reconcile. Use
 the HelmRelease patch above instead.
 :::
 
-## Step 2 — Verify
+## Step 2: Verify
 
 On the kind devstack this step checks the policy's shape, that the operator
 still reconciles under the enforced policy, and that a fresh connection from

@@ -14,8 +14,9 @@ Placement can run without a ControlPlane. The placement-operator reconciles a
 `Placement` CR on its own: it provisions the schema, renders `placement.conf`,
 runs the db-sync Job, and serves the API behind a Gateway API HTTPRoute. What it
 does not do is talk to Keystone's admin API. On a ControlPlane the c5c3 operator
-mints the service user, assigns its role, and registers the service and its
-endpoints through K-ORC. Standalone, that half is yours.
+creates the service user, assigns its role, and registers the service and its
+endpoints through K-ORC. For standalone Placement, create these Keystone objects
+and catalog entries yourself.
 
 This guide walks the whole bring-your-own path against the Quick Start devstack:
 install the operator, create the Keystone identity objects, apply the CR, and
@@ -47,10 +48,10 @@ credentials Secret `keystone-admin`, the shared `openstack-db` and
   [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) plugin for
   the verification in Step 5.
 - The devstack's `placement-db` Secret in `openstack`. External Secrets
-  materializes it from OpenBao as part of `make deploy-infra`; the Placement CR
+  creates it from OpenBao as part of `make deploy-infra`; the Placement CR
   below points `spec.database.secretRef` at it.
 
-## Step 1 — Install the placement-operator
+## Step 1: Install the placement-operator
 
 The Quick Start already applied the `c5c3-charts` HelmRepository source, and the
 kind overlay ships the `placement-operator` HelmRelease suspended. Applying the
@@ -65,7 +66,7 @@ kubectl wait helmrelease/placement-operator -n placement-system \
 The controller runs in `placement-system`; the Placement workload it manages runs
 in `openstack`, the same controller-vs-workload split the keystone-operator uses.
 
-## Step 2 — Create the Keystone identity objects
+## Step 2: Create the Keystone identity objects
 
 Placement authenticates every incoming token against Keystone using a service
 user of its own, so that user, its project, and its role assignment have to exist
@@ -80,8 +81,8 @@ export OS_USER_DOMAIN_NAME=Default
 export OS_PROJECT_DOMAIN_NAME=Default
 ```
 
-Pick a password for the service user — `openssl rand -base64 24` produces one —
-and create the objects, pasting it at the `--password-prompt` prompt. Each
+Generate a password for the service user with `openssl rand -base64 24` and
+enter it at the `--password-prompt`. Each
 create uses `--or-show`, which returns the existing object where a plain create
 would fail, and `role add` on an assignment that already exists is a no-op, so
 the whole block is safe to re-run:
@@ -93,18 +94,17 @@ openstack --insecure user create --domain Default --or-show --password-prompt pl
 openstack --insecure role add --project service --user placement service
 ```
 
-`--password-prompt` rather than `--password`: a password passed as a command-line
-argument lands in argv, so it is written to the shell's history file and is
-readable out of `/proc/<pid>/cmdline` by any local user running `ps auxww` while
-the command runs.
+Use `--password-prompt` to keep the password out of command-line arguments.
+Arguments are written to shell history and remain readable in
+`/proc/<pid>/cmdline` while the command runs.
 
 Do not reach for `openstack ... show` to test whether an object exists first. In
 this CLI a `show` of a missing identity object exits `0`, so a `show || create`
 chain silently skips the create. `--or-show` is the idiom that works.
 
 `--or-show` on `user create` returns the existing user untouched, so on a re-run
-the password you type at the prompt is not the one Keystone holds. To rotate it
-deliberately, use `openstack user set --password-prompt placement` and update the
+the password you type at the prompt is not the one Keystone holds. To rotate it,
+use `openstack user set --password-prompt placement` and update the
 Secret below in the same breath.
 
 Store the password where the CR can read it. `--from-file=password=/dev/stdin`
@@ -147,7 +147,7 @@ The defaulting webhook fills the rest of the identity: username `placement`,
 project `service`, `Default` for both domains, and `password` as the Secret key.
 The CR therefore names nothing but the Secret.
 
-## Step 3 — Apply the Placement CR
+## Step 3: Apply the Placement CR
 
 ```yaml
 # placement.yaml
@@ -183,8 +183,8 @@ spec:
     path: /
 ```
 
-`keystoneEndpoint` is the cluster-local Service URL because keystonemiddleware
-resolves it from inside the pod, not from your browser. The gateway hostname has
+`keystoneEndpoint` is the cluster-local Service URL. keystonemiddleware resolves
+it from inside the pod. The gateway hostname has
 to be `placement.127-0-0-1.nip.io`: that is the one the devstack's `openstack-gw`
 terminates TLS for, with a cert-manager certificate issued for that name.
 
@@ -206,7 +206,7 @@ kubectl wait placement/placement -n openstack \
 The `placement-db-sync` Job migrates the schema before the API pods go ready,
 which is what the 10-minute bound covers.
 
-## Step 4 — Register the service and its endpoints
+## Step 4: Register the service and its endpoints
 
 The API is now serving, but nothing in the catalog points at it, so a client that
 discovers its endpoints from Keystone cannot find Placement. This is the half a
@@ -228,7 +228,7 @@ The internal endpoint is the in-cluster Service the operator owns (`placement` i
 `openstack`, port 8778). The public one goes through the Gateway on the kind host
 port from `KIND_HOST_PORT=8443`.
 
-## Step 5 — Verify
+## Step 5: Verify
 
 `resource class list` is a read-only call that Placement answers only for an
 authenticated request, so a listing proves the catalog entry, the gateway, and
@@ -241,18 +241,18 @@ openstack --insecure resource class list
 The output is a one-column table of the standard resource classes a fresh
 Placement seeds, `VCPU`, `MEMORY_MB` and `DISK_GB` among them.
 
-An `EndpointNotFound` here means Step 4 did not land. A `401` means the service
+An `EndpointNotFound` here means Step 4 did not register the catalog entry. A `401` means the service
 user cannot validate tokens: re-check the `service` role assignment from Step 2
 and that `placement-service-user` holds the password Keystone actually has.
 
 ## See also
 
-- [Placement CRD API Reference](../../reference/placement/placement-crd.md) —
+- [Placement CRD API Reference](../../reference/placement/placement-crd.md):
   every `spec` field, including the ones this walkthrough leaves at their
   defaults.
-- [Controller Events](../../reference/placement/placement-events.md) — what the
+- [Controller Events](../../reference/placement/placement-events.md): what the
   operator emits while the CR converges.
-- [Quick Start (ControlPlane)](../../quick-start-controlplane.md) — the managed
+- [Quick Start (ControlPlane)](../../quick-start-controlplane.md): the managed
   path, where the identity objects and catalog rows of Steps 2 and 4 are
   projected instead of typed.
 
@@ -271,8 +271,8 @@ The suite shares the `openstack` namespace and the `openstack-db` /
 `openstack-memcached` backing services with the rest of the parallel suite pool,
 so its fixture carries isolation identifiers instead of the devstack names used
 above: the CR is `placement-basic` on its own `placement_basic` schema, and it
-authenticates as the pre-seeded `admin` service user from `keystone-admin` rather
-than the `placement` user Step 2 creates. It declares no `spec.gateway`; the
+authenticates as the pre-seeded `admin` service user from `keystone-admin`; Step 2
+of this guide creates the `placement` service user. It declares no `spec.gateway`; the
 `gateway-quick-start-smoke` suite covers that with a `placement-smoke` CR of its
 own.
 

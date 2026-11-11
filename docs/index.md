@@ -12,7 +12,7 @@ This documentation covers the
 [c5c3/cobaltcore](https://github.com/C5C3/cobaltcore) repository, which
 delivers everything needed for a self-contained OpenStack control-plane stack:
 from the declarative infrastructure manifests, through the service operators,
-to the c5c3-operator orchestration layer — built with the Operator SDK (Go),
+to the c5c3-operator orchestration layer, built with the Operator SDK (Go),
 controller-runtime, and Kubebuilder. The [Architecture](./architecture/)
 section shows how the pieces fit together, from the implemented
 management/target-cluster topology to the
@@ -27,10 +27,9 @@ the [Quick Start (metal-stack)](./quick-start-metal-stack.md). There,
 metal-stack takes the place of IronCore at the bare-metal layer.
 
 The Keystone operator is the reference implementation that establishes the
-patterns — CRD layout, sub-reconciler chain, webhooks, finalizers,
-instrumentation — replicated by every other service operator. Horizon, Glance,
-Placement, Barbican, Cinder, Nova, and Neutron with its OVN layer are onboarded
-on the same scaffolding. The c5c3-operator ties the services together into a
+patterns: CRD layout, sub-reconciler chain, webhooks, finalizers, and
+instrumentation. Horizon, Glance, Placement, Barbican, Cinder, Nova, and
+Neutron with its OVN layer follow those patterns. The c5c3-operator ties the services together into a
 single ControlPlane resource, which projects Nova through `services.nova`.
 Compute nodes join it through `NovaCompute` pools, which the
 [Quick Start (metal-stack)](./quick-start-metal-stack.md) runs on KVM, and
@@ -39,16 +38,16 @@ attaches a separate compute cluster.
 
 ## Start here
 
-- **[Quick Start](./quick-start.md)** — from `git clone` to an authenticated
+- **[Quick Start](./quick-start.md):** from `git clone` to an authenticated
   Keystone API call on a local kind cluster.
-- **[Quick Start (Extended)](./quick-start-extended.md)** — UI tours, the
+- **[Quick Start (Extended)](./quick-start-extended.md):** UI tours, the
   local-build path, the production HelmRelease, E2E, and Tempest.
-- **[Quick Start (ControlPlane)](./quick-start-controlplane.md)** — bring up a
+- **[Quick Start (ControlPlane)](./quick-start-controlplane.md):** bring up a
   full ControlPlane through the c5c3-operator.
-- **[Quick Start (metal-stack)](./quick-start-metal-stack.md)** — the same
+- **[Quick Start (metal-stack)](./quick-start-metal-stack.md):** the same
   ControlPlane on a metal-stack cluster, where every worker is a KVM hypervisor
   and runs a server.
-- **[Quick Start (Orders)](./quick-start-orders.md)** — the Keystone, MariaDB
+- **[Quick Start (Orders)](./quick-start-orders.md):** the Keystone, MariaDB
   and RabbitMQ pieces of a foreign service, ordered from an assigned namespace
   on the management cluster and on a target cluster.
 
@@ -83,22 +82,22 @@ on the ControlPlane devstack.
   [CI Workflow](./reference/ci-cd/ci-workflow.md) and
   [Nix Image Build](./reference/ci-cd/nix-image-build.md).
 - **Test suites.** Unit, envtest integration, Chainsaw E2E, Tempest, and Chaos
-  Mesh coverage across the stack — see the
+  Mesh coverage across the stack. See the
   [Testing reference](./reference/testing/keystone-e2e-tests.md).
 
 ## Go deeper
 
-- **[Architecture](./architecture/)** — the implemented topology, the layering
+- **[Architecture](./architecture/):** the implemented topology, the layering
   from Flux stack to ControlPlane orchestration, and the
   [Core Components](./architecture/core-components.md) catalog.
-- **[Guides](./guides/observability.md)** — day-2 operations, key rotation,
+- **[Guides](./guides/observability.md):** day-2 operations, key rotation,
   multi-tenant deployment, identity and storage backends, target clusters, and
   advanced configuration.
-- **[Reference](./reference/keystone/)** — CRDs, reconciler architecture,
+- **[Reference](./reference/keystone/):** CRDs, reconciler architecture,
   controller events, metrics, and the infrastructure, CI/CD, and testing
   internals.
-- **[Future](./future/)** — idea sketches for where the operators could go next.
-- **[Contributing](./contributing/adding-a-new-operator.md)** — onboard a new
+- **[Future](./future/):** idea sketches for where the operators could go next.
+- **[Contributing](./contributing/adding-a-new-operator.md):** onboard a new
   operator or release, follow the guide conventions, and set up the development
   environment.
 

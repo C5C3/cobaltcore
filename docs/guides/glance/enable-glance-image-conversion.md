@@ -58,7 +58,7 @@ What is left is the `web-download` import the walkthrough below uses.
 
 ## Enable it
 
-The plugin selection is a ControlPlane knob, projected onto the Glance child.
+The plugin selection is a ControlPlane setting projected onto the Glance child.
 The presence of the `conversion` sub-block is the switch, so an empty block runs
 it at the operator default output format, `raw`:
 
@@ -175,8 +175,8 @@ conversion lands on the volume `staging`, beside the first.
 
 ![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. Each size limit is an eviction threshold: once a volume grows past it, the kubelet evicts the pod. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
 
-Size that budget against what the conversion produces rather than against what
-travels over the wire. A `raw` result is the image's full virtual size, and a
+Size the staging budget for the conversion output. A `raw` result is the image's
+full virtual size, and a
 sparse `qcow2` download hides that number: a few hundred megabytes on the mirror
 can be several gigabytes on the staging volume. The bound is an eviction
 threshold the kubelet enforces, so an import that crosses it evicts the
@@ -225,15 +225,15 @@ again disables the plugin on the next rollout.
 
 ## See also
 
-- [Glance CRD API Reference](../../reference/glance/glance-crd.md#importpluginsspec) —
+- [Glance CRD API Reference](../../reference/glance/glance-crd.md#importpluginsspec):
   the full `ImportPluginsSpec` contract, the two sibling plugins
   (`decompression` and `injectMetadata`), the fixed plugin order, and the four
   `extraConfig` keys this block owns.
-- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md) —
+- [ControlPlane CRD API Reference](../../reference/c5c3/controlplane-crd.md):
   `services.glance.importPlugins` and the rest of the projected Glance surface.
-- [Filter web-download Image Imports](./filter-web-download-imports.md) — the
+- [Filter web-download Image Imports](./filter-web-download-imports.md): the
   filter every import URI passes before the plugin ever sees a byte.
-- [Large Image Uploads through the Gateway](./large-image-uploads.md) — the
+- [Large Image Uploads through the Gateway](./large-image-uploads.md): the
   staging bound a conversion draws twice from.
 
 ## Tested by

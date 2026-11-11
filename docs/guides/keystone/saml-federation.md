@@ -341,7 +341,7 @@ the last federation backend restores the plain uWSGI-only pod.
 
 | Symptom | Likely cause |
 | --- | --- |
-| Mapped user has empty attributes | The mapping remote type does not match the uppercased header spelling — use `HTTP_MELLON_<ATTR>` (uppercase), not the assertion's original case. |
+| Mapped user has empty attributes | Use `HTTP_MELLON_<ATTR>` in uppercase because the HTTP hop uppercases attribute names. The assertion's original case will not match. |
 | `MappingsReady=False`, reason `NoMappingRules` | `spec.mappings` is empty; Keystone requires at least one mapping rule before the protocol can be provisioned. |
 | Backend stays pending, `FederationProxyImageMissing` | `spec.federation.proxyImage` is not set on the Keystone CR. |
 | Second SAML backend rejected at admission | At most one SAML backend per Keystone is supported. |

@@ -14,7 +14,8 @@ Leaving the pool is the drain. When a node stops matching a `NovaCompute`'s
 selector, the pool disables the node's compute service once and keeps its pod
 while Nova counts servers on the host. When none is left, the pool releases the
 pod and deletes the service, which removes the host mapping, the resource
-provider and the aggregate membership. The pool never migrates an instance.
+provider and the aggregate membership. An owner must move or delete instances;
+the pool does not migrate them.
 
 The figure shows the phases a node of a pool passes through. This guide walks
 the path from `Active` through `Draining` and `Releasing` until the entry is
@@ -161,9 +162,9 @@ service row is `disabled` with the reason
 runs on the node. The DaemonSet's node affinity holds one term per Draining
 node, which keeps its pod there while the instances leave (see
 [The pod](../../reference/nova/novacompute-crd.md#the-pod)). The new term
-changes the pod template, so a `RollingUpdate` pool restarts that pod once; the
-servers keep running through the restart, because libvirt runs them, not
-`nova-compute`.
+changes the pod template, so a `RollingUpdate` pool restarts that pod once. The
+servers keep running through the restart because libvirt hosts them while
+`nova-compute` manages them.
 
 ### 2. Empty the host
 

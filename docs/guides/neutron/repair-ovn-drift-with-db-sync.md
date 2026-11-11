@@ -40,9 +40,9 @@ Step 7, so the projected `Neutron` `controlplane-neutron` is Ready in the
 `openstack` namespace and its logical model holds something worth comparing.
 :::
 
-1. The `OVNCentral` `controlplane-ovn` reachable from the Neutron pods. The
-   sync utility reads the same two config files the API pods do, so a
-   Northbound address they cannot dial is one it cannot dial either.
+The `OVNCentral` `controlplane-ovn` must be reachable from the Neutron pods.
+The sync utility reads the same two config files as the API pods, so it also
+needs access to the configured Northbound address.
 
 ## Steps
 
@@ -54,8 +54,8 @@ the fields it sets, and `spec.ovnDBSync` is not among them: the `ControlPlane`
 CRD carries no field for the schedule, and the projection leaves the child's own
 value alone (see
 [ServiceNeutronSpec](../../reference/c5c3/controlplane-crd.md#serviceneutronspec)).
-The patch below therefore survives every reconcile, and nothing takes it back
-for you.
+The controller does not overwrite this field, so the patch remains until you
+remove it.
 
 ```bash
 kubectl patch neutron controlplane-neutron -n openstack --type merge \
@@ -100,7 +100,8 @@ before.
 
 ### 3. Read the report
 
-The verdict is in the log, not in the exit status:
+Check the log for the comparison result. In `log` mode, the utility exits 0
+whether or not the databases agree:
 
 ```bash
 kubectl logs job/controlplane-neutron-ovn-db-sync-manual -n openstack
@@ -149,7 +150,7 @@ kubectl wait --for=jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0]
 ```
 
 Then repeat Step 2 under a fresh Job name, read its log the same way, and put
-`syncMode` back to `log` — waiting on the same projection with `log` as the
+`syncMode` back to `log`. Wait for the same projection with `log` as the
 value, because a schedule that resumes before it lands still fires the `repair`
 template. Leaving the CR in `repair` lets the hourly schedule rewrite the
 logical model unattended, which is the wrong posture for anything but the window
@@ -213,9 +214,9 @@ and reads the switch back:
 chainsaw test --test-dir tests/e2e/neutron/ovn-db-sync-repair
 ```
 
-The suite proves the deletion direction of `repair` mode, on a leg that carries
-no Keystone: it drives the Northbound database directly, so the `openstack` side
-of a drift stays outside what it asserts.
+The suite proves the deletion direction of `repair` mode without deploying
+Keystone. It drives the Northbound database directly, so it does not assert
+drift on the Neutron `openstack` side.
 
 ::: details The Neutron the suite applies
 The suite shares the `openstack` namespace with every other neutron suite, so

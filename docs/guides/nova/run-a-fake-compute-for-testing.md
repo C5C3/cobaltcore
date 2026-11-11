@@ -130,8 +130,8 @@ kubectl exec -n openstack deploy/controlplane-nova-conductor -c conductor -- \
 
 `--verbose` names the host it mapped. A run that maps nothing either found the
 host already mapped or ran before the compute registered; repeat it once the
-service row reads `up`. [Nova Cells](../../reference/nova/nova-cells.md#host-discovery)
-describes the periodic.
+service row reads `up`. The scheduler's periodic discovery is described in
+[Nova Cells](../../reference/nova/nova-cells.md#host-discovery).
 
 ### 4. Boot a server
 
@@ -166,8 +166,8 @@ again.
 
 ### 5. (Optional) Resize the server
 
-The fake compute is the only host, so a resize has to land on the host the
-server already runs on. nova leaves that host out of the candidates unless
+The fake compute is the only host, so a resize must stay on the host where the
+server already runs. nova leaves that host out of the candidates unless
 `allow_resize_to_same_host` is set, and the resize then finds no valid host.
 Set it on the ControlPlane, which projects it into the child's
 `spec.extraConfig`:

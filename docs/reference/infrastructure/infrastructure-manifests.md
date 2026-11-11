@@ -3628,7 +3628,7 @@ the pods of the `OVNChassis` and of the metadata agent, and
 network of the node, and the shoot is shared. The chart's
 `controllerManager.allowHostNetworkTesting` defaults to `false`, and the
 controller then refuses such an experiment with the event
-``It's dangerous to inject network chaos on a pod(<ns>/<name>) with `hostNetwork` ``.
+`It's dangerous to inject network chaos on a pod(<ns>/<name>) with hostNetwork`.
 The overlay sets neither that value nor `clusterScoped`, and its test fails
 when the render names either.
 

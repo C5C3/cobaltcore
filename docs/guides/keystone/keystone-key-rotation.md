@@ -40,9 +40,9 @@ projected `controlplane-keystone` Keystone is `Ready`. Every resource name in th
 examples below is one that devstack produces.
 :::
 
-- A healthy Keystone CR (`Ready=True`) — see [Observability & Diagnostics](../observability.md).
+- A healthy Keystone CR (`Ready=True`): see [Observability & Diagnostics](../observability.md).
 - `kubectl` access to the CR's namespace (`openstack`).
-- The rotation CronJobs already reconciled —
+- The rotation CronJobs are already reconciled:
   `kubectl -n openstack get cronjob controlplane-keystone-fernet-rotate controlplane-keystone-credential-rotate` returns both.
 
 ---
@@ -57,8 +57,8 @@ Earlier the rotation CronJob wrote directly to the production
 | Rotation CronJob (ServiceAccount `controlplane-keystone-fernet-rotate`) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (via `patch`) | Production Secret `controlplane-keystone-fernet-keys` (via `get`, mounted as volume) |
 | Operator (controller-manager ServiceAccount) | Production Secret `controlplane-keystone-fernet-keys` (via `update`, which replaces the whole `data` map) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (validates, then deletes) |
 
-The staging Secret carries one controller-observable marker — the
-`cobaltcore.c5c3.io/rotation-completed-at` annotation — that tells the operator
+The staging Secret carries one controller-observable marker, the
+`cobaltcore.c5c3.io/rotation-completed-at` annotation. It tells the operator
 "the CronJob finished; please apply". Until that annotation is present
 and parseable as RFC3339 UTC, the operator will not touch the production
 Secret.
@@ -74,7 +74,7 @@ lists the steps. `{name}` is `controlplane-keystone` here.
 ## 1. Trigger a manual rotation
 
 Rotations run on the `spec.fernet.rotationSchedule` / `spec.credentialKeys.rotationSchedule`
-cron schedule by default (both default to `0 0 * * 0` — weekly, Sunday 00:00 UTC).
+cron schedule by default. Both default to `0 0 * * 0` (weekly, Sunday 00:00 UTC).
 To pause scheduled rotation during an incident without deleting the CronJob or
 any sibling resource, set `spec.fernet.suspend: true` (or
 `spec.credentialKeys.suspend: true`); clearing the flag resumes the schedule.
@@ -112,7 +112,8 @@ Fernet keys staging Secret updated successfully
 ```
 
 At this point the CronJob has PATCHed the staging Secret with both the new
-`data` map and the completion annotation. The operator has not yet acted.
+`data` map and the completion annotation. The operator processes it on its next
+reconcile.
 
 A failed PATCH (an API error, a network error, or a staging Secret that is
 missing at that moment) fails the rotate container, and the kubelet restarts it
@@ -147,8 +148,8 @@ Retry: the production Secret already holds the Fernet keys this pod rotated; not
 
 ## 2. Verify the staging Secret's completion annotation
 
-The `cobaltcore.c5c3.io/rotation-completed-at` annotation is transient — it
-appears on the staging Secret only between the CronJob's PATCH and the
+The `cobaltcore.c5c3.io/rotation-completed-at` annotation is transient. It
+appears on the staging Secret between the CronJob's PATCH and the
 operator's next reconcile, which typically closes the window in seconds.
 To catch it, watch the staging Secret during a rotation:
 
@@ -172,8 +173,8 @@ $ kubectl -n openstack get secret controlplane-keystone-fernet-keys-rotation
 Error from server (NotFound): secrets "controlplane-keystone-fernet-keys-rotation" not found
 ```
 
-The operator recreates the empty staging Secret on the next reconcile —
-see `ensureFernetStagingSecret`. If you see the staging Secret exist with
+The operator recreates the empty staging Secret on the next reconcile; see
+`ensureFernetStagingSecret`. If you see the staging Secret exist with
 empty `Data`, that is the steady state between rotations.
 
 ---
@@ -234,11 +235,10 @@ subsequent rotations.
 
 The operator validates every staged rotation before copying it onto the
 production Secret. On failure it emits a Warning event and **clears the
-staged payload** — the staging Secret object is kept, but its `.data` and
-the `cobaltcore.c5c3.io/rotation-completed-at` annotation are removed so the
-next CronJob run starts from an empty base rather than merging over a
-rejected payload. The Warning event message, not the staging Secret
-contents, is the record of what was rejected.
+staged payload**. It keeps the staging Secret object and removes its `.data`
+and `cobaltcore.c5c3.io/rotation-completed-at` annotation. The next CronJob run
+starts from an empty base and cannot merge over rejected data. The Warning event
+message records what was rejected.
 
 ### Symptoms
 
@@ -261,9 +261,8 @@ is the same.
 
 ### Match the rejection reason
 
-Because the staged `.data` is cleared on rejection, the `RotationRejected`
-event message above — not the staging Secret — is what tells you which
-rule failed. Match it against the operator's validation contract
+The staged `.data` is cleared on rejection. The `RotationRejected` event
+message identifies which rule failed. Match it against the operator's validation contract
 (see [Operator validation rules](../../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)):
 
 | Event message contains | Likely cause |
@@ -294,8 +293,8 @@ The recovery sequence is always:
    validates and applies.
 3. Confirm apply by repeating steps 2-4 above.
 
-> **Production safety note.** The production Secret is never modified
-> during a rejected rotation — that is the whole point of the
+> **Production safety note.** The production Secret remains unchanged
+> during a rejected rotation. This is the purpose of the
 > staging/production split. You can inspect a `RotationRejected` state as long as you like
 > without impacting running Keystone pods; they continue to serve tokens
 > with the previous key set.
@@ -304,7 +303,7 @@ The recovery sequence is always:
 
 ## Credential-key specifics
 
-Everything above applies to credential rotation unchanged — substitute:
+For credential rotation, use these substitutions:
 
 | Fernet | Credential |
 | --- | --- |
@@ -329,7 +328,7 @@ scheduled for aging-out.
 > refreshing the in-place Secret projection. During this window,
 > running Keystone pods still have the old keyset mounted and cannot decrypt
 > rows already re-encrypted under the new primary. This is an inherent
-> property of the rotation flow, not a regression.
+> property of the rotation flow.
 
 ---
 
@@ -347,23 +346,22 @@ substitute the `controlplane-keystone-` prefix with `keystone-` throughout:
 | Secret `controlplane-keystone-fernet-keys-rotation` | Secret `keystone-fernet-keys-rotation` |
 | (credential variants of each) | (credential variants of each) |
 
-Everything else — the staging/production split, the completion annotation, the
-validation rules, and the credential-key `credential_migrate` step — is
-identical.
+The staging/production split, completion annotation, validation rules, and
+credential-key `credential_migrate` step are identical.
 
 ---
 
 ## See also
 
-- [Rotate the Keystone Admin Password](./keystone-admin-password-rotation.md) — the *admin-password* counterpart to this key rotation, driven from the OpenBao source.
-- [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md) — CronJob-driven scheduled admin-password rotation.
-- [Day 2 Operations](../day-2-operations.md) — a condensed on-demand rotation trigger alongside scaling and upgrades.
+- [Rotate the Keystone Admin Password](./keystone-admin-password-rotation.md): the *admin-password* counterpart to this key rotation, driven from the OpenBao source.
+- [Schedule Keystone Admin Password Rotation](./keystone-admin-password-scheduled-rotation.md): CronJob-driven scheduled admin-password rotation.
+- [Day 2 Operations](../day-2-operations.md): a condensed on-demand rotation trigger alongside scaling and upgrades.
 
 ## Related reference
 
-- [Key Rotation RBAC Split](../../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split) — the authoritative contract for the Fernet sub-reconciler.
-- [Labels and Annotations](../../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys observable by consumers.
-- [Rotation Scripts](../../reference/backend/rotation-scripts.md) — the embedded `fernet_rotate.sh` / `credential_rotate.sh` contract.
+- [Key Rotation RBAC Split](../../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split): the authoritative contract for the Fernet sub-reconciler.
+- [Labels and Annotations](../../reference/keystone/keystone-reconciler.md#labels-and-annotations): stable metadata keys observable by consumers.
+- [Rotation Scripts](../../reference/backend/rotation-scripts.md): the embedded `fernet_rotate.sh` / `credential_rotate.sh` contract.
 
 ## Tested by
 

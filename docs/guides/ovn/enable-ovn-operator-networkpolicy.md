@@ -43,7 +43,7 @@ Step 7, so the ovn-operator is running (namespace `ovn-system`) alongside the
 2. The `OVNCentral` `controlplane-ovn`, which the quick start applies in its
    Step 3. Without it the Step 2 verification has nothing to roll.
 
-## Step 1 — Enable the policy
+## Step 1: Enable the policy
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
@@ -107,7 +107,7 @@ kubectl patch helmrelease ovn-operator -n ovn-system --type=merge \
 Each entry is rendered verbatim as a `NetworkPolicyPeer`, so a `podSelector`
 narrows it further to the Prometheus pods.
 
-## Step 2 — Verify
+## Step 2: Verify
 
 On the kind devstack this step checks the policy's shape, that the operator
 still reconciles under the enforced policy, and that a fresh connection from

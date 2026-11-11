@@ -290,8 +290,8 @@ The command prints `Dynamic Dynamic`. Watch for:
 - Both ExternalSecrets, `controlplane-nova-api-db-credentials` and
   `controlplane-nova-db-credentials`, changing from static `data[].remoteRef` to
   `dataFrom[].sourceRef.generatorRef` (kind `VaultDynamicSecret`).
-- The Kubernetes Secrets' `username` values becoming engine-issued logins rather than
-  `controlplane-nova-api` and `controlplane-nova`.
+- The Kubernetes Secrets' `username` values changing from
+  `controlplane-nova-api` and `controlplane-nova` to engine-issued logins.
 - A rollout of all five Nova Deployments: `controlplane-nova`,
   `controlplane-nova-metadata`, `controlplane-nova-scheduler`,
   `controlplane-nova-conductor` and `controlplane-nova-novncproxy`. The nova
