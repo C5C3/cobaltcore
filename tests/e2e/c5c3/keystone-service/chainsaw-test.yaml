@@ -32,6 +32,10 @@
 #               taken over. catalog.adopt then takes the row over, the account
 #               half keeps holding, and deleting the CR removes the adopted row
 #               from Keystone while the never-adopted user stays: decision D6.
+#               Applied again, the registration collides on the user alone;
+#               account.adopt takes the user over at password generation 2, a
+#               Job authenticates with the delivered password, and deleting the
+#               CR removes the user from Keystone.
 #   DELETION    deleting the round-trip registration leaves nothing behind in
 #               Kubernetes, OpenBao or Keystone.
 #
@@ -47,11 +51,14 @@
 # same scripts deploy-infra runs. Everything else a ControlPlane needs in its
 # namespace is operator-projected or cluster-scoped.
 #
-# ── Where the collision leg stops ────────────────────────────────────────────
-# Account adoption is not asserted here. With the pinned K-ORC an adopted user
-# keeps its pre-existing password and stays at generation 1, so nothing is
-# delivered that a Job could authenticate with. The account block is asserted up
-# to its collision and no further; account.adopt is tracked as #920.
+# ── How account adoption is proven ───────────────────────────────────────────
+# K-ORC records the first password reference of a user it adopted without
+# writing it, so the operator moves an account created under account.adopt to
+# password generation 2, which K-ORC does write. The verify Job's `token issue`
+# is the regression proof: it fails with any password other than the one
+# Keystone holds. The seed Job discards the seeded password and Keystone keeps
+# one password per user, so a delivered password that authenticates is the
+# proof that the takeover applied it.
 #
 # ── Presence guard ───────────────────────────────────────────────────────────
 # Mirrors the sibling c5c3 suites. The e2e-operator c5c3 matrix leg runs this
@@ -99,6 +106,7 @@ spec:
           LEGACY_URL="http://legacy-api.${CP_NS}.svc.cluster.local:8777/"
           WORKFLOW_KV="openstack/keystone/${CP_NS}/${KS_NAME}/service-accounts/credentials"
           PW_GEN_ANNOTATION="cobaltcore.c5c3.io/password-generation"
+          PW_TAKEOVER_ANNOTATION="cobaltcore.c5c3.io/password-takeover"
 
           REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
           skip_or_fail() { # <reason...>
@@ -965,9 +973,71 @@ spec:
           assert_eq "the adopted row left Keystone with the CR that owned it" "ABSENT" \
             "$(admin_service_id)"
           # The user was never adopted, so nothing owns it and nothing removes it.
-          # It goes with the ephemeral plane's teardown.
+          # The account takeover below adopts it.
           assert_eq "the never-adopted user is untouched" "${SEED_USER_ID}" "$(admin_user_id)"
           echo "OK: deleting the CR removed only what it owned."
+
+          # ── The account takeover ──────────────────────────────────────────
+          # The same registration again, against the user that is still seeded.
+          # The first application's catalog row and managed project left with
+          # it, so the user is the only collision; the message check tells it
+          # from a project collision a slow teardown would leave behind.
+          sed -e "s|@CP_NS@|${CP_NS}|g" 02-keystoneservice-legacy.yaml \
+            | kubectl apply -n "${CP_NS}" -f -
+          wait_reason keystoneservice "${LEGACY_KS}" "${CP_NS}" AccountReady ServiceAccountCollision 300
+          if ! grep -q "set account.adopt=true" \
+               <<<"$(condition_message keystoneservice "${LEGACY_KS}" "${CP_NS}" AccountReady)"; then
+            echo "ERROR: the re-applied registration does not collide on the seeded user"; exit 1
+          fi
+
+          # K-ORC adopts the user and records generation 1 without writing it;
+          # the operator then applies generation 2, which K-ORC writes, and only
+          # then binds the role and delivers the credentials.
+          kubectl patch keystoneservice "${LEGACY_KS}" -n "${CP_NS}" --type merge \
+            -p '{"spec":{"account":{"adopt":true}}}'
+          wait_reason keystoneservice "${LEGACY_KS}" "${CP_NS}" AccountReady AccountProvisioned 600
+          wait_ks_condition "${LEGACY_KS}" "${CP_NS}" Ready True 300
+          assert_eq "the registration reports the seeded user (adopted, not duplicated)" "${SEED_USER_ID}" \
+            "$(ks_field "${LEGACY_KS}" '{.status.account.userID}')"
+          admin_osc show metering "${LEGACY_KS}" "${LEGACY_KS}"
+          assert_eq "Keystone holds the one seeded user" "${SEED_USER_ID}" "$(admin_user_id)"
+          assert_eq "the adopted account is at password generation 2" "2" \
+            "$(ks_field "${LEGACY_KS}" '{.status.account.passwordGeneration}')"
+          assert_nonempty "the takeover recorded a password rotation" \
+            "$(ks_field "${LEGACY_KS}" '{.status.account.lastPasswordRotation}')"
+
+          LEGACY_USER="$(kubectl get users.openstack.k-orc.cloud -n "${CP_NS}" -l "${LEGACY_SELECTOR}" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | grep -- '-registration-user$' || true)"
+          assert_nonempty "the adopted account has a managed User child" "${LEGACY_USER}"
+          LEGACY_PREFIX="${LEGACY_USER%user}"
+          # One read: a failed get has to fail the script rather than read as a
+          # missing annotation.
+          LEGACY_USER_JSON="$(kubectl get users.openstack.k-orc.cloud "${LEGACY_USER}" -n "${CP_NS}" -o json)"
+          assert_eq "K-ORC applied the second password Secret to the adopted user" "${LEGACY_PREFIX}password-v2" \
+            "$(jq -r '.status.resource.appliedPasswordRef // ""' <<<"${LEGACY_USER_JSON}")"
+          assert_eq "the adopted User child is annotated with generation 2" "2" \
+            "$(jq -r --arg k "${PW_GEN_ANNOTATION}" '.metadata.annotations[$k] // ""' <<<"${LEGACY_USER_JSON}")"
+          assert_eq "the adopted User child carries no takeover marker" "false" \
+            "$(jq -r --arg k "${PW_TAKEOVER_ANNOTATION}" '.metadata.annotations // {} | has($k)' <<<"${LEGACY_USER_JSON}")"
+          kubectl get secret "${LEGACY_PREFIX}password-v2" -n "${CP_NS}" >/dev/null
+          wait_gone secret "${LEGACY_PREFIX}password-v1" "${CP_NS}" 120
+          LEGACY_CHILD_NAMES="$(kubectl get "${KORC_KINDS}" -n "${CP_NS}" -l "${LEGACY_SELECTOR}" \
+            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"
+          assert_eq "no collision probe is left under the legacy labels" "0" \
+            "$(grep -c -- '-probe$' <<<"${LEGACY_CHILD_NAMES}" || true)"
+
+          # Before the takeover, this Job failed on `token issue`.
+          run_verify_job "${LEGACY_KS}" "${LEGACY_KS}" "${LEGACY_URL}"
+          echo "OK: account.adopt applied the delivered password to the seeded user."
+
+          kubectl delete keystoneservice "${LEGACY_KS}" -n "${CP_NS}" --wait=false
+          wait_gone keystoneservice "${LEGACY_KS}" "${CP_NS}" 600
+          assert_eq "every legacy child went with the adopted account" "0" \
+            "$(count_of "${KORC_KINDS}" "${CP_NS}" "${LEGACY_SELECTOR}")"
+          admin_osc show metering "${LEGACY_KS}" "${LEGACY_KS}"
+          assert_eq "the catalog row left Keystone with the CR" "ABSENT" "$(admin_service_id)"
+          assert_eq "the adopted user left Keystone with the CR that took it over" "ABSENT" "$(admin_user_id)"
+          echo "OK: deleting the CR removed the adopted user."
 
           # ══ LEG 5 — the registration's deletion leaves nothing ════════════
           kubectl delete keystoneservice "${KS_NAME}" -n "${CP_NS}" --wait=false
@@ -1033,7 +1103,7 @@ spec:
           echo "OK: the registration left nothing behind in Kubernetes, OpenBao or Keystone."
 
           # ══ Teardown ══════════════════════════════════════════════════════
-          kubectl delete job "${KS_NAME}-verify" admin-osc-seed admin-osc-show \
+          kubectl delete job "${KS_NAME}-verify" "${LEGACY_KS}-verify" admin-osc-seed admin-osc-show \
             -n "${CP_NS}" --ignore-not-found
 
           # The plane goes down through its own finalizer, and the suite only
@@ -1157,7 +1227,7 @@ spec:
           # suite; the pod is shared with the two earlier suites on this job.
           kubectl exec -n shared-services openbao-0 -- \
             rm -f /tmp/.bao-token 2>&1 || true
-          kubectl delete job workflow-verify admin-osc-seed admin-osc-show \
+          kubectl delete job workflow-verify legacy-verify admin-osc-seed admin-osc-show \
             -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
           # run_verify_job removes this one itself on every path it returns from.
           kubectl delete secret workflow-verify-oldpw \

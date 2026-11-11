@@ -13,10 +13,13 @@
 # behind the user's back.
 #
 # The test then patches catalog.adopt: true in. The seeded row becomes a managed
-# K-ORC Service and later leaves Keystone with the CR. account.adopt stays unset
-# for the whole suite. Account adoption is tracked separately as #920, because
-# with the pinned K-ORC an adopted user keeps its pre-existing password at
-# generation 1.
+# K-ORC Service and later leaves Keystone with the CR, while the seeded user
+# stays.
+#
+# The test applies this fixture a second time, unchanged, against the user that
+# is still seeded, and patches account.adopt: true in. The user becomes a managed
+# K-ORC User, the operator applies its generated password at generation 2, and
+# the user leaves Keystone with the CR.
 #
 # The catalog service name and the user name both default to metadata.name
 # ("legacy"). @CP_NS@ is substituted by the test with the ephemeral namespace.
