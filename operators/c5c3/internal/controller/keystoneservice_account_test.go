@@ -40,6 +40,16 @@ func ksAccountReconciler(
 	t *testing.T, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
 ) (*KeystoneServiceReconciler, client.Client, *record.FakeRecorder) {
 	t.Helper()
+	return ksAccountReconcilerWith(t, ks, cp, interceptor.Funcs{}, objs...)
+}
+
+// ksAccountReconcilerWith is ksAccountReconciler with interceptors, for the tests
+// that inject a stale read or a failed write.
+func ksAccountReconcilerWith(
+	t *testing.T, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
+	funcs interceptor.Funcs, objs ...client.Object,
+) (*KeystoneServiceReconciler, client.Client, *record.FakeRecorder) {
+	t.Helper()
 	s := korcTestScheme(t)
 	all := append([]client.Object{cp, ks, readyTenantStoreFor(cp)}, objs...)
 	c := fake.NewClientBuilder().
@@ -51,6 +61,7 @@ func ksAccountReconciler(
 		WithStatusSubresource(&c5c3v1alpha1.KeystoneService{},
 			&orcv1alpha1.Project{}, &orcv1alpha1.User{},
 			&orcv1alpha1.Role{}, &orcv1alpha1.RoleAssignment{}).
+		WithInterceptorFuncs(funcs).
 		Build()
 	recorder := record.NewFakeRecorder(20)
 	return &KeystoneServiceReconciler{Client: c, Scheme: s, Recorder: recorder}, c, recorder
@@ -229,6 +240,91 @@ func TestKSAccount_AdoptSkipsTheProbeEntirely(t *testing.T) {
 	err := c.Get(context.Background(),
 		types.NamespacedName{Name: keystoneServiceUserProbeRef(ks), Namespace: ks.Namespace}, &orcv1alpha1.User{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no probe is created under adopt")
+}
+
+func TestKSAccount_AdoptNeverTakesOverAUserAnotherOwnerManages(t *testing.T) {
+	// other stands for any other owner of a managed User in the plane's namespace,
+	// a built-in service's registration among them.
+	other := keystoneServiceCR()
+	other.Name = "cinder"
+	heldUser := func(name, domainRef string, policy orcv1alpha1.ManagementPolicy) *orcv1alpha1.User {
+		return &orcv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: keystoneServiceUserRef(other), Namespace: ksTestNamespace,
+				Labels: keystoneServiceChildLabels(other),
+			},
+			Spec: orcv1alpha1.UserSpec{
+				ManagementPolicy: policy,
+				Resource: &orcv1alpha1.UserResourceSpec{
+					Name:      ptr.To(orcv1alpha1.OpenStackName(name)),
+					DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+				},
+			},
+		}
+	}
+	domainImport := func(name, domainName string) *orcv1alpha1.Domain {
+		return unmanagedDomainImport(name, ksTestNamespace, domainName, orcv1alpha1.CloudCredentialsReference{})
+	}
+	cp := ksControlPlane()
+	cases := []struct {
+		name       string
+		domainName string
+		seeded     []client.Object
+		refused    bool
+	}{
+		{
+			name:    "the same user in the admin domain",
+			seeded:  []client.Object{heldUser(ksTestName, adminDomainRef(cp), orcv1alpha1.ManagementPolicyManaged)},
+			refused: true,
+		},
+		{
+			name:    "a case and accent variant of the name",
+			seeded:  []client.Object{heldUser("GLANCE-Registratión", adminDomainRef(cp), orcv1alpha1.ManagementPolicyManaged)},
+			refused: true,
+		},
+		{
+			name:       "the same domain under another registration's import",
+			domainName: "services",
+			seeded: []client.Object{
+				heldUser(ksTestName, "cinder-domain", orcv1alpha1.ManagementPolicyManaged),
+				domainImport("cinder-domain", "Services"),
+			},
+			refused: true,
+		},
+		{
+			name: "a same-named user in another domain",
+			seeded: []client.Object{
+				heldUser(ksTestName, "cinder-domain", orcv1alpha1.ManagementPolicyManaged),
+				domainImport("cinder-domain", "elsewhere"),
+			},
+		},
+		{
+			name:   "an unmanaged import of the user",
+			seeded: []client.Object{heldUser(ksTestName, adminDomainRef(cp), orcv1alpha1.ManagementPolicyUnmanaged)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			ks := ksWithAccount()
+			ks.Spec.Account.Adopt = true
+			ks.Spec.Account.DomainName = tc.domainName
+
+			cond, c := runKSAccount(t, ks, cp, tc.seeded...)
+
+			_, created := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+			if !tc.refused {
+				g.Expect(created).To(BeTrue(), "a user no other managed User holds is adopted")
+				return
+			}
+			g.Expect(created).To(BeFalse(), "no managed User may take over an account another owner manages")
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(reasonServiceAccountCollision))
+			g.Expect(cond.Message).To(ContainSubstring(keystoneServiceUserRef(other)))
+			g.Expect(cond.Message).To(ContainSubstring("account.adopt=true never takes over"))
+		})
+	}
 }
 
 func TestKSAccount_ExistingManagedUserSkipsTheProbe(t *testing.T) {
@@ -621,11 +717,463 @@ func TestKSAccount_UnobservedRotationNudgeSurvivesForTheNextPass(t *testing.T) {
 		"and this pass must not rotate on a request it did not see")
 }
 
+// --- the password takeover under account.adopt ---
+
+// ksTakeoverAccount is ksConvergedAccount with the password takeover marker on
+// the managed User; mutate, when set, adjusts that User further.
+func ksTakeoverAccount(
+	ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane, mutate func(*orcv1alpha1.User),
+) []client.Object {
+	seeded := ksConvergedAccount(ks, cp)
+	for _, obj := range seeded {
+		if user, ok := obj.(*orcv1alpha1.User); ok {
+			user.Annotations[serviceAccountPasswordTakeoverAnnotation] = serviceAccountPasswordTakeoverPending
+			if mutate != nil {
+				mutate(user)
+			}
+		}
+	}
+	return seeded
+}
+
+// ksSourceSecretExists reports whether the pass assembled the source Secret,
+// which is the first thing the publish leg writes.
+func ksSourceSecretExists(t *testing.T, c client.Client, ks *c5c3v1alpha1.KeystoneService) bool {
+	t.Helper()
+	err := c.Get(context.Background(),
+		types.NamespacedName{Name: keystoneServiceSourceSecretName(ks), Namespace: ks.Namespace}, &corev1.Secret{})
+	if apierrors.IsNotFound(err) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("getting the source Secret: %v", err)
+	}
+	return true
+}
+
+func TestKSAccount_AdoptStampsTheTakeoverMarkerOnCreate(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	cond, c := runKSAccount(t, ks, cp)
+
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordTakeoverAnnotation, serviceAccountPasswordTakeoverPending),
+		"the create carries the marker, so the takeover survives a restart before K-ORC records the first reference")
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)))
+	g.Expect(user.Annotations[serviceAccountPasswordGenerationAnnotation]).To(Equal("1"))
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+}
+
+func TestKSAccount_NoAdoptCreatesNoTakeoverMarker(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+
+	probe := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceUserProbeRef(ks), Namespace: ks.Namespace},
+		Status:     orcv1alpha1.UserStatus{Conditions: pendingImportConditions(0)},
+	}
+
+	_, c := runKSAccount(t, ks, cp, probe)
+
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue(), "the absent verdict lets the pass create the User")
+	g.Expect(user.Annotations).NotTo(HaveKey(serviceAccountPasswordTakeoverAnnotation),
+		"a user the probe found absent was created by K-ORC, which wrote its password")
+}
+
+func TestKSAccount_TakeoverHoldsUntilKORCRecordsTheFirstRef(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*orcv1alpha1.User)
+	}{
+		{name: "K-ORC has reported no resource status", mutate: func(u *orcv1alpha1.User) { u.Status.Resource = nil }},
+		{name: "K-ORC has recorded no reference", mutate: func(u *orcv1alpha1.User) {
+			u.Status.Resource.AppliedPasswordRef = ""
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			cp := ksControlPlane()
+			ks := ksWithAccount()
+			ks.Spec.Account.Adopt = true
+
+			cond, c := runKSAccount(t, ks, cp, ksTakeoverAccount(ks, cp, tc.mutate)...)
+
+			user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+			g.Expect(ok).To(BeTrue())
+			g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)),
+				"a reference set before K-ORC's first record would be recorded unwritten as well")
+			g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordTakeoverAnnotation, serviceAccountPasswordTakeoverPending))
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+			g.Expect(cond.Message).To(ContainSubstring("account.adopt=true"))
+			g.Expect(ksSourceSecretExists(t, c, ks)).To(BeFalse(), "an unwritten generation is never published")
+			err := c.Get(context.Background(),
+				types.NamespacedName{Name: keystoneServicePasswordSecretName(ks, 2), Namespace: ks.Namespace}, &corev1.Secret{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no generation 2 Secret before the flip")
+		})
+	}
+}
+
+func TestKSAccount_TakeoverWaitNamesAnUnavailableUserFirst(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	cond, _ := runKSAccount(t, ks, cp, ksTakeoverAccount(ks, cp, func(u *orcv1alpha1.User) {
+		u.Status.Conditions = pendingImportConditions(0)
+		u.Status.Resource.AppliedPasswordRef = ""
+	})...)
+
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(cond.Message).To(Equal("the account's user is registered but not yet Available"),
+		"the User itself is the blocker, so the wait names it ahead of the takeover behind it")
+}
+
+func TestKSAccount_TakeoverFlipsToTheNextGenerationOnceRecorded(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	// account.adopt stays unset: the marker on the live User drives the flip, not
+	// the spec.
+
+	cond, c := runKSAccount(t, ks, cp, ksTakeoverAccount(ks, cp, nil)...)
+
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 2)))
+	g.Expect(user.Annotations).NotTo(HaveKey(serviceAccountPasswordTakeoverAnnotation),
+		"the flip removes the marker in the same update")
+	g.Expect(user.Annotations[serviceAccountPasswordGenerationAnnotation]).To(Equal("2"))
+
+	fresh := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(),
+		types.NamespacedName{Name: keystoneServicePasswordSecretName(ks, 2), Namespace: ks.Namespace}, fresh)).To(Succeed())
+	g.Expect(fresh.Data[serviceAccountPasswordKey]).NotTo(BeEmpty())
+
+	g.Expect(ks.Status.Account).NotTo(BeNil())
+	g.Expect(ks.Status.Account.PasswordGeneration).To(Equal(int64(2)))
+	g.Expect(ks.Status.Account.LastPasswordRotation).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(ksSourceSecretExists(t, c, ks)).To(BeFalse(), "generation 2 is published only once K-ORC applied it")
+}
+
+func TestKSAccount_TakeoverCompletesOnceTheSecondGenerationIsApplied(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	second := []byte("second-password")
+	seeded := ksConvergedAccount(ks, cp)
+	for _, obj := range seeded {
+		switch o := obj.(type) {
+		case *orcv1alpha1.User:
+			o.Spec.Resource.PasswordRef = ptr.To(orcv1alpha1.KubernetesNameRef(keystoneServicePasswordSecretName(ks, 2)))
+			o.Annotations[serviceAccountPasswordGenerationAnnotation] = "2"
+			o.Status.Resource.AppliedPasswordRef = keystoneServicePasswordSecretName(ks, 2)
+		case *corev1.Secret:
+			if o.Name == keystoneServiceCredentialsSecretName(ks) {
+				o.Data[serviceAccountPasswordKey] = second
+			}
+		}
+	}
+	v2 := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            keystoneServicePasswordSecretName(ks, 2),
+			Namespace:       ks.Namespace,
+			OwnerReferences: ownedByKS(ks),
+		},
+		Data: map[string][]byte{serviceAccountPasswordKey: second},
+	}
+
+	cond, c := runKSAccount(t, ks, cp, append(seeded, v2)...)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceAccountProvisioned))
+	g.Expect(ks.Status.Account.PasswordGeneration).To(Equal(int64(2)))
+	err := c.Get(context.Background(),
+		types.NamespacedName{Name: keystoneServicePasswordSecretName(ks, 1), Namespace: ks.Namespace}, &corev1.Secret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the never-written generation 1 is pruned once generation 2 is applied")
+}
+
+func TestKSAccount_TakeoverNeverPublishesTheUnrecordedGeneration(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	// K-ORC records generation 1 BETWEEN the engine's read and the
+	// create-or-update read: the managed User is read three times per pass (the
+	// collision gate, the engine, CreateOrUpdate), so blanking the status on the
+	// SECOND read makes the engine hold while the User it gets back already names
+	// generation 1 as applied.
+	userGets := 0
+	r, c, _ := ksAccountReconcilerWith(t, ks, cp, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			err := cl.Get(ctx, key, obj, opts...)
+			if user, ok := obj.(*orcv1alpha1.User); ok && key.Name == keystoneServiceUserRef(ks) && err == nil {
+				userGets++
+				if userGets == 2 {
+					user.Status.Resource = nil
+				}
+			}
+			return err
+		},
+	}, ksTakeoverAccount(ks, cp, nil)...)
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+	_, err := r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(userGets).To(BeNumerically(">=", 3), "the engine's read must be the one the interceptor blanked")
+
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)))
+	g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordTakeoverAnnotation, serviceAccountPasswordTakeoverPending))
+	cond := ksAccountCondition(ks)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceAccounts))
+	g.Expect(cond.Message).To(ContainSubstring("account.adopt=true"),
+		"the readiness gate's takeover term, not another wait, held the pass")
+	g.Expect(ksSourceSecretExists(t, c, ks)).To(BeFalse(), "generation 1 reads as applied but was never written")
+}
+
+func TestKSAccount_RotationNudgeDuringTakeoverIsHeldUntilRecorded(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+
+	_, c := runKSAccount(t, ks, cp, ksTakeoverAccount(ks, cp, func(u *orcv1alpha1.User) {
+		u.Status.Resource.AppliedPasswordRef = ""
+		u.Annotations[serviceAccountPasswordGenerationAnnotation] = ""
+	})...)
+
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)),
+		"a nudge during the takeover must not move the reference before K-ORC's first record either")
+	g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordGenerationAnnotation, ""),
+		"the nudge stays for the flip to serve")
+	g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordTakeoverAnnotation, serviceAccountPasswordTakeoverPending))
+}
+
+func TestKSAccount_TakeoverFlipConsumesAPendingNudge(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+
+	_, c := runKSAccount(t, ks, cp, ksTakeoverAccount(ks, cp, func(u *orcv1alpha1.User) {
+		u.Annotations[serviceAccountPasswordGenerationAnnotation] = ""
+	})...)
+
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 2)),
+		"one flip serves the takeover and the nudge, so the generation moves by one")
+	g.Expect(user.Annotations[serviceAccountPasswordGenerationAnnotation]).To(Equal("2"))
+	g.Expect(user.Annotations).NotTo(HaveKey(serviceAccountPasswordTakeoverAnnotation))
+	g.Expect(ks.Status.Account.PasswordGeneration).To(Equal(int64(2)))
+}
+
+func TestKSAccount_AdoptOnAnExistingUserStartsNoTakeover(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	// Set after the User exists: the marker is stamped on create only, so a User
+	// adopted by an earlier build is left at its generation.
+	ks.Spec.Account.Adopt = true
+
+	cond, c := runKSAccount(t, ks, cp, ksConvergedAccount(ks, cp)...)
+
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)))
+	g.Expect(user.Annotations).NotTo(HaveKey(serviceAccountPasswordTakeoverAnnotation))
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceAccountProvisioned))
+}
+
+func TestKSAccount_UnknownTakeoverMarkerValueIsIgnored(t *testing.T) {
+	for _, value := range []string{"Pending", "done", ""} {
+		t.Run(fmt.Sprintf("value %q", value), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			cp := ksControlPlane()
+			ks := ksWithAccount()
+
+			cond, c := runKSAccount(t, ks, cp, ksTakeoverAccount(ks, cp, func(u *orcv1alpha1.User) {
+				u.Annotations[serviceAccountPasswordTakeoverAnnotation] = value
+			})...)
+
+			user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+			g.Expect(ok).To(BeTrue())
+			g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)))
+			g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordTakeoverAnnotation, value),
+				"a value the operator does not recognise is left as found")
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceAccountProvisioned))
+		})
+	}
+}
+
+func TestKSAccount_TerminalErrorDuringTakeoverFailsLoudly(t *testing.T) {
+	// The form K-ORC gives a Keystone rejection of the password update.
+	const msg = "invalid configuration updating resource: Expected HTTP response code [204] when accessing " +
+		"[PATCH /v3/users/0123], but got 400 instead: password does not meet the requirements"
+	cases := []struct {
+		name       string
+		applied    string
+		wantGen    int64
+		wantMarker bool
+	}{
+		{name: "before K-ORC records the first reference", applied: "", wantGen: 1, wantMarker: true},
+		{name: "on the pass that flips", applied: "v1", wantGen: 2, wantMarker: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			cp := ksControlPlane()
+			ks := ksWithAccount()
+			ks.Spec.Account.Adopt = true
+
+			cond, c := runKSAccount(t, ks, cp, ksTakeoverAccount(ks, cp, func(u *orcv1alpha1.User) {
+				u.Status.Conditions = terminalImportConditions(msg)
+				if tc.applied == "" {
+					u.Status.Resource.AppliedPasswordRef = ""
+				}
+			})...)
+
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(reasonServiceAccountsFailed))
+			g.Expect(cond.Message).To(ContainSubstring("password does not meet the requirements"))
+			g.Expect(ksSourceSecretExists(t, c, ks)).To(BeFalse())
+
+			user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+			g.Expect(ok).To(BeTrue())
+			g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, tc.wantGen)))
+			if tc.wantMarker {
+				g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordTakeoverAnnotation, serviceAccountPasswordTakeoverPending),
+					"a held takeover keeps its marker, so it is not left on a generation K-ORC never wrote")
+			} else {
+				g.Expect(user.Annotations).NotTo(HaveKey(serviceAccountPasswordTakeoverAnnotation),
+					"the flip moves the generation and removes the marker together")
+			}
+		})
+	}
+}
+
+func TestKSAccount_TakeoverSecretFailureLeavesTheMarkerInPlace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	boom := errors.New("secrets is forbidden")
+	r, c, _ := ksAccountReconcilerWith(t, ks, cp, interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if secret, ok := obj.(*corev1.Secret); ok && secret.Name == keystoneServicePasswordSecretName(ks, 2) {
+				return boom
+			}
+			return cl.Create(ctx, obj, opts...)
+		},
+	}, ksTakeoverAccount(ks, cp, nil)...)
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+
+	_, err := r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, boom)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("ensuring registration password Secret %q",
+		keystoneServicePasswordSecretName(ks, 2))))
+	cond := ksAccountCondition(ks)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountError))
+
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)),
+		"the flip never names a Secret that does not exist")
+	g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordTakeoverAnnotation, serviceAccountPasswordTakeoverPending),
+		"the marker stays, so the next pass retries the flip")
+}
+
+func TestKSAccount_TakeoverFlipConflictIsReturnedAndRetried(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	failUpdate := true
+	r, c, _ := ksAccountReconcilerWith(t, ks, cp, interceptor.Funcs{
+		Update: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*orcv1alpha1.User); ok && obj.GetName() == keystoneServiceUserRef(ks) && failUpdate {
+				return apierrors.NewConflict(orcv1alpha1.Resource("users"), obj.GetName(),
+					errors.New("the object has been modified"))
+			}
+			return cl.Update(ctx, obj, opts...)
+		},
+	}, ksTakeoverAccount(ks, cp, nil)...)
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+
+	_, err := r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsConflict(err)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring(fmt.Sprintf("registration managed User %q", keystoneServiceUserRef(ks))))
+	cond := ksAccountCondition(ks)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountError))
+	user, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 1)))
+	g.Expect(user.Annotations).To(HaveKeyWithValue(serviceAccountPasswordTakeoverAnnotation, serviceAccountPasswordTakeoverPending))
+
+	v2Key := types.NamespacedName{Name: keystoneServicePasswordSecretName(ks, 2), Namespace: ks.Namespace}
+	before := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), v2Key, before)).To(Succeed())
+
+	failUpdate = false
+	_, err = r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	user, ok = ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(string(*user.Spec.Resource.PasswordRef)).To(Equal(keystoneServicePasswordSecretName(ks, 2)))
+	g.Expect(user.Annotations).NotTo(HaveKey(serviceAccountPasswordTakeoverAnnotation))
+	after := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), v2Key, after)).To(Succeed())
+	g.Expect(after.Data[serviceAccountPasswordKey]).To(Equal(before.Data[serviceAccountPasswordKey]),
+		"the retried flip reuses the generation 2 password the failed pass generated")
+}
+
 // TestEnsureManagedAccountUser_DesiredGeneration pins the branch an owner that
 // declares its password generation takes: a fresh User starts at the declared
 // generation, an existing one moves up to it and records the rotation, a lower
 // declaration never rolls the password back, and an empty projectRef leaves the
-// User without a default project. The nudge annotation plays no part.
+// User without a default project. The nudge annotation plays no part, and an
+// owner that leaves takeover unset gets no takeover marker.
 func TestEnsureManagedAccountUser_DesiredGeneration(t *testing.T) {
 	const ns = "default"
 	pwName := func(gen int64) string { return fmt.Sprintf("acct-password-v%d", gen) }
@@ -661,6 +1209,8 @@ func TestEnsureManagedAccountUser_DesiredGeneration(t *testing.T) {
 		wantGen    int64
 		wantRotate bool
 		wantKeptV1 bool
+		// wantNoMarker asserts the fresh User carries no takeover marker.
+		wantNoMarker bool
 	}{
 		{name: "fresh user starts at generation 1", desired: 1, wantGen: 1, wantKeptV1: true},
 		{name: "fresh user starts at a declared generation 2 without a rotation", desired: 2, wantGen: 2},
@@ -686,6 +1236,10 @@ func TestEnsureManagedAccountUser_DesiredGeneration(t *testing.T) {
 		{
 			name: "a project ref is kept when the owner names one", desired: 1, projectRef: "acct-project",
 			wantGen: 1, wantKeptV1: true,
+		},
+		{
+			name: "an owner without takeover creates no takeover marker", desired: 2,
+			wantGen: 2, wantNoMarker: true,
 		},
 	}
 	for _, tc := range cases {
@@ -717,6 +1271,9 @@ func TestEnsureManagedAccountUser_DesiredGeneration(t *testing.T) {
 				g.Expect(user.Spec.Resource.DefaultProjectRef).To(BeNil())
 			} else {
 				g.Expect(string(*user.Spec.Resource.DefaultProjectRef)).To(Equal(tc.projectRef))
+			}
+			if tc.wantNoMarker {
+				g.Expect(user.Annotations).NotTo(HaveKey(serviceAccountPasswordTakeoverAnnotation))
 			}
 			err = c.Get(context.Background(), types.NamespacedName{Name: pwName(1), Namespace: ns}, &corev1.Secret{})
 			if tc.wantKeptV1 {
@@ -1378,4 +1935,39 @@ func TestKSAccount_ScheduledRotationIsDeferredWithAnEvent(t *testing.T) {
 	}
 	g.Expect(event).To(ContainSubstring("ScheduledRotationDeferred"),
 		"the deferral must be visible; a silently ignored rotation policy reads as a working one")
+}
+
+// --- the password takeover event ---
+
+func TestKSAccount_AdoptEmitsATakeoverEvent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.Adopt = true
+
+	r, _, recorder := ksAccountReconciler(t, ks, cp)
+	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
+	_, err := r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+	events := drainEvents(recorder)
+	g.Expect(events).To(ContainElement(And(HavePrefix("Normal AccountPasswordTakeover"),
+		ContainSubstring("account.adopt=true"))), "the takeover must be visible on the creating pass")
+
+	_, err = r.ensureAccount(context.Background(), ks, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(drainEvents(recorder)).NotTo(ContainElement(ContainSubstring("AccountPasswordTakeover")),
+		"the event marks the create, not every pass over the existing User")
+
+	plain := ksWithAccount()
+	probe := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceUserProbeRef(plain), Namespace: plain.Namespace},
+		Status:     orcv1alpha1.UserStatus{Conditions: pendingImportConditions(0)},
+	}
+	r, c, recorder := ksAccountReconciler(t, plain, cp, probe)
+	_, err = r.ensureAccount(context.Background(), plain, cp, credRef, managedCredRef)
+	g.Expect(err).NotTo(HaveOccurred())
+	_, ok := ksGetUser(t, c, keystoneServiceUserRef(plain), plain.Namespace)
+	g.Expect(ok).To(BeTrue(), "the pass without adopt created the User too")
+	g.Expect(drainEvents(recorder)).NotTo(ContainElement(ContainSubstring("AccountPasswordTakeover")))
 }
