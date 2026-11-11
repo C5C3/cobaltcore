@@ -32,16 +32,14 @@ CR named `controlplane` is `Ready` in the `openstack` namespace and its projecte
 examples below is one that devstack produces.
 :::
 
-::: warning The Keystone child is operator-owned
-On a ControlPlane deployment the `controlplane-keystone` Keystone CR is
-**projected** by the c5c3-operator; the projected fields are re-asserted on every
-reconcile, so editing them on the child is reverted. Configure supported
-options on the `ControlPlane` CR. For an option the CRD does not expose, use a
+On a ControlPlane deployment, the c5c3-operator projects the
+`controlplane-keystone` Keystone CR and re-asserts projected fields on every
+reconcile. Direct edits to those fields are reverted. Configure supported
+options on the `ControlPlane` CR. For an option it does not expose, use a
 Keystone CR you own in the
-[Standalone Keystone](#standalone-keystone-without-a-controlplane) section. See
-the [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md) for
-the projection contract.
-:::
+[Standalone Keystone](#standalone-keystone-without-a-controlplane) section;
+see the [ControlPlane Reconciler](../reference/c5c3/controlplane-reconciler.md)
+for the projection contract.
 
 Each section covers an independent recipe. Apply only what you need.
 
@@ -91,10 +89,9 @@ The reconciler copies the `infrastructure.database` and `infrastructure.cache`
 blocks onto the `controlplane-keystone` child, so the child connects to the
 servers declared here.
 
-::: warning Brownfield expects an existing database
-In brownfield mode (no `clusterRef`), the operator does not create the supplied
-Secret, database, user, or grants. Create those before the control plane
-reconciles:
+**Brownfield mode expects an existing database.** Without `clusterRef`, the
+operator does not create the supplied Secret, database, user, or grants. Create
+those before the control plane reconciles:
 
 ```sql
 CREATE DATABASE keystone DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;
@@ -111,8 +108,6 @@ Keystone schema on first reconcile. Step 5 of the
 [Quick Start (ControlPlane)](../quick-start-controlplane.md) applies only to
 managed mode's engine-issued database credentials. Brownfield mode does not use
 the OpenBao database engine.
-:::
-
 The webhook requires exactly one of `clusterRef` or `host` (`servers` for cache)
 for both `database` and `cache`; never set both.
 
@@ -279,9 +274,9 @@ admission warning naming the key, its owner, its impact, and the block that set 
 
 **Option-catalog** validation runs on every create. Updates rerun it only when a
 catalog input changes: either INI block, `spec.openStackRelease`,
-`services.keystone.image`, or a newly-declared service. A replicas bump alone does
-not re-run it, so a stored CR whose `extraConfig` went stale-invalid against a
-regenerated catalog is not rejected by an unrelated edit. Each declared INI
+`services.keystone.image`, or a service is added or removed. A replicas bump
+alone does not re-run it, so a stored CR whose `extraConfig` went stale-invalid
+against a regenerated catalog is not rejected by an unrelated edit. Each declared INI
 service's merged result is checked against that service's per-release option
 catalog. Keystone uses `services.keystone.image.tag` when its image is overridden
 and otherwise uses `spec.openStackRelease`; the other ControlPlane catalogs use
@@ -535,9 +530,10 @@ spec:
 Each list entry requires a `namespaceSelector` and may narrow it with an optional
 `podSelector`. Both are Kubernetes `metav1.LabelSelector`s and support
 `matchLabels` or set-based `matchExpressions`. Within one entry the selectors
-AND together; multiple entries OR. Keystone ingress is restricted to TCP 5000.
-There is no per-entry port configuration. A non-empty list blocks all other
-ingress by default.
+AND together; multiple entries OR. Keystone ingress targets TCP 5000 unless the
+federation proxy sidecar is active, in which case it targets the proxy on TCP
+5050. There is no per-entry port configuration. A non-empty list blocks all
+other ingress by default.
 
 For targets that auto-derivation cannot see, such as an off-cluster MariaDB host
 or an external IdP, add rules with `spec.networkPolicy.additionalEgress`. These
@@ -614,8 +610,8 @@ warning naming its replacement, such as `[DEFAULT] logfile`, superseded by
 
 This check lives only in the webhook. There is no CEL or CRD-schema backstop, so
 a cluster with the validating webhook disabled accepts a misspelled option name
-and surfaces it only at render time. Updates re-run the check only when
-`spec.extraConfig`, the plugin section list, or the release field changes.
+and surfaces it only at render time. Updates re-run the check when
+`spec.extraConfig`, `spec.image.tag`, or the plugin section list changes.
 
 The operator does not validate option values. A wrong value can be ignored or
 cause a crash loop, so test changes in a lab before rollout. Changing
@@ -632,8 +628,8 @@ cause a crash loop, so test changes in a lab before rollout. Changing
 
 ## Tested by
 
-The recipes above are exercised on the CI e2e kind cluster — the operator
-installed with a dev image — by these chainsaw suites:
+The recipes above run in CI on the e2e kind cluster with the operator installed
+from a dev image. These Chainsaw suites cover them:
 
 ```bash
 chainsaw test --test-dir tests/e2e/keystone/brownfield-database
