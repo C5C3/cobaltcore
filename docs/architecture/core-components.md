@@ -23,7 +23,7 @@ resources, and aggregates their readiness.
 | --- | --- | --- |
 | `ControlPlane` | `c5c3.io/v1alpha1` | Top-level resource for a whole control plane: infrastructure, services, identity plane ([CRD reference](../reference/c5c3/controlplane-crd.md)) |
 | `CredentialRotation` | `c5c3.io/v1alpha1` | Rotates the admin application credential ([reconciler reference](../reference/c5c3/controlplane-reconciler.md)) |
-| `SecretAggregate` | `c5c3.io/v1alpha1` | Aggregates secrets from multiple sources into one consumer Secret |
+| `SecretAggregate` | `c5c3.io/v1alpha1` | Aggregates secrets from multiple sources into one consumer Secret ([CRD reference](../reference/c5c3/controlplane-crd.md#secretaggregate)) |
 | `KeystoneService` | `c5c3.io/v1alpha1` | Registers one service against a ControlPlane's identity plane: catalog entry and service account, from the service's own namespace ([CRD reference](../reference/c5c3/keystoneservice-crd.md)) |
 | `KeystoneUser` | `c5c3.io/v1alpha1` | Orders one Keystone user from a namespace a ControlPlane assigns, on the management cluster or a target cluster, and delivers its credentials as a Secret beside the order ([CRD reference](../reference/c5c3/keystoneuser-crd.md)) |
 | `KeystoneProject` | `c5c3.io/v1alpha1` | Orders one Keystone project in the ControlPlane's admin domain from an assigned namespace ([CRD reference](../reference/c5c3/keystoneproject-crd.md)) |
