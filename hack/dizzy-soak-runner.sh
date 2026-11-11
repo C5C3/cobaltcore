@@ -12,12 +12,12 @@
 # background and samples the platform beside it: the containers of every pod
 # of the platform's namespaces and their usage, and the Go runtime of every
 # operator pod from its /metrics endpoint, every DIZZY_SOAK_SAMPLE_INTERVAL
-# seconds, and the conditions of the ControlPlanes and the CobaltCore service
-# kinds at the start and at the end. A TERM or INT goes to dizzy once; dizzy
-# then tears its resources down and prints its leak check, and the runner
+# seconds, and the conditions of the ControlPlanes and the CobaltCore OpenStack
+# service kinds at the start and at the end. A TERM or INT goes to dizzy once;
+# dizzy then tears its resources down and prints its leak check, and the runner
 # waits for it. Then it renders dizzy's report, derives the platform tables,
-# decides the verdict and writes report.md. It exits 0 on PASS and 1 on FAIL,
-# so the Job ends Complete or Failed by verdict.
+# decides the verdict and writes report.md. It exits 0 on PASS and 1 on FAIL, so
+# the Job ends Complete or Failed by verdict.
 #
 # Its settings come from the ConfigMap dizzy-soak-config: DIZZY_SOAK_SERVICE,
 # DIZZY_SOAK_DURATION, DIZZY_ARGS, DIZZY_VERSION, DIZZY_SOAK_NAMESPACES,

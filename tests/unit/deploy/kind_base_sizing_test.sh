@@ -6,9 +6,9 @@
 # Verify the sizing patches of the kind base overlay, which keep the devstack
 # within the one 4 vCPU / 16 GiB node that the e2e-controlplane job checks
 # with hack/ci-check-node-budget.sh:
-#   - every CobaltCore operator HelmRelease renders spec.values.replicas: 1;
-#     the nine service operators stay suspended, and c5c3-operator stays
-#     active because the CONTROLPLANE_OPERATORS=flux path of
+#   - every CobaltCore OpenStack operator HelmRelease renders
+#     spec.values.replicas: 1; the nine service operators stay suspended, and
+#     c5c3-operator stays active because the CONTROLPLANE_OPERATORS=flux path of
 #     hack/deploy-infra.sh relies on the base applying it active;
 #   - the operator patches keep the production values they merge into;
 #   - OpenBao renders a 100m CPU request and keeps its memory request, its

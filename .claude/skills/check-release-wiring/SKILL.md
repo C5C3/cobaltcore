@@ -2,19 +2,18 @@
 name: check-release-wiring
 description: >-
   Audit whether every OpenStack release under releases/<version>/ is fully
-  wired through the CobaltCore repo — the mandatory release config files,
-  the per-operator option catalogs, constraint overrides and service
-  patches, the per-service Tempest config directories the CI matrix
-  generator hard-requires, every service's per-release basic-deployment
-  e2e variant and the release pins across the e2e fixture trees, the
-  placed-services pins and their ci.yaml preloads, the default-release
-  references in deploy/kind/, hack/, and ci.yaml, the Renovate regression
-  tests and per-release rules, the upgrade-path suites of every service,
-  and the version-pattern lockstep across every OpenStackRelease CRD
-  marker, webhook, and release.ParseRelease. Use when asked to check
-  release wiring, after adding or removing a releases/<version>/
-  directory, or before a release when a stale default tag or an orphan
-  Tempest directory would fail the pipeline.
+  wired through the CobaltCore OpenStack repo — the mandatory release config
+  files, the per-operator option catalogs, constraint overrides and service
+  patches, the per-service Tempest config directories the CI matrix generator
+  hard-requires, every service's per-release basic-deployment e2e variant and
+  the release pins across the e2e fixture trees, the placed-services pins and
+  their ci.yaml preloads, the default-release references in deploy/kind/, hack/,
+  and ci.yaml, the Renovate regression tests and per-release rules, the
+  upgrade-path suites of every service, and the version-pattern lockstep across
+  every OpenStackRelease CRD marker, webhook, and release.ParseRelease. Use when
+  asked to check release wiring, after adding or removing a releases/<version>/
+  directory, or before a release when a stale default tag or an orphan Tempest
+  directory would fail the pipeline.
 ---
 
 # Check release wiring

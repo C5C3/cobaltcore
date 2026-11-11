@@ -4,8 +4,8 @@ title: Core Components
 
 # Core Components
 
-The components of the CobaltCore stack, organized by layer. Each entry links
-to the reference page that documents it in depth; the way the layers fit
+The components of the CobaltCore OpenStack stack, organized by layer. Each entry
+links to the reference page that documents it in depth; the way the layers fit
 together is described on the [Architecture](./index.md) page.
 
 The figure shows where the components of the first five sections sit on the

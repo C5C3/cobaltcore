@@ -18,7 +18,7 @@
 # DEVIATION from the original build-pipeline design: the image creates no
 # 'openstack' user. The agent is a static Go
 # binary, so it runs on the image that stands in for the distroless base the
-# CobaltCore operator images use (nix/lib/operator-image.nix), but as root instead
+# CobaltCore OpenStack operator images use (nix/lib/operator-image.nix), but as root instead
 # of that base's nonroot user: kna authenticates to the host's system bus and
 # starts units there, and a Debian host's dbus-daemon drops a uid it cannot
 # resolve (#1167). Upstream's own image is Alpine with USER 42438:42438, a
@@ -30,7 +30,7 @@ in
 staticImage {
   name = "kvm-node-agent";
   tag = manager.version;
-  description = "kvm-node-agent built from a pinned upstream main commit with CobaltCore patches";
+  description = "kvm-node-agent built from a pinned upstream main commit with CobaltCore OpenStack patches";
   inherit manager;
   upstreamCommit = manager.src.rev;
   user = "0:0";

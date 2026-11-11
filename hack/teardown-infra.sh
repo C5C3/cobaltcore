@@ -47,23 +47,22 @@ TEARDOWN_TIMEOUT="${TEARDOWN_TIMEOUT:-600}"
 # nfs.csi.k8s.io volume, and the Rook cleanup Jobs.
 TEARDOWN_POLL_SECONDS="${TEARDOWN_POLL_SECONDS:-5}"
 
-# The API groups whose CRDs the stack registers: the CobaltCore operators
-# (operators/*/config/crd/bases: c5c3.io and <svc>.openstack.c5c3.io), the
-# HelmReleases and Flux Kustomizations of deploy/flux-system, the two bundles
-# hack/deploy-infra.sh installs itself (Gateway API, Envoy Gateway), the
+# The API groups whose CRDs the stack registers: the CobaltCore OpenStack
+# operators (operators/*/config/crd/bases: c5c3.io and <svc>.openstack.c5c3.io),
+# the HelmReleases and Flux Kustomizations of deploy/flux-system, the two
+# bundles hack/deploy-infra.sh installs itself (Gateway API, Envoy Gateway), the
 # kvm.cloud.sap CRDs the charts of the lab hypervisors install
 # (deploy/lab/metal-stack/hypervisor; Helm leaves them behind), and the
 # chaos-mesh.org CRDs the opt-in Chaos Mesh release installs from its chart's
 # crds/, which Helm never deletes either. The rook-ceph chart of the lab Ceph
 # (deploy/lab/metal-stack/ceph) installs the ceph.rook.io and objectbucket.io
 # CRDs as templates marked helm.sh/resource-policy: keep, so its uninstall
-# leaves them too; csi.ceph.io is the group of the ceph-csi-operator, of
-# which the lab applies the one CRD clientprofiles.csi.ceph.io beside the
-# HelmRelease (csi-clientprofile-crd.yaml), because the Rook operator watches
-# that kind without a CSI operator. The groups
-# of the platform (autoscaling.k8s.io, cert.gardener.cloud, dns.gardener.cloud,
-# crd.projectcalico.org, metallb.io, snapshot.storage.k8s.io) are absent on
-# purpose and must stay absent.
+# leaves them too; csi.ceph.io is the group of the ceph-csi-operator, of which
+# the lab applies the one CRD clientprofiles.csi.ceph.io beside the HelmRelease
+# (csi-clientprofile-crd.yaml), because the Rook operator watches that kind
+# without a CSI operator. The groups of the platform (autoscaling.k8s.io,
+# cert.gardener.cloud, dns.gardener.cloud, crd.projectcalico.org, metallb.io,
+# snapshot.storage.k8s.io) are absent on purpose and must stay absent.
 STACK_CRD_GROUPS='cert-manager\.io|external-secrets\.io|k8s\.mariadb\.com|openbao\.org|garage\.rajsingh\.info|rabbitmq\.com|gateway\.networking\.k8s\.io|gateway\.envoyproxy\.io|monitoring\.coreos\.com|c5c3\.io|openstack\.k-orc\.cloud|(source|kustomize|helm|notification|image)\.toolkit\.fluxcd\.io|fluxcd\.controlplane\.io|kvm\.cloud\.sap|chaos-mesh\.org|ceph\.rook\.io|objectbucket\.io|csi\.ceph\.io'
 
 # The kinds of the cluster-scoped objects the stack's charts leave behind. Helm

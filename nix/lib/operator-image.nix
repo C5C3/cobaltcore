@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# The image of a CobaltCore operator: one expression builds every
+# The image of a CobaltCore OpenStack operator: one expression builds every
 # operators/<op>/ that has a go.mod, which flake.nix finds by reading the
 # directory, so a new operator gets its <op>-operator-image without a flake
 # edit. The manager is the static binary of the module's main package, and
@@ -151,12 +151,12 @@ staticImage (
   {
     name = "${name}-operator";
     tag = "latest";
-    description = "CobaltCore ${name} operator";
+    description = "CobaltCore OpenStack ${name} operator";
     inherit manager;
     version = null;
   }
   // lib.optionalAttrs cover {
     tag = "cover";
-    description = "CobaltCore ${name} operator, coverage-instrumented";
+    description = "CobaltCore OpenStack ${name} operator, coverage-instrumented";
   }
 )

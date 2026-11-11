@@ -2,15 +2,15 @@
 name: prepare-new-release
 description: >-
   Analyze and prepare the addition of a new OpenStack release (e.g. 2026.2)
-  into CobaltCore — inventory the touch points the auto-discovery does not
-  cover (release config files under releases/<version>/, per-operator option
+  into CobaltCore OpenStack — inventory the touch points the auto-discovery does
+  not cover (release config files under releases/<version>/, per-operator option
   catalogs, constraint overrides and service patches, the Tempest config
   directory of every Tempest-covered service that the CI matrix generator
-  hard-requires, every service's per-release basic-deployment e2e variant,
-  the upgrade-path suites), and walk the decision points: moving the default
-  release and retiring an old release. Use when asked to add or onboard a
-  new OpenStack release, to bump the release matrix, or to remove an old
-  release from the repo.
+  hard-requires, every service's per-release basic-deployment e2e variant, the
+  upgrade-path suites), and walk the decision points: moving the default release
+  and retiring an old release. Use when asked to add or onboard a new OpenStack
+  release, to bump the release matrix, or to remove an old release from the
+  repo.
 ---
 
 # Prepare a new OpenStack release

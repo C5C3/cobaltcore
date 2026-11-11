@@ -72,7 +72,7 @@
 <text x="927" y="990.2" font-size="20" font-weight="400" fill="#55606E">WITH_METRICS_SERVER, WITH_VPA: deploy/kind/metrics-server, deploy/kind/vpa</text>
 <text x="927" y="1016.2" font-size="20" font-weight="400" fill="#55606E">WITH_CONTROLPLANE: resumes the service-operator releases</text>
 <text x="927" y="1042.2" font-size="20" font-weight="400" fill="#55606E">without it: suspends c5c3-operator and k-orc</text>
-<text x="927" y="1068.2" font-size="20" font-weight="400" fill="#55606E">INFRA_ONLY: suspends every CobaltCore operator release</text>
+<text x="927" y="1068.2" font-size="20" font-weight="400" fill="#55606E">INFRA_ONLY: suspends every CobaltCore OpenStack operator release</text>
 <polyline points="908,952 830.5,952" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
 <polygon points="820,952 835,944.8 835,959.2" fill="#3A4452"/>
 <rect x="40" y="1101" width="780" height="174" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>

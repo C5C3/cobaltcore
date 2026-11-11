@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package types provides shared Go struct definitions used across CobaltCore
-// operator CRDs.
+// OpenStack operator CRDs.
 //
 // +kubebuilder:object:generate=true
 package types

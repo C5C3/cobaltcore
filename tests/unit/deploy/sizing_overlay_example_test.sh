@@ -160,7 +160,7 @@ test_priority_class() {
   assert_eq "PriorityClass is not the global default" "false" "$(val "$pc" '.globalDefault')"
 }
 
-# --- Test 3: a CobaltCore operator HelmRelease ---
+# --- Test 3: a CobaltCore OpenStack operator HelmRelease ---
 test_keystone_release() {
   echo "Test: HelmRelease keystone-system/keystone-operator spec.values"
 

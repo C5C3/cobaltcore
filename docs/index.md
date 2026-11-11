@@ -2,11 +2,12 @@
 title: Overview
 ---
 
-# CobaltCore
+# CobaltCore OpenStack
 
-CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating
-Hosted Control Planes. The project website at
-[cobaltcore.dev](https://cobaltcore.dev) introduces CobaltCore as a whole.
+CobaltCore OpenStack (C5C3 OpenStack) is a Kubernetes-native OpenStack
+distribution for operating Hosted Control Planes. It is the OpenStack part of
+CobaltCore, the parent project that the project website at
+[cobaltcore.dev](https://cobaltcore.dev) introduces as a whole.
 This documentation covers the
 [c5c3/cobaltcore](https://github.com/C5C3/cobaltcore) repository, which
 delivers everything needed for a self-contained OpenStack control-plane stack:
@@ -17,11 +18,11 @@ section shows how the pieces fit together, from the implemented
 management/target-cluster topology to the
 [multi-cluster target picture](./architecture/index.md#the-multi-cluster-target-picture).
 
-![What CobaltCore does: a layer stack from bare metal provisioned and managed by IronCore or metal-stack, through Garden Linux on every node and Kubernetes clusters managed by Gardener, to CobaltCore operating the OpenStack control planes and the OpenStack clouds whose API serves users and tools. Why it matters: Kubernetes-native OpenStack, one resource per cloud, growth with demand, built-in day-2 operations, and open building blocks.](./diagrams/cobaltcore-overview.svg)
+![What CobaltCore OpenStack does: a layer stack from bare metal provisioned and managed by IronCore or metal-stack, through Garden Linux on every node and Kubernetes clusters managed by Gardener, to CobaltCore OpenStack operating the OpenStack control planes and the OpenStack clouds whose API serves users and tools. Why it matters: Kubernetes-native OpenStack, one resource per cloud, growth with demand, built-in day-2 operations, and open building blocks.](./diagrams/cobaltcore-overview.svg)
 
-The layers below CobaltCore in this picture belong to the target picture.
-No deployment in this repository runs on IronCore or Garden Linux yet: the
-stack runs on a local kind cluster, or on a Gardener shoot on metal-stack in
+The layers below CobaltCore OpenStack in this picture belong to the target
+picture. No deployment in this repository runs on IronCore or Garden Linux yet:
+the stack runs on a local kind cluster, or on a Gardener shoot on metal-stack in
 the [Quick Start (metal-stack)](./quick-start-metal-stack.md). There,
 metal-stack takes the place of IronCore at the bare-metal layer.
 

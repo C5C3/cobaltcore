@@ -1,18 +1,19 @@
-# CobaltCore
+# CobaltCore OpenStack
 
 Kubernetes-native operators and deployment stack for OpenStack Hosted Control Planes.
 
-**Project website:** [cobaltcore.dev](https://cobaltcore.dev) ·
+**CobaltCore website:** [cobaltcore.dev](https://cobaltcore.dev) ·
 **Documentation:** [c5c3.github.io/cobaltcore](https://c5c3.github.io/cobaltcore/) ·
 **Issues:** [github.com/c5c3/cobaltcore/issues](https://github.com/c5c3/cobaltcore/issues)
 
 ## Overview
 
-CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating Hosted Control Planes. The
-project website at [cobaltcore.dev](https://cobaltcore.dev) introduces CobaltCore as a whole. This repository
-holds its control-plane stack: the declarative infrastructure manifests, one operator per OpenStack service,
-and the c5c3-operator, which orchestrates the service operators as children of a single `ControlPlane`
-resource. The operators are written in Go with the Operator SDK, controller-runtime, and Kubebuilder.
+CobaltCore OpenStack (C5C3 OpenStack) is a Kubernetes-native OpenStack distribution for operating Hosted
+Control Planes. It is the OpenStack part of CobaltCore, the parent project that the project website at
+[cobaltcore.dev](https://cobaltcore.dev) introduces as a whole. This repository holds the control-plane
+stack: the declarative infrastructure manifests, one operator per OpenStack service, and the c5c3-operator,
+which orchestrates the service operators as children of a single `ControlPlane` resource. The operators are
+written in Go with the Operator SDK, controller-runtime, and Kubebuilder.
 
 The Keystone operator is the reference implementation. Its CRD layout, sub-reconciler chain, webhooks,
 finalizers, and instrumentation are the patterns every other service operator follows. How the pieces fit
@@ -119,4 +120,4 @@ expectations.
 
 ## License
 
-CobaltCore is licensed under the [Apache License 2.0](LICENSE). Source files carry SPDX license headers.
+CobaltCore OpenStack is licensed under the [Apache License 2.0](LICENSE). Source files carry SPDX license headers.

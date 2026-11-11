@@ -6216,7 +6216,7 @@ jobs:
             type=raw,value=${{ steps.chart.outputs.version }},enable={{is_default_branch}}
           annotations: |
             org.opencontainers.image.title=${{ matrix.operator }}-operator
-            org.opencontainers.image.description=CobaltCore ${{ matrix.operator }} operator
+            org.opencontainers.image.description=CobaltCore OpenStack ${{ matrix.operator }} operator
             org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.vendor=SAP SE
 

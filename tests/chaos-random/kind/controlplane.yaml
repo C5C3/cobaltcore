@@ -22,7 +22,7 @@ metadata:
 spec:
   openStackRelease: "2026.1"
   region: RegionOne
-  regionDescription: CobaltCore e2e region
+  regionDescription: CobaltCore OpenStack e2e region
   infrastructure:
     database:
       clusterRef:

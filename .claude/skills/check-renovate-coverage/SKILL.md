@@ -1,35 +1,33 @@
 ---
 name: check-renovate-coverage
 description: >-
-  Audit whether every pinned version in the CobaltCore repo — OpenStack
-  release tags under releases/<version>/source-refs.yaml, shell-script
-  VERSION constants under hack/, kind / FluxCD HelmRelease versions
-  under deploy/kind/ and deploy/flux-system/, and tool-version pins in
-  Makefile + .github/workflows — is covered by either a native Renovate
-  manager or a customManager rule in renovate.json with a paired
-  packageRules entry, and that tool pins duplicated between the
-  Makefile and ci.yaml stay in lockstep. Use when asked to check
-  Renovate coverage, after adding a new pinned dependency, or when a
-  previously-bumped pin silently stopped receiving updates.
+  Audit whether every pinned version in the CobaltCore OpenStack repo —
+  OpenStack release tags under releases/<version>/source-refs.yaml, shell-script
+  VERSION constants under hack/, kind / FluxCD HelmRelease versions under
+  deploy/kind/ and deploy/flux-system/, and tool-version pins in Makefile +
+  .github/workflows — is covered by either a native Renovate manager or a
+  customManager rule in renovate.json with a paired packageRules entry, and that
+  tool pins duplicated between the Makefile and ci.yaml stay in lockstep. Use
+  when asked to check Renovate coverage, after adding a new pinned dependency,
+  or when a previously-bumped pin silently stopped receiving updates.
 ---
 
 # Check Renovate coverage
 
-This skill verifies that the CobaltCore **dependency pins are all reachable
-by Renovate**: every version literal that a human edits when bumping a
-dependency must be paired with a matcher (native or custom) that
-Renovate can crank, and every customManager must have a packageRules
-entry that decides triage rules (major/minor split, automerge, release
-age, grouping). A pin without a manager is a pin that silently goes
-stale.
+This skill verifies that the CobaltCore OpenStack **dependency pins are all
+reachable by Renovate**: every version literal that a human edits when bumping a
+dependency must be paired with a matcher (native or custom) that Renovate can
+crank, and every customManager must have a packageRules entry that decides
+triage rules (major/minor split, automerge, release age, grouping). A pin
+without a manager is a pin that silently goes stale.
 
 It is repeatable — run it any time, especially after introducing a new
 version literal or after editing `renovate.json`.
 
 ## What Renovate coverage means here
 
-A version pin in CobaltCore typically threads through three things, all of
-which Renovate has to understand:
+A version pin in CobaltCore OpenStack typically threads through three things,
+all of which Renovate has to understand:
 
 | Layer | Where it lives | Renovate handle |
 |---|---|---|

@@ -5,7 +5,7 @@ quadrant: operator
 
 # Sizing Calibration
 
-A CobaltCore CR that names no resources gets its CPU and memory from
+A CobaltCore OpenStack CR that names no resources gets its CPU and memory from
 render-time defaults, and a ControlPlane on the Minimal
 [sizing profile](../c5c3/controlplane-crd.md) gets fixed figures for its
 service pods and backing services. This page describes how those figures are

@@ -15,7 +15,7 @@ written it, the swap makes it write uninitialized heap memory of that
 line's length instead, and the line is lost; both threads also read the
 pipe at once.
 
-The CobaltCore API containers run uWSGI with --threaded-logger
+The CobaltCore OpenStack API containers run uWSGI with --threaded-logger
 (`UWSGIGracefulShutdownArgs` in internal/common/deployment/uwsgi.go).
 The master logs `gateway "uWSGI http 1" has been buried` and
 `goodbye to uWSGI.` right before it exits, so the race hits the last

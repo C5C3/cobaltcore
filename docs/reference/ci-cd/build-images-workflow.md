@@ -1547,7 +1547,7 @@ workflow builds from `nix/lib/operator-image.nix`, carry the four static labels 
 | Label | Value (example for keystone-operator) |
 | --- | --- |
 | `org.opencontainers.image.title` | `keystone-operator` |
-| `org.opencontainers.image.description` | `CobaltCore keystone operator` |
+| `org.opencontainers.image.description` | `CobaltCore OpenStack keystone operator` |
 | `org.opencontainers.image.licenses` | `Apache-2.0` |
 | `org.opencontainers.image.vendor` | `SAP SE` |
 

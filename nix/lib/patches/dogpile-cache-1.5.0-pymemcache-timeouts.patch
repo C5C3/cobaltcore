@@ -14,8 +14,8 @@ with an iptables DROP in both directions inside Memcached's network
 namespace, one cache read on an open connection blocked for 213 s under
 a 120 s partition (the partition plus 93 s of TCP backoff), and a new
 connection blocked until 8 s after the partition lifted. Both uWSGI
-workers of a partitioned Keystone hung that way on CobaltCore CI run
-40586904996, and every token request timed out.
+workers of a partitioned Keystone hung that way on CobaltCore OpenStack
+CI run 40586904996, and every token request timed out.
 
 The patch reads `socket_timeout` in `PyMemcacheBackend.__init__` and
 hands it to `HashClient` as `connect_timeout` and `timeout`. The

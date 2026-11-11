@@ -992,7 +992,7 @@ spec:
             "$(owner_of regions.openstack.k-orc.cloud "${REGION_CR}")"
           assert_eq "K-ORC Region adopted the bootstrap region" "RegionOne" \
             "$(kubectl get regions.openstack.k-orc.cloud "${REGION_CR}" -n "${CP_NS}" -o jsonpath='{.status.id}')"
-          assert_eq "K-ORC Region carries spec.regionDescription" "CobaltCore e2e region" \
+          assert_eq "K-ORC Region carries spec.regionDescription" "CobaltCore OpenStack e2e region" \
             "$(kubectl get regions.openstack.k-orc.cloud "${REGION_CR}" -n "${CP_NS}" -o jsonpath='{.spec.resource.description}')"
           assert_eq "K-ORC Region detaches on delete" "detach" \
             "$(kubectl get regions.openstack.k-orc.cloud "${REGION_CR}" -n "${CP_NS}" -o jsonpath='{.spec.managedOptions.onDelete}')"

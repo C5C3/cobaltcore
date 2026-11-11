@@ -346,7 +346,7 @@ CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS:-}"
 CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-}"
 
 # Marks this cluster as one that runs third-party infrastructure only: MariaDB,
-# Memcached, OpenBao, ESO, cert-manager and the rest of the stack, but no CobaltCore
+# Memcached, OpenBao, ESO, cert-manager and the rest of the stack, but no CobaltCore OpenStack
 # operator pod. That is the target-cluster half of the two-cluster devstack — the
 # operators live on the management cluster (hack/deploy-mgmt-cluster.sh) and
 # project their children onto this one through a registered kubeconfig.
@@ -1765,13 +1765,13 @@ install_envoy_gateway_crds() {
 preflight_checks() {
   log "Running pre-flight checks..."
 
-  # INFRA_ONLY=true scales every CobaltCore operator to zero, so nothing would
-  # admit or reconcile the bundled ControlPlane CR: its admission probe could
-  # only time out, after the whole stack is applied. INFRA_ONLY is read by
-  # indirect expansion for the reason preflight_external_cluster gives.
+  # INFRA_ONLY=true scales every CobaltCore OpenStack operator to zero, so
+  # nothing would admit or reconcile the bundled ControlPlane CR: its admission
+  # probe could only time out, after the whole stack is applied. INFRA_ONLY is
+  # read by indirect expansion for the reason preflight_external_cluster gives.
   local infra_only=INFRA_ONLY
   if [[ "${!infra_only}" == "true" && "${WITH_CONTROLPLANE}" == "true" && "${WITH_CONTROLPLANE_CR}" == "true" ]]; then
-    log "ERROR: INFRA_ONLY=true does not support WITH_CONTROLPLANE_CR=true: this cluster runs no CobaltCore operator to admit or reconcile the ControlPlane CR."
+    log "ERROR: INFRA_ONLY=true does not support WITH_CONTROLPLANE_CR=true: this cluster runs no CobaltCore OpenStack operator to admit or reconcile the ControlPlane CR."
     exit 1
   fi
 
@@ -3502,7 +3502,7 @@ main() {
   log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the kind-only shared-rabbitmq broker)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
-  log "Infrastructure only : ${INFRA_ONLY} (set INFRA_ONLY=true for a target cluster that runs no CobaltCore operator)"
+  log "Infrastructure only : ${INFRA_ONLY} (set INFRA_ONLY=true for a target cluster that runs no CobaltCore OpenStack operator)"
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     log "ControlPlane operators : ${CONTROLPLANE_OPERATORS} (flux = published chart + K-ORC Flux source; external = operators deployed out of band)"
     log "ControlPlane backing   : MariaDB replicas=${CONTROLPLANE_DB_REPLICAS:-<profile>} (>1 = Galera) storage=${CONTROLPLANE_DB_STORAGE:-<profile>}, Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS:-<profile>} (unset = the CR's sizing profile; pin via CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_DB_STORAGE / CONTROLPLANE_CACHE_REPLICAS)"
@@ -3997,7 +3997,7 @@ main() {
   fi
 
   # INFRA_ONLY overrides whichever branch above ran: this cluster receives placed
-  # children from a management cluster and must run no CobaltCore operator of its own.
+  # children from a management cluster and must run no CobaltCore OpenStack operator of its own.
   #
   # Every operator, not just c5c3: the WITH_CONTROLPLANE=true / flux branch above
   # un-suspends the nine service operators the kind base overlay suspends, so
@@ -4007,7 +4007,7 @@ main() {
   # fresh cluster, and the Deployment exists only where the chart already
   # installed once.
   if [[ "${INFRA_ONLY}" == "true" ]]; then
-    log "INFRA_ONLY=true: suspending every CobaltCore operator HelmRelease and scaling its Deployment to zero."
+    log "INFRA_ONLY=true: suspending every CobaltCore OpenStack operator HelmRelease and scaling its Deployment to zero."
     for operator in c5c3:c5c3-system keystone:keystone-system horizon:horizon-system \
                     glance:glance-system placement:placement-system barbican:barbican-system \
                     ovn:ovn-system neutron:neutron-system cinder:cinder-system \
@@ -4618,7 +4618,7 @@ main() {
           novas.nova.openstack.c5c3.io
         operators_awaited=true
       else
-        log "  Skipping the operator waits and the admission probe (INFRA_ONLY=true; this cluster runs no CobaltCore operator)."
+        log "  Skipping the operator waits and the admission probe (INFRA_ONLY=true; this cluster runs no CobaltCore OpenStack operator)."
       fi
 
       # The projected Keystone references ghcr.io/c5c3/keystone:<release>; preload it

@@ -24,8 +24,8 @@ that body, a servers.LiveMigrateOptsBuilder that sends "host": null
 
 No upstream test pins the request body. The patch adds
 TestLiveMigrateAutoBody, a plain Go test outside the Ginkgo suite, so
-it runs without envtest; the CobaltCore image build runs it and fails
-when it does not pass.
+it runs without envtest; the CobaltCore OpenStack image build runs it
+and fails when it does not pass.
 
 Applies-to: cobaltcore-dev/openstack-hypervisor-operator main @ a2baf3f4002e39ff93f105fae9594b357ba55b21
 

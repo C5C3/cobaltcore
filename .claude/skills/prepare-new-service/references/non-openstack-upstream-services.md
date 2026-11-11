@@ -13,8 +13,8 @@ breaks structurally. Profile these instead of the Python questions:
 
 - **Upstream artifacts first:** check what upstream actually publishes
   (Aurora: npm packages only, via Changesets; both upstream Dockerfiles
-  are dev-grade). Default posture: CobaltCore builds the production image from
-  source at a pinned upstream git ref.
+  are dev-grade). Default posture: CobaltCore OpenStack builds the production
+  image from source at a pinned upstream git ref.
 - **Release decoupling — do NOT add a `releases/*/source-refs.yaml`
   key.** The keys *are* the build/test/verify matrix
   (`hack/ci-generate-build-matrix.sh:61-69`), imply per-OpenStack-release

@@ -2,17 +2,17 @@
 name: add-image-patch
 description: >-
   Add, backport, forward-port, or retire a downstream source patch that the
-  CobaltCore service image builds apply to an upstream OpenStack tree —
-  patches/<svc>/<release>/NNNN-<slug>.patch cut with git format-patch against
+  CobaltCore OpenStack service image builds apply to an upstream OpenStack tree
+  — patches/<svc>/<release>/NNNN-<slug>.patch cut with git format-patch against
   the tag releases/<release>/source-refs.yaml pins, carrying the house header
   (SPDX pair, rationale, Applies-to line, Upstream status), the upstream
-  unit-test hunks a behaviour change needs, a verify_<svc>.sh assertion, and
-  a Source patch paragraph in docs/reference/ci-cd/container-images.md. Use
-  when a service needs a code fix no upstream tag ships yet, when a patch
-  must follow to another release, when test-service-images turns red on an
-  upstream unit test a patch changed, or when a Renovate "OpenStack upstream
-  tags" bump fails the "Apply patches" step with "patch does not apply"
-  because the new tag already carries the fix.
+  unit-test hunks a behaviour change needs, a verify_<svc>.sh assertion, and a
+  Source patch paragraph in docs/reference/ci-cd/container-images.md. Use when a
+  service needs a code fix no upstream tag ships yet, when a patch must follow
+  to another release, when test-service-images turns red on an upstream unit
+  test a patch changed, or when a Renovate "OpenStack upstream tags" bump fails
+  the "Apply patches" step with "patch does not apply" because the new tag
+  already carries the fix.
 ---
 
 # Add, backport, or retire an image patch
@@ -135,10 +135,10 @@ needs no assertion.
 
 Add a **Source patch:** paragraph to the service's section of
 `docs/reference/ci-cd/container-images.md` (cinder has eight): the path, its
-twins, what upstream does, why CobaltCore cannot live with it, what the patch
-changes, which upstream tests moved (or why none), the `verify_<svc>.sh`
-assertion, and the upstream status. When the patch creates a configuration
-requirement for the operator, say so there (cinder 0001 needs
+twins, what upstream does, why CobaltCore OpenStack cannot live with it, what
+the patch changes, which upstream tests moved (or why none), the
+`verify_<svc>.sh` assertion, and the upstream status. When the patch creates a
+configuration requirement for the operator, say so there (cinder 0001 needs
 `nas_secure_file_operations = true`).
 
 ### 6. Check and test locally

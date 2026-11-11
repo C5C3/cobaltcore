@@ -6,7 +6,7 @@ quadrant: operator
 # Keystone CRD API Reference
 
 Reference documentation for the Keystone Custom Resource Definition. The
-Keystone CRD is the reference implementation for all CobaltCore service operators —
+Keystone CRD is the reference implementation for all CobaltCore OpenStack service operators —
 the patterns established here (types, webhooks, generation, scheme registration) are
 replicated by the Horizon, Glance, Placement, Barbican and Neutron operators and by
 the OVN layer underneath Neutron.
@@ -1466,7 +1466,7 @@ are rejected by the reconciler.
 ## Shared Types (from `internal/common/types`)
 
 The following types are imported as `commonv1` from
-`github.com/c5c3/cobaltcore/internal/common/types`. They are shared across all CobaltCore
+`github.com/c5c3/cobaltcore/internal/common/types`. They are shared across all CobaltCore OpenStack
 operator CRDs.
 
 ### ImageSpec
@@ -2274,5 +2274,5 @@ tests/e2e/keystone/
     └── 12-credentialkeys-maxactivekeys-below-minimum.yaml  CredentialKeys maxActiveKeys < 3
 ```
 
-This layout is the canonical pattern for all CobaltCore operators. New operators
-should replicate this directory structure.
+This layout is the canonical pattern for all CobaltCore OpenStack operators. New
+operators should replicate this directory structure.

@@ -278,9 +278,9 @@ further narrowing: the Deployment pod selector (immutable after creation) and
 the NetworkPolicy pod selector (maintenance pods must keep inheriting its egress
 rules).
 
-The following CobaltCore-specific metadata keys carry controller-observable
-semantics and are stable across releases — consumers (watch predicates,
-chainsaw tests, dashboards) may rely on them:
+The following CobaltCore OpenStack-specific metadata keys carry
+controller-observable semantics and are stable across releases — consumers
+(watch predicates, chainsaw tests, dashboards) may rely on them:
 
 | Key | Kind | Applied to | Value | Purpose |
 | --- | --- | --- | --- | --- |

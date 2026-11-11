@@ -4,8 +4,8 @@
 
 # The identity of the soak's runner in the cluster. The runner samples the
 # containers of the platform's pods and their usage, and reads the conditions
-# of the ControlPlanes and the CobaltCore service kinds at the start and end
-# of a run. It reads, with get and list alone, and reads no Secret.
+# of the ControlPlanes and the CobaltCore OpenStack service kinds at the start
+# and end of a run. It reads, with get and list alone, and reads no Secret.
 ---
 apiVersion: v1
 kind: ServiceAccount

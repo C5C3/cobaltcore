@@ -103,6 +103,10 @@ code. Do not credit metadata or lifecycle hooks with work a controller does.
 - **Don't:** 3–5 subordinate clauses and asides packed into one sentence (overview paragraphs and bullet lists are the worst offenders).
 - **Do:** split at the colon or semicolon. If you run out of breath reading it aloud, break it.
 
+### 12. Name the project CobaltCore OpenStack
+- **Don't:** write CobaltCore alone for what this repository builds. CobaltCore is the parent project that [cobaltcore.dev](https://cobaltcore.dev) introduces, and the name stays for the parent and for its parts of the target picture, such as the CobaltCore Operation and Monitoring cluster.
+- **Do:** write CobaltCore OpenStack, short C5C3 OpenStack, the OpenStack part of CobaltCore. Identifiers keep their spelling: the `c5c3/cobaltcore` repository, module paths, API groups, annotations, and cluster names.
+
 ## Keep — don't sand these off
 
 - **Frontmatter** (`title`, `quadrant`) and the page's structure.

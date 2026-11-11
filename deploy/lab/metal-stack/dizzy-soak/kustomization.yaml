@@ -29,10 +29,10 @@
 # dizzy, on every start).
 #
 # POSTURE: the ClusterRole reads pods, namespaces, pod metrics and the
-# CobaltCore service kinds with get and list, and no Secret. The Keystone user
-# holds admin on its project, because the Legacy persona's migration
-# pre-check needs it; its password lives in a Secret and reaches Keystone over
-# plain HTTP inside the cluster.
+# CobaltCore OpenStack service kinds with get and list, and no Secret. The
+# Keystone user holds admin on its project, because the Legacy persona's
+# migration pre-check needs it; its password lives in a Secret and reaches
+# Keystone over plain HTTP inside the cluster.
 #
 # The teardown, `EXTERNAL_CLUSTER=true make teardown-infra`, deletes the Job
 # and the reader pod first, which ends a running soak with its report, then

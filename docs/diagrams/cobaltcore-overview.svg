@@ -6,7 +6,7 @@
 <text x="68" y="136.8" font-size="30" font-weight="700" fill="#1D47A6">OpenStack clouds</text>
 <text x="68" y="174.64" font-size="24" font-weight="400" fill="#2B3440">OpenStack API for users and tools</text>
 <rect x="41.5" y="219.5" width="637" height="117" rx="14.5" fill="#1E6B40" stroke="#1E6B40" stroke-width="3"/>
-<text x="68" y="270.8" font-size="30" font-weight="700" fill="#FBFAF7">CobaltCore</text>
+<text x="68" y="270.8" font-size="30" font-weight="700" fill="#FBFAF7">CobaltCore OpenStack</text>
 <text x="68" y="308.64" font-size="24" font-weight="400" fill="#DCEFE3">Operates the OpenStack control planes</text>
 <rect x="41.5" y="353.5" width="637" height="117" rx="14.5" fill="#EEEAF7" stroke="#5E43A8" stroke-width="3"/>
 <text x="68" y="404.8" font-size="30" font-weight="700" fill="#4B3592">Kubernetes</text>

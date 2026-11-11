@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Observability & Diagnostics
 
-To read what a CobaltCore service operator is doing, start with the CR status, then inspect the event stream, and only then read the operator or service logs.
+To read what a CobaltCore OpenStack service operator is doing, start with the CR status, then inspect the event stream, and only then read the operator or service logs.
 
 ## Prerequisites
 

@@ -1,24 +1,23 @@
 ---
 name: check-fixture-drift
 description: >-
-  Audit whether every CobaltCore CR fixture under tests/ still validates against
-  the *current* CRD schema —
-  no removed Spec field is still referenced, every fixture's
-  apiVersion / kind matches a real CRD, every invalid-cr fixture is
-  reachable from a Chainsaw test, and the existing
+  Audit whether every CobaltCore OpenStack CR fixture under tests/ still
+  validates against the *current* CRD schema — no removed Spec field is still
+  referenced, every fixture's apiVersion / kind matches a real CRD, every
+  invalid-cr fixture is reachable from a Chainsaw test, and the existing
   verify-invalid-cr-fixtures generator stays in sync with its hand-edited
-  outputs. Use when asked to check fixture drift, after editing a CRD
-  or the validating webhook, or before a release.
+  outputs. Use when asked to check fixture drift, after editing a CRD or the
+  validating webhook, or before a release.
 ---
 
 # Check fixture drift
 
-This skill verifies that the CobaltCore **test fixtures still match the CRD
-they claim to instantiate**: every fixture document under `tests/` whose
-apiVersion is in an API group the repo's own CRDs declare uses only Spec
-fields that the current CRD schema accepts, every invalid-cr fixture is
-referenced from a Chainsaw test that exercises it, and the
-`verify-invalid-cr-fixtures` generator's outputs stay in sync.
+This skill verifies that the CobaltCore OpenStack **test fixtures still match
+the CRD they claim to instantiate**: every fixture document under `tests/` whose
+apiVersion is in an API group the repo's own CRDs declare uses only Spec fields
+that the current CRD schema accepts, every invalid-cr fixture is referenced from
+a Chainsaw test that exercises it, and the `verify-invalid-cr-fixtures`
+generator's outputs stay in sync.
 
 The schema checks cover **every CRD kind in the repo** and read **every
 document** of a multi-document fixture. Suite roots are discovered rather
@@ -132,7 +131,7 @@ the printed inventory, confirm:
    done
    ```
    This requires `kubectl` configured against a cluster with the
-   CobaltCore CRDs installed.
+   CobaltCore OpenStack CRDs installed.
 
 ### 3. Run the authoritative gate
 

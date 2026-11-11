@@ -3,5 +3,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package envtest provides shared envtest bootstrap utilities for integration
-// tests across all CobaltCore operators.
+// tests across all CobaltCore OpenStack operators.
 package envtest

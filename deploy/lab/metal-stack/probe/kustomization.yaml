@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Read-only node probe for metal-stack clusters, applied by hand before the
-# CobaltCore lab stack exists:
+# CobaltCore OpenStack lab stack exists:
 #
 #   kubectl apply -k deploy/lab/metal-stack/probe
 #

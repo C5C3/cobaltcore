@@ -51,7 +51,7 @@ spec:
   region: RegionOne
   # Link 5 asserts this literal on the adopted Region CR, and Link 7b reads it
   # back through `openstack region show`.
-  regionDescription: CobaltCore e2e region
+  regionDescription: CobaltCore OpenStack e2e region
   # The Minimal sizing profile (spec.sizing below) gives the full fresh-create
   # chain a single-node topology: a single-instance non-Galera MariaDB on a
   # 512Mi volume instead of the Standard profile's 3-node Galera on 100Gi, a

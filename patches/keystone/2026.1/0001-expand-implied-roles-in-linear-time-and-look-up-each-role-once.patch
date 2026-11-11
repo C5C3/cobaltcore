@@ -10,21 +10,22 @@ twice per resulting assignment. `add_implied_roles` keeps the refs it has
 already expanded in a list and tests every new implied ref with
 `implied_ref in checked_role_refs`, a dict-equality scan of a list that
 grows to the size of the result: 4,000 member assignments that each imply
-reader take 0.22 s in the published CobaltCore 2026.1 and 2026.2 images,
-and 16,000,000 dict comparisons. `_strip_domain_roles` then calls
-`role_api.get_role` once per resulting ref to read its `domain_id`.
-Without a cache that is two SQL statements per ref, the role row and its
-options (`lazy='subquery'`); with a cache it is one role cache read per
-ref. The listing backs GET /v3/role_assignments?effective,
-GET /v3/users/{user_id}/projects and the project and domain lists of
-GET /v3/auth/projects and GET /v3/auth/domains, and `add_implied_roles`
-runs inside every token's role resolution. Upstream reported the slow
-listing as https://bugs.launchpad.net/keystone/+bug/1700852 and closed it
-by caching the result, which every role grant, project change and group
-membership change flushes; https://bugs.launchpad.net/keystone/+bug/1920979
-reports it again and is still New. CobaltCore creates role assignments
-from namespace orders, so their number grows with every tenant
-(issue #1459).
+reader take 0.22 s in the published CobaltCore OpenStack 2026.1 and
+2026.2 images, and 16,000,000 dict comparisons. `_strip_domain_roles`
+then calls `role_api.get_role` once per resulting ref to read its
+`domain_id`. Without a cache that is two SQL statements per ref, the
+role row and its options (`lazy='subquery'`); with a cache it is one
+role cache read per ref. The listing backs GET
+/v3/role_assignments?effective, GET /v3/users/{user_id}/projects and the
+project and domain lists of GET /v3/auth/projects and GET
+/v3/auth/domains, and `add_implied_roles` runs inside every token's role
+resolution. Upstream reported the slow listing as
+https://bugs.launchpad.net/keystone/+bug/1700852 and closed it by
+caching the result, which every role grant, project change and group
+membership change flushes;
+https://bugs.launchpad.net/keystone/+bug/1920979 reports it again and is
+still New. CobaltCore OpenStack creates role assignments from namespace
+orders, so their number grows with every tenant (issue #1459).
 
 `add_implied_roles` now keeps the checked refs as a set of hashable keys,
 a frozenset of a ref's items with the nested indirect dict frozen the same
@@ -44,8 +45,8 @@ RoleNotFound. A first version of this patch read the roles with one
 recomputes its roles through `_strip_domain_roles` whenever a role grant
 has flushed the computed assignments, and there that call made two SQL
 statements where upstream reads the role cache: under the cold-role-cache
-profile of CobaltCore's keystone-pressure job the validate p50 was 8.3 %
-(2026.1) and 12.8 % (2026.2) above the unpatched image
+profile of CobaltCore OpenStack's keystone-pressure job the validate p50
+was 8.3 % (2026.1) and 12.8 % (2026.2) above the unpatched image
 (https://github.com/C5C3/cobaltcore/actions/runs/39795997952). No schema
 migration, option or new method is involved.
 

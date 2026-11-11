@@ -1,28 +1,26 @@
 ---
 name: check-go-workspace-deps
 description: >-
-  Audit the CobaltCore Go workspace for dependency-version drift between
-  the operators/<op>/go.mod files and internal/common/go.mod —
+  Audit the CobaltCore OpenStack Go workspace for dependency-version drift
+  between the operators/<op>/go.mod files and internal/common/go.mod —
   controller-runtime, multicluster-runtime, the k8s.io family, every other
   direct requirement two modules share, the Go directive, and any toolchain
   directive must stay in lockstep so the workspace builds the same versions
-  everywhere. Use when asked to check workspace deps, after running
-  `go get` in one module, after Renovate bumps a dependency in only some of
-  the modules, or when PR CI shows sum.golang.org errors that do not
-  reproduce on the branch.
+  everywhere. Use when asked to check workspace deps, after running `go get` in
+  one module, after Renovate bumps a dependency in only some of the modules, or
+  when PR CI shows sum.golang.org errors that do not reproduce on the branch.
 ---
 
 # Check Go workspace consistency
 
-This skill verifies that the CobaltCore **Go workspace's shared dependencies
-stay in lockstep** across all modules. `go.work` lists `internal/common`
-and every operator module under `operators/` (eleven members at the time
-of writing; the audit reads the list, it does not assume it). In
-workspace mode the *build* picks one version per dependency by minimum
-version selection, but each module's `go.mod` declares its own pin. If
-those pins drift, `go mod tidy` per module rewrites them, and a CI leg
-that builds one module sees a different graph than the laptop that built
-the workspace.
+This skill verifies that the CobaltCore OpenStack **Go workspace's shared
+dependencies stay in lockstep** across all modules. `go.work` lists
+`internal/common` and every operator module under `operators/` (eleven members
+at the time of writing; the audit reads the list, it does not assume it). In
+workspace mode the *build* picks one version per dependency by minimum version
+selection, but each module's `go.mod` declares its own pin. If those pins drift,
+`go mod tidy` per module rewrites them, and a CI leg that builds one module sees
+a different graph than the laptop that built the workspace.
 
 It is repeatable — run it any time, especially after a `go get` in one
 module, or after a Renovate PR that touched only some `go.mod` files.

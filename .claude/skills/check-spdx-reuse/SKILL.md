@@ -1,19 +1,18 @@
 ---
 name: check-spdx-reuse
 description: >-
-  Audit SPDX / REUSE compliance across the CobaltCore source tree — every
-  *.go, *.sh, *.nix, hand-authored YAML, and CI workflow file should carry
-  matching SPDX-FileCopyrightText and SPDX-License-Identifier headers,
-  and every license referenced in a header has a corresponding text
-  under LICENSES/. Use when
-  asked to check SPDX or REUSE coverage, after adding a new source
-  file, or before tagging a release where SAP supply-chain audits
-  require clean REUSE output.
+  Audit SPDX / REUSE compliance across the CobaltCore OpenStack source tree —
+  every *.go, *.sh, *.nix, hand-authored YAML, and CI workflow file should carry
+  matching SPDX-FileCopyrightText and SPDX-License-Identifier headers, and every
+  license referenced in a header has a corresponding text under LICENSES/. Use
+  when asked to check SPDX or REUSE coverage, after adding a new source file, or
+  before tagging a release where SAP supply-chain audits require clean REUSE
+  output.
 ---
 
 # Check SPDX / REUSE coverage
 
-This skill verifies that the CobaltCore source tree keeps its **SPDX
+This skill verifies that the CobaltCore OpenStack source tree keeps its **SPDX
 headers**: every file class that carries a copyright/licence header by
 convention has one, and every header references a licence that ships
 under `LICENSES/`.

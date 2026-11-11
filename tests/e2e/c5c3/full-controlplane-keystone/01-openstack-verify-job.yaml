@@ -101,7 +101,7 @@ spec:
               openstack --os-cloud admin catalog list | grep -qi block-storage
               echo "== region description round-trip =="
               DESC="$(openstack --os-cloud admin region show RegionOne -f value -c description)"
-              test "${DESC}" = "CobaltCore e2e region" || { echo "ERROR: region description '${DESC}' != 'CobaltCore e2e region'"; exit 1; }
+              test "${DESC}" = "CobaltCore OpenStack e2e region" || { echo "ERROR: region description '${DESC}' != 'CobaltCore OpenStack e2e region'"; exit 1; }
               echo "OK: region description round-trip"
               echo "== openstack --os-cloud admin role assignment list --names --user glance =="
               openstack --os-cloud admin role assignment list --names --user glance

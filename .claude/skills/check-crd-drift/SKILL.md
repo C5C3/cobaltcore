@@ -1,22 +1,22 @@
 ---
 name: check-crd-drift
 description: >-
-  Audit whether every CobaltCore operator CRD is in sync across its three
-  representations — the Go +kubebuilder source under operators/<op>/api/,
-  the controller-gen output under operators/<op>/config/crd/bases/, and
-  the Helm chart copy under operators/<op>/helm/<op>-operator/crds/.
-  Use when asked to check CRD drift, after editing a *_types.go file or
-  a kubebuilder marker, or before a release to catch a CRD that the
-  cluster will reject because the schema is older than the controller.
+  Audit whether every CobaltCore OpenStack operator CRD is in sync across its
+  three representations — the Go +kubebuilder source under operators/<op>/api/,
+  the controller-gen output under operators/<op>/config/crd/bases/, and the Helm
+  chart copy under operators/<op>/helm/<op>-operator/crds/. Use when asked to
+  check CRD drift, after editing a *_types.go file or a kubebuilder marker, or
+  before a release to catch a CRD that the cluster will reject because the
+  schema is older than the controller.
 ---
 
 # Check CRD drift
 
-This skill verifies that the CobaltCore generated CRDs still **reflect their
-Go +kubebuilder source**: every kubebuilder marker is regenerable into
-the YAML under `config/crd/bases/`, every Helm chart `crds/` file is a
-byte-for-byte mirror of the corresponding base, and `make verify-crd-sync`
-leaves the working tree clean.
+This skill verifies that the CobaltCore OpenStack generated CRDs still **reflect
+their Go +kubebuilder source**: every kubebuilder marker is regenerable into the
+YAML under `config/crd/bases/`, every Helm chart `crds/` file is a byte-for-byte
+mirror of the corresponding base, and `make verify-crd-sync` leaves the working
+tree clean.
 
 It is repeatable — run it any time, especially after touching a type
 file or a marker, before tagging a release.

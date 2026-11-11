@@ -4,7 +4,7 @@
 
 # The two Ceph users of the lab's Cinder: client.cinder on the pool volumes and
 # client.cinder-backup on the pool backups. The overlay creates them and
-# CobaltCore never does (rule 1 of #1338).
+# CobaltCore OpenStack never does (rule 1 of #1338).
 #
 # For each client Rook writes the Secret rook-ceph-client-<name> in rook-ceph
 # with the data keys <name>, userID and userKey, and rewrites it in place when

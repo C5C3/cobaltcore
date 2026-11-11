@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Example PriorityClass for the CobaltCore operators and platform workloads.
+# Example PriorityClass for the CobaltCore OpenStack operators and platform
+# workloads.
 #
 # This directory is an example to copy. No script applies it;
 # tests/unit/deploy/sizing_overlay_example_test.sh renders it. The value ranks
@@ -17,4 +18,4 @@ metadata:
   name: cobaltcore-platform
 value: 1000000
 globalDefault: false
-description: "CobaltCore operators and platform workloads; ranked above tenant workloads for preemption and node-pressure eviction"
+description: "CobaltCore OpenStack operators and platform workloads; ranked above tenant workloads for preemption and node-pressure eviction"

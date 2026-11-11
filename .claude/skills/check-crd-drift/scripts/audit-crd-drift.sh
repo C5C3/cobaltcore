@@ -3,8 +3,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# audit-crd-drift.sh — mechanical CRD-drift checks for the CobaltCore repo.
-# Verifies, per operator:
+# audit-crd-drift.sh — mechanical CRD-drift checks for the CobaltCore OpenStack
+# repo. Verifies, per operator:
 #   C1  every operators/<op>/api/ has a matching config/crd/bases/ with >=1 CRD
 #   C2  every config/crd/bases/*.yaml is byte-equivalent (modulo leading `#`
 #       comments) to helm/<op>-operator/crds/<same>
