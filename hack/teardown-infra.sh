@@ -1605,11 +1605,13 @@ teardown_external_cluster() {
   printf '%s\n' "${render}" |
     yq 'select(.kind == "Gateway" or .kind == "GatewayClass")' |
     delete_and_wait "the Gateway and the GatewayClass" -f -
+  # Prometheus must uninstall while its APIs still exist. The base includes
+  # prometheus-operator-crds; removing it first leaves Helm unable to map the
+  # Prometheus, Alertmanager and ServiceMonitor objects it needs to delete.
+  teardown_prometheus
   printf '%s\n' "${render}" |
     yq 'select(.kind != "Namespace" and .kind != "FluxInstance" and .kind != "Gateway" and .kind != "GatewayClass")' |
     delete_and_wait "the base overlay (HelmReleases, Flux sources and Kustomizations)" -f -
-  # The opt-in monitoring release, then what its uninstall leaves behind.
-  teardown_prometheus
   # The dizzy stack, while the helm-controller can still uninstall its charts.
   teardown_dizzy
 
