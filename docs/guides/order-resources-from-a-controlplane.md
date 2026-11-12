@@ -11,16 +11,19 @@ SPDX-License-Identifier: Apache-2.0
 # How-to: Order Resources from a ControlPlane
 
 A service owner whose namespace a ControlPlane assigns can order a Keystone user
-there with a `KeystoneUser` CR. The c5c3-operator creates the user, backs its
-password up to OpenBao, and writes the credentials into a Secret beside the
-order. Nothing in the owner's namespace can reach OpenBao: the owner receives a
-Secret and nothing else.
+there with a `KeystoneUser` CR. The c5c3-operator creates the user and, through
+the External Secrets Operator (ESO), backs its password up to OpenBao before
+writing credentials into a Secret beside the order. The order creates no
+OpenBao-facing objects in the owner's namespace; its backup Secret and
+PushSecret stay beside the ControlPlane.
 
 Beside the user the owner can order a project, a role for the user on it, a
-catalog entry and an application credential, each as a CR of its own. The
-user's Secret scopes a token to the project once the role is assigned. The
-operator rotates the user's password on a schedule. Of the further orders only
-the application credential delivers a Secret, and the operator rotates it on a
+after the role is assigned, a service can request a project-scoped token using
+catalog entry and an application credential, each as a CR of its own. After
+the role is assigned, a service can request a project-scoped token using
+the user's unscoped Secret by setting the project name and domain. The operator
+rotates the user's password on a schedule. Of those Keystone orders, only the
+application credential also delivers a Secret. The operator rotates it on a
 schedule too. A `MariaDBDatabase` orders a database on the
 ControlPlane's MariaDB, whose user OpenBao replaces every day. Apart from
 Keystone, the owner can order a vhost of their own on the ControlPlane's
@@ -66,11 +69,11 @@ scripts.
 | Description | Namespace | Why |
 | --- | --- | --- |
 | The namespace assignment | `openstack` | It is consent the ControlPlane gives, so it lives on the ControlPlane CR |
-| The K-ORC User, its password Secrets, the source Secret and the PushSecret | `openstack` | K-ORC reads the admin credential there, and the PushSecret pushes the password to OpenBao through that namespace's own secret store |
+| The K-ORC (OpenStack Resource Controller) User, its password Secrets, the source Secret and the PushSecret | `openstack` | K-ORC reads the admin credential there, and the PushSecret pushes the password to OpenBao through that namespace's own secret store |
 | The order and the delivered Secret `workflow-credentials` | `workflow` | The credentials are delivered where the service that reads them runs |
 | The K-ORC Project, Role import, RoleAssignment, Service, Region import and Endpoints of the further orders | `openstack` | K-ORC reads the admin credential there |
 | The `KeystoneProject`, `KeystoneRoleAssignment` and `KeystoneCatalogEntry` orders | `workflow` | They live beside the user they belong to |
-| The K-ORC ApplicationCredentials, their secrets, the user's `mint-cloud` document, the source Secret and the PushSecret of the application credential | `openstack` | K-ORC creates and deletes the credentials there, authenticated as the user |
+| The K-ORC ApplicationCredentials, their secrets, the user's `mint-cloud` Secret (a project-scoped password `clouds.yaml`), the source Secret and the PushSecret of the application credential | `openstack` | K-ORC creates and deletes the credentials there, authenticated as the user |
 | The `KeystoneApplicationCredential` order and its Secret `workflow-appcred-credentials` | `workflow` | The credential is delivered where the service that reads it runs |
 | The ESO generator and ExternalSecret and the Database CR of the database order | `openstack` | OpenBao issues the credential through that namespace's identity, and the mariadb-operator creates the schema beside the MariaDB |
 | The `MariaDBDatabase` order and its Secret `workflow-db-credentials` | `workflow` | The credential is delivered where the service that reads it runs |
@@ -593,10 +596,12 @@ CatalogReady=False (CatalogNotAllowed)
 Ready=False (NotAllReady)
 ```
 
-Set `allowCatalogEntries` on the `workflow` entry, with the index `i` from the
-role step:
+Set `allowCatalogEntries` on the `workflow` entry. Find its current index so
+the `test` operation guards the patch:
 
 ```bash
+i=$(kubectl get controlplane controlplane -n openstack -o json \
+  | jq '[.spec.namespaceAssignments[] | .namespace == "workflow" and .targetClusterRef == null] | index(true)')
 kubectl patch controlplane controlplane -n openstack --type json -p "[
   {\"op\":\"test\",\"path\":\"/spec/namespaceAssignments/${i}/namespace\",\"value\":\"workflow\"},
   {\"op\":\"add\",\"path\":\"/spec/namespaceAssignments/${i}/allowCatalogEntries\",\"value\":true}]"
@@ -606,9 +611,9 @@ openstack --insecure catalog show dns
 
 The catalog lists the public URL in `RegionOne`. Every service type but
 `identity` may be registered; a row of the same type and name that the order
-did not create is refused with `ServiceCollision`. The endpoints may change
-later, and an interface the spec no longer declares is removed. The type and
-the name are frozen.
+did not create is refused with `ServiceCollision`. The service type and name
+are immutable; endpoints may change later, and an interface the spec no longer
+declares is removed.
 
 ## Order a database
 
@@ -689,9 +694,12 @@ other reason the order reports.
 
 `spec.deletionPolicy` decides what deleting the order does to the data. Under
 `Retain`, the default, the schema and its data stay; under `Delete` the
-mariadb-operator drops them. The user, its leases and the OpenBao role go
-under both, so the last credential stops working the moment the order is
-deleted:
+mariadb-operator drops them. When the ControlPlane's OpenBao client certificate
+is available, the operator revokes the database leases and deletes the role
+under either policy, so the last credential stops working immediately. If the
+certificate is missing, the operator skips OpenBao cleanup; existing users
+remain valid until their leases expire (up to 72 hours), and the role is left
+behind:
 
 ```bash
 kubectl patch mariadbdatabase workflow-db -n workflow --type merge \
@@ -800,8 +808,9 @@ way, on that cluster. The ControlPlane's entry names the cluster in
 `targetClusterRef`, the `target-cluster-access` chart's `assignedNamespaces`
 and the registration Secret's `assignedNamespaces` key name the namespace, and
 the ControlPlane publishes the addresses of Keystone, the database and the bus
-that a pod on that cluster can reach; without them the orders report
-`KeystoneNotPublished`, `DatabaseNotPublished` or `MessagingNotPublished`.
+that a pod on that cluster can reach. Without the matching published endpoint,
+credential delivery reports `KeystoneNotPublished`, database orders report
+`DatabaseNotPublished`, and vhost orders report `MessagingNotPublished`.
 [Part 2 of the Quick Start (Orders)](../quick-start-orders.md#target-cluster)
 runs all of it on two kind clusters. See
 [Assigned namespaces](../reference/target-clusters.md#assigned-namespaces).
