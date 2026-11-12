@@ -8,7 +8,7 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# How-to: Deploy Services into Dedicated Namespaces
+# Deploy Services into Dedicated Namespaces
 
 By default, every service a ControlPlane projects lands in the ControlPlane's
 own namespace, so you cannot separate the services of one control plane with
@@ -35,11 +35,13 @@ up again; do not delete and re-create the CR in place. Every resource name in
 the examples below is one that devstack produces.
 :::
 
-The namespace assignment is create-only: you cannot add it to an existing
-ControlPlane, and admission allows only one ControlPlane per namespace. Step 3
-therefore applies its own `ControlPlane` CR in place of the tutorial's. Set
-every option on that CR. The c5c3-operator projects the `controlplane-keystone`
-child from it and reverts any change you make on the child directly.
+Once a service is declared, its namespace assignment (presence, name, and
+lifecycle) is immutable. A newly declared service may be added with its
+namespace assignment. Admission also allows only one ControlPlane per
+namespace. Step 3 therefore applies its own `ControlPlane` CR in place of the
+tutorial's. Set every option on that CR. The c5c3-operator projects the
+`controlplane-keystone` child from it and reverts any change you make on the
+child directly.
 
 ---
 
@@ -50,11 +52,10 @@ places that service and everything scoped to it in the named namespace:
 
 - the projected service child (`controlplane-keystone`) and its Deployment;
 - the backing services created from the shared `spec.infrastructure` block.
-  Each namespace that hosts a service gets its own MariaDB / Memcached
-  instances. In the example below, `openstack-internal` receives
-  `openstack-db` and `openstack-memcached` for Keystone, and `openstack` keeps
-  an `openstack-memcached` for the services that stay in the ControlPlane's
-  namespace (here, Horizon);
+  Each declared service gets the managed backing services it consumes in its
+  assigned namespace. In this example, `openstack-internal` receives
+  `openstack-db` and `openstack-memcached` for Keystone, while `openstack` keeps
+  an `openstack-memcached` for Horizon;
 - the credential material: the `controlplane-keystone-admin-credentials` and
   `controlplane-keystone-db-credentials` ExternalSecrets and Secrets are
   created beside the Keystone child, and their OpenBao paths are keyed on the
