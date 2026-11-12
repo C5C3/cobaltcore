@@ -73,22 +73,18 @@ the last healthy pod; at `replicas == 1` it sets `maxUnavailable=1` instead,
 allowing eviction so a node drain cannot deadlock on a
 single-replica child.
 
-::: tip Load-driven autoscaling
 `spec.sizing.keystone.api.autoscaling` projects a `HorizontalPodAutoscaler` onto
 the Keystone child, which then scales between its bounds on load. The HPA needs
 metrics-server, so no sizing profile sets it. See
 [Advanced Configuration: Autoscaling (HPA)](./advanced-configuration.md#autoscaling-hpa).
-:::
 
 ---
 
 ## Upgrade the OpenStack release
 
-::: warning Back up the database first
-Make a database backup before starting the upgrade. Recovery from a bad upgrade
+**Back up the database before starting an upgrade.** Recovery from a bad upgrade
 requires restoring the database because the schema migrations are not
 reversible.
-:::
 
 Before you patch, make the target-release images node-local. The devstack
 preloads only the `2026.1` Keystone image, while all six enabled service children
@@ -98,8 +94,13 @@ or their rollouts stall on image pulls:
 ```bash
 RELEASE=2026.2
 for operator in barbican glance horizon keystone neutron placement; do
-  podman pull "ghcr.io/c5c3/${operator}:${RELEASE}"
-  kind load docker-image "ghcr.io/c5c3/${operator}:${RELEASE}" --name cobaltcore
+  image="ghcr.io/c5c3/${operator}:${RELEASE}"
+  if [[ "${KIND_EXPERIMENTAL_PROVIDER:-docker}" == podman ]]; then
+    podman pull "$image"
+  else
+    docker pull "$image"
+  fi
+  kind load docker-image "$image" --name cobaltcore
 done
 ```
 
@@ -157,7 +158,8 @@ way back on this path.
 
 ![The release upgrade as a state machine, in two panels. Phased upgrade, which Keystone, Glance, Cinder, Nova and Neutron share: a spec release one release ahead of installedRelease starts Expanding, and a release that does not parse, is older or skips a release is rejected with VersionParseError, DowngradeNotSupported or UpgradePathInvalid while the old image keeps running. The Database step moves the upgrade from Expanding to Migrating and on to RollingUpdate as each phase Job completes, the Deployment step moves it to Contracting once every replica runs the new image, and the Database step ends it when the contract Job completes and installedRelease becomes the target. A phase Job that used up its retries holds its phase as ExpandFailed, MigrateFailed or ContractFailed. A spec that changes to a third release holds the upgrade as UpgradeTargetChanged until it names the target again. Setting the spec back to installedRelease aborts from every phase: that is safe during Expanding, Migrating and RollingUpdate and unsafe during Contracting, where the old release would meet a contracted schema. Single pass, which Barbican and Placement run: one db-sync Job on the new image, the same rejections plus ImageReleaseMismatch, the failure state DBSyncFailed, no phases and no abort.](../diagrams/service-upgrade-phases.svg)
 
-::: warning Upgrade constraints
+### Upgrade constraints
+
 Only **sequential** upgrades are supported. `2026.1 → 2026.2` is the one step
 the release floor leaves today, and a `YYYY.2 → YYYY+1.1` step such as
 `2026.2 → 2027.1` is sequential too. A **downgrade** is rejected at ControlPlane
@@ -168,7 +170,6 @@ Keystone DB migrations are not reversible`. A **skip-level** jump (e.g.
 the keystone-operator refuses to run.
 
 Full contract in [Keystone Upgrade Flow](../reference/keystone/keystone-upgrade-flow.md).
-:::
 
 ### Minimum supported release
 
@@ -236,9 +237,9 @@ Secret may still contain the old key immediately after the Job finishes.
 Creating a Job from the CronJob is not a CR edit, so it is valid against the
 operator-owned child.
 
-A Job you create from the CronJob enters the figure at step 1. The
+Creating a Job from the CronJob enters the six-step flow at step 1; see the
 [reconciler reference](../reference/keystone/keystone-reconciler.md#key-rotation-rbac-split)
-lists the steps.
+for the sequence.
 
 ![Staged rotation of Fernet keys in six numbered steps. The CronJob mounts the production Secret read-only, runs keystone-manage fernet_rotate on a copy and patches the result onto a staging Secret, the only Secret its Role may write. The keystone-operator validates the staged keys, replaces the data of the production Secret and deletes the staging Secret. A rejected payload raises the event RotationRejected, the staging data is cleared and the production Secret stays as it was. The kubelet projects the new keys into the running Keystone pods without a rollout, and a PushSecret copies them to OpenBao as a backup. Credential keys follow the same path with credential_rotate and credential_migrate.](../diagrams/secrets-rotation-keys.svg)
 
@@ -261,7 +262,7 @@ kubectl -n openstack describe keystone controlplane-keystone | grep FernetKeysRo
   child's `maxActiveKeys` is exceeded, so tokens issued before rotation remain
   valid through the overlap window.
 - **No Deployment rollout happens.** Running pods pick up the new keys via the
-  in-place Secret projection (~60s). Their UIDs stay unchanged.
+  in-place Secret projection (about 60 seconds), so their UIDs stay unchanged.
 - Credential keys rotate the same way and are **always managed**. Swap `fernet` for
   `credential` in the CronJob name:
 
@@ -275,16 +276,16 @@ For the full staging-aware verification flow, the operator's validation contract
 recovery from a rejected rotation (`RotationRejected`), see
 [Rotate Keystone Fernet and Credential Keys](./keystone/keystone-key-rotation.md).
 
-::: tip Cleanup
-Manual rotation Jobs are not garbage-collected automatically and accumulate if you run
-them often. Delete them after verification:
+Manual rotation Jobs are not garbage-collected automatically. Delete them after
+verification to keep them from accumulating:
 
 ```bash
 kubectl -n openstack get jobs -o name \
   | grep -E '/controlplane-keystone-(fernet|credential)-rotate-manual-' \
-  | xargs -r kubectl -n openstack delete
+  | while IFS= read -r job; do
+      kubectl -n openstack delete "$job"
+    done
 ```
-:::
 
 ---
 
@@ -335,8 +336,12 @@ so the services that wait for Keystone keep reconciling.
 
 Rotations the operator drives wait for the resume too. The Fernet and
 credential-key CronJobs keep firing, but the operator commits the staged keys
-only after the resume. A credential rotated outside the CR, such as a
-KeystoneUser password schedule or an ESO resync, reaches the pods only then.
+only after the resume. Other controllers keep their own schedules: the c5c3
+operator continues KeystoneUser password rotations, and ESO can refresh the
+database credential. While Keystone is suspended, its operator does not update
+the derived DB-connection Secret or roll the Deployment to use a refreshed
+credential; the running pods keep the credential they already have until the
+Keystone CR resumes reconciliation.
 Deleting a suspended CR still runs its finalizer cleanup.
 
 The delayed database credential limits how long a ControlPlane child with
@@ -385,9 +390,9 @@ describe where the pass stops.
 
 ## Standalone Keystone, without a ControlPlane
 
-On the [Quick Start](../quick-start.md) / [Quick Start (Extended)](../quick-start-extended.md)
-devstacks a standalone Keystone CR named `keystone` runs with no ControlPlane
-projecting it. Drive these operations directly on that CR.
+On the [Quick Start](../quick-start.md) and [Quick Start (Extended)](../quick-start-extended.md)
+devstacks, a standalone Keystone CR named `keystone` runs without a ControlPlane
+projecting it.
 
 **Scale** by patching `spec.deployment.replicas`:
 
@@ -417,6 +422,14 @@ upgrade stalls at its first phase that needs it, `Expanding`, which runs
 
 ```bash
 docker pull ghcr.io/c5c3/keystone:2026.1
+kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name cobaltcore
+```
+
+With Podman, keep `KIND_EXPERIMENTAL_PROVIDER=podman` exported from the
+Quick Start prerequisites and load the image into that provider:
+
+```bash
+podman pull ghcr.io/c5c3/keystone:2026.1
 kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name cobaltcore
 ```
 
