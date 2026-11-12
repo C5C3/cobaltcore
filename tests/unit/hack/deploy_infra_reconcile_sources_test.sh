@@ -40,11 +40,17 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 #     invocation to ${KUBECTL_ANNOTATE_LOG}
 # All other invocations exit 0 silently. The stub captures argv into the log
 # in a fixed format so the test can assert on each annotate call.
+# Beside the stub, <dir> links the real dirname and date: sourcing the script
+# runs dirname, and the annotation value comes from date. Without dirname,
+# Bash 5.2 still sourced the script (it accepts cd ""), while Bash 5.3 stops
+# with "cd: null directory".
 install_kubectl_stub() {
   local dir="$1"
   local helm_repos="$2"
   local oci_repos="$3"
   mkdir -p "$dir"
+  ln -sf "$(command -v dirname)" "$dir/dirname"
+  ln -sf "$(command -v date)" "$dir/date"
   local log_file="${KUBECTL_ANNOTATE_LOG}"
 
   cat >"$dir/kubectl" <<STUB
@@ -68,8 +74,8 @@ STUB
 }
 
 # Source the script and call the function under test in a subshell with PATH
-# pointing at the stub. Echoes combined stdout/stderr; returns the exit
-# status.
+# pointing at the stub directory alone. Echoes combined stdout/stderr; returns
+# the exit status.
 run_reconcile() {
   local stub_dir="$1"
   (
@@ -117,6 +123,8 @@ test_reconcile_annotates_each_repo() {
 
   assert_file_contains "annotate uses reconcile.fluxcd.io/requestedAt key" \
     "$KUBECTL_ANNOTATE_LOG" "reconcile.fluxcd.io/requestedAt="
+  assert_file_contains "the requestedAt value is the timestamp date printed" \
+    "$KUBECTL_ANNOTATE_LOG" "reconcile.fluxcd.io/requestedAt=[0-9]"
   # Pattern is "overwrite" (not "--overwrite") because grep would interpret
   # the leading "--" as end-of-options and assert_file_contains has no escape
   # hatch for that.
