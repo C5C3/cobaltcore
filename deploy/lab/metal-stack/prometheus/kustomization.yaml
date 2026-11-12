@@ -15,10 +15,8 @@
 #   - The render holds no Namespace. The base overlay declares monitoring
 #     (deploy/flux-system/namespaces.yaml) and gives it the Gardener opt-out
 #     label and the chaos-mesh.org/inject annotation (../base/kustomization.yaml).
-#     The kind overlay declares monitoring without either, so a second apply
-#     of that Namespace would remove both. The patch deletes the Namespace
-#     from the render, and this overlay never touches the object; a patch that
-#     restated the label would still drop the annotation.
+#     The prometheus-managed composition omits that Namespace. This overlay
+#     never touches the object, so it cannot overwrite either field.
 #   - The scrape jobs of etcd, the scheduler, the controller manager and
 #     kube-proxy are off. The first three run in Gardener's seed, and the
 #     shoot's kube-proxy pods carry app: kubernetes and role: proxy, not the
@@ -86,16 +84,9 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../../../kind/prometheus
+  - ../../../kind/prometheus-managed
 
 patches:
-  - patch: |
-      $patch: delete
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: monitoring
-
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2

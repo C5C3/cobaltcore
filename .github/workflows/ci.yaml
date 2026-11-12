@@ -483,6 +483,7 @@ jobs:
               - 'tests/e2e/keystone/prometheus-stack/**'
               - 'tests/e2e/horizon/prometheus-stack/**'
               - 'deploy/kind/prometheus/**'
+              - 'deploy/kind/prometheus-managed/**'
               - 'operators/keystone/dashboards/**'
               - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
               - 'operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml'

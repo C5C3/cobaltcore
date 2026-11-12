@@ -2,23 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Kustomization for CRD-dependent infrastructure resources.
-# These resources require their operator CRDs to be installed first.
-# Apply AFTER the base kustomization (deploy/flux-system/) and operator
-# CRDs are available. See docs/reference/infrastructure-manifests.md for
-# deployment instructions.
----
+# Legacy reference instances. Apply only after their controllers and CRDs exist.
+# TLS has one resource list, also used by the public TLS stage.
+# See ../README.md and ../../bases/README.md for staged consumption.
+
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-
 resources:
-  - tls/cluster-issuer.yaml
-  - tls/db-ca-issuer.yaml
-  - tls/ovn-ca-issuer.yaml
+  - tls
   - mariadb.yaml
   - memcached.yaml
   - garage.yaml
-  - tls/openbao-ca-issuer.yaml
-  - tls/openbao-tls-cert.yaml
-  - tls/openbao-client-tls-cert.yaml
   - ../../eso

@@ -132,7 +132,7 @@ test_files() {
     "$LAB_PROMETHEUS_DIR/kustomization.yaml" "SPDX-FileCopyrightText: Copyright 2026 SAP SE"
   assert_file_contains "kustomization.yaml has SPDX-License-Identifier: Apache-2.0" \
     "$LAB_PROMETHEUS_DIR/kustomization.yaml" "SPDX-License-Identifier: Apache-2.0"
-  assert_eq "kustomization.yaml lists ../../../kind/prometheus alone" "../../../kind/prometheus" \
+  assert_eq "kustomization.yaml lists the namespace-free Prometheus composition" "../../../kind/prometheus-managed" \
     "$(resource_entries "$LAB_PROMETHEUS_DIR/kustomization.yaml")"
 }
 

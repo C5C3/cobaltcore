@@ -1417,15 +1417,15 @@ test_main_gates() {
   assert_before "the gate opens before the port-mapping warning" "$probe_gate" "$probe_warning"
   assert_before "and closes after it" "$probe_warning" "$probe_gate_end"
 
-  # WITH_PROMETHEUS=true: the overlay root's prometheus/, deploy/kind/prometheus
-  # in kind mode, after the Keystone dashboard is staged where both read it.
-  local prometheus_apply='kubectl apply -k "${OVERLAY_ROOT}/prometheus"'
+  # WITH_PROMETHEUS=true: the external overlay's prometheus/ or the kind
+  # namespace-free prometheus-managed composition, after the Keystone dashboard is staged where both read it.
+  local prometheus_apply='kubectl apply -k "${PROMETHEUS_OVERLAY_ROOT}"'
   assert_file_contains_fixed "Step 3 applies the overlay root's prometheus/" \
     "$DEPLOY_INFRA_SH" "$prometheus_apply"
   assert_file_not_contains "Step 3 no longer hardcodes the kind Prometheus overlay" \
     "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"'
   assert_file_contains_fixed "the apply logs the directory it applied" \
-    "$DEPLOY_INFRA_SH" 'log "Prometheus overlay ${OVERLAY_ROOT}/prometheus applied (WITH_PROMETHEUS=true)."'
+    "$DEPLOY_INFRA_SH" 'log "Prometheus overlay ${PROMETHEUS_OVERLAY_ROOT} applied (WITH_PROMETHEUS=true)."'
   assert_before "the Keystone dashboard is staged into deploy/kind/prometheus/ before the apply" \
     "$(line_of '"${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"')" "$(line_of "$prometheus_apply")"
 

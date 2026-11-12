@@ -8,8 +8,12 @@ quadrant: infrastructure
 Reference documentation for the FluxCD infrastructure manifests. These manifests
 define HelmRepository sources, HelmRelease operators, and infrastructure custom resources
 that provision the shared platform services required by OpenStack operators. Deployment is
-split into two phases: base resources (namespaces, sources, releases) and CRD-dependent
-infrastructure resources (applied after operators install their CRDs).
+split into two phases in the legacy aggregate: base resources (namespaces, sources,
+releases) and CRD-dependent infrastructure resources (applied after operators
+install their CRDs). The public `deploy/bases/` catalog exposes five narrower
+stages for deployment repositories; see
+[Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure) for
+the complete catalog, compatibility aliases and environment compositions.
 
 ## Directory Layout
 
@@ -20,6 +24,7 @@ deploy/
     ├── namespaces.yaml                   Namespace resources for all components
     ├── fluxinstance.yaml                 FluxInstance CR driving the flux-operator
     ├── sources/                          Flux sources (HelmRepository, OCIRepository, GitRepository)
+    │   ├── kustomization.yaml            Canonical source catalog
     │   ├── cert-manager.yaml             Jetstack Helm chart registry
     │   ├── mariadb-operator.yaml         MariaDB Operator Helm chart registry
     │   ├── external-secrets.yaml         External Secrets Operator Helm chart registry
@@ -32,13 +37,16 @@ deploy/
     │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
     │   └── garage-operator.yaml          Garage Operator OCI chart registry
     ├── releases/                         HelmRelease CRs and three Flux Kustomizations
+    │   ├── kustomization.yaml            Controller catalog; excludes shared OpenBao and c5c3
     │   ├── cert-manager.yaml             cert-manager
     │   ├── prometheus-operator-crds.yaml Prometheus Operator CRDs
     │   ├── mariadb-operator-crds.yaml    MariaDB Operator CRDs
     │   ├── mariadb-operator.yaml         MariaDB Operator
     │   ├── external-secrets.yaml         External Secrets Operator
     │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
-    │   ├── openbao.yaml                  OpenBao HA Raft cluster
+    │   ├── openbao/                      Shared OpenBao leaf root
+    │   │   ├── kustomization.yaml
+    │   │   └── helmrelease.yaml          OpenBao HA Raft cluster
     │   ├── openbao-operator.yaml         OpenBao Operator (per-service OpenBao instances)
     │   ├── garage-operator.yaml          Garage Operator
     │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
@@ -53,18 +61,22 @@ deploy/
     │   ├── k-orc.yaml                    K-ORC (Flux Kustomization over config/default)
     │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator (Flux Kustomization over config/installation)
     │   ├── messaging-topology-operator.yaml RabbitMQ Messaging Topology Operator (Flux Kustomization over config/installation)
-    │   └── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
+    │   └── c5c3-operator/                ControlPlane operator leaf root
+    │       ├── kustomization.yaml
+    │       └── helmrelease.yaml          c5c3-operator (from c5c3-charts)
     └── infrastructure/                   CRD-dependent infrastructure resources
-        ├── kustomization.yaml            Infrastructure kustomization, also lists ../../eso
-        ├── cluster-issuer.yaml           Self-signed ClusterIssuer (requires cert-manager CRDs)
-        ├── db-ca-issuer.yaml             OpenStack DB CA Certificate + ClusterIssuer
-        ├── ovn-ca-issuer.yaml            OVN CA Certificate + ClusterIssuer
+        ├── kustomization.yaml            Includes tls/, static instances and ../../eso
         ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack (with TLS)
         ├── memcached.yaml                Memcached cluster for OpenStack
         ├── garage.yaml                   Garage object store (GarageCluster, GarageBuckets, GarageKey)
-        ├── openbao-ca-issuer.yaml        OpenBao CA Certificate + ClusterIssuer
-        ├── openbao-tls-cert.yaml         OpenBao server Certificate
-        └── openbao-client-tls-cert.yaml  OpenBao client Certificates
+        └── tls/                          Shared TLS leaf root
+            ├── kustomization.yaml
+            ├── cluster-issuer.yaml       Self-signed ClusterIssuer (requires cert-manager CRDs)
+            ├── db-ca-issuer.yaml         OpenStack DB CA Certificate + ClusterIssuer
+            ├── ovn-ca-issuer.yaml        OVN CA Certificate + ClusterIssuer
+            ├── openbao-ca-issuer.yaml    OpenBao CA Certificate + ClusterIssuer
+            ├── openbao-tls-cert.yaml     OpenBao server Certificate
+            └── openbao-client-tls-cert.yaml OpenBao client Certificates
 ```
 
 The proving `OpenBaoCluster` instance is **not** part of this tree. It is CI/dev-only and
@@ -2216,31 +2228,36 @@ with a namespace filter and a pod that loads the kernel modules; see
 
 ### kube-prometheus-stack (kind-only opt-in)
 
-**File:** `deploy/kind/prometheus/kustomization.yaml`
+**Files:** `deploy/kind/prometheus/kustomization.yaml` (standalone compatibility root),
+`deploy/kind/prometheus-managed/kustomization.yaml` (composed deploy flow)
 
 [`kube-prometheus-stack`](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
 ships as a separate **opt-in** kind overlay. The default
-`make deploy-infra` flow does **not** install it — the `monitoring`
-namespace stays absent, and Prometheus / Grafana / the prometheus-operator
-pods do not consume any of the kind node's CPU or memory budget unless a
-contributor explicitly opts in. The production `deploy/flux-system/` overlay
+`make deploy-infra` flow does **not** install it. The base already declares
+`monitoring` for the Prometheus Operator CRDs; Prometheus / Grafana / the
+prometheus-operator pods do not consume any of the kind node's CPU or memory
+budget unless a contributor explicitly opts in. The production `deploy/flux-system/` overlay
 also does not install the stack: production clusters are expected to run
 their own Prometheus and widen its `serviceMonitorSelector` to pick up the
 keystone-operator chart's `ServiceMonitor` (see
 [Enable Keystone Operator Metrics](../../guides/keystone/enable-keystone-operator-metrics.md)
 for that wiring path).
 
-The overlay is self-contained: the `Namespace` and `HelmRelease` live in
+The standalone root retains its `Namespace` and `HelmRelease` in
 `deploy/kind/prometheus/namespace.yaml` and
 `deploy/kind/prometheus/release.yaml`, and the upstream `prometheus-community`
 HelmRepository in `deploy/flux-system/sources/prometheus-community.yaml` is
 **reused** (it is already present for the `prometheus-operator-crds`
 HelmRelease in the production base, so no new source manifest is added to
-the production tree). The overlay bundles the resources with:
+the production tree). The `prometheus-managed` root imports that directory
+and removes only its Namespace. `make deploy-infra` uses this managed root in
+kind mode, so the base remains the sole Namespace owner. The lab imports it
+too. The standalone root remains available to direct consumers that need the
+Namespace. Both roots use the same chart settings:
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `monitoring` (created inline; no PodSecurity label override required) |
+| Target namespace | `monitoring` (owned by the platform base in composed flows; the standalone root includes it) |
 | Chart | `kube-prometheus-stack` |
 | Version constraint | `>=65.0.0 <70.0.0` |
 | Source | `prometheus-community` HelmRepository (reused from `deploy/flux-system/sources/`) |
@@ -2273,16 +2290,17 @@ manual API call. Because the dashboard JSON lives outside the overlay
 directory, `hack/deploy-infra.sh` performs an idempotent copy
 into `deploy/kind/prometheus/keystone-operator.json` immediately before
 `kubectl apply -k` runs — this satisfies kustomize's default
-`LoadRestrictionsRootOnly` constraint (the overlay has no `../` references)
-without requiring `--load-restrictor=LoadRestrictionsNone`.
+`LoadRestrictionsRootOnly` constraint: the generator reads a local file,
+and the managed and lab roots import directories. No caller needs
+`--load-restrictor=LoadRestrictionsNone`.
 
 **Local validation (`make stage-prometheus-dashboard`).** The staged
 `deploy/kind/prometheus/keystone-operator.json` is git-ignored — the
 canonical file lives only at `operators/keystone/dashboards/keystone-operator.json`.
-Developers who want to run `kustomize build deploy/kind/prometheus/`,
-`kubectl apply -k deploy/kind/prometheus/`, or `chainsaw lint` against the
-overlay **without** running `WITH_PROMETHEUS=true make deploy-infra` first
-must stage the dashboard manually:
+Developers who want to render or apply `deploy/kind/prometheus/`,
+`deploy/kind/prometheus-managed/` or the lab Prometheus overlay, or run
+`chainsaw lint` against the overlay **without** running
+`WITH_PROMETHEUS=true make deploy-infra` first must stage the dashboard manually:
 
 ```bash
 make stage-prometheus-dashboard
@@ -2324,9 +2342,9 @@ walkthrough — port-forward, default Grafana credentials, the bundled
 **Posture summary.** Reviewers checking new kind-only opt-ins should treat
 this entry as a parallel of the `Chaos Mesh (kind-only opt-in)` example
 above: the production omission is explicit, the opt-in flag has a single
-documented name (`WITH_PROMETHEUS`), and the kind overlay is self-contained
-under `deploy/kind/prometheus/` so the production kustomization root is
-untouched. The
+documented name (`WITH_PROMETHEUS`), and the chart resources remain under
+`deploy/kind/prometheus/`. The `prometheus-managed/` composition leaves the
+base Namespace untouched. The
 [`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/cobaltcore/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
 review pattern catalogues the full surface area.
 
@@ -3046,7 +3064,7 @@ overlay to the lab, and who applies each directory.
 [Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure)
 lists every directory with its base.
 
-![The kustomize overlays under deploy/ in three columns: production, kind and the lab on metal-stack. An arrow runs from a directory to the overlay that takes it as its base. deploy/flux-system is the base of deploy/kind/base, which is the base of deploy/lab/metal-stack/base. deploy/flux-system/infrastructure, which includes deploy/eso, is the base of deploy/kind/infrastructure, which is the base of deploy/lab/metal-stack/infrastructure. The kind overlays add Envoy Gateway, the Gateway, the certificates and the ExternalSecrets and patch the stack down to one node. The lab overlays remove the storage class, label the Namespaces, give the Gateway one listener on *.nip.io, and replace the kind EnvoyProxy and certificates with a LoadBalancer EnvoyProxy and the lab CA. The four opt-in directories chaos-mesh, dizzy, nfs and prometheus exist under deploy/kind, and the lab directory of the same name takes each as its base. The lab hypervisor-fixtures take the kind hypervisor-operator-fixtures as their base. Without a base are metrics-server, vpa, messaging, controlplane and fake-compute under deploy/kind, and controlplane, probe, migration-ports, dizzy-soak, hypervisor, controlplane-nfs, ceph and ceph/cluster under the lab. A person applies the two production directories, the fixtures, the controlplane directories, fake-compute and the lab directories without a base with kubectl, except dizzy-soak, which make dizzy-soak-start applies, and ceph and ceph/cluster, which make deploy-infra applies in Steps 3 and 5 under WITH_CEPH=true. make deploy-infra applies the base overlay in Step 3 and the infrastructure overlay in Step 5, from the kind column or, under EXTERNAL_CLUSTER=true, from the lab column. deploy/examples/sizing-overlay is a template for a production overlay of the same shape. Deployment repositories can reconcile five Flux stages independently and package the OpenBao bootstrap scripts and policies as ConfigMaps.](../../diagrams/deploy-overlay-inheritance.svg)
+![Deployment composition in three sections. First, five public bases under deploy/bases wrap the retained implementation roots, and the old deploy/gitops/bases paths alias those public bases. Operators uses the legacy aggregate with three exclusions and Namespace prune protection; TLS, shared-openbao, eso-store and controlplane-operator wrap their respective leaves. Second, the legacy aggregate composes sources, controller releases, shared OpenBao and c5c3; infrastructure composes TLS and ESO with static instances. Examples customize the aggregate or the public stages, and OpenBao bootstrap and policies package ConfigMaps. Third, arrows run from a directory to the overlay that lists it as a resource: legacy base and infrastructure to kind and then metal-stack; standalone Prometheus to prometheus-managed and then lab Prometheus; kind chaos-mesh, dizzy, nfs and hypervisor fixtures to their lab equivalents. The managed Prometheus path omits the Namespace already owned by the platform base. Other kind and lab roots are listed with their appliers. Arrows show composition, not readiness or reconciliation order.](../../diagrams/deploy-overlay-inheritance.svg)
 
 The patches remove the kind pin `standard` from the OpenBao, MariaDB and
 Garage volumes. The lab has a `standard` class too, so the pin would bind to it
@@ -3101,7 +3119,7 @@ checks the cluster for a default StorageClass, for the absence of a
 `spec.network.dnsEndpointIPs` for a host-networked resolver) and for a Ready
 node, and prints the Gateway's hostnames and the command that saves the lab CA
 when it completes. Under `WITH_PROMETHEUS=true` it applies `prometheus/` in place of
-`deploy/kind/prometheus`, and it refuses that flag for an overlay without one.
+`deploy/kind/prometheus-managed`, and it refuses that flag for an overlay without one.
 `WITH_CEPH=true` has no kind overlay: the kind mode refuses it, and this mode
 accepts it only for an overlay with both `ceph/` and `ceph/cluster/`.
 The teardown removes the stack in finalizer order and leaves the
@@ -4421,7 +4439,7 @@ Prometheus and Grafana of the
 with the metrics on a volume, the scrape jobs a Gardener shoot can feed, and a
 dashboard for openstack-hypervisor-operator (hvo). `hack/deploy-infra.sh`
 applies the directory in Step 3 when `WITH_PROMETHEUS=true` is set beside
-`EXTERNAL_CLUSTER=true`, in place of `deploy/kind/prometheus`. The flag
+`EXTERNAL_CLUSTER=true`, in place of `deploy/kind/prometheus-managed`. The flag
 composes onto the deploy command of the
 [Quick Start (metal-stack)](../../quick-start-metal-stack.md), which does not
 need it:
@@ -4430,15 +4448,16 @@ need it:
 EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_PROMETHEUS=true make deploy-infra
 ```
 
-The kustomization takes `deploy/kind/prometheus` as its one resource, deletes
-its Namespace and patches its HelmRelease. Its render holds three objects in
-`monitoring`: the HelmRelease `kube-prometheus-stack` and the ConfigMaps
+The kustomization takes `deploy/kind/prometheus-managed` as its one resource
+and patches its HelmRelease. That managed root imports the standalone
+`deploy/kind/prometheus` root and removes its Namespace. The lab render holds
+three objects in `monitoring`: the HelmRelease `kube-prometheus-stack` and the ConfigMaps
 `keystone-operator-dashboard` and `hypervisor-operator-dashboard`. The
 storage follows the decision D7 of #1219.
 
 | Property | Kind | Lab |
 | --- | --- | --- |
-| Namespace `monitoring` | declared by the overlay, without labels | not in the render. The base overlay declares it with the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled` (see [Lab overlay](#lab-overlay)), and a second apply of the kind Namespace would remove both |
+| Namespace `monitoring` | omitted by `prometheus-managed`; the standalone `prometheus` root still includes it | not in the render. The base overlay declares it with the label `apiserver-proxy.networking.gardener.cloud/inject: disable` and the annotation `chaos-mesh.org/inject: enabled` (see [Lab overlay](#lab-overlay)), and a second apply of the kind Namespace would remove both |
 | Scrape jobs | the chart's defaults | `kubeEtcd`, `kubeScheduler`, `kubeControllerManager` and `kubeProxy` off. Gardener runs etcd, the scheduler and the controller manager in the seed. The chart's kube-proxy Service selects `k8s-app: kube-proxy`, while the shoot's kube-proxy pods carry `app: kubernetes` and `role: proxy`. Each of the four Services in `kube-system` would select nothing. `apiserver`, `coredns` and `kubelet` stay on |
 | Retention | `6h` | `7d`, bounded by `retentionSize: 8GB` |
 | Storage | emptyDir | a volume claim template of 10Gi, `ReadWriteOnce`, without a `storageClassName` |

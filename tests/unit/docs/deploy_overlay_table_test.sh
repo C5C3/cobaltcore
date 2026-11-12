@@ -16,9 +16,10 @@
 # .drawio and of the .svg, by its path or by its last path element as a word
 # of its own, and every label that is a path deploy/<path> names a
 # directory. The figure groups the kind and lab directories of one name in a
-# box each ("chaos-mesh, dizzy, nfs, prometheus" under "four directories
-# under deploy/kind"), so a last path element that several directories share
-# (base, chaos-mesh, controlplane, dizzy, infrastructure, nfs, prometheus)
+# box each ("chaos-mesh, dizzy, nfs" under "deploy/kind", with
+# Prometheus on its own composition row), so a last path element that several
+# directories share (base, chaos-mesh, controlplane, dizzy, infrastructure, nfs,
+# prometheus)
 # satisfies this check for all of them at once, and the check does not tell
 # those directories apart. check_overlay_table prints one problem per line,
 # sorted, and nothing when the table and the figure match the tree. The

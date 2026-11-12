@@ -1,11 +1,10 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Compatibility entry point; the public catalog is deploy/bases/.
+
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-- ../../../flux-system/releases/openbao
-patches:
-- target:
-    kind: HelmRelease
-    name: openbao
-  patch: |-
-    - op: remove
-      path: /spec/values/server/dataStorage/storageClass
+  - ../../../bases/shared-openbao

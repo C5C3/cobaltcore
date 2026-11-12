@@ -23,8 +23,9 @@
 # The same page counts the base kustomization three times: the Resource
 # count line and the category table of "### Base Kustomization", and the
 # sentence under "### Step 1: Apply base resources" that starts with "This
-# applies". check_resource_counts reads the files the top-level resources:
-# list of deploy/flux-system/kustomization.yaml names, counts their documents
+# applies". check_resource_counts follows local resources: directory entries
+# from deploy/flux-system/kustomization.yaml, reads the selected leaf files and
+# counts their documents
 # by kind and holds the three places to the files: the file count, the count
 # and the names of every kind, the Total row, and every number of the
 # sentence, where "sources" is the sum of the *Repository kinds.
@@ -173,14 +174,14 @@ check_flux_dependencies() {
 # Resource counts of the base kustomization
 # ---------------------------------------------------------------------------
 
-# The files of the top-level resources: list of a kustomization.yaml, one per
+# The entries of the top-level resources: list of a kustomization.yaml, one per
 # line, without the comment that may follow an entry.
 # shellcheck disable=SC2016 # an awk program, not shell
 RESOURCES_AWK='
 function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
 /^resources:/ { list = 1; next }
+list && /^[ \t]*-[ \t]+/ { s = $0; sub(/^[ \t]*-[ \t]+/, "", s); sub(/[ \t]+#.*$/, "", s); print trim(s); next }
 list && /^[^ \t#]/ { list = 0 }
-list && /^  - / { s = $0; sub(/^  - /, "", s); sub(/[ \t]+#.*$/, "", s); print trim(s) }
 '
 
 # One line per document with a kind: kind and name, separated by a tab.
@@ -301,6 +302,72 @@ END {
 }
 '
 
+# collect_resource_files <directory>: follow local Kustomize compositions,
+# counting leaf manifest files rather than the kustomization files themselves.
+# Uses the dynamically scoped arrays/problems of check_resource_counts so it
+# works on Bash 3.2 without associative arrays or a YAML-library dependency.
+# Directory identity is physical, so aliases containing ./ or ../ cannot hide
+# cycles or repeated selection. Errors are reported instead of silently counting
+# a resource twice. This is a source-file inventory, not a Kustomize renderer.
+collect_resource_files() {
+  local dir="$1" kfile="" candidate physical_dir entry path identity seen
+  local kfiles=()
+
+  physical_dir="$(cd "$dir" && pwd -P)" || return
+  if [[ ${#count_active_dirs[@]} -gt 0 ]]; then
+    for seen in "${count_active_dirs[@]}"; do
+      if [[ "$seen" == "$physical_dir" ]]; then
+        problems="${problems}resource directory cycle: $dir"$'\n'
+        return
+      fi
+    done
+  fi
+  if [[ ${#count_seen_dirs[@]} -gt 0 ]]; then
+    for seen in "${count_seen_dirs[@]}"; do
+      if [[ "$seen" == "$physical_dir" ]]; then
+        problems="${problems}resource directory selected twice: $dir"$'\n'
+        return
+      fi
+    done
+  fi
+  for candidate in kustomization.yaml kustomization.yml Kustomization; do
+    [[ ! -f "$dir/$candidate" ]] || kfiles+=("$dir/$candidate")
+  done
+  if [[ ${#kfiles[@]} -eq 0 ]]; then
+    problems="${problems}missing $dir/kustomization.yaml"$'\n'
+    return
+  fi
+  if [[ ${#kfiles[@]} -ne 1 ]]; then
+    problems="${problems}multiple kustomization files: $dir"$'\n'
+    return
+  fi
+  kfile="${kfiles[0]}"
+  count_seen_dirs+=("$physical_dir")
+  count_active_dirs+=("$physical_dir")
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    path="$dir/$entry"
+    if [[ -d "$path" ]]; then
+      collect_resource_files "$path"
+    elif [[ -f "$path" ]]; then
+      identity="$(cd "$(dirname "$path")" && pwd -P)/$(basename "$path")"
+      seen=""
+      if [[ ${#files[@]} -gt 0 ]]; then
+        for seen in "${files[@]}"; do
+          if [[ "$seen" == "$identity" ]]; then
+            problems="${problems}resource file selected twice: $entry ($kfile)"$'\n'
+            break
+          fi
+        done
+      fi
+      [[ "$seen" == "$identity" ]] || files+=("$identity")
+    else
+      problems="${problems}not a file: $entry ($kfile)"$'\n'
+    fi
+  done < <(awk "$RESOURCES_AWK" "$kfile")
+  unset "count_active_dirs[$((${#count_active_dirs[@]} - 1))]"
+}
+
 # check_resource_counts <flux-system-dir> <page>: print one problem per
 # line, sorted, and nothing when the Resource count line, the category table
 # and the sentence under Step 1 of the page state what the files of the
@@ -309,23 +376,21 @@ END {
 check_resource_counts() {
   local dir="$1" page="$2"
   local kfile="$dir/kustomization.yaml"
-  local entry docs statements problems=""
+  local docs statements problems=""
   local files=()
+  local count_seen_dirs=() count_active_dirs=()
 
   if [[ ! -f "$kfile" ]]; then
     echo "missing $kfile"
     return
   fi
-  while IFS= read -r entry; do
-    [[ -n "$entry" ]] || continue
-    if [[ -f "$dir/$entry" ]]; then
-      files+=("$dir/$entry")
-    else
-      problems="${problems}not a file: $entry ($kfile)"$'\n'
-    fi
-  done < <(awk "$RESOURCES_AWK" "$kfile")
+  collect_resource_files "$dir"
   if [[ ${#files[@]} -eq 0 ]]; then
-    echo "no file under resources in $kfile"
+    if [[ -n "$problems" ]]; then
+      printf '%s' "$problems" | LC_ALL=C sort -u
+    else
+      echo "no file under resources in $kfile"
+    fi
     return
   fi
   if [[ ! -f "$page" ]]; then
@@ -574,6 +639,52 @@ HelmReleases.
 
 ### Step 2: Apply infrastructure resources
 EOF2
+  printf '%s\n' "$root"
+}
+
+# The same six files/seven resources through directory catalogs, including a
+# second level like releases/openbao. An unselected YAML file proves this is
+# resource traversal rather than a recursive filesystem glob.
+build_nested_counts_fixture() {
+  local root
+  root="$(build_counts_fixture)"
+  cat >"$root/flux/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - fluxinstance.yaml
+  - sources
+  - releases
+EOF
+  cat >"$root/flux/sources/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - alpha.yaml
+EOF
+  cat >"$root/flux/releases/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - alpha.yaml
+  - beta.yaml
+  - kappa
+EOF
+  mkdir "$root/flux/releases/kappa"
+  mv "$root/flux/releases/kappa.yaml" "$root/flux/releases/kappa/release.yaml"
+  cat >"$root/flux/releases/kappa/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- release.yaml
+EOF
+  cat >"$root/flux/releases/unselected.yaml" <<'EOF'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: outside-the-composition
+EOF
   printf '%s\n' "$root"
 }
 
@@ -847,6 +958,39 @@ test_counts_consistent_fixture_reports_nothing() {
   assert_eq "no problems" "" "$(check_counts "$root")"
 }
 
+test_counts_nested_directories_preserve_leaf_counts() {
+  echo "Test: nested catalogs retain the same file/document counts and exclude unselected files"
+
+  local root
+  root="$(build_nested_counts_fixture)"
+  assert_eq "the existing six-file, seven-resource documentation still matches" "" "$(check_counts "$root")"
+  rewrite "$root/flux/releases/kappa/release.yaml" 's/^  name: kappa/  name: changed/'
+  assert_eq "a nested resource change is still checked" \
+    'names differ: Kustomization: manifests only "changed", table only "kappa"' \
+    "$(check_counts "$root")"
+}
+
+test_counts_repeated_selection_and_cycles_are_reported() {
+  echo "Test: resource traversal rejects cycles and repeated file/directory selection"
+
+  local root
+  root="$(build_nested_counts_fixture)"
+  printf '  - ..\n' >>"$root/flux/sources/kustomization.yaml"
+  assert_eq "an ancestor cycle is reported without recursion or double counting" \
+    "resource directory cycle: $root/flux/sources/.." "$(check_counts "$root")"
+
+  root="$(build_nested_counts_fixture)"
+  printf '  - ./sources\n' >>"$root/flux/kustomization.yaml"
+  assert_eq "a directory cannot be selected twice under different spellings" \
+    "resource directory selected twice: $root/flux/./sources" "$(check_counts "$root")"
+
+  root="$(build_nested_counts_fixture)"
+  printf '  - sources/../releases/alpha.yaml\n' >>"$root/flux/kustomization.yaml"
+  assert_eq "a direct file cannot also be selected through a directory" \
+    "resource file selected twice: sources/../releases/alpha.yaml ($root/flux/kustomization.yaml)" \
+    "$(check_counts "$root")"
+}
+
 test_counts_table_row_differs() {
   echo "Test: a row whose count or names differ from the manifests is reported"
 
@@ -949,16 +1093,16 @@ test_counts_only_reports() {
   assert_eq "another header row" "no resource table in $root/page.md" "$(check_counts "$root")"
 
   root="$(build_counts_fixture)"
-  rewrite "$root/flux/kustomization.yaml" 's/^  - .*/  - sources/'
+  rewrite "$root/flux/kustomization.yaml" '/^  - /d'
   assert_eq "no file among the resources" "no file under resources in $root/flux/kustomization.yaml" \
     "$(check_counts "$root")"
 
-  # A directory among the files is reported beside the other checks, and its
-  # documents are not counted.
+  # A directory without a kustomization is reported beside the other checks;
+  # its unselected files are not counted.
   root="$(build_counts_fixture)"
   rewrite "$root/flux/kustomization.yaml" 's/^  - sources\/alpha.yaml/  - sources/'
   assert_eq "a directory among the files" \
-    "file count differs: manifests 5, page 6"$'\n'"not a file: sources ($root/flux/kustomization.yaml)"$'\n'"resource count differs: manifests 6, page 7"$'\n'"row without a kind: HelmRepository"$'\n'"step 1 differs: resources: manifests 6, page 7"$'\n'"step 1 differs: sources: manifests 0, page 1"$'\n'"step 1 names no kind: HelmRepository"$'\n'"total differs: manifests 6, table 7" \
+    "file count differs: manifests 5, page 6"$'\n'"missing $root/flux/sources/kustomization.yaml"$'\n'"resource count differs: manifests 6, page 7"$'\n'"row without a kind: HelmRepository"$'\n'"step 1 differs: resources: manifests 6, page 7"$'\n'"step 1 differs: sources: manifests 0, page 1"$'\n'"step 1 names no kind: HelmRepository"$'\n'"total differs: manifests 6, table 7" \
     "$(check_counts "$root")"
 }
 
@@ -999,6 +1143,8 @@ test_page_without_table_is_the_only_report
 test_missing_figure_file_is_the_only_report
 test_repository_table_and_figure_match_the_releases
 test_counts_consistent_fixture_reports_nothing
+test_counts_nested_directories_preserve_leaf_counts
+test_counts_repeated_selection_and_cycles_are_reported
 test_counts_table_row_differs
 test_counts_kind_and_row_without_partner
 test_counts_total_row

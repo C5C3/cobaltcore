@@ -469,6 +469,12 @@ else
   OVERLAY_ROOT="${REPO_ROOT}/deploy/kind"
   PUBLIC_PORT="${KIND_HOST_PORT}"
 fi
+# The base already owns monitoring. The built-in kind addon must not reapply
+# the standalone Namespace. External overlays retain their prometheus/ contract.
+PROMETHEUS_OVERLAY_ROOT="${OVERLAY_ROOT}/prometheus"
+if [[ "${EXTERNAL_CLUSTER}" != "true" ]]; then
+  PROMETHEUS_OVERLAY_ROOT="${OVERLAY_ROOT}/prometheus-managed"
+fi
 PUBLIC_SUFFIX="127-0-0-1.nip.io"
 # Set in Step 1 under PUBLIC_SOURCE_RANGES (resolve_public_source_ranges).
 PUBLIC_SOURCE_RANGES_RESOLVED=""
@@ -3676,10 +3682,10 @@ main() {
 
   # Opt-in kube-prometheus-stack overlay. Layered on top of
   # the base so the default Quick Start stays minimal; enable with
-  # WITH_PROMETHEUS=true. The kind mode applies deploy/kind/prometheus, which is
-  # self-contained (no `../../` parent-dir references); the external mode
-  # applies the overlay's prometheus/, which references deploy/kind/prometheus
-  # as a directory. kubectl's embedded kustomize renders both under the default
+  # WITH_PROMETHEUS=true. Kind uses prometheus-managed, leaving the monitoring
+  # Namespace owned by the base. External mode preserves the overlay's
+  # prometheus/ entry point; the built-in lab also uses the managed composition.
+  # kubectl's embedded kustomize renders both under the default
   # LoadRestrictionsRootOnly security check — same contract as the chaos-mesh
   # overlay (no `--load-restrictor` flag required, kubernetes/kubectl#948).
   #
@@ -3695,8 +3701,8 @@ main() {
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
     cp -f "${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json" "${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"
     log "Dashboard JSON copied into deploy/kind/prometheus/ for kustomize configMapGenerator (WITH_PROMETHEUS=true)."
-    kubectl apply -k "${OVERLAY_ROOT}/prometheus"
-    log "Prometheus overlay ${OVERLAY_ROOT}/prometheus applied (WITH_PROMETHEUS=true)."
+    kubectl apply -k "${PROMETHEUS_OVERLAY_ROOT}"
+    log "Prometheus overlay ${PROMETHEUS_OVERLAY_ROOT} applied (WITH_PROMETHEUS=true)."
   fi
 
   # Opt-in metrics-server overlay. Layered on top of the base so the default

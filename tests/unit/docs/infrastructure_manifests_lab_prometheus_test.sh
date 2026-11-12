@@ -219,7 +219,7 @@ test_names_from_sources() {
   assert_file_contains_fixed "the dashboard's uid is hypervisor-operator" \
     "$PROJECT_ROOT/deploy/lab/metal-stack/prometheus/hypervisor-operator.json" '"uid": "hypervisor-operator"'
   assert_file_contains_fixed "hack/deploy-infra.sh logs the apply the run expects" \
-    "$PROJECT_ROOT/hack/deploy-infra.sh" 'log "Prometheus overlay ${OVERLAY_ROOT}/prometheus applied (WITH_PROMETHEUS=true)."'
+    "$PROJECT_ROOT/hack/deploy-infra.sh" 'log "Prometheus overlay ${PROMETHEUS_OVERLAY_ROOT} applied (WITH_PROMETHEUS=true)."'
   assert_contains "the run expects that line with the lab overlay" "$RUN" \
     '`Prometheus overlay <clone>/deploy/lab/metal-stack/prometheus applied (WITH_PROMETHEUS=true).`'
   assert_file_contains_fixed "hack/teardown-infra.sh logs the claim delete the run expects" \

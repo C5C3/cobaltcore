@@ -7,7 +7,8 @@
 #
 # Bundles everything needed to render a working observability stack on a
 # kind cluster:
-#   1. The monitoring Namespace (declared inline so the overlay is self-contained — production overlays do NOT install kube-prometheus-stack, so the Namespace lives here, not in deploy/flux-system/namespaces.yaml).
+#   1. The monitoring Namespace for standalone use. The platform also declares
+#      it; deploy-infra uses ../prometheus-managed to leave its ownership there.
 #   2. The kube-prometheus-stack HelmRelease with kind-tuned values baked
 #      directly into release.yaml (no separate patch file — the production
 #      stack never references this release, so there is no upstream values
