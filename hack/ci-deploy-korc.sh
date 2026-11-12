@@ -6,13 +6,10 @@
 # hack/ci-deploy-korc.sh — Deploy K-ORC (OpenStack Resource Controller) into a
 # kind cluster from a pinned upstream commit.
 #
-# K-ORC does not publish a Helm chart. At release time upstream ships a single
-# flattened installer manifest as a release asset, but the c5c3-operator Owns()
-# the RoleAssignment and Region kinds, which no released K-ORC ships and which
-# only upstream main's controller reconciles. The Flux source
-# (deploy/flux-system/sources/k-orc.yaml) is therefore pinned to an upstream MAIN
-# COMMIT, and its Kustomization builds ./config/default with an image override
-# instead of applying the release-only ./dist/install.yaml.
+# The Flux source pins an upstream main commit and builds ./config/default.
+# Renovate updates that commit and the digest discovered through branch-main
+# in one group. This script verifies the image's
+# build provenance against the source commit before applying any resources.
 #
 # This script mirrors that exactly: it parses the pinned commit from the Flux
 # GitRepository manifest and the container image tag from the Flux Kustomization
@@ -43,12 +40,10 @@
 #     substituted controller under K-ORC's cluster RBAC. The digest is parsed from
 #     the Flux Kustomization and applied verbatim, so CI and Flux schedule the same
 #     bytes.
-# On top of that a drift guard asserts the (documentation-only) image tag equals
-# commit-<first 7 chars of the pinned commit>, so a Renovate commit bump that
-# forgets to re-pin the image fails loudly on the bump PR: the pin gates run
-# offline under KORC_VERIFY_ONLY=true in tests/unit/deploy/korc_pin_lockstep_test.sh
-# (make test-shell, which runs on every pull request), and a change to either
-# K-ORC manifest adds the c5c3 e2e leg, which runs this script in full.
+# The image tag is branch-main, or commit-<short SHA> for historical fixtures.
+# KORC_VERIFY_ONLY checks the local field shapes without network access; a full
+# branch-main deployment additionally checks every platform's provenance via
+# Docker Buildx and jq. Changes to either manifest select the c5c3 e2e leg.
 #
 # Used by the e2e-controlplane CI job, which deploys the c5c3 + keystone
 # operators as local dev images and needs K-ORC's CRDs + controller alongside
@@ -116,12 +111,12 @@ if [[ ! "${KORC_IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
   exit 1
 fi
 
-# Drift guard: upstream publishes a deterministic per-commit image tagged
-# commit-<first 7 chars of the commit SHA>. If the Flux image override was not
-# bumped in lockstep with the source commit, fail loudly with an actionable
-# message rather than silently deploying a mismatched controller image.
+# Branch-main discovers updates while the digest fixes the deployed image.
+# Historical commit-tag fixtures retain their deterministic short-SHA check.
+# The moving discovery tag needs the provenance check below to bind the image
+# to the source commit; a tag string alone cannot establish that relationship.
 KORC_EXPECTED_TAG="commit-${KORC_COMMIT:0:7}"
-if [[ "${KORC_IMAGE_TAG}" != "${KORC_EXPECTED_TAG}" ]]; then
+if [[ "${KORC_IMAGE_TAG}" != "branch-main" && "${KORC_IMAGE_TAG}" != "${KORC_EXPECTED_TAG}" ]]; then
   echo "::error::K-ORC image tag ${KORC_IMAGE_TAG} in ${KORC_RELEASE} does not match the pinned commit ${KORC_COMMIT} in ${KORC_SOURCE} (expected ${KORC_EXPECTED_TAG}); bump spec.images[].newTag in lockstep with ref.commit"
   exit 1
 fi
@@ -129,6 +124,32 @@ fi
 if [[ "${KORC_VERIFY_ONLY:-false}" == "true" ]]; then
   echo "K-ORC pin verified: commit ${KORC_COMMIT}, image ${KORC_IMAGE_TAG}@${KORC_IMAGE_DIGEST}"
   exit 0
+fi
+
+# A moving discovery tag does not prove which source produced a pinned image.
+# Read provenance from the immutable digest, never from today's branch-main.
+# Grouped Renovate lookups can race an upstream build; fail closed until the
+# image and source have both caught up. BuildKit records this VCS revision for
+# every platform in upstream's multi-architecture image.
+if [[ "${KORC_IMAGE_TAG}" == "branch-main" ]]; then
+  if ! command -v docker >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    echo "::error::Verifying the K-ORC branch-main image requires Docker Buildx and jq"
+    exit 1
+  fi
+  KORC_PROVENANCE="$(docker buildx imagetools inspect \
+    "quay.io/orc/openstack-resource-controller@${KORC_IMAGE_DIGEST}" \
+    --format '{{json .Provenance}}')" || {
+    echo "::error::Could not read provenance for the pinned K-ORC image"
+    exit 1
+  }
+  if ! jq -e --arg commit "${KORC_COMMIT}" '
+    type == "object" and length > 0 and
+    all(.[]; .SLSA.runDetails.metadata.buildkit_metadata.vcs.revision == $commit)
+  ' <<<"${KORC_PROVENANCE}" >/dev/null; then
+    echo "::error::K-ORC image provenance does not match the pinned commit ${KORC_COMMIT} on every platform; update the source and image digest together"
+    exit 1
+  fi
+  echo "K-ORC image provenance matches source commit ${KORC_COMMIT} on every platform"
 fi
 
 # Fetch the pinned tree. --filter=blob:none keeps the clone small (blobs are

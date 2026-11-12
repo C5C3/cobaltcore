@@ -54,7 +54,7 @@ The custom managers cover:
 - **OpenStack release refs** — git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
 - **Test tooling in `hack/`** — Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` and `ENVOY_GATEWAY_VERSION` (the Envoy Gateway CRD pin, grouped with the `gateway-helm` chart) in `hack/deploy-infra.sh`.
 - **kind deploy components** — `flux-web.yaml` under `deploy/kind/base/`.
-- **K-ORC Flux source** — the `ref.commit` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (git-refs on upstream `main`, digest updates). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the `k-orc/openstack-resource-controller` Go module the operator compiles against. A commit bump is not complete on its own: the `commit-<short sha>` image tag and digest in `deploy/flux-system/releases/k-orc.yaml` and the Go pseudo-version in `operators/c5c3/go.mod` move in the same change, and the `hack/ci-deploy-korc.sh` drift guard fails CI until the image is re-pinned.
+- **K-ORC main-line pins** — the source `ref.commit` in `deploy/flux-system/sources/k-orc.yaml` follows upstream `main` via `git-refs`. The image digest in `deploy/flux-system/releases/k-orc.yaml` follows `branch-main` via `docker`. Both share one `k-orc` group. Renovate updates these pins and automerges digest updates after required CI, with no release-age delay for the moving branch. CI checks every image platform's build provenance against the source pin before deploying. Go API dependencies remain managed separately, so routine source/image updates require no manual Go or Nix refresh. Updates must merge before old images are garbage-collected; grouping cannot extend upstream retention.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
 - **Helm CLI of the `setup-helm` jobs** — `HELM_VERSION` in the `env:` block of `.github/workflows/ci.yaml` (github-releases on `helm/helm`), the version every `azure/setup-helm` step installs. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged: `helm-push` runs only on a push to `main`, so no pull request run pushes a chart with the new Helm before it merges. `tests/unit/renovate/workflow_pins_custommanager_test.sh` pins the manager and both rules.
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
@@ -204,8 +204,8 @@ Two more rules make the manager work on the sources of this repository:
 Two rules switch the manager off. The `c5c3-charts` releases match
 `ghcr.io/c5c3/charts/**`, the `url` of `deploy/flux-system/sources/c5c3-charts.yaml`
 without `oci://`: this repository publishes those charts and sets their ranges itself.
-The other rule lists every file a customManager reads, plus the K-ORC release, whose
-image stays untracked and moves with the `bump-korc-pin` skill:
+The other rule lists every file a customManager reads, including both K-ORC
+source and image pins:
 
 - `deploy/flux-system/sources/k-orc.yaml`
 - `deploy/flux-system/sources/openbao-operator.yaml`

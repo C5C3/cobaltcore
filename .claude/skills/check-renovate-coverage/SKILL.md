@@ -35,7 +35,7 @@ all of which Renovate has to understand:
 | Release test and constraint pins | `releases/<release>/test-refs.yaml`, `overrides/<release>/constraints.txt` | customManager each (pypi) |
 | Shell script constants | `hack/deploy-infra.sh` + `hack/deploy-mgmt-cluster.sh` (`FLUX_OPERATOR_VERSION="v…"`, deliberately duplicated, one customManager over both files; `GATEWAY_API_VERSION`, `ENVOY_GATEWAY_VERSION`, `REGISTRY_CACHE_IMAGE`), `hack/install-test-deps.sh` (chainsaw, flux, kind, kubectl), `hack/dizzy.sh` | customManager, one regex per constant |
 | kind manifests | `deploy/kind/base/flux-web.yaml`, `deploy/kind/infrastructure/openbao-instance.yaml`, `deploy/kind/nfs/nfs-server.yaml` | customManager, one regex per file shape |
-| Flux sources and images pinned by tag/commit/digest | `deploy/flux-system/sources/{k-orc,openbao-operator,rabbitmq-cluster-operator}.yaml`, `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml` | customManager each. The K-ORC image in `deploy/flux-system/releases/k-orc.yaml` is **not** tracked (pattern 7) |
+| Flux sources and images pinned by tag/commit/digest | `deploy/flux-system/sources/{k-orc,openbao-operator,rabbitmq-cluster-operator}.yaml`, `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml` | customManager each. The K-ORC image in `deploy/flux-system/releases/k-orc.yaml` tracks `branch-main` digests in the same group as the source (pattern 7) |
 | FluxCD HelmRelease chart versions | third-party charts under `deploy/flux-system/releases/` and `deploy/kind/` (`spec.chart.spec.version: ">=0.10.0 <1.0.0"`) | native `flux` manager over `flux.managerFilePatterns`. `widen` stays silent inside the range and, on a release past the ceiling, raises the ceiling and keeps the floor; `bump` for `gateway-helm` and `headlamp` (minor/patch automerged); an exact pin for `csi-driver-nfs` (majors disabled). The `c5c3-charts` releases are switched off by design, and so is every file a customManager reads |
 | Pins in Go source | `operators/c5c3/internal/controller/reconcile_barbican_openbao.go` (`defaultOpenBaoVersion`), `operators/ovn/internal/controller/image.go` (`defaultOVNVersion`) | customManager each, paired with the matching manifest or image pin |
 | Go module deps | `operators/*/go.mod`, `internal/common/go.mod` | native `gomod` manager |
@@ -269,20 +269,14 @@ These recurring shapes are worth grepping for first:
    formatting that CI's `format-check` rejects (or vice versa). Fix by
    aligning, or better by single-sourcing one side from the other the
    way ci.yaml already `awk`-reads `ENVTEST_K8S_VERSION`.
-7. **Half-tracked pin pair: the K-ORC main commit.** Renovate tracks
-   the upstream main commit in `deploy/flux-system/sources/k-orc.yaml`
-   (`ref.commit`, datasource `git-refs`, digest updates automerged) but
-   **not** the controller image in `deploy/flux-system/releases/k-orc.yaml`
-   (`spec.images[].newTag: commit-<short sha>` plus `digest`); that
-   file's header says so. `hack/ci-deploy-korc.sh` fails CI when the tag
-   does not match the pinned commit ("K-ORC image tag … does not match
-   the pinned commit"), so a Renovate commit bump stays red until the
-   image is re-pinned by hand. Quay `commit-<sha>` tags also expire
-   after four weeks, after which the pinned digest returns `NotFound`
-   and every leg that deploys K-ORC hangs in `ImagePullBackOff`. R4
-   reports the source manager as paired; the gap is the image, which
-   no manager claims. Move the pins together with
-   [[bump-korc-pin]].
+7. **Grouped main-line pins: K-ORC.** The source commit follows `main`
+   through `git-refs`; the controller digest follows `branch-main` through
+   `docker`. Keep both in the `k-orc` digest-update group. CI checks every
+   image platform's build provenance before applying anything, blocking a
+   source update that races the upstream image build. Go dependencies are
+   managed separately so routine image updates need no manual vendor-hash
+   refresh. Do not reintroduce a floating image pull or a source-only
+   automerge rule. See [[bump-korc-pin]].
 8. **Renamed file, stale pattern.** A pinned file moves (a fixture
    directory renamed, a script split) and the customManager's
    file-anchored regex keeps pointing at the old path. Renovate raises
@@ -296,9 +290,7 @@ These recurring shapes are worth grepping for first:
   unit test) as a separate, explicitly-scoped task.
 - Some pins are *intentionally* not Renovate-tracked (e.g. a tool
   whose upstream release cadence is too aggressive). When the
-  decision is to skip, document it in a comment beside the pin (the
-  K-ORC image in `deploy/flux-system/releases/k-orc.yaml` is the worked
-  example).
+  decision is to skip, document it in a comment beside the pin.
 - The existing tests under `tests/unit/renovate/` are the source of
   truth for "what is covered today". If you add a customManager, add
   a sibling test there — R6 fails on a manager no test singles out,

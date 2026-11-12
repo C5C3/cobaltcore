@@ -2,47 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Deploy K-ORC (OpenStack Resource Controller),
-# whose ApplicationCredential / Service / Endpoint / RoleAssignment CRDs the
-# c5c3-operator drives.
+# Deploy K-ORC from the immutable main-line commit in sources/k-orc.yaml.
+# Keep ./config/default: its namespace and namePrefix place resources in
+# orc-system, so spec.targetNamespace is deliberately unset.
 #
-# DECISION: a Flux Kustomization (kustomize.toolkit.fluxcd.io), not a HelmRelease.
-# K-ORC ships no Helm chart (see sources/k-orc.yaml) — only a flattened installer
-# manifest, and only at release time. The source is pinned to an upstream main
-# commit (no released K-ORC ships the RoleAssignment and Region kinds the
-# c5c3-operator Owns()), so it vendors ./config rather than a stale ./dist and this
-# Kustomization runs the kustomize build of ./config/default. That base carries its
-# own kustomization.yaml (namespace: orc-system, namePrefix: orc-): it declares the
-# orc-system Namespace and namespaces every resource into it — the same posture
-# dist/install.yaml had — so no spec.targetNamespace is set (orc-system is also
-# declared in deploy/flux-system/namespaces.yaml, where we co-declare it — because
-# the K-ORC installer's own resources land there — so the Namespace exists before
-# this Kustomization reconciles). REVERT to path ./dist (and drop the images
-# override below) once the source pin returns to a release tag.
+# Upstream publishes branch-main on every main push; there is no latest tag.
+# Renovate discovers new digests through that tag and groups them with the
+# source commit. The digest, not the tag, resolves the
+# deployed image. A tag-only edit must never turn this into a floating pull.
 #
-# Images: config/manager/manager.yaml uses the placeholder image controller:latest,
-# so spec.images (the kustomize-controller's native image override) is the ONLY
-# thing resolving the controller that actually gets scheduled. It rewrites the
-# placeholder to the quay.io/orc/openstack-resource-controller image upstream
-# publishes per commit, matching the pinned source commit in sources/k-orc.yaml.
-#
-# The pull is resolved by DIGEST, not by the commit-<short sha> tag: a quay tag is
-# mutable, so the tag alone pins nothing — anyone able to push to the upstream quay
-# repo could re-point it at a substituted image, which then runs with K-ORC's
-# cluster RBAC and reads the Keystone admin clouds.yaml the ControlPlane hands it.
-# The source commit is content-addressed; the digest pins the image the same way.
-# Both consumers agree: the kustomize-controller ignores newTag when digest is set,
-# and the `kubectl apply -k` in hack/ci-deploy-korc.sh renders name:tag@digest —
-# either way the digest is what resolves.
-#
-# newTag therefore stays only as the human-readable record of the tag the digest
-# was resolved from, and as the OFFLINE drift anchor: neither is Renovate-tracked,
-# so a source-commit bump must re-pin BOTH here in lockstep. The
-# hack/ci-deploy-korc.sh drift guard fails CI on a stale tag (make test-shell runs
-# it offline on every pull request) — which is what blocks
-# Renovate from automerging a commit bump that leaves this image behind. Resolve
-# the new digest at bump time, e.g.
-#   crane digest quay.io/orc/openstack-resource-controller:commit-<short sha>
+# Unlike commit-* tags, branch-main has no configured expiry, but moves with
+# each build. Old digests can still be collected after it moves, so keep the
+# Renovate updates merging. CI compares each platform's build provenance with
+# the source pin before deploying. A source-only update cannot pass that gate.
 #
 # Credentials: the previous HelmRelease set globalCloudConfig.secretName, the chart
 # value for K-ORC's GLOBAL default clouds.yaml mount. The upstream installer has no
@@ -74,7 +46,7 @@ spec:
     - name: controller
       newName: quay.io/orc/openstack-resource-controller
       # Documentation + drift anchor; the digest below is what resolves the pull.
-      newTag: commit-da276e4
-      digest: sha256:ddedd3d875960065af901d42cfd614360485f931fee33e891213e7b469267c11
+      newTag: branch-main
+      digest: sha256:9874744fe80230eb13f76ce4f56fbc318da43164c81ab50b61bb13a75a09a915
   prune: true
   wait: true

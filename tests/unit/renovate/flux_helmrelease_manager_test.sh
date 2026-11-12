@@ -343,7 +343,6 @@ test_one_owner_per_file() {
   # so its chart range silently stops being tracked.
   while IFS= read -r f; do
     [ -z "$f" ] && continue
-    [ "$f" = "deploy/flux-system/releases/k-orc.yaml" ] && continue
     if ! grep -qxF -- "$f" <<<"$both"; then
       echo "  FAIL: $f is switched off for the flux manager but no customManager reads it, so no manager tracks its pins; drop it from the matchFileNames of the flux rule with enabled: false"
       FAIL=$((FAIL + 1))
@@ -351,15 +350,15 @@ test_one_owner_per_file() {
     fi
   done <<<"$disabled"
   if [ "$extra" -eq 0 ]; then
-    echo "  PASS: every file switched off for the flux manager is read by a customManager, apart from the K-ORC release"
+    echo "  PASS: every file switched off for the flux manager is read by a customManager"
     PASS=$((PASS + 1))
   fi
 
   if grep -qxF -- "deploy/flux-system/releases/k-orc.yaml" <<<"$disabled"; then
-    echo "  PASS: the K-ORC image in deploy/flux-system/releases/k-orc.yaml stays untracked"
+    echo "  PASS: the K-ORC image uses its customManager instead of the flux manager"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: deploy/flux-system/releases/k-orc.yaml is not switched off for the flux manager (its image moves with the bump-korc-pin skill)"
+    echo "  FAIL: deploy/flux-system/releases/k-orc.yaml has overlapping flux and customManager ownership"
     FAIL=$((FAIL + 1))
   fi
 

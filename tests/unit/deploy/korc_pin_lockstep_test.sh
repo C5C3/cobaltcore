@@ -3,18 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the K-ORC pin in the committed Flux manifests is internally consistent:
-# the image tag in deploy/flux-system/releases/k-orc.yaml names the commit that
-# deploy/flux-system/sources/k-orc.yaml pins, and both carry their canonical
-# shapes (40-char commit, sha256 digest).
-#
-# hack/ci-deploy-korc.sh enforces exactly this before it clones, but it runs only
-# in the jobs that deploy K-ORC (e2e-operator for c5c3 and the three ControlPlane
-# jobs). A change to deploy/** alone selects the canary instead, so a Renovate
-# PR that moves only ref.commit (the digest is not Renovate-tracked) could pass
-# CI with the image left behind, and the k-orc rule automerges. make test-shell
-# runs on every pull request; this test runs the script's offline gates
-# (KORC_VERIFY_ONLY=true) against the real manifests there.
+# Verify the committed main-line source and image keep immutable pin shapes.
+# The installer separately verifies their agreement through build provenance;
+# ci_deploy_korc_main_image_test.sh checks a source-only Renovate bump fails.
 #
 # Usage: bash tests/unit/deploy/korc_pin_lockstep_test.sh
 
@@ -61,19 +52,15 @@ test_committed_pin_is_consistent() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: a commit-only bump (the Renovate shape) fails
+# Test 2: replacing the immutable commit with a moving branch fails
 # ---------------------------------------------------------------------------
-test_commit_only_bump_fails() {
-  echo "Test: moving ref.commit without the image tag fails the gates"
+test_mutable_source_fails() {
+  echo "Test: replacing ref.commit with a branch fails the gates"
 
   local tmp output exit_code current bumped
   tmp="$(mktemp -d)"
   current="$(awk '/^[[:space:]]*commit:[[:space:]]*/{print $2; exit}' "$KORC_SOURCE_YAML")"
-  # Any other valid 40-char SHA: flip the first hex digit.
-  case "${current:0:1}" in
-    0) bumped="1${current:1}" ;;
-    *) bumped="0${current:1}" ;;
-  esac
+  bumped="main"
   sed "s/${current}/${bumped}/" "$KORC_SOURCE_YAML" >"$tmp/source.yaml"
   cp "$KORC_RELEASE_YAML" "$tmp/release.yaml"
 
@@ -81,9 +68,9 @@ test_commit_only_bump_fails() {
   exit_code=$?
   rm -rf "$tmp"
 
-  assert_nonzero_exit "a commit-only bump is rejected" "$exit_code"
-  assert_contains "the rejection names the tag/commit drift" \
-    "$output" "does not match the pinned commit"
+  assert_nonzero_exit "a mutable source is rejected" "$exit_code"
+  assert_contains "the rejection requires an immutable source" \
+    "$output" "MUST be pinned by a full commit SHA"
 }
 
 # ---------------------------------------------------------------------------
@@ -109,7 +96,7 @@ test_missing_digest_fails() {
 # Run
 # ---------------------------------------------------------------------------
 test_committed_pin_is_consistent
-test_commit_only_bump_fails
+test_mutable_source_fails
 test_missing_digest_fails
 
 echo ""
