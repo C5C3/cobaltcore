@@ -153,7 +153,8 @@ spec:
   # an empty listing is not the explanation because Garage answers that with a
   # Contents-less JSON body, not with silence. kubectl logs replays from
   # container start, read once the pod reached a terminal phase and before it is
-  # deleted.
+  # deleted. The container removes its own probe object on exit: leaving it
+  # behind prevents GarageBucket finalization during external teardown.
   - try:
     - script:
         timeout: 3m
@@ -183,7 +184,17 @@ spec:
             --env "AWS_SECRET_ACCESS_KEY=${SAK}" \
             --env "AWS_DEFAULT_REGION=garage" \
             --env "AWS_CONFIG_FILE=/tmp/aws-cfg" \
-            --command -- sh -c 'set -e; printf "[default]\ns3 =\n    addressing_style = path\n" > /tmp/aws-cfg; echo probe > /tmp/p; aws --endpoint-url http://garage.shared-services.svc.cluster.local:3900 s3api put-object --bucket glance-images --key garage-health/probe.txt --body /tmp/p; aws --endpoint-url http://garage.shared-services.svc.cluster.local:3900 s3api list-objects-v2 --bucket glance-images --prefix garage-health/'
+            --command -- sh -c '
+              set -e
+              printf "[default]\ns3 =\n    addressing_style = path\n" > /tmp/aws-cfg
+              cleanup() {
+                aws --endpoint-url http://garage.shared-services.svc.cluster.local:3900 s3api delete-object --bucket glance-images --key garage-health/probe.txt
+              }
+              trap cleanup EXIT
+              echo probe > /tmp/p
+              aws --endpoint-url http://garage.shared-services.svc.cluster.local:3900 s3api put-object --bucket glance-images --key garage-health/probe.txt --body /tmp/p
+              aws --endpoint-url http://garage.shared-services.svc.cluster.local:3900 s3api list-objects-v2 --bucket glance-images --prefix garage-health/
+            '
           # 30 polls x 5s = 150s, inside the 3m step timeout (covers the digest-
           # pinned aws-cli image pull on a cold node).
           PHASE=""
@@ -198,4 +209,4 @@ spec:
           echo "${OUT}"
           [ "$PHASE" = "Succeeded" ]
           echo "${OUT}" | grep -q 'garage-health/probe.txt'
-          echo "OK: imported key put and listed garage-health/probe.txt in glance-images"
+          echo "OK: imported key put, listed and removed garage-health/probe.txt in glance-images"
