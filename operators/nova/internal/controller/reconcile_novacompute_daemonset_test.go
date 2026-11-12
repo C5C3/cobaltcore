@@ -522,7 +522,9 @@ func TestCreateInstancesDirCommand(t *testing.T) {
 
 		var exitErr *exec.ExitError
 		g.Expect(errors.As(err, &exitErr)).To(BeTrue(), "the command must fail by exiting, got %v", err)
-		g.Expect(stderr).To(ContainSubstring("File exists"))
+		// GNU coreutils and BusyBox say "File exists"; the uutils coreutils
+		// of an Ubuntu 26.04 host running this test say "Already exists".
+		g.Expect(stderr).To(MatchRegexp(`(File|Already) exists`))
 	})
 }
 
