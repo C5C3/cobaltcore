@@ -163,7 +163,7 @@ transport URL alone and holds no admin account on it.
 
 The topology operator has to run on the management cluster. Without its
 `Vhost` kind the order reads `VhostReady=False/TopologyOperatorNotInstalled`,
-naming `deploy/flux-system/releases/messaging-topology-operator.yaml`, and is
+naming `deploy/bases/operators/releases/messaging-topology-operator.yaml`, and is
 retried every 10 minutes.
 
 ### Orders on a target cluster
@@ -376,10 +376,10 @@ kubectl delete vhosts.rabbitmq.com,users.rabbitmq.com,permissions.rabbitmq.com,p
 
 The backup writes `openstack/rabbitmq/<controlplane namespace>/…`, a path the
 `eso-tenant` OpenBao policy grants from this release on. An existing deployment
-runs `deploy/openbao/bootstrap/setup-policies.sh` once more before its first
+runs `deploy/bases/shared-openbao/bootstrap/setup-policies.sh` once more before its first
 order; until it does, the PushSecret fails with 403 and the order holds at
 `DeliveryReady=False/BackupNotSynced`. The topology operator arrives with the
-Flux base (`deploy/flux-system/releases/messaging-topology-operator.yaml`). See
+Flux base (`deploy/bases/operators/releases/messaging-topology-operator.yaml`). See
 [OpenBao Bootstrap](../infrastructure/openbao-bootstrap.md) and
 [RabbitMQ Messaging Topology Operator](../infrastructure/infrastructure-manifests.md#rabbitmq-messaging-topology-operator).
 

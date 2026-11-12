@@ -365,7 +365,7 @@ sync-crds: manifests
 	done
 	@echo "Syncing the order CRDs into the target-cluster-access chart..."
 	@for f in $(TARGET_CLUSTER_CRDS); do \
-		cp "operators/c5c3/helm/c5c3-operator/crds/$$f" deploy/target-cluster/target-cluster-access/crds/; \
+		cp "operators/c5c3/helm/c5c3-operator/crds/$$f" deploy/bases/target-cluster-access/crds/; \
 	done
 
 .PHONY: verify-crd-sync
@@ -397,9 +397,9 @@ verify-crd-sync:
 		fi; \
 	done; \
 	for f in $(TARGET_CLUSTER_CRDS); do \
-		if ! cmp -s "operators/c5c3/helm/c5c3-operator/crds/$$f" "deploy/target-cluster/target-cluster-access/crds/$$f"; then \
-			echo "FAIL: deploy/target-cluster/target-cluster-access/crds/$$f differs from operators/c5c3/helm/c5c3-operator/crds/$$f"; \
-			diff -u "operators/c5c3/helm/c5c3-operator/crds/$$f" "deploy/target-cluster/target-cluster-access/crds/$$f" || true; \
+		if ! cmp -s "operators/c5c3/helm/c5c3-operator/crds/$$f" "deploy/bases/target-cluster-access/crds/$$f"; then \
+			echo "FAIL: deploy/bases/target-cluster-access/crds/$$f differs from operators/c5c3/helm/c5c3-operator/crds/$$f"; \
+			diff -u "operators/c5c3/helm/c5c3-operator/crds/$$f" "deploy/bases/target-cluster-access/crds/$$f" || true; \
 			fail=1; \
 		fi; \
 	done; \
@@ -563,7 +563,7 @@ helm-package:
 # Usage: make helm-package-target-cluster [CHART_VERSION=1.2.3]
 # No dependency build: the chart has no subchart.
 helm-package-target-cluster:
-	helm package deploy/target-cluster/target-cluster-access/ $(if $(CHART_VERSION),--version $(CHART_VERSION))
+	helm package deploy/bases/target-cluster-access/ $(if $(CHART_VERSION),--version $(CHART_VERSION))
 
 # ============================================================================
 # Testing and Infrastructure Targets
@@ -957,7 +957,7 @@ e2e-operator-upgrade:
 # See docs/reference/target-clusters.md for the registration Secret's contract.
 e2e-multicluster:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; point the context at the management cluster (`kubectl config use-context kind-cobaltcore-mgmt`, created by hack/deploy-mgmt-cluster.sh)' >&2; exit 1; }
-	@kubectl get secret cobaltcore-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/target-cluster/target-cluster-access on the target and create the registration Secret `cobaltcore-target` in c5c3-clusters (see docs/guides/deploy-to-a-target-cluster.md)' >&2; exit 1; }
+	@kubectl get secret cobaltcore-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/bases/target-cluster-access on the target and create the registration Secret `cobaltcore-target` in c5c3-clusters (see docs/guides/deploy-to-a-target-cluster.md)' >&2; exit 1; }
 	@test -f _output/cobaltcore-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name cobaltcore-target > _output/cobaltcore-target.kubeconfig`' >&2; exit 1; }
 	chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/
 
@@ -969,7 +969,7 @@ e2e-multicluster:
 # job deploys: `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external make
 # deploy-infra`, the keystone, horizon, glance and placement CRDs, K-ORC
 # (hack/ci-deploy-korc.sh), and the keystone- and c5c3-operator. The target is a
-# bare kind cluster with deploy/target-cluster/target-cluster-access installed
+# bare kind cluster with deploy/bases/target-cluster-access installed
 # (namespaces={openstack}, assignedNamespaces={orders-tenant,orders-outsider})
 # and the two tenant namespaces created; its registration Secret carries
 # namespaces=openstack and assignedNamespaces=orders-tenant,orders-outsider. The
@@ -986,7 +986,7 @@ e2e-multicluster:
 e2e-orders-multicluster:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; point the context at the management cluster' >&2; exit 1; }
 	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external make deploy-infra` (and deploy K-ORC + the keystone- and c5c3-operator) first' >&2; exit 1; }
-	@kubectl get secret cobaltcore-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/target-cluster/target-cluster-access on the target with assignedNamespaces={orders-tenant,orders-outsider} and create the registration Secret `cobaltcore-target` in c5c3-clusters with the namespaces and assignedNamespaces keys (see docs/quick-start-orders.md)' >&2; exit 1; }
+	@kubectl get secret cobaltcore-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/bases/target-cluster-access on the target with assignedNamespaces={orders-tenant,orders-outsider} and create the registration Secret `cobaltcore-target` in c5c3-clusters with the namespaces and assignedNamespaces keys (see docs/quick-start-orders.md)' >&2; exit 1; }
 	@test -f _output/cobaltcore-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name cobaltcore-target > _output/cobaltcore-target.kubeconfig`' >&2; exit 1; }
 	chainsaw test --config tests/e2e-orders-multicluster/chainsaw-config.yaml tests/e2e-orders-multicluster/
 
@@ -1076,7 +1076,7 @@ tempest-test:
 
 .PHONY: stage-prometheus-dashboard
 # stage-prometheus-dashboard copies the canonical Keystone Operator Grafana
-# dashboard JSON into deploy/kind/prometheus/ so that local kustomize flows
+# dashboard JSON into deploy/bases/prometheus/ so that local kustomize flows
 # (kustomize build, kubectl apply -k, chainsaw lint) can render the
 # configMapGenerator without a parent-dir traversal.
 #
@@ -1088,8 +1088,8 @@ tempest-test:
 # docs/reference/infrastructure/infrastructure-manifests.md for the
 # overlay's staging contract.
 stage-prometheus-dashboard:
-	cp -f operators/keystone/dashboards/keystone-operator.json deploy/kind/prometheus/keystone-operator.json
-	@echo "Staged dashboard JSON into deploy/kind/prometheus/."
+	cp -f operators/keystone/dashboards/keystone-operator.json deploy/bases/prometheus/keystone-operator.json
+	@echo "Staged dashboard JSON into deploy/bases/prometheus/."
 
 .PHONY: deploy-infra
 deploy-infra:
@@ -1207,7 +1207,7 @@ keystone-pressure-ab:
 #   DIZZY_AUTH_URL              in-cluster Keystone URL override.
 #   DIZZY_CP_NAME               ControlPlane name (default controlplane).
 #   DIZZY_CP_NAMESPACE          ControlPlane namespace (default openstack).
-#   EXTERNAL_OVERLAY            overlay root (default deploy/lab/metal-stack).
+#   EXTERNAL_OVERLAY            overlay root (default deploy/overlays/metal-stack).
 #   DIZZY_SOAK_NAMESPACES       platform namespaces to sample.
 #   DIZZY_SOAK_SAMPLE_INTERVAL  seconds between samples (default 60).
 #   DIZZY_SOAK_MAX_ERROR_RATE   error-rate threshold in percent (default none).

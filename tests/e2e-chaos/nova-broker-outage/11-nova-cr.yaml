@@ -17,7 +17,7 @@
 # nova_broker_chaos on the openstack-db MariaDB cluster (cell0 is derived as
 # nova_broker_chaos_cell0), the openstack-memcached cache, the ESO-synced
 # nova-api-db and nova-db credentials and the pre-seeded keystone-admin
-# service-user password (all from deploy/kind/infrastructure).
+# service-user password (all from deploy/overlays/kind/infrastructure).
 #
 # One API replica. The suite reads the API container's readiness and restart
 # count under the partition, and a second replica would make those reads

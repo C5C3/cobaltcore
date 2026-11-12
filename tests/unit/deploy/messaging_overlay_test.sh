@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the message-bus opt-in overlay:
-#   - deploy/kind/messaging/{kustomization,shared-rabbitmq}.yaml exist with
+#   - deploy/overlays/kind/messaging/{kustomization,shared-rabbitmq}.yaml exist with
 #     SPDX headers, and the kustomization references the one local file and
 #     nothing outside the overlay (no parent-directory paths, no remote URLs).
 #   - kustomize build of the overlay renders one document and no more, under
@@ -13,8 +13,8 @@
 #   - That broker carries the sizing the 4-vCPU kind node has room for: one
 #     replica, 100m CPU and 1Gi memory requested, 1Gi memory limited, and no
 #     CPU limit (a limit would throttle the broker during a suite).
-#   - kustomize build of deploy/flux-system, deploy/kind/base and
-#     deploy/kind/infrastructure renders ZERO RabbitmqCluster documents
+#   - kustomize build of deploy/bases/operators, deploy/overlays/kind/base and
+#     deploy/overlays/kind/infrastructure renders ZERO RabbitmqCluster documents
 #     (default posture: no broker unless the overlay is asked for).
 # Usage: bash tests/unit/deploy/messaging_overlay_test.sh
 
@@ -30,12 +30,12 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
-KIND_MESSAGING_DIR="$PROJECT_ROOT/deploy/kind/messaging"
-KIND_MESSAGING_KUSTOMIZATION="$KIND_MESSAGING_DIR/kustomization.yaml"
-KIND_MESSAGING_BROKER="$KIND_MESSAGING_DIR/shared-rabbitmq.yaml"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
+KIND_MESSAGING_DIR="$PROJECT_ROOT/deploy/overlays/kind/messaging"
+KIND_MESSAGING_KUSTOMIZATION="$PROJECT_ROOT/deploy/bases/messaging/kustomization.yaml"
+KIND_MESSAGING_BROKER="$PROJECT_ROOT/deploy/bases/messaging/shared-rabbitmq.yaml"
 
 # Read a single value out of a rendered stream. Prints the first line of the
 # yq result, or the empty string when the expression matches nothing.
@@ -84,7 +84,7 @@ assert_renders_no_broker() {
 
 # --- Test 1: overlay files exist with SPDX headers ---
 test_overlay_files_exist_with_spdx() {
-  echo "Test: deploy/kind/messaging/{kustomization,shared-rabbitmq}.yaml exist with SPDX headers"
+  echo "Test: deploy/overlays/kind/messaging/{kustomization,shared-rabbitmq}.yaml exist with SPDX headers"
 
   local f
   for f in "$KIND_MESSAGING_KUSTOMIZATION" "$KIND_MESSAGING_BROKER"; do
@@ -130,7 +130,7 @@ test_kustomization_is_self_contained() {
 
 # --- Test 3: kustomize build renders the single expected document ---
 test_kustomize_build_renders_one_document() {
-  echo "Test: kustomize build deploy/kind/messaging renders one document"
+  echo "Test: kustomize build deploy/overlays/kind/messaging renders one document"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (1 check skipped)"
@@ -201,17 +201,17 @@ test_broker_sizing() {
 
 # --- Tests 5-7: default posture renders no broker ---
 test_flux_system_renders_no_broker() {
-  echo "Test: kustomize build deploy/flux-system renders no RabbitmqCluster"
+  echo "Test: kustomize build deploy/bases/operators renders no RabbitmqCluster"
   assert_renders_no_broker "the production overlay" "$FLUX_SYSTEM_DIR"
 }
 
 test_kind_base_renders_no_broker() {
-  echo "Test: kustomize build deploy/kind/base renders no RabbitmqCluster"
+  echo "Test: kustomize build deploy/overlays/kind/base renders no RabbitmqCluster"
   assert_renders_no_broker "kind/base" "$KIND_BASE_DIR"
 }
 
 test_kind_infrastructure_renders_no_broker() {
-  echo "Test: kustomize build deploy/kind/infrastructure renders no RabbitmqCluster"
+  echo "Test: kustomize build deploy/overlays/kind/infrastructure renders no RabbitmqCluster"
   assert_renders_no_broker "kind/infrastructure" "$KIND_INFRA_DIR"
 }
 

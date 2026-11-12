@@ -48,7 +48,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
-LAB_INFRA="$PROJECT_ROOT/deploy/lab/metal-stack/infrastructure"
+LAB_INFRA="$PROJECT_ROOT/deploy/overlays/metal-stack/infrastructure"
 
 PASS=0
 FAIL=0
@@ -126,7 +126,7 @@ run_fn() {
     # shellcheck source=/dev/null
     source "$DEPLOY_INFRA_SH"
     # shellcheck disable=SC2034 # read by the sourced script's functions
-    EXTERNAL_CLUSTER=true OVERLAY_ROOT="$PROJECT_ROOT/deploy/lab/metal-stack" POD_TIMEOUT=60
+    EXTERNAL_CLUSTER=true OVERLAY_ROOT="$PROJECT_ROOT/deploy/overlays/metal-stack" POD_TIMEOUT=60
     local assignment
     for assignment in "$@"; do
       eval "${assignment%%=*}=\"\${assignment#*=}\""
@@ -324,7 +324,7 @@ test_resolve_public_source_ranges() {
 # Test 5: render_envoy_proxy on the lab render
 # ---------------------------------------------------------------------------
 test_render_envoy_proxy() {
-  echo "Test: render_envoy_proxy on deploy/lab/metal-stack/infrastructure"
+  echo "Test: render_envoy_proxy on deploy/overlays/metal-stack/infrastructure"
   if ! command -v kustomize >/dev/null 2>&1 || ! command -v yq >/dev/null 2>&1; then
     echo "  SKIP: kustomize or yq not installed (8 checks skipped)"
     SKIP=$((SKIP + 8))

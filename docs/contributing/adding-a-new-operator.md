@@ -66,7 +66,7 @@ that user. The db-sync Job stays a single Job. It chains both commands in one
 connection env vars in `JobSetParams.Env` (the two-entry env in
 `neutronJobSetParams`, `operators/neutron/internal/controller/reconcile_database.go`). The
 block's OpenBao engine role is one row of `SERVICE_TENANTS` in
-`deploy/openbao/bootstrap/setup-database-tenant.sh`.
+`deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh`.
 
 ## Residual touch list
 
@@ -143,7 +143,7 @@ bottom when scaffolding `operators/<op>/`:
   scheme list; E2E suites live under `tests/e2e/<op>/` (one directory per
   feature, mirroring `tests/e2e/keystone/`), plus at least one chaos suite
   under `tests/e2e-chaos/`.
-- **Deploy stack:** a flux HelmRelease under `deploy/flux-system/releases/`
+- **Deploy stack:** a flux HelmRelease under `deploy/bases/operators/releases/`
   with the matching kind-overlay suspend patch, plus the literal lists in
   `hack/deploy-infra.sh` (the un-suspend step and the ServiceMonitor toggle)
   and the target tuple in `hack/refresh-operator-image-digests.sh`. An

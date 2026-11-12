@@ -4,10 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the Chaos Mesh overlay of the metal-stack lab,
-# deploy/lab/metal-stack/chaos-mesh, which hack/deploy-infra.sh applies under
+# deploy/overlays/metal-stack/chaos-mesh, which hack/deploy-infra.sh applies under
 # EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true:
 #   1. Both files carry SPDX headers, and the kustomization lists exactly
-#      ../../../kind/chaos-mesh and modules-daemonset.yaml.
+#      ../../../bases/chaos-mesh and modules-daemonset.yaml.
 #   2. The render holds four objects: the Namespace chaos-mesh, the
 #      HelmRepository and the HelmRelease of the kind overlay, and the
 #      DaemonSet chaos-mesh-modules.
@@ -21,14 +21,14 @@
 #   5. chaos-mesh-modules mounts no token, shares no host namespace, rolls out
 #      with RollingUpdate, tolerates every taint, loads in a privileged init
 #      container and holds the pod in an unprivileged container, both on
-#      host-prepare's image (deploy/lab/metal-stack/hypervisor/
+#      host-prepare's image (deploy/overlays/metal-stack/hypervisor/
 #      libvirt-daemonset.yaml) pulled IfNotPresent, with /lib/modules mounted
 #      read-only.
 #   6. The load script, run with a stub modprobe first on PATH, loads the six
 #      modules of the kind mode's host load (hack/deploy-infra.sh) in order
 #      and reports them, or names the module that failed and exits 1 without
 #      loading the next one.
-#   7. deploy/kind/chaos-mesh still renders three documents, with the filter
+#   7. deploy/overlays/kind/chaos-mesh still renders three documents, with the filter
 #      off, no annotation and no Gardener label.
 #
 # Checks 2 to 7 are counted as SKIP when kustomize or yq is not on PATH; a
@@ -52,9 +52,9 @@ source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 # shellcheck source=tests/lib/module_loader.sh
 source "$PROJECT_ROOT/tests/lib/module_loader.sh"
 
-CHAOS_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/chaos-mesh"
-KIND_CHAOS_DIR="$PROJECT_ROOT/deploy/kind/chaos-mesh"
-LIBVIRT_DAEMONSET="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml"
+CHAOS_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/chaos-mesh"
+KIND_CHAOS_DIR="$PROJECT_ROOT/deploy/overlays/kind/chaos-mesh"
+LIBVIRT_DAEMONSET="$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml"
 
 # The kernel the stub uname reports, the lab's on 2026-10-04.
 STUB_KERNEL="6.1.0-49-amd64"
@@ -87,14 +87,14 @@ test_files_have_spdx_and_two_resources() {
     assert_file_contains "$f has SPDX-License-Identifier: Apache-2.0" \
       "$CHAOS_DIR/$f" "SPDX-License-Identifier: Apache-2.0"
   done
-  assert_eq "kustomization.yaml lists ../../../kind/chaos-mesh and modules-daemonset.yaml alone" \
-    "$(printf '%s\n' ../../../kind/chaos-mesh modules-daemonset.yaml)" \
+  assert_eq "kustomization.yaml lists ../../../bases/chaos-mesh and modules-daemonset.yaml alone" \
+    "$(printf '%s\n' ../../../bases/chaos-mesh modules-daemonset.yaml)" \
     "$(resource_entries "$CHAOS_DIR/kustomization.yaml" 2>/dev/null)"
 }
 
 # --- Test 2: the four objects ---
 test_render_holds_the_four_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/chaos-mesh renders the four objects"
+  echo "Test: kustomize build deploy/overlays/metal-stack/chaos-mesh renders the four objects"
 
   render "$CHAOS_DIR" 2 || return
 
@@ -272,7 +272,7 @@ test_load_script_reports_and_fails_loudly() {
 
 # --- Test 7: the kind overlay is unchanged ---
 test_kind_overlay_unchanged() {
-  echo "Test: kustomize build deploy/kind/chaos-mesh still renders the kind bundle without the lab's changes"
+  echo "Test: kustomize build deploy/overlays/kind/chaos-mesh still renders the kind bundle without the lab's changes"
 
   render "$KIND_CHAOS_DIR" 4 || return
 

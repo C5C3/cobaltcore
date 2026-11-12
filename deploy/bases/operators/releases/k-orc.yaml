@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Deploy K-ORC from the immutable main-line commit in sources/k-orc.yaml.
+# Keep ./config/default: its namespace and namePrefix place resources in
+# orc-system, so spec.targetNamespace is deliberately unset.
+#
+# Upstream publishes branch-main on every main push; there is no latest tag.
+# Renovate discovers new digests through that tag and groups them with the
+# source commit. The digest, not the tag, resolves the
+# deployed image. A tag-only edit must never turn this into a floating pull.
+#
+# Unlike commit-* tags, branch-main has no configured expiry, but moves with
+# each build. Old digests can still be collected after it moves, so keep the
+# Renovate updates merging. CI compares each platform's build provenance with
+# the source pin before deploying. A source-only update cannot pass that gate.
+#
+# Credentials: the previous HelmRelease set globalCloudConfig.secretName, the chart
+# value for K-ORC's GLOBAL default clouds.yaml mount. The upstream installer has no
+# such knob. There is NO static orc-system clouds.yaml copy anymore — the static
+# No static ExternalSecret supplies a global clouds.yaml mount.
+# K-ORC needs no global default clouds.yaml mount because (C1) every
+# c5c3-operator K-ORC CR carries a per-resource CloudCredentialsRef that K-ORC
+# resolves in the CR's OWN (control-plane) namespace; the upstream installer ships
+# no globalCloudConfig knob.
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  # Short, stable name so other manifests/diagnostics reference K-ORC as "k-orc"
+  # (the upstream installer's own resources keep their openstack-resource-controller
+  # names). Flux Kustomizations live in flux-system alongside their source.
+  name: k-orc
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: k-orc
+    namespace: flux-system
+  path: ./config/default
+  images:
+    - name: controller
+      newName: quay.io/orc/openstack-resource-controller
+      # Documentation + drift anchor; the digest below is what resolves the pull.
+      newTag: branch-main
+      digest: sha256:9874744fe80230eb13f76ce4f56fbc318da43164c81ab50b61bb13a75a09a915
+  prune: true
+  wait: true

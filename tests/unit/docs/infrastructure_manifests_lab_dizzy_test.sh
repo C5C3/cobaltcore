@@ -122,7 +122,7 @@ test_section_content() {
   assert_not_empty "the section has a body" "$STACK"
   local text
   for text in \
-    '**File:** `deploy/lab/metal-stack/dizzy/kustomization.yaml`' \
+    '**File:** `deploy/overlays/metal-stack/dizzy/kustomization.yaml`' \
     'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_DIZZY=true make deploy-infra' \
     'kubectl -n dizzy port-forward svc/dizzy-victoria-metrics-server 8428:8428' \
     'EXTERNAL_CLUSTER=true make dizzy-keystone' \
@@ -169,7 +169,7 @@ test_run_commands() {
 # shellcheck disable=SC2016 # the page's literal text, not expanded here
 test_names_from_sources() {
   echo "Test: each name the section uses comes from its source"
-  local kind_dir="$PROJECT_ROOT/deploy/kind/dizzy"
+  local kind_dir="$PROJECT_ROOT/deploy/bases/dizzy"
   # The chart appends -server to the fullname for the Service and the
   # StatefulSet; the claim is <template>-<statefulset>-0.
   assert_file_contains_fixed "the VictoriaMetrics release sets fullnameOverride dizzy-victoria-metrics" \
@@ -200,7 +200,7 @@ test_names_from_sources() {
 test_links() {
   echo "Test: the kind section and the lab opening link the section, and Lab overlay names WITH_DIZZY"
   assert_contains "the kind dizzy section links #lab-dizzy-stack" \
-    "$(subsection '### dizzy load/chaos stack (kind-only opt-in)')" '(#lab-dizzy-stack)'
+    "$(subsection '### dizzy load/chaos stack (development opt-in)')" '(#lab-dizzy-stack)'
   assert_contains "the opening of Metal-stack lab links #lab-dizzy-stack" \
     "$(subsection '## Metal-stack lab')" '(#lab-dizzy-stack)'
   local overlay

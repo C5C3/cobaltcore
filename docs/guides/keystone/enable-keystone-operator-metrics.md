@@ -30,7 +30,7 @@ and a Keystone CR are running.
 :::
 
 For a non-kind installation, use your own Prometheus and Grafana instances.
-The production overlays (`deploy/flux-system/`) omit kube-prometheus-stack.
+The production overlays (`deploy/bases/operators/`) omit kube-prometheus-stack.
 Step 1 describes the CRD and selector requirements for that setup.
 
 ---

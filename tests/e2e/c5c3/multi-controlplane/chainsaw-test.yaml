@@ -51,7 +51,7 @@
 # token reach bao on stdin, and the database passwords reach the probe pod on
 # stdin, as in the keystone-user suite. write-bootstrap-secrets.sh and
 # setup-database-tenant.sh still pass the root token to kubectl exec as an
-# argument (see the TODO in deploy/openbao/bootstrap/common.sh), so the suite
+# argument (see the TODO in deploy/bases/shared-openbao/bootstrap/common.sh), so the suite
 # unsets BAO_TOKEN once its last call to them returns.
 #
 # ── DECISION: "credentials differ" comparison field ──────────────────────────
@@ -121,7 +121,7 @@ spec:
           PATH_A="kv-v2/openstack/keystone/${NS_A}/${CP_A}/admin/app-credential"
           PATH_B="kv-v2/openstack/keystone/${NS_B}/${CP_B}/admin/app-credential"
 
-          # OpenBao server lives in shared-services (deploy/openbao/bootstrap).
+          # OpenBao server lives in shared-services (deploy/bases/shared-openbao/bootstrap).
           BAO_NS="shared-services"
           BAO_SECRET="openbao-init-keys"
 
@@ -197,7 +197,7 @@ spec:
           if ! kubectl get pod openbao-0 -n "${BAO_NS}" >/dev/null 2>&1; then
             skip_or_fail "${BAO_NS}/openbao-0 not present."
           fi
-          # The two deploy/openbao/bootstrap scripts below read the token from
+          # The two deploy/bases/shared-openbao/bootstrap scripts below read the token from
           # their environment and hand it to kubectl exec as an argument (see
           # the header), so the export stays until the onboarding is done.
           # Every bao call of this script reads it from a file staged in
@@ -424,7 +424,7 @@ spec:
           # bootstrap/tenant-b/controlplane-b-keystone/admin. deploy-infra seeds
           # the openstack plane alone.
           KORC_CONTROLPLANES="${NS_A}/${CP_A} ${NS_B}/${CP_B}" \
-            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+            ../../../../deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh
           echo "OK: both identities' admin-password paths are seeded."
 
           # Apply both ControlPlane fixtures (each carries its own namespace).
@@ -445,8 +445,8 @@ spec:
           wait_cp_condition "${CP_B}" "${NS_B}" InfrastructureReady 600
           kubectl wait mariadb/openstack-db -n "${NS_A}" --for=condition=Ready --timeout=120s
           kubectl wait mariadb/openstack-db -n "${NS_B}" --for=condition=Ready --timeout=120s
-          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${NS_A}" "${CP_A}"
-          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${NS_B}" "${CP_B}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${NS_A}" "${CP_A}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${NS_B}" "${CP_B}"
           unset BAO_TOKEN
           echo "OK: both tenants' OpenBao database-engine roles onboarded."
 

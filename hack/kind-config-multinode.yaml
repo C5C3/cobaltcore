@@ -32,7 +32,7 @@ nodes:
     # Bridge host :443 → container :31443 so `https://keystone.127-0-0-1.nip.io/v3`
     # reaches the Envoy Gateway data-plane Service (type=NodePort,
     # nodePort=31443; pinned via the EnvoyProxy CR in
-    # deploy/kind/base/envoy-gateway.yaml). Listening on 127.0.0.1 keeps
+    # deploy/bases/devstack/base/envoy-gateway.yaml). Listening on 127.0.0.1 keeps
     # the Quick Start endpoint local-only.
     extraPortMappings:
       - hostPort: 443
@@ -42,7 +42,7 @@ nodes:
       # Bridge host :8428 → container :30428 so host-side OTLP metric export
       # (`http://localhost:8428/opentelemetry/v1/metrics`) reaches the
       # VictoriaMetrics server (type=NodePort, nodePort=30428) of the opt-in
-      # dizzy observability overlay (deploy/kind/dizzy/, gated on
+      # dizzy observability overlay (deploy/overlays/kind/dizzy/, gated on
       # WITH_DIZZY=true in hack/deploy-infra.sh). Listening on 127.0.0.1 keeps
       # it loopback-only. The mapping is unconditional so WITH_DIZZY=true can
       # be enabled later on any cluster created after this change without

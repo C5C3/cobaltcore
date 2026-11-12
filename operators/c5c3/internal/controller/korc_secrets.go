@@ -242,7 +242,7 @@ func (r *ControlPlaneReconciler) ensureAdminPasswordCloud(ctx context.Context, c
 // the operator seeds a password-based document here that lets K-ORC's admin
 // imports authenticate before the application credential is ever minted —
 // in MANAGED mode this was previously seeded by
-// deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
+// deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh.
 //
 // The seed NEVER invents a password. It renders the cleartext reconcileKORC read
 // from the EFFECTIVE admin-password Secret (readAdminPassword ->

@@ -13,7 +13,7 @@
 # nova_cinder_tempest_2026_1 on the openstack-db MariaDB cluster (cell0 is
 # derived as nova_cinder_tempest_2026_1_cell0), the openstack-memcached cache,
 # the ESO-synced nova-api-db and nova-db credentials and the pre-seeded
-# keystone-admin service-user password (all from deploy/kind/infrastructure).
+# keystone-admin service-user password (all from deploy/overlays/kind/infrastructure).
 # Separate schemas keep stale state from prior Chainsaw E2E tests on the same
 # kind cluster out of this leg.
 #

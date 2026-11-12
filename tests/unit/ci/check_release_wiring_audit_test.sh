@@ -65,7 +65,7 @@ stage_tree() {
   local t="$1" floor="$2" r f slug
   shift 2
   mkdir -p "$t/$(dirname "$AUDIT")" "$t/internal/common/release" \
-    "$t/deploy/kind/controlplane" "$t/deploy/kind/fake-compute" "$t/hack" \
+    "$t/deploy/overlays/kind/controlplane" "$t/deploy/overlays/kind/fake-compute" "$t/hack" \
     "$t/tests/e2e" "$t/.github/workflows" "$t/operators/c5c3/api/v1alpha1"
   cp "$PROJECT_ROOT/$AUDIT" "$t/$AUDIT"
   for r in "$@"; do
@@ -73,7 +73,7 @@ stage_tree() {
   done
   echo "var MinimumSupported = Release{Year: ${floor%%.*}, Minor: ${floor#*.}, Raw: \"$floor\"}" \
     >"$t/internal/common/release/release.go"
-  printf 'spec:\n  openStackRelease: "%s"\n' "$1" >"$t/deploy/kind/controlplane/controlplane.yaml"
+  printf 'spec:\n  openStackRelease: "%s"\n' "$1" >"$t/deploy/overlays/kind/controlplane/controlplane.yaml"
   write_fake_compute "$t" "$1"
   slug="${1/./-}"
   write_tempest_fallbacks "$t" "$slug"
@@ -89,7 +89,7 @@ EOF
 # write_fake_compute <dir> <tag> — The two nova image refs of the kind fake
 # compute, both at <tag>.
 write_fake_compute() {
-  cat >"$1/deploy/kind/fake-compute/fake-compute.yaml" <<EOF
+  cat >"$1/deploy/overlays/kind/fake-compute/fake-compute.yaml" <<EOF
           image: ghcr.io/c5c3/nova:$2
           image: ghcr.io/c5c3/nova:$2
 EOF
@@ -170,7 +170,7 @@ test_well_formed_floor_passes() {
   assert_not_contains "L8 reports no failure" "$(l8_section "$output")" "[FAIL]"
   assert_not_contains "L3 leaves the floor fixtures to L8" "$output" "which has no releases/2025.2/"
   assert_contains "the fake compute tags exist" "$output" \
-    "[PASS] deploy/kind/fake-compute/fake-compute.yaml: nova image tag \"2026.1\" exists under releases/"
+    "[PASS] deploy/overlays/kind/fake-compute/fake-compute.yaml: nova image tag \"2026.1\" exists under releases/"
   assert_not_contains "the fake compute tags equal the kind default" "$output" "is not the kind ControlPlane default"
   assert_contains "the CONFIG_DIR fallback parses and exists" "$output" \
     "[PASS] hack/ci-run-tempest.sh: CONFIG_DIR fallback \"2026.1\" exists under releases/"
@@ -325,7 +325,7 @@ test_fake_compute_off_default_fails() {
   output="$(run_audit "$tmp")"
 
   assert_contains "the tag mismatch is reported" "$output" \
-    "[FAIL] deploy/kind/fake-compute/fake-compute.yaml: nova image tag \"2026.2\" is not the kind ControlPlane default \"2026.1\""
+    "[FAIL] deploy/overlays/kind/fake-compute/fake-compute.yaml: nova image tag \"2026.2\" is not the kind ControlPlane default \"2026.1\""
   rm -rf "$tmp"
 }
 
@@ -364,8 +364,8 @@ test_repository_references_parse() {
   # The copies below replace the staged floor and default references.
   # shellcheck disable=SC2086 # one argument per release directory
   stage_tree "$tmp" 2026.1 $releases
-  for f in internal/common/release/release.go deploy/kind/controlplane/controlplane.yaml \
-    deploy/kind/fake-compute/fake-compute.yaml hack/ci-run-tempest.sh; do
+  for f in internal/common/release/release.go deploy/overlays/kind/controlplane/controlplane.yaml \
+    deploy/overlays/kind/fake-compute/fake-compute.yaml hack/ci-run-tempest.sh; do
     cp "$PROJECT_ROOT/$f" "$tmp/$f"
   done
 

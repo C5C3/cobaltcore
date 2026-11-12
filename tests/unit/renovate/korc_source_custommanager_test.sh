@@ -34,8 +34,8 @@ check_manager() {
   assert_eq "$package captures the committed digest" "$expected" "$captured"
 }
 
-check_manager https://github.com/k-orc/openstack-resource-controller git-refs main deploy/flux-system/sources/k-orc.yaml commit
-check_manager quay.io/orc/openstack-resource-controller docker branch-main deploy/flux-system/releases/k-orc.yaml digest
+check_manager https://github.com/k-orc/openstack-resource-controller git-refs main deploy/bases/operators/sources/k-orc.yaml commit
+check_manager quay.io/orc/openstack-resource-controller docker branch-main deploy/bases/operators/releases/k-orc.yaml digest
 
 for package in https://github.com/k-orc/openstack-resource-controller quay.io/orc/openstack-resource-controller; do
   rule="$(jq -c --arg pkg "$package" '.packageRules[] | select((.matchPackageNames // []) | index($pkg)) | select(.groupName == "k-orc")' "$RENOVATE_FILE")"

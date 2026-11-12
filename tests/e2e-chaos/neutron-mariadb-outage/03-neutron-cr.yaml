@@ -7,7 +7,7 @@
 # Managed mode throughout: the schema neutron_db_chaos on the openstack-db
 # MariaDB cluster, the openstack-memcached cache, the ESO-synced neutron-db
 # credentials and the pre-seeded keystone-admin service-user password (both from
-# deploy/kind/infrastructure). The broker Secret and the OVN control plane come
+# deploy/overlays/kind/infrastructure). The broker Secret and the OVN control plane come
 # from the two sibling fixtures.
 #
 # One API replica and one worker: the suite asserts what a partitioned database

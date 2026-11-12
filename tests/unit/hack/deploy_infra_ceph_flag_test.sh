@@ -379,7 +379,7 @@ test_preflight() {
   rc=$?
   assert_eq "WITH_CEPH=true is refused in kind mode" "1" "$rc"
   assert_contains "with the kind-mode error" "$output" \
-    "ERROR: WITH_CEPH=true is not supported in kind mode: the Ceph overlay exists only under deploy/lab/metal-stack, and Ceph on kind and in CI is tracked by #1339."
+    "ERROR: WITH_CEPH=true is not supported in kind mode: the Ceph overlay exists only under deploy/overlays/metal-stack, and Ceph on kind and in CI is tracked by #1339."
   assert_eq "before Docker is asked" "" "$(grep '^docker ' "$STUB_LOG" || true)"
   assert_not_contains "and before preflight passes" "$output" "Pre-flight checks passed."
 

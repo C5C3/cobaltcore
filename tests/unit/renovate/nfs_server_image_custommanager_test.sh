@@ -45,7 +45,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 
 NFS_PACKAGE="ghcr.io/kubernetes-sigs/nfs-ganesha"
-OVERLAY_PATH="deploy/kind/nfs/nfs-server.yaml"
+OVERLAY_PATH="deploy/bases/nfs/nfs-server.yaml"
 SUITE_PATH="tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
 
 # --- Test 1: customManager targets both files and captures depName/tag/digest ---
@@ -63,7 +63,7 @@ test_custom_manager_captures_image() {
   local entry
   entry="$(jq -c '.customManagers[]
     | select(.datasourceTemplate == "docker")
-    | select((.managerFilePatterns // []) | join(",") | contains("deploy/kind/nfs"))' \
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/bases/nfs"))' \
     "$RENOVATE_FILE")"
 
   if [ -z "$entry" ]; then
@@ -80,8 +80,8 @@ test_custom_manager_captures_image() {
 
   local patterns
   patterns="$(jq -r '.managerFilePatterns | join(",")' <<<"$entry")"
-  assert_contains "managerFilePatterns targets the kind overlay" \
-    "$patterns" "deploy/kind/nfs/nfs-server"
+  assert_contains "managerFilePatterns targets the shared base" \
+    "$patterns" "deploy/bases/nfs/nfs-server"
   assert_contains "managerFilePatterns targets the nfs-health suite" \
     "$patterns" "tests/e2e/infrastructure/nfs-health/chainsaw-test"
 
@@ -198,16 +198,16 @@ test_all_nfs_server_pins_covered() {
 
   local pinned
   pinned="$(cd "$PROJECT_ROOT" && grep -rl 'image: ghcr\.io/kubernetes-sigs/nfs-ganesha' \
-    deploy/kind tests/e2e | sort)"
+    deploy/overlays/kind tests/e2e | sort)"
   assert_not_empty "at least one nfs-server image pin exists" "$pinned"
 
-  # The nfs-server image pin is the only customManager on deploy/kind/nfs; the
+  # The nfs-server image pin is the only customManager on deploy/bases/nfs; the
   # csi-driver-nfs chart version belongs to the native flux manager. The
   # datasource filter keeps this lookup on the image if another manager joins.
   local entry patterns f
   entry="$(jq -c '.customManagers[]
     | select(.datasourceTemplate == "docker")
-    | select((.managerFilePatterns // []) | join(",") | contains("deploy/kind/nfs"))' \
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/bases/nfs"))' \
     "$RENOVATE_FILE" | head -1)"
   # managerFilePatterns are Renovate regexes ("/path/to/file\\.yaml$/"), so
   # drop the backslash escapes before matching the plain file paths.
@@ -227,7 +227,7 @@ test_all_nfs_server_pins_covered() {
   # of the files would pull a second image onto the kind node.
   local distinct
   distinct="$(cd "$PROJECT_ROOT" && grep -rh 'image: ghcr\.io/kubernetes-sigs/nfs-ganesha' \
-    deploy/kind tests/e2e | sed 's/^[[:space:]]*//' | sort -u | wc -l | tr -d '[:space:]')"
+    deploy/overlays/kind tests/e2e | sed 's/^[[:space:]]*//' | sort -u | wc -l | tr -d '[:space:]')"
   assert_eq "all nfs-server pins reference the same tag and digest" "1" "$distinct"
 }
 

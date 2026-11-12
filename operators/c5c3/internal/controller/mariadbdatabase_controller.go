@@ -141,7 +141,7 @@ const (
 const (
 	// orderDBCredentialServiceAccountName is the ServiceAccount the generators
 	// present to OpenBao. It is bound by the order-db auth role
-	// (deploy/openbao/bootstrap/setup-auth.sh).
+	// (deploy/bases/shared-openbao/bootstrap/setup-auth.sh).
 	orderDBCredentialServiceAccountName = "order-db-creds" //nolint:gosec // G101 false positive: ServiceAccount name, not a credential.
 	// orderDBClientCertName names the cert-manager Certificate, and the Secret it
 	// materialises, carrying the mTLS keypair the generators and the operator's
@@ -202,7 +202,7 @@ const mariaDBDatabaseCredentialsSecretSuffix = "-credentials"
 // the operator's auth role or policy, or the widened connection, is missing on
 // a deployment that has not re-run the bootstrap.
 const mariaDBDatabaseOpenBaoBootstrapHint = "the operator's OpenBao login or policy is missing; re-run " +
-	"deploy/openbao/bootstrap/setup-auth.sh, setup-policies.sh and setup-database-tenant.sh: "
+	"deploy/bases/shared-openbao/bootstrap/setup-auth.sh, setup-policies.sh and setup-database-tenant.sh: "
 
 // MariaDBDatabaseReconciler owns the MariaDBDatabase lifecycle and is the
 // single writer of its status. It serves orders on the management cluster and
@@ -409,7 +409,7 @@ func mariaDBDatabaseDynamicGate(cp *c5c3v1alpha1.ControlPlane, failBoth func(rea
 	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeDBCredentialsReady) {
 		failBoth(reasonMariaDBDatabaseWaitingForDBCredentials, fmt.Sprintf(
 			"ControlPlane %s/%s reports DBCredentialsReady is not True; the OpenBao database engine is not "+
-				"onboarded for its database yet (deploy/openbao/bootstrap/setup-database-tenant.sh)",
+				"onboarded for its database yet (deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh)",
 			cp.Namespace, cp.Name))
 		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, false
 	}

@@ -5,7 +5,7 @@
 # Namespace fixture for the Horizon Gateway quick-start E2E test.
 #
 # The `openstack` namespace is already created by the kind overlay
-# (`deploy/kind/base/`) because it holds the Gateway and Certificate objects
+# (`deploy/overlays/kind/base/`) because it holds the Gateway and Certificate objects
 # wired in `openstack-gateway.yaml`. The suite still applies it so it is
 # self-contained: chainsaw's `apply` is idempotent on an existing Namespace.
 #

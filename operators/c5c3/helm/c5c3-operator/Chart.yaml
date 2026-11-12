@@ -24,7 +24,7 @@ annotations:
     - kind: changed
       description: The ClusterRole drops every verb that neither the RBAC usage audit of the e2e suites nor a call site in the operator claims (docs/reference/testing/rbac-usage-audit.md), and the leader-election rule grants get, create and update on leases only
     - kind: removed
-      description: "RBAC for get and patch on the orc-controller-manager Deployment; K-ORC at commit da276e44 or later refreshes its own service catalog, so the operator no longer restarts it. Upgrade K-ORC (apply deploy/flux-system again) before or together with this chart; an older K-ORC misses a service registered after its first login for up to half a token lifetime and needs kubectl rollout restart deployment/orc-controller-manager -n orc-system"
+      description: "RBAC for get and patch on the orc-controller-manager Deployment; K-ORC at commit da276e44 or later refreshes its own service catalog, so the operator no longer restarts it. Upgrade K-ORC (apply deploy/bases/operators again) before or together with this chart; an older K-ORC misses a service registered after its first login for up to half a token lifetime and needs kubectl rollout restart deployment/orc-controller-manager -n orc-system"
     - kind: added
       description: "webhook.standalone runs the release as a standalone admission webhook for namespace-scoped installs: --enable-controllers=false, no leader election, a ClusterRole reduced to the webhook reads (operator-library 0.11.0)"
     - kind: added

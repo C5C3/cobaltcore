@@ -14,8 +14,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_KORC_SH="$PROJECT_ROOT/hack/ci-deploy-korc.sh"
-KORC_SOURCE_YAML="$PROJECT_ROOT/deploy/flux-system/sources/k-orc.yaml"
-KORC_RELEASE_YAML="$PROJECT_ROOT/deploy/flux-system/releases/k-orc.yaml"
+KORC_SOURCE_YAML="$PROJECT_ROOT/deploy/bases/operators/sources/k-orc.yaml"
+KORC_RELEASE_YAML="$PROJECT_ROOT/deploy/bases/operators/releases/k-orc.yaml"
 
 PASS=0
 FAIL=0

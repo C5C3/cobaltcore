@@ -4,16 +4,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the Chaos Mesh opt-in overlay:
-#   - deploy/flux-system/kustomization.yaml no longer references
+#   - deploy/bases/operators/kustomization.yaml no longer references
 #     sources/chaos-mesh.yaml or releases/chaos-mesh.yaml in its resources
 #     list, and the corresponding files are no longer present under
-#     deploy/flux-system/{sources,releases}/ (they were relocated into the opt-in overlay so the overlay is self-contained).
-#   - deploy/flux-system/namespaces.yaml no longer creates the chaos-mesh
+#     deploy/bases/operators/{sources,releases}/ (they were relocated into the opt-in overlay so the overlay is self-contained).
+#   - deploy/bases/operators/namespaces.yaml no longer creates the chaos-mesh
 #     Namespace.
-#   - deploy/kind/base/kustomization.yaml no longer carries the chaos-mesh
+#   - deploy/overlays/kind/base/kustomization.yaml no longer carries the chaos-mesh
 #     HelmRelease patch (kustomize would otherwise refuse to render with a
 #     missing target).
-#   - deploy/kind/chaos-mesh/kustomization.yaml exists, references the
+#   - deploy/overlays/kind/chaos-mesh/kustomization.yaml exists, references the
 #     local source/release/namespace files (no parent-directory paths),
 #     and carries the kind-tuning patch.
 #   - kustomize build of all three overlays renders the expected document
@@ -37,23 +37,23 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 FLUX_SYSTEM_KUSTOMIZATION="$FLUX_SYSTEM_DIR/kustomization.yaml"
 FLUX_SYSTEM_NAMESPACES="$FLUX_SYSTEM_DIR/namespaces.yaml"
 FLUX_SYSTEM_CHAOS_SOURCE="$FLUX_SYSTEM_DIR/sources/chaos-mesh.yaml"
 FLUX_SYSTEM_CHAOS_RELEASE="$FLUX_SYSTEM_DIR/releases/chaos-mesh.yaml"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 KIND_BASE_KUSTOMIZATION="$KIND_BASE_DIR/kustomization.yaml"
-KIND_CHAOS_DIR="$PROJECT_ROOT/deploy/kind/chaos-mesh"
-KIND_CHAOS_KUSTOMIZATION="$KIND_CHAOS_DIR/kustomization.yaml"
-KIND_CHAOS_NAMESPACE="$KIND_CHAOS_DIR/namespace.yaml"
-KIND_CHAOS_SOURCE="$KIND_CHAOS_DIR/source.yaml"
-KIND_CHAOS_RELEASE="$KIND_CHAOS_DIR/release.yaml"
+KIND_CHAOS_DIR="$PROJECT_ROOT/deploy/overlays/kind/chaos-mesh"
+KIND_CHAOS_KUSTOMIZATION="$PROJECT_ROOT/deploy/bases/chaos-mesh/kustomization.yaml"
+KIND_CHAOS_NAMESPACE="$PROJECT_ROOT/deploy/bases/chaos-mesh/namespace.yaml"
+KIND_CHAOS_SOURCE="$PROJECT_ROOT/deploy/bases/chaos-mesh/source.yaml"
+KIND_CHAOS_RELEASE="$PROJECT_ROOT/deploy/bases/chaos-mesh/release.yaml"
 
 # --- Test 1: production overlay no longer lists chaos-mesh source/release
 #             files in its resources block ---
 test_flux_system_kustomization_drops_chaos_mesh_entries() {
-  echo "Test: deploy/flux-system/kustomization.yaml resources list contains no chaos-mesh entries"
+  echo "Test: deploy/bases/operators/kustomization.yaml resources list contains no chaos-mesh entries"
 
   if [[ ! -f "$FLUX_SYSTEM_KUSTOMIZATION" ]]; then
     echo "  FAIL: $FLUX_SYSTEM_KUSTOMIZATION does not exist"
@@ -71,11 +71,11 @@ test_flux_system_kustomization_drops_chaos_mesh_entries() {
   assert_eq "no '- releases/chaos-mesh.yaml' entry in resources list" "0" "${release_entry// /}"
 }
 
-# --- Test 2: chaos-mesh source/release files live INSIDE the opt-in overlay
+# --- Test 2: chaos-mesh source/release files live INSIDE the opt-in shared base
 #             so the overlay is self-contained — kustomize build does not need
 #             --load-restrictor=LoadRestrictionsNone (/) ---
 test_chaos_mesh_files_local_to_overlay() {
-  echo "Test: chaos-mesh source/release files live inside the opt-in overlay"
+  echo "Test: chaos-mesh source/release files live inside the opt-in shared base"
 
   if [[ -f "$KIND_CHAOS_SOURCE" ]]; then
     echo "  PASS: $KIND_CHAOS_SOURCE exists"
@@ -93,7 +93,7 @@ test_chaos_mesh_files_local_to_overlay() {
     FAIL=$((FAIL + 1))
   fi
 
-  # The legacy on-disk locations under deploy/flux-system/ must be gone:
+  # The legacy on-disk locations under deploy/bases/operators/ must be gone:
   # leaving stale duplicates would invite drift between the production-omitted
   # files and the overlay-active copies. kubectl apply -k cannot pass
   # --load-restrictor (kubernetes/kubectl#948), so the overlay MUST be
@@ -119,7 +119,7 @@ test_chaos_mesh_files_local_to_overlay() {
 # --- Test 3: production namespaces.yaml no longer declares the chaos-mesh
 #             Namespace ---
 test_flux_system_namespaces_drops_chaos_mesh() {
-  echo "Test: deploy/flux-system/namespaces.yaml no longer creates the chaos-mesh Namespace"
+  echo "Test: deploy/bases/operators/namespaces.yaml no longer creates the chaos-mesh Namespace"
 
   if [[ ! -f "$FLUX_SYSTEM_NAMESPACES" ]]; then
     echo "  FAIL: $FLUX_SYSTEM_NAMESPACES does not exist"
@@ -135,10 +135,10 @@ test_flux_system_namespaces_drops_chaos_mesh() {
   assert_eq "no 'name: chaos-mesh' Namespace entry in namespaces.yaml" "0" "${hits// /}"
 }
 
-# --- Test 4: deploy/kind/base/kustomization.yaml no longer carries a patch
+# --- Test 4: deploy/overlays/kind/base/kustomization.yaml no longer carries a patch
 #             whose target is the chaos-mesh HelmRelease ---
 test_kind_base_kustomization_drops_chaos_mesh_patch() {
-  echo "Test: deploy/kind/base/kustomization.yaml no longer patches the chaos-mesh HelmRelease"
+  echo "Test: deploy/overlays/kind/base/kustomization.yaml no longer patches the chaos-mesh HelmRelease"
 
   if [[ ! -f "$KIND_BASE_KUSTOMIZATION" ]]; then
     echo "  FAIL: $KIND_BASE_KUSTOMIZATION does not exist"
@@ -163,10 +163,10 @@ test_kind_base_kustomization_drops_chaos_mesh_patch() {
     "0" "${patch_target_hits// /}"
 }
 
-# --- Test 5: deploy/kind/chaos-mesh/ overlay exists with the expected
+# --- Test 5: deploy/overlays/kind/chaos-mesh/ overlay exists with the expected
 #             on-disk shape ---
 test_kind_chaos_overlay_files_exist() {
-  echo "Test: deploy/kind/chaos-mesh/{kustomization,namespace}.yaml exist with SPDX + Feature ID"
+  echo "Test: deploy/overlays/kind/chaos-mesh/{kustomization,namespace}.yaml exist with SPDX + Feature ID"
 
   if [[ ! -f "$KIND_CHAOS_KUSTOMIZATION" ]]; then
     echo "  FAIL: $KIND_CHAOS_KUSTOMIZATION does not exist"
@@ -215,7 +215,7 @@ test_kind_chaos_overlay_files_exist() {
 # --- Test 6: kustomize build of production flux-system renders zero
 #             chaos-mesh resources ---
 test_kustomize_build_flux_system_renders_no_chaos_mesh() {
-  echo "Test: kustomize build deploy/flux-system renders no chaos-mesh resources"
+  echo "Test: kustomize build deploy/bases/operators renders no chaos-mesh resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (3 checks skipped)"
@@ -265,7 +265,7 @@ test_kustomize_build_flux_system_renders_no_chaos_mesh() {
 # --- Test 7: kustomize build of kind/base succeeds (no orphan patch error)
 #             and renders no chaos-mesh resources ---
 test_kustomize_build_kind_base_succeeds_without_chaos_mesh() {
-  echo "Test: kustomize build deploy/kind/base succeeds and renders no chaos-mesh resources"
+  echo "Test: kustomize build deploy/overlays/kind/base succeeds and renders no chaos-mesh resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"
@@ -294,13 +294,13 @@ test_kustomize_build_kind_base_succeeds_without_chaos_mesh() {
 #             preserved ---
 #
 # The overlay is self-contained — all resource references are local to
-# deploy/kind/chaos-mesh/. Kustomize's default security model
+# deploy/overlays/kind/chaos-mesh/. Kustomize's default security model
 # (LoadRestrictionsRootOnly) is therefore satisfied without any extra flag,
 # and the same default applies to kubectl's embedded kustomize used by
 # hack/deploy-infra.sh (kubectl does not expose --load-restrictor —
 # kubernetes/kubectl#948 — so the no-flag build is the production caller).
 test_kustomize_build_kind_chaos_overlay_renders_full_bundle() {
-  echo "Test: kustomize build deploy/kind/chaos-mesh renders Namespace + HelmRepository + HelmRelease with kind tuning"
+  echo "Test: kustomize build deploy/overlays/kind/chaos-mesh renders Namespace + HelmRepository + HelmRelease with kind tuning"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (8 checks skipped)"

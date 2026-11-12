@@ -90,7 +90,7 @@
 <text x="508" y="1171.2" font-size="20" font-weight="400" fill="#55606E">install retries: 30</text>
 <polyline points="274,1098 274,1068.5" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="274,1058 281.2,1073 266.8,1073" fill="#3A4452"/>
-<text x="40" y="1289.2" font-size="20" font-weight="400" fill="#55606E">A pill is a HelmRelease of deploy/flux-system/releases, under its metadata.name. The three in the box Flux Kustomizations are Flux Kustomization resources.</text>
+<text x="40" y="1289.2" font-size="20" font-weight="400" fill="#55606E">A pill is a HelmRelease of deploy/bases/operators/releases, under its metadata.name. The three in the box Flux Kustomizations are Flux Kustomization resources.</text>
 <text x="40" y="1315.2" font-size="20" font-weight="400" fill="#55606E">A solid arrow is a dependsOn entry. An entry that other arrows imply is left out. The table on the page lists every entry.</text>
 <text x="40" y="1341.2" font-size="20" font-weight="400" fill="#55606E">A dotted arrow holds at run time and is declared nowhere: dependsOn of a HelmRelease names only HelmReleases, dependsOn of a Kustomization only Kustomizations.</text>
 </svg>

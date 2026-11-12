@@ -62,7 +62,7 @@ spec:
           fi
           # hack/ci-deploy-operator.sh installs the release
           # horizon-operator into horizon-system, and the Flux HelmRelease
-          # there is suspended by deploy/kind/base/kustomization.yaml, so
+          # there is suspended by deploy/overlays/kind/base/kustomization.yaml, so
           # only the helm-installed ServiceMonitor renders.
           kubectl get servicemonitor horizon-operator -n horizon-system >/dev/null
           echo "OK: ServiceMonitor/horizon-operator exists in horizon-system"

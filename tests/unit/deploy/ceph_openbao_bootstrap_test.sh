@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the OpenBao bootstrap legs of the lab Ceph's key hand-off
-# (deploy/lab/metal-stack/ceph/cluster/keys-push.yaml and keys-pull.yaml).
+# (deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml and keys-pull.yaml).
 #
 #   - setup-auth.sh must write BOTH kubernetes/management roles once each:
 #     push-ceph-keys bound to the ServiceAccount ceph-keys-push in rook-ceph,
@@ -30,8 +30,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-AUTH_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-auth.sh"
-POLICY_DIR="$PROJECT_ROOT/deploy/openbao/policies"
+AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
+POLICY_DIR="$PROJECT_ROOT/deploy/bases/shared-openbao/policies"
 READ_POLICY="$POLICY_DIR/read-ceph-keys.hcl"
 PUSH_POLICY="$POLICY_DIR/push-ceph-keys.hcl"
 

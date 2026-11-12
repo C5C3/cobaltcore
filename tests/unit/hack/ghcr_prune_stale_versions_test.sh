@@ -352,7 +352,7 @@ test_libvirt_keeper_tag_keeps_the_pinned_build() {
   echo "Test: a <libvirt-version>-r<N> tag keeps its manifest without latest"
   local fixture="$TMPDIR_BASE/libvirt.json" output mode pinned_tag
   pinned_tag="$(grep -hoE 'image: ghcr\.io/c5c3/libvirt:[^@[:space:]]+' \
-    "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml" | head -1 | sed 's/.*libvirt://' || true)"
+    "$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml" | head -1 | sed 's/.*libvirt://' || true)"
   assert_not_empty "the DaemonSet carries a pinned tag to test" "$pinned_tag"
   cat > "$fixture" <<EOF
 {

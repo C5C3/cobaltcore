@@ -238,7 +238,7 @@ spec:
             fi
           done
 
-          # The two deploy/openbao/bootstrap scripts below read the token from
+          # The two deploy/bases/shared-openbao/bootstrap scripts below read the token from
           # their environment, so the export stays. The one bao call of this
           # script reads it from a file staged in openbao-0 instead, which keeps
           # the root token out of argv and the API server's audit log.
@@ -499,7 +499,7 @@ spec:
           BUS_ENDPOINT="${NODE_IP}:${BUS_NODEPORT}"
 
           KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
-            ../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+            ../../../deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh
           echo "OK: the per-CR admin-password path is seeded."
 
           sed -e "s|@PUBLIC_ENDPOINT@|${PUBLIC_ENDPOINT}|g" -e "s|@DB_ENDPOINT@|${DB_ENDPOINT}|g" \
@@ -510,7 +510,7 @@ spec:
           # start is the slow part of it.
           wait_cp_condition InfrastructureReady 900
           kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=600s
-          ../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          ../../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
           echo "OK: OpenBao database-engine tenant onboarded."
           wait_cp_condition DBCredentialsReady 300
           wait_cp_condition KeystoneReady 900

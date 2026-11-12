@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Shared prometheus resources; environment overlays select their settings.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Top-level namespace propagates to every namespaced resource emitted by
+# this overlay (HelmRelease, generated ConfigMap) without each one having
+# to repeat the field.
+namespace: monitoring
+
+resources:
+  # The consumer owns Namespace/monitoring: the devstack base in managed
+  # installs, or the standalone kind overlay for direct consumers.
+  - release.yaml
+
+configMapGenerator:
+  # Wraps the Keystone Operator dashboard JSON in a ConfigMap so the
+  # Grafana sidecar (kiwigrid/k8s-sidecar, shipped with kube-prometheus-stack)
+  # auto-loads it at boot. The sidecar discovers ConfigMaps cluster-wide
+  # via the `grafana_dashboard=1` label; the `app.kubernetes.io/part-of`
+  # label keeps the resource grouped with the rest of the stack for
+  # `kubectl get -l` queries. The `keystone-operator.json` path is a local
+  # sibling staged at deploy time by hack/deploy-infra.sh — the file is
+  # NOT tracked in git (see .gitignore); the canonical source lives at
+  # operators/keystone/dashboards/keystone-operator.json.
+  - name: keystone-operator-dashboard
+    namespace: monitoring
+    files:
+      - keystone-operator.json
+    options:
+      # disableNameSuffixHash keeps the ConfigMap name stable
+      # (`keystone-operator-dashboard` instead of `…-<hash>`) so the
+      # chainsaw assertions in can reference it by a fixed name.
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+        app.kubernetes.io/part-of: kube-prometheus-stack

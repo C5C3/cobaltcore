@@ -96,7 +96,7 @@ spec:
           # the metadata endpoint and must be set with `bao kv metadata put` —
           # `bao kv put` has no -custom-metadata flag in this OpenBao build. This
           # makes the suite self-contained and mirrors mark_eso_managed in
-          # deploy/openbao/bootstrap/write-bootstrap-secrets.sh.
+          # deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh.
           kubectl exec -n "${BAO_NS}" "${POD}" -- \
             env BAO_ADDR="${BAO_ADDR}" BAO_TOKEN="${BAO_TOKEN}" \
                 VAULT_CACERT="${VAULT_CACERT}" \

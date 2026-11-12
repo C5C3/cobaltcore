@@ -19,7 +19,7 @@
 #   1. the EXTERNAL_CLUSTER=true preflight check for the overlay's
 #      dizzy/kustomization.yaml
 #   2. Step 3 overlay apply (stage-dashboards + kubectl apply -k of the dizzy/
-#      of OVERLAY_ROOT, deploy/kind/dizzy in kind mode)
+#      of OVERLAY_ROOT, deploy/overlays/kind/dizzy in kind mode)
 #   3. Phase 3 helm-release wait list append (dizzy-victoria-metrics, dizzy-grafana)
 #   4. post-wait Grafana URL log
 #   5. the two dizzy: lines of the EXTERNAL_CLUSTER=true completion banner
@@ -36,7 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 KIND_CONFIG_FILE="$PROJECT_ROOT/hack/kind-config.yaml"
-DIZZY_KUSTOMIZATION="$PROJECT_ROOT/deploy/kind/dizzy/kustomization.yaml"
+DIZZY_KUSTOMIZATION="$PROJECT_ROOT/deploy/overlays/kind/dizzy/kustomization.yaml"
 
 PASS=0
 FAIL=0
@@ -159,7 +159,7 @@ test_banner_includes_dizzy_line() {
 
 # ---------------------------------------------------------------------------
 # Test 6: Step 3 overlay apply is gated, and stage-dashboards runs first
-# The kustomize apply of the dizzy/ of OVERLAY_ROOT (deploy/kind/dizzy in kind
+# The kustomize apply of the dizzy/ of OVERLAY_ROOT (deploy/overlays/kind/dizzy in kind
 # mode) must live inside the WITH_DIZZY gate so the default Quick Start does not
 # install it, and dizzy.sh stage-dashboards MUST run inside the SAME gate BEFORE
 # the apply so the configMapGenerator's staged JSONs exist when kustomize
@@ -169,12 +169,12 @@ test_dizzy_apply_is_gated_after_staging() {
   echo "Test: dizzy overlay apply is gated and staged after dizzy.sh stage-dashboards"
 
   # There is exactly one apply of the dizzy overlay, and it reads the overlay
-  # root, which is deploy/kind in kind mode.
+  # root, which is deploy/overlays/kind in kind mode.
   local apply_hits
   apply_hits="$(grep -cF 'kubectl apply -k "${OVERLAY_ROOT}/dizzy"' "$DEPLOY_INFRA_SH" || true)"
   assert_eq "deploy-infra.sh applies the dizzy overlay exactly once" "1" "$apply_hits"
   assert_file_not_contains "deploy-infra.sh no longer hardcodes the kind dizzy overlay" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"'
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/dizzy"'
 
   local apply_line stage_line gate_before_apply gate_before_stage
   apply_line="$(grep -nF 'kubectl apply -k "${OVERLAY_ROOT}/dizzy"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
@@ -241,9 +241,9 @@ test_phase3_append_is_gated() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 8: overlay is self-contained (no parent-directory resource entries)
+# Test 8: overlay is self-contained (no parent-directory raw-file imports)
 # kubectl's embedded kustomize (used by the production apply) does NOT expose
-# --load-restrictor (kubernetes/kubectl#948), so a `../..` resource reference
+# --load-restrictor (kubernetes/kubectl#948), so a parent raw-file reference
 # would re-introduce the LoadRestrictionsRootOnly failure. Assert zero such
 # entries in the kustomization AND in every tracked file of the overlay. The
 # pattern is anchored to a YAML list item (`- ../..`) — the same discipline as
@@ -251,7 +251,7 @@ test_phase3_append_is_gated() {
 # contract in the overlay's own comments does not trip the check.
 # ---------------------------------------------------------------------------
 test_overlay_is_self_contained() {
-  echo "Test: dizzy overlay has no '../..' parent-directory resource entries"
+  echo "Test: dizzy overlay has no parent-directory raw-file imports"
 
   if [[ ! -f "$DIZZY_KUSTOMIZATION" ]]; then
     echo "  FAIL: $DIZZY_KUSTOMIZATION does not exist"
@@ -260,19 +260,19 @@ test_overlay_is_self_contained() {
   fi
 
   local kust_refs
-  kust_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./\.\.' "$DIZZY_KUSTOMIZATION" || true; } | wc -l | tr -d '[:space:]')"
-  assert_eq "kustomization.yaml has no '../..' parent-directory resource entries" "0" "$kust_refs"
+  kust_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./.*\.(ya?ml|json)[[:space:]]*$' "$DIZZY_KUSTOMIZATION" || true; } | wc -l | tr -d '[:space:]')"
+  assert_eq "kustomization.yaml has no parent-directory raw-file imports" "0" "$kust_refs"
 
-  # Every tracked file of the overlay must be free of '../..' resource entries.
+  # Every tracked file of the overlay must be free of parent raw-file imports.
   # `git ls-files` yields exactly the tracked set (the git-ignored dashboards/
   # dir is excluded even when a developer has staged JSONs into it).
   local tracked f total_refs=0 checked=0
-  tracked="$(git -C "$PROJECT_ROOT" ls-files 'deploy/kind/dizzy' 2>/dev/null)"
+  tracked="$(git -C "$PROJECT_ROOT" ls-files 'deploy/overlays/kind/dizzy' 2>/dev/null)"
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
     checked=$((checked + 1))
     local n
-    n="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./\.\.' "$PROJECT_ROOT/$f" || true; } | wc -l | tr -d '[:space:]')"
+    n="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./.*\.(ya?ml|json)[[:space:]]*$' "$PROJECT_ROOT/$f" || true; } | wc -l | tr -d '[:space:]')"
     total_refs=$((total_refs + n))
   done <<< "$tracked"
 

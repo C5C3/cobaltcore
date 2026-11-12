@@ -63,7 +63,7 @@ func childNamespace(cp *c5c3v1alpha1.ControlPlane) string {
 // HA cluster matching the production baseline, a single replica a single-instance
 // non-Galera MariaDB so the fresh-create path schedules on a constrained cluster
 // such as a single-node kind), and its storageSize drives the volume size
-// (default 100Gi mirrors deploy/flux-system/infrastructure/mariadb.yaml; kind/CI
+// (default 100Gi mirrors deploy/bases/infrastructure/mariadb.yaml; kind/CI
 // pins a far smaller value). TLS / issuerRefs are deliberately NOT set here: the
 // baseline wires those from cluster-specific ClusterIssuers that are an
 // infrastructure concern outside the aggregate's knowledge, and the keystone
@@ -1219,7 +1219,7 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(
 
 // rabbitMQDefaultResources is the spec.resources the RabbitmqCluster CRD
 // defaults an unset field to (cluster-operator v2.23.0, the tag
-// deploy/flux-system/sources/rabbitmq-cluster-operator.yaml pins). A bus the
+// deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml pins). A bus the
 // sizing sets no resources for carries it, so it counts as matching rather
 // than being removed, and defaulted back, on every pass. Keep it and the
 // figures docs/reference/c5c3/controlplane-crd.md repeats in lockstep with a

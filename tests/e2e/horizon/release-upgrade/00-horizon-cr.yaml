@@ -6,7 +6,7 @@
 # 2026.1 release: Horizon has no spec.openStackRelease, so the image tag is
 # the release and 01-patch-upgrade.yaml moves it alone. Managed cache via
 # clusterRef to openstack-memcached; the SECRET_KEY comes from the ESO-synced
-# horizon-secret-key Secret (deploy/kind/infrastructure). keystoneEndpoint
+# horizon-secret-key Secret (deploy/overlays/kind/infrastructure). keystoneEndpoint
 # points at the cluster-local convention URL: the login page renders without
 # a live Keystone. A single replica keeps the rollout observable when the
 # patch bumps the tag to 2026.2.

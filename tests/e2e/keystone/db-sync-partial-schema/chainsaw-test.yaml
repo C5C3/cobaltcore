@@ -40,7 +40,7 @@ spec:
   # (internal/common/database/builders.go), so the mariadb-operator's
   # CREATE DATABASE IF NOT EXISTS adopts the seeded schema unchanged. The root
   # Secret comes from the live MariaDB CR, as in
-  # deploy/openbao/bootstrap/setup-database-tenant.sh. `kubectl` calls fail
+  # deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh. `kubectl` calls fail
   # transiently under `parallel: 4`, so each attempt re-reads the password and
   # runs the exec under `timeout`.
   - name: seed-partial-schema

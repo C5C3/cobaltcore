@@ -56,7 +56,7 @@ OPERATOR_DIGEST_TARGETS=(
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
-# Matches the pattern from deploy/openbao/bootstrap/common.sh.
+# Matches the pattern from deploy/bases/shared-openbao/bootstrap/common.sh.
 # ---------------------------------------------------------------------------
 log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"

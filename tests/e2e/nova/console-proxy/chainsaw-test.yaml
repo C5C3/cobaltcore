@@ -86,7 +86,7 @@ spec:
           set -euo pipefail
 
           # ── Presence guard ──────────────────────────────────────
-          # The kind overlay alone applies deploy/kind/base/openstack-gateway.yaml,
+          # The kind overlay alone applies deploy/overlays/kind/base/openstack-gateway.yaml,
           # which materialises GatewayClass/envoy and Gateway/openstack-gw. Their
           # absence unambiguously signals a non-kind cluster, so exit 0 with a
           # SKIP line.

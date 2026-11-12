@@ -12,7 +12,7 @@
 #
 # Managed mode throughout: the schema cinder_basic on the openstack-db MariaDB
 # cluster, the openstack-memcached cache, and the ESO-synced cinder-db
-# credentials (deploy/kind/infrastructure). The transport URL comes from the
+# credentials (deploy/overlays/kind/infrastructure). The transport URL comes from the
 # Secret ../broker-vhost.sh writes for this suite's own vhost.
 #
 # No keystoneEndpoint and no serviceUser: the two are set together or not at

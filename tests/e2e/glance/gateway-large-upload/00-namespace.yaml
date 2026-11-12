@@ -5,7 +5,7 @@
 # Namespace fixture for the Glance large-upload gateway test.
 #
 # The `openstack` namespace is already created by the kind overlay
-# (`deploy/kind/base/`) because it holds the Gateway/Certificate objects wired
+# (`deploy/overlays/kind/base/`) because it holds the Gateway/Certificate objects wired
 # in `openstack-gateway.yaml` (including the `https-glance-upload` listener and
 # its `glance-upload-nip-io-tls` Certificate) and the managed backing services
 # the image store and cache rely on. We still apply it here defensively so the

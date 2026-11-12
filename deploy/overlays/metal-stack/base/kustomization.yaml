@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Metal-stack controller stage: shared profile, Gardener namespace metadata and public gateway.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../bases/devstack/base
+  - openstack-gateway.yaml
+patches:
+  - target:
+      version: v1
+      kind: Namespace
+    patch: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: every-namespace
+        labels:
+          apiserver-proxy.networking.gardener.cloud/inject: disable
+        annotations:
+          chaos-mesh.org/inject: enabled

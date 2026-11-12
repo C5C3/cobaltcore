@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify provision_service_tenant in
-# deploy/openbao/bootstrap/setup-database-tenant.sh renders one GRANT per schema
+# deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh renders one GRANT per schema
 # of its comma-separated <database_names> argument, inside the single
 # creation_statements value of the database-engine role, so one role can cover
 # every schema of a service that owns more than one. A one-element list renders
@@ -32,7 +32,7 @@ set -uo pipefail
 # overwrites SCRIPT_DIR with its own bootstrap directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SCRIPT_UNDER_TEST="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-database-tenant.sh"
+SCRIPT_UNDER_TEST="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh"
 
 PASS=0
 FAIL=0
@@ -87,7 +87,7 @@ export PATH
 # The two positional arguments satisfy the script's <namespace> <controlplane>
 # guards; the source guard keeps main from running.
 export BAO_TOKEN="dummy-token"
-# shellcheck source=deploy/openbao/bootstrap/setup-database-tenant.sh
+# shellcheck source=deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh
 source "$SCRIPT_UNDER_TEST" openstack cp
 # The sourced script turns on errexit, which would end this harness on the first
 # non-zero command under test.

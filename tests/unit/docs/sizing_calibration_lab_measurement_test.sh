@@ -16,7 +16,7 @@
 #      come in this order
 #   3. each name comes from its source: the script's managed-by label, the
 #      libvirtd scope's unit, the libvirt pods' app label, the three CR
-#      names of deploy/lab/metal-stack/hypervisor/compute.yaml that the five
+#      names of deploy/overlays/metal-stack/hypervisor/compute.yaml that the five
 #      workload names of `verdicts` start with, the components the operators
 #      append to them, and the libvirt DaemonSet's name; the fixture header is
 #      the report header of the script, whose columns 3, 9, 12, 13, 16 and 17
@@ -247,7 +247,7 @@ test_command_order() {
 # block reads nothing or the wrong column.
 test_name_sources() {
   echo "Test: each name the section uses is the one its source sets"
-  local hypervisor="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor"
+  local hypervisor="$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor"
   local verdicts_helper
   assert_file_contains_fixed "the script labels its VPAs managed-by ci-vpa-recommendations" \
     "$PROJECT_ROOT/hack/ci-vpa-recommendations.sh" 'MANAGED_BY="ci-vpa-recommendations"'

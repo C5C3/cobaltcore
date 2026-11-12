@@ -3,10 +3,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the dizzy overlay of the metal-stack lab, deploy/lab/metal-stack/dizzy,
+# Verify the dizzy overlay of the metal-stack lab, deploy/overlays/metal-stack/dizzy,
 # which hack/deploy-infra.sh applies under EXTERNAL_CLUSTER=true WITH_DIZZY=true:
 #   1. The directory holds kustomization.yaml alone; it carries the SPDX pair
-#      and lists ../../../kind/dizzy as its one resource.
+#      and lists ../../../bases/dizzy as its one resource.
 #   2. Without staged dashboards its build fails, as the kind overlay's does.
 #   3. With the three dashboards staged the render holds the seven objects of
 #      the kind overlay: the Namespace dizzy, the HelmRepositories
@@ -21,11 +21,11 @@
 #   6. The HelmRelease dizzy-grafana, the ConfigMap and both HelmRepositories
 #      are identical to the kind render's, and so is the HTTPRoute but for the
 #      sectionName of its one parent: the lab's Gateway has no listener
-#      https-dizzy (deploy/lab/metal-stack/base/kustomization.yaml).
-#   7. deploy/kind/dizzy still renders the NodePort 30428, no volume and a
+#      https-dizzy (deploy/overlays/metal-stack/base/kustomization.yaml).
+#   7. deploy/overlays/kind/dizzy still renders the NodePort 30428, no volume and a
 #      Namespace without labels.
 #
-# A developer's staged deploy/kind/dizzy/dashboards/ is moved aside before the
+# A developer's staged deploy/bases/dizzy/dashboards/ is moved aside before the
 # checks and restored on EXIT (tests/lib/dizzy_dashboards.sh); the checks run
 # on `{}` placeholders. Checks 2 to 7 are counted as SKIP when kustomize or yq
 # is not on PATH; a failing kustomize build counts them as FAIL and prints the
@@ -49,8 +49,8 @@ source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 # shellcheck source=tests/lib/dizzy_dashboards.sh
 source "$PROJECT_ROOT/tests/lib/dizzy_dashboards.sh"
 
-LAB_DIZZY_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/dizzy"
-KIND_DIZZY_DIR="$PROJECT_ROOT/deploy/kind/dizzy"
+LAB_DIZZY_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/dizzy"
+KIND_DIZZY_DIR="$PROJECT_ROOT/deploy/overlays/kind/dizzy"
 
 RENDERED=""
 KIND_RENDERED=""
@@ -76,7 +76,7 @@ render_both() {
 test_file_has_spdx_and_one_resource() {
   echo "Test: the overlay is one kustomization with SPDX headers and the kind overlay as its one resource"
 
-  assert_eq "deploy/lab/metal-stack/dizzy holds kustomization.yaml alone" "kustomization.yaml" \
+  assert_eq "deploy/overlays/metal-stack/dizzy holds kustomization.yaml alone" "kustomization.yaml" \
     "$(find "$LAB_DIZZY_DIR" -type f 2>/dev/null | sed 's#.*/##' | sort | paste -sd' ' -)"
   if [[ ! -f "$LAB_DIZZY_DIR/kustomization.yaml" ]]; then
     echo "  FAIL: $LAB_DIZZY_DIR/kustomization.yaml does not exist"
@@ -87,7 +87,7 @@ test_file_has_spdx_and_one_resource() {
     "$LAB_DIZZY_DIR/kustomization.yaml" "SPDX-FileCopyrightText: Copyright 2026 SAP SE"
   assert_file_contains "kustomization.yaml has SPDX-License-Identifier: Apache-2.0" \
     "$LAB_DIZZY_DIR/kustomization.yaml" "SPDX-License-Identifier: Apache-2.0"
-  assert_eq "kustomization.yaml lists ../../../kind/dizzy alone" "../../../kind/dizzy" \
+  assert_eq "kustomization.yaml lists ../../../bases/dizzy alone" "../../../bases/dizzy" \
     "$(resource_entries "$LAB_DIZZY_DIR/kustomization.yaml")"
 }
 
@@ -105,15 +105,15 @@ test_build_fails_without_dashboards() {
   local rc
   rc=0
   kustomize build "$KIND_DIZZY_DIR" >/dev/null 2>&1 || rc=$?
-  assert_nonzero_exit "kustomize build deploy/kind/dizzy fails without dashboards/" "$rc"
+  assert_nonzero_exit "kustomize build deploy/overlays/kind/dizzy fails without dashboards/" "$rc"
   rc=0
   kustomize build "$LAB_DIZZY_DIR" >/dev/null 2>&1 || rc=$?
-  assert_nonzero_exit "kustomize build deploy/lab/metal-stack/dizzy fails without dashboards/" "$rc"
+  assert_nonzero_exit "kustomize build deploy/overlays/metal-stack/dizzy fails without dashboards/" "$rc"
 }
 
 # --- Test 3: the seven objects ---
 test_render_holds_the_seven_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/dizzy renders the seven objects of the kind overlay"
+  echo "Test: kustomize build deploy/overlays/metal-stack/dizzy renders the seven objects of the kind overlay"
 
   render_both 2 || return
 
@@ -209,7 +209,7 @@ test_other_objects_match_kind() {
 
 # --- Test 7: the kind overlay is unchanged ---
 test_kind_overlay_unchanged() {
-  echo "Test: kustomize build deploy/kind/dizzy still publishes NodePort 30428 and keeps an emptyDir"
+  echo "Test: kustomize build deploy/overlays/kind/dizzy still publishes NodePort 30428 and keeps an emptyDir"
 
   stage_placeholder_dashboards
   render "$KIND_DIZZY_DIR" 4 || return

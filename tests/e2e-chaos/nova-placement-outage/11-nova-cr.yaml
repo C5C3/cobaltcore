@@ -15,7 +15,7 @@
 # nova_placement_chaos on the openstack-db MariaDB cluster (cell0 is derived as
 # nova_placement_chaos_cell0), the openstack-memcached cache, the ESO-synced
 # nova-api-db and nova-db credentials and the pre-seeded keystone-admin
-# service-user password (all from deploy/kind/infrastructure).
+# service-user password (all from deploy/overlays/kind/infrastructure).
 #
 # One API replica: the suite makes a handful of API calls and the node already
 # carries five services. The conductor, the metadata API and the console proxy

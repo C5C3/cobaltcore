@@ -12,7 +12,7 @@
 #
 # /usr/share/cirros/ holds the cirros 0.6.3 disk the guest suite of
 # tests/e2e-nova-libvirt/guest-dataplane/ boots, so no CI run downloads it.
-# Its URL and sha256 are the ones deploy/kind/hypervisor-operator-fixtures/
+# Its URL and sha256 are the ones deploy/overlays/kind/hypervisor-operator-fixtures/
 # image.yaml pins, and tests/unit/images/tempest_cirros_pin_test.sh fails
 # until both files carry the same pair.
 #

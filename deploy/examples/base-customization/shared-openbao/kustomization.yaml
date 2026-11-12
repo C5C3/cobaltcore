@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../bases/shared-openbao
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: openbao
+      namespace: shared-services
+    patch: |-
+      - op: add
+        path: /spec/values/server/dataStorage/storageClass
+        value: example-fast-storage
+      - op: replace
+        path: /spec/values/server/dataStorage/size
+        value: 20Gi

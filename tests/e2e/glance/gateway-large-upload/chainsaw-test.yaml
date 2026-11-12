@@ -40,7 +40,7 @@
 # ── DECISION: its own hostname, not `https-glance` ───────────────────
 # The quick-start smoke suite already claims `glance.127-0-0-1.nip.io`; two
 # HTTPRoutes on one hostname with the same `/` prefix would race under
-# chainsaw's `parallel: 4`. deploy/kind/base/openstack-gateway.yaml therefore
+# chainsaw's `parallel: 4`. deploy/overlays/kind/base/openstack-gateway.yaml therefore
 # carries a dedicated `https-glance-upload` listener for this suite.
 #
 # ── DECISION: staged upload, not web-download ────────────────────────
@@ -132,7 +132,7 @@ spec:
 
           # ── Presence guard ──────────────────────────────
           # The kind overlay alone applies
-          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # `deploy/overlays/kind/base/openstack-gateway.yaml`, which materialises
           # GatewayClass/envoy and Gateway/openstack-gw (with the
           # `https-glance-upload` listener). Their absence unambiguously
           # signals a non-kind cluster — exit 0 with a SKIP line.

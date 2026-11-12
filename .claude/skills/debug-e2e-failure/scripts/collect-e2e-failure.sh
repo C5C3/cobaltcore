@@ -64,7 +64,7 @@ ghcr-transient|docker push [a-z0-9./:@-]+ failed after [0-9]+ attempts|infra: gh
 go-merge-with-main|FAIL: operators/[a-z0-9]+ is not tidy|infra: a module is not tidy; if the branch leaves it untouched, the merge with main is (PR CI tests the merge), tidy in a merged tree
 go-merge-with-main|reading https://sum\.golang\.org/|infra: the go command fetched checksums from the sumdb, which is flaky; usually a module out of lockstep with main
 job-wall|has exceeded the maximum execution time|the job wall (timeout-minutes) cancelled the job before the suite's own timeout: no catch block, no JUnit; the last suite or step started is the one that stalled
-korc-suspend-race|conflict with \"kustomize-controller\"|Flux reconciled k-orc before deploy-infra suspended it; fixed by the suspended Kustomization in deploy/kind/base
+korc-suspend-race|conflict with \"kustomize-controller\"|Flux reconciled k-orc before deploy-infra suspended it; fixed by the suspended Kustomization in deploy/overlays/kind/base
 rabbitmq-recreate-race|rabbitmqcluster/[a-z0-9-]+ was not removed within|upstream cluster-operator re-created an unowned broker; check the FinalizingMessaging guard ran before blaming the suite
 oom-kill|OOMKilled|a container was OOM-killed: openstack-db-0 = mariadb-oom, cinder-backup = issue #1003; read the node-pressure blocks of the dump
 mariadb-oom|Recovering after a crash|mysqld restarted into crash recovery: an OOM kill of the kind MariaDB, the DatabaseReady=False victim suite is incidental

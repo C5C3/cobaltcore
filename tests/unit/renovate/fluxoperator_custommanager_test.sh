@@ -79,7 +79,7 @@ test_custom_manager_regex_captures_version() {
 
   # Locate the flux-operator customManagers entry — identified by the
   # hack/deploy-infra.sh managerFilePatterns so the assertions don't
-  # collide with the deploy/kind/base/flux-web.yaml entry that
+  # collide with the deploy/bases/devstack/base/flux-web.yaml entry that
   # shares the controlplaneio-fluxcd/flux-operator packageNameTemplate.
   local entry
   entry="$(jq -c '.customManagers[]

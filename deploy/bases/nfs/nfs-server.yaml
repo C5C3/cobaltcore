@@ -1,0 +1,297 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NFS server for the CI/e2e stack, an in-cluster NFSv4 export that the Cinder
+# suites of #979 mount through csi-driver-nfs (release.yaml). The metal-stack
+# lab runs the same server through deploy/overlays/metal-stack/nfs (#1196).
+#
+# The server is NFS-Ganesha 6.5, a userspace NFS server, from the image the
+# project kubernetes-sigs/nfs-ganesha-server-and-external-provisioner
+# publishes as ghcr.io/kubernetes-sigs/nfs-ganesha, tag V6.5 (Fedora 41, with
+# amd64 and arm64 manifests), pinned by digest below. The image has no
+# entrypoint, so both containers run a script through /bin/sh -c. The
+# server's script writes /tmp/ganesha.conf and execs ganesha.nfsd, which makes
+# Ganesha PID 1, so the kubelet's SIGTERM stops it cleanly. The configuration:
+#   - Protocols = 4 and Minor_Versions = 1, 2: NFSv4.1 and 4.2 over TCP. 2049
+#     is the whole client surface, and the Service exposes neither 111 nor a
+#     mountd port. Every mount in the tree asks for 4.1 or 4.2. A 4.0 client
+#     sends no RECLAIM_COMPLETE, so it would hold every restart in grace for
+#     the full 90 seconds.
+#   - Pseudo = / makes the export the NFSv4 pseudo-root, so a client mounts
+#     the two shares as
+#       nfs-server.openstack.svc.cluster.local:/volumes
+#       nfs-server.openstack.svc.cluster.local:/backups
+#     A path of :/exports/volumes does not exist on the server and fails.
+#     Those two share strings are what the CinderBackend and
+#     CinderBackupBackend of #979 carry.
+#   - Attr_Expiration_Time = 0 turns off Ganesha's attribute cache. The
+#     multi-backend suite, the NFS backend guide and the repair of a volume
+#     file's owner in infrastructure-manifests.md (Lab hypervisors) chown
+#     files of the export from inside this pod with kubectl exec. With the
+#     default of 60 a chown made there reached a client after 94 seconds,
+#     with 0 after 4.
+#   - Dir_Chunk = 0 turns off Ganesha's cache of directory entries. The
+#     chaos suite cinder-nfs-outage, the multi-backend suite and the NFS
+#     backend guide remove a file or a directory of the export from inside
+#     this pod, behind Ganesha's back. With the cache on, every later READDIR
+#     of that directory failed with `Stale file handle` for every client, also
+#     on a fresh mount, and so did a mount of a directory removed and created
+#     again. Without it Ganesha reads each directory from the filesystem.
+#   - FSAL = INFO logs `Added filesystem ... /exports ... fsid=<id>` and
+#     `Root fs for export /exports is /exports`: the filesystem the export
+#     sits on and the id every file handle carries.
+# At start Ganesha logs CRIT lines about D-Bus and `Cannot acquire
+# credentials for principal nfs`, and `Cannot register NFS V4 on UDP`. They
+# are expected: the pod runs no D-Bus, no Kerberos and no rpcbind.
+#
+# CLIENT RECORDS. After a server restart an NFSv4 client reclaims its opens
+# and locks, and the server admits a reclaim only from a client it recorded
+# before. QEMU holds a lock on the file of every attached volume, so a refused
+# reclaim fails the guest's disk until a hard reboot (#1245). Two settings
+# keep the records across a restart of this pod, also on another node:
+#   - RecoveryBackend = fs writes them below RecoveryRoot,
+#     /var/lib/nfs/ganesha, the directory ganesha/ of the export claim.
+#   - Server_Scope = "nfs-server.openstack" is the NFSv4.1 server scope.
+#     Without it Ganesha announces its hostname, a Deployment pod gets a new
+#     one at every restart, and the Linux client does not reclaim from a
+#     server whose scope changed. The pod spec sets no hostname.
+# The kernel's nfsd in a pod keeps no records: the kernel refuses its
+# usermode helper and its legacy recovery directory outside the initial
+# network namespace.
+#
+# CLAIM LAYOUT. The claim holds the export in exports/ and the records in
+# ganesha/. The server container mounts the claim twice, subPath exports at
+# /exports and subPath ganesha at /var/lib/nfs/ganesha, so a client that
+# mounts the export does not see the records (a forged file handle does, see
+# the posture below), and /exports in the pod is still what the suites and
+# guides kubectl exec into. The init container prepare-exports mounts the
+# claim root at /claim. It creates both directories and moves every other
+# entry of the root but lost+found into exports/, so a claim the kernel
+# server wrote, with volumes/ and backups/ at its root, keeps its volume
+# files. A deploy of the kernel server over a claim laid out this way creates
+# an empty volumes/ and backups/ at the root again, so prepare-exports
+# removes an empty directory whose name exports/ holds too. Any other name
+# present on both levels stops it with exit 1 before the next entry, and a
+# second run moves nothing. It then creates exports/volumes and
+# exports/backups as 42424:42424 with mode 0770, the restricted `openstack`
+# user the Cinder pods run as, so the NFS backup driver skips its `chgrp -R`
+# and `chmod -R g+w` root branches (#979 D3), and gives ganesha/ mode 0700.
+# It reuses the server image, so the overlay pins one image.
+#
+# The move keeps files, not mounts: a client that mounted the kernel server
+# holds file handles Ganesha does not know. A stack that ran the kernel server
+# switches only when it is redeployed from a bare cluster, or after every
+# Nova server with a volume attached has had it detached and the pods of
+# cinder-volume and cinder-backup are deleted once Ganesha has rolled out:
+# they mount both shares for as long as they run.
+#
+# MEMORY. Ganesha handles the I/O in its own process. On the metal-stack lab
+# it idled at 49 MiB, and its working set peaked at 547 MiB while four guests
+# rewrote a 2 GiB volume each for 300 seconds (#1260). It requests 640Mi, that
+# peak plus 15 % rounded up to a multiple of 64Mi, and is limited to 1Gi.
+# Under writes the container's usage stays at the limit: the page cache of the
+# files Ganesha writes is charged to it, and the kernel reclaims that cache
+# at the limit. A 256Mi limit got Ganesha OOM-killed in a local run, at 397 MiB
+# resident under a 3 GiB write and four parallel 1 GiB writers.
+#
+# NON-PRODUCTION posture, accepted for kind and for the metal-stack lab, one
+# tenant's cluster:
+#   - The server container runs privileged. Ganesha derives the filesystem
+#     id, a part of every file handle, from the filesystem's UUID, which it
+#     reads from the device node. With DAC_READ_SEARCH alone it served the
+#     export but derived another id.
+#   - Plain sec=sys, with No_Root_Squash and no client list. Every pod that
+#     reaches 2049 has full read/write access to both shares as root, and
+#     beyond them: Ganesha checks a file handle against the filesystem alone,
+#     not against the export path (vfs_check_handle, read at V6.5), so a
+#     client that forges a handle reaches every file of the filesystem that
+#     holds the claim, as root. On the lab that is the claim's volume,
+#     ganesha/ included; on kind it is the host disk behind the kind node's
+#     /var. The kernel server's no_subtree_check export reached as far.
+#   - The image is a third-party build, pinned by digest. Renovate proposes a
+#     new tag for review and never automerges it.
+#   - The overlay is opt-in behind WITH_NFS, so the default Quick Start never
+#     meets any of this by accident.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-server-exports
+  namespace: openstack
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # kind's local-path class, the same one the Garage and MariaDB kind patches
+  # in deploy/overlays/kind/infrastructure/kustomization.yaml use.
+  resources:
+    requests:
+      # local-path enforces no capacity, so this number bounds nothing. It is
+      # the smallest value that reads as intentional.
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-server
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nfs-server
+spec:
+  replicas: 1
+  strategy:
+    # An RWO claim admits one writer, so the old pod has to release the
+    # volume before the new one starts.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nfs-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nfs-server
+    spec:
+      # The server runs Ganesha and nothing else; it never calls the
+      # Kubernetes API, so it has no use for a token. Without this the kubelet
+      # projects one for the `openstack` default ServiceAccount into both
+      # containers.
+      #
+      # This raises the cost of that step; it does not bound the reachable
+      # credentials. The container below runs privileged, so anyone who
+      # reaches code execution in it (the export is open to every pod in the
+      # cluster, with sec=sys, No_Root_Squash and no client list) has
+      # CAP_SYS_ADMIN and reads every token the kubelet has projected on the
+      # node out of /var/lib/kubelet/pods anyway.
+      # What contains that is where the stack runs, never the flag below: it
+      # is opt-in behind WITH_NFS, on a kind cluster or on the metal-stack
+      # lab, and neither has an untrusted tenant. Restricting who may dial
+      # 2049 needs a NetworkPolicy in `openstack`, which this overlay does not
+      # ship. The lab ships one that admits its nodes alone
+      # (deploy/overlays/metal-stack/nfs/client-policy.yaml).
+      automountServiceAccountToken: false
+      initContainers:
+        - name: prepare-exports
+          image: ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5@sha256:9ac92d14019a82be4355bf7956fdc557db1219e95976d1174ef23a5f544c11e6
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /claim/exports /claim/ganesha
+              for entry in /claim/* /claim/.[!.]*; do
+                [ -e "$entry" ] || continue
+                name="${entry#/claim/}"
+                case "$name" in exports|ganesha|lost+found) continue ;; esac
+                if [ -e "/claim/exports/$name" ]; then
+                  if [ -d "$entry" ] && rmdir "$entry" 2>/dev/null; then
+                    echo "prepare-exports: removed the empty /claim/$name left by a kernel-server start"
+                    continue
+                  fi
+                  echo "prepare-exports: /claim/$name and /claim/exports/$name both exist; move one of them away"
+                  exit 1
+                fi
+                mv "$entry" "/claim/exports/$name"
+                echo "prepare-exports: moved $name into exports/"
+              done
+              mkdir -p /claim/exports/volumes /claim/exports/backups
+              chown 42424:42424 /claim/exports/volumes /claim/exports/backups
+              chmod 0770 /claim/exports/volumes /claim/exports/backups
+              chmod 0700 /claim/ganesha
+              echo "prepare-exports: exports/volumes and exports/backups are 42424:42424 0770"
+          volumeMounts:
+            - name: exports
+              mountPath: /claim
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      containers:
+        - name: nfs-server
+          image: ghcr.io/kubernetes-sigs/nfs-ganesha:V6.5@sha256:9ac92d14019a82be4355bf7956fdc557db1219e95976d1174ef23a5f544c11e6
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              cat >/tmp/ganesha.conf <<'EOF'
+              NFS_CORE_PARAM {
+                  Protocols = 4;
+                  Enable_NLM = false;
+                  Enable_RQUOTA = false;
+              }
+              NFSv4 {
+                  RecoveryBackend = fs;
+                  RecoveryRoot = /var/lib/nfs/ganesha;
+                  Minor_Versions = 1, 2;
+                  Server_Scope = "nfs-server.openstack";
+              }
+              MDCACHE {
+                  Dir_Chunk = 0;
+              }
+              EXPORT {
+                  Export_Id = 1;
+                  Path = /exports;
+                  Pseudo = /;
+                  Access_Type = RW;
+                  Squash = No_Root_Squash;
+                  SecType = sys;
+                  Protocols = 4;
+                  Transports = TCP;
+                  Attr_Expiration_Time = 0;
+                  FSAL { Name = VFS; }
+              }
+              LOG {
+                  Default_Log_Level = EVENT;
+                  COMPONENTS { FSAL = INFO; }
+              }
+              EOF
+              exec ganesha.nfsd -F -L /dev/stdout -f /tmp/ganesha.conf -p /tmp/ganesha.pid
+          securityContext:
+            privileged: true
+          ports:
+            - name: nfs
+              containerPort: 2049
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 2049
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 2049
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 640Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: exports
+              mountPath: /exports
+              subPath: exports
+            - name: exports
+              mountPath: /var/lib/nfs/ganesha
+              subPath: ganesha
+      volumes:
+        - name: exports
+          persistentVolumeClaim:
+            claimName: nfs-server-exports
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfs-server
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nfs-server
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nfs-server
+  ports:
+    - name: nfs
+      port: 2049
+      targetPort: 2049
+      protocol: TCP

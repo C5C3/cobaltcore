@@ -48,7 +48,7 @@
 
 set -euo pipefail
 
-# The broker side is fixed by deploy/kind/messaging/shared-rabbitmq.yaml: the
+# The broker side is fixed by deploy/bases/messaging/shared-rabbitmq.yaml: the
 # RabbitmqCluster lives in openstack, and the cluster operator names its single
 # server pod <cluster>-server-0 with the broker in the "rabbitmq" container.
 BROKER_NAMESPACE="openstack"

@@ -94,7 +94,7 @@ spec:
             username="${DB_USER}" password="${DB_PASS}" >/dev/null
           bao_exec bao kv put -mount=kv-v2 "bootstrap/${TENANT_NS}/pss/s3" \
             access-key-id="${S3_AKID}" secret-access-key="${S3_SAK}" >/dev/null
-          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
     - assert:
         resource:
           apiVersion: v1

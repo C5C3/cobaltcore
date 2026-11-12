@@ -55,7 +55,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 SOAK_SH="$PROJECT_ROOT/hack/dizzy-soak.sh"
 DIZZY_SH="$PROJECT_ROOT/hack/dizzy.sh"
-OVERLAY="$PROJECT_ROOT/deploy/lab/metal-stack"
+OVERLAY="$PROJECT_ROOT/deploy/overlays/metal-stack"
 
 PASS=0
 FAIL=0

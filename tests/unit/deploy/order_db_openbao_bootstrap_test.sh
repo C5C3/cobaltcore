@@ -31,10 +31,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-AUTH_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-auth.sh"
-TENANT_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-database-tenant.sh"
-ORDER_POLICY="$PROJECT_ROOT/deploy/openbao/policies/order-db-dynamic.hcl"
-OPERATOR_POLICY="$PROJECT_ROOT/deploy/openbao/policies/c5c3-operator.hcl"
+AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
+TENANT_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh"
+ORDER_POLICY="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/order-db-dynamic.hcl"
+OPERATOR_POLICY="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/c5c3-operator.hcl"
 
 # The ACL template every per-tenant policy path is scoped by.
 NS_TEMPLATE='{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}'
@@ -244,7 +244,7 @@ STUB
   (
     PATH="$tmp:$PATH"
     export PATH BAO_TOKEN="dummy-token"
-    # shellcheck source=deploy/openbao/bootstrap/setup-database-tenant.sh
+    # shellcheck source=deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh
     source "$TENANT_SCRIPT" openstack cp
     set +e
     bao_exec() { printf '%s\n' "$*" >>"$bao_log"; }

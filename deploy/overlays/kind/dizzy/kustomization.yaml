@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kind dizzy uses ephemeral storage, a host-mapped NodePort and the local gateway listener.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../bases/dizzy
+patches:
+  - target:
+      kind: HelmRelease
+      name: dizzy-victoria-metrics
+      namespace: dizzy
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: dizzy-victoria-metrics
+        namespace: dizzy
+      spec:
+        values:
+          server:
+            persistentVolume:
+              enabled: false
+            service:
+              type: NodePort
+              nodePort: 30428
+  - target:
+      kind: HTTPRoute
+      name: dizzy-grafana
+      namespace: dizzy
+    patch: |
+      - op: add
+        path: /spec/parentRefs/0/sectionName
+        value: https-dizzy

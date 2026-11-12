@@ -8,7 +8,7 @@
 # basic-deployment suites), cache via clusterRef to openstack-memcached, OVN via
 # the sibling OVNCentral. The database credentials come from the ESO-synced
 # neutron-db Secret and the service-user password from the pre-seeded
-# keystone-admin Secret (both deploy/kind/infrastructure).
+# keystone-admin Secret (both deploy/overlays/kind/infrastructure).
 #
 # A single API replica keeps the rollout observable when 03-patch-upgrade.yaml
 # bumps the release to 2026.2: with one replica, updatedReplicas == replicas

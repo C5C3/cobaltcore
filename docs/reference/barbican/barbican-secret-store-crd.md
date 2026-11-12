@@ -228,7 +228,7 @@ repository provisions run a 2.7 release: the dedicated one through
 `defaultOpenBaoVersion` in
 `operators/c5c3/internal/controller/reconcile_barbican_openbao.go`, the kind
 proving instance through `spec.version` in
-`deploy/kind/infrastructure/openbao-instance.yaml`. A server that returns no
+`deploy/bases/devstack/infrastructure/openbao-instance.yaml`. A server that returns no
 index gets no `vault_index` row, and its reads carry no header. HashiCorp Vault
 Community never returns one, but its standbys forward every request to the
 active node, so its reads always see the write. OpenBao before 2.7 answers

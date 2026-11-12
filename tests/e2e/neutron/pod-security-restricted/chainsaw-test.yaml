@@ -99,7 +99,7 @@ spec:
             password="${ADMIN_PASS}" >/dev/null
           bao_exec bao kv put -mount=kv-v2 "openstack/neutron/${TENANT_NS}/pss/db" \
             username="${DB_USER}" password="${DB_PASS}" >/dev/null
-          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
     - assert:
         resource:
           apiVersion: v1

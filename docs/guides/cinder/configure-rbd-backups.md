@@ -307,7 +307,7 @@ start's backups stay: `lab-bk`'s after Part 2, Step 10, and `lab-nfs-bk`'s
 after Part 3. If Step 4 created `nfsbk-vol`, delete it too with
 `openstack volume delete nfsbk-vol`; the volume type `nfs` belongs to Part 3 of
 the quick start and stays. Then put the entry of the lab's `ControlPlane` back, the `cephbk` of
-`deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`; on a shoot whose
+`deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml`; on a shoot whose
 networks you wrote into that file, write the same two here:
 
 ```bash

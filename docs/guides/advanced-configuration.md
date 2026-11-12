@@ -482,7 +482,7 @@ spec:
   wait for it to reconcile:
 
   ```bash
-  kubectl apply -k deploy/kind/metrics-server
+  kubectl apply -k deploy/overlays/kind/metrics-server
   kubectl wait helmrelease/metrics-server -n kube-system --for=condition=Ready --timeout=5m
   kubectl top pods -n openstack   # sanity check: real utilisation, not an error
   ```

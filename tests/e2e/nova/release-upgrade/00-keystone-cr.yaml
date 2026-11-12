@@ -32,7 +32,7 @@ spec:
 #
 # One replica and the database keystone_nova_upgrade. The bootstrap admin
 # password comes from the pre-seeded keystone-admin Secret
-# (deploy/kind/infrastructure), which is also the serviceUser password of the
+# (deploy/overlays/kind/infrastructure), which is also the serviceUser password of the
 # Placement and the Nova, so all of them are one identity.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: Keystone

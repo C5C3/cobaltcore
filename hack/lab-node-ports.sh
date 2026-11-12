@@ -21,7 +21,7 @@
 # Every Pod is unprivileged (no capability, no privilege escalation, read-only
 # root filesystem, UID 65534, no ServiceAccount token): the ports are above
 # 1024, so binding them needs nothing. The image is the node probe's pinned
-# debian image (deploy/lab/metal-stack/probe/node-probe.yaml), which carries
+# debian image (deploy/overlays/metal-stack/probe/node-probe.yaml), which carries
 # bash, perl and timeout, so the check has no image or Renovate pin of its own.
 #
 # Output: one line per ordered pair, then a summary:
@@ -35,7 +35,7 @@
 # retries such a port once per second for NODE_PORTS_BIND_TIMEOUT seconds
 # first), and `no result` when the client produced no line for it (the Pod
 # never ran, its image did not pull, or the client wait ran out). All three
-# fail the run. deploy/lab/metal-stack/migration-ports keeps new connections
+# fail the run. deploy/overlays/metal-stack/migration-ports keeps new connections
 # off the migration range; a connection older than it holds its port until
 # its process is restarted, which a retry does not outlast.
 #
@@ -174,15 +174,15 @@ resolve_image() {
     echo "${NODE_PORTS_IMAGE}"
     return 0
   fi
-  local manifest="${REPO_ROOT}/deploy/lab/metal-stack/probe/node-probe.yaml"
+  local manifest="${REPO_ROOT}/deploy/overlays/metal-stack/probe/node-probe.yaml"
   if [[ ! -f "${manifest}" ]]; then
-    log "ERROR: NODE_PORTS_IMAGE is unset and deploy/lab/metal-stack/probe/node-probe.yaml is missing." >&2
+    log "ERROR: NODE_PORTS_IMAGE is unset and deploy/overlays/metal-stack/probe/node-probe.yaml is missing." >&2
     exit 2
   fi
   local image
   image="$(grep -oE 'image: [^ ]+' "${manifest}" | head -n 1 | cut -d' ' -f2)"
   if [[ -z "${image}" ]]; then
-    log "ERROR: NODE_PORTS_IMAGE is unset and deploy/lab/metal-stack/probe/node-probe.yaml names no image." >&2
+    log "ERROR: NODE_PORTS_IMAGE is unset and deploy/overlays/metal-stack/probe/node-probe.yaml names no image." >&2
     exit 2
   fi
   echo "${image}"

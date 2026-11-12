@@ -3,9 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the lab ControlPlane under deploy/lab/metal-stack/controlplane, the
+# Verify the lab ControlPlane under deploy/overlays/metal-stack/controlplane, the
 # quick start's OVNCentral and ControlPlane applied by hand on the lab, and its
-# NFS variant under deploy/lab/metal-stack/controlplane-nfs, which Part 3 of
+# NFS variant under deploy/overlays/metal-stack/controlplane-nfs, which Part 3 of
 # the quick start applies:
 #   1. kustomization.yaml, ovncentral.yaml and controlplane-lab.yaml exist with
 #      SPDX headers, the kustomization lists exactly the two manifests, the
@@ -53,7 +53,7 @@
 #      target equal to the base's. Without the backends the variant's render
 #      equals the base's.
 #
-# LAB_ROOT overrides the deploy/lab/metal-stack tree every check reads; the
+# LAB_ROOT overrides the deploy/overlays/metal-stack tree every check reads; the
 # .gitignore part of check 1 keeps its repository-relative paths.
 # QUICK_START_DOC overrides the page checks 4 and 8 read. Checks 2, 3, 6 and
 # 8 are counted as SKIP when kustomize or yq is not on PATH, checks 4 and 7
@@ -80,7 +80,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
-LAB_ROOT="${LAB_ROOT:-$PROJECT_ROOT/deploy/lab/metal-stack}"
+LAB_ROOT="${LAB_ROOT:-$PROJECT_ROOT/deploy/overlays/metal-stack}"
 CONTROLPLANE_DIR="$LAB_ROOT/controlplane"
 NFS_VARIANT_DIR="$LAB_ROOT/controlplane-nfs"
 QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-controlplane.md}"
@@ -179,7 +179,7 @@ controlplane/controlplane-lab.yaml controlplane-nfs/kustomization.yaml'
   local rc
   for name in $files; do
     git -C "$PROJECT_ROOT" check-ignore -q --no-index \
-      "deploy/lab/metal-stack/$name"
+      "deploy/overlays/metal-stack/$name"
     rc=$?
     assert_eq "no .gitignore pattern matches $name" "1" "$rc"
   done
@@ -187,7 +187,7 @@ controlplane/controlplane-lab.yaml controlplane-nfs/kustomization.yaml'
 
 # --- Test 2: the render is the OVNCentral and the ControlPlane ---
 test_render_two_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/controlplane"
+  echo "Test: kustomize build deploy/overlays/metal-stack/controlplane"
 
   render "$CONTROLPLANE_DIR" 5 || return
 
@@ -450,7 +450,7 @@ test_ceph_entries_name_the_lab() {
 
 # --- Test 8: the NFS variant renders the base plus nfs1 ---
 test_nfs_variant_renders_nfs1() {
-  echo "Test: kustomize build deploy/lab/metal-stack/controlplane-nfs"
+  echo "Test: kustomize build deploy/overlays/metal-stack/controlplane-nfs"
 
   local checks=10 base tmp
   render "$CONTROLPLANE_DIR" "$checks" || return

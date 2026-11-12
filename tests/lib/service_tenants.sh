@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Shared reader for the SERVICE_TENANTS table of
-# deploy/openbao/bootstrap/setup-database-tenant.sh, for the tests that pin
+# deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh, for the tests that pin
 # another file against it (tests/unit/hack/deploy_infra_tenant_wait_set_test.sh,
 # tests/unit/deploy/nova_openbao_bootstrap_test.sh).
 #
@@ -26,8 +26,8 @@ service_tenants_column() {
   local column="$1"
   (
     export BAO_TOKEN="dummy-token"
-    # shellcheck source=deploy/openbao/bootstrap/setup-database-tenant.sh
-    source "$PROJECT_ROOT/deploy/openbao/bootstrap/setup-database-tenant.sh" openstack cp
+    # shellcheck source=deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh
+    source "$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh" openstack cp
     local entry fields
     for entry in "${SERVICE_TENANTS[@]}"; do
       read -r -a fields <<<"$entry"

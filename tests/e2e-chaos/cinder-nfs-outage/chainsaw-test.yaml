@@ -26,7 +26,7 @@
 #
 # The outage is a scale-down of the NFS server, not a NetworkChaos partition.
 # The share is mounted by the csi-nfs-node DaemonSet, which runs with
-# hostNetwork: true (deploy/kind/nfs/release.yaml, line 56), so the kernel NFS
+# hostNetwork: true (deploy/bases/nfs/release.yaml, line 56), so the kernel NFS
 # client sends from the node's network namespace and an iptables rule keyed on
 # the cinder-volume pod's IP never matches a single mount packet. Scaling
 # deploy/nfs-server to 0 removes the endpoint the client dials instead, which

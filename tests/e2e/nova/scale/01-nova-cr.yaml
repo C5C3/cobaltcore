@@ -9,7 +9,7 @@
 # the API and metadata probes GET the API root and the scheduler and conductor
 # probes read the broker socket. spec.keystoneEndpoint is a convention URL
 # nothing serves, and spec.serviceUser reads the kind-only keystone-admin
-# Secret from deploy/kind/infrastructure.
+# Secret from deploy/overlays/kind/infrastructure.
 #
 # The two schemas nova_scale_api and nova_scale live on the openstack-db
 # MariaDB cluster (cell0 is derived as nova_scale_cell0), the cache is

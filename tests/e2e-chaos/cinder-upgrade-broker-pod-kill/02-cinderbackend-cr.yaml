@@ -4,7 +4,7 @@
 
 # The one NFS backend the cinder-upg-bus CR serves. Without a backend the
 # Cinder never reaches Ready, and the volume stream needs a volume service on
-# the bus. The export is the kind-only NFS server (deploy/kind/nfs/).
+# the bus. The export is the kind-only NFS server (deploy/overlays/kind/nfs/).
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: CinderBackend
 metadata:

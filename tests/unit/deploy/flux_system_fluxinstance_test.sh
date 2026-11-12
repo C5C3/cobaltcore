@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify deploy/flux-system/fluxinstance.yaml renders through kustomize with
+# Verify deploy/bases/flux/fluxinstance.yaml renders through kustomize with
 # the FluxInstance spec. Covers the three
 # test_specifications:
 #   - kustomize build renders FluxInstance with required spec
@@ -23,13 +23,13 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUXINSTANCE_FILE="$PROJECT_ROOT/deploy/flux-system/fluxinstance.yaml"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
+FLUXINSTANCE_FILE="$PROJECT_ROOT/deploy/bases/flux/fluxinstance.yaml"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/flux"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 
 # --- Test 1: fluxinstance.yaml has SPDX header ---
 test_spdx_header() {
-  echo "Test: deploy/flux-system/fluxinstance.yaml has SPDX header"
+  echo "Test: deploy/bases/flux/fluxinstance.yaml has SPDX header"
 
   if [[ ! -f "$FLUXINSTANCE_FILE" ]]; then
     echo "  FAIL: $FLUXINSTANCE_FILE does not exist"
@@ -51,10 +51,10 @@ test_spdx_header() {
     "$line3"
 }
 
-# --- Test 2: kustomize build deploy/flux-system/ renders FluxInstance
+# --- Test 2: kustomize build deploy/bases/operators/ renders FluxInstance
 #             with required spec ---
 test_kustomize_build_flux_system() {
-  echo "Test: kustomize build deploy/flux-system/ renders FluxInstance with required spec"
+  echo "Test: kustomize build deploy/bases/operators/ renders FluxInstance with required spec"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (6 checks skipped)"
@@ -123,10 +123,10 @@ test_kustomize_build_flux_system() {
   assert_eq "spec.sync is NOT present" "false" "$has_sync"
 }
 
-# --- Test 3: kustomize build deploy/kind/base/ includes the FluxInstance
+# --- Test 3: kustomize build deploy/overlays/kind/base/ includes the FluxInstance
 #             unchanged ---
 test_kustomize_build_kind_base() {
-  echo "Test: kustomize build deploy/kind/base/ renders the FluxInstance unchanged"
+  echo "Test: kustomize build deploy/overlays/kind/base/ renders the FluxInstance unchanged"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"

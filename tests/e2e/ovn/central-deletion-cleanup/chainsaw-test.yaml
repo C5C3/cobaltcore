@@ -22,7 +22,7 @@
 # The three cert-manager Secrets are asserted before the deletion but not after
 # it: cert-manager only owns the Secret it writes when it runs with
 # --enable-certificate-owner-ref, which the cert-manager HelmRelease in
-# deploy/flux-system/releases/cert-manager.yaml does not set. Deleting the
+# deploy/bases/operators/releases/cert-manager.yaml does not set. Deleting the
 # Certificates therefore leaves their Secrets behind, and asserting otherwise
 # would pin an expectation this cluster cannot meet.
 #
