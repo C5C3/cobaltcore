@@ -598,7 +598,7 @@ pods to load the new ID. Operators do not need to restart those pods by hand.
 This automation applies to a managed store that names an `OpenBaoCluster`.
 External-server mode is read-only: rotate the AppRole secret ID on that server
 and update the referenced credentials Secret yourself. See
-[Attach an External OpenBao to Barbican](../../guides/barbican/attach-external-openbao.md#_2-the-two-secrets)
+[Attach an External OpenBao to Barbican](../../guides/barbican/attach-external-openbao.md#_2-credentials-and-optional-ca-bundle)
 for the external credential contract and replacement procedure.
 
 `secret_id_num_uses` is deliberately left unset on the role. castellan's Vault key manager
