@@ -10,11 +10,11 @@ SPDX-License-Identifier: Apache-2.0
 
 # How-to: Register a Service the ControlPlane Does Not Manage
 
-A `KeystoneService` CR can be used to register an unmanaged service against a
-ControlPlane's identity plane.
+Use a `KeystoneService` custom resource to register a service the ControlPlane
+does not manage with its identity plane.
 
-The example registers a fictional `workflow` service running in a namespace of
-the same name.
+The example registers a fictional `workflow` service in a namespace of the same
+name; its workload does not need to be running for registration.
 
 ## Prerequisites
 
@@ -31,6 +31,9 @@ CR named `controlplane` is `Ready` in the `openstack` namespace and its projecte
 examples below is one that devstack produces.
 :::
 
+The role-limit and consent-withdrawal commands use `jq` to find array indexes;
+install it on the machine where you run `kubectl`.
+
 ---
 
 ## Background: what lands where
@@ -40,12 +43,12 @@ This example spreads the registration across two namespaces:
 | Description | Namespace | Why |
 | --- | --- | --- |
 | The allowlist entry | `openstack` | It is consent the ControlPlane gives, so it lives on the ControlPlane CR |
-| The K-ORC children: user, project, role import, role assignment, catalog service row, region import, endpoint rows | `openstack` | K-ORC reads the admin `clouds.yaml` from each child's own namespace, and that credential is created once, beside the ControlPlane |
-| The tenant secret store and the consumer Secret | `workflow` | Credentials are delivered where the workload that reads them runs |
+| The OpenStack Resource Controller (K-ORC) children: user, project, role import, role assignment, catalog service row, region import, endpoint rows | `openstack` | K-ORC reads the admin `clouds.yaml` from each child's own namespace, and that credential is created once, beside the ControlPlane |
+| The tenant SecretStore, its ServiceAccount and Certificate, source Secret, PushSecret, ExternalSecret and consumer Secret | `workflow` | The External Secrets Operator (ESO) uses the PushSecret to back up credentials through the tenant store; the ExternalSecret keeps the consumer Secret current |
 
-The children follow the credential into `openstack`. Copying the cloud-admin
-`clouds.yaml` into every registering namespace would hand each of them the whole
-cloud, which is the escalation the allowlist exists to prevent. The child resources
+The registration's admin `clouds.yaml` stays in `openstack`; the service
+receives only its own account credentials. The allowlist controls which
+namespaces may ask the operator to create those accounts. The child resources
 are marked with the labels `c5c3.io/keystoneservice-name` and
 `c5c3.io/keystoneservice-namespace`, because an owner reference cannot cross a
 namespace.
@@ -67,9 +70,9 @@ kubectl create namespace workflow
 
 ### 2. Grant consent on the ControlPlane
 
-A `KeystoneService` can create a Keystone user with any role it asks for, so a
-registration from a namespace the ControlPlane has not consented to is refused.
-Admit `workflow`:
+A `KeystoneService` can create a Keystone user with any existing role it asks
+for, including `admin`, so a registration from a namespace the ControlPlane has
+not consented to is refused. Admit `workflow`:
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
@@ -197,10 +200,10 @@ Read the reason from the conditions one-liner above and match it here:
 | `NamespaceNotAllowed` | `workflow` is not on the allowlist, usually because Step 2 was skipped or a later patch replaced the list without it | Re-run Step 2, naming every namespace you want admitted |
 | `RoleNotAllowed` on `AccountReady` | The ControlPlane's `spec.namespaceAssignments` entry for `workflow` does not list a role the account requests | Add the role to the entry's `allowedRoles`, or drop it from `spec.account.roles`. See [Limit the roles a registration may request](#limit-the-roles-a-registration-may-request) |
 | `ControlPlaneNotFound` | `spec.controlPlaneRef` does not resolve, usually a missing `namespace: openstack` | Fix the reference. The registration recovers on its own |
-| `SecretStoreNotReady` | The tenant store in `workflow` is not ready, so the credentials cannot be delivered | Run `kubectl get secretstore openbao-tenant-store certificate eso-tenant-client-tls -n workflow`, then wait for cert-manager and External Secrets |
+| `SecretStoreNotReady` | The tenant store in `workflow` is not ready, so the credentials cannot be delivered | Run `kubectl get secretstore openbao-tenant-store -n workflow` and `kubectl get certificate eso-tenant-client-tls -n workflow`, then wait for cert-manager and the External Secrets Operator |
 | `WaitingForServiceAccounts` naming a role | A declared role does not exist in Keystone, so its import never resolves | Declare a role Keystone has, such as `service` |
 | `ProbingForCollision` | The collision probe has not finished | Transient. Wait |
-| `ServiceCollision` or `ServiceAccountCollision` | A catalog row of this type and name, or a user of this name, already exists | Take it over with `catalog.adopt` or `account.adopt`, or pick another name. See [Collision and adoption](../reference/c5c3/keystoneservice-crd.md#collision-and-adoption) |
+| `ServiceCollision` or `ServiceAccountCollision` | A catalog row of this type and name, or an account project or user of this name, already exists | Use `catalog.adopt` for a catalog row, `account.adopt` for a user, or set `spec.account.project.create: false` to reference an existing project. Otherwise pick another name. See [Collision and adoption](../reference/c5c3/keystoneservice-crd.md#collision-and-adoption) |
 
 ### 5. Consume the delivered credentials
 
@@ -428,11 +431,16 @@ place until the `KeystoneService` itself is deleted. To revoke a registration,
 delete its CR.
 :::
 
-Withdraw consent and watch what happens:
+This devstack uses `workflow` as its only registration namespace. On a shared
+ControlPlane, remove only the `workflow` entry so other registrations stay
+admitted. Find its current index and test it before removing it:
 
 ```bash
-kubectl patch controlplane controlplane -n openstack --type merge \
-  -p '{"spec":{"korc":{"serviceRegistrations":{"allowedNamespaces":[]}}}}'
+i=$(kubectl get controlplane controlplane -n openstack -o json \
+  | jq '[.spec.korc.serviceRegistrations.allowedNamespaces[]] | index("workflow")')
+kubectl patch controlplane controlplane -n openstack --type json -p "[
+  {\"op\":\"test\",\"path\":\"/spec/korc/serviceRegistrations/allowedNamespaces/${i}\",\"value\":\"workflow\"},
+  {\"op\":\"remove\",\"path\":\"/spec/korc/serviceRegistrations/allowedNamespaces/${i}\"}]"
 ```
 
 An empty list and an absent block admit the same set, the namespaces the
@@ -471,11 +479,17 @@ kubectl get secretstore openbao-tenant-store -n workflow
 ```
 
 Re-applying the verification Job from the previous section still completes: the
-service authenticates as before. The ControlPlane meanwhile reports
-`RegistrationTenantStoresReady=True` with reason `NoRegistrationNamespaces`,
-because it counts admitted namespaces and there are none.
+service authenticates as before. If no other admitted namespace still hosts a
+registration, the ControlPlane reports
+`RegistrationTenantStoresReady=True/NoRegistrationNamespaces`. Any other
+admitted namespace that still hosts a registration keeps that condition active.
 
-Re-admit the namespace with the Step 2 patch, and the registration recovers:
+Re-add `workflow` without replacing other entries, and the registration recovers:
+
+```bash
+kubectl patch controlplane controlplane -n openstack --type json \
+  -p '[{"op":"add","path":"/spec/korc/serviceRegistrations/allowedNamespaces/-","value":"workflow"}]'
+```
 
 ```bash
 kubectl wait --for=condition=Ready keystoneservice/workflow -n workflow --timeout=10m
@@ -519,11 +533,12 @@ credentials left to reach Keystone with, so the rows there are not removed. See
 ## Standalone Keystone, without a ControlPlane
 
 There is no registration path for a standalone Keystone. `spec.controlPlaneRef`
-is required, and the two things it reaches for exist only on a ControlPlane: the
-admin credentials the K-ORC children authenticate with, and the tenant
-secret store the consumer Secret is delivered through. A Keystone CR you own
-carries neither. On such an installation, create service accounts and catalog
-entries through the identity API directly.
+is required, and the ControlPlane integration provides the dependencies it
+needs: the admin credentials its K-ORC children authenticate with and the
+tenant SecretStore used to deliver the consumer Secret. A standalone Keystone
+CR does not provide these dependencies to a `KeystoneService`. On such an
+installation, create service accounts and catalog entries through the identity
+API directly.
 
 ## See also
 
