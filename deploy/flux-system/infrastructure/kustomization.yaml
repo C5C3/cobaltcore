@@ -4,7 +4,7 @@
 
 # Legacy reference instances. Apply only after their controllers and CRDs exist.
 # TLS has one resource list, also used by the public TLS stage.
-# See ../README.md and ../../bases/README.md for staged consumption.
+# See ../../README.md#reusable-bases for staged consumption.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

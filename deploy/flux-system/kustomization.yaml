@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Legacy aggregate: runtime, operators, shared OpenBao and c5c3.
-# New staged consumers start at deploy/bases/README.md. Do not reconcile both
+# New staged consumers start at deploy/README.md#reusable-bases. Do not reconcile both
 # this aggregate and its staged equivalents against the same objects.
 # Add controller sources/releases to their own catalogs, not to this list.
 

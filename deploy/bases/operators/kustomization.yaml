@@ -6,7 +6,7 @@
 # Default Kustomize load restrictions prohibit referencing that file from here;
 # retain the bounded exclusions instead of copying namespaces or breaking raw
 # callers. Sources and operator releases themselves are composed directly.
-# README.md describes the ownership and prerequisites.
+# See ../../README.md#reusable-bases for ownership and prerequisites.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
