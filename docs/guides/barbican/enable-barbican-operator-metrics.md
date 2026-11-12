@@ -30,6 +30,9 @@ the recurring clean-up, and the secret store's AppRole rotation:
 | `barbican_operator_db_clean_duration_seconds` | histogram | `barbican`, `namespace` |
 | `barbican_operator_secretstore_remints_total` | counter | `store`, `namespace`, `trigger` |
 
+The DB-job `result` label is `succeeded` or `failed`. Counters and duration
+histograms are recorded once a Job reaches a terminal state.
+
 The clean-up pair has no counterpart on the other service operators. Barbican
 never hard-deletes: deleting a secret, container, or order flips its row to
 deleted, so every Barbican gets a `{name}-db-clean` CronJob and the counter and
@@ -64,7 +67,8 @@ Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
 `serviceMonitorNamespaceSelector` to include `barbican-system`. The per-CR
 series in Step 3 requires a reconciled `Barbican` CR. On the devstack that is
 `controlplane-barbican`, projected when the ControlPlane declares
-`spec.services.barbican`. See
+`spec.services.barbican`. Step 3 also uses `curl` and `jq` to query Prometheus.
+See
 [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
 
 ## Step 1: Enable the ServiceMonitor
@@ -140,7 +144,8 @@ Keep the port-forward running in a separate terminal:
 kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
 ```
 
-For an existing Prometheus, replace `monitoring` with its namespace.
+For an existing Prometheus, use the namespace, Service name and port that expose
+its UI.
 In another terminal, query the targets:
 
 ```bash
