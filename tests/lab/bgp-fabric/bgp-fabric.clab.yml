@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The containerlab topology of the BGP fabric contract
+# (docs/reference/networking/bgp-fabric-contract.md): node1 stands in for one
+# chassis-bearing CobaltCore OpenStack node, dual-homed to the VTEP leaf pair
+# leaf1 and leaf2; spine1 reflects EVPN routes; leaf3 is the observer VTEP
+# that sees node1's host routes as Type-5 routes over both leaves. FRR runs
+# on every box. run.sh deploys, checks and destroys it.
+name: bgp-fabric
+
+# The management network on eth0 is the lab's own, with subnets Docker assigns:
+# containerlab's default 172.20.20.0/24 collides with any Docker network that
+# already holds 172.20.0.0/16. On node1, eth0 stands in for the node network.
+mgmt:
+  network: bgp-fabric-mgmt
+  ipv4-subnet: auto
+  ipv6-subnet: auto
+
+topology:
+  kinds:
+    linux:
+      image: quay.io/frrouting/frr:10.7.1@sha256:e995beaa50fdc9edb35eadcfefa29b7f062cc06f2b812613789b68fa541554d2
+      # One daemons file for every box; containerlab adds each node's own
+      # binds to these.
+      binds:
+        - daemons:/etc/frr/daemons
+      sysctls:
+        net.ipv4.ip_forward: "1"
+        net.ipv6.conf.all.forwarding: "1"
+        net.ipv4.fib_multipath_hash_policy: "1"
+        net.ipv6.fib_multipath_hash_policy: "1"
+
+  # Every box starts from its setup.sh, which builds the VRF and VXLAN
+  # devices FRR reads at start and then execs the image's own start command.
+  nodes:
+    node1:
+      kind: linux
+      binds:
+        - node1/frr.conf:/etc/frr/frr.conf
+        - node1/setup.sh:/setup.sh
+      entrypoint: /setup.sh
+    leaf1:
+      kind: linux
+      binds:
+        - leaf1/frr.conf:/etc/frr/frr.conf
+        - leaf1/setup.sh:/setup.sh
+      entrypoint: /setup.sh
+    leaf2:
+      kind: linux
+      binds:
+        - leaf2/frr.conf:/etc/frr/frr.conf
+        - leaf2/setup.sh:/setup.sh
+      entrypoint: /setup.sh
+    leaf3:
+      kind: linux
+      binds:
+        - leaf3/frr.conf:/etc/frr/frr.conf
+        - leaf3/setup.sh:/setup.sh
+      entrypoint: /setup.sh
+    spine1:
+      kind: linux
+      binds:
+        - spine1/frr.conf:/etc/frr/frr.conf
+        - spine1/setup.sh:/setup.sh
+      entrypoint: /setup.sh
+
+  # The two node links are the node's uplinks at the contract's MTU 9000; the
+  # three fabric links carry VXLAN between the VTEPs at 9216.
+  links:
+    - endpoints: ["node1:eth1", "leaf1:eth1"]
+      mtu: 9000
+    - endpoints: ["node1:eth2", "leaf2:eth1"]
+      mtu: 9000
+    - endpoints: ["leaf1:eth2", "spine1:eth1"]
+      mtu: 9216
+    - endpoints: ["leaf2:eth2", "spine1:eth2"]
+      mtu: 9216
+    - endpoints: ["leaf3:eth1", "spine1:eth3"]
+      mtu: 9216
