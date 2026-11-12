@@ -23,7 +23,7 @@ comparison of two Keystone builds under it have a page of their own:
 [Keystone Pressure Testing](keystone-pressure-testing.md).
 
 For the overlay that installs the VictoriaMetrics + Grafana backend, see
-[Infrastructure Manifests](../infrastructure/infrastructure-manifests.md#dizzy-load-chaos-stack-kind-only-opt-in)
+[Infrastructure Manifests](../infrastructure/infrastructure-manifests.md#dizzy-load-chaos-stack-development-opt-in)
 for kind and [Lab dizzy stack](../infrastructure/infrastructure-manifests.md#lab-dizzy-stack)
 for the metal-stack lab.
 

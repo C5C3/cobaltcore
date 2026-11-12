@@ -200,7 +200,7 @@ test_names_from_sources() {
 test_links() {
   echo "Test: the kind section and the lab opening link the section, and Lab overlay names WITH_DIZZY"
   assert_contains "the kind dizzy section links #lab-dizzy-stack" \
-    "$(subsection '### dizzy load/chaos stack (kind-only opt-in)')" '(#lab-dizzy-stack)'
+    "$(subsection '### dizzy load/chaos stack (development opt-in)')" '(#lab-dizzy-stack)'
   assert_contains "the opening of Metal-stack lab links #lab-dizzy-stack" \
     "$(subsection '## Metal-stack lab')" '(#lab-dizzy-stack)'
   local overlay

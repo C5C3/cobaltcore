@@ -10,7 +10,7 @@
 #     holds (the OVN central, the CR, the tenant onboarding, the chain, the
 #     Verify checks) names the step that holds it, on the page, in the guides
 #     under docs/guides/, in the hints of hack/deploy-infra.sh and in the
-#     comments under deploy/lab/
+#     comments under deploy/overlays/metal-stack/
 #
 # Outside the page a phrase names one of its steps only when its words say
 # so; any other match names a step of its own file (a guide's `## Step`, the

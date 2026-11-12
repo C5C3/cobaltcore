@@ -60,7 +60,7 @@
 # storage, after which OpenBao revokes the root token. The list below is
 # therefore the complete permanent configuration of this instance: changing it
 # requires recreating the instance, which means deleting the CR AND its PVC.
-# tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh pins the request names so
+# tests/unit/deploy/openbao_instance_overlay_test.sh pins the request names so
 # an edit cannot land without confronting that. Anything a consumer needs at
 # runtime (minting AppRole secret IDs, writing secrets) goes through the
 # provisioner role below, not through this list.

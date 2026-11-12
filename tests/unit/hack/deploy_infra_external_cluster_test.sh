@@ -348,8 +348,8 @@ test_knobs_and_derived_variables() {
     "$(resolve '${EXTERNAL_CLUSTER}' EXTERNAL_CLUSTER=true)"
   assert_eq "EXTERNAL_CLUSTER=yes is preserved verbatim" "yes" \
     "$(resolve '${EXTERNAL_CLUSTER}' EXTERNAL_CLUSTER=yes)"
-  assert_eq "EXTERNAL_OVERLAY passes through verbatim" "deploy/lab/other" \
-    "$(resolve '${EXTERNAL_OVERLAY}' EXTERNAL_OVERLAY=deploy/lab/other)"
+  assert_eq "EXTERNAL_OVERLAY passes through verbatim" "deploy/overlays/custom" \
+    "$(resolve '${EXTERNAL_OVERLAY}' EXTERNAL_OVERLAY=deploy/overlays/custom)"
 
   assert_eq "OVERLAY_ROOT is deploy/overlays/kind by default" "$PROJECT_ROOT/deploy/overlays/kind" \
     "$(resolve '${OVERLAY_ROOT}')"

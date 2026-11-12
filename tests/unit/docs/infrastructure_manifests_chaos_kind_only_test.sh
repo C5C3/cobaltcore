@@ -8,7 +8,7 @@
 #     production namespace.
 #   - The HelmRelease–HelmRepository cross-reference table no longer lists
 #     chaos-mesh as an always-on entry.
-#   - A `### Chaos Mesh (kind-only opt-in)` subsection exists under the
+#   - A `### Chaos Mesh (development opt-in)` subsection exists under the
 #     `## Kind Overlay Demo Addons` section and points at
 #     `deploy/overlays/kind/chaos-mesh/kustomization.yaml`.
 #   - The kind-only subsection documents the WITH_CHAOS_MESH opt-in flag.
@@ -118,7 +118,7 @@ test_cross_reference_table_has_no_chaos_mesh_row() {
 
 # --- Test 3: Kind-only opt-in subsection exists ---
 test_kind_only_subsection_present() {
-  echo "Test: '### Chaos Mesh (kind-only opt-in)' subsection exists in 'Kind Overlay Demo Addons'"
+  echo "Test: '### Chaos Mesh (development opt-in)' subsection exists in 'Kind Overlay Demo Addons'"
 
   local kind_section
   kind_section="$(extract_kind_overlay_section)"
@@ -129,11 +129,11 @@ test_kind_only_subsection_present() {
     return
   fi
 
-  if grep -qE '^### Chaos Mesh \(kind-only opt-in\)' <<<"$kind_section"; then
-    echo "  PASS: '### Chaos Mesh (kind-only opt-in)' subsection found"
+  if grep -qE '^### Chaos Mesh \(development opt-in\)' <<<"$kind_section"; then
+    echo "  PASS: '### Chaos Mesh (development opt-in)' subsection found"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: '### Chaos Mesh (kind-only opt-in)' subsection missing"
+    echo "  FAIL: '### Chaos Mesh (development opt-in)' subsection missing"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -144,8 +144,8 @@ test_kind_only_subsection_points_at_overlay_file() {
 
   local subsection
   subsection="$(awk '
-    /^### Chaos Mesh \(kind-only opt-in\)/ { in_block = 1 }
-    in_block && /^### / && !/Chaos Mesh \(kind-only opt-in\)/ { exit }
+    /^### Chaos Mesh \(development opt-in\)/ { in_block = 1 }
+    in_block && /^### / && !/Chaos Mesh \(development opt-in\)/ { exit }
     in_block && /^## / && !/Kind Overlay Demo Addons/ { exit }
     in_block { print }
   ' "$DOC")"

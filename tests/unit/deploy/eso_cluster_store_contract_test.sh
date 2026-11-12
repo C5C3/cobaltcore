@@ -24,7 +24,7 @@
 #     `namespaceRegexes: [".*"]` added alongside the list widens the store to
 #     every namespace while the list itself still reads clean.
 #
-# Usage: bash tests/unit/deploy/bases/eso-store_cluster_store_contract_test.sh
+# Usage: bash tests/unit/deploy/eso_cluster_store_contract_test.sh
 
 set -uo pipefail
 

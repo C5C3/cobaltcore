@@ -18,7 +18,7 @@
 #   - compare_guardrails reports a copy of the YAML whose figures or shape
 #     differ, naming the const or the key.
 #
-# Usage: bash tests/unit/deploy/bases/shared-openbao_tenant_guardrails_contract_test.sh
+# Usage: bash tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh
 
 set -uo pipefail
 

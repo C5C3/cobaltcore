@@ -21,7 +21,7 @@
 # hands out a synthetic init-output Secret, logs every argv it is called with,
 # and captures what the unseal call receives on stdin.
 #
-# Usage: bash tests/unit/deploy/bases/shared-openbao_unseal_key_stdin_test.sh
+# Usage: bash tests/unit/deploy/openbao_unseal_key_stdin_test.sh
 
 set -uo pipefail
 

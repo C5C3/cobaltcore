@@ -236,7 +236,7 @@ test_names_from_sources() {
 test_links() {
   echo "Test: the kind section and the lab opening link the section, Lab overlay names WITH_PROMETHEUS, and the hvo rows name the alerts"
   assert_contains "the kind Prometheus section links #lab-prometheus-stack" \
-    "$(subsection '### kube-prometheus-stack (kind-only opt-in)')" '(#lab-prometheus-stack)'
+    "$(subsection '### kube-prometheus-stack (development opt-in)')" '(#lab-prometheus-stack)'
   assert_contains "the opening of Metal-stack lab links #lab-prometheus-stack" \
     "$(subsection '## Metal-stack lab')" '(#lab-prometheus-stack)'
   local overlay

@@ -24,7 +24,7 @@
 #
 # The spec is the guardrail spec of the c5c3 operator, the openBaoTenant* consts
 # in operators/c5c3/internal/controller/reconcile_barbican_openbao.go, and
-# tests/unit/deploy/bases/shared-openbao_tenant_guardrails_contract_test.sh keeps the two
+# tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh keeps the two
 # equal. It starts from the provisioner defaults of chart 0.4.2
 # (internal/service/provisioner/quotas.go). pods rises from 50 to 100: a
 # Standard ControlPlane with its three-member OVN central runs 55 pods, and up

@@ -17,7 +17,7 @@
 #     `dizzy soak runner image`.
 #
 # This is the regression test the check-renovate-coverage skill requires for
-# every customManager; that skill's audit does not scan deploy/lab/. It does
+# every customManager; that skill's audit does not scan deploy/overlays/metal-stack/. It does
 # NOT run renovate-config-validator itself: the sibling
 # fluxoperator_custommanager_test.sh exercises that gate over the whole file.
 #

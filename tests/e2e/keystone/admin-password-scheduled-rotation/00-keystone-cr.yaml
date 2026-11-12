@@ -27,9 +27,8 @@
 # verify this matches the RemoteKey formula in reconcile_passwordrotation.go.
 #
 # Consequence of the per-CR path: rotating it re-bootstraps ONLY this CR. No
-# other Keystone CR — nor the production keystone-admin ExternalSecret in
-# deploy/bases/eso-store/externalsecrets/keystone-admin.yaml (which reads its own per-CR
-# path) — observes the change. The suite is therefore parallel-safe and runs in
+# other Keystone CR or ControlPlane-owned admin ExternalSecret (which reads
+# its own per-CR path) observes the change. The suite is therefore parallel-safe and runs in
 # the execution.parallel:4 pool like its sibling admin-password-rotation suite
 # chainsaw-test.yaml re-seeds this per-CR path with a known initial
 # password at the start for cross-run determinism.

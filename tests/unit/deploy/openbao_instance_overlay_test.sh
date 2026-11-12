@@ -35,7 +35,7 @@
 #     the default LimitRange and quota, its quota admits 100 pods, and its
 #     overrides set no limit.
 #
-# Usage: bash tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh
+# Usage: bash tests/unit/deploy/openbao_instance_overlay_test.sh
 
 set -uo pipefail
 

@@ -3505,7 +3505,7 @@ main() {
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
   log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the NFS server + csi-driver-nfs; in kind mode it also modprobes nfs/nfsv4 on the host, under EXTERNAL_CLUSTER=true the pods of the overlay's nfs/ load them on the nodes)"
   log "Ceph storage stack  : ${WITH_CEPH} (set WITH_CEPH=true for the Rook operator and a Ceph on raw block volumes; external cluster only)"
-  log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the kind-only shared-rabbitmq broker)"
+  log "Message bus         : ${WITH_MESSAGING} (set WITH_MESSAGING=true for the development shared-rabbitmq broker)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
   log "Infrastructure only : ${INFRA_ONLY} (set INFRA_ONLY=true for a target cluster that runs no CobaltCore OpenStack operator)"

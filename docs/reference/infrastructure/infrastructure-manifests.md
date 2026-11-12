@@ -11,8 +11,8 @@ that provision the shared platform services required by OpenStack operators. Dep
 composed from bases for Flux, operators, TLS, shared OpenBao, ESO and the
 ControlPlane operator. Their manifests and bootstrap assets live directly in
 `deploy/bases/`; environment choices live in `deploy/overlays/`.
-See [deployment order](../../../deploy/README.md#deployment-order) for readiness
-and bootstrap gates, and [path migration](../../../deploy/README.md#path-migration)
+See [deployment order](https://github.com/stefanm8/cobaltcore/blob/refactor/deploy-base-catalog/deploy/README.md#deployment-order) for readiness
+and bootstrap gates, and [path migration](https://github.com/stefanm8/cobaltcore/blob/refactor/deploy-base-catalog/deploy/README.md#path-migration)
 for imports from the previous layout.
 
 ## Directory Layout
@@ -34,8 +34,8 @@ deploy/
   examples/                    compositions to copy
 ```
 
-The proving `OpenBaoCluster` instance is **not** part of this tree. It is CI/dev-only and
-lives at `deploy/bases/devstack/infrastructure/openbao-instance.yaml` — see
+The proving `OpenBaoCluster` belongs to the shared development base, not the
+reusable reference-infrastructure stage. It lives at `deploy/bases/devstack/infrastructure/openbao-instance.yaml` — see
 [OpenBao Proving Instance](#openbao-proving-instance).
 
 All YAML files carry the SPDX Apache-2.0 license header (3 lines: copyright, blank
@@ -82,11 +82,11 @@ one accepted co-tenant and holds neither grant; do not add a workload or a
 Secret-reading `Role` here without treating it as a security review.
 
 The `chaos-mesh` namespace is **not** part of the production base. It is created
-inline by the kind-only opt-in overlay at `deploy/overlays/kind/chaos-mesh/` when
+by the shared `deploy/bases/chaos-mesh/` base, selected through `deploy/overlays/kind/chaos-mesh/` when
 `WITH_CHAOS_MESH=true make deploy-infra` is used, and by the lab overlay
-`deploy/overlays/metal-stack/chaos-mesh/`, which takes that overlay as its base, under
+`deploy/overlays/metal-stack/chaos-mesh/`, which independently imports the same shared base, under
 `EXTERNAL_CLUSTER=true`. See
-[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) and
+[Chaos Mesh (development opt-in)](#chaos-mesh-development-opt-in) and
 [Lab Chaos Mesh](#lab-chaos-mesh) below.
 
 **Note:** The `install.createNamespace: true` setting on HelmReleases instructs FluxCD's
@@ -228,10 +228,10 @@ cannot hand different bytes to a controller that runs with cluster-wide RBAC.
 This source is applied by a Flux `Kustomization` as well; see
 [RabbitMQ Cluster Operator](#rabbitmq-cluster-operator).
 
-The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
+The `chaos-mesh` HelmRepository ships in the shared opt-in base at
 `deploy/bases/chaos-mesh/source.yaml` — it is intentionally absent
 from `deploy/bases/operators/{sources,kustomization.yaml}`. See
-[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
+[Chaos Mesh (development opt-in)](#chaos-mesh-development-opt-in).
 
 The `c5c3-charts`, `prometheus-community`, and `garage-operator` repositories are
 OCI-type sources (`spec.type: oci`). `c5c3-charts` hosts internally-built operator
@@ -342,10 +342,10 @@ manager instead requires those CRDs to be present at startup.
 FluxCD resolves this dependency graph and installs operators in the correct order.
 If cert-manager is not ready, dependent operators are held in a pending state.
 
-The kind-only `chaos-mesh` HelmRelease (`deploy/overlays/kind/chaos-mesh/`) also
+The optional `chaos-mesh` HelmRelease (`deploy/overlays/kind/chaos-mesh/`) also
 declares `dependsOn: cert-manager` but is only installed when
 `WITH_CHAOS_MESH=true make deploy-infra` is used. Production overlays do not
-install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
+install it. See [Chaos Mesh (development opt-in)](#chaos-mesh-development-opt-in).
 
 ### cert-manager
 
@@ -467,7 +467,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 The production ESO kustomization renders one store,
 `ClusterSecretStore/openbao-cluster-store` (`deploy/bases/eso-store/`). It serves the
 namespaces `openstack` and `shared-services`: standalone service CRs that set
-no `spec.secretStoreRef`, and the static ExternalSecrets of the kind overlay.
+no `spec.secretStoreRef`, and the static ExternalSecrets of the shared development base.
 A ControlPlane does not use it by default. The c5c3-operator provisions a
 namespaced `SecretStore/openbao-tenant-store` in every ControlPlane namespace
 (`reconcileESOTenantStore`) and routes the ControlPlane and its children
@@ -591,7 +591,7 @@ controller waits for the `openbao-operator-tenant-rolebinding` RoleBinding that 
 onboarding creates and pauses every reconcile in that namespace. It logs that pause at
 `V(1)`, so the visible symptom is an `OpenBaoCluster` that keeps an empty status and
 never gets a `StatefulSet`. The c5c3 operator creates a tenant for each service
-namespace it projects into, and the kind overlay carries a static one for the proving
+namespace it projects into, and the shared development base carries a static one for the proving
 instance (see [OpenBao Proving Instance](#openbao-proving-instance)).
 
 **Accepted risk (decided 2026-08-05):** openbao-operator is a young, single-maintainer,
@@ -1041,7 +1041,7 @@ OCIRepository.
 `sources/rabbitmq-cluster-operator.yaml`), not a HelmRelease backed by a
 HelmRepository.
 
-The kind-only `chaos-mesh` HelmRelease ships in the opt-in overlay at
+The optional `chaos-mesh` HelmRelease ships in the opt-in overlay at
 `deploy/bases/chaos-mesh/release.yaml`, with its own local
 `source.yaml`. It is intentionally absent from this always-on table because
 production overlays do not install it.
@@ -1169,9 +1169,9 @@ the MariaDB CR, which made the operator create the same `<mariadb>-maxscale` CR 
 `spec.maxScaleRef`; the file now declares both explicitly.
 
 The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, key
-`password`). The production stack ships **no** `ExternalSecret` for it — a non-kind Flux
+`password`). The production stack ships **no** `ExternalSecret` for it — a production Flux
 MariaDB baseline is expected to provide the `mariadb-root-password` Secret itself. On
-kind, a kind-only overlay shim
+both development environments, a shared devstack shim
 (`deploy/bases/devstack/infrastructure/mariadb-root-password-externalsecret.yaml`) materialises it
 from the OpenBao path `infrastructure/mariadb` so the single-node Quick Start stays
 self-contained.
@@ -1179,7 +1179,7 @@ self-contained.
 > **Non-Goal — operator-owned root credential.** Unlike the Keystone admin password
 > (which the c5c3-operator now projects per ControlPlane as a dedicated
 > `ExternalSecret`), the MariaDB **root** password is deliberately **not**
-> operator-owned. Provisioning it is left to the MariaDB baseline — the kind shim above,
+> operator-owned. Provisioning it is left to the MariaDB baseline — the development shim above,
 > or a production Flux baseline — keeping the operator off the database superuser
 > credential path.
 
@@ -1317,10 +1317,10 @@ Four instance CRs (API group `garage.rajsingh.info`) declare the S3 object store
 `replication.factor: 1`, a single storage tier, `network.service.type: ClusterIP`, and
 the S3 API on `:3900` with SigV4 region `garage` (path-style addressing — virtual-host
 style would need wildcard DNS). No `spec.image` is set, so the Garage version rides the
-operator/chart releases. The kind overlay
-(`deploy/overlays/kind/infrastructure/kustomization.yaml`) patches the storage tier to a single
-node with small PVCs on the `standard` storage class, mirroring the MariaDB/Memcached
-single-node kind footprint. This is a **CI/dev fixture** — plain HTTP in-cluster, single
+operator/chart releases. The shared development base
+(`deploy/bases/devstack/infrastructure/kustomization.yaml`) patches the storage tier to a
+single node with small PVCs, mirroring its MariaDB/Memcached footprint. Kind selects
+`standard` storage; metal-stack uses the cluster default. This is a **CI/dev fixture** — plain HTTP in-cluster, single
 tier; production-grade multi-node/zone-aware guidance is out of scope.
 
 **Credential flow — OpenBao stays the single source of truth.** No key material is read
@@ -1332,8 +1332,8 @@ namespace gets its own ExternalSecret on the same OpenBao path.
    `bootstrap/openstack/garage/s3-credentials` (see the
    [OpenBao bootstrap reference](./openbao-bootstrap.md#write-bootstrap-secrets-sh)). The
    `openstack` segment names the consuming tenant, not the namespace Garage runs in.
-2. Kind-only ExternalSecrets
-   (`deploy/overlays/kind/infrastructure/garage-{admin-token,s3-credentials}-externalsecret.yaml`)
+2. Shared development ExternalSecrets
+   (`deploy/bases/devstack/infrastructure/garage-{admin-token,s3-credentials}-externalsecret.yaml`)
    materialize them through the shared `openbao-cluster-store`: `garage-admin-token` and
    one `garage-s3-credentials` copy into `shared-services`, beside the CRs that read them,
    and a second `garage-s3-credentials` copy into `openstack`.
@@ -1366,7 +1366,7 @@ because the chart's admission policy accepts `spec.quota` and `spec.limitRange` 
 a tenant in the operator namespace. Its spec is the guardrail spec the c5c3-operator
 also gives the tenant of a [dedicated Barbican store](../c5c3/controlplane-crd.md#barbicandedicatedsecretstorespec).
 The `openBaoTenant*` consts in `operators/c5c3/internal/controller/reconcile_barbican_openbao.go`
-hold the same figures, and `tests/unit/deploy/bases/shared-openbao_tenant_guardrails_contract_test.sh`
+hold the same figures, and `tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh`
 fails when the two differ:
 
 | Object | Setting | Value |
@@ -1397,24 +1397,24 @@ The LimitRange shapes only the pods admitted after it changes: a running pod kee
 limits it was admitted with until it restarts. A kind cluster created before the tenant moved keeps its old
 `openstack/openstack` tenant beside the new one, so recreate it.
 
-The instance runs in every kind deploy, so the primitives a managed Barbican secret store
+The instance runs in both development environments, so the primitives a managed Barbican secret store
 needs are exercised with no Barbican attached: static-seal auto-unseal, cert-manager TLS
 in External mode, declarative self-init, and the AppRole and Kubernetes-auth methods a
 service and its operator log in with.
 
-**Why it is kind-only.** Everything above is a proving posture, not a production one. The
+**Why it stays in the development base.** Everything above is a proving posture, not a production one. The
 `Development` profile is what keeps the instance on a single node — one replica, so no
 PodDisruptionBudget and no anti-affinity — and the static seal keeps its key material in
 a Secret in the shared `openstack` namespace. `Hardened`, the profile that forces an
 external-KMS unseal and three replicas, is the production control, and this instance
 deliberately opts out of it to exercise the static-seal path. Shipping that from
 `deploy/bases/infrastructure/` would put it, a cluster-scoped RBAC binding, and a
-self-initialized AppRole with no consumer into every production deployment. Only the
-[openbao-operator](#openbao-operator) itself ships in the production base. The dedicated
+self-initialized AppRole with no consumer into every production deployment. Both kind and metal-stack select the shared devstack instance. The reusable
+operator stage ships only the [openbao-operator](#openbao-operator) controller. The dedicated
 instance a ControlPlane projects for a managed Barbican secret store carries the same
 proving-grade `Development` profile; a `Hardened` production-shaped instance is still
 future work.
-[`tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh)
+[`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
 asserts both directions of that split.
 
 **Two Certificates, one trust domain.** The operator's External TLS contract reads two
@@ -1543,7 +1543,7 @@ itself sets `automountServiceAccountToken: false`, since every consumer mints ex
 > work (minting AppRole secret IDs, writing secrets) goes through the `provisioner` role
 > instead. Because that failure is silent — the CR reconciles, `Available` stays `True`,
 > and the new request is simply never applied —
-> [`tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh)
+> [`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
 > pins the request names, so an edit cannot land without confronting it.
 
 **Shared names with the brownfield leg.** The mount, policy, and role names (`barbican/`,
@@ -1615,9 +1615,8 @@ reconcile. The operator then forces a re-push (`c5c3.io/push-cacert-hash`), so
 the Secret in OpenBao no longer carries the key. The PushSecret's
 `deletionPolicy` is `Delete`: the OpenBao key leaves with the ControlPlane.
 
-**No `orc-system` copy** — the static `deploy/bases/eso-store/externalsecrets/k-orc-clouds-yaml.yaml`
-manifest that previously declared K-ORC's global default `clouds.yaml` mount has been
-removed. K-ORC authenticates **per resource** via each CR's `CloudCredentialsRef`,
+**No `orc-system` copy** — there is no static ExternalSecret for a global
+K-ORC `clouds.yaml` mount. K-ORC authenticates **per resource** via each CR's `CloudCredentialsRef`,
 resolved in the control-plane namespace, so no cluster-global default mount is needed.
 The `orc-system` Namespace itself is retained (co-declared in
 `deploy/bases/operators/namespaces.yaml`) because the K-ORC installer's own resources land
@@ -1687,7 +1686,7 @@ ControlPlane operator each have their own base and lifecycle gate.
 | **Total** | **52** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
-kind-only opt-in overlay at `deploy/overlays/kind/chaos-mesh/` and are not
+shared opt-in base at `deploy/bases/chaos-mesh/` and are not
 counted here.
 
 ### Infrastructure Kustomization
@@ -1698,7 +1697,8 @@ The infrastructure kustomization includes CRD-dependent resources that require t
 operator CRDs to be installed first. This kustomization must be applied after the base
 kustomization and after operators have finished installing their CRDs.
 
-**Resource count:** 9 manifests and the `../eso-store` kustomization, producing 17
+**Resource count:** three instance manifests plus the `../tls` and
+`../eso-store` kustomizations, producing 17
 Kubernetes resources (the `db-ca-issuer.yaml`, `ovn-ca-issuer.yaml`, and
 `openbao-ca-issuer.yaml` manifests declare two resources each: a CA Certificate and the
 CA-type ClusterIssuer that signs from it; `garage.yaml` declares four;
@@ -1716,8 +1716,8 @@ CA-type ClusterIssuer that signs from it; `garage.yaml` declares four;
 | **Total** | **17** | |
 
 The proving instance's own five resources (two Certificates, a ServiceAccount, a
-ClusterRoleBinding, and the `OpenBaoCluster`) are not counted here: they ship in the kind
-overlay — see [OpenBao Proving Instance](#openbao-proving-instance).
+ClusterRoleBinding, and the `OpenBaoCluster`) are not counted here: they ship in the shared
+development base — see [OpenBao Proving Instance](#openbao-proving-instance).
 
 
 ## Deployment
@@ -1751,7 +1751,7 @@ Messaging Topology Operator). FluxCD resolves controller dependencies.
 
 Wait for controller CRDs and admission webhooks before applying their resources.
 TLS, the shared OpenBao server, bootstrap, ESO and the ControlPlane operator follow
-as separate stages; use the [deployment order](../../../deploy/README.md#deployment-order).
+as separate stages; use the [deployment order](https://github.com/stefanm8/cobaltcore/blob/refactor/deploy-base-catalog/deploy/README.md#deployment-order).
 `make deploy-infra` performs these gates for the development environments.
 
 ### Step 2: Apply infrastructure resources
@@ -1781,7 +1781,7 @@ fail — wait for the operators to finish installing and retry.
 > works.
 
 > **Expected transient failure:** The MariaDB cluster references a
-> `rootPasswordSecretKeyRef` Secret (`mariadb-root-password`). On kind, the overlay
+> `rootPasswordSecretKeyRef` Secret (`mariadb-root-password`). In the development overlays, the shared base
 > shim materialises it from OpenBao via the External Secrets Operator; in production a
 > Flux MariaDB baseline must provide it. Until that Secret exists, the
 > mariadb-operator will enter a failed reconciliation loop with
@@ -2062,7 +2062,7 @@ Headlamp and the development OpenBao UI patch are documented in the Quick Start.
 Chaos Mesh ships as a
 separate **opt-in** kind overlay at `deploy/overlays/kind/chaos-mesh/` — applied only when
 `WITH_CHAOS_MESH=true` is set on `make deploy-infra`; see
-[Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in) below.
+[Chaos Mesh (development opt-in)](#chaos-mesh-development-opt-in) below.
 
 ### Flux Web UI ResourceSet
 
@@ -2117,7 +2117,7 @@ Headlamp by rendering the three flux-operator-specific CRDs (`ResourceSet`,
 `ResourceSetInputProvider`, `FluxReport`) that the generic Headlamp Flux
 plugin does not know about.
 
-### Chaos Mesh (kind-only opt-in)
+### Chaos Mesh (development opt-in)
 
 **File:** `deploy/overlays/kind/chaos-mesh/kustomization.yaml`
 
@@ -2130,9 +2130,8 @@ production `deploy/bases/operators/` overlay also does not install Chaos Mesh.
 
 The shared Chaos Mesh base contains its own inputs: the `HelmRepository` lives in
 `deploy/bases/chaos-mesh/source.yaml` and the `HelmRelease` in
-`deploy/bases/chaos-mesh/release.yaml` (both relocated from the former
-`deploy/bases/operators/{sources,releases}/chaos-mesh.yaml` locations). The
-overlay bundles them with:
+`deploy/bases/chaos-mesh/release.yaml` (both outside the default operator catalog). The
+kind and metal-stack overlays compose that base with:
 
 | Property | Value |
 | --- | --- |
@@ -2173,11 +2172,11 @@ WITH_CHAOS_MESH=true make deploy-infra
 
 This is the prerequisite for `make e2e-chaos`. See
 [Chaos E2E Tests](../testing/chaos-e2e-tests.md) for the full workflow. The
-metal-stack lab deploys Chaos Mesh from its own overlay on top of this one,
+metal-stack lab deploys Chaos Mesh from its own overlay over the same shared base,
 with a namespace filter and a pod that loads the kernel modules; see
 [Lab Chaos Mesh](#lab-chaos-mesh).
 
-### kube-prometheus-stack (kind-only opt-in)
+### kube-prometheus-stack (development opt-in)
 
 **Files:** `deploy/overlays/kind/prometheus/kustomization.yaml` (standalone compatibility root),
 `deploy/overlays/kind/prometheus-managed/kustomization.yaml` (composed deploy flow)
@@ -2290,14 +2289,12 @@ walkthrough — port-forward, default Grafana credentials, the bundled
 `Keystone Operator` dashboard, and a Prometheus targets sanity-check — see
 [Extended Quick Start — Step 4c](../../quick-start-extended.md#step-4c-grafana-ui).
 
-**Posture summary.** Reviewers checking new kind-only opt-ins should treat
-this entry as a parallel of the `Chaos Mesh (kind-only opt-in)` example
-above: the production omission is explicit, the opt-in flag has a single
-documented name (`WITH_PROMETHEUS`), and the chart resources remain under
-`deploy/overlays/kind/prometheus/`. The `prometheus-managed/` composition leaves the
-base Namespace untouched. The
-[`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/cobaltcore/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
-review pattern catalogues the full surface area.
+**Posture summary.** The default operator catalog omits the stack, and the
+opt-in flag is `WITH_PROMETHEUS`. The chart and dashboard resources live in
+`deploy/bases/prometheus/`. Both environments import that base; the kind
+`prometheus-managed/` composition and the lab overlay leave Namespace ownership
+to their base stage. The standalone kind `prometheus/` entry point adds the
+Namespace for manual use.
 
 The metal-stack lab runs the same stack with its metrics on a volume, the
 scrape jobs a Gardener shoot can feed, and a dashboard for the hypervisor
@@ -2440,7 +2437,7 @@ On an external cluster, which refuses `WITH_VPA=true`,
 WITH_VPA=true make deploy-infra
 ```
 
-### dizzy load/chaos stack (kind-only opt-in)
+### dizzy load/chaos stack (development opt-in)
 
 **File:** `deploy/overlays/kind/dizzy/kustomization.yaml`
 
@@ -2451,7 +2448,8 @@ observability stack ships as a separate **opt-in** kind overlay. The default
 absent, and neither VictoriaMetrics nor Grafana runs unless a contributor opts
 in. The production `deploy/bases/operators/` overlay ships none of it.
 
-The overlay is self-contained, seven tracked files under `deploy/overlays/kind/dizzy/`:
+The kind overlay imports `deploy/bases/dizzy/` and adds its local route.
+The shared base owns these files except for the kind-specific `httproute.yaml`:
 
 | File | Purpose |
 | --- | --- |
@@ -2465,10 +2463,10 @@ The overlay is self-contained, seven tracked files under `deploy/overlays/kind/d
 
 Both HelmRepositories (`victoria-metrics`, `grafana`) are declared into the
 `flux-system` namespace, where Flux resolves HelmRelease sourceRefs, even though
-the two source files live inside the kind-only overlay. That keeps
+the two source files live inside the shared base. That keeps
 `deploy/bases/operators/**` untouched while the overlay stays self-contained.
 
-**Dashboard staging (`hack/dizzy.sh stage-dashboards`).** The overlay's
+**Dashboard staging (`hack/dizzy.sh stage-dashboards`).** The shared base's
 `configMapGenerator` wraps three dizzy dashboard JSONs, but
 `deploy/bases/dizzy/dashboards/` is git-ignored; the dashboards are a
 version-pinned dizzy asset staged from the release tarball, so the tree tracks
@@ -2507,8 +2505,8 @@ runs the same stack with its metrics on a volume; see
 
 **Posture summary.** Same shape as the entries above: the production omission is
 explicit, the opt-in flag has a single documented name (`WITH_DIZZY`), and the
-kind overlay is self-contained under `deploy/overlays/kind/dizzy/` so the production
-kustomization root ships none of it.
+kind and metal-stack overlays import `deploy/bases/dizzy/` explicitly;
+the default operator catalog ships none of it.
 
 ### NFS storage stack (opt-in)
 
@@ -2518,9 +2516,9 @@ The NFS storage stack, an in-cluster NFSv4 server plus the
 [csi-driver-nfs](https://github.com/kubernetes-csi/csi-driver-nfs) mounter,
 ships as a separate **opt-in** kind overlay for the Cinder e2e suites of
 [#979](https://github.com/c5c3/cobaltcore/issues/979). The default
-`make deploy-infra` flow does **not** install it. Unlike the other opt-ins of
-this section it is not kind-only: the metal-stack lab builds its
-[Lab NFS stack](#lab-nfs-stack) on this overlay. Production omits it for two
+`make deploy-infra` flow does **not** install it. Kind and metal-stack independently compose
+`deploy/bases/nfs/`; the lab adds its own storage and node preparation in
+[Lab NFS stack](#lab-nfs-stack). Production omits it for two
 reasons: users bring their own NFS server (a `CinderBackend` takes a `server`
 and a `path` per backend), and the mounter is a prerequisite of the target
 cluster. Shipping `csi-driver-nfs` from `deploy/bases/operators/releases/` would
@@ -2532,8 +2530,8 @@ privileged container, and on a Linux host the deploy script loads `nfs` and
 `nfsv4` for the mounter through sudo. An always-on manifest would put a
 privileged pod into the default Quick Start and ask every run for sudo.
 
-The overlay is self-contained: `source.yaml`, `release.yaml` and
-`nfs-server.yaml` are all local to `deploy/overlays/kind/nfs/`. It ships **no**
+The shared base owns `source.yaml`, `release.yaml` and `nfs-server.yaml`
+under `deploy/bases/nfs/`. The kind overlay imports it and patches local storage. It ships **no**
 `Namespace`. The HelmRelease targets the pre-existing `kube-system`, because
 the chart defaults to `priorityClassName: system-cluster-critical`, which
 resolves in no other Namespace. The server lands in the pre-existing
@@ -2702,7 +2700,7 @@ shares mount under `restricted` PodSecurity.
 
 **Posture summary.** Same shape as the entries above: the production omission
 is explicit, the opt-in flag has a single documented name (`WITH_NFS`), and
-the kind overlay is self-contained under `deploy/overlays/kind/nfs/`. The
+both environment overlays explicitly import the shared `deploy/bases/nfs/` base. The
 non-production posture is recorded in the header of `nfs-server.yaml`: a
 privileged server, because Ganesha reads the filesystem UUID behind its file
 handles from the device node, `sec=sys` with `No_Root_Squash` and no client
@@ -2721,7 +2719,7 @@ pod spec alone. PodSecurity does not bound that. In a namespace that is not
 `nfs-health` probe mounts them. The metal-stack lab carries the same posture,
 as [Lab NFS stack](#lab-nfs-stack) states.
 
-### Message bus (kind-only opt-in)
+### Message bus (development opt-in)
 
 **Files:** `deploy/overlays/kind/messaging/kustomization.yaml`,
 `deploy/bases/messaging/shared-rabbitmq.yaml`
@@ -2776,7 +2774,7 @@ resulting `controlplane-keystone-messaging` Secret into both of its bus-consumin
 children, Neutron and Cinder.
 
 **Deploy-infra wiring.** With `WITH_MESSAGING=true`, `hack/deploy-infra.sh`
-applies `deploy/overlays/kind/messaging` after Step 5, where both prerequisites are
+applies `deploy/bases/messaging` in either environment after Step 5, where both prerequisites are
 settled: the `openstack` namespace from the Step 3 base overlay and the
 `rabbitmqclusters.rabbitmq.com` CRD from the Phase 3b operator wait. It then
 waits for `rabbitmqcluster/shared-rabbitmq` to report `AllReplicasReady`. The
@@ -2793,7 +2791,7 @@ WITH_MESSAGING=true make deploy-infra
 
 **Posture summary.** Same shape as the entries above: the production omission
 is explicit, the opt-in flag has a single documented name (`WITH_MESSAGING`),
-and the kind overlay is self-contained under `deploy/overlays/kind/messaging/`.
+and `deploy/overlays/kind/messaging/` remains a manual entry point to the shared base.
 
 ### Glance large-upload listener
 
@@ -3061,7 +3059,7 @@ answer proves the address, the name and the certificate.
 The deploy runs against the current kubeconfig context and never switches it.
 It refuses four opt-ins that are bound to kind, `WITH_VPA`,
 `WITH_METRICS_SERVER`, `WITH_REGISTRY_CACHE` and `WITH_OVN_KERNEL_MODULES`
-(`WITH_MESSAGING`, which applies `deploy/overlays/kind/messaging` unchanged, and
+(`WITH_MESSAGING`, which applies `deploy/bases/messaging`, and
 `WITH_NFS`, `WITH_CEPH`, `WITH_CHAOS_MESH` and `WITH_DIZZY` aside, which apply
 `nfs/`, `ceph/` with `ceph/cluster/`, `chaos-mesh/` and `dizzy/`),
 checks the cluster for a default StorageClass, for the absence of a
@@ -3529,7 +3527,7 @@ operator that is gone first leaves both, and they hold the namespace in
 The fault injection of
 [#1219](https://github.com/c5c3/cobaltcore/issues/1219) for the metal-stack
 lab ([#1221](https://github.com/c5c3/cobaltcore/issues/1221)): the
-[Chaos Mesh](#chaos-mesh-kind-only-opt-in) of the kind overlay, scoped to the
+[Chaos Mesh](#chaos-mesh-development-opt-in) of the kind overlay, scoped to the
 namespaces the lab declares. `hack/deploy-infra.sh` applies the directory in
 Step 3 when `WITH_CHAOS_MESH=true` is set beside `EXTERNAL_CLUSTER=true`, in
 place of `deploy/overlays/kind/chaos-mesh`. The flag composes onto the deploy command
@@ -4137,7 +4135,7 @@ The metrics stack of a dizzy soak for the metal-stack lab
 ([#1225](https://github.com/c5c3/cobaltcore/issues/1225), from the dizzy
 findings of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)): the
 VictoriaMetrics and Grafana of the
-[dizzy load/chaos stack](#dizzy-load-chaos-stack-kind-only-opt-in), with the
+[dizzy load/chaos stack](#dizzy-load-chaos-stack-development-opt-in), with the
 metrics on a volume. `hack/deploy-infra.sh` applies the directory in Step 3
 when `WITH_DIZZY=true` is set beside `EXTERNAL_CLUSTER=true`, in place of
 `deploy/overlays/kind/dizzy`. The flag composes onto the deploy command of the
@@ -4384,7 +4382,7 @@ The kube-prometheus-stack of the metal-stack lab
 ([#1226](https://github.com/c5c3/cobaltcore/issues/1226), from the Prometheus
 findings of [#1219](https://github.com/c5c3/cobaltcore/issues/1219)): the
 Prometheus and Grafana of the
-[kube-prometheus-stack (kind-only opt-in)](#kube-prometheus-stack-kind-only-opt-in),
+[kube-prometheus-stack (development opt-in)](#kube-prometheus-stack-development-opt-in),
 with the metrics on a volume, the scrape jobs a Gardener shoot can feed, and a
 dashboard for openstack-hypervisor-operator (hvo). `hack/deploy-infra.sh`
 applies the directory in Step 3 when `WITH_PROMETHEUS=true` is set beside
@@ -4413,7 +4411,7 @@ storage follows the decision D7 of #1219.
 | Prometheus memory | request `256Mi`, limit `512Mi`, sized for one kind node | request `1Gi`, limit `2Gi`: the lab scrapes three kubelets with cAdvisor, and the request follows that working set |
 | Dashboards | `keystone-operator` | `keystone-operator` and `hypervisor-operator` |
 
-Everything else is the kind overlay's: the chart range `>=65.0.0 <70.0.0`,
+Both overlays inherit the remaining settings from the shared base: the chart range `>=65.0.0 <70.0.0`,
 the dependency on `cert-manager`, `crds.enabled: false`, Alertmanager,
 node-exporter and kube-state-metrics off, the open ServiceMonitor selectors,
 Prometheus's CPU request, Grafana's resources, and Grafana without a volume,

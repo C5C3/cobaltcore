@@ -19,7 +19,7 @@
 #
 # The test reads the policy file only; nothing touches a cluster or an OpenBao.
 #
-# Usage: bash tests/unit/deploy/bases/eso-store_tenant_rabbitmq_policy_test.sh
+# Usage: bash tests/unit/deploy/eso_tenant_rabbitmq_policy_test.sh
 
 set -uo pipefail
 

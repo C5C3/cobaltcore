@@ -26,7 +26,7 @@
 #     carries no pin.
 #
 # This is the regression test the check-renovate-coverage skill requires for
-# every customManager; that skill's audit does not scan deploy/lab/, so this
+# every customManager; that skill's audit does not scan deploy/overlays/metal-stack/, so this
 # test is what keeps the manager honest. It does NOT run
 # renovate-config-validator itself: the sibling
 # fluxoperator_custommanager_test.sh already exercises that authoritative gate

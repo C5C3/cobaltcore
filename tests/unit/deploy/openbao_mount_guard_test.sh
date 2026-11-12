@@ -21,7 +21,7 @@
 # that reads the whole list passes whatever the timing; a guard that stops at
 # the first match fails here on any jq.
 #
-# Usage: bash tests/unit/deploy/bases/shared-openbao_mount_guard_test.sh
+# Usage: bash tests/unit/deploy/openbao_mount_guard_test.sh
 
 set -uo pipefail
 
