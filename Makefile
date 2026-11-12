@@ -179,8 +179,9 @@ govulncheck:
 # the chaos workload harness (tests/e2e-chaos/lib/ and the probe-lib.sh a suite
 # sources), the library of the lab failover suites (tests/lab-failover/lib/),
 # the scripts of the libvirt suites (the guest suite's guest-lib.sh and the
-# POSIX sh guest-user-data.sh) and the patch checks the hvo and kna manager
-# builds run (images/*/patch-checks.sh).
+# POSIX sh guest-user-data.sh), the patch checks the hvo and kna manager
+# builds run (images/*/patch-checks.sh) and the BGP fabric lab (run.sh and the
+# POSIX sh setup.sh of every box under tests/lab/bgp-fabric/).
 shellcheck:
 	@echo "Linting hack/*.sh..."
 	@shellcheck --severity=warning hack/*.sh
@@ -196,6 +197,8 @@ shellcheck:
 	@shellcheck --severity=warning tests/e2e-nova-libvirt/*/*.sh
 	@echo "Linting the image patch checks..."
 	@shellcheck --severity=warning images/*/patch-checks.sh
+	@echo "Linting the BGP fabric lab..."
+	@shellcheck --severity=warning tests/lab/bgp-fabric/*.sh tests/lab/bgp-fabric/*/*.sh
 
 .PHONY: chainsaw-lint
 # chainsaw-lint validates every Chainsaw test (tests/**/chainsaw-test.yaml) and

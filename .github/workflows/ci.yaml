@@ -782,7 +782,7 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Run shellcheck on hack/*.sh and operator rotation scripts
+      - name: Run shellcheck on hack/*.sh, operator rotation scripts and the BGP fabric lab
         run: make shellcheck
 
   # Always-on gate: the whole tracked tree (code, tests, CI, scripts, docs)

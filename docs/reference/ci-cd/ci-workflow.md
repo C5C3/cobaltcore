@@ -466,7 +466,7 @@ The shellcheck binary is pre-installed on `ubuntu-latest` runners.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh` and the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`) |
+| 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh`, the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`) and the BGP fabric lab (`tests/lab/bgp-fabric/`) |
 
 Timeout: 8 minutes.
 
@@ -3426,6 +3426,7 @@ The CI workflow depends on the following artifacts:
 | `.golangci.yml` | `lint` job | Provides linter configuration (enabled linters, exclusion rules, timeout) |
 | `go.work` | All Go-based jobs | Provides the Go version for `actions/setup-go@v7` |
 | `hack/*.sh` | `shellcheck` job | Shell scripts validated by shellcheck |
+| `tests/lab/bgp-fabric/*.sh`, `tests/lab/bgp-fabric/*/setup.sh` | `shellcheck` job | The BGP fabric lab's runner and box entrypoints, validated by shellcheck |
 | `.codecov.yml` | Codecov integration | Component-level coverage thresholds |
 | `hack/ci-dump-diagnostics.sh` | every `e2e-*` job and the `tempest` job | Shared diagnostic dump |
 | `hack/ci-nix-build-e2e-images.sh` | `build-e2e-images` job, in the `nixos/nix` container | Builds the Nix-built operator, service, nova-compute, Tempest, ovn, libvirt and federation proxy images and writes their streams to `.nix-e2e/` |
