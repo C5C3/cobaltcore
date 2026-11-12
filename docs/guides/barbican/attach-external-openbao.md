@@ -14,9 +14,10 @@ SPDX-License-Identifier: Apache-2.0
 
 This guide attaches the Key Manager service to an OpenBao or HashiCorp Vault
 server that already exists, run and hardened outside this control plane. It is
-the production shape of the service: the operator reads two Secrets, verifies the
-credentials in them, and renders the store configuration. It creates no mount, no
-policy, and no AppRole on your server, and it never writes to it.
+the production shape of the service: the operator reads the AppRole credentials
+Secret and, when needed, a CA-bundle Secret; it verifies the credentials and
+renders the store configuration. It creates no mount, no policy, and no AppRole
+on your server, and it never writes to it.
 
 Because the operator is read-only, the server must be provisioned out of band
 before a `ControlPlane` referencing it can converge. Sections 1 and 2 specify
@@ -27,7 +28,7 @@ The right panel of the figure shows this mode. The left panel is the mode of
 [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md). The
 management OpenBao of the devstack stands in both and is the server of neither.
 
-![The two modes of a Barbican secret store, side by side. Dedicated: the c5c3-operator creates an OpenBaoCluster {cp}-barbican-bao and declares its self-init, which provisions the KV mount barbican/, a policy, the AppRole role barbican and a Kubernetes auth role. The barbican-operator logs in to that instance through Kubernetes auth, checks the mount, reads the role ID and mints a secret ID into the Secret {cp}-barbican-store-approle. The API pods of {cp}-barbican read the secret ID from that Secret and the CA from {cp}-barbican-bao-tls-ca, and store their secrets in the instance. External: an OpenBao or Vault server runs outside the control plane, and its KV mount, policy and AppRole are provisioned by hand, as are the Secret with the role ID and the secret ID and the optional Secret with a CA bundle. The barbican-operator only reads the two Secrets, logs in with the AppRole and checks its capabilities; it writes nothing to the server. The API pods use the same two Secrets. On the kind devstack the OpenBaoCluster openbao-instance stands in for the outside server. In both modes the management OpenBao in shared-services is a separate server that delivers the database credentials of Barbican and no store credential.](../../diagrams/service-barbican-secret-stores.svg)
+![The two modes of a Barbican secret store, side by side. Dedicated: the c5c3-operator creates an OpenBaoCluster {cp}-barbican-bao and declares its self-init, which provisions the KV mount barbican/, a policy, the AppRole role barbican and a Kubernetes auth role. The barbican-operator logs in to that instance through Kubernetes auth, checks the mount, reads the role ID and mints a secret ID into the Secret {cp}-barbican-store-approle. The API pods of {cp}-barbican read the secret ID from that Secret and the CA from {cp}-barbican-bao-tls-ca, and store their secrets in the instance. External: an OpenBao or Vault server runs outside the control plane, and its KV mount, policy and AppRole are provisioned by hand. A required Secret carries the role ID and secret ID; an optional Secret carries the CA bundle. The barbican-operator reads the credentials and optional CA, logs in with the AppRole and checks its capabilities; it writes nothing to the server. The API pods use the same Secret references. On the kind devstack the OpenBaoCluster openbao-instance stands in for the outside server. In both modes the management OpenBao in shared-services is a separate server that delivers the database credentials of Barbican and no store credential.](../../diagrams/service-barbican-secret-stores.svg)
 
 ## Prerequisites
 
@@ -44,13 +45,17 @@ also brings up the proving `OpenBaoCluster` `openbao-instance` in `openstack`,
 which stands in below for the server you already run.
 :::
 
-1. **An OpenBao or HashiCorp Vault server reachable from the cluster over
-   `https://`.** Plain HTTP is rejected at admission: the role ID, the secret ID,
-   and every secret Barbican stores travel that URL. On the devstack the stand-in
-   is `https://openbao-instance.openstack.svc:8200`.
-2. **A token with write access to that server**, for the provisioning in
-  section 1. The operator reads its AppRole credentials from the referenced Secrets.
-3. **`jq` on `PATH`** for the condition readouts in section 5.
+The OpenBao or HashiCorp Vault server must be reachable from the cluster over
+`https`; plain HTTP is rejected at admission. Have the `bao` or `vault` CLI
+configured for that server and a token with write access for section 1. The
+section's commands use `bao`; use the equivalent `vault` commands for Vault.
+`jq` must be on `PATH` for section 4's token extraction and section 5's
+condition readouts. On the devstack, the server stand-in is
+`https://openbao-instance.openstack.svc:8200`.
+
+## 1. What the server must carry
+
+Three things, provisioned by you.
 
 ::: warning Not the shared management OpenBao
 The devstack's other OpenBao, the management instance in the `shared-services`
@@ -60,10 +65,6 @@ bundle only, with no way to present one. Attaching to it produces a connection
 reset that looks like an unreachable server. Use a server that accepts AppRole
 logins, which on this devstack is `openbao-instance`.
 :::
-
-## 1. What the server must carry
-
-Three things, provisioned by you.
 
 **A KV v2 mount.** castellan's vault plugin speaks KV version 2 and nothing else,
 so a version 1 mount is not usable. `kvMountpoint` defaults to `barbican`, which
@@ -75,7 +76,8 @@ instead.
 bootstrap writes, and it is the exact grant the operator probes for
 (`deploy/openbao/policies/barbican-secretstore.hcl`):
 
-```hcl
+```bash
+bao policy write barbican-secretstore - <<'EOF'
 path "barbican/data/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
@@ -83,6 +85,7 @@ path "barbican/data/*" {
 path "barbican/metadata/*" {
   capabilities = ["create", "read", "update", "list"]
 }
+EOF
 ```
 
 The absence of `delete` on `metadata/*` is deliberate. In KV v2 a delete on the
@@ -90,10 +93,18 @@ metadata path permanently destroys every version of a secret along with its
 metadata, which is the only in-store recovery path tenant key material has. The
 delete castellan issues goes through `data/`, where it is a recoverable soft
 delete. On a mount other than `barbican`, substitute the mount path in both
-blocks.
+policy blocks before applying them.
 
 **An AppRole carrying that policy.** The shape the bootstrap writes
 (`deploy/openbao/bootstrap/setup-auth.sh`):
+
+Enable AppRole auth at `auth/approle` if it is not already enabled:
+
+```bash
+bao auth enable approle
+```
+
+Then create the role:
 
 ```bash
 bao write auth/approle/role/barbican \
@@ -114,15 +125,16 @@ IDs in this mode. The replacement procedure, under the AppRole Auth heading of t
 is the control: it reads the stable role ID, mints a replacement secret ID
 straight into the Secret, and destroys the accessor of the one it replaced.
 
-## 2. The two Secrets
+## 2. Credentials and optional CA bundle
 
-The operator resolves both by name in the namespace the Barbican service is
-placed in. The operator expects fixed data keys for both Secrets.
+The operator resolves the credentials Secret and optional CA Secret by name in
+the namespace where the Barbican service is placed. It expects fixed data keys
+for each Secret.
 
 | Secret | Data keys | Required |
 | --- | --- | --- |
 | credentials | `role-id`, `secret-id` | yes |
-| CA bundle | `ca.crt` | only when the server's certificate is not already trusted by the pods' system store |
+| CA bundle | `ca.crt` | only when the server's certificate is not already trusted by both the operator and Barbican pods |
 
 On the devstack, the e2e suite's helper mints a secret ID against the proving
 instance and writes both Secrets for you. It is the stand-in for the out-of-band
@@ -136,8 +148,9 @@ It logs in to `openbao-instance` through its Kubernetes auth method as the
 `openbao-instance-provisioner` ServiceAccount, reads the `barbican` AppRole's
 role ID, mints a secret ID, and writes `barbican-brownfield-approle` (role ID and
 secret ID) plus `openbao-instance-ca` (the trust bundle) into the namespace it is
-given. Against a real server, create the same two Secrets by hand from the
-credentials your operators issued.
+given. For a real server, create the credentials Secret with that server's role
+ID and secret ID, and create the CA Secret when either the operator or Barbican
+pods do not already trust the server certificate.
 
 ## 3. Declare the Barbican service
 
@@ -174,11 +187,16 @@ store's mode. The `BarbicanSecretStore` CRD freezes that field, so the reconcile
 deletes `controlplane-barbican-store` and recreates it against the external
 server on the next pass. It reports `BarbicanReady=False` with
 reason `RecreatingBarbicanSecretStore` in between. The dedicated instance
-`controlplane-barbican-bao` is left in place: nothing in the switch tears it
-down, and the c5c3-operator removes it only when `services.barbican` is dropped
-under both deletion annotations. It keeps running, with the material Barbican
-wrote through the old store, until you delete it by hand. What that deletion
-destroys is spelled out in step 6 of
+`controlplane-barbican-bao` is left in place; nothing in the switch tears it
+down. This switch does not migrate secret payloads. Barbican uses the same store
+name against a different server, so any existing secret reference whose payload
+was not copied there will fail, even when the new store becomes `Ready`. Store
+readiness checks cover credentials, capabilities and configuration. They do not
+inspect existing secret payloads. Keep the dedicated instance until you have migrated or otherwise
+verified the data. If you later drop `services.barbican`, the c5c3-operator
+removes the instance only when both deletion annotations are set; a full
+ControlPlane teardown also removes it. What deleting the instance destroys is
+spelled out in step 6 of
 [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
 
 `external` and `dedicated` are mutually exclusive, and a block naming neither is
@@ -234,14 +252,14 @@ kubectl get barbicansecretstore controlplane-barbican-store -n openstack \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\n"}{end}'
 ```
 
-The external store reports two conditions. `CredentialsReady` reports the login
-and capability probe; `ConfigProjected` reports that the rendered
-`barbican.conf` in the running Deployment carries this store's section. The
-operator omits `ProvisioningReady` because this store is provisioned out of band.
+`CredentialsReady` reports the login and capability probe. `ConfigProjected`
+reports that the rendered `barbican.conf` in the running Deployment carries
+this store's section, and aggregate `Ready` summarizes both. The operator omits
+`ProvisioningReady` because this store is provisioned out of band.
 
-The figure shows the order the two conditions turn `True` in, and
-[The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
-lists its five steps with what differs per kind.
+The figure shows how `CredentialsReady` and `ConfigProjected` lead to aggregate
+`Ready`. [The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
+lists its five steps and what differs per kind.
 
 ![The handshake between a satellite resource and the service it attaches to, in five numbered steps across two controllers. 1: the satellite controller checks the credentials and sets CredentialsReady on the satellite. 2: the aggregation step of the service controller reads only that condition. 3: it renders one section per satellite that passed into a Secret whose name carries a hash of its content. 4: the pod template of the service's Deployment mounts that Secret, and a new name rolls the pods. 5: the satellite controller finds its section in the mounted Secret and sets ConfigProjected. Ready turns True once both conditions are. An arrow marked never runs from Ready to the aggregation step: reading Ready there would deadlock, because Ready needs ConfigProjected, which needs that step. On a KeystoneIdentityBackend the gate is DomainReady, and ConfigProjected also waits until the rollout has finished.](../../diagrams/service-satellite-handshake.svg)
 
@@ -268,16 +286,16 @@ Every reason below sits on `CredentialsReady` on the
 | Reason | Cause | What to do |
 | --- | --- | --- |
 | `WaitingForCredentials` | A referenced Secret is absent, or carries an empty `role-id`, `secret-id`, or `ca.crt`. Routine while GitOps ordering settles. | Create the Secret, or fill the missing key. The message names the Secret and the key. |
-| `InvalidCredentials` | The server rejected the login. The secret ID expired or was destroyed, the role ID belongs to a different AppRole, or the AppRole lives in an OpenBao namespace `namespace` does not name. | Re-mint the secret ID into the credentials Secret, or correct the namespace. |
+| `InvalidCredentials` | The server rejected the login. The secret ID expired or was destroyed, the role ID belongs to a different AppRole, or the AppRole lives in an OpenBao namespace `namespace` does not name. | Issue a replacement secret ID into the credentials Secret, or correct the namespace. |
 | `InsufficientCapabilities` | The login succeeded and the policy behind the AppRole does not grant all five capabilities on `<mount>/data/*`. The message names the ones missing. | Apply the policy from section 1, with the mount path substituted. |
 | `OpenBaoUnreachable` | The server did not answer, or the client could not be built: DNS, a dropped connection, an expired or wrong CA bundle. A NetworkPolicy that does not admit the operator produces a timeout here rather than a refusal. | Check the URL and the bundle in `ca.crt`, then the egress and ingress policies between `barbican-system` and the server. |
 
 ## Standalone Barbican, without a ControlPlane
 
-Without a ControlPlane you own the `BarbicanSecretStore` directly, and the same
-two Secrets are resolved in its own namespace. The names below are ones you
-choose; none of the `controlplane-` names from the walkthrough above applies
-here.
+Without a ControlPlane you own the `BarbicanSecretStore` directly, and its
+credentials Secret and optional CA Secret are resolved in its own namespace.
+The names below are ones you choose; none of the `controlplane-` names from the
+walkthrough above applies here.
 
 ```yaml
 apiVersion: barbican.openstack.c5c3.io/v1alpha1
