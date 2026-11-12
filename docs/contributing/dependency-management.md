@@ -54,8 +54,8 @@ The custom managers cover:
 
 - **OpenStack release refs**: git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
 - **Test tooling in `hack/`**: Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` and `ENVOY_GATEWAY_VERSION` (the Envoy Gateway CRD pin, grouped with the `gateway-helm` chart) in `hack/deploy-infra.sh`.
-- **kind deploy components**: `flux-web.yaml` under `deploy/overlays/kind/base/`.
-- **K-ORC main-line pins**: the source `ref.commit` in `deploy/flux-system/sources/k-orc.yaml` follows upstream `main` via `git-refs`. The image digest in `deploy/flux-system/releases/k-orc.yaml` follows `branch-main` via `docker`. Both share one `k-orc` group. Renovate updates these pins and automerges digest updates after required CI, with no release-age delay for the moving branch. CI checks every image platform's build provenance against the source pin before deploying. Go API dependencies remain managed separately, so routine source/image updates require no manual Go or Nix refresh. Updates must merge before old images are garbage-collected; grouping cannot extend upstream retention.
+- **Shared development components**: `flux-web.yaml` under `deploy/bases/devstack/base/`.
+- **K-ORC main-line pins**: the source `ref.commit` in `deploy/bases/operators/sources/k-orc.yaml` follows upstream `main` via `git-refs`. The image digest in `deploy/bases/operators/releases/k-orc.yaml` follows `branch-main` via `docker`. Both share one `k-orc` group. Renovate updates these pins and automerges digest updates after required CI, with no release-age delay for the moving branch. CI checks every image platform's build provenance against the source pin before deploying. Go API dependencies remain managed separately, so routine source/image updates require no manual Go or Nix refresh. Updates must merge before old images are garbage-collected; grouping cannot extend upstream retention.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`**: `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
 - **Helm CLI of the `setup-helm` jobs**: `HELM_VERSION` in the `env:` block of `.github/workflows/ci.yaml` (github-releases on `helm/helm`), the version every `azure/setup-helm` step installs. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged: `helm-push` runs only on a push to `main`, so no pull request run pushes a chart with the new Helm before it merges. `tests/unit/renovate/workflow_pins_custommanager_test.sh` pins the manager and both rules.
 - **`renovate-config-validator` pin**: the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
@@ -143,7 +143,7 @@ shell, whose uv wrote the committed locks
 Renovate's native `flux` manager reads the Flux manifests through the four
 `flux.managerFilePatterns` entries in `renovate.json`:
 
-- `/^deploy/flux-system/(releases|sources)/.+\.yaml$/`
+- `/^deploy/bases/operators/(releases|sources)/.+\.yaml$/`
 - `/^deploy/bases/.+\.yaml$/`
 - `/^deploy/overlays/kind/.+\.yaml$/`
 - `/^deploy/overlays/metal-stack/ceph/(release|source)\.yaml$/`
@@ -151,7 +151,7 @@ Renovate's native `flux` manager reads the Flux manifests through the four
 The manager resolves the `sourceRef` of a HelmRelease against the HelmRepository
 manifests it has parsed, so the sources directory has to match as well:
 `deploy/bases/prometheus/release.yaml` references the `prometheus-community`
-HelmRepository in `deploy/flux-system/sources/`. Under `deploy/overlays/metal-stack/` only the
+HelmRepository in `deploy/bases/operators/sources/`. Under `deploy/overlays/metal-stack/` only the
 HelmRelease and the HelmRepository of the lab Ceph match, because that overlay has no
 shared chart base; nothing else under `deploy/overlays/metal-stack/` or `deploy/examples/` does. The patterns use no regex lookahead, because the hosted bot
 compiles them with RE2, which has none.
@@ -160,13 +160,13 @@ It tracks seventeen third-party charts and one image:
 
 | Chart | File | Strategy | Automerge |
 | --- | --- | --- | --- |
-| `cert-manager` | `deploy/flux-system/releases/cert-manager.yaml` | `widen` | no |
-| `external-secrets` | `deploy/flux-system/releases/external-secrets.yaml` | `widen` | no |
-| `garage-operator` | `deploy/flux-system/releases/garage-operator.yaml` | `widen` | no |
-| `mariadb-operator` | `deploy/flux-system/releases/mariadb-operator.yaml` | `widen`, group `mariadb-operator chart` | no |
-| `mariadb-operator-crds` | `deploy/flux-system/releases/mariadb-operator-crds.yaml` | `widen`, group `mariadb-operator chart` | no |
-| `openbao` | `deploy/flux-system/releases/openbao/helmrelease.yaml` | `widen` | no |
-| `prometheus-operator-crds` | `deploy/flux-system/releases/prometheus-operator-crds.yaml` | `widen`, group `prometheus-operator charts` | no |
+| `cert-manager` | `deploy/bases/operators/releases/cert-manager.yaml` | `widen` | no |
+| `external-secrets` | `deploy/bases/operators/releases/external-secrets.yaml` | `widen` | no |
+| `garage-operator` | `deploy/bases/operators/releases/garage-operator.yaml` | `widen` | no |
+| `mariadb-operator` | `deploy/bases/operators/releases/mariadb-operator.yaml` | `widen`, group `mariadb-operator chart` | no |
+| `mariadb-operator-crds` | `deploy/bases/operators/releases/mariadb-operator-crds.yaml` | `widen`, group `mariadb-operator chart` | no |
+| `openbao` | `deploy/bases/shared-openbao/helmrelease.yaml` | `widen` | no |
+| `prometheus-operator-crds` | `deploy/bases/operators/releases/prometheus-operator-crds.yaml` | `widen`, group `prometheus-operator charts` | no |
 | `chaos-mesh` | `deploy/bases/chaos-mesh/release.yaml` | `widen` | no |
 | `grafana` | `deploy/bases/dizzy/release-grafana.yaml` | `widen` | no |
 | `victoria-metrics-single` | `deploy/bases/dizzy/release-victoria-metrics.yaml` | `widen` | no |
@@ -204,16 +204,16 @@ Two more rules make the manager work on the sources of this repository:
   `ghcr.io` dependencies automerges.
 
 Two rules switch the manager off. The `c5c3-charts` releases match
-`ghcr.io/c5c3/charts/**`, the `url` of `deploy/flux-system/sources/c5c3-charts.yaml`
+`ghcr.io/c5c3/charts/**`, the `url` of `deploy/bases/operators/sources/c5c3-charts.yaml`
 without `oci://`: this repository publishes those charts and sets their ranges itself.
 The other rule lists every file a customManager reads, including both K-ORC
 source and image pins:
 
-- `deploy/flux-system/sources/k-orc.yaml`
-- `deploy/flux-system/sources/openbao-operator.yaml`
-- `deploy/flux-system/sources/rabbitmq-cluster-operator.yaml`
-- `deploy/flux-system/releases/k-orc.yaml`
-- `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`
+- `deploy/bases/operators/sources/k-orc.yaml`
+- `deploy/bases/operators/sources/openbao-operator.yaml`
+- `deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml`
+- `deploy/bases/operators/releases/k-orc.yaml`
+- `deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml`
 - `deploy/bases/devstack/base/flux-web.yaml`
 - `deploy/bases/devstack/infrastructure/openbao-instance.yaml`
 - `deploy/bases/nfs/nfs-server.yaml`

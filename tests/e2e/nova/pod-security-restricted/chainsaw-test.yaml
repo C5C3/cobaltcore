@@ -104,7 +104,7 @@ spec:
             bao_exec bao kv put -mount=kv-v2 "openstack/nova/${TENANT_NS}/pss/${half}" \
               username="${DB_USER}" password="${DB_PASS}" >/dev/null
           done
-          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
     # One vhost per suite: nova's RPC topics are named after the service rather
     # than after the CR, so two suites on one vhost would share the scheduler
     # and conductor queues. See ../../cinder/broker-vhost.sh. The Secret lands

@@ -15,7 +15,7 @@
 #     chart version stays within minor 0.13, whose values disable the
 #     admission controller and the updater, and whose recommender carries the
 #     two per-pod floor flags.
-#   - kustomize build of deploy/flux-system and deploy/overlays/kind/base renders ZERO
+#   - kustomize build of deploy/bases/operators and deploy/overlays/kind/base renders ZERO
 #     vertical-pod-autoscaler resources (production / default posture).
 # Usage: bash tests/unit/deploy/vpa_overlay_test.sh
 
@@ -31,7 +31,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 KIND_VPA_DIR="$PROJECT_ROOT/deploy/overlays/kind/vpa"
 KIND_VPA_KUSTOMIZATION="$KIND_VPA_DIR/kustomization.yaml"

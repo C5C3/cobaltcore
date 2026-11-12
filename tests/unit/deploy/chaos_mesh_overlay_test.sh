@@ -4,11 +4,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the Chaos Mesh opt-in overlay:
-#   - deploy/flux-system/kustomization.yaml no longer references
+#   - deploy/bases/operators/kustomization.yaml no longer references
 #     sources/chaos-mesh.yaml or releases/chaos-mesh.yaml in its resources
 #     list, and the corresponding files are no longer present under
-#     deploy/flux-system/{sources,releases}/ (they were relocated into the opt-in overlay so the overlay is self-contained).
-#   - deploy/flux-system/namespaces.yaml no longer creates the chaos-mesh
+#     deploy/bases/operators/{sources,releases}/ (they were relocated into the opt-in overlay so the overlay is self-contained).
+#   - deploy/bases/operators/namespaces.yaml no longer creates the chaos-mesh
 #     Namespace.
 #   - deploy/overlays/kind/base/kustomization.yaml no longer carries the chaos-mesh
 #     HelmRelease patch (kustomize would otherwise refuse to render with a
@@ -37,7 +37,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 FLUX_SYSTEM_KUSTOMIZATION="$FLUX_SYSTEM_DIR/kustomization.yaml"
 FLUX_SYSTEM_NAMESPACES="$FLUX_SYSTEM_DIR/namespaces.yaml"
 FLUX_SYSTEM_CHAOS_SOURCE="$FLUX_SYSTEM_DIR/sources/chaos-mesh.yaml"
@@ -53,7 +53,7 @@ KIND_CHAOS_RELEASE="$PROJECT_ROOT/deploy/bases/chaos-mesh/release.yaml"
 # --- Test 1: production overlay no longer lists chaos-mesh source/release
 #             files in its resources block ---
 test_flux_system_kustomization_drops_chaos_mesh_entries() {
-  echo "Test: deploy/flux-system/kustomization.yaml resources list contains no chaos-mesh entries"
+  echo "Test: deploy/bases/operators/kustomization.yaml resources list contains no chaos-mesh entries"
 
   if [[ ! -f "$FLUX_SYSTEM_KUSTOMIZATION" ]]; then
     echo "  FAIL: $FLUX_SYSTEM_KUSTOMIZATION does not exist"
@@ -93,7 +93,7 @@ test_chaos_mesh_files_local_to_overlay() {
     FAIL=$((FAIL + 1))
   fi
 
-  # The legacy on-disk locations under deploy/flux-system/ must be gone:
+  # The legacy on-disk locations under deploy/bases/operators/ must be gone:
   # leaving stale duplicates would invite drift between the production-omitted
   # files and the overlay-active copies. kubectl apply -k cannot pass
   # --load-restrictor (kubernetes/kubectl#948), so the overlay MUST be
@@ -119,7 +119,7 @@ test_chaos_mesh_files_local_to_overlay() {
 # --- Test 3: production namespaces.yaml no longer declares the chaos-mesh
 #             Namespace ---
 test_flux_system_namespaces_drops_chaos_mesh() {
-  echo "Test: deploy/flux-system/namespaces.yaml no longer creates the chaos-mesh Namespace"
+  echo "Test: deploy/bases/operators/namespaces.yaml no longer creates the chaos-mesh Namespace"
 
   if [[ ! -f "$FLUX_SYSTEM_NAMESPACES" ]]; then
     echo "  FAIL: $FLUX_SYSTEM_NAMESPACES does not exist"
@@ -215,7 +215,7 @@ test_kind_chaos_overlay_files_exist() {
 # --- Test 6: kustomize build of production flux-system renders zero
 #             chaos-mesh resources ---
 test_kustomize_build_flux_system_renders_no_chaos_mesh() {
-  echo "Test: kustomize build deploy/flux-system renders no chaos-mesh resources"
+  echo "Test: kustomize build deploy/bases/operators renders no chaos-mesh resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (3 checks skipped)"

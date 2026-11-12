@@ -123,7 +123,7 @@ const (
 const (
 	// defaultBarbicanOperatorNamespace / defaultBarbicanOperatorServiceAccount are
 	// the barbican-operator's chart defaults, and defaultOpenBaoOperatorNamespace
-	// is the namespace deploy/flux-system/releases/openbao-operator.yaml installs
+	// is the namespace deploy/bases/operators/releases/openbao-operator.yaml installs
 	// the openbao-operator into. They are the fallback for a reconciler
 	// constructed without the BARBICAN_OPERATOR_* and OPENBAO_OPERATOR_NAMESPACE
 	// environment, which is every unit test and envtest run.
@@ -136,7 +136,7 @@ const (
 // namespace: the ResourceQuota and the LimitRange the openbao-operator's
 // provisioner writes into that namespace. deploy/overlays/kind/infrastructure/
 // openbao-tenant.yaml carries the same spec for the kind and lab openstack
-// namespace, and tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh
+// namespace, and tests/unit/deploy/bases/shared-openbao_tenant_guardrails_contract_test.sh
 // compares the two, which is why each value is a single-line string literal.
 //
 // The figures fit a Standard ControlPlane: 55 long-running pods with a

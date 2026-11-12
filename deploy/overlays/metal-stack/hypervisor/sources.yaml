@@ -4,7 +4,7 @@
 
 # The upstream charts of openstack-hypervisor-operator (hvo) and
 # kvm-node-agent (kna), each pinned by digest the way
-# deploy/flux-system/sources/openbao-operator.yaml pins its chart: ref.digest
+# deploy/bases/operators/sources/openbao-operator.yaml pins its chart: ref.digest
 # takes precedence over ref.tag, so a re-pushed tag changes nothing that runs.
 #
 # Each is the chart of a pinned upstream main commit: hvo's is the "rev" key

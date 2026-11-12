@@ -96,7 +96,7 @@ test_adoption_choreography_order() {
   # Located by the command rather than its payload: the same patch also carries
   # spec.network.apiServerEndpointIPs, so the payload's exact shape is not a stable
   # anchor. That the patch still clears spec.paused is asserted by
-  # tests/unit/deploy/openbao_instance_overlay_test.sh.
+  # tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh.
   unpause="$(line_of 'kubectl patch openbaocluster openbao-instance')"
 
   assert_before "the ExternalSecret is waited for before the ownership proof" \
@@ -113,7 +113,7 @@ test_instance_start_is_not_serialized_behind_garage() {
   # Located by the command rather than its payload: the same patch also carries
   # spec.network.apiServerEndpointIPs, so the payload's exact shape is not a stable
   # anchor. That the patch still clears spec.paused is asserted by
-  # tests/unit/deploy/openbao_instance_overlay_test.sh.
+  # tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh.
   unpause="$(line_of 'kubectl patch openbaocluster openbao-instance')"
   garage_wait="$(line_of 'kubectl wait garagecluster/garage')"
   available_wait="$(line_of 'kubectl wait openbaocluster/openbao-instance')"

@@ -15,7 +15,7 @@
 #     the upstream chart index, and HelmRelease/metrics-server in kube-system
 #     whose chart version stays within major 3 and whose values carry
 #     `--kubelet-insecure-tls`.
-#   - kustomize build of deploy/flux-system and deploy/overlays/kind/base renders ZERO
+#   - kustomize build of deploy/bases/operators and deploy/overlays/kind/base renders ZERO
 #     metrics-server resources (production / default posture).
 # Usage: bash tests/unit/deploy/metrics_server_overlay_test.sh
 
@@ -31,7 +31,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 KIND_MS_DIR="$PROJECT_ROOT/deploy/overlays/kind/metrics-server"
 KIND_MS_KUSTOMIZATION="$KIND_MS_DIR/kustomization.yaml"
@@ -168,7 +168,7 @@ test_kustomize_build_renders_bundle() {
 
 # --- Test 4: production flux-system renders zero metrics-server resources ---
 test_flux_system_renders_no_metrics_server() {
-  echo "Test: kustomize build deploy/flux-system renders no metrics-server resources"
+  echo "Test: kustomize build deploy/bases/operators renders no metrics-server resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"

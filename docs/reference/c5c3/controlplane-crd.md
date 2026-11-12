@@ -2171,8 +2171,8 @@ no longer forced onto `Static`. It carries a glance-scoped engine role, the
 carry the same three under their own names (`placement-{namespace}`,
 `placement-db-dynamic`, `placement-db` and `barbican-{namespace}`,
 `barbican-db-dynamic`, `barbican-db`). All three sets come from
-`deploy/openbao/bootstrap/setup-database-tenant.sh` and `setup-auth.sh`, with
-the policies under `deploy/openbao/policies/`, the way Keystone's do.
+`deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh` and `setup-auth.sh`, with
+the policies under `deploy/bases/shared-openbao/policies/`, the way Keystone's do.
 
 The mode is resolved from ControlPlane-wide to per-service:
 
@@ -2198,7 +2198,7 @@ per-service path (`openstack/keystone/{namespace}/{name}/db` for Keystone,
 A dedicated **managed** database uses `credentialsMode: Static`. The defaulting
 webhook materializes it, and an explicit `Dynamic` is **rejected at admission**:
 the OpenBao database engine carries exactly one connection and one role **per
-namespace** (`deploy/openbao/bootstrap/setup-database-tenant.sh`), bootstrapped
+namespace** (`deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh`), bootstrapped
 against the *shared* cluster, so no engine role exists that could issue
 credentials for a dedicated instance — an admitted `Dynamic` dedicated database
 would wedge on an ExternalSecret that can never sync. It reads the same

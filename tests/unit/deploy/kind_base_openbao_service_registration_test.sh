@@ -12,7 +12,7 @@
 #     GET of the pod gets a 403, the server retries every 5 seconds, and
 #     OpenBao 2.7.1 leaks one goroutine per retry until the pod is OOMKilled
 #     and comes back sealed;
-#   - deploy/flux-system/ (production) keeps HA mode and its
+#   - deploy/bases/shared-openbao/ (production) keeps HA mode and its
 #     service_registration stanza, for which the chart grants that Role.
 #
 # Usage: bash tests/unit/deploy/kind_base_openbao_service_registration_test.sh
@@ -30,7 +30,7 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/shared-openbao"
 OPENBAO='.kind == "HelmRelease" and .metadata.name == "openbao"'
 
 # render <dir> <file>
@@ -72,7 +72,7 @@ test_kind_base() {
 # ---------------------------------------------------------------------------
 test_production() {
   local file="$1"
-  echo "Test: deploy/flux-system/ keeps HA mode and its service registration"
+  echo "Test: deploy/bases/shared-openbao/ keeps HA mode and its service registration"
 
   assert_eq "production OpenBao runs in HA mode" \
     "true" "$(field "$file" '.spec.values.server.ha.enabled')"

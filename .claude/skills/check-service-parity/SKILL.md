@@ -38,7 +38,7 @@ threads through five layers:
 |---|---|---|
 | Container image | `images/<svc>/image.nix`, `tests/container-images/verify_<svc>.sh`, `releases/*/`(source-refs, extra-packages, test-excludes) | the keystone image contract and `verify_release_config.sh` |
 | Service operator | `operators/<svc>/` (module, CRD, webhook, helm chart, dashboards) | the keystone operator scaffolding on `internal/common` |
-| CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `tests/e2e-multicluster/` (when the service joins the placed-services suite: fixtures **and** the hard-coded image list in the ci.yaml `e2e-multicluster` job), `deploy/flux-system/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
+| CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `tests/e2e-multicluster/` (when the service joins the placed-services suite: fixtures **and** the hard-coded image list in the ci.yaml `e2e-multicluster` job), `deploy/bases/operators/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
 | ControlPlane integration | `operators/c5c3/api/` `ServicesSpec`, `internal/controller/reconcile_<svc>.go`, `internal/controller/builtin_registrations.go`, c5c3 chart RBAC | the keystone projection (`reconcile_keystone.go`, `KeystoneReady`); for the registration, `desiredGlanceRegistration`, since Keystone registers no child for itself |
 | Documentation | `docs/reference/<svc>/`, `docs/guides/<svc>/enable-<svc>-operator-*.md`, `docs/.vitepress/sidebar.ts` | the keystone reference/guide set |
 
@@ -113,7 +113,7 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   chaos suite. Keystone's chaos suites predate multi-service naming
   and are unprefixed; later services prefix theirs (`<svc>-*`).
 - **P7** — deploy stack: the FluxCD HelmRelease under
-  `deploy/flux-system/releases/`, the `<svc>-system` namespace, the
+  `deploy/bases/operators/releases/`, the `<svc>-system` namespace, the
   kustomization resource entry, and the three literal per-service
   lists in the deploy helpers: the `hack/deploy-infra.sh` un-suspend
   patch on the flux ControlPlane path (the kind overlay suspends every

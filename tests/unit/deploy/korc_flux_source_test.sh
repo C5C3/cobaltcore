@@ -5,7 +5,7 @@
 
 # Verify that the K-ORC Flux source checks out only the directory its
 # Kustomization builds:
-#   - deploy/flux-system/sources/k-orc.yaml sets spec.sparseCheckout. Without
+#   - deploy/bases/operators/sources/k-orc.yaml sets spec.sparseCheckout. Without
 #     it the source-controller populates the worktree with the tip of upstream
 #     main and then hard-resets to the pinned commit, and that reset removes
 #     every path the tip has and the pin lacks. Upstream added the symlink
@@ -14,7 +14,7 @@
 #     the source never becomes Ready, and the c5c3-operator crash-loops for
 #     want of the K-ORC CRDs. A sparse checkout starts from an empty worktree,
 #     so nothing outside the listed directories is ever removed.
-#   - the spec.path of deploy/flux-system/releases/k-orc.yaml lies inside a
+#   - the spec.path of deploy/bases/operators/releases/k-orc.yaml lies inside a
 #     sparse directory, so a path change (the planned return to ./dist) cannot
 #     leave the Kustomization pointing at a directory the checkout skipped.
 #   - the production overlay, the kind base and the metal-stack base all
@@ -37,8 +37,8 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-KORC_SOURCE_YAML="$PROJECT_ROOT/deploy/flux-system/sources/k-orc.yaml"
-KORC_RELEASE_YAML="$PROJECT_ROOT/deploy/flux-system/releases/k-orc.yaml"
+KORC_SOURCE_YAML="$PROJECT_ROOT/deploy/bases/operators/sources/k-orc.yaml"
+KORC_RELEASE_YAML="$PROJECT_ROOT/deploy/bases/operators/releases/k-orc.yaml"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 # The entries of spec.sparseCheckout in the source manifest, one per line.
@@ -54,7 +54,7 @@ sparse_dirs() {
 # --- Test 1: the source declares a sparse checkout ---
 #             (source-level, no tools required)
 test_source_declares_sparse_checkout() {
-  echo "Test: deploy/flux-system/sources/k-orc.yaml sets spec.sparseCheckout"
+  echo "Test: deploy/bases/operators/sources/k-orc.yaml sets spec.sparseCheckout"
 
   assert_not_empty "GitRepository/k-orc lists at least one sparse checkout directory" \
     "$(sparse_dirs)"
@@ -86,7 +86,7 @@ test_kustomization_path_is_checked_out() {
 test_overlays_render_sparse_checkout() {
   echo "Test: the production, kind and metal-stack overlays render GitRepository/k-orc with spec.sparseCheckout"
 
-  local overlays=(deploy/flux-system deploy/overlays/kind/base deploy/overlays/metal-stack/base)
+  local overlays=(deploy/bases/operators deploy/overlays/kind/base deploy/overlays/metal-stack/base)
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (${#overlays[@]} checks skipped)"

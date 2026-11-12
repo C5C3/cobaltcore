@@ -8,75 +8,30 @@ quadrant: infrastructure
 Reference documentation for the FluxCD infrastructure manifests. These manifests
 define HelmRepository sources, HelmRelease operators, and infrastructure custom resources
 that provision the shared platform services required by OpenStack operators. Deployment is
-split into two phases in the legacy aggregate: base resources (namespaces, sources,
-releases) and CRD-dependent infrastructure resources (applied after operators
-install their CRDs). The public `deploy/bases/` catalog exposes five narrower
-stages for deployment repositories; see
-[Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure) for
-the complete catalog, compatibility aliases and environment compositions.
+composed from bases for Flux, operators, TLS, shared OpenBao, ESO and the
+ControlPlane operator. Their manifests and bootstrap assets live directly in
+`deploy/bases/`; environment choices live in `deploy/overlays/`.
+See [deployment order](../../../deploy/README.md#deployment-order) for readiness
+and bootstrap gates, and [path migration](../../../deploy/README.md#path-migration)
+for imports from the previous layout.
 
 ## Directory Layout
 
 ```text
 deploy/
-└── flux-system/
-    ├── kustomization.yaml                Base kustomize overlay (namespaces, FluxInstance, sources, releases)
-    ├── namespaces.yaml                   Namespace resources for all components
-    ├── fluxinstance.yaml                 FluxInstance CR driving the flux-operator
-    ├── sources/                          Flux sources (HelmRepository, OCIRepository, GitRepository)
-    │   ├── kustomization.yaml            Canonical source catalog
-    │   ├── cert-manager.yaml             Jetstack Helm chart registry
-    │   ├── mariadb-operator.yaml         MariaDB Operator Helm chart registry
-    │   ├── external-secrets.yaml         External Secrets Operator Helm chart registry
-    │   ├── openbao.yaml                  OpenBao Helm chart registry
-    │   ├── openbao-operator.yaml         OpenBao Operator OCI chart artifact (digest-pinned OCIRepository)
-    │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
-    │   ├── k-orc.yaml                    K-ORC GitRepository (commit pinned)
-    │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator GitRepository (tag + commit pinned)
-    │   ├── messaging-topology-operator.yaml RabbitMQ Messaging Topology Operator GitRepository (tag + commit pinned)
-    │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
-    │   └── garage-operator.yaml          Garage Operator OCI chart registry
-    ├── releases/                         HelmRelease CRs and three Flux Kustomizations
-    │   ├── kustomization.yaml            Controller catalog; excludes shared OpenBao and c5c3
-    │   ├── cert-manager.yaml             cert-manager
-    │   ├── prometheus-operator-crds.yaml Prometheus Operator CRDs
-    │   ├── mariadb-operator-crds.yaml    MariaDB Operator CRDs
-    │   ├── mariadb-operator.yaml         MariaDB Operator
-    │   ├── external-secrets.yaml         External Secrets Operator
-    │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
-    │   ├── openbao/                      Shared OpenBao leaf root
-    │   │   ├── kustomization.yaml
-    │   │   └── helmrelease.yaml          OpenBao HA Raft cluster
-    │   ├── openbao-operator.yaml         OpenBao Operator (per-service OpenBao instances)
-    │   ├── garage-operator.yaml          Garage Operator
-    │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
-    │   ├── horizon-operator.yaml         Horizon Operator (from c5c3-charts)
-    │   ├── glance-operator.yaml          Glance Operator (from c5c3-charts)
-    │   ├── placement-operator.yaml       Placement Operator (from c5c3-charts)
-    │   ├── barbican-operator.yaml        Barbican Operator (from c5c3-charts)
-    │   ├── ovn-operator.yaml             OVN Operator (from c5c3-charts)
-    │   ├── neutron-operator.yaml         Neutron Operator (from c5c3-charts)
-    │   ├── cinder-operator.yaml          Cinder Operator (from c5c3-charts)
-    │   ├── nova-operator.yaml            Nova Operator (from c5c3-charts)
-    │   ├── k-orc.yaml                    K-ORC (Flux Kustomization over config/default)
-    │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator (Flux Kustomization over config/installation)
-    │   ├── messaging-topology-operator.yaml RabbitMQ Messaging Topology Operator (Flux Kustomization over config/installation)
-    │   └── c5c3-operator/                ControlPlane operator leaf root
-    │       ├── kustomization.yaml
-    │       └── helmrelease.yaml          c5c3-operator (from c5c3-charts)
-    └── infrastructure/                   CRD-dependent infrastructure resources
-        ├── kustomization.yaml            Includes tls/, static instances and ../../eso
-        ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack (with TLS)
-        ├── memcached.yaml                Memcached cluster for OpenStack
-        ├── garage.yaml                   Garage object store (GarageCluster, GarageBuckets, GarageKey)
-        └── tls/                          Shared TLS leaf root
-            ├── kustomization.yaml
-            ├── cluster-issuer.yaml       Self-signed ClusterIssuer (requires cert-manager CRDs)
-            ├── db-ca-issuer.yaml         OpenStack DB CA Certificate + ClusterIssuer
-            ├── ovn-ca-issuer.yaml        OVN CA Certificate + ClusterIssuer
-            ├── openbao-ca-issuer.yaml    OpenBao CA Certificate + ClusterIssuer
-            ├── openbao-tls-cert.yaml     OpenBao server Certificate
-            └── openbao-client-tls-cert.yaml OpenBao client Certificates
+  bases/
+    flux/                     FluxInstance
+    operators/                namespaces, sources and controller releases
+    tls/                      certificate and issuer manifests
+    shared-openbao/            server release, bootstrap/ and policies/
+    eso-store/                 shared ClusterSecretStore
+    controlplane-operator/     c5c3 HelmRelease
+    infrastructure/            reference database, cache and object store
+    target-cluster-access/     target access Helm chart
+    devstack/                  shared development compositions
+    <addon>/                   shared optional components
+  overlays/{kind,metal-stack}/ environment resources and patches
+  examples/                    compositions to copy
 ```
 
 The proving `OpenBaoCluster` instance is **not** part of this tree. It is CI/dev-only and
@@ -183,7 +138,7 @@ rather than resolving it — delete the retired stack once the new one serves.
 
 ## FluxInstance
 
-**File:** `deploy/flux-system/fluxinstance.yaml`
+**File:** `deploy/bases/flux/fluxinstance.yaml`
 
 A single `FluxInstance` CR drives the
 [flux-operator](https://github.com/controlplaneio-fluxcd/flux-operator), which replaces
@@ -275,7 +230,7 @@ This source is applied by a Flux `Kustomization` as well; see
 
 The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
 `deploy/bases/chaos-mesh/source.yaml` — it is intentionally absent
-from `deploy/flux-system/{sources,kustomization.yaml}`. See
+from `deploy/bases/operators/{sources,kustomization.yaml}`. See
 [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 
 The `c5c3-charts`, `prometheus-community`, and `garage-operator` repositories are
@@ -318,7 +273,7 @@ entry, and the two dotted arrows are dependencies that no manifest can
 declare. The table lists every entry of every release, in the order of the
 layers.
 
-![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
+![The install order of the Flux resources of deploy/bases/operators, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
 
 | Release | `dependsOn` |
 | --- | --- |
@@ -394,7 +349,7 @@ install it. See [Chaos Mesh (kind-only opt-in)](#chaos-mesh-kind-only-opt-in).
 
 ### cert-manager
 
-**File:** `deploy/flux-system/releases/cert-manager.yaml`
+**File:** `deploy/bases/operators/releases/cert-manager.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -433,14 +388,14 @@ release sets no `spec.timeout`, so helm-controller's default release timeout
 of 5 minutes bounds the wait. When the check does not pass in that time, the
 install fails. The release has no install remediation, so it stays failed and
 not `Ready`, the terminal state the install comment in
-`deploy/flux-system/releases/external-secrets.yaml` describes. Every dependent
+`deploy/bases/operators/releases/external-secrets.yaml` describes. Every dependent
 release waits at `dependsOn`, so the release that reports the failure is
 cert-manager itself. `tests/unit/deploy/cert_manager_release_test.sh` pins the
 value in the three renders.
 
 ### Prometheus Operator CRDs
 
-**File:** `deploy/flux-system/releases/prometheus-operator-crds.yaml`
+**File:** `deploy/bases/operators/releases/prometheus-operator-crds.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -456,7 +411,7 @@ controller, which unconditionally watches ServiceMonitor resources via Owns().
 
 ### MariaDB Operator CRDs
 
-**File:** `deploy/flux-system/releases/mariadb-operator-crds.yaml`
+**File:** `deploy/bases/operators/releases/mariadb-operator-crds.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -472,7 +427,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 
 ### MariaDB Operator
 
-**File:** `deploy/flux-system/releases/mariadb-operator.yaml`
+**File:** `deploy/bases/operators/releases/mariadb-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -491,7 +446,7 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 
 ### External Secrets Operator
 
-**File:** `deploy/flux-system/releases/external-secrets.yaml`
+**File:** `deploy/bases/operators/releases/external-secrets.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -510,14 +465,14 @@ mariadb-operator so CRDs are available for the operator and for infrastructure C
 | `certController.enabled` | `true` | Manage webhook TLS certificates |
 
 The production ESO kustomization renders one store,
-`ClusterSecretStore/openbao-cluster-store` (`deploy/eso/`). It serves the
+`ClusterSecretStore/openbao-cluster-store` (`deploy/bases/eso-store/`). It serves the
 namespaces `openstack` and `shared-services`: standalone service CRs that set
 no `spec.secretStoreRef`, and the static ExternalSecrets of the kind overlay.
 A ControlPlane does not use it by default. The c5c3-operator provisions a
 namespaced `SecretStore/openbao-tenant-store` in every ControlPlane namespace
 (`reconcileESOTenantStore`) and routes the ControlPlane and its children
 through it. `spec.secretStoreRef` on the ControlPlane is the opt-out for a
-store you manage yourself, and `deploy/openbao/bootstrap/setup-eso-tenant.sh`
+store you manage yourself, and `deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh`
 provisions the same store by hand for a standalone namespace (see the
 [OpenBao bootstrap reference](./openbao-bootstrap.md#setup-eso-tenant-sh) and the
 [multi-tenant deployment guide](../../guides/multi-tenant-deployment.md#per-controlplane-secret-stores-and-openbao-identities)).
@@ -528,7 +483,7 @@ The figure shows both stores and the paths that run through them.
 
 ### Memcached Operator
 
-**File:** `deploy/flux-system/releases/memcached-operator.yaml`
+**File:** `deploy/bases/operators/releases/memcached-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -551,7 +506,7 @@ OCI registry (`oci://ghcr.io/c5c3/charts`), not a dedicated HelmRepository. The
 
 ### Garage Operator
 
-**File:** `deploy/flux-system/releases/garage-operator.yaml`
+**File:** `deploy/bases/operators/releases/garage-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -579,7 +534,7 @@ this layer.
 
 ### OpenBao Operator
 
-**File:** `deploy/flux-system/releases/openbao-operator.yaml`
+**File:** `deploy/bases/operators/releases/openbao-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -661,14 +616,14 @@ Pinning `spec.ref.digest` on the OCIRepository is what makes every change to wha
 here a reviewed commit.
 
 Renovate keeps that pin from becoming a freeze. Its native Flux manager reads
-`deploy/flux-system/`, but a packageRule switches it off for
+`deploy/bases/operators/`, but a packageRule switches it off for
 `sources/openbao-operator.yaml`: the pin is tracked by an explicit `customManagers` entry
 in `renovate.json` that rewrites the tag and the digest in the same pull request. The
 entry never automerges: every bump of this operator is a human decision.
 
 ### OpenBao
 
-**File:** `deploy/flux-system/releases/openbao/helmrelease.yaml`
+**File:** `deploy/bases/shared-openbao/helmrelease.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -711,20 +666,20 @@ Kubernetes-token auth method (`auth.kubernetes`) is unchanged and runs
 | `injector.enabled` | `false` | Disable the Vault/Bao agent injector |
 
 **Client certificates.** The two client `Certificate` resources are
-declared in `deploy/flux-system/infrastructure/tls/openbao-client-tls-cert.yaml`
-and registered in `deploy/flux-system/infrastructure/tls/kustomization.yaml`
+declared in `deploy/bases/tls/openbao-client-tls-cert.yaml`
+and registered in `deploy/bases/tls/kustomization.yaml`
 immediately after `openbao-tls-cert.yaml`, so cert-manager reconciles them
 *before* the OpenBao StatefulSet and `ClusterSecretStore` consume them
 (first-apply ordering, see also "Apply ordering" notes below):
 
 | Certificate | Secret (namespace) | Consumer | Reference |
 | --- | --- | --- | --- |
-| `openbao-client-tls` | `openbao-client-tls` (`shared-services`) | OpenBao pods — Raft `retry_join` + in-pod `bao` exec | StatefulSet volume `client-tls` mounted at `/openbao/client-tls`; env vars `VAULT_CLIENT_CERT` / `VAULT_CLIENT_KEY` in every exec wrapper (`deploy/openbao/bootstrap/common.sh`, `init-unseal.sh`, `hack/deploy-infra.sh`) |
-| `eso-openbao-client-tls` | `eso-openbao-client-tls` (`shared-services`) | ESO `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` in `deploy/eso/clustersecretstore.yaml`; `auth.kubernetes` block (mountPath `kubernetes/management`, role `eso-management`) is unchanged — mTLS is purely transport-layer |
+| `openbao-client-tls` | `openbao-client-tls` (`shared-services`) | OpenBao pods — Raft `retry_join` + in-pod `bao` exec | StatefulSet volume `client-tls` mounted at `/openbao/client-tls`; env vars `VAULT_CLIENT_CERT` / `VAULT_CLIENT_KEY` in every exec wrapper (`deploy/bases/shared-openbao/bootstrap/common.sh`, `init-unseal.sh`, `hack/deploy-infra.sh`) |
+| `eso-openbao-client-tls` | `eso-openbao-client-tls` (`shared-services`) | ESO `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` in `deploy/bases/eso-store/clustersecretstore.yaml`; `auth.kubernetes` block (mountPath `kubernetes/management`, role `eso-management`) is unchanged — mTLS is purely transport-layer |
 
 Both client certs are issued from the same `openbao-ca-issuer` as
 `openbao-tls` (a CA-type ClusterIssuer defined in
-`deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml` and itself
+`deploy/bases/tls/openbao-ca-issuer.yaml` and itself
 bootstrapped by `selfsigned-cluster-issuer`). Sharing one CA is what makes the
 listener's `tls_client_ca_file = /openbao/tls/ca.crt` validate every presented
 client cert — a SelfSigned issuer would mint each Certificate as its own root
@@ -737,7 +692,7 @@ operator interface, and the runnable mTLS-enforcement probe.
 
 ### Keystone Operator
 
-**File:** `deploy/flux-system/releases/keystone-operator.yaml`
+**File:** `deploy/bases/operators/releases/keystone-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -772,13 +727,13 @@ Flux merges `valuesFrom` first and `spec.values` on top per-key, so
 
 ### K-ORC (OpenStack Resource Controller)
 
-**File:** `deploy/flux-system/releases/k-orc.yaml`
+**File:** `deploy/bases/operators/releases/k-orc.yaml`
 
 | Property | Value |
 | --- | --- |
 | Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
 | Target namespace | `orc-system` (the upstream installer self-namespaces) |
-| Source | `k-orc` `GitRepository` ([pinned main commit](https://github.com/C5C3/cobaltcore/blob/main/deploy/flux-system/sources/k-orc.yaml)) |
+| Source | `k-orc` `GitRepository` ([pinned main commit](https://github.com/C5C3/cobaltcore/blob/main/deploy/bases/operators/sources/k-orc.yaml)) |
 | Path | `./config/default` |
 | Image | `quay.io/orc/openstack-resource-controller:branch-main`, pulled by digest |
 | Dependencies | None |
@@ -824,7 +779,7 @@ pick up the new URL at once.
 
 c5c3-operator chart 0.18.0 relies on the missing-endpoint eviction and no longer
 restarts K-ORC. Upgrade K-ORC to commit `da276e44` or later before or together
-with the chart, by applying `deploy/flux-system/` of the same checkout again (see
+with the chart, by applying `deploy/bases/operators/` of the same checkout again (see
 [Deployment](#deployment)). The `c5c3-operator` HelmRelease floats the chart
 version and the image tag, while the K-ORC pin moves only when that directory is
 applied. With an older K-ORC, a service registered after K-ORC's first login
@@ -881,7 +836,7 @@ raise the cap with a `spec.patches` entry on the `k-orc` Kustomization.
 
 ### RabbitMQ Cluster Operator
 
-**File:** `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`
+**File:** `deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -951,7 +906,7 @@ double-quoted), which
 
 ### RabbitMQ Messaging Topology Operator
 
-**File:** `deploy/flux-system/releases/messaging-topology-operator.yaml`
+**File:** `deploy/bases/operators/releases/messaging-topology-operator.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1015,7 +970,7 @@ guard the YAML shape the managers anchor on.
 
 ### c5c3-operator
 
-**File:** `deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`
+**File:** `deploy/bases/controlplane-operator/helmrelease.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1100,7 +1055,7 @@ after the corresponding operator HelmReleases install their Helm charts.
 
 ### Self-Signed ClusterIssuer
 
-**File:** `deploy/flux-system/infrastructure/tls/cluster-issuer.yaml`
+**File:** `deploy/bases/tls/cluster-issuer.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1123,7 +1078,7 @@ each server accepts every client certificate of its own CA.
 
 ### OpenStack DB CA Issuer
 
-**File:** `deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml`
+**File:** `deploy/bases/tls/db-ca-issuer.yaml`
 
 Provisions the dedicated cert-manager CA that anchors the OpenStack database trust
 domain. The file declares two resources:
@@ -1160,7 +1115,7 @@ For the end-to-end TLS path the issuer participates in, see the
 
 ### OVN CA Issuer
 
-**File:** `deploy/flux-system/infrastructure/tls/ovn-ca-issuer.yaml`
+**File:** `deploy/bases/tls/ovn-ca-issuer.yaml`
 
 Provisions the cert-manager CA that anchors the OVN database trust domain. The file
 declares two resources:
@@ -1191,7 +1146,7 @@ is rejected by the ovn-operator's TLS sub-reconciler.
 
 ### MariaDB Galera Cluster
 
-**File:** `deploy/flux-system/infrastructure/mariadb.yaml`
+**File:** `deploy/bases/infrastructure/mariadb.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1254,7 +1209,7 @@ client certificate from the referenced MariaDB:
 | `spec.tls.listenerCertIssuerRef` (MaxScale CR) | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue the client-listener certificate from the shared DB CA. Without the ref, mariadb-operator provisions the self-signed CA `openstack-db-maxscale-ca` and signs the listener certificate with it |
 | `spec.tls.adminCertIssuerRef` (MaxScale CR) | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue the admin REST API and GUI certificate from the shared DB CA |
 
-The rendered YAML in `deploy/flux-system/infrastructure/mariadb.yaml` is:
+The rendered YAML in `deploy/bases/infrastructure/mariadb.yaml` is:
 
 ```yaml
 spec:
@@ -1326,7 +1281,7 @@ To turn the path on for a `Keystone` CR, follow the
 
 ### Memcached Cluster
 
-**File:** `deploy/flux-system/infrastructure/memcached.yaml`
+**File:** `deploy/bases/infrastructure/memcached.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -1346,7 +1301,7 @@ shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) 
 
 ### Garage Object Store
 
-**File:** `deploy/flux-system/infrastructure/garage.yaml`
+**File:** `deploy/bases/infrastructure/garage.yaml`
 
 Four instance CRs (API group `garage.rajsingh.info`) declare the S3 object store the
 [garage-operator](#garage-operator) manages. All live in the `shared-services` namespace:
@@ -1411,7 +1366,7 @@ because the chart's admission policy accepts `spec.quota` and `spec.limitRange` 
 a tenant in the operator namespace. Its spec is the guardrail spec the c5c3-operator
 also gives the tenant of a [dedicated Barbican store](../c5c3/controlplane-crd.md#barbicandedicatedsecretstorespec).
 The `openBaoTenant*` consts in `operators/c5c3/internal/controller/reconcile_barbican_openbao.go`
-hold the same figures, and `tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh`
+hold the same figures, and `tests/unit/deploy/bases/shared-openbao_tenant_guardrails_contract_test.sh`
 fails when the two differ:
 
 | Object | Setting | Value |
@@ -1453,13 +1408,13 @@ PodDisruptionBudget and no anti-affinity — and the static seal keeps its key m
 a Secret in the shared `openstack` namespace. `Hardened`, the profile that forces an
 external-KMS unseal and three replicas, is the production control, and this instance
 deliberately opts out of it to exercise the static-seal path. Shipping that from
-`deploy/flux-system/infrastructure/` would put it, a cluster-scoped RBAC binding, and a
+`deploy/bases/infrastructure/` would put it, a cluster-scoped RBAC binding, and a
 self-initialized AppRole with no consumer into every production deployment. Only the
 [openbao-operator](#openbao-operator) itself ships in the production base. The dedicated
 instance a ControlPlane projects for a managed Barbican secret store carries the same
 proving-grade `Development` profile; a `Hardened` production-shaped instance is still
 future work.
-[`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
+[`tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh)
 asserts both directions of that split.
 
 **Two Certificates, one trust domain.** The operator's External TLS contract reads two
@@ -1588,13 +1543,13 @@ itself sets `automountServiceAccountToken: false`, since every consumer mints ex
 > work (minting AppRole secret IDs, writing secrets) goes through the `provisioner` role
 > instead. Because that failure is silent — the CR reconciles, `Available` stays `True`,
 > and the new request is simply never applied —
-> [`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
+> [`tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh)
 > pins the request names, so an edit cannot land without confronting it.
 
 **Shared names with the brownfield leg.** The mount, policy, and role names (`barbican/`,
 `barbican-secretstore`, `barbican`) match the ones the bootstrap scripts provision on the
 shared management OpenBao (`enable_barbican_kv` in `setup-secret-engines.sh`,
-`deploy/openbao/policies/barbican-secretstore.hcl`, and the `barbican` AppRole role in
+`deploy/bases/shared-openbao/policies/barbican-secretstore.hcl`, and the `barbican` AppRole role in
 `setup-auth.sh`; see the
 [OpenBao bootstrap reference](./openbao-bootstrap.md#setup-secret-engines-sh)). A
 deployment that attaches Barbican to the shared instance instead of a dedicated one
@@ -1660,12 +1615,12 @@ reconcile. The operator then forces a re-push (`c5c3.io/push-cacert-hash`), so
 the Secret in OpenBao no longer carries the key. The PushSecret's
 `deletionPolicy` is `Delete`: the OpenBao key leaves with the ControlPlane.
 
-**No `orc-system` copy** — the static `deploy/eso/externalsecrets/k-orc-clouds-yaml.yaml`
+**No `orc-system` copy** — the static `deploy/bases/eso-store/externalsecrets/k-orc-clouds-yaml.yaml`
 manifest that previously declared K-ORC's global default `clouds.yaml` mount has been
 removed. K-ORC authenticates **per resource** via each CR's `CloudCredentialsRef`,
 resolved in the control-plane namespace, so no cluster-global default mount is needed.
 The `orc-system` Namespace itself is retained (co-declared in
-`deploy/flux-system/namespaces.yaml`) because the K-ORC installer's own resources land
+`deploy/bases/operators/namespaces.yaml`) because the K-ORC installer's own resources land
 there — it no longer hosts a `clouds.yaml` copy.
 
 On a fresh cluster the bootstrap `clouds.yaml` at the per-CR OpenBao key is seeded
@@ -1676,7 +1631,7 @@ so the ExternalSecrets can materialise before any credential is minted. Once the
 c5c3-operator mints the admin Application Credential the same PushSecret overwrites
 the key with the App-Cred-based `clouds.yaml`.
 
-**OpenBao policy** — `deploy/openbao/policies/eso-tenant.hcl`
+**OpenBao policy** — `deploy/bases/shared-openbao/policies/eso-tenant.hcl`
 
 This per-tenant policy grants the write path for each ControlPlane's admin
 credential PushSecret. Because the admin credential path is keyed per
@@ -1708,31 +1663,28 @@ SecretStore auth path these manifests ride on, see
 
 ## Kustomization
 
-Deployment is split into two kustomize overlays to separate base resources from
-CRD-dependent infrastructure resources:
+Deployment uses staged bases to keep operator installation separate from
+CRD-dependent infrastructure and bootstrap:
 
 ### Base Kustomization
 
-**File:** `deploy/flux-system/kustomization.yaml`
+**File:** `deploy/bases/operators/kustomization.yaml`
 
-The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and includes
-namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
-These resources depend on no CRD that an operator of this stack installs. The Flux
-kinds among them need the flux-operator, which registers the `FluxInstance` kind and,
-once it has reconciled the instance, the Flux toolkit kinds.
+The operator base owns namespaces, sources and controller reconciliation objects.
+Flux must already be ready. The Flux runtime, shared OpenBao server, TLS and
+ControlPlane operator each have their own base and lifecycle gate.
 
-**Resource count:** 35 files producing 55 Kubernetes resources.
+**Resource count:** 32 files producing 52 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
 | Namespace | 21 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, openstack, shared-services, keystone-system, horizon-system, glance-system, placement-system, barbican-system, ovn-system, neutron-system, cinder-system, nova-system, c5c3-system, garage-system, orc-system, openbao-operator-system, rabbitmq-system |
-| FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, garage-operator |
 | OCIRepository | 1 | openbao-operator |
 | GitRepository | 3 | k-orc, rabbitmq-cluster-operator, messaging-topology-operator |
-| HelmRelease | 19 | cert-manager, mariadb-operator-crds, prometheus-operator-crds, mariadb-operator, memcached-operator, external-secrets, garage-operator, openbao, openbao-operator, ovn-operator, keystone-operator, horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, neutron-operator, c5c3-operator |
+| HelmRelease | 17 | cert-manager, mariadb-operator-crds, prometheus-operator-crds, mariadb-operator, memcached-operator, external-secrets, garage-operator, openbao-operator, ovn-operator, keystone-operator, horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, neutron-operator |
 | Kustomization | 3 | k-orc, rabbitmq-cluster-operator, messaging-topology-operator |
-| **Total** | **55** | |
+| **Total** | **52** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
 kind-only opt-in overlay at `deploy/overlays/kind/chaos-mesh/` and are not
@@ -1740,13 +1692,13 @@ counted here.
 
 ### Infrastructure Kustomization
 
-**File:** `deploy/flux-system/infrastructure/kustomization.yaml`
+**File:** `deploy/bases/infrastructure/kustomization.yaml`
 
 The infrastructure kustomization includes CRD-dependent resources that require their
 operator CRDs to be installed first. This kustomization must be applied after the base
 kustomization and after operators have finished installing their CRDs.
 
-**Resource count:** 9 manifests and the `../../eso` kustomization, producing 17
+**Resource count:** 9 manifests and the `../eso-store` kustomization, producing 17
 Kubernetes resources (the `db-ca-issuer.yaml`, `ovn-ca-issuer.yaml`, and
 `openbao-ca-issuer.yaml` manifests declare two resources each: a CA Certificate and the
 CA-type ClusterIssuer that signs from it; `garage.yaml` declares four;
@@ -1760,7 +1712,7 @@ CA-type ClusterIssuer that signs from it; `garage.yaml` declares four;
 | MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
 | Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
 | GarageCluster / GarageBucket / GarageKey | 4 | `garage`, `glance-images`, `glance-images-2`, `glance-s3` (require garage-operator CRDs; see [Garage Object Store](#garage-object-store)) |
-| ClusterSecretStore | 1 | `openbao-cluster-store`, from `deploy/eso/` |
+| ClusterSecretStore | 1 | `openbao-cluster-store`, from `deploy/bases/eso-store/` |
 | **Total** | **17** | |
 
 The proving instance's own five resources (two Certificates, a ServiceAccount, a
@@ -1770,7 +1722,7 @@ overlay — see [OpenBao Proving Instance](#openbao-proving-instance).
 
 ## Deployment
 
-The two steps below apply the two kustomizations by hand. `make deploy-infra`
+The examples below show the operator and reference-instance stages. `make deploy-infra`
 applies the same two phases, on the kind or the lab overlay, as its Step 3 and
 Step 5, and runs the waits and the OpenBao bootstrap around them. The figure
 shows that run. [Deployment Sequence](e2e-deployment.md#deployment-sequence)
@@ -1782,27 +1734,30 @@ numbers of the two pages.
 
 ### Step 1: Apply base resources
 
+After installing flux-operator, apply the namespaces and runtime, wait for Flux,
+then apply the operator base:
+
 ```bash
-kubectl apply -k deploy/flux-system/
+kubectl apply -f deploy/bases/operators/namespaces.yaml
+kubectl apply -k deploy/bases/flux/
+kubectl wait fluxinstance/flux -n flux-system --for=condition=Ready --timeout=600s
+kubectl apply -k deploy/bases/operators/
 ```
 
-On a cluster where `FluxInstance/flux` is not Ready yet, the sources and releases
-fail with `no matches for kind "HelmRepository"`: the flux-operator registers the
-Flux toolkit CRDs only when it reconciles the instance. Apply `namespaces.yaml` and
-`fluxinstance.yaml` first and wait for the instance, as Step 2 of
-`hack/deploy-infra.sh` does.
-
-This applies 55 resources: 21 namespaces, 1 FluxInstance, 11 sources
-(7 HelmRepository, 1 OCIRepository, 3 GitRepository), 19 HelmReleases and
+This applies 52 resources from the operator base: 21 namespaces, 11 sources
+(7 HelmRepository, 1 OCIRepository, 3 GitRepository), 17 HelmReleases and
 3 Flux Kustomizations (K-ORC, the RabbitMQ Cluster Operator and the RabbitMQ
-Messaging Topology Operator). FluxCD resolves the dependency graph between
-HelmReleases and installs operators in the correct order. Wait for all operators to
-finish installing before proceeding to step 2.
+Messaging Topology Operator). FluxCD resolves controller dependencies.
+
+Wait for controller CRDs and admission webhooks before applying their resources.
+TLS, the shared OpenBao server, bootstrap, ESO and the ControlPlane operator follow
+as separate stages; use the [deployment order](../../../deploy/README.md#deployment-order).
+`make deploy-infra` performs these gates for the development environments.
 
 ### Step 2: Apply infrastructure resources
 
 ```bash
-kubectl apply -k deploy/flux-system/infrastructure/
+kubectl apply -k deploy/bases/infrastructure/
 ```
 
 This applies the CRD-dependent resources: the `selfsigned-cluster-issuer`
@@ -1836,8 +1791,8 @@ fail — wait for the operators to finish installing and retry.
 ### Validate manifests locally
 
 ```bash
-kustomize build deploy/flux-system/
-kustomize build deploy/flux-system/infrastructure/
+kustomize build deploy/bases/operators/
+kustomize build deploy/bases/infrastructure/
 ```
 
 These commands render the manifest output without applying it. Use them to verify YAML
@@ -1853,7 +1808,7 @@ syntax and resource inclusion before deployment.
 
 ## Sizing and placement overrides
 
-The manifests under `deploy/flux-system/` ship the components' own sizing and no
+The manifests under `deploy/bases/operators/` ship the components' own sizing and no
 node placement. A deployer changes both with a kustomize overlay per apply phase
 and leaves the shipped files untouched. `deploy/examples/sizing-overlay/` is an
 example of such an overlay. No script applies it, and
@@ -1870,9 +1825,9 @@ the same way.
 2. Point the base entry in each phase's `resources` list at its base; the
    `priorityclass.yaml` entry stays as it is. Inside a checkout of this
    repository a relative path works. Elsewhere, use a remote base pinned to a
-   commit: `https://github.com/C5C3/cobaltcore//deploy/flux-system?ref=<commit>`
+   commit: `https://github.com/C5C3/cobaltcore//deploy/bases/operators?ref=<commit>`
    for the base phase and
-   `https://github.com/C5C3/cobaltcore//deploy/flux-system/infrastructure?ref=<commit>`
+   `https://github.com/C5C3/cobaltcore//deploy/bases/infrastructure?ref=<commit>`
    for the infrastructure phase. When you move `<commit>` later, compare each
    copied `spec.chart.spec.version` with the base's at the new commit. The
    patch replaces the whole range, so an upper bound the base has moved past
@@ -1925,8 +1880,8 @@ The infrastructure phase, `deploy/examples/sizing-overlay/infrastructure/kustomi
 
 ### Where each workload is sized
 
-One row per entry of `deploy/flux-system/kustomization.yaml` and
-`deploy/flux-system/infrastructure/kustomization.yaml` that runs pods:
+One row per entry of `deploy/bases/operators/kustomization.yaml` and
+`deploy/bases/infrastructure/kustomization.yaml` that runs pods:
 
 | Entry | Kind | Field to patch | Sizing keys |
 | --- | --- | --- | --- |
@@ -2101,7 +2056,7 @@ internally-built charts to `oci://ghcr.io/c5c3/charts`.
 
 The kind and metal-stack base overlays import development UI and gateway
 controller manifests from `deploy/bases/devstack/base/`. These are **not**
-referenced from `deploy/flux-system/kustomization.yaml`, so production consumers
+referenced from `deploy/bases/operators/kustomization.yaml`, so production consumers
 of that root do not install them. The section below catalogues these addons;
 Headlamp and the development OpenBao UI patch are documented in the Quick Start.
 Chaos Mesh ships as a
@@ -2144,7 +2099,7 @@ the same `packageRules` as `hack/deploy-infra.sh` — major upgrades are
 disabled, minor/patch upgrades auto-merge after a three-day `minimumReleaseAge`
 cooldown.
 
-**Production opt-out.** `deploy/flux-system/kustomization.yaml` deliberately
+**Production opt-out.** `deploy/bases/operators/kustomization.yaml` deliberately
 does **not** list `deploy/bases/devstack/base/flux-web.yaml`. The flux-operator Web UI
 ships without token authentication, without TLS termination, and without an
 Ingress story — it is safe as a localhost port-forward demo on a single-node
@@ -2171,12 +2126,12 @@ overlay. The default `make deploy-infra` flow does **not** install
 it — first-run deployments skip the privileged `chaos-daemon` DaemonSet, the
 `chaos-mesh` namespace, and the upstream HelmRepository / HelmRelease pair so
 that developers who never run chaos E2E suites pay zero install cost. The
-production `deploy/flux-system/` overlay also does not install Chaos Mesh.
+production `deploy/bases/operators/` overlay also does not install Chaos Mesh.
 
 The shared Chaos Mesh base contains its own inputs: the `HelmRepository` lives in
 `deploy/bases/chaos-mesh/source.yaml` and the `HelmRelease` in
 `deploy/bases/chaos-mesh/release.yaml` (both relocated from the former
-`deploy/flux-system/{sources,releases}/chaos-mesh.yaml` locations). The
+`deploy/bases/operators/{sources,releases}/chaos-mesh.yaml` locations). The
 overlay bundles them with:
 
 | Property | Value |
@@ -2232,7 +2187,7 @@ ships as a separate **opt-in** kind overlay. The default
 `make deploy-infra` flow does **not** install it. The base already declares
 `monitoring` for the Prometheus Operator CRDs; Prometheus / Grafana / the
 prometheus-operator pods do not consume any of the kind node's CPU or memory
-budget unless a contributor explicitly opts in. The production `deploy/flux-system/` overlay
+budget unless a contributor explicitly opts in. The production `deploy/bases/operators/` overlay
 also does not install the stack: production clusters are expected to run
 their own Prometheus and widen its `serviceMonitorSelector` to pick up the
 keystone-operator chart's `ServiceMonitor` (see
@@ -2242,7 +2197,7 @@ for that wiring path).
 The standalone root retains its `Namespace` and `HelmRelease` in
 `deploy/overlays/kind/prometheus/namespace.yaml` and
 `deploy/bases/prometheus/release.yaml`, and the upstream `prometheus-community`
-HelmRepository in `deploy/flux-system/sources/prometheus-community.yaml` is
+HelmRepository in `deploy/bases/operators/sources/prometheus-community.yaml` is
 **reused** (it is already present for the `prometheus-operator-crds`
 HelmRelease in the production base, so no new source manifest is added to
 the production tree). The standalone and managed kind roots both import
@@ -2256,7 +2211,7 @@ Namespace. Both roots use the same chart settings:
 | Target namespace | `monitoring` (owned by the platform base in composed flows; the standalone root includes it) |
 | Chart | `kube-prometheus-stack` |
 | Version constraint | `>=65.0.0 <70.0.0` |
-| Source | `prometheus-community` HelmRepository (reused from `deploy/flux-system/sources/`) |
+| Source | `prometheus-community` HelmRepository (reused from `deploy/bases/operators/sources/`) |
 | Dependencies | `cert-manager` in `cert-manager` namespace |
 
 **Kind-tuned values** (deliberately too lean for a real workload — they exist
@@ -2356,7 +2311,7 @@ operator; see [Lab Prometheus stack](#lab-prometheus-stack).
 a separate **opt-in** kind overlay. The default `make deploy-infra` flow does
 **not** install it — the `kube-system` metrics-server stays absent so the
 default Quick Start does not spend the kind node's budget on a component most
-tutorials do not need. The production `deploy/flux-system/` overlay also does
+tutorials do not need. The production `deploy/bases/operators/` overlay also does
 not install it: managed distributions ship their own metrics-server, and
 production clusters bring their own.
 
@@ -2414,7 +2369,7 @@ omission is explicit, the opt-in flag has a single documented name
 
 The [VerticalPodAutoscaler](https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler)
 recommender ships as a separate opt-in kind overlay. Neither the default
-`make deploy-infra` flow nor the production `deploy/flux-system/` overlay
+`make deploy-infra` flow nor the production `deploy/bases/operators/` overlay
 installs it.
 
 It has two consumers. The first is the
@@ -2494,7 +2449,7 @@ consistency tester for OpenStack control planes. Its VictoriaMetrics + Grafana
 observability stack ships as a separate **opt-in** kind overlay. The default
 `make deploy-infra` flow does **not** install it — the `dizzy` namespace stays
 absent, and neither VictoriaMetrics nor Grafana runs unless a contributor opts
-in. The production `deploy/flux-system/` overlay ships none of it.
+in. The production `deploy/bases/operators/` overlay ships none of it.
 
 The overlay is self-contained, seven tracked files under `deploy/overlays/kind/dizzy/`:
 
@@ -2511,7 +2466,7 @@ The overlay is self-contained, seven tracked files under `deploy/overlays/kind/d
 Both HelmRepositories (`victoria-metrics`, `grafana`) are declared into the
 `flux-system` namespace, where Flux resolves HelmRelease sourceRefs, even though
 the two source files live inside the kind-only overlay. That keeps
-`deploy/flux-system/**` untouched while the overlay stays self-contained.
+`deploy/bases/operators/**` untouched while the overlay stays self-contained.
 
 **Dashboard staging (`hack/dizzy.sh stage-dashboards`).** The overlay's
 `configMapGenerator` wraps three dizzy dashboard JSONs, but
@@ -2568,7 +2523,7 @@ this section it is not kind-only: the metal-stack lab builds its
 [Lab NFS stack](#lab-nfs-stack) on this overlay. Production omits it for two
 reasons: users bring their own NFS server (a `CinderBackend` takes a `server`
 and a `path` per backend), and the mounter is a prerequisite of the target
-cluster. Shipping `csi-driver-nfs` from `deploy/flux-system/releases/` would
+cluster. Shipping `csi-driver-nfs` from `deploy/bases/operators/releases/` would
 put a privileged `hostNetwork` DaemonSet into every production deployment for
 a service no production cluster runs yet.
 
@@ -2582,7 +2537,7 @@ The overlay is self-contained: `source.yaml`, `release.yaml` and
 `Namespace`. The HelmRelease targets the pre-existing `kube-system`, because
 the chart defaults to `priorityClassName: system-cluster-critical`, which
 resolves in no other Namespace. The server lands in the pre-existing
-`openstack`, which `deploy/flux-system/namespaces.yaml` reserves for
+`openstack`, which `deploy/bases/operators/namespaces.yaml` reserves for
 components that exist only to run the operators standalone. `shared-services`
 is not used: it is the trust zone holding `openbao-init-keys`, with Garage as
 its one accepted co-tenant.
@@ -2777,7 +2732,7 @@ standalone Cinder e2e suites of
 ControlPlane suites of #989. The RabbitMQ Cluster Operator that reconciles it
 is not part of the overlay: it reaches every cluster this script provisions
 through the Flux Kustomization in
-`deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`. Only the broker
+`deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml`. Only the broker
 instance is opt-in, and the default `make deploy-infra` flow creates none.
 
 Production ships no equivalent object. A production `ControlPlane` declares
@@ -2867,7 +2822,7 @@ the Glance CR the suite applies, and deletes it again when the suite cleans up.
 `deploy/overlays/metal-stack/` holds the manifests of the CobaltCore OpenStack lab on
 a metal-stack cluster, planned in
 [#1138](https://github.com/c5c3/cobaltcore/issues/1138).
-`deploy/flux-system/kustomization.yaml` does not reference the tree.
+`deploy/bases/operators/kustomization.yaml` does not reference the tree.
 `hack/deploy-infra.sh` applies its `base/` and `infrastructure/` under
 `EXTERNAL_CLUSTER=true` (see [Lab overlay](#lab-overlay)), its `ceph/` and
 `ceph/cluster/` when `WITH_CEPH=true` is set (see [Lab Ceph](#lab-ceph)), its
@@ -2939,7 +2894,7 @@ never completes and has to be deleted by hand; the Job keeps each run bounded.
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `default`. The probe runs before `deploy/flux-system/namespaces.yaml` has created `openstack` or `shared-services`, and the metal-stack shoot enforces no PodSecurity level on `default` |
+| Target namespace | `default`. The probe runs before `deploy/bases/operators/namespaces.yaml` has created `openstack` or `shared-services`, and the metal-stack shoot enforces no PodSecurity level on `default` |
 | Image | `docker.io/library/debian:bookworm-slim`, digest-pinned. A Renovate `customManager` refreshes the digest (automerged after 3 days); Renovate never moves the `bookworm-slim` codename tag, so a Debian release change is a manual edit |
 | Runs as | one Job with `backoffLimit: 0`, one privileged container, the host root read-only at `/host` |
 | Dependencies | none |
@@ -3059,7 +3014,7 @@ and who applies each directory.
 [Kustomize Overlay Structure](e2e-deployment.md#kustomize-overlay-structure)
 lists every directory with its base.
 
-![Deployment composition: five public stages retain their implementation and GitOps compatibility paths. Both kind and metal-stack independently import the shared devstack controller and infrastructure bases plus shared addon bases. Kind adds local gateway, NodePort and storage settings; metal-stack adds public gateway, Gardener metadata, persistence and node preparation. Prometheus has one shared chart/dashboard base without a Namespace; the standalone kind entry point adds its Namespace. Arrows point from a base to its consumers, not between environments, and do not imply readiness order.](../../diagrams/deploy-overlay-inheritance.svg)
+![Deployment composition: canonical bases own their manifests directly, including Flux, operators, TLS, shared OpenBao, ESO and target-cluster access. Both kind and metal-stack independently import the shared devstack controller and infrastructure bases plus shared addon bases. Kind adds local gateway, NodePort and storage settings; metal-stack adds public gateway, Gardener metadata, persistence and node preparation. Prometheus has one shared chart/dashboard base without a Namespace; the standalone kind entry point adds its Namespace. Arrows point from a base to its consumers, not between environments, and do not imply readiness order.](../../diagrams/deploy-overlay-inheritance.svg)
 
 The shared bases leave the OpenBao, MariaDB and Garage storage class unset;
 kind adds its `standard` pin in its own overlays. The lab volumes and the
@@ -3993,7 +3948,7 @@ broker and single-member Raft clusters, so none of these faults has run
 before. Per D2 of [#1386](https://github.com/c5c3/cobaltcore/issues/1386) the
 runs are lab-only: no CI job, nightly or gate runs them. They test the operators
 the lab installs from the charts published from `main`
-(`deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`); the suites and the script
+(`deploy/bases/controlplane-operator/helmrelease.yaml`); the suites and the script
 come from the branch that runs them.
 
 Each suite is a Chainsaw test that drives the workload and consistency harness
@@ -4855,7 +4810,7 @@ objects, so every block names `minReplicas`, `null` where the case has none.
 | V6 | `InPlaceOrRecreate`, the same VPA, patched | 1 | `100m` | the same UID and restart count, and `100m` as the spec's and the running request |
 
 V5 and V6 apply the VPA by hand. The lab installs the operators from the
-charts published from `main` (`deploy/flux-system/releases/c5c3-operator/helmrelease.yaml`),
+charts published from `main` (`deploy/bases/controlplane-operator/helmrelease.yaml`),
 and a release older than the mode refuses it in a ControlPlane block, so the
 two cases do not depend on the release the lab runs. The VPA
 `lab-placement-inplace` is the one `BuildVPA` renders for the mode, under a

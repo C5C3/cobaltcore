@@ -16,7 +16,7 @@
 #
 # This manifest is deployed ONLY from the shared development base
 # (deploy/bases/devstack/base/kustomization.yaml) and NEVER reaches
-# deploy/flux-system/ — installing a Gateway controller in the
+# deploy/bases/operators/ — installing a Gateway controller in the
 # production overlay is explicitly out of scope (the operator stays
 # platform-agnostic; customers pick their own Gateway implementation,
 # matching docs/reference/keystone-crd.md:316-318).
@@ -24,15 +24,15 @@
 # DECISION: chart source
 # Ambiguity: task 1.1 allows either reusing `oci://ghcr.io/c5c3/charts`
 # (if the chart is mirrored) or adding a new `HelmRepository` under
-# `deploy/flux-system/sources/envoy-gateway-charts.yaml`.
+# `deploy/bases/operators/sources/envoy-gateway-charts.yaml`.
 # Chose: inline a development `HelmRepository` in this file, mirroring the
 # `headlamp.yaml` precedent (self-contained kind addon).
 # Reason: (a) the Envoy Gateway chart is not known to be mirrored into
-# `c5c3-charts`, (b) adding the repo under `deploy/flux-system/sources/`
-# would still require wiring it into `deploy/flux-system/kustomization.yaml`,
+# `c5c3-charts`, (b) adding the repo under `deploy/bases/operators/sources/`
+# would still require wiring it into `deploy/bases/operators/kustomization.yaml`,
 # which forbids, and (c) `deploy/bases/devstack/base/headlamp.yaml` already
 # sets the precedent for inlining a per-addon `HelmRepository` in the
-# kind overlay. Result: `deploy/flux-system/` is byte-identical to main.
+# development base, keeping the operator catalog independent of this gateway.
 #
 # Supply-chain note: `oci://docker.io/envoyproxy` is an anonymous Docker
 # Hub pull. Docker Hub throttles anonymous pulls to 100/6h per source IP,
@@ -107,7 +107,7 @@ metadata:
   # source-controller / helm-controller log lines become ambiguous
   # ("envoy-gateway not ready" could mean the repo OR the release).
   # Mirrors the `HelmRepository/*-charts` pattern used by c5c3-charts
-  # and the flux-web-chart source in `deploy/flux-system/sources/`.
+  # and the flux-web-chart source in `deploy/bases/operators/sources/`.
   name: envoy-gateway-charts
   namespace: flux-system
 spec:

@@ -129,14 +129,14 @@ spec:
           if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
             echo "SKIP: GatewayClass/envoy not present."
             echo "      This is expected on non-kind overlays"
-            echo "      (deploy/flux-system/ does not reference"
+            echo "      (deploy/bases/operators/ does not reference"
             echo "      deploy/bases/devstack/base/envoy-gateway.yaml)."
             exit 0
           fi
           if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
             echo "SKIP: Gateway/openstack-gw not present in openstack namespace."
             echo "      This is expected on non-kind overlays"
-            echo "      (deploy/flux-system/ does not reference"
+            echo "      (deploy/bases/operators/ does not reference"
             echo "      deploy/overlays/kind/base/openstack-gateway.yaml)."
             exit 0
           fi

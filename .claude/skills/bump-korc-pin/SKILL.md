@@ -50,8 +50,8 @@ reproducibility while retained, not permanent artifact storage.
 
 3. If a one-time repair is needed, update the two immutable pins together:
 
-   - `deploy/flux-system/sources/k-orc.yaml`: full `ref.commit`.
-   - `deploy/flux-system/releases/k-orc.yaml`: `newTag: branch-main` and
+   - `deploy/bases/operators/sources/k-orc.yaml`: full `ref.commit`.
+   - `deploy/bases/operators/releases/k-orc.yaml`: `newTag: branch-main` and
      `digest: sha256:<64 hex>`.
 
    Read upstream changes under `api/` and `config/`, especially the Keystone

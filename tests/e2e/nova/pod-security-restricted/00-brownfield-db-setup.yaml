@@ -24,7 +24,7 @@
 # (synced from OpenBao by the cluster's shims), so each User's SET PASSWORD lands
 # the same value the PSS-namespace Secret carries (copied from the same
 # standalone OpenBao path): no race. The two users are the ones
-# deploy/openbao/bootstrap/write-bootstrap-secrets.sh seeds for a standalone
+# deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh seeds for a standalone
 # Nova. `cleanupPolicy: Skip` keeps both alive when this test's User CRs are
 # deleted, so a sibling test still managing the same canonical user is not
 # stranded mid-flight.

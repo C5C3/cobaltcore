@@ -19,7 +19,7 @@
 #      chainsaw CLI filter this test out on non-kind invocations via
 #      `chainsaw test --selector 'overlay!=kind' tests/e2e/infrastructure/`.
 #      This is the preferred gate for pipelines that know they run
-#      against production clusters (which never install Chaos Mesh — the sources/releases manifests were dropped from deploy/flux-system/kustomization.yaml).
+#      against production clusters (which never install Chaos Mesh — the sources/releases manifests were dropped from deploy/bases/operators/kustomization.yaml).
 #
 #   2. Runtime presence check (first line of the script): an early
 #      `kubectl get ns chaos-mesh` probe. If the namespace is absent,

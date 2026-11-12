@@ -26,7 +26,7 @@
 # — labelled `overlay: kind` with a runtime presence-check guard. The
 # chaos-mesh assertions previously inhabiting Step 5 of this file
 # moved out as part of because the production overlay
-# (deploy/flux-system/) no longer installs chaos-mesh by default — keeping
+# (deploy/bases/operators/) no longer installs chaos-mesh by default — keeping
 # the assertions here would fail on every default `make deploy-infra` run.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -158,7 +158,7 @@ spec:
   # openstack/keystone/standalone/db that the deploy-infra seed writes (the
   # stage-(a) per-ControlPlane static path is retired since #439:
   # managed-mode ControlPlanes draw engine-issued credentials). The production stack
-  # (deploy/eso/) ships no keystone-db ExternalSecret. The operator-created
+  # (deploy/bases/eso-store/) ships no keystone-db ExternalSecret. The operator-created
   # per-ControlPlane ExternalSecret (controlplane-keystone-db-credentials)
   # does not exist after a bare `make deploy-infra` (no ControlPlane CR yet)
   # and is asserted by tests/e2e/c5c3/db-credential-scoping/ instead. This
@@ -168,7 +168,7 @@ spec:
   # keystone-admin and mariadb-root-password are now ALSO kind-only
   # shims (deploy/bases/devstack/infrastructure/keystone-admin-externalsecret.yaml and
   # mariadb-root-password-externalsecret.yaml) — the production stack
-  # (deploy/eso/) ships NONE of these static ExternalSecrets. The admin
+  # (deploy/bases/eso-store/) ships NONE of these static ExternalSecrets. The admin
   # password specifically is now operator-projected per-ControlPlane
   # (reconcileAdminPassword) into the per-CP Secret
   # controlplane-keystone-admin-credentials, asserted by

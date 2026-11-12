@@ -18,7 +18,7 @@ metadata:
 spec:
   tls:
     issuerRef:
-      # The cluster-scoped CA issuer of deploy/flux-system/infrastructure/
+      # The cluster-scoped CA issuer of deploy/bases/infrastructure/
       # ovn-ca-issuer.yaml, which the lab's infrastructure overlay inherits. OVN
       # authenticates every connection, so both databases and the client
       # identity the Neutron pods mount are issued from this one CA.

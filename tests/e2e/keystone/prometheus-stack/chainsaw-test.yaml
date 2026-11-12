@@ -47,7 +47,7 @@
 #   1. Label selector (`metadata.labels.overlay: kind`): non-kind invocations
 #      can pass `--selector 'overlay!=kind'` to skip this test entirely
 #      without paying any chainsaw start-up cost. Production
-#      (deploy/flux-system/) does not install kube-prometheus-stack — it is
+#      (deploy/bases/operators/) does not install kube-prometheus-stack — it is
 #      a kind-only opt-in.
 #
 #   2. Runtime presence check at the head of every step's script: an early
@@ -62,7 +62,7 @@
 #      NOTE the probe deliberately keys off the HelmRelease, not
 # `kubectl get ns monitoring`. Since the `monitoring` Namespace
 #      is owned by the always-applied flux base
-#      (deploy/flux-system/namespaces.yaml) so prometheus-operator-crds and
+#      (deploy/bases/operators/namespaces.yaml) so prometheus-operator-crds and
 #      memcached-operator can install into a live Namespace — it now exists
 #      on every cluster, prometheus or not, so its presence is no longer a
 #      valid WITH_PROMETHEUS=true signal. The kube-prometheus-stack

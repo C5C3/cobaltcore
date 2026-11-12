@@ -44,7 +44,7 @@ operators/keystone/
 operators/shared/helm/
 ├── operator-library/                   Library chart: every manifest template above, defined once
 └── operator-library-testbed/           Test consumer of the library; runs the shared helm-unittest suites
-deploy/flux-system/
+deploy/bases/operators/
 ├── kustomization.yaml                  Base kustomization (includes keystone-operator release)
 └── releases/
     └── keystone-operator.yaml          FluxCD HelmRelease
@@ -565,7 +565,7 @@ namespace whenever `webhook.enabled=true`.
 
 ## FluxCD HelmRelease
 
-**File:** `deploy/flux-system/releases/keystone-operator.yaml`
+**File:** `deploy/bases/operators/releases/keystone-operator.yaml`
 
 The HelmRelease deploys the Keystone operator chart via FluxCD's helm-controller,
 following the established pattern used by other operators in the project (memcached-operator,
@@ -606,7 +606,7 @@ All other values use chart defaults.
 | `upgrade.remediation.retries` | `3` |
 
 **Kustomization inclusion:** The HelmRelease is listed in
-`deploy/flux-system/kustomization.yaml` under the `resources` list as
+`deploy/bases/operators/kustomization.yaml` under the `resources` list as
 `releases/keystone-operator.yaml`.
 
 ## Dependency Chain
@@ -614,7 +614,7 @@ All other values use chart defaults.
 The Keystone operator depends on four infrastructure operators that must be running
 before it starts. FluxCD enforces this ordering via `spec.dependsOn`:
 
-![The install order of the Flux resources of deploy/flux-system, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
+![The install order of the Flux resources of deploy/bases/operators, in four layers. Layer 1 declares no dependency: cert-manager, mariadb-operator-crds and prometheus-operator-crds. Layer 2 waits for cert-manager: mariadb-operator, which also waits for mariadb-operator-crds, memcached-operator, which also waits for prometheus-operator-crds, external-secrets, garage-operator, openbao, openbao-operator and ovn-operator. Layer 3 is keystone-operator, which waits for mariadb-operator, memcached-operator and external-secrets. Layer 4 waits for keystone-operator: horizon-operator, glance-operator, placement-operator, cinder-operator, nova-operator, barbican-operator, which also waits for openbao-operator, neutron-operator, which also waits for ovn-operator, and c5c3-operator. A solid arrow is a dependsOn entry of a HelmRelease, and the one solid arrow between Flux Kustomizations says that the Kustomization messaging-topology-operator waits for the Kustomization rabbitmq-cluster-operator. Two dotted arrows are dependencies that no manifest declares, because each crosses between a HelmRelease and a Flux Kustomization: the Kustomization rabbitmq-cluster-operator needs the CRDs of cert-manager and retries until they exist, and c5c3-operator starts only once the Kustomization k-orc has installed the K-ORC CRDs.](../../diagrams/deploy-flux-dependencies.svg)
 
 The keystone-operator HelmRelease sits in layer 3 of the figure: it waits for
 `cert-manager`, `mariadb-operator`, `memcached-operator` and `external-secrets`.

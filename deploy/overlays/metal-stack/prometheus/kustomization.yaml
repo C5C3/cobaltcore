@@ -13,7 +13,7 @@
 # It imports deploy/bases/prometheus, shared with kind and differs from it in
 # four places:
 #   - The render holds no Namespace. The base overlay declares monitoring
-#     (deploy/flux-system/namespaces.yaml) and gives it the Gardener opt-out
+#     (deploy/bases/operators/namespaces.yaml) and gives it the Gardener opt-out
 #     label and the chaos-mesh.org/inject annotation (../base/kustomization.yaml).
 #     The prometheus-managed composition omits that Namespace. This overlay
 #     never touches the object, so it cannot overwrite either field.

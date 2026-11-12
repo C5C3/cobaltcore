@@ -1504,12 +1504,12 @@ have_yq() {
   command -v yq >/dev/null 2>&1
 }
 
-# stack_namespace_names — the Namespaces of deploy/flux-system/namespaces.yaml,
+# stack_namespace_names — the Namespaces of deploy/bases/operators/namespaces.yaml,
 # space-separated, then the two the kind base declares and the ones of the
 # Chaos Mesh, dizzy and Ceph overlays.
 stack_namespace_names() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
-    "$PROJECT_ROOT/deploy/flux-system/namespaces.yaml" | tr '\n' ' '
+    "$PROJECT_ROOT/deploy/bases/operators/namespaces.yaml" | tr '\n' ' '
   printf '%s' 'envoy-gateway-system headlamp-system chaos-mesh dizzy rook-ceph'
 }
 

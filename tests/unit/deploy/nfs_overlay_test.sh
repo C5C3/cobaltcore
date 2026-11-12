@@ -32,7 +32,7 @@
 #     exports/backups to 42424:42424 mode 0770.
 #   - The Service exposes 2049/TCP alone (the server speaks NFSv4 only, so
 #     neither rpcbind's 111 nor a mountd port is reachable or needed).
-#   - kustomize build of deploy/flux-system, deploy/overlays/kind/base and
+#   - kustomize build of deploy/bases/operators, deploy/overlays/kind/base and
 #     deploy/overlays/kind/infrastructure renders ZERO NFS resources (default posture:
 #     nothing is applied unless the overlay is asked for).
 # Usage: bash tests/unit/deploy/nfs_overlay_test.sh
@@ -49,7 +49,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
 KIND_NFS_DIR="$PROJECT_ROOT/deploy/overlays/kind/nfs"
@@ -560,7 +560,7 @@ test_service_exposes_only_2049() {
 
 # --- Tests 8-10: default posture renders nothing NFS ---
 test_flux_system_renders_no_nfs() {
-  echo "Test: kustomize build deploy/flux-system renders no NFS resources"
+  echo "Test: kustomize build deploy/bases/operators renders no NFS resources"
   assert_renders_no_nfs "the production overlay" "$FLUX_SYSTEM_DIR"
 }
 

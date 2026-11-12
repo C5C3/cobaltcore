@@ -936,13 +936,13 @@ Keystone's Fernet/credential backup PushSecrets authenticate as the per-tenant
 for existing clusters that identity and store must be in place — otherwise ESO
 will return `403` on the backup step and `FernetKeysReady` /
 `CredentialKeysReady` will flip to `False`. The write authorisation comes from
-the `eso-tenant` policy (`deploy/openbao/policies/eso-tenant.hcl`), whose paths
+the `eso-tenant` policy (`deploy/bases/shared-openbao/policies/eso-tenant.hcl`), whose paths
 are templated to the caller's own namespace; it is created by
-`deploy/openbao/bootstrap/setup-auth.sh` (the `eso-tenant` auth role) and
-`deploy/openbao/bootstrap/setup-policies.sh` (the policy). For kind/dev clusters
+`deploy/bases/shared-openbao/bootstrap/setup-auth.sh` (the `eso-tenant` auth role) and
+`deploy/bases/shared-openbao/bootstrap/setup-policies.sh` (the policy). For kind/dev clusters
 this happens automatically when `hack/deploy-infra.sh` is re-run; the in-cluster
 namespaced store is then provisioned per namespace by
-`deploy/openbao/bootstrap/setup-eso-tenant.sh <namespace>`, and the standalone
+`deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh <namespace>`, and the standalone
 Keystone CR must select it with
 `spec.secretStoreRef: {kind: SecretStore, name: openbao-tenant-store}`.
 
@@ -980,11 +980,11 @@ per-CR layout. The flat `bootstrap/keystone-admin` object becomes the per-CR
 `bootstrap/{keystone.Namespace}/{keystone.Name}/admin`. As above, the new
 RemoteKey lands on operator upgrade, and the same per-tenant `eso-tenant`
 identity authorises the push: the `admin` leaf is covered by the `eso-tenant`
-policy (`deploy/openbao/policies/eso-tenant.hcl`), templated to the caller's own
-namespace. Re-run `deploy/openbao/bootstrap/setup-auth.sh` and
-`deploy/openbao/bootstrap/setup-policies.sh` (or `hack/deploy-infra.sh`) and
+policy (`deploy/bases/shared-openbao/policies/eso-tenant.hcl`), templated to the caller's own
+namespace. Re-run `deploy/bases/shared-openbao/bootstrap/setup-auth.sh` and
+`deploy/bases/shared-openbao/bootstrap/setup-policies.sh` (or `hack/deploy-infra.sh`) and
 provision the namespaced store with
-`deploy/openbao/bootstrap/setup-eso-tenant.sh <namespace>` — otherwise ESO
+`deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh <namespace>` — otherwise ESO
 returns `403` on the push and `PasswordRotationReady` flips to `False`. The
 legacy `bootstrap/keystone-admin` object is **orphaned but harmless** after
 migration and can be purged once the per-CR path is populated and Ready:

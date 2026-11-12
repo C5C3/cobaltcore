@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # A Memcached of three pods for the cache-ring suite, the shape of
-# deploy/flux-system/infrastructure/memcached.yaml. kind runs
+# deploy/bases/infrastructure/memcached.yaml. kind runs
 # openstack-memcached with one replica, so the shared cache cannot show a
 # revocation that reaches one pod of several. The suite owns this Memcached
 # alone: Keystone's cache keys carry no instance identity, and a second

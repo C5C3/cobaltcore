@@ -68,7 +68,7 @@ service accounts, and the catalog. See
 
 ## Infrastructure stack
 
-The HelmReleases under `deploy/flux-system/` install the backing services the
+The HelmReleases under `deploy/bases/operators/` install the backing services the
 control plane depends on. Their configuration and the CRs built on top are
 documented per component in
 [Infrastructure Manifests](../reference/infrastructure/infrastructure-manifests.md):
@@ -101,7 +101,7 @@ documented per component in
 ## GitOps
 
 The **flux-operator** manages FluxCD through a `FluxInstance` CR that syncs
-`deploy/flux-system/` from Git. HelmRelease ordering is expressed as
+`deploy/bases/operators/` from Git. HelmRelease ordering is expressed as
 `dependsOn` edges with cert-manager at the base. See
 [FluxInstance](../reference/infrastructure/infrastructure-manifests.md#fluxinstance)
 and the

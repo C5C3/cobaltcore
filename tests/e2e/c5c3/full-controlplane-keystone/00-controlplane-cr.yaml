@@ -10,7 +10,7 @@
 # the c5c3-operator reconcileInfrastructure sub-reconciler projects an owned
 # MariaDB ("openstack-db") and Memcached ("openstack-memcached") in the
 # ControlPlane's own namespace (openstack). These are the same cluster names the
-# deploy stack provisions (deploy/flux-system/infrastructure/), so the chain
+# deploy stack provisions (deploy/bases/infrastructure/), so the chain
 # reads against the production-shaped infrastructure.
 #
 # The K-ORC admin credential is (re-)minted from the admin password. In managed
@@ -100,7 +100,7 @@ spec:
         name: controlplane-keystone-horizon-secret-key
         key: secret-key
     # single-replica Glance against the Garage S3 bucket the deploy stack
-    # provisions (deploy/flux-system/infrastructure/garage.yaml, ESO-synced
+    # provisions (deploy/bases/infrastructure/garage.yaml, ESO-synced
     # garage-s3-credentials Secret in the openstack namespace).
     glance:
       backends:

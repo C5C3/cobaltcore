@@ -6,8 +6,8 @@
 # Verify renovate.json points Renovate's native flux manager at the Flux
 # HelmReleases, so a chart release past the ceiling of a range opens a reviewed
 # PR that raises the ceiling and keeps the floor. The test pins:
-#   - the four flux.managerFilePatterns, replayed with Perl against every
-#     HelmRelease and HelmRepository file under deploy/flux-system/ and
+#   - the three flux.managerFilePatterns, replayed with Perl against every
+#     HelmRelease and HelmRepository file under deploy/bases/operators/ and
 #     deploy/overlays/kind/, and against deploy/overlays/metal-stack/ and deploy/examples/, of which only
 #     the release.yaml and source.yaml of deploy/overlays/metal-stack/ceph match:
 #     the lab Ceph has no kind sibling
@@ -72,11 +72,11 @@ paths_matching() {
   ' <<<"$2"
 }
 
-# helmrelease_files — the files under deploy/flux-system/ and deploy/overlays/kind/ that
+# helmrelease_files — the files under deploy/bases/operators/ and deploy/overlays/kind/ that
 # carry a HelmRelease, as repo-relative paths.
 helmrelease_files() {
   (cd "$PROJECT_ROOT" \
-    && grep -rlE '^kind: HelmRelease[[:space:]]*$' deploy/flux-system deploy/bases deploy/overlays/kind 2>/dev/null \
+    && grep -rlE '^kind: HelmRelease[[:space:]]*$' deploy/bases deploy/overlays/kind 2>/dev/null \
     | sort)
 }
 
@@ -113,12 +113,12 @@ chart_versions() {
 # package_of <file> — the packageName the flux manager gives the chart of a
 # HelmRelease: the chart name for an HTTP HelmRepository, the url without
 # oci:// plus the chart name for a type: oci one. The HelmRepository is read
-# from deploy/flux-system/sources/<sourceRef.name>.yaml.
+# from deploy/bases/operators/sources/<sourceRef.name>.yaml.
 package_of() {
   local chart src url
   chart="$(chart_of "$1")"
   src="$(awk '/^        name: / { print $2; exit }' "$PROJECT_ROOT/$1")"
-  url="$(awk '/^  url: / { print $2; exit }' "$PROJECT_ROOT/deploy/flux-system/sources/$src.yaml" 2>/dev/null)"
+  url="$(awk '/^  url: / { print $2; exit }' "$PROJECT_ROOT/deploy/bases/operators/sources/$src.yaml" 2>/dev/null)"
   case "$url" in
     oci://*) echo "${url#oci://}/$chart" ;;
     *) echo "$chart" ;;
@@ -126,7 +126,7 @@ package_of() {
 }
 
 test_flux_file_patterns() {
-  echo "Test: the flux manager reads deploy/flux-system/, deploy/overlays/kind/ and the lab Ceph's chart, nothing else under deploy/overlays/metal-stack/ or deploy/examples/"
+  echo "Test: the flux manager reads deploy/bases/operators/, deploy/overlays/kind/ and the lab Ceph's chart, nothing else under deploy/overlays/metal-stack/ or deploy/examples/"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (4 checks skipped)"
@@ -142,7 +142,7 @@ test_flux_file_patterns() {
     return
   fi
   assert_eq "flux.managerFilePatterns names the shared and kind Flux trees and the two Flux files of the lab Ceph" \
-    '["/^deploy/flux-system/(releases|sources)/.+\\.yaml$/","/^deploy/bases/.+\\.yaml$/","/^deploy/overlays/kind/.+\\.yaml$/","/^deploy/overlays/metal-stack/ceph/(release|source)\\.yaml$/"]' \
+    '["/^deploy/bases/.+\\.yaml$/","/^deploy/overlays/kind/.+\\.yaml$/","/^deploy/overlays/metal-stack/ceph/(release|source)\\.yaml$/"]' \
     "$patterns"
 
   if ! command -v perl >/dev/null 2>&1; then
@@ -154,10 +154,10 @@ test_flux_file_patterns() {
   local pattern_lines flux_files matched f missed=0
   pattern_lines="$(jq -r '.flux.managerFilePatterns[]' "$RENOVATE_FILE")"
   flux_files="$(cd "$PROJECT_ROOT" \
-    && grep -rlE '^kind: Helm(Release|Repository)[[:space:]]*$' deploy/flux-system deploy/bases deploy/overlays/kind 2>/dev/null \
+    && grep -rlE '^kind: Helm(Release|Repository)[[:space:]]*$' deploy/bases deploy/overlays/kind 2>/dev/null \
     | sort)"
   if [ -z "$flux_files" ]; then
-    echo "  FAIL: no HelmRelease or HelmRepository manifest found under deploy/flux-system/ or deploy/overlays/kind/"
+    echo "  FAIL: no HelmRelease or HelmRepository manifest found under deploy/bases/operators/ or deploy/overlays/kind/"
     FAIL=$((FAIL + 1))
   else
     matched="$(paths_matching "$pattern_lines" "$flux_files")"
@@ -263,7 +263,7 @@ test_oci_ranges_use_helm_versioning() {
   done <<<"$(helmrelease_files)"
 
   if [ "$checked" -eq 0 ]; then
-    echo "  FAIL: no HelmRelease chart version found under deploy/flux-system/ or deploy/overlays/kind/"
+    echo "  FAIL: no HelmRelease chart version found under deploy/bases/operators/ or deploy/overlays/kind/"
     FAIL=$((FAIL + 1))
   elif [ "$bad" -eq 0 ]; then
     echo "  PASS: all $checked HelmRelease chart versions are x.y.z or start with >="
@@ -281,7 +281,7 @@ test_c5c3_charts_are_excluded() {
   fi
 
   local url expected rule
-  url="$(awk '/^  url: / { print $2; exit }' "$PROJECT_ROOT/deploy/flux-system/sources/c5c3-charts.yaml")"
+  url="$(awk '/^  url: / { print $2; exit }' "$PROJECT_ROOT/deploy/bases/operators/sources/c5c3-charts.yaml")"
   assert_not_empty "the c5c3-charts HelmRepository carries a url" "$url"
   expected="${url#oci://}/**"
 
@@ -354,11 +354,11 @@ test_one_owner_per_file() {
     PASS=$((PASS + 1))
   fi
 
-  if grep -qxF -- "deploy/flux-system/releases/k-orc.yaml" <<<"$disabled"; then
+  if grep -qxF -- "deploy/bases/operators/releases/k-orc.yaml" <<<"$disabled"; then
     echo "  PASS: the K-ORC image uses its customManager instead of the flux manager"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: deploy/flux-system/releases/k-orc.yaml has overlapping flux and customManager ownership"
+    echo "  FAIL: deploy/bases/operators/releases/k-orc.yaml has overlapping flux and customManager ownership"
     FAIL=$((FAIL + 1))
   fi
 
@@ -567,8 +567,8 @@ test_crd_coupled_charts_grouped() {
     assert_eq "that rule groups them as $group" \
       "$group" "$(jq -r '.[0].groupName // empty' <<<"$rules")"
   done <<EOF
-deploy/flux-system/releases/mariadb-operator.yaml|deploy/flux-system/releases/mariadb-operator-crds.yaml|mariadb-operator chart
-deploy/bases/prometheus/release.yaml|deploy/flux-system/releases/prometheus-operator-crds.yaml|prometheus-operator charts
+deploy/bases/operators/releases/mariadb-operator.yaml|deploy/bases/operators/releases/mariadb-operator-crds.yaml|mariadb-operator chart
+deploy/bases/prometheus/release.yaml|deploy/bases/operators/releases/prometheus-operator-crds.yaml|prometheus-operator charts
 EOF
 }
 

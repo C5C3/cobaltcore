@@ -76,7 +76,7 @@ spec:
     # https://horizon.127-0-0-1.nip.io:<KIND_HOST_PORT>/. secretKeyRef is omitted:
     # this default-identity ControlPlane ("controlplane") inherits the kind shim
     # Secret "horizon-secret-key" (seeded per the default identity by
-    # deploy/openbao/bootstrap/write-bootstrap-secrets.sh); additional
+    # deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh); additional
     # ControlPlanes MUST set services.horizon.secretKeyRef to their own Secret.
     horizon:
       gateway:

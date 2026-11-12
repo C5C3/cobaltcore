@@ -22,7 +22,7 @@
 #   an early `kubectl get gateway openstack-gw -n openstack` /
 #   `kubectl get gatewayclass envoy` check. If either is missing, the
 #   probe script logs SKIP and exits 0, short-circuiting the suite.
-#   Production overlays (deploy/flux-system/) do not install Envoy
+#   Production overlays (deploy/bases/operators/) do not install Envoy
 #   Gateway nor the quick-start Gateway, so this probe default-skips the
 #   test off any non-kind cluster — no chainsaw `--selector` flag is
 #   required from callers.
@@ -107,13 +107,13 @@ spec:
           # the missing reconcile path downstream.
           if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
             echo "SKIP: GatewayClass/envoy not present on this cluster."
-            echo "      This is expected on non-kind overlays (deploy/flux-system/"
+            echo "      This is expected on non-kind overlays (deploy/bases/operators/"
             echo "      does not reference deploy/bases/devstack/base/envoy-gateway.yaml)."
             exit 0
           fi
           if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
             echo "SKIP: Gateway/openstack-gw not present in namespace openstack."
-            echo "      This is expected on non-kind overlays (deploy/flux-system/"
+            echo "      This is expected on non-kind overlays (deploy/bases/operators/"
             echo "      does not reference deploy/overlays/kind/base/openstack-gateway.yaml)."
             exit 0
           fi

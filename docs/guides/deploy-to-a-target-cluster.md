@@ -115,7 +115,7 @@ the examples below resolve on the target: `openstack-db`,
 
 ### 1. Install the access chart on the target
 
-`deploy/target-cluster/target-cluster-access` is the grant set a cluster applies
+`deploy/bases/target-cluster-access` is the grant set a cluster applies
 before it is registered. It renders one Role per declared namespace, a
 ClusterRole for the few kinds that have no namespace to be scoped to, the
 ServiceAccount the management cluster authenticates as, and a long-lived token
@@ -123,7 +123,7 @@ Secret for it:
 
 ```bash
 helm install --kube-context kind-cobaltcore-target \
-  target-cluster-access deploy/target-cluster/target-cluster-access \
+  target-cluster-access deploy/bases/target-cluster-access \
   -n c5c3-access --create-namespace \
   --set 'namespaces={openstack}' \
   --set createNamespaces=false

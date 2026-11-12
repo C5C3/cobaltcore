@@ -138,8 +138,8 @@ for rel_dir in releases/*/; do
 done
 check "hack/ci-generate-tempest-matrix.sh ALL_TEMPEST_SERVICES + hack/ci-resolve-changes.sh TEMPEST_ALL_SERVICES (skip if no tempest plugin)" \
   bash -c "grep -E '^ALL_TEMPEST_SERVICES=' hack/ci-generate-tempest-matrix.sh | grep -qw '${SERVICE}' && grep -E '^TEMPEST_ALL_SERVICES=' hack/ci-resolve-changes.sh | grep -qw '${SERVICE}'"
-check "deploy/flux-system/releases/${SERVICE}-operator.yaml" \
-  test -f "deploy/flux-system/releases/${SERVICE}-operator.yaml"
+check "deploy/bases/operators/releases/${SERVICE}-operator.yaml" \
+  test -f "deploy/bases/operators/releases/${SERVICE}-operator.yaml"
 check "deploy/bases/devstack/base/kustomization.yaml suspend patch for ${SERVICE}-operator" \
   grep -q "name: ${SERVICE}-operator" deploy/bases/devstack/base/kustomization.yaml
 check "hack/deploy-infra.sh un-suspends ${SERVICE}-operator (flux ControlPlane path)" \
@@ -153,11 +153,11 @@ check "kind Gateway listener hostname ${SERVICE}.127-0-0-1.nip.io" \
 check "deploy/overlays/kind/infrastructure/${SERVICE}-nip-io-tls-certificate.yaml" \
   test -f "deploy/overlays/kind/infrastructure/${SERVICE}-nip-io-tls-certificate.yaml"
 check "OpenBao DB-engine tenant leg: a SERVICE_TENANTS row for spec.services.${SERVICE} (skip if no database)" \
-  grep -Eq "^  \"[a-z0-9-]+ ${SERVICE} [a-z0-9_,]+\"|provision_service_tenant ${SERVICE} " deploy/openbao/bootstrap/setup-database-tenant.sh
+  grep -Eq "^  \"[a-z0-9-]+ ${SERVICE} [a-z0-9_,]+\"|provision_service_tenant ${SERVICE} " deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh
 check "OpenBao auth role ${SERVICE}[-<block>]-db in setup-auth.sh (skip if no database)" \
-  grep -Eq "role/${SERVICE}(-[a-z0-9]+)?-db\"" deploy/openbao/bootstrap/setup-auth.sh
-check "deploy/openbao/policies/${SERVICE}[-<block>]-db-dynamic.hcl (skip if no database)" \
-  bash -c "ls deploy/openbao/policies/ | grep -Eq '^${SERVICE}(-[a-z0-9]+)?-db-dynamic\.hcl$'"
+  grep -Eq "role/${SERVICE}(-[a-z0-9]+)?-db\"" deploy/bases/shared-openbao/bootstrap/setup-auth.sh
+check "deploy/bases/shared-openbao/policies/${SERVICE}[-<block>]-db-dynamic.hcl (skip if no database)" \
+  bash -c "ls deploy/bases/shared-openbao/policies/ | grep -Eq '^${SERVICE}(-[a-z0-9]+)?-db-dynamic\.hcl$'"
 
 header "Layer 4: ControlPlane (c5c3) integration"
 check "ServicesSpec has Service…Spec for '${SERVICE}'" \

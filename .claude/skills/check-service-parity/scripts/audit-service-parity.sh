@@ -326,17 +326,17 @@ done
 # ---------------------------------------------------------------------------
 hdr "P7: deploy stack (flux HelmRelease, namespace, kustomization, deploy-infra wiring)"
 for svc in ${SERVICES}; do
-  t=0; [[ -f "deploy/flux-system/releases/${svc}-operator.yaml" ]] || t=1
+  t=0; [[ -f "deploy/bases/operators/releases/${svc}-operator.yaml" ]] || t=1
   check "${svc}" P7 "flux-release" "${t}" \
-    "deploy/flux-system/releases/${svc}-operator.yaml present"
+    "deploy/bases/operators/releases/${svc}-operator.yaml present"
 
-  t=0; grep -qE "name: ${svc}-system" deploy/flux-system/namespaces.yaml || t=1
+  t=0; grep -qE "name: ${svc}-system" deploy/bases/operators/namespaces.yaml || t=1
   check "${svc}" P7 "namespace" "${t}" \
-    "deploy/flux-system/namespaces.yaml declares ${svc}-system"
+    "deploy/bases/operators/namespaces.yaml declares ${svc}-system"
 
-  t=0; grep -qE "^[[:space:]]*-[[:space:]]+${svc}-operator[.]yaml[[:space:]]*$" deploy/flux-system/releases/kustomization.yaml || t=1
+  t=0; grep -qE "^[[:space:]]*-[[:space:]]+${svc}-operator[.]yaml[[:space:]]*$" deploy/bases/operators/releases/kustomization.yaml || t=1
   check "${svc}" P7 "kustomization" "${t}" \
-    "deploy/flux-system/releases/kustomization.yaml lists ${svc}-operator.yaml"
+    "deploy/bases/operators/releases/kustomization.yaml lists ${svc}-operator.yaml"
 
   # hack/deploy-infra.sh carries three literal per-service lists that no gate
   # cross-checks — the failure mode that left glance-operator suspended on the
@@ -359,7 +359,7 @@ for svc in ${SERVICES}; do
   # A HelmRelease consuming a <svc>-operator-image-digest ConfigMap needs the
   # matching OPERATOR_DIGEST_TARGETS tuple, or its :latest image is never
   # digest-pinned and a merged feature does not roll out.
-  if grep -q "${svc}-operator-image-digest" "deploy/flux-system/releases/${svc}-operator.yaml" 2>/dev/null; then
+  if grep -q "${svc}-operator-image-digest" "deploy/bases/operators/releases/${svc}-operator.yaml" 2>/dev/null; then
     t=0; grep -qF "\"${svc}-operator|${svc}-system|" hack/refresh-operator-image-digests.sh || t=1
     check "${svc}" P7 "digest-target" "${t}" \
       "hack/refresh-operator-image-digests.sh OPERATOR_DIGEST_TARGETS covers ${svc}-operator"

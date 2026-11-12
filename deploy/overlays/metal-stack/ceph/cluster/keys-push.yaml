@@ -7,7 +7,7 @@
 # kv-v2/data/ceph/client-cinder and kv-v2/data/ceph/client-cinder-backup.
 # keys-pull.yaml reads them back into openstack.
 #
-# The SecretStore is the shape of deploy/openbao/bootstrap/setup-eso-tenant.sh:
+# The SecretStore is the shape of deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh:
 # an mTLS client Certificate from the ClusterIssuer openbao-ca-issuer, whose
 # Secret also carries the CA, and Kubernetes auth on kubernetes/management as
 # the role push-ceph-keys, which setup-auth.sh binds to the ServiceAccount

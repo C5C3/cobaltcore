@@ -13,7 +13,7 @@
 #
 # This manifest is deployed ONLY from the shared development base
 # (deploy/bases/devstack/base/kustomization.yaml) and NEVER reaches
-# deploy/flux-system/ — an unauthenticated read-only dashboard is a
+# deploy/bases/operators/ — an unauthenticated read-only dashboard is a
 # demo / quick-start affordance, not something we ship to production.
 #
 # Why a standalone Web UI install instead of `spec.web.enabled` on the

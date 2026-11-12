@@ -15,7 +15,7 @@ import sys
 from figlib import Fig, INK, MUTED, PAPER, FRAME_FILL, GREY
 
 OUT = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path(__file__).resolve().parents[2] / "docs" / "diagrams"
-fig = Fig("deploy-overlay-inheritance", "Deployment composition: public stages, compatibility paths, kind and lab", 1808, 2360)
+fig = Fig("deploy-overlay-inheritance", "Deployment composition: canonical bases, kind and metal-stack", 1808, 2360)
 X = (48, 640, 1232)
 W = 528
 
@@ -51,62 +51,25 @@ def section(y, label, detail):
 text(48, 26, "Deployment composition", fs=32, bold=True)
 text(48, 72, "Arrow: a resource directory points to the root that imports it. Composition does not imply readiness or apply order.")
 
-section(126, "Public stages and compatibility aliases", "Deployment repositories reconcile the public stages with their own ordering, patches and retention policies.")
-for x, label in zip(X, ("Retained implementation root", "Public catalog", "Older GitOps import")):
-    text(x, 208, label, fs=24, bold=True)
-
-stages = [
-    ("deploy/flux-system", "deploy/bases/operators", "deploy/gitops/bases/operators"),
-    ("deploy/flux-system/infrastructure/tls", "deploy/bases/tls", "deploy/gitops/bases/tls"),
-    ("deploy/flux-system/releases/openbao", "deploy/bases/shared-openbao", "deploy/gitops/bases/openbao"),
-    ("deploy/eso", "deploy/bases/eso-store", "deploy/gitops/bases/secrets"),
-    ("deploy/flux-system/releases/c5c3-operator", "deploy/bases/controlplane-operator", "deploy/gitops/bases/controlplane-operator"),
-]
-for row, paths in enumerate(stages):
-    y = 252 + 78 * row
-    for x, path in zip(X, paths):
-        fig.box(x, y, W, 58, path, fs=20, fill=PAPER, stroke=GREY)
-    link(y + 29)
-    link(y + 29, 1)
-text(48, 654, "Operators keeps a bounded adapter: excludes FluxInstance, shared OpenBao and c5c3; protects Namespaces from pruning.")
-text(48, 682, "The raw manifest files stay in place. Shared OpenBao's public stage removes the storage-class pin; the environment supplies storage.")
-
-section(744, "Catalog contents, examples and bootstrap inputs", "Leaf catalogs are positive resource lists; they do not create a second owner of the aggregate's objects.")
-card(X[0], 828, "deploy/flux-system", [
-    "sources, releases",
-    "releases/openbao, releases/c5c3-operator",
-    "plus raw namespaces.yaml and fluxinstance.yaml",
-], height=154)
-card(X[1], 828, "deploy/flux-system/infrastructure", [
-    "tls, deploy/eso",
-    "plus raw MariaDB, Memcached and Garage",
-    "Apply once their controllers and CRDs exist.",
-], height=154)
-card(X[2], 828, "deploy/openbao", [
-    "bootstrap, policies",
-    "Package scripts and HCL as ConfigMaps.",
-    "Environment-owned Jobs perform bootstrap.",
-], height=154)
-card(X[0], 1012, "deploy/examples/sizing-overlay", [
-    "root imports deploy/flux-system",
-    "infrastructure imports its infrastructure root",
-    "Template to copy; retains aggregate ownership.",
-], height=154, dashed=True)
-card(X[1], 1012, "deploy/examples/base-customization", [
-    "operators imports deploy/bases/operators",
-    "shared-openbao imports its public stage",
-    "Example controller sizing and storage patches.",
-], height=154, dashed=True)
-card(X[2], 1012, "Composition and readiness are separate", [
-    "Flux controllers must already exist.",
-    "Server TLS precedes OpenBao installation.",
-    "Bootstrap precedes a usable ESO store.",
-], height=154)
+section(126, "Canonical bases", "Every reusable manifest and bootstrap asset lives directly in its owning base. There are no compatibility aliases.")
+card(X[0], 236, "bases/operators", ["namespaces.yaml", "sources/ and releases/", "Protects staged namespaces from pruning"], height=154)
+card(X[1], 236, "bases/flux", ["fluxinstance.yaml", "Runtime installed before operator resources", "No automatic Git synchronization"], height=154)
+card(X[2], 236, "bases/controlplane-operator", ["helmrelease.yaml", "Reconcile after operator/bootstrap gates", "ControlPlane instances belong to overlays"], height=154)
+card(X[0], 448, "bases/tls", ["Certificate and ClusterIssuer manifests", "Requires ready cert-manager", "Precedes shared OpenBao installation"], height=154)
+card(X[1], 448, "bases/shared-openbao", ["helmrelease.yaml", "bootstrap/ scripts and policies/ HCL", "Separate inputs retain their lifecycle gates"], height=154)
+card(X[2], 448, "bases/eso-store", ["clustersecretstore.yaml", "Requires initialized shared OpenBao", "Retains namespace grant boundaries"], height=154)
+card(X[0], 660, "bases/infrastructure", ["Reference MariaDB, Memcached and Garage", "Composes TLS and the shared ESO store", "Requires controller CRDs"], height=154)
+card(X[1], 660, "bases/target-cluster-access", ["Helm chart, templates and intentional CRD copies", "make helm-package-target-cluster", "make verify-crd-sync"], height=154)
+card(X[2], 660, "deploy/examples", ["base-customization: individual stage patches", "sizing-overlay: a staged composition", "Copy into the deployment repository"], height=154)
+section(890, "Ownership and readiness", "A directory import composes objects; it does not wait for dependencies or assign a second Flux owner.")
+card(X[0], 1000, "Deployment repositories", ["Select bases and one environment overlay", "Pin the revision and supply storage choices", "Keep one reconciler per resource identity"], height=154)
+card(X[1], 1000, "Development composition", ["Flux + operators + OpenBao + c5c3", "Environment gateways and storage are separate", "Bootstrap gates remain in make deploy-infra"], height=154)
+card(X[2], 1000, "Path migration", ["Old flux-system/openbao/eso folders removed", "Old GitOps aliases removed", "Update external imports to canonical bases"], height=154)
 
 section(1218, "Sibling environment overlays", "Each environment imports the same shared bases. Gateway, storage and host settings belong to its overlay.")
 for x, label in zip(X, ("Shared bases", "deploy/overlays/kind", "deploy/overlays/metal-stack")):
     text(x, 1300, label, fs=24, bold=True)
-card(X[0], 1344, "deploy/bases/devstack/base", ["Controllers, UI and development sizing", "Includes the retained Flux aggregate"], height=126)
+card(X[0], 1344, "deploy/bases/devstack/base", ["Controllers, UI and development sizing", "Composes Flux, operators, OpenBao and c5c3"], height=126)
 card(X[1], 1344, "base", ["Local gateway and standard storage class", "make deploy-infra, Step 3"], height=126)
 card(X[2], 1344, "base", ["Namespace metadata, storage and Gateway patches", "EXTERNAL_CLUSTER=true, Step 3"], height=126)
 fork(1407, 1344)
@@ -147,7 +110,7 @@ card(X[2], 2090, "Other lab roots (no directory base)", [
     "ceph: WITH_CEPH, Step 3",
     "ceph/cluster: WITH_CEPH, Step 5",
 ], height=206, fs=21)
-text(48, 2314, "Repository callers use canonical paths. Bootstrap policy keys and chart paths are unchanged; keep one owner per resource.")
+text(48, 2314, "Repository callers use canonical paths. Bootstrap policy keys and resource identities are unchanged; keep one owner per resource.")
 
 OUT.mkdir(parents=True, exist_ok=True)
 fig.write(str(OUT / "deploy-overlay-inheritance"))

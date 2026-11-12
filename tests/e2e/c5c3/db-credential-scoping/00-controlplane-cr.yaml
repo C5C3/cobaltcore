@@ -14,7 +14,7 @@
 #   database/mariadb/creds/keystone-{cp.KeystoneNamespace()}
 #     = database/mariadb/creds/keystone-<namespace>
 # (dbDynamicRoleFor, keyed on the namespace alone), whose engine role the test
-# onboards via deploy/openbao/bootstrap/setup-database-tenant.sh.
+# onboards via deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh.
 #
 # ── DECISION: a fresh CR in the suite's own namespace ───────────────────────
 # The suite seeds the plane's admin-password path itself with

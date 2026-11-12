@@ -49,7 +49,7 @@ TEARDOWN_POLL_SECONDS="${TEARDOWN_POLL_SECONDS:-5}"
 
 # The API groups whose CRDs the stack registers: the CobaltCore OpenStack
 # operators (operators/*/config/crd/bases: c5c3.io and <svc>.openstack.c5c3.io),
-# the HelmReleases and Flux Kustomizations of deploy/flux-system, the two
+# the HelmReleases and Flux Kustomizations of deploy/bases/operators, the two
 # bundles hack/deploy-infra.sh installs itself (Gateway API, Envoy Gateway), the
 # kvm.cloud.sap CRDs the charts of the lab hypervisors install
 # (deploy/overlays/metal-stack/hypervisor; Helm leaves them behind), and the
@@ -203,7 +203,7 @@ resume_installed_flux_objects() {
 
 # ---------------------------------------------------------------------------
 # stack_namespaces — The namespaces the stack creates, one per line: every
-# Namespace of deploy/flux-system/namespaces.yaml, the two the kind base files
+# Namespace of deploy/bases/operators/namespaces.yaml, the two the kind base files
 # declare (envoy-gateway-system, headlamp-system), chaos-mesh and dizzy, which
 # the opt-in Chaos Mesh and dizzy overlays declare, rook-ceph, which the lab's
 # Ceph overlay declares, and flux-system. No other namespace is ever deleted.
@@ -211,7 +211,7 @@ resume_installed_flux_objects() {
 # ---------------------------------------------------------------------------
 stack_namespaces() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
-    "${REPO_ROOT}/deploy/flux-system/namespaces.yaml" || return 1
+    "${REPO_ROOT}/deploy/bases/operators/namespaces.yaml" || return 1
   printf '%s\n' envoy-gateway-system headlamp-system chaos-mesh dizzy rook-ceph flux-system
 }
 
@@ -1635,7 +1635,7 @@ teardown_external_cluster() {
   # in step 9.
   local namespace_list namespaces=() namespaces_to_delete=() line
   if ! namespace_list="$(stack_namespaces)"; then
-    log "ERROR: cannot read the stack namespaces from deploy/flux-system/namespaces.yaml (yq's error is above)."
+    log "ERROR: cannot read the stack namespaces from deploy/bases/operators/namespaces.yaml (yq's error is above)."
     exit 1
   fi
   while IFS= read -r line; do

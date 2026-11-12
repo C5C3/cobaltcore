@@ -24,7 +24,7 @@
 #   R7  every <NAME>_VERSION pin that appears in BOTH the Makefile and the
 #       .github/workflows/ci.yaml env block carries the same value (the
 #       Makefile comment "Must be kept in sync" is enforced mechanically)
-#   R8  every HelmRelease chart version under deploy/flux-system/releases/ and
+#   R8  every HelmRelease chart version under deploy/bases/operators/releases/ and
 #       deploy/overlays/kind/ has one owner, the flux manager or a customManager (the
 #       c5c3-charts releases are excluded by design), and is spelled x.y.z or
 #       >=…
@@ -655,7 +655,7 @@ if [[ "${have_jq}" -ne 1 ]]; then
 else
   XYZ_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
   r8_seen=0
-  hr_files=$(grep -rlE --include='*.yaml' '^kind: HelmRelease[[:space:]]*$' deploy/flux-system/releases deploy/bases deploy/overlays/kind 2>/dev/null | sort || true)
+  hr_files=$(grep -rlE --include='*.yaml' '^kind: HelmRelease[[:space:]]*$' deploy/bases deploy/overlays/kind 2>/dev/null | sort || true)
   while IFS= read -r f; do
     [[ -z "${f}" ]] && continue
     # One line per HelmRelease document: the first indented version: value with

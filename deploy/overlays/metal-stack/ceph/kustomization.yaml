@@ -26,7 +26,7 @@
 # /var/lib/rook from the host, and the OSD pods run privileged to open their
 # raw block devices. The client keys leave the namespace only through
 # OpenBao: the push role writes them from rook-ceph, and the one read role is
-# bound to openstack alone (deploy/openbao/bootstrap/setup-auth.sh).
+# bound to openstack alone (deploy/bases/shared-openbao/bootstrap/setup-auth.sh).
 #
 # What the pods leave on a node: every node that ran a mon, an OSD or an OSD
 # prepare job keeps the cluster's state under /var/lib/rook. The node probe

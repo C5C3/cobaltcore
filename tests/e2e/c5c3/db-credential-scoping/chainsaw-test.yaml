@@ -131,7 +131,7 @@ spec:
           if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
             skip_or_fail "shared-services/openbao-0 not present."
           fi
-          # The two deploy/openbao/bootstrap scripts below read the token from
+          # The two deploy/bases/shared-openbao/bootstrap scripts below read the token from
           # their environment.
           export BAO_TOKEN
           BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
@@ -198,7 +198,7 @@ spec:
 
           # ── Seed the per-CR OpenBao path this plane reads ──────────────────
           KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
-            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+            ../../../../deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh
           echo "OK: the per-CR admin-password path is seeded."
 
           # Apply the ControlPlane now that the presence guard passed.
@@ -213,7 +213,7 @@ spec:
           # exits NotFound.
           wait_cp_condition InfrastructureReady 600
           kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=120s
-          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
           unset BAO_TOKEN
           echo "OK: OpenBao database-engine tenant onboarded."
 

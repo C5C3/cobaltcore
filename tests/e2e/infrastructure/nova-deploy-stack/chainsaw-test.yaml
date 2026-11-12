@@ -26,7 +26,7 @@
 # these Secrets arrive with the #1039 suites.
 #
 # Scope gate (`metadata.labels.overlay: kind`): every resource below is a kind
-# overlay artifact. The production stack (deploy/flux-system/) ships neither
+# overlay artifact. The production stack (deploy/bases/operators/) ships neither
 # the certificates nor the database shims nor the Nova listeners, and it leaves
 # the release unsuspended. Non-kind runs exclude this suite with
 # `chainsaw test --selector 'overlay!=kind' tests/e2e/infrastructure/`, the
@@ -49,7 +49,7 @@ spec:
     assert: 5m
   steps:
   # ── Step 1: the operator release is installed and suspended ─────────────
-  # The release itself comes from deploy/flux-system/releases/nova-operator.yaml;
+  # The release itself comes from deploy/bases/operators/releases/nova-operator.yaml;
   # the kind base overlay patches `suspend: true` onto it. A release that
   # reconciles here would install the published chart over the dev image the
   # e2e-operator job installs under the same release name.
@@ -124,7 +124,7 @@ spec:
 
   # ── Step 3: the two database shims sync their Secrets ───────────────────
   # nova-api-db and nova-db read the two standalone OpenBao paths seeded by
-  # deploy/openbao/bootstrap/write-bootstrap-secrets.sh through the per-tenant
+  # deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh through the per-tenant
   # SecretStore openbao-tenant-store. SecretSynced proves the read succeeded;
   # the script then proves the materialized Secrets carry the right SQL user,
   # because a standalone Nova takes the user from the Secret and the two

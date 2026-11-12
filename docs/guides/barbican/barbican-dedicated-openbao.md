@@ -113,7 +113,7 @@ case:
 ```bash
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
-deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN
 ```
 

@@ -35,7 +35,7 @@
 # Scope gating — none. Unlike chaos-mesh-health and prometheus-stack which
 # carry `overlay: kind`, this test is *environment-agnostic*: it asserts an
 # absence invariant that is also true on production overlays
-# (deploy/flux-system/ does not install kube-prometheus-stack — see .planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md follow-up). Adding a kind-only label would defeat the purpose of
+# (deploy/bases/operators/ does not install kube-prometheus-stack — see .planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md follow-up). Adding a kind-only label would defeat the purpose of
 # running it as a non-regression gate on every lane that exercises the
 # default deploy-infra contract.
 #
@@ -71,7 +71,7 @@ spec:
 
           # ── Assertion 1: monitoring namespace is base-owned ──
           # Post- the flux-system base owns the `monitoring` Namespace
-          # (deploy/flux-system/namespaces.yaml) so the always-on
+          # (deploy/bases/operators/namespaces.yaml) so the always-on
           # prometheus-operator-crds HelmRelease — a hard dependency of
           # memcached-operator — has a live target. Its presence on a
           # default-flag cluster is the EXPECTED steady state, not a leak;
@@ -86,7 +86,7 @@ spec:
             echo " Post- the flux-system base MUST own 'monitoring' so the"
             echo "      always-on prometheus-operator-crds HelmRelease has a live target Namespace."
             echo "      Source of regression: 'monitoring' was dropped from"
-            echo "      deploy/flux-system/namespaces.yaml, or monitoring-system was reintroduced."
+            echo "      deploy/bases/operators/namespaces.yaml, or monitoring-system was reintroduced."
             exit 1
           fi
           echo "OK: namespace 'monitoring' is present and base-owned"

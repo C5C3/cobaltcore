@@ -14,13 +14,13 @@
 # storage class. The control that defends a production secret store is the
 # Hardened profile — external-KMS unseal and three replicas — which this
 # instance deliberately opts out of in order to exercise the static-seal path.
-# Shipping it from deploy/flux-system/infrastructure/ would put that posture,
+# Shipping it from deploy/bases/infrastructure/ would put that posture,
 # plus a cluster-scoped RBAC binding and a self-init'd AppRole with no consumer,
 # into every production deployment. The Barbican onboarding is what introduces
 # the production-shaped instance; only the openbao-operator itself ships in the
-# production base (deploy/flux-system/releases/openbao-operator.yaml).
+# production base (deploy/bases/operators/releases/openbao-operator.yaml).
 #
-# Unseal-key custody: the management OpenBao (deploy/flux-system/releases/
+# Unseal-key custody: the management OpenBao (deploy/bases/operators/releases/
 # openbao.yaml) is the root of trust for the instance's static seal.
 #   1. write-bootstrap-secrets.sh seeds a generated 32-byte key at
 #      bootstrap/openstack/openbao-instance/unseal-key.
@@ -60,7 +60,7 @@
 # storage, after which OpenBao revokes the root token. The list below is
 # therefore the complete permanent configuration of this instance: changing it
 # requires recreating the instance, which means deleting the CR AND its PVC.
-# tests/unit/deploy/openbao_instance_overlay_test.sh pins the request names so
+# tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh pins the request names so
 # an edit cannot land without confronting that. Anything a consumer needs at
 # runtime (minting AppRole secret IDs, writing secrets) goes through the
 # provisioner role below, not through this list.
@@ -294,7 +294,7 @@ spec:
           type: approle
       # The AppRole identity Barbican's vault_plugin authenticates with. The
       # TTLs mirror the AppRole role shape on the shared management OpenBao
-      # (deploy/openbao/bootstrap/setup-auth.sh). Minting the secret ID stays
+      # (deploy/bases/shared-openbao/bootstrap/setup-auth.sh). Minting the secret ID stays
       # out of self-init: it is runtime work of the barbican-operator.
       - name: barbican_approle_role
         operation: create
@@ -306,7 +306,7 @@ spec:
           # 30 days, not a year: a secret ID is a bearer credential with no use
           # count and no CIDR bound, so its TTL is the only thing that bounds a
           # leaked one. No automated re-mint exists yet — the shared-instance
-          # twin (deploy/openbao/bootstrap/setup-auth.sh) carries the note on
+          # twin (deploy/bases/shared-openbao/bootstrap/setup-auth.sh) carries the note on
           # what that means operationally and why no use cap is set.
           secret_id_ttl: "720h"
       - name: kubernetes_auth

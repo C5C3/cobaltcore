@@ -10,7 +10,7 @@
 #   - deploy/overlays/kind/base/kustomization.yaml lists flux-web.yaml immediately
 #     after headlamp.yaml, keeping the kind-only overlay the single
 #     entry point for the Web UI demo addon.
-#   - deploy/flux-system/ (production overlay) is NOT affected: no
+#   - deploy/bases/operators/ (production overlay) is NOT affected: no
 #     ResourceSet is rendered and the flux-web string never appears.
 # Usage: bash tests/unit/deploy/kind_base_flux_web_test.sh
 
@@ -29,7 +29,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 FLUX_WEB_FILE="$PROJECT_ROOT/deploy/bases/devstack/base/flux-web.yaml"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 KIND_KUSTOMIZATION="$PROJECT_ROOT/deploy/bases/devstack/base/kustomization.yaml"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 FLUX_SYSTEM_KUSTOMIZATION="$FLUX_SYSTEM_DIR/kustomization.yaml"
 FLUX_SYSTEM_FLUXINSTANCE="$FLUX_SYSTEM_DIR/fluxinstance.yaml"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
@@ -253,7 +253,7 @@ test_kustomization_lists_flux_web() {
 
 # --- Test 5: production overlay has NO flux-web / ResourceSet ---
 test_production_overlay_has_no_flux_web() {
-  echo "Test: kustomize build deploy/flux-system/ renders no ResourceSet and no flux-web string"
+  echo "Test: kustomize build deploy/bases/operators/ renders no ResourceSet and no flux-web string"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"
@@ -280,7 +280,7 @@ test_production_overlay_has_no_flux_web() {
 # --- Test 6: production fluxinstance frozen; kustomization carries no flux-web
 #             leakage ---
 test_production_kustomization_unchanged() {
-  echo "Test: deploy/flux-system/fluxinstance.yaml unchanged vs. origin/main and kustomization.yaml carries no flux-web leakage"
+  echo "Test: deploy/bases/flux/fluxinstance.yaml unchanged vs. origin/main and kustomization.yaml carries no flux-web leakage"
 
   if ! git -C "$PROJECT_ROOT" rev-parse --verify origin/main >/dev/null 2>&1; then
     echo "  SKIP: origin/main ref is not available in this checkout (1 check skipped)"
@@ -290,11 +290,21 @@ test_production_kustomization_unchanged() {
 
   # The FluxInstance spec is frozen — the kind-only flux-web addon must not
   # touch it.
-  local diff_rc=0
-  git -C "$PROJECT_ROOT" diff --quiet origin/main -- \
-    deploy/flux-system/fluxinstance.yaml \
-    || diff_rc=$?
-  assert_eq "fluxinstance.yaml diff against origin/main is empty" "0" "$diff_rc"
+  for tool in yq jq; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "  SKIP: $tool required for moved resource comparison (1 check skipped)"
+      SKIP=$((SKIP + 1))
+      return
+    fi
+  done
+
+  local baseline_flux=deploy/bases/flux/fluxinstance.yaml
+  if ! git -C "$PROJECT_ROOT" cat-file -e "origin/main:$baseline_flux" 2>/dev/null; then
+    baseline_flux=deploy/flux-system/fluxinstance.yaml
+  fi
+  assert_eq "FluxInstance resource data is unchanged across the move" \
+    "$(git -C "$PROJECT_ROOT" show "origin/main:$baseline_flux" | yq -o=json '.' | jq -S '.')" \
+    "$(yq -o=json '.' "$PROJECT_ROOT/deploy/bases/flux/fluxinstance.yaml" | jq -S '.')"
 
   # The production kustomization legitimately grows as operators are added (the
   # documented Extensibility recipe adds each operator's source + release to the

@@ -165,7 +165,7 @@ password has rotated.
 
 On a target cluster the CRD comes from the `target-cluster-access` chart, whose
 `crds/` Helm never upgrades. Apply
-`deploy/target-cluster/target-cluster-access/crds/c5c3.io_keystoneusers.yaml`
+`deploy/bases/target-cluster-access/crds/c5c3.io_keystoneusers.yaml`
 with `kubectl apply -f` on every registered target cluster before the operator
 upgrade (see [Assigned namespaces](../target-clusters.md#assigned-namespaces)).
 Until then that cluster's schema drops `spec.rotation` and

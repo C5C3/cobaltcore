@@ -4,7 +4,7 @@
 
 # Opt-in kind overlay for a nova-compute on nova's fake virt driver. Nothing
 # applies it for you: hack/deploy-infra.sh never does, and the production
-# overlays (deploy/flux-system/kustomization.yaml) do not list it. The reader
+# overlays (deploy/bases/operators/kustomization.yaml) do not list it. The reader
 # of the ControlPlane quick start applies it by hand, once the ControlPlane
 # reports NovaReady=True:
 #

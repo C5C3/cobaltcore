@@ -870,7 +870,7 @@ spec:
             echo "ERROR: could not extract OpenBao root token for tenant onboarding"; exit 1
           fi
           # bao_exec runs a bao command inside openbao-0 with the mTLS client
-          # material (mirrors deploy/openbao/bootstrap/common.sh); reused by the
+          # material (mirrors deploy/bases/shared-openbao/bootstrap/common.sh); reused by the
           # revocation/isolation link below.
           bao_exec() {
             kubectl exec -n shared-services openbao-0 -- \
@@ -879,7 +879,7 @@ spec:
               VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
               VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
           }
-          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
           echo "OK: OpenBao database-engine tenant onboarded."
           wait_cp_condition DBCredentialsReady 300
 
@@ -2009,7 +2009,7 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}")"
 
           # ── Link 6c: glance-db / keystone-db SERVICE isolation ─────────────
-          # deploy/openbao/policies/glance-db-dynamic.hcl claims the two role +
+          # deploy/bases/shared-openbao/policies/glance-db-dynamic.hcl claims the two role +
           # policy pairs are told apart by the ServiceAccount NAME the token
           # carries — glance-db-creds vs keystone-db-creds — and that this holds
           # even for two services CO-LOCATED in one namespace. This suite runs

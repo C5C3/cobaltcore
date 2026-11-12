@@ -11,7 +11,7 @@
 #
 # This manifest is deployed only from the shared development base
 # (deploy/bases/devstack/base/kustomization.yaml) and NEVER reaches
-# deploy/flux-system/ — an unauthenticated web UI has no place in
+# deploy/bases/operators/ — an unauthenticated web UI has no place in
 # production clusters.
 #
 # Access in the quick-start guide is via kubectl port-forward + a

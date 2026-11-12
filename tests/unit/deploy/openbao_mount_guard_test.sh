@@ -21,14 +21,14 @@
 # that reads the whole list passes whatever the timing; a guard that stops at
 # the first match fails here on any jq.
 #
-# Usage: bash tests/unit/deploy/openbao_mount_guard_test.sh
+# Usage: bash tests/unit/deploy/bases/shared-openbao_mount_guard_test.sh
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-ENGINES_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-secret-engines.sh"
-AUTH_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-auth.sh"
+ENGINES_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh"
+AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
 
 # The engine and auth maps of an instance both scripts have already run
 # against: every mount they enable, plus the ones OpenBao always carries.

@@ -26,7 +26,6 @@
   },
   "flux": {
     "managerFilePatterns": [
-      "/^deploy/flux-system/(releases|sources)/.+\\.yaml$/",
       "/^deploy/bases/.+\\.yaml$/",
       "/^deploy/overlays/kind/.+\\.yaml$/",
       "/^deploy/overlays/metal-stack/ceph/(release|source)\\.yaml$/"
@@ -201,7 +200,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/flux-system/sources/k-orc\\.yaml$/"
+        "/deploy/bases/operators/sources/k-orc\\.yaml$/"
       ],
       "matchStrings": [
         "commit:\\s*(?<currentDigest>[a-f0-9]{40})"
@@ -214,7 +213,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/flux-system/releases/k-orc\\.yaml$/"
+        "/deploy/bases/operators/releases/k-orc\\.yaml$/"
       ],
       "matchStrings": [
         "newTag:\\s*branch-main\\s+digest:\\s*(?<currentDigest>sha256:[a-f0-9]{64})"
@@ -226,7 +225,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/flux-system/sources/openbao-operator\\.yaml$/"
+        "/deploy/bases/operators/sources/openbao-operator\\.yaml$/"
       ],
       "matchStrings": [
         "tag: \"(?<currentValue>[^\"]+)\"\\n\\s*digest: \"(?<currentDigest>sha256:[a-f0-9]{64})\""
@@ -239,7 +238,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/flux-system/sources/rabbitmq-cluster-operator\\.yaml$/"
+        "/deploy/bases/operators/sources/rabbitmq-cluster-operator\\.yaml$/"
       ],
       "matchStrings": [
         "tag: \"(?<currentValue>v[^\"]+)\"\\n\\s*commit: \"(?<currentDigest>[a-f0-9]{40})\""
@@ -252,7 +251,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/flux-system/releases/rabbitmq-cluster-operator\\.yaml$/"
+        "/deploy/bases/operators/releases/rabbitmq-cluster-operator\\.yaml$/"
       ],
       "matchStrings": [
         "newTag: \"(?<currentValue>[^\"]+)\"\\n\\s*digest: \"(?<currentDigest>sha256:[a-f0-9]{64})\""
@@ -265,7 +264,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/flux-system/sources/messaging-topology-operator\\.yaml$/"
+        "/deploy/bases/operators/sources/messaging-topology-operator\\.yaml$/"
       ],
       "matchStrings": [
         "tag: \"(?<currentValue>v[^\"]+)\"\\n\\s*commit: \"(?<currentDigest>[a-f0-9]{40})\""
@@ -278,7 +277,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/flux-system/releases/messaging-topology-operator\\.yaml$/"
+        "/deploy/bases/operators/releases/messaging-topology-operator\\.yaml$/"
       ],
       "matchStrings": [
         "newTag: \"(?<currentValue>[^\"]+)\"\\n\\s*digest: \"(?<currentDigest>sha256:[a-f0-9]{64})\""
@@ -763,7 +762,7 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/flux-system/sources/openbao-operator.yaml"],
+      "matchFileNames": ["deploy/bases/operators/sources/openbao-operator.yaml"],
       "matchPackageNames": ["ghcr.io/dc-tec/charts/openbao-operator"],
       "automerge": false,
       "minimumReleaseAge": "3 days",
@@ -771,7 +770,7 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/flux-system/sources/rabbitmq-cluster-operator.yaml"],
+      "matchFileNames": ["deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml"],
       "matchPackageNames": ["rabbitmq/cluster-operator"],
       "automerge": false,
       "minimumReleaseAge": "3 days",
@@ -779,7 +778,7 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"],
+      "matchFileNames": ["deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml"],
       "matchPackageNames": ["ghcr.io/rabbitmq/cluster-operator"],
       "automerge": false,
       "minimumReleaseAge": "3 days",
@@ -787,7 +786,7 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/flux-system/sources/messaging-topology-operator.yaml"],
+      "matchFileNames": ["deploy/bases/operators/sources/messaging-topology-operator.yaml"],
       "matchPackageNames": ["rabbitmq/messaging-topology-operator"],
       "automerge": false,
       "minimumReleaseAge": "3 days",
@@ -795,7 +794,7 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/flux-system/releases/messaging-topology-operator.yaml"],
+      "matchFileNames": ["deploy/bases/operators/releases/messaging-topology-operator.yaml"],
       "matchPackageNames": ["ghcr.io/rabbitmq/messaging-topology-operator"],
       "automerge": false,
       "minimumReleaseAge": "3 days",
@@ -1277,13 +1276,13 @@
       "description": "Files a customManager reads: one owner per pin",
       "matchManagers": ["flux"],
       "matchFileNames": [
-        "deploy/flux-system/sources/k-orc.yaml",
-        "deploy/flux-system/sources/messaging-topology-operator.yaml",
-        "deploy/flux-system/sources/openbao-operator.yaml",
-        "deploy/flux-system/sources/rabbitmq-cluster-operator.yaml",
-        "deploy/flux-system/releases/k-orc.yaml",
-        "deploy/flux-system/releases/messaging-topology-operator.yaml",
-        "deploy/flux-system/releases/rabbitmq-cluster-operator.yaml",
+        "deploy/bases/operators/sources/k-orc.yaml",
+        "deploy/bases/operators/sources/messaging-topology-operator.yaml",
+        "deploy/bases/operators/sources/openbao-operator.yaml",
+        "deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml",
+        "deploy/bases/operators/releases/k-orc.yaml",
+        "deploy/bases/operators/releases/messaging-topology-operator.yaml",
+        "deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml",
         "deploy/bases/devstack/base/flux-web.yaml",
         "deploy/bases/devstack/infrastructure/openbao-instance.yaml",
         "deploy/bases/nfs/nfs-server.yaml"

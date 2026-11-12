@@ -19,7 +19,7 @@
 # Phase 1; applying this resource before Phase 4 ("wait HelmReleases
 # Ready") would fail with `no matches for kind "Certificate"`.
 # The same reasoning applies to the `selfsigned-cluster-issuer`
-# ClusterIssuer it references (deploy/flux-system/infrastructure/
+# ClusterIssuer it references (deploy/bases/infrastructure/
 # cluster-issuer.yaml) — also a Phase-2 resource.
 #
 # Self-signed is correct for a kind quick-start cluster (single-user

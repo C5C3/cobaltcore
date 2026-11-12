@@ -136,7 +136,7 @@ func TestAssignedNamespaceKindsAreTheOrderKindsAndTheSecret(t *testing.T) {
 
 // assignedRolePath is the access chart's template of the Role every assigned
 // namespace on a target gets.
-const assignedRolePath = "../../deploy/target-cluster/target-cluster-access/templates/role-assigned.yaml"
+const assignedRolePath = "../../deploy/bases/target-cluster-access/templates/role-assigned.yaml"
 
 // TestAssignedNamespaceKindsAreReadableUnderTheAssignedRole checks every kind in
 // assignedNamespaceKinds against the rules of the access chart's assigned Role.

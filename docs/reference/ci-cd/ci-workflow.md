@@ -89,12 +89,12 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
 | `tests_e2e_<op>` | `tests/e2e/<op>/**` and `tests/e2e/<op>-operator/**` (`tests/e2e/c5c3/**` and `tests/e2e/c5c3-operator/**` for c5c3); `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova); for ovn and neutron the three shared scripts their suites run, `tests/e2e/lib/assert-operator-env-clean.sh`, `assert-operator-metric-families.sh` and `assert-steady-state-events.sh`, and for both also `tests/e2e/lib/assert-networkpolicy-enforced.sh`, the NetworkPolicy probe their `network-policy-egress` suites and neutron's `network-policy` suite run; and the first two of them for c5c3, whose `env-key-material` suite runs the scan and whose `sizing-profile` suite runs the metric-family check | that operator's `e2e-operator` leg |
 | `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/overlays/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
-| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
+| `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/bases/target-cluster-access/**` | the job that runs it |
 | `tests_chaos_random` | `tests/chaos-random/**`, `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`, `deploy/overlays/metal-stack/dizzy-soak/**`, `tests/e2e-chaos/lib/consistency.sh` | `e2e-chaos-random` |
 | `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
 | `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`; keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls, and `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**` with the `tests/e2e-chaos/lib/workload.sh` and `workload.py` that suite calls | that operator's `e2e-operator-upgrade` job |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
-| `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/openbao/**` adds the barbican leg |
+| `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/bases/shared-openbao/**` adds the barbican leg |
 | `actionlint` | `.github/**` | `actionlint` |
 | `docs`, `helm`, `target_cluster_chart` | as before | `docs` and `docs-overlay`, `helm-validate`, `helm-push-target-cluster` |
 | `publish_legacy` | the wide paths a push publishes from | push events only, ignored on pull requests |
@@ -846,7 +846,7 @@ validated without editing the job.
 
 **Dependencies:** `needs: [changes]`
 **Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'`
-**Path filter:** `operators/*/helm/**`, `deploy/target-cluster/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `hack/verify-helm-released-values.sh`, `hack/helm-removed-values.yaml`, `Makefile` (forced `true` on `v*` tag pushes)
+**Path filter:** `operators/*/helm/**`, `deploy/bases/target-cluster-access/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `hack/verify-helm-released-values.sh`, `hack/helm-removed-values.yaml`, `Makefile` (forced `true` on `v*` tag pushes)
 
 | Step | Action | Details |
 | --- | --- | --- |
@@ -860,7 +860,7 @@ validated without editing the job.
 | 8 | `helm template` (7 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
 | 9 | `helm unittest` | Runs the unit test suites under each chart's `tests/` directory |
 | 10 | `make verify-helm-released-values` | Renders every operator chart with the `values.yaml` of its released chart from `oci://ghcr.io/c5c3/charts` and fails when the chart rejects them; `hack/helm-removed-values.yaml` waives an intended removal |
-| 11 | Validate target-cluster-access chart | Runs `helm lint`, `helm template` (3 scenarios) and `helm unittest` on `deploy/target-cluster/target-cluster-access` |
+| 11 | Validate target-cluster-access chart | Runs `helm lint`, `helm template` (3 scenarios) and `helm unittest` on `deploy/bases/target-cluster-access` |
 
 **Template scenarios (step 8), run against each chart:**
 
@@ -1975,7 +1975,7 @@ database-engine roles itself, and deletes its planes before the next step.
 OpenBao with per-CR admin-password seeding, the ESO ClusterSecretStore) and
 suspends the Flux ControlPlane stack, so the dev-image operators deployed by the
 subsequent steps own the reconcile. K-ORC is applied by `hack/ci-deploy-korc.sh`
-at the tag pinned in `deploy/flux-system/sources/k-orc.yaml`.
+at the tag pinned in `deploy/bases/operators/sources/k-orc.yaml`.
 
 `setup-e2e-infra` also carries `WITH_NFS: "true"` and `WITH_MESSAGING: "true"`,
 neither of which `deploy-infra.sh` installs by default. The seventh service, Cinder,
@@ -2246,7 +2246,7 @@ its `needs`.
 | 10 | `Deploy barbican-operator` | The same script with `OPERATOR: barbican`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator` and `NAMESPACE: barbican-system` |
 | 11 | `Deploy ovn-operator` | The same script with `OPERATOR: ovn`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator` and `NAMESPACE: ovn-system`. No other operator in the job writes a StatefulSet or a PersistentVolumeClaim to the target, so this one exercises those two grants of the chart |
 | 12 | `Deploy neutron-operator` | The same script with `OPERATOR: neutron`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator` and `NAMESPACE: neutron-system`. It follows the ovn-operator, which installs the `OVNCentral` CRD |
-| 13 | `Install the target-cluster-access chart on the target` | `helm install` of `deploy/target-cluster/target-cluster-access` as the release `target-cluster-access` in the namespace `c5c3-access`, with `--kube-context "kind-$TARGET_CLUSTER"`, `--create-namespace`, `--set 'namespaces={openstack}'` and `--set createNamespaces=false`. The `openstack` namespace already exists from step 6 |
+| 13 | `Install the target-cluster-access chart on the target` | `helm install` of `deploy/bases/target-cluster-access` as the release `target-cluster-access` in the namespace `c5c3-access`, with `--kube-context "kind-$TARGET_CLUSTER"`, `--create-namespace`, `--set 'namespaces={openstack}'` and `--set createNamespaces=false`. The `openstack` namespace already exists from step 6 |
 | 14 | `Register the target cluster` | Reads the token from the Secret `target-cluster-access-token` in `c5c3-access`, with up to 30 tries 2 seconds apart, and fails with an `::error::` when it stays empty. Builds a kubeconfig from that token, the Secret's `ca.crt` and the server URL of `kind get kubeconfig --internal`. On the management cluster it creates the namespace `c5c3-clusters` and the Secret `cobaltcore-target` with the keys `kubeconfig` and `namespaces=openstack`, and labels the Secret `sigs.k8s.io/multicluster-runtime-kubeconfig=true` |
 | 15 | `Write the chainsaw kubeconfig for the target cluster` | Writes the admin kubeconfig of the target to `_output/cobaltcore-target.kubeconfig`. Chainsaw asserts on the target with it. The operators read the registration Secret of step 14 |
 | 16 | `Run the two-cluster E2E suite` | Creates `_output/reports`, switches the `kubectl` context to `kind-$MGMT_CLUSTER` and runs `make e2e-multicluster`. The target checks that a cluster answers, that the Secret `cobaltcore-target` exists in `c5c3-clusters` and that the chainsaw kubeconfig exists. Then it runs `chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/` |
@@ -2258,7 +2258,7 @@ its `needs`.
 `tests/e2e-multicluster/chainsaw-config.yaml` sets `parallel: 1` and an `assert`
 timeout of `300s`, and writes the JUnit report to `_output/reports`.
 
-**Path filter:** `tests/e2e-multicluster/**` and `deploy/target-cluster/**` (the
+**Path filter:** `tests/e2e-multicluster/**` and `deploy/bases/target-cluster-access/**` (the
 `tests_multicluster` class), or the `ci:multicluster` label.
 `hack/ci-resolve-changes.sh` reads no operator class and no image class for this
 flag, so a change to one of the four operators alone does not schedule the job.
@@ -2311,7 +2311,7 @@ references. `cleanup-e2e-tags` lists the job in its `needs`.
 | 8 | `Deploy keystone-operator` | `hack/ci-deploy-operator.sh` with `OPERATOR: keystone`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator` and `NAMESPACE: keystone-system` |
 | 9 | `Deploy c5c3-operator` | The same script with `OPERATOR: c5c3`, `IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/c5c3-operator` and `NAMESPACE: c5c3-system` |
 | 10 | `Create the assigned namespaces on the target` | `kubectl --context "kind-$TARGET_CLUSTER" create namespace` for `orders-tenant` and `orders-outsider`. The chart creates no assigned namespace |
-| 11 | `Install the target-cluster-access chart on the target` | `helm install` of `deploy/target-cluster/target-cluster-access` as the release `target-cluster-access` in the namespace `c5c3-access`, with `--kube-context "kind-$TARGET_CLUSTER"`, `--create-namespace`, `--set 'namespaces={openstack}'` and `--set 'assignedNamespaces={orders-tenant,orders-outsider}'`. The default `createNamespaces=true` creates `openstack`, which the bare target lacks |
+| 11 | `Install the target-cluster-access chart on the target` | `helm install` of `deploy/bases/target-cluster-access` as the release `target-cluster-access` in the namespace `c5c3-access`, with `--kube-context "kind-$TARGET_CLUSTER"`, `--create-namespace`, `--set 'namespaces={openstack}'` and `--set 'assignedNamespaces={orders-tenant,orders-outsider}'`. The default `createNamespaces=true` creates `openstack`, which the bare target lacks |
 | 12 | `Register the target cluster` | The registration of `e2e-multicluster`: the token and `ca.crt` of the Secret `target-cluster-access-token`, the server URL of `kind get kubeconfig --internal`, and on the management cluster the namespace `c5c3-clusters` and the Secret `cobaltcore-target` with the keys `kubeconfig`, `namespaces=openstack` and `assignedNamespaces=orders-tenant,orders-outsider`, labelled `sigs.k8s.io/multicluster-runtime-kubeconfig=true` |
 | 13 | `Wait for both operators to engage the target` | Reads the logs of the keystone-operator in `keystone-system` and of the c5c3-operator in `c5c3-system` every 5 seconds, for up to 180 seconds, until each holds a `cluster engaged` line for `cobaltcore-target`, and fails with an `::error::` otherwise. Engagement waits for no informer the controllers start on the target, so the step proves the engagement alone; step 16 checks the keystone-operator's scope |
 | 14 | `Write the chainsaw kubeconfig for the target cluster` | Writes the admin kubeconfig of the target to `_output/cobaltcore-target.kubeconfig`. Chainsaw reaches the target with it. The operators read the registration Secret of step 12 |
@@ -2326,7 +2326,7 @@ references. `cleanup-e2e-tags` lists the job in its `needs`.
 `assert` timeout of `300s`, and writes the JUnit report
 `chainsaw-orders-multicluster-report` to `_output/reports`.
 
-**Path filter:** `tests/e2e-orders-multicluster/**` and `deploy/target-cluster/**`
+**Path filter:** `tests/e2e-orders-multicluster/**` and `deploy/bases/target-cluster-access/**`
 (the `tests_orders_multicluster` class), `operators/c5c3/**` (the `c5c3` class,
 which schedules the ControlPlane jobs too), or the `ci:controlplane` or
 `ci:multicluster` label. A change to the keystone-operator or a shared Go change
@@ -2655,7 +2655,7 @@ the same registry tag.
 **Permissions:** `contents: read`, `packages: write`
 
 `hack/ci-resolve-changes.sh` sets `target-cluster-chart` when the
-`target_cluster_chart` class (`deploy/target-cluster/**`) changed, and forces it
+`target_cluster_chart` class (`deploy/bases/target-cluster-access/**`) changed, and forces it
 on for a `v*` tag push.
 
 | Step | Action | Details |
@@ -2673,7 +2673,7 @@ on for a `v*` tag push.
 | Push v* tag | The tag name without its `v` prefix, passed as `CHART_VERSION="${GITHUB_REF_NAME#v}"` |
 
 The `make helm-package-target-cluster` target packages
-`deploy/target-cluster/target-cluster-access/`. When `CHART_VERSION` is set, the
+`deploy/bases/target-cluster-access/`. When `CHART_VERSION` is set, the
 target passes it to `helm package` as `--version`, which overrides the version in
 `Chart.yaml`. The target runs no `helm dependency build`, because the chart has
 no subchart.

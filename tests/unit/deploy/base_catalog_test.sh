@@ -5,7 +5,7 @@
 
 # Exercise the public deployment stages as a consumer would: render under the
 # default load restrictions, check ownership and references across stages, and
-# retain the legacy entry points. Use real dashboard data in a temporary copy;
+# require all reusable assets to live in bases. Use real dashboard data in a temporary copy;
 # this test neither contacts a cluster nor changes a developer's staged assets.
 
 set -euo pipefail
@@ -60,18 +60,14 @@ UNIQUE_IDENTITIES='def identity:
    .kind, .metadata.namespace // "", .metadata.name];
   length == (unique_by(identity) | length)'
 
-echo "Test: public stage inventory and compatibility entry points"
-for pair in operators:operators tls:tls shared-openbao:openbao eso-store:secrets \
-  controlplane-operator:controlplane-operator; do
-  public="${pair%%:*}"
-  legacy="${pair#*:}"
+echo "Test: public stage inventory"
+for public in operators tls shared-openbao eso-store controlplane-operator; do
   render "deploy/bases/$public" "$TEST_ROOT/public-$public"
-  render "deploy/gitops/bases/$legacy" "$TEST_ROOT/legacy-$legacy"
-  assert_eq "$public preserves its legacy GitOps entry point" \
-    "$(cat "$TEST_ROOT/legacy-$legacy.json")" "$(cat "$TEST_ROOT/public-$public.json")"
   assert_json "$public has unique resource identities" \
     "$TEST_ROOT/public-$public.json" "$UNIQUE_IDENTITIES"
 done
+assert_eq "deployment root contains only bases, overlays and examples" \
+  "bases examples overlays" "$(find "$PROJECT_ROOT/deploy" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | paste -sd ' ' -)"
 
 OPERATORS="$TEST_ROOT/public-operators.json"
 assert_json "operators contain only namespaces, sources and operator reconciliation objects" \
@@ -159,27 +155,24 @@ assert_eq "the operator example preserves all other operators and Keystone setti
   "$(jq -S "$WITHOUT_KEYSTONE_SIZING" "$OPERATORS")" \
   "$(jq -S "$WITHOUT_KEYSTONE_SIZING" "$TEST_ROOT/customized-operators.json")"
 
-echo "Test: legacy bootstrap files remain independently consumable"
-canonicalize < "$PROJECT_ROOT/deploy/flux-system/namespaces.yaml" > "$TEST_ROOT/raw-namespaces.json"
+echo "Test: bootstrap files remain independently consumable"
+canonicalize < "$PROJECT_ROOT/deploy/bases/operators/namespaces.yaml" > "$TEST_ROOT/raw-namespaces.json"
 assert_json "raw namespace file remains a nonempty Namespace stream" \
   "$TEST_ROOT/raw-namespaces.json" 'length > 0 and all(.[]; .kind == "Namespace")'
-canonicalize < "$PROJECT_ROOT/deploy/flux-system/fluxinstance.yaml" > "$TEST_ROOT/raw-fluxinstance.json"
+canonicalize < "$PROJECT_ROOT/deploy/bases/flux/fluxinstance.yaml" > "$TEST_ROOT/raw-fluxinstance.json"
 assert_json "raw FluxInstance remains the bootstrap CR without automatic Git synchronization" \
   "$TEST_ROOT/raw-fluxinstance.json" 'length == 1 and .[0].kind == "FluxInstance" and
     .[0].metadata.name == "flux" and .[0].metadata.namespace == "flux-system" and
     (.[0].spec | has("sync") | not)'
-render "deploy/flux-system" "$TEST_ROOT/legacy-root"
-assert_json "legacy aggregate still includes Flux bootstrap and the delayed releases" \
-  "$TEST_ROOT/legacy-root.json" '([.[] | select(.kind == "FluxInstance")] | length) == 1 and
-    ([.[] | select(.kind == "HelmRelease" and .metadata.name == "openbao" and
-      .metadata.namespace == "shared-services")] | length) == 1 and
-    ([.[] | select(.kind == "HelmRelease" and .metadata.name == "c5c3-operator" and
-      .metadata.namespace == "c5c3-system")] | length) == 1'
+render "deploy/bases/flux" "$TEST_ROOT/flux-runtime"
+assert_eq "the Flux base owns exactly the independently applied runtime CR" \
+  "$(cat "$TEST_ROOT/raw-fluxinstance.json")" "$(cat "$TEST_ROOT/flux-runtime.json")"
+
 for raw in cert-manager external-secrets garage-operator mariadb-operator openbao \
   c5c3-charts k-orc openbao-operator prometheus-community rabbitmq-cluster-operator \
   messaging-topology-operator; do
-  canonicalize < "$PROJECT_ROOT/deploy/flux-system/sources/$raw.yaml" > "$TEST_ROOT/raw-source.json"
-  assert_json "$raw source remains readable at its raw compatibility path" \
+  canonicalize < "$PROJECT_ROOT/deploy/bases/operators/sources/$raw.yaml" > "$TEST_ROOT/raw-source.json"
+  assert_json "$raw source remains readable inside its owning base" \
     "$TEST_ROOT/raw-source.json" 'length == 1 and
       (.[0].kind == "HelmRepository" or .[0].kind == "GitRepository" or .[0].kind == "OCIRepository")'
 done

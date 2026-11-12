@@ -9,7 +9,7 @@
 #   - the chart URL oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator
 #     is cited in that subsection
 #   - the Renovate customManager / pin story is mentioned
-#   - an explicit note clarifies that deploy/flux-system/kustomization.yaml
+#   - an explicit note clarifies that deploy/bases/operators/kustomization.yaml
 #     does NOT reference this file (production stays opt-out)
 #   - the document still parses as a sequence of well-formed Markdown
 #     headers (monotonically non-decreasing depth, no malformed '#' lines)
@@ -97,11 +97,11 @@ test_renovate_cross_reference() {
 # --- Test 7: explicit note that production flux-system does NOT reference
 #             this file ---
 test_production_opt_out_note() {
-  echo "Test: the flux-web subsection notes that deploy/flux-system/kustomization.yaml does not reference this file"
+  echo "Test: the flux-web subsection notes that deploy/bases/operators/kustomization.yaml does not reference this file"
 
   assert_file_contains "production kustomization opt-out note present" \
     "$MANIFESTS_DOC" \
-    'deploy/flux-system/kustomization.yaml'
+    'deploy/bases/operators/kustomization.yaml'
 }
 
 # --- Test 8: Kind Overlay Demo Addons heading present ---

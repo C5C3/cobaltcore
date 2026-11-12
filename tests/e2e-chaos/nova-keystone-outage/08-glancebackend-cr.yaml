@@ -4,7 +4,7 @@
 
 # Default S3 image store for the glance-nova-ks-chaos CR. It points at
 # the in-cluster Garage S3 endpoint
-# (deploy/flux-system/infrastructure/garage.yaml):
+# (deploy/bases/infrastructure/garage.yaml):
 # the GarageCluster "garage" listens on port 3900 with SigV4 region "garage",
 # the glance-images bucket is pre-created, and the garage-s3-credentials Secret
 # is ESO-synced (deploy/overlays/kind/infrastructure). glance-api registers no store

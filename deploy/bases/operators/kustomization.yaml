@@ -2,32 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Compatibility adapter for the shared raw namespaces.yaml contract.
-# Default Kustomize load restrictions prohibit referencing that file from here;
-# retain the bounded exclusions instead of copying namespaces or breaking raw
-# callers. Sources and operator releases themselves are composed directly.
-# See ../../README.md#reusable-bases for ownership and prerequisites.
-
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - ../../flux-system
+  - namespaces.yaml
+  - sources
+  - releases
 patches:
-  - patch: |-
-      apiVersion: fluxcd.controlplane.io/v1
-      kind: FluxInstance
-      metadata: {name: flux, namespace: flux-system}
-      $patch: delete
-  - patch: |-
-      apiVersion: helm.toolkit.fluxcd.io/v2
-      kind: HelmRelease
-      metadata: {name: openbao, namespace: shared-services}
-      $patch: delete
-  - patch: |-
-      apiVersion: helm.toolkit.fluxcd.io/v2
-      kind: HelmRelease
-      metadata: {name: c5c3-operator, namespace: c5c3-system}
-      $patch: delete
   - target:
       kind: Namespace
     patch: |-

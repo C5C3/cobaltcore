@@ -27,7 +27,7 @@
 # caller in hack/deploy-infra.sh — same constraint that drove the chaos-mesh
 # and kube-prometheus-stack overlays in.
 #
-# Production overlays (deploy/flux-system/kustomization.yaml) do not list any
+# Production overlays (deploy/bases/operators/kustomization.yaml) do not list any
 # of the resources in this directory — metrics-server is a kind-only
 # convenience for the HPA / autoscaling recipe. Managed distributions ship
 # their own metrics-server; production clusters bring their own.

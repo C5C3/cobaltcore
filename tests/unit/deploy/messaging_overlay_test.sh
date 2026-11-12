@@ -13,7 +13,7 @@
 #   - That broker carries the sizing the 4-vCPU kind node has room for: one
 #     replica, 100m CPU and 1Gi memory requested, 1Gi memory limited, and no
 #     CPU limit (a limit would throttle the broker during a suite).
-#   - kustomize build of deploy/flux-system, deploy/overlays/kind/base and
+#   - kustomize build of deploy/bases/operators, deploy/overlays/kind/base and
 #     deploy/overlays/kind/infrastructure renders ZERO RabbitmqCluster documents
 #     (default posture: no broker unless the overlay is asked for).
 # Usage: bash tests/unit/deploy/messaging_overlay_test.sh
@@ -30,7 +30,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
 KIND_MESSAGING_DIR="$PROJECT_ROOT/deploy/overlays/kind/messaging"
@@ -201,7 +201,7 @@ test_broker_sizing() {
 
 # --- Tests 5-7: default posture renders no broker ---
 test_flux_system_renders_no_broker() {
-  echo "Test: kustomize build deploy/flux-system renders no RabbitmqCluster"
+  echo "Test: kustomize build deploy/bases/operators renders no RabbitmqCluster"
   assert_renders_no_broker "the production overlay" "$FLUX_SYSTEM_DIR"
 }
 

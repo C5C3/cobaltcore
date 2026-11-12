@@ -26,7 +26,7 @@
 #   primary end-to-end coverage of the default posture.
 #
 # Scope gating — none. This absence invariant is also true on production
-# overlays (deploy/flux-system/ does not install the dizzy stack at all), so the
+# overlays (deploy/bases/operators/ does not install the dizzy stack at all), so the
 # test is environment-agnostic like no-metrics-server-when-disabled.
 #
 # Why a single script and not declarative `error` blocks: asserting "no
@@ -76,7 +76,7 @@ spec:
                   -n flux-system >/dev/null 2>&1; then
               echo "FAIL: HelmRepository '${repo}' exists in 'flux-system' on a default cluster."
               echo "      Source of regression: the dizzy overlay was applied without"
-              echo "      WITH_DIZZY=true, or a source was pulled into deploy/flux-system."
+              echo "      WITH_DIZZY=true, or a source was pulled into deploy/bases/operators."
               exit 1
             fi
             echo "OK: no HelmRepository '${repo}' in 'flux-system'"

@@ -161,12 +161,12 @@ test_kind_only_subsection_points_at_overlay_file() {
     "$subsection" \
     "deploy/overlays/kind/chaos-mesh/kustomization.yaml"
 
-  # Also check that the obsolete deploy/flux-system/releases/chaos-mesh.yaml
+  # Also check that the obsolete deploy/bases/operators/releases/chaos-mesh.yaml
   # path (used pre-) is NOT cited as the primary file in the
   # subsection's "File:" line. The on-disk file is reused from the kind
   # overlay, which the subsection prose can mention, but the **File:**
   # marker should point at the new overlay-root kustomization.
-  if grep -qE '^\*\*File:\*\*[[:space:]]+`deploy/flux-system/releases/chaos-mesh\.yaml`' <<<"$subsection"; then
+  if grep -qE '^\*\*File:\*\*[[:space:]]+`deploy/bases/operators/releases/chaos-mesh\.yaml`' <<<"$subsection"; then
     echo "  FAIL: subsection 'File:' marker still points at the legacy production-base release path"
     FAIL=$((FAIL + 1))
   else

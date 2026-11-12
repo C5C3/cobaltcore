@@ -40,7 +40,7 @@
 # Deploys full infrastructure stack to kind cluster.
 # Applies manifests in two phases with health waits between.
 # Invokes existing OpenBao bootstrap scripts from
-#   deploy/openbao/bootstrap/.
+#   deploy/bases/shared-openbao/bootstrap/.
 # set -euo pipefail, SPDX Apache-2.0 header, feature ID.
 # Configurable timeouts via environment variables.
 # envoy-gateway HelmRelease is gated in Phase 3 and a
@@ -516,11 +516,11 @@ ENVOY_GATEWAY_CRDS_URL="${ENVOY_GATEWAY_CRDS_URL:-https://github.com/envoyproxy/
 # via renovate.json custom managers.
 FLUX_OPERATOR_VERSION="v0.61.0"
 
-# OpenBao init parameters (match deploy/openbao/bootstrap/init-unseal.sh)
+# OpenBao init parameters (match deploy/bases/shared-openbao/bootstrap/init-unseal.sh)
 KEY_SHARES=5
 KEY_THRESHOLD=3
 # OPENBAO_NAMESPACE is the namespace the OpenBao server runs in. The bootstrap
-# scripts (deploy/openbao/bootstrap/) resolve the same OPENBAO_NAMESPACE env var
+# scripts (deploy/bases/shared-openbao/bootstrap/) resolve the same OPENBAO_NAMESPACE env var
 # in common.sh (same 'shared-services' default), so setting it once configures
 # both layers — the export below propagates it to the child scripts. The generic
 # NAMESPACE env var is deliberately NOT honored: chainsaw injects
@@ -536,7 +536,7 @@ SECRET_NAME="openbao-init-keys"
 
 # ---------------------------------------------------------------------------
 # log — Print a timestamped log message (ISO 8601 UTC).
-# Matches the pattern from deploy/openbao/bootstrap/common.sh.
+# Matches the pattern from deploy/bases/shared-openbao/bootstrap/common.sh.
 # ---------------------------------------------------------------------------
 log() {
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"
@@ -678,7 +678,7 @@ dump_pod_logs() {
 # a request.
 #
 # On an install, HelmRelease/cert-manager Ready includes the chart's
-# startup API check, which deploy/flux-system/releases/cert-manager.yaml
+# startup API check, which deploy/bases/operators/releases/cert-manager.yaml
 # enables: its post-install Job waits for the admission path that the
 # first ClusterIssuer create takes, and helm-controller waits for the Job.
 # An upgrade runs no post-install hook, so there, and with the check off,
@@ -2124,7 +2124,7 @@ relocated_object_exists() {
 # namespace-scoped StatefulSet PVCs, so the move does not carry the data over:
 # this script brings up EMPTY volumes in shared-services and nothing prunes what
 # stays behind. `kubectl apply -k` (Step 3/5) does not prune, and
-# deploy/flux-system/fluxinstance.yaml declares no spec.sync, so Flux never
+# deploy/bases/flux/fluxinstance.yaml declares no spec.sync, so Flux never
 # reconciles-and-prunes the repo either.
 #
 # Left in place, the retired OpenBao namespace keeps a second, unsealed instance
@@ -2800,7 +2800,7 @@ openbao_bootstrap() {
 
   log "Root token extracted. Running bootstrap scripts..."
 
-  local bootstrap_dir="${REPO_ROOT}/deploy/openbao/bootstrap"
+  local bootstrap_dir="${REPO_ROOT}/deploy/bases/shared-openbao/bootstrap"
   local scripts=(
     setup-secret-engines.sh
     setup-auth.sh
@@ -2930,7 +2930,7 @@ openbao_onboard_database_tenant() {
     exit 1
   fi
 
-  local tenant_script="${REPO_ROOT}/deploy/openbao/bootstrap/setup-database-tenant.sh"
+  local tenant_script="${REPO_ROOT}/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh"
   log "Running setup-database-tenant.sh ${cp_ns} ${cp_name}..."
   bash "${tenant_script}" "${cp_ns}" "${cp_name}"
   unset BAO_TOKEN
@@ -3627,7 +3627,7 @@ main() {
   #
   # Only the two bootstrap-scope manifests are applied here — the Namespace
   # resources and the FluxInstance CR. HelmRepository/HelmRelease objects from
-  # deploy/flux-system/{sources,releases}/ intentionally come later (Step 3):
+  # deploy/bases/operators/{sources,releases}/ intentionally come later (Step 3):
   # flux-operator's install.yaml only registers the fluxcd.controlplane.io
   # CRDs, and the source.toolkit.fluxcd.io / helm.toolkit.fluxcd.io CRDs
   # consumed by those objects are materialised only after the flux-operator
@@ -3637,8 +3637,8 @@ main() {
   log "=== Step 2/8: Install flux-operator + apply FluxInstance ==="
   kubectl apply -f \
     "https://github.com/controlplaneio-fluxcd/flux-operator/releases/download/${FLUX_OPERATOR_VERSION}/install.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/namespaces.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/fluxinstance.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/operators/namespaces.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/flux/fluxinstance.yaml"
   wait_for_fluxinstance "${HELMRELEASE_TIMEOUT}"
   log "flux-operator installed and FluxInstance/flux is Ready."
 
@@ -3650,7 +3650,7 @@ main() {
   # Safe to run only after Step 2's wait_for_fluxinstance succeeds — at that
   # point flux-operator has materialised the Flux toolkit CRDs (source/helm
   # /kustomize/notification), so HelmRepository and HelmRelease objects under
-  # deploy/flux-system/{sources,releases}/ resolve to known Kinds.
+  # deploy/bases/operators/{sources,releases}/ resolve to known Kinds.
   log "=== Step 3/8: Apply base kustomize overlay ==="
   kubectl apply -k "${OVERLAY_ROOT}/base"
   log "Base kustomize overlay applied."
@@ -4036,7 +4036,7 @@ main() {
   # waits for the admission path the Phase 2 applies take. An upgrade runs
   # no hook, so the probe stays as the script's own gate and uses the
   # manifest Phase 2 applies first.
-  wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"
+  wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/bases/tls/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"
 
   # Phase 2: Apply TLS prerequisites that OpenBao and MariaDB need to start.
   # The openbao-tls Certificate creates the Secret mounted by the OpenBao
@@ -4055,10 +4055,10 @@ main() {
   #   - openbao-ca-issuer must exist before openbao-tls-cert.yaml (which
   #     references it via issuerRef).
   log "Phase 2: Applying TLS prerequisites (ClusterIssuer + OpenBao CA + OpenBao TLS Certificate + DB CA Issuer)..."
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/cluster-issuer.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/openbao-tls-cert.yaml"
-  kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/tls/cluster-issuer.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/tls/openbao-ca-issuer.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/tls/openbao-tls-cert.yaml"
+  kubectl apply -f "${REPO_ROOT}/deploy/bases/tls/db-ca-issuer.yaml"
 
   # Phase 3: Wait for remaining HelmReleases now that OpenBao can mount its TLS secret.
   # envoy-gateway is kind-only (deploy/bases/devstack/base/envoy-gateway.yaml) and provides
@@ -4119,7 +4119,7 @@ main() {
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 
   # Phase 3b: the RabbitMQ Cluster Operator arrives through a Flux Kustomization
-  # (deploy/flux-system/releases/rabbitmq-cluster-operator.yaml), which
+  # (deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml), which
   # wait_for_helmreleases cannot see. It hard-fails on every run, where the
   # k-orc wait further down does so only on the CONTROLPLANE_OPERATORS=flux
   # path: the c5c3 ControlPlane projects a RabbitmqCluster for
@@ -4136,7 +4136,7 @@ main() {
   log "rabbitmq-cluster-operator Kustomization is Ready."
 
   # The RabbitMQ Messaging Topology Operator arrives the same way
-  # (deploy/flux-system/releases/messaging-topology-operator.yaml) and depends
+  # (deploy/bases/operators/releases/messaging-topology-operator.yaml) and depends
   # on the Cluster Operator's Kustomization. It serves the Vhost, User and
   # Permission CRDs RabbitMQVhost orders are provisioned through, so it is on
   # every cluster this script provisions as well.
@@ -4150,8 +4150,8 @@ main() {
   log "messaging-topology-operator Kustomization is Ready."
 
   # The Flux `images:` overrides in
-  # deploy/flux-system/releases/rabbitmq-cluster-operator.yaml and
-  # deploy/flux-system/releases/messaging-topology-operator.yaml key on the
+  # deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml and
+  # deploy/bases/operators/releases/messaging-topology-operator.yaml key on the
   # image NAME upstream's ./config/installation resolves to, and kustomize
   # silently NO-OPS when no resource matches that name. If upstream re-points a
   # base at a different image (the Cluster Operator already moved once), the
@@ -4168,8 +4168,8 @@ main() {
     rabbit_image_seen=true
     if [[ "${rabbit_image}" != *"@sha256:"* ]]; then
       log "ERROR: a rabbitmq-system image is not digest-pinned: ${rabbit_image}"
-      log "       The spec.images override in deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
-      log "       or deploy/flux-system/releases/messaging-topology-operator.yaml no longer matches"
+      log "       The spec.images override in deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml"
+      log "       or deploy/bases/operators/releases/messaging-topology-operator.yaml no longer matches"
       log "       the image name upstream's ./config/installation resolves to."
       exit 1
     fi
@@ -4405,7 +4405,7 @@ main() {
     # re-validation so keystone-db can sync below. keystone-admin and
     # mariadb-root-password stay on the shared store (bootstrap/infrastructure reads).
     log "Provisioning the per-tenant OpenBao store for the standalone openstack namespace..."
-    bash "${REPO_ROOT}/deploy/openbao/bootstrap/setup-eso-tenant.sh" openstack
+    bash "${REPO_ROOT}/deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh" openstack
     kubectl annotate secretstore/openbao-tenant-store -n openstack \
       "deploy.c5c3.io/reconcile-trigger=${now}" --overwrite || true
     kubectl wait secretstore/openbao-tenant-store -n openstack \
@@ -4737,7 +4737,7 @@ main() {
       log "    kubectl kustomize ${OVERLAY_ROOT}/controlplane | sed 's/127-0-0-1\\.nip\\.io/${PUBLIC_SUFFIX}/g' | kubectl apply -f -"
       log "  Then onboard the OpenBao database-engine tenant once MariaDB is Ready"
       log "  (docs/quick-start-controlplane.md, Step 5):"
-      log "    deploy/openbao/bootstrap/setup-database-tenant.sh openstack ${CONTROLPLANE_NAME}"
+      log "    deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh openstack ${CONTROLPLANE_NAME}"
     else
       if [[ "${operators_awaited}" == "true" ]]; then
         # Probe the bundled CR the hint below names together with the

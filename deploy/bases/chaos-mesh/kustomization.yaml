@@ -20,7 +20,7 @@ resources:
 patches:
   # Chaos Mesh: configure containerd runtime for kind, disable the dashboard
   # (unnecessary in CI), and reduce resource requests for single-node clusters.
-  # Relocated from deploy/kind/base/kustomization.yaml so the patch target
+  # Kept in the optional Chaos Mesh base so the patch target
   # (HelmRelease/chaos-mesh) lives in the same overlay.
   # Feature: (original kind-tuning rationale)
   - target:

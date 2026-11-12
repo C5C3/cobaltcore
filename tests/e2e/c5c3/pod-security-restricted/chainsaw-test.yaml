@@ -140,7 +140,7 @@ spec:
           # The root token stays out of argv, as in keystone-service: it is
           # staged once on stdin under a per-namespace path, and only that path
           # and the token's length travel on the command line. The export
-          # stays, because the two deploy/openbao/bootstrap scripts below read
+          # stays, because the two deploy/bases/shared-openbao/bootstrap scripts below read
           # the token from their environment.
           export BAO_TOKEN
           BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
@@ -249,7 +249,7 @@ spec:
 
           # ── Seed the per-CR OpenBao paths this plane reads ────────────────
           KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
-            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+            ../../../../deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh
           echo "OK: the per-CR admin-password path is seeded."
 
           # ── Apply the ControlPlane and wait for readiness ─────────────────
@@ -261,7 +261,7 @@ spec:
           # The database-engine role is keyed on the service namespace, so it
           # has to be onboarded for this plane's namespace before the dynamic
           # DB credential can be issued.
-          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
           echo "OK: OpenBao database-engine tenant onboarded."
 
           wait_cp_condition DBCredentialsReady 300

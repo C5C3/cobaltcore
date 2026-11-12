@@ -15,7 +15,7 @@
 #     instance's STATIC SEAL: a second, different value under a live instance
 #     makes its raft store undecryptable for good, so the ExternalSecret must
 #     materialize once and never converge.
-#   - kustomize build deploy/flux-system/infrastructure renders ZERO of either.
+#   - kustomize build deploy/bases/infrastructure renders ZERO of either.
 #     Profile Development (one replica, no PDB, no anti-affinity), a static seal
 #     whose key sits in a Secret in the shared openstack namespace, 1Gi of raft
 #     storage and a cluster-scoped auth-delegator binding are a proving posture,
@@ -35,7 +35,7 @@
 #     the default LimitRange and quota, its quota admits 100 pods, and its
 #     overrides set no limit.
 #
-# Usage: bash tests/unit/deploy/openbao_instance_overlay_test.sh
+# Usage: bash tests/unit/deploy/bases/shared-openbao_instance_overlay_test.sh
 
 set -uo pipefail
 
@@ -50,9 +50,9 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
-PROD_INFRA_DIR="$PROJECT_ROOT/deploy/flux-system/infrastructure"
+PROD_INFRA_DIR="$PROJECT_ROOT/deploy/bases/infrastructure"
 INSTANCE_FILE="$PROJECT_ROOT/deploy/bases/devstack/infrastructure/openbao-instance.yaml"
-OPERATOR_RELEASE_FILE="$PROJECT_ROOT/deploy/flux-system/releases/openbao-operator.yaml"
+OPERATOR_RELEASE_FILE="$PROJECT_ROOT/deploy/bases/operators/releases/openbao-operator.yaml"
 DEPLOY_SCRIPT="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 # The complete permanent configuration of the instance, in declaration order.
@@ -112,7 +112,7 @@ test_kind_overlay_renders_paused_instance() {
 
 # --- Test 2: the production overlay renders neither ---
 test_production_overlay_renders_no_instance() {
-  echo "Test: kustomize build deploy/flux-system/infrastructure renders no proving instance"
+  echo "Test: kustomize build deploy/bases/infrastructure renders no proving instance"
 
   if ! command -v kustomize >/dev/null 2>&1 || ! command -v yq >/dev/null 2>&1; then
     echo "  SKIP: kustomize or yq not installed (2 checks skipped)"

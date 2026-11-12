@@ -5,7 +5,7 @@
 # VictoriaMetrics HelmRepository — chart source for the dizzy overlay's
 # OTLP metrics backend. Declared into the `flux-system` namespace (where
 # Flux resolves HelmRelease sourceRefs) even though this file lives inside
-# the development dizzy overlay, so deploy/flux-system/** stays untouched and
+# the development dizzy overlay, so deploy/bases/operators/** stays untouched and
 # the overlay remains self-contained (no `../../` parent traversal — same
 # LoadRestrictionsRootOnly constraint that drove the chaos-mesh source).
 ---

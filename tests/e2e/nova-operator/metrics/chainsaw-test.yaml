@@ -26,7 +26,7 @@
 # ServiceMonitor and marks the target Up) is exercised by the WITH_PROMETHEUS
 # kind bring-up, not by this suite: the e2e cluster only installs
 # prometheus-operator-crds (see
-# deploy/flux-system/releases/prometheus-operator-crds.yaml) and does NOT run a
+# deploy/bases/operators/releases/prometheus-operator-crds.yaml) and does NOT run a
 # Prometheus instance, so there is no /api/v1/targets endpoint to poll. The
 # structural ServiceMonitor assertion below (CRD shape, labels, selector,
 # endpoints port/path/interval) is what this cluster can honestly verify.

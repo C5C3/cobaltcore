@@ -6,7 +6,7 @@
 # nova-drain prefix, for novacompute-drain-compute-kill.
 #
 # Default S3 image store for the glance-nova-drain CR. It points at the
-# in-cluster Garage S3 endpoint (deploy/flux-system/infrastructure/garage.yaml):
+# in-cluster Garage S3 endpoint (deploy/bases/infrastructure/garage.yaml):
 # the GarageCluster "garage" listens on port 3900 with SigV4 region "garage",
 # the glance-images bucket is pre-created, and the garage-s3-credentials Secret
 # is ESO-synced (deploy/overlays/kind/infrastructure). glance-api registers no store

@@ -23,7 +23,7 @@ import (
 
 const (
 	// placementDBDynamicVaultRole is the OpenBao Kubernetes-auth role the Placement
-	// generator authenticates against (see deploy/openbao/bootstrap/setup-auth.sh);
+	// generator authenticates against (see deploy/bases/shared-openbao/bootstrap/setup-auth.sh);
 	// it is bound to the placement-db-dynamic policy scoping reads to the per-tenant
 	// creds path.
 	placementDBDynamicVaultRole = "placement-db"
@@ -73,7 +73,7 @@ func placementDBCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
 // cluster-unique) and the placement-db-dynamic policy can scope reads by the
 // caller's service_account_namespace with an EXACT match. It MUST stay in sync
 // with the role-name derivation in
-// deploy/openbao/bootstrap/setup-database-tenant.sh: the operator reads
+// deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh: the operator reads
 // credentials from the engine role that script provisions per service, which for
 // Placement is placement-<placement-ns>. The auth half (the placement-db role and
 // the placement-db-dynamic policy) is already bootstrapped; the engine branch of

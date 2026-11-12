@@ -1,97 +1,72 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="2360" viewBox="0 0 1808 2360" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Deployment composition: public stages, compatibility paths, kind and lab">
-<title>Deployment composition: public stages, compatibility paths, kind and lab</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1808" height="2360" viewBox="0 0 1808 2360" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Deployment composition: canonical bases, kind and metal-stack">
+<title>Deployment composition: canonical bases, kind and metal-stack</title>
 <rect width="1808" height="2360" fill="#F6F5F1"/>
 <text x="48" y="60.02" font-size="32" font-weight="700" fill="#2B3440">Deployment composition</text>
 <text x="48" y="93.2" font-size="20" font-weight="400" fill="#55606E">Arrow: a resource directory points to the root that imports it. Composition does not imply readiness or apply order.</text>
-<text x="48" y="155.58" font-size="28" font-weight="700" fill="#2B3440">Public stages and compatibility aliases</text>
-<text x="48" y="187.2" font-size="20" font-weight="400" fill="#55606E">Deployment repositories reconcile the public stages with their own ordering, patches and retention policies.</text>
-<text x="48" y="233.64" font-size="24" font-weight="700" fill="#2B3440">Retained implementation root</text>
-<text x="640" y="233.64" font-size="24" font-weight="700" fill="#2B3440">Public catalog</text>
-<text x="1232" y="233.64" font-size="24" font-weight="700" fill="#2B3440">Older GitOps import</text>
-<rect x="48" y="252" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="312" y="288.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/flux-system</text>
-<rect x="640" y="252" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="904" y="288.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/bases/operators</text>
-<rect x="1232" y="252" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="1496" y="288.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/gitops/bases/operators</text>
-<polyline points="576,281 629.5,281" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="640,281 625,288.2 625,273.8" fill="#3A4452"/>
-<polyline points="1168,281 1221.5,281" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,281 1217,288.2 1217,273.8" fill="#3A4452"/>
-<rect x="48" y="330" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="312" y="366.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/flux-system/infrastructure/tls</text>
-<rect x="640" y="330" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="904" y="366.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/bases/tls</text>
-<rect x="1232" y="330" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="1496" y="366.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/gitops/bases/tls</text>
-<polyline points="576,359 629.5,359" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="640,359 625,366.2 625,351.8" fill="#3A4452"/>
-<polyline points="1168,359 1221.5,359" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,359 1217,366.2 1217,351.8" fill="#3A4452"/>
-<rect x="48" y="408" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="312" y="444.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/flux-system/releases/openbao</text>
-<rect x="640" y="408" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="904" y="444.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/bases/shared-openbao</text>
-<rect x="1232" y="408" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="1496" y="444.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/gitops/bases/openbao</text>
-<polyline points="576,437 629.5,437" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="640,437 625,444.2 625,429.8" fill="#3A4452"/>
-<polyline points="1168,437 1221.5,437" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,437 1217,444.2 1217,429.8" fill="#3A4452"/>
-<rect x="48" y="486" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="312" y="522.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/eso</text>
-<rect x="640" y="486" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="904" y="522.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/bases/eso-store</text>
-<rect x="1232" y="486" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="1496" y="522.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/gitops/bases/secrets</text>
-<polyline points="576,515 629.5,515" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="640,515 625,522.2 625,507.8" fill="#3A4452"/>
-<polyline points="1168,515 1221.5,515" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,515 1217,522.2 1217,507.8" fill="#3A4452"/>
-<rect x="48" y="564" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="312" y="600.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/flux-system/releases/c5c3-operator</text>
-<rect x="640" y="564" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="904" y="600.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/bases/controlplane-operator</text>
-<rect x="1232" y="564" width="528" height="58" rx="6" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="1496" y="600.2" font-size="20" font-weight="700" fill="#2B3440" text-anchor="middle">deploy/gitops/bases/controlplane-operator</text>
-<polyline points="576,593 629.5,593" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="640,593 625,600.2 625,585.8" fill="#3A4452"/>
-<polyline points="1168,593 1221.5,593" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,593 1217,600.2 1217,585.8" fill="#3A4452"/>
-<text x="48" y="675.2" font-size="20" font-weight="400" fill="#55606E">Operators keeps a bounded adapter: excludes FluxInstance, shared OpenBao and c5c3; protects Namespaces from pruning.</text>
-<text x="48" y="703.2" font-size="20" font-weight="400" fill="#55606E">The raw manifest files stay in place. Shared OpenBao's public stage removes the storage-class pin; the environment supplies storage.</text>
-<text x="48" y="773.58" font-size="28" font-weight="700" fill="#2B3440">Catalog contents, examples and bootstrap inputs</text>
-<text x="48" y="805.2" font-size="20" font-weight="400" fill="#55606E">Leaf catalogs are positive resource lists; they do not create a second owner of the aggregate's objects.</text>
-<rect x="48" y="828" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
-<text x="66" y="861.92" font-size="22" font-weight="700" fill="#2B3440">deploy/flux-system</text>
-<text x="66" y="897.2" font-size="20" font-weight="400" fill="#55606E">sources, releases</text>
-<text x="66" y="925.2" font-size="20" font-weight="400" fill="#55606E">releases/openbao, releases/c5c3-operator</text>
-<text x="66" y="953.2" font-size="20" font-weight="400" fill="#55606E">plus raw namespaces.yaml and fluxinstance.yaml</text>
-<rect x="640" y="828" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
-<text x="658" y="861.92" font-size="22" font-weight="700" fill="#2B3440">deploy/flux-system/infrastructure</text>
-<text x="658" y="897.2" font-size="20" font-weight="400" fill="#55606E">tls, deploy/eso</text>
-<text x="658" y="925.2" font-size="20" font-weight="400" fill="#55606E">plus raw MariaDB, Memcached and Garage</text>
-<text x="658" y="953.2" font-size="20" font-weight="400" fill="#55606E">Apply once their controllers and CRDs exist.</text>
-<rect x="1232" y="828" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
-<text x="1250" y="861.92" font-size="22" font-weight="700" fill="#2B3440">deploy/openbao</text>
-<text x="1250" y="897.2" font-size="20" font-weight="400" fill="#55606E">bootstrap, policies</text>
-<text x="1250" y="925.2" font-size="20" font-weight="400" fill="#55606E">Package scripts and HCL as ConfigMaps.</text>
-<text x="1250" y="953.2" font-size="20" font-weight="400" fill="#55606E">Environment-owned Jobs perform bootstrap.</text>
-<rect x="48" y="1012" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
-<text x="66" y="1045.92" font-size="22" font-weight="700" fill="#2B3440">deploy/examples/sizing-overlay</text>
-<text x="66" y="1081.2" font-size="20" font-weight="400" fill="#55606E">root imports deploy/flux-system</text>
-<text x="66" y="1109.2" font-size="20" font-weight="400" fill="#55606E">infrastructure imports its infrastructure root</text>
-<text x="66" y="1137.2" font-size="20" font-weight="400" fill="#55606E">Template to copy; retains aggregate ownership.</text>
-<rect x="640" y="1012" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2" stroke-dasharray="6 4"/>
-<text x="658" y="1045.92" font-size="22" font-weight="700" fill="#2B3440">deploy/examples/base-customization</text>
-<text x="658" y="1081.2" font-size="20" font-weight="400" fill="#55606E">operators imports deploy/bases/operators</text>
-<text x="658" y="1109.2" font-size="20" font-weight="400" fill="#55606E">shared-openbao imports its public stage</text>
-<text x="658" y="1137.2" font-size="20" font-weight="400" fill="#55606E">Example controller sizing and storage patches.</text>
-<rect x="1232" y="1012" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
-<text x="1250" y="1045.92" font-size="22" font-weight="700" fill="#2B3440">Composition and readiness are separate</text>
-<text x="1250" y="1081.2" font-size="20" font-weight="400" fill="#55606E">Flux controllers must already exist.</text>
-<text x="1250" y="1109.2" font-size="20" font-weight="400" fill="#55606E">Server TLS precedes OpenBao installation.</text>
-<text x="1250" y="1137.2" font-size="20" font-weight="400" fill="#55606E">Bootstrap precedes a usable ESO store.</text>
+<text x="48" y="155.58" font-size="28" font-weight="700" fill="#2B3440">Canonical bases</text>
+<text x="48" y="187.2" font-size="20" font-weight="400" fill="#55606E">Every reusable manifest and bootstrap asset lives directly in its owning base. There are no compatibility aliases.</text>
+<rect x="48" y="236" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="66" y="269.92" font-size="22" font-weight="700" fill="#2B3440">bases/operators</text>
+<text x="66" y="305.2" font-size="20" font-weight="400" fill="#55606E">namespaces.yaml</text>
+<text x="66" y="333.2" font-size="20" font-weight="400" fill="#55606E">sources/ and releases/</text>
+<text x="66" y="361.2" font-size="20" font-weight="400" fill="#55606E">Protects staged namespaces from pruning</text>
+<rect x="640" y="236" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="658" y="269.92" font-size="22" font-weight="700" fill="#2B3440">bases/flux</text>
+<text x="658" y="305.2" font-size="20" font-weight="400" fill="#55606E">fluxinstance.yaml</text>
+<text x="658" y="333.2" font-size="20" font-weight="400" fill="#55606E">Runtime installed before operator resources</text>
+<text x="658" y="361.2" font-size="20" font-weight="400" fill="#55606E">No automatic Git synchronization</text>
+<rect x="1232" y="236" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1250" y="269.92" font-size="22" font-weight="700" fill="#2B3440">bases/controlplane-operator</text>
+<text x="1250" y="305.2" font-size="20" font-weight="400" fill="#55606E">helmrelease.yaml</text>
+<text x="1250" y="333.2" font-size="20" font-weight="400" fill="#55606E">Reconcile after operator/bootstrap gates</text>
+<text x="1250" y="361.2" font-size="20" font-weight="400" fill="#55606E">ControlPlane instances belong to overlays</text>
+<rect x="48" y="448" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="66" y="481.92" font-size="22" font-weight="700" fill="#2B3440">bases/tls</text>
+<text x="66" y="517.2" font-size="20" font-weight="400" fill="#55606E">Certificate and ClusterIssuer manifests</text>
+<text x="66" y="545.2" font-size="20" font-weight="400" fill="#55606E">Requires ready cert-manager</text>
+<text x="66" y="573.2" font-size="20" font-weight="400" fill="#55606E">Precedes shared OpenBao installation</text>
+<rect x="640" y="448" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="658" y="481.92" font-size="22" font-weight="700" fill="#2B3440">bases/shared-openbao</text>
+<text x="658" y="517.2" font-size="20" font-weight="400" fill="#55606E">helmrelease.yaml</text>
+<text x="658" y="545.2" font-size="20" font-weight="400" fill="#55606E">bootstrap/ scripts and policies/ HCL</text>
+<text x="658" y="573.2" font-size="20" font-weight="400" fill="#55606E">Separate inputs retain their lifecycle gates</text>
+<rect x="1232" y="448" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1250" y="481.92" font-size="22" font-weight="700" fill="#2B3440">bases/eso-store</text>
+<text x="1250" y="517.2" font-size="20" font-weight="400" fill="#55606E">clustersecretstore.yaml</text>
+<text x="1250" y="545.2" font-size="20" font-weight="400" fill="#55606E">Requires initialized shared OpenBao</text>
+<text x="1250" y="573.2" font-size="20" font-weight="400" fill="#55606E">Retains namespace grant boundaries</text>
+<rect x="48" y="660" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="66" y="693.92" font-size="22" font-weight="700" fill="#2B3440">bases/infrastructure</text>
+<text x="66" y="729.2" font-size="20" font-weight="400" fill="#55606E">Reference MariaDB, Memcached and Garage</text>
+<text x="66" y="757.2" font-size="20" font-weight="400" fill="#55606E">Composes TLS and the shared ESO store</text>
+<text x="66" y="785.2" font-size="20" font-weight="400" fill="#55606E">Requires controller CRDs</text>
+<rect x="640" y="660" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="658" y="693.92" font-size="22" font-weight="700" fill="#2B3440">bases/target-cluster-access</text>
+<text x="658" y="729.2" font-size="20" font-weight="400" fill="#55606E">Helm chart, templates and intentional CRD copies</text>
+<text x="658" y="757.2" font-size="20" font-weight="400" fill="#55606E">make helm-package-target-cluster</text>
+<text x="658" y="785.2" font-size="20" font-weight="400" fill="#55606E">make verify-crd-sync</text>
+<rect x="1232" y="660" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1250" y="693.92" font-size="22" font-weight="700" fill="#2B3440">deploy/examples</text>
+<text x="1250" y="729.2" font-size="20" font-weight="400" fill="#55606E">base-customization: individual stage patches</text>
+<text x="1250" y="757.2" font-size="20" font-weight="400" fill="#55606E">sizing-overlay: a staged composition</text>
+<text x="1250" y="785.2" font-size="20" font-weight="400" fill="#55606E">Copy into the deployment repository</text>
+<text x="48" y="919.58" font-size="28" font-weight="700" fill="#2B3440">Ownership and readiness</text>
+<text x="48" y="951.2" font-size="20" font-weight="400" fill="#55606E">A directory import composes objects; it does not wait for dependencies or assign a second Flux owner.</text>
+<rect x="48" y="1000" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="66" y="1033.92" font-size="22" font-weight="700" fill="#2B3440">Deployment repositories</text>
+<text x="66" y="1069.2" font-size="20" font-weight="400" fill="#55606E">Select bases and one environment overlay</text>
+<text x="66" y="1097.2" font-size="20" font-weight="400" fill="#55606E">Pin the revision and supply storage choices</text>
+<text x="66" y="1125.2" font-size="20" font-weight="400" fill="#55606E">Keep one reconciler per resource identity</text>
+<rect x="640" y="1000" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="658" y="1033.92" font-size="22" font-weight="700" fill="#2B3440">Development composition</text>
+<text x="658" y="1069.2" font-size="20" font-weight="400" fill="#55606E">Flux + operators + OpenBao + c5c3</text>
+<text x="658" y="1097.2" font-size="20" font-weight="400" fill="#55606E">Environment gateways and storage are separate</text>
+<text x="658" y="1125.2" font-size="20" font-weight="400" fill="#55606E">Bootstrap gates remain in make deploy-infra</text>
+<rect x="1232" y="1000" width="528" height="154" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1250" y="1033.92" font-size="22" font-weight="700" fill="#2B3440">Path migration</text>
+<text x="1250" y="1069.2" font-size="20" font-weight="400" fill="#55606E">Old flux-system/openbao/eso folders removed</text>
+<text x="1250" y="1097.2" font-size="20" font-weight="400" fill="#55606E">Old GitOps aliases removed</text>
+<text x="1250" y="1125.2" font-size="20" font-weight="400" fill="#55606E">Update external imports to canonical bases</text>
 <text x="48" y="1247.58" font-size="28" font-weight="700" fill="#2B3440">Sibling environment overlays</text>
 <text x="48" y="1279.2" font-size="20" font-weight="400" fill="#55606E">Each environment imports the same shared bases. Gateway, storage and host settings belong to its overlay.</text>
 <text x="48" y="1325.64" font-size="24" font-weight="700" fill="#2B3440">Shared bases</text>
@@ -100,7 +75,7 @@
 <rect x="48" y="1344" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="66" y="1377.92" font-size="22" font-weight="700" fill="#2B3440">deploy/bases/devstack/base</text>
 <text x="66" y="1413.2" font-size="20" font-weight="400" fill="#55606E">Controllers, UI and development sizing</text>
-<text x="66" y="1441.2" font-size="20" font-weight="400" fill="#55606E">Includes the retained Flux aggregate</text>
+<text x="66" y="1441.2" font-size="20" font-weight="400" fill="#55606E">Composes Flux, operators, OpenBao and c5c3</text>
 <rect x="640" y="1344" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="658" y="1377.92" font-size="22" font-weight="700" fill="#2B3440">base</text>
 <text x="658" y="1413.2" font-size="20" font-weight="400" fill="#55606E">Local gateway and standard storage class</text>
@@ -192,5 +167,5 @@
 <text x="1250" y="2187.2" font-size="20" font-weight="400" fill="#55606E">dizzy-soak: make dizzy-soak-start</text>
 <text x="1250" y="2215.2" font-size="20" font-weight="400" fill="#55606E">ceph: WITH_CEPH, Step 3</text>
 <text x="1250" y="2243.2" font-size="20" font-weight="400" fill="#55606E">ceph/cluster: WITH_CEPH, Step 5</text>
-<text x="48" y="2335.2" font-size="20" font-weight="400" fill="#55606E">Repository callers use canonical paths. Bootstrap policy keys and chart paths are unchanged; keep one owner per resource.</text>
+<text x="48" y="2335.2" font-size="20" font-weight="400" fill="#55606E">Repository callers use canonical paths. Bootstrap policy keys and resource identities are unchanged; keep one owner per resource.</text>
 </svg>

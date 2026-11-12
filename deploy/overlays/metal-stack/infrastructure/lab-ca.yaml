@@ -23,7 +23,7 @@
 # nip.io alone, which browsers, OpenSSL and the macOS trust store enforce. The
 # constraint is critical, so a client that cannot evaluate it refuses the
 # root. NameConstraints is a beta feature of cert-manager since 1.17, on by
-# default; the chart range of deploy/flux-system/releases/cert-manager.yaml
+# default; the chart range of deploy/bases/operators/releases/cert-manager.yaml
 # resolves to a newer release.
 #
 # The teardown deletes the cert-manager.io CRDs and the namespace

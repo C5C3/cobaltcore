@@ -25,7 +25,7 @@
 # The plan calls for "poll Prometheus API until
 # keystone_operator_reconcile_duration_seconds target is Up", but the test
 # cluster only installs prometheus-operator-crds (see
-# deploy/flux-system/releases/prometheus-operator-crds.yaml) and does NOT run
+# deploy/bases/operators/releases/prometheus-operator-crds.yaml) and does NOT run
 # a Prometheus instance — so there is no /api/v1/targets endpoint to poll.
 # This deferral is recorded against in
 # planwerk/progress/-add-prometheus-metrics-and-servicemonitor-sub.json

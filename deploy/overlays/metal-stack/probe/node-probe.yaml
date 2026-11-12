@@ -38,7 +38,7 @@
 #     /etc/containerd/config.toml is the address of its [grpc] table. The
 #     unit test fails when the script names /host/var/run.
 #
-# NAMESPACE default: the probe runs before deploy/flux-system/namespaces.yaml
+# NAMESPACE default: the probe runs before deploy/bases/operators/namespaces.yaml
 # has created `openstack` or `shared-services`, and the metal-stack shoot
 # enforces no PodSecurity level on `default`.
 #

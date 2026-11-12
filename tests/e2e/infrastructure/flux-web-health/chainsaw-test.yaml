@@ -22,7 +22,7 @@
 #   2. Runtime presence check (first line of the script): an early
 #      `kubectl get resourceset flux-web -n flux-system` probe. If the
 #      ResourceSet is absent, the script exits 0 with a SKIP log line.
-#      Production (deploy/flux-system/) never references flux-web.yaml,
+#      Production (deploy/bases/operators/) never references flux-web.yaml,
 #      so the ResourceSet will not exist there — the test is therefore
 #      default-safe on any non-kind cluster even without a selector.
 #
@@ -90,7 +90,7 @@ spec:
           # missing HelmRelease / Deployment / Service downstream.
           if ! kubectl get resourceset flux-web -n flux-system >/dev/null 2>&1; then
             echo "SKIP: flux-web ResourceSet not present in flux-system namespace."
-            echo "      This is expected on non-kind overlays (deploy/flux-system/"
+            echo "      This is expected on non-kind overlays (deploy/bases/operators/"
             echo "      does not reference deploy/bases/devstack/base/flux-web.yaml)."
             exit 0
           fi

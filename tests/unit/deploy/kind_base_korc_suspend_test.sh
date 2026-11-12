@@ -14,7 +14,7 @@
 #     out-of-band hack/ci-deploy-korc.sh then conflicts with it on the
 #     manager image under server-side apply.
 #   - kustomize build deploy/overlays/kind/base/ renders that suspend.
-#   - deploy/flux-system/ (production overlay) is NOT affected: its
+#   - deploy/bases/operators/ (production overlay) is NOT affected: its
 #     Kustomization/k-orc renders without spec.suspend.
 #   - hack/deploy-infra.sh un-suspends kustomization/k-orc on the
 #     CONTROLPLANE_OPERATORS=flux path, so the base-level suspend does not
@@ -40,7 +40,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 KIND_KUSTOMIZATION="$PROJECT_ROOT/deploy/bases/devstack/base/kustomization.yaml"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 # The rendered Kustomization/k-orc document, or empty when absent.
@@ -111,7 +111,7 @@ test_kind_base_renders_korc_suspended() {
 
 # --- Test 3: the production overlay renders k-orc without a suspend ---
 test_production_overlay_renders_korc_active() {
-  echo "Test: kustomize build deploy/flux-system/ renders Kustomization/k-orc without spec.suspend"
+  echo "Test: kustomize build deploy/bases/operators/ renders Kustomization/k-orc without spec.suspend"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"

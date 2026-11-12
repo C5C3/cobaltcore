@@ -8,7 +8,7 @@
 #
 # "### Dependency Order" of docs/reference/infrastructure/
 # infrastructure-manifests.md holds a table with one row per HelmRelease of
-# deploy/flux-system/releases/ and its spec.dependsOn names in the order of
+# deploy/bases/operators/releases/ and its spec.dependsOn names in the order of
 # the manifest, and the figure deploy-flux-dependencies draws every
 # HelmRelease and every Flux Kustomization of that directory as a pill, and
 # nothing else. check_flux_dependencies reads the manifests as plain text: a
@@ -24,7 +24,7 @@
 # count line and the category table of "### Base Kustomization", and the
 # sentence under "### Step 1: Apply base resources" that starts with "This
 # applies". check_resource_counts follows local resources: directory entries
-# from deploy/flux-system/kustomization.yaml, reads the selected leaf files and
+# from deploy/bases/operators/kustomization.yaml, reads the selected leaf files and
 # counts their documents
 # by kind and holds the three places to the files: the file count, the count
 # and the names of every kind, the Total row, and every number of the
@@ -99,7 +99,7 @@ check_flux_dependencies() {
   local dir="$1" page="$2" diagrams="$3"
   local drawio="$diagrams/$FIGURE.drawio" svg="$diagrams/$FIGURE.svg"
   local records="" rows f
-  local files=()
+  local files=("${@:4}")
 
   if [[ -d "$dir" ]]; then
     while IFS= read -r -d '' f; do
@@ -933,13 +933,13 @@ test_missing_figure_file_is_the_only_report() {
 }
 
 test_repository_table_and_figure_match_the_releases() {
-  echo "Test: the repository's table and figure match deploy/flux-system/releases"
+  echo "Test: the repository's table and figure match deploy/bases/operators/releases"
 
-  local releases="$PROJECT_ROOT/deploy/flux-system/releases"
+  local releases="$PROJECT_ROOT/deploy/bases/operators/releases"
   local page="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
   local copy
   assert_eq "no problems" "" \
-    "$(check_flux_dependencies "$releases" "$page" "$PROJECT_ROOT/docs/diagrams")"
+    "$(check_flux_dependencies "$releases" "$page" "$PROJECT_ROOT/docs/diagrams" "$PROJECT_ROOT/deploy/bases/shared-openbao/helmrelease.yaml" "$PROJECT_ROOT/deploy/bases/controlplane-operator/helmrelease.yaml")"
 
   # The same check on a copy without the k-orc label proves it reads the real
   # figure and the Kustomizations of the real directory.
@@ -947,7 +947,7 @@ test_repository_table_and_figure_match_the_releases() {
   cp "$PROJECT_ROOT/docs/diagrams/$FIGURE.drawio" "$PROJECT_ROOT/docs/diagrams/$FIGURE.svg" "$copy/"
   rewrite "$copy/$FIGURE.svg" 's/>k-orc</>K-ORC</'
   assert_eq "a copy without k-orc" "not in the figure: k-orc ($FIGURE.svg)" \
-    "$(check_flux_dependencies "$releases" "$page" "$copy")"
+    "$(check_flux_dependencies "$releases" "$page" "$copy" "$PROJECT_ROOT/deploy/bases/shared-openbao/helmrelease.yaml" "$PROJECT_ROOT/deploy/bases/controlplane-operator/helmrelease.yaml")"
 }
 
 test_counts_consistent_fixture_reports_nothing() {
@@ -1107,9 +1107,9 @@ test_counts_only_reports() {
 }
 
 test_repository_counts_match_the_base_kustomization() {
-  echo "Test: the repository's Resource count, table and Step 1 sentence match deploy/flux-system"
+  echo "Test: the repository's Resource count, table and Step 1 sentence match deploy/bases/operators"
 
-  local flux="$PROJECT_ROOT/deploy/flux-system"
+  local flux="$PROJECT_ROOT/deploy/bases/operators"
   local page="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
   local copy
   assert_eq "no problems" "" "$(check_resource_counts "$flux" "$page")"
@@ -1118,8 +1118,8 @@ test_repository_counts_match_the_base_kustomization() {
   # page against the real files.
   copy="$(mktemp -d "$TMP_ROOT/copy.XXXXXX")"
   cp "$page" "$copy/page.md"
-  rewrite "$copy/page.md" 's/^| \*\*Total\*\* | \*\*55\*\* | |/| **Total** | **54** | |/'
-  assert_eq "a copy with another total" "total differs: manifests 55, table 54" \
+  rewrite "$copy/page.md" 's/^| \*\*Total\*\* | \*\*52\*\* | |/| **Total** | **51** | |/'
+  assert_eq "a copy with another total" "total differs: manifests 52, table 51" \
     "$(check_resource_counts "$flux" "$copy/page.md")"
 }
 

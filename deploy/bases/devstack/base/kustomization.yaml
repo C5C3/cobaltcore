@@ -8,11 +8,22 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../../../flux-system
+  - ../../operators
+  - ../../flux
+  - ../../shared-openbao
+  - ../../controlplane-operator
   - headlamp.yaml
   - flux-web.yaml
   - envoy-gateway.yaml
 patches:
+  # The staged operator base protects namespaces from GitOps pruning; the
+  # disposable development stack keeps its existing teardown ownership.
+  - target:
+      kind: Namespace
+      annotationSelector: kustomize.toolkit.fluxcd.io/prune=disabled
+    patch: |-
+      - op: remove
+        path: /metadata/annotations
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2

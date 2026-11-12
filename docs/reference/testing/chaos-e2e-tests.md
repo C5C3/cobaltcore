@@ -920,7 +920,7 @@ these lists fails the generator.
 ### Components without a fault suite
 
 Every platform component under the OpenStack services has a fault suite except
-Flux. The FluxInstance has no `spec.sync` (`deploy/flux-system/fluxinstance.yaml`),
+Flux. The FluxInstance has no `spec.sync` (`deploy/bases/flux/fluxinstance.yaml`),
 and the operators under test are installed by `helm` with their HelmReleases
 suspended (`deploy/overlays/kind/base/kustomization.yaml`). No HelmRelease enables drift
 detection, so a killed Flux is on no request path and leaves no state for a suite
@@ -3966,7 +3966,7 @@ the policy reads back as the capture. Otherwise it fails and keeps the ConfigMap
 **Design notes:**
 
 - `setup-policies.sh` substitutes the accessor of the auth mount when it writes the
-  policy, so the file in `deploy/openbao/policies/` differs from what OpenBao
+  policy, so the file in `deploy/bases/shared-openbao/policies/` differs from what OpenBao
   holds. The suite captures the live text and writes that back.
 - The root token is the first line of the stdin of each `bao` call into
   `openbao-0`, and the policy text follows it. The token appears in no argv and no

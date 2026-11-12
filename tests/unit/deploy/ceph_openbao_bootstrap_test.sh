@@ -30,8 +30,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-AUTH_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-auth.sh"
-POLICY_DIR="$PROJECT_ROOT/deploy/openbao/policies"
+AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
+POLICY_DIR="$PROJECT_ROOT/deploy/bases/shared-openbao/policies"
 READ_POLICY="$POLICY_DIR/read-ceph-keys.hcl"
 PUSH_POLICY="$POLICY_DIR/push-ceph-keys.hcl"
 

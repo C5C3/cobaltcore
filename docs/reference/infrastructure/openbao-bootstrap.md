@@ -22,10 +22,10 @@ shows how secrets leave and enter it.
 
 | Store | Kind | OpenBao login | Serves |
 | --- | --- | --- | --- |
-| `openbao-cluster-store` | `ClusterSecretStore` (`deploy/eso/clustersecretstore.yaml`) | Mount `kubernetes/management`, role `eso-management`, ServiceAccount `external-secrets`, client certificate `eso-openbao-client-tls` | The namespaces `openstack` and `shared-services`: standalone service CRs and the static ExternalSecrets of the kind overlay (`keystone-admin`, `mariadb-root-password`) |
+| `openbao-cluster-store` | `ClusterSecretStore` (`deploy/bases/eso-store/clustersecretstore.yaml`) | Mount `kubernetes/management`, role `eso-management`, ServiceAccount `external-secrets`, client certificate `eso-openbao-client-tls` | The namespaces `openstack` and `shared-services`: standalone service CRs and the static ExternalSecrets of the kind overlay (`keystone-admin`, `mariadb-root-password`) |
 | `openbao-tenant-store` | `SecretStore`, one per ControlPlane namespace, created by `reconcileESOTenantStore` | Mount `kubernetes/management`, role `eso-tenant`, ServiceAccount `eso-tenant-auth`, client certificate `eso-tenant-client-tls` | The ExternalSecrets and PushSecrets of one ControlPlane and its children, such as `{cp}-keystone-admin-credentials` and `{cp}-keystone-db-credentials` in Static mode |
 
-The production stack (`deploy/eso/`, included by `deploy/flux-system/`) ships
+The production stack (`deploy/bases/eso-store/`, included by `deploy/bases/operators/`) ships
 **no** ExternalSecret resources — its kustomization renders only
 `clustersecretstore.yaml`. The per-ControlPlane admin and database
 ExternalSecrets are operator-projected, and the standalone `keystone-admin`,
@@ -57,8 +57,8 @@ The following must be in place before running the bootstrap scripts:
 | Kubernetes cluster | Management cluster with `kubectl` access configured |
 | FluxCD | source-controller and helm-controller installed |
 | cert-manager | Deployed and healthy (CRDs installed, webhook ready) |
-| Base manifests | `kubectl apply -k deploy/flux-system/` completed successfully |
-| Infrastructure manifests | `kubectl apply -k deploy/flux-system/infrastructure/` completed (includes openbao-tls Certificate) |
+| Base manifests | `kubectl apply -k deploy/bases/operators/` completed successfully |
+| Infrastructure manifests | `kubectl apply -k deploy/bases/infrastructure/` completed (includes openbao-tls Certificate) |
 | OpenBao pods | All 3 replicas (`openbao-0`, `openbao-1`, `openbao-2`) running in `shared-services` namespace |
 | CLI tools | `kubectl`, `jq` available on the operator workstation; `openssl` available inside the OpenBao pod (used for in-pod password generation) |
 
@@ -130,7 +130,7 @@ deploy/
         └── openbao-tls-cert.yaml       cert-manager Certificate for TLS
 ```
 
-**Note:** The static `deploy/eso/externalsecrets/` directory has been removed.
+**Note:** The static `deploy/bases/eso-store/externalsecrets/` directory has been removed.
 The production ESO kustomization now renders only `clustersecretstore.yaml`, so
 the production stack ships **no** ExternalSecret resources. The per-ControlPlane
 admin and database ExternalSecrets are projected by the c5c3 operator, and the
@@ -194,7 +194,7 @@ injection:
 | `VAULT_CLIENT_CERT` | `/openbao/client-tls/tls.crt` | Client certificate the in-pod `bao` CLI presents on every API call. Required because `tls_require_and_verify_client_cert = true` is enabled on the listener; without it the TLS handshake fails before any application-layer auth runs. |
 | `VAULT_CLIENT_KEY` | `/openbao/client-tls/tls.key` | Matching private key for `VAULT_CLIENT_CERT`. Both files are mounted from the `openbao-client-tls` Secret at `/openbao/client-tls`. |
 
-Defaults are set in `deploy/openbao/bootstrap/common.sh` and forwarded by every
+Defaults are set in `deploy/bases/shared-openbao/bootstrap/common.sh` and forwarded by every
 `bao`-invoking wrapper (`bao_exec`, `bao_exec_stdin` in `common.sh`, the private
 `kube_exec` and `kube_exec_stdin` in `init-unseal.sh`, and `openbao_kube_exec`
 and `openbao_kube_exec_stdin` in `hack/deploy-infra.sh`). The `_stdin` variants
@@ -209,7 +209,7 @@ from the `openbao-client-tls` Secret.
 
 ```bash
 # Step 1: Initialize and unseal (produces root token)
-cd deploy/openbao/bootstrap
+cd deploy/bases/shared-openbao/bootstrap
 ./init-unseal.sh
 
 # Retrieve the root token from the Kubernetes Secret
@@ -234,7 +234,7 @@ export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
 
 **Purpose:** Initialize OpenBao with Shamir secret sharing and unseal all 3 replicas.
 
-**File:** `deploy/openbao/bootstrap/init-unseal.sh`
+**File:** `deploy/bases/shared-openbao/bootstrap/init-unseal.sh`
 
 | Parameter | Value |
 | --- | --- |
@@ -281,7 +281,7 @@ requires the exported keys, so ensure they are recoverable before deletion.
 **Purpose:** Enable the KV version 2, PKI, and MariaDB `database` secret engines, plus
 the Barbican KV v2 mount.
 
-**File:** `deploy/openbao/bootstrap/setup-secret-engines.sh`
+**File:** `deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh`
 
 **Requires:** `BAO_TOKEN` environment variable.
 
@@ -319,7 +319,7 @@ managed ControlPlane's per-service DB users: Keystone always, and each
 `SERVICE_TENANTS` service when the ControlPlane declares it on the shared managed
 database.
 
-**File:** `deploy/openbao/bootstrap/setup-database-tenant.sh`
+**File:** `deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh`
 
 **Requires:** `BAO_TOKEN` environment variable; the tenant's MariaDB must be Ready.
 
@@ -340,7 +340,7 @@ per engine role, as three space-separated fields:
 
 | Field | Meaning |
 | --- | --- |
-| `<role>` | The first half of the role name `<role>-{namespace}`, and of the auth-role and policy names in `setup-auth.sh` and `deploy/openbao/policies/<role>-db-dynamic.hcl` |
+| `<role>` | The first half of the role name `<role>-{namespace}`, and of the auth-role and policy names in `setup-auth.sh` and `deploy/bases/shared-openbao/policies/<role>-db-dynamic.hcl` |
 | `<spec-service>` | The `spec.services.<name>` block that gates the leg |
 | `<schemas>` | The comma-separated schema list the role grants on |
 
@@ -413,7 +413,7 @@ ServiceAccount, Certificate, and SecretStore itself and defaults the control
 plane onto the store (`reconcileESOTenantStore`). It is the ESO counterpart to
 `setup-database-tenant.sh`.
 
-**File:** `deploy/openbao/bootstrap/setup-eso-tenant.sh`
+**File:** `deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh`
 
 **Requires:** `kubectl` access to the tenant's cluster; cert-manager and the
 `openbao-ca-issuer` ClusterIssuer. It does **not** talk to OpenBao directly —
@@ -449,7 +449,7 @@ for the full procedure.
 **Purpose:** Configure Kubernetes authentication for 4 cluster contexts and AppRole
 authentication for CI/CD pipelines and the Barbican secret store.
 
-**File:** `deploy/openbao/bootstrap/setup-auth.sh`
+**File:** `deploy/bases/shared-openbao/bootstrap/setup-auth.sh`
 
 **Requires:** `BAO_TOKEN` environment variable.
 
@@ -614,11 +614,11 @@ uses `bao write` which is an upsert operation (creates or updates).
 
 **Purpose:** Apply all HCL access control policies from the `policies/` directory.
 
-**File:** `deploy/openbao/bootstrap/setup-policies.sh`
+**File:** `deploy/bases/shared-openbao/bootstrap/setup-policies.sh`
 
 **Requires:** `BAO_TOKEN` environment variable.
 
-The script iterates over all `.hcl` files in `deploy/openbao/policies/` and applies
+The script iterates over all `.hcl` files in `deploy/bases/shared-openbao/policies/` and applies
 each one via `bao policy write <name> -` (reading from stdin). The policy name is
 derived from the filename without the `.hcl` extension. Because the loop globs
 `*.hcl`, adding a new policy file (such as `eso-tenant.hcl`) needs no script
@@ -655,7 +655,7 @@ content is inherently idempotent.
 **Purpose:** Generate cryptographically secure passwords and seed initial credentials
 into the KV v2 secret engine.
 
-**File:** `deploy/openbao/bootstrap/write-bootstrap-secrets.sh`
+**File:** `deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh`
 
 **Requires:** `BAO_TOKEN` environment variable.
 
@@ -867,7 +867,7 @@ to OpenBao. ExternalSecret resources reference this store to pull secrets into
 Kubernetes.
 
 **Note:** The shared `openbao-cluster-store` is now namespace-restricted. Its
-`spec.conditions` (`deploy/eso/clustersecretstore.yaml`) limit which namespaces
+`spec.conditions` (`deploy/bases/eso-store/clustersecretstore.yaml`) limit which namespaces
 may reference it to `openstack` and `shared-services`. The first hosts the static
 infrastructure ExternalSecrets listed below; the second hosts the Garage ones that
 sit next to the object store. Per-ControlPlane Keystone key material is
@@ -892,7 +892,7 @@ deployment-specific.
 | `nova-api-db` (kind only) | `openstack` | `openstack/nova/openstack/standalone/api-db` | `username`, `password` | `nova-api-db` | `username`, `password` |
 | `nova-db` (kind only) | `openstack` | `openstack/nova/openstack/standalone/db` | `username`, `password` | `nova-db` | `username`, `password` |
 
-**Note:** The static `deploy/eso/externalsecrets/` directory has been removed, so
+**Note:** The static `deploy/bases/eso-store/externalsecrets/` directory has been removed, so
 the production stack ships **no** ExternalSecret resources — its ESO
 kustomization renders only `clustersecretstore.yaml`. The admin and database
 ExternalSecrets are now projected **per-ControlPlane** by the c5c3 operator: the
@@ -929,7 +929,7 @@ reads the exact key specified — the MariaDB CRD uses a standard
 
 ## OpenBao HelmRelease
 
-**File:** `deploy/flux-system/releases/openbao/helmrelease.yaml`
+**File:** `deploy/bases/shared-openbao/helmrelease.yaml`
 
 | Property | Value |
 | --- | --- |
@@ -971,9 +971,9 @@ headless service DNS names (`openbao-0.openbao-internal`, `openbao-1.openbao-int
 
 The TLS certificate is issued by the `openbao-ca-issuer` (a CA-type ClusterIssuer)
 via a cert-manager Certificate resource at
-`deploy/flux-system/infrastructure/tls/openbao-tls-cert.yaml`. The CA keypair itself
+`deploy/bases/tls/openbao-tls-cert.yaml`. The CA keypair itself
 is bootstrapped by `selfsigned-cluster-issuer` in
-`deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml` — a SelfSigned issuer
+`deploy/bases/tls/openbao-ca-issuer.yaml` — a SelfSigned issuer
 cannot sign leaves for a separate trust chain, so the openbao trust domain owns
 its own CA (mirrors the `openstack-db-ca` precedent).
 
@@ -983,12 +983,12 @@ The figure shows the OpenBao trust domain beside the other three.
 
 **Client certificates.** Two additional `cert-manager.io/v1` Certificates
 issue *client*-auth keypairs from the same `openbao-ca-issuer`, both
-declared in `deploy/flux-system/infrastructure/tls/openbao-client-tls-cert.yaml`:
+declared in `deploy/bases/tls/openbao-client-tls-cert.yaml`:
 
 | Certificate | Secret | Consumer | Mount / Reference |
 | --- | --- | --- | --- |
 | `openbao-client-tls` | `openbao-client-tls` (namespace `shared-services`) | OpenBao pods themselves — Raft `retry_join` peer auth + in-pod `bao` exec via `bootstrap/*.sh` | StatefulSet volume `client-tls` mounted read-only at `/openbao/client-tls`, distinct from the server-cert mount at `/openbao/tls` |
-| `eso-openbao-client-tls` | `eso-openbao-client-tls` (namespace `shared-services`) | External Secrets Operator `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` (`deploy/eso/clustersecretstore.yaml`); Kubernetes-token `auth.kubernetes` block is unchanged — mTLS is purely a transport-layer admission gate |
+| `eso-openbao-client-tls` | `eso-openbao-client-tls` (namespace `shared-services`) | External Secrets Operator `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` (`deploy/bases/eso-store/clustersecretstore.yaml`); Kubernetes-token `auth.kubernetes` block is unchanged — mTLS is purely a transport-layer admission gate |
 
 Both client Certificates carry `usages: ["client auth"]` and share the
 `openbao-tls` duration / `renewBefore` so server and client rotation cadences
@@ -1086,7 +1086,7 @@ kubectl delete pods -n shared-services -l app.kubernetes.io/name=openbao
 Ensure scripts have execute permissions:
 
 ```bash
-chmod +x deploy/openbao/bootstrap/*.sh
+chmod +x deploy/bases/shared-openbao/bootstrap/*.sh
 ```
 
 ### ExternalSecrets stuck in "SecretSyncedError"
@@ -1156,15 +1156,15 @@ kubectl exec -n shared-services openbao-0 -- \
 
 If the first command unexpectedly returns `http_code=200`, the listener is not
 enforcing client-cert auth — re-check
-`deploy/flux-system/releases/openbao/helmrelease.yaml` for `tls_client_ca_file` and
+`deploy/bases/shared-openbao/helmrelease.yaml` for `tls_client_ca_file` and
 `tls_require_and_verify_client_cert = true`, and that the HelmRelease has
 reconciled (`kubectl get helmrelease openbao -n shared-services`).
 
 ## Related Resources
 
 - [Infrastructure Manifests](./infrastructure-manifests.md) — FluxCD base deployment
-- `deploy/flux-system/releases/openbao/helmrelease.yaml` — OpenBao HelmRelease
-- `deploy/flux-system/infrastructure/tls/openbao-tls-cert.yaml` — server TLS Certificate
-- `deploy/flux-system/infrastructure/tls/openbao-client-tls-cert.yaml` — client TLS Certificates
-- `deploy/eso/clustersecretstore.yaml` — ClusterSecretStore configuration (now uses client-cert mTLS); the only resource the production ESO kustomization renders
+- `deploy/bases/shared-openbao/helmrelease.yaml` — OpenBao HelmRelease
+- `deploy/bases/tls/openbao-tls-cert.yaml` — server TLS Certificate
+- `deploy/bases/tls/openbao-client-tls-cert.yaml` — client TLS Certificates
+- `deploy/bases/eso-store/clustersecretstore.yaml` — ClusterSecretStore configuration (now uses client-cert mTLS); the only resource the production ESO kustomization renders
 - `deploy/overlays/kind/infrastructure/` — kind-overlay-only ExternalSecret shims (`keystone-admin`, `mariadb-root-password`, `keystone-db`)

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The CA of the lab's libvirt migration domain, bootstrapped from
-# selfsigned-cluster-issuer the way deploy/flux-system/infrastructure/
+# selfsigned-cluster-issuer the way deploy/bases/infrastructure/
 # ovn-ca-issuer.yaml bootstraps the OVN CA.
 #
 # openstack-hypervisor-operator requests Certificate libvirt-<node> with kind

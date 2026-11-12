@@ -225,7 +225,7 @@ become `Ready` before returning.
 The `keystone-admin`, `keystone-db`, and `mariadb-root-password` ExternalSecrets applied
 in Step 5 and awaited in Step 8 are **kind-overlay shims**
 (`deploy/overlays/kind/infrastructure/`) that keep this standalone Keystone flow self-contained.
-The production stack (`deploy/eso/`) ships only the `ClusterSecretStore`: in a
+The production stack (`deploy/bases/eso-store/`) ships only the `ClusterSecretStore`: in a
 ControlPlane-based deployment the admin password is projected per ControlPlane by the
 c5c3-operator, and the MariaDB root password is expected from a non-kind Flux MariaDB
 baseline.
@@ -298,7 +298,7 @@ openstack   keystone-db           (database credentials from OpenBao)
 Chaos Mesh is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow leaves the `chaos-mesh` namespace absent so first-run
 deployments are faster and do not require the `chaos-daemon` privileged
-DaemonSet on hosts that don't need it. Production overlays (`deploy/flux-system/`)
+DaemonSet on hosts that don't need it. Production overlays (`deploy/bases/operators/`)
 also explicitly omit Chaos Mesh.
 
 Opt in by setting `WITH_CHAOS_MESH=true` before `make deploy-infra`:
@@ -336,7 +336,7 @@ Removing a previously enabled flag does not uninstall that component; cleanup is
 The kube-prometheus-stack is **not installed by default** in the kind Quick Start. The default
 `make deploy-infra` flow puts no workload into the `monitoring` namespace, so
 first-run deployments stay lean and do not pin extra CPU/memory on a developer laptop.
-Production overlays (`deploy/flux-system/`) also omit the stack, because production
+Production overlays (`deploy/bases/operators/`) also omit the stack, because production
 clusters wire their own Prometheus.
 
 Opt in by setting `WITH_PROMETHEUS=true` before `make deploy-infra`:
@@ -356,7 +356,7 @@ port-forward and the bundled `Keystone Operator` dashboard.
 ::: tip Enabling metrics-server
 `metrics-server` is **not installed by default** in the kind Quick Start. The
 default `make deploy-infra` flow leaves the `kube-system` metrics-server absent
-so first-run deployments stay lean. Production overlays (`deploy/flux-system/`)
+so first-run deployments stay lean. Production overlays (`deploy/bases/operators/`)
 also omit it, because managed distributions ship their own.
 
 Opt in by setting `WITH_METRICS_SERVER=true` before `make deploy-infra`:
@@ -381,7 +381,7 @@ deploys it so the operators create the VerticalPodAutoscalers a
 
 ::: tip Enabling the dizzy load/chaos stack
 The dizzy load/chaos stack is **not installed by default** in the kind Quick
-Start, and the production overlays (`deploy/flux-system/`) ship none of it.
+Start, and the production overlays (`deploy/bases/operators/`) ship none of it.
 Opt in by setting `WITH_DIZZY=true` before `make deploy-infra`:
 
 ```bash
@@ -495,7 +495,7 @@ Kubernetes events that produced it.
 The kind overlay also ships the flux-operator's own
 [Flux Web UI](https://fluxoperator.dev/web-ui/) as a demo surface (and, alongside it,
 the optional Grafana UI from [Step 4c](#step-4c-grafana-ui) when `WITH_PROMETHEUS=true`).
-This is a kind-only convenience. The production `deploy/flux-system/` overlay keeps the
+This is a kind-only convenience. The production `deploy/bases/operators/` overlay keeps the
 Web UI disabled (no token, no TLS, no Ingress) until the upstream project ships token
 auth, TLS termination, and an Ingress story suitable for a shared cluster. Forward the
 service port and browse directly:
@@ -590,7 +590,7 @@ produced this token, see
 
 The kind overlay can ship a slimmed-down `kube-prometheus-stack` (Prometheus +
 Grafana + the prometheus-operator) under the `monitoring` namespace. This is a
-**kind-only opt-in**: production overlays (`deploy/flux-system/`) omit the
+**kind-only opt-in**: production overlays (`deploy/bases/operators/`) omit the
 stack so production clusters can wire their own Prometheus. If you have not
 already opted in, see the Enabling Prometheus & Grafana tip in
 [Step 3](#step-3-deploy-the-infrastructure-stack) (`WITH_PROMETHEUS=true make deploy-infra`).
@@ -655,10 +655,10 @@ automatically:
 
 ```bash
 # Add the HelmRepository source (already present if you ran make deploy-infra)
-kubectl apply -f deploy/flux-system/sources/c5c3-charts.yaml
+kubectl apply -f deploy/bases/operators/sources/c5c3-charts.yaml
 
 # Apply the HelmRelease — Flux installs the chart and keeps it reconciled
-kubectl apply -f deploy/flux-system/releases/keystone-operator.yaml
+kubectl apply -f deploy/bases/operators/releases/keystone-operator.yaml
 
 # Wait until the operator is Ready
 kubectl wait helmrelease/keystone-operator \

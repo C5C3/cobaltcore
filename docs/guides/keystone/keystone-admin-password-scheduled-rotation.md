@@ -416,7 +416,7 @@ Keystone CRs concurrently.
 > `bootstrap/{namespace}/{name}/admin`. On a ControlPlane deployment the
 > operator-projected `controlplane-keystone-admin-credentials` ExternalSecret
 > reads `bootstrap/openstack/controlplane-keystone/admin`, and the bootstrap seed
-> (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh`) seeds that path for each
+> (`deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh`) seeds that path for each
 > ControlPlane identity in `KORC_CONTROLPLANES`. Scheduled rotation is not
 > configured on the projected child (see
 > [On a ControlPlane deployment](#on-a-controlplane-deployment)).

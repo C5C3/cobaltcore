@@ -73,7 +73,7 @@ Where the truth usually lives for the facts docs repeat most:
 | Default release of the kind quick start | `openStackRelease` in `deploy/overlays/kind/controlplane/controlplane.yaml` |
 | Test-tool versions (chainsaw, flux, kind, kubectl) | `*_VERSION=` in `hack/install-test-deps.sh` |
 | Build/lint tool versions | `*_VERSION ?=` in `Makefile`, `env:` in `.github/workflows/ci.yaml` |
-| Infrastructure chart versions | `deploy/flux-system/releases/*.yaml`, `deploy/bases/devstack/base/*.yaml` |
+| Infrastructure chart versions | `deploy/bases/operators/releases/*.yaml`, `deploy/bases/devstack/base/*.yaml` |
 | CRD fields, defaults, validation | `operators/<op>/api/v1alpha1/*_types.go` and the generated `operators/<op>/config/crd/bases/` |
 | Condition types | the `subReconcilerConditionTypes` map in `operators/<op>/internal/controller/instrumentation.go` |
 | Tempest-covered services | `ALL_TEMPEST_SERVICES` in `hack/ci-generate-tempest-matrix.sh` |

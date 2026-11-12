@@ -8,26 +8,28 @@ guides for complete installation and teardown procedures.
 | Area | Purpose and entry point |
 | --- | --- |
 | [Deployment order](#deployment-order) | Prerequisites, reconciliation and bootstrap gates |
-| [Reusable bases](#reusable-bases) | `bases/`: five stages for your deployment repository |
+| [Reusable bases](#reusable-bases) | `bases/`: canonical manifests, bootstrap assets and access chart |
 | [Customization](#customization-and-examples) | `examples/`: controller sizing, service placement and storage patches |
 | [kind](#kind-development-environment) | `overlays/kind/`: local development with `make deploy-infra` |
 | [metal-stack](#metal-stack-and-external-environments) | `overlays/metal-stack/`: an existing cluster with `EXTERNAL_CLUSTER=true` |
 | [Addons](#addons-and-generated-inputs) | Optional monitoring, storage and test fixtures |
-| [OpenBao and ESO](#openbao-and-eso) | `openbao/` scripts/policies and `eso/` shared store |
-| [Target-cluster access](#target-cluster-access) | `target-cluster/`: access chart for projected workloads |
-| [Compatibility](#legacy-entry-points-and-compatibility) | `flux-system/`, `gitops/` and migration of existing imports |
+| [OpenBao and ESO](#openbao-and-eso) | `bases/shared-openbao/`: scripts/policies; `bases/eso-store/`: shared store |
+| [Target-cluster access](#target-cluster-access) | `bases/target-cluster-access/`: access chart for projected workloads |
+| [Path migration](#path-migration) | Updating imports from the previous layout |
 
 ```text
 deploy/
   bases/
-    operators/  tls/  shared-openbao/  eso-store/  controlplane-operator/
+    flux/  operators/  tls/  eso-store/  controlplane-operator/
+    shared-openbao/           # HelmRelease, bootstrap scripts and policies
+    infrastructure/          # reference database, cache and object-store instances
+    target-cluster-access/   # Helm chart for projected workloads
     devstack/                # shared development controller/instance stages
     chaos-mesh/  dizzy/  nfs/  prometheus/  messaging/  hypervisor-fixtures/
   overlays/
     kind/                    # local gateway, storage and development fixtures
     metal-stack/             # public gateway, Gardener, Ceph and physical hosts
-  openbao/  target-cluster/  examples/
-  flux-system/  gitops/  eso/ # retained low-level and staged compatibility paths
+  examples/                  # compositions and patches to copy
 ```
 
 ## Deployment order
@@ -35,7 +37,7 @@ deploy/
 A local `kustomization.yaml` composes YAML. A Flux `Kustomization` reconciles a
 source with its own readiness and pruning policies. Rendering does not install
 chart workloads or wait for CRDs. The checked-in
-[FluxInstance](flux-system/fluxinstance.yaml) installs Flux through flux-operator;
+[FluxInstance](bases/flux/fluxinstance.yaml) installs Flux through flux-operator;
 it has no Git sync configured. A deployment repository supplies the source,
 Flux reconciliation stages, environment patches and bootstrap execution.
 
@@ -78,19 +80,20 @@ Each [base](bases/) owns a distinct stage. Preview one with
 | [eso-store](bases/eso-store/) | Shared `ClusterSecretStore/openbao-cluster-store` | ESO, TLS and initialized/auth-configured shared OpenBao |
 | [controlplane-operator](bases/controlplane-operator/) | c5c3 operator HelmRelease; no ControlPlane instance | Infrastructure/service operators, K-ORC APIs and bootstrap prerequisites |
 
-`operators` excludes FluxInstance, the shared OpenBao server and c5c3. It keeps a
-three-object compatibility filter over the legacy aggregate because Kustomize's
-default restrictions prevent directly importing the existing raw namespace file
-from a new directory. This avoids copying that file or breaking raw callers.
-The [source](flux-system/sources/kustomization.yaml) and
-[controller](flux-system/releases/kustomization.yaml) catalogs are direct lists;
-add controllers there and namespaces to [namespaces.yaml](flux-system/namespaces.yaml).
+The files live directly inside their owning bases. `operators` includes
+[namespaces](bases/operators/namespaces.yaml), [sources](bases/operators/sources/)
+and [controller releases](bases/operators/releases/); it excludes FluxInstance,
+the shared OpenBao server and c5c3. [flux](bases/flux/) owns the Flux runtime CR.
+[shared-openbao/bootstrap](bases/shared-openbao/bootstrap/) and
+[shared-openbao/policies](bases/shared-openbao/policies/) package bootstrap inputs
+separately from the server release, preserving their lifecycle gates.
+[infrastructure](bases/infrastructure/) composes TLS, ESO and the reference
+MariaDB, Memcached and Garage instances after their CRDs exist.
 
-Use one reconciler per resource identity. Choose the stages or the legacy
-aggregate for an installation. The operators stage protects Namespaces with
-`kustomize.toolkit.fluxcd.io/prune: disabled`; that does not protect Helm releases
-or their data from uninstall. Preserve TLS issuer/Secret identities and make
-stateful-resource retention explicit when changing owners or removing stages.
+Use one reconciler per resource identity. The operators stage protects Namespaces
+with `kustomize.toolkit.fluxcd.io/prune: disabled`; that does not protect Helm
+releases or their data from uninstall. Preserve TLS issuer/Secret identities and
+make stateful-resource retention explicit when changing owners or removing stages.
 
 The environment overlays share [`bases/devstack/base`](bases/devstack/base/)
 for development controllers/sizing and [`bases/devstack/infrastructure`](bases/devstack/infrastructure/)
@@ -226,8 +229,8 @@ The apparently duplicated OpenBao definitions have distinct lifecycles:
 
 | Role | Definition and responsibility |
 | --- | --- |
-| Shared/bootstrap server | [HelmRelease](flux-system/releases/openbao/helmrelease.yaml) in `shared-services`: bootstrap material, auth/policies, tenant secrets and dynamic database credentials |
-| OpenBao operator | [Separate controller](flux-system/releases/openbao-operator.yaml) for `OpenBaoCluster` and `OpenBaoTenant` resources |
+| Shared/bootstrap server | [HelmRelease](bases/shared-openbao/helmrelease.yaml) in `shared-services`: bootstrap material, auth/policies, tenant secrets and dynamic database credentials |
+| OpenBao operator | [Separate controller](bases/operators/releases/openbao-operator.yaml) for `OpenBaoCluster` and `OpenBaoTenant` resources |
 | Development proving instance | [Shared development instance](bases/devstack/infrastructure/openbao-instance.yaml), selected by both environments: separate static-seal server for Barbican integration |
 | Dedicated service instances | Created by the [c5c3 operator](../operators/c5c3/internal/controller/reconcile_barbican_openbao.go) at runtime in service namespaces |
 
@@ -236,8 +239,8 @@ it and ESO on the target cluster. The instance operator does not manage that
 Helm installation. The proving instance adopts its unseal key from the shared
 backend through ESO before being unpaused.
 
-[`openbao/bootstrap/`](openbao/bootstrap/) contains executable scripts;
-[`openbao/policies/`](openbao/policies/) holds HCL policies. After initialization/
+[`bases/shared-openbao/bootstrap/`](bases/shared-openbao/bootstrap/) contains executable scripts;
+[`bases/shared-openbao/policies/`](bases/shared-openbao/policies/) holds HCL policies. After initialization/
 unseal, the script workflow runs `setup-secret-engines.sh`, `setup-auth.sh`,
 `setup-policies.sh`, then `write-bootstrap-secrets.sh`. Auth precedes policies
 that substitute its mount accessor. Database and ESO tenant onboarding are
@@ -251,7 +254,7 @@ readiness checks. Compose Jobs and generators together so generated-name
 references update. Scripts need adjacent `common.sh`; policy setup needs adjacent
 policies or `POLICIES_DIR`. Bootstrap must be runnable while OpenBao is sealed.
 
-[`eso/`](eso/) and `bases/eso-store` expose only the shared store, not the ESO
+[`bases/eso-store/`](bases/eso-store/) exposes only the shared store, not the ESO
 controller or application ExternalSecrets. It uses mTLS plus Kubernetes auth as
 `eso-management`. Its `openstack`/`shared-services` allow-list is an authorization
 boundary; ControlPlane traffic uses separate tenant stores. Preserve the store
@@ -261,7 +264,7 @@ store breaks refresh rather than cleaning up secrets.
 
 ## Target-cluster access
 
-The [target-cluster-access chart](target-cluster/target-cluster-access/) creates
+The [target-cluster-access chart](bases/target-cluster-access/) creates
 the target's access identity/token, RBAC, optional namespaces and order-resource
 CRDs. It neither installs the complete stack nor registers the target with
 management. Follow the [target-cluster guide](../docs/guides/deploy-to-a-target-cluster.md)
@@ -269,50 +272,37 @@ to install it, assemble its kubeconfig, register the management Secret and place
 a workload. `namespaces`/`assignedNamespaces` grants must match registration;
 use `createNamespaces=false` for namespaces already owned elsewhere.
 
-[Chart values](target-cluster/target-cluster-access/values.yaml) define optional
+[Chart values](bases/target-cluster-access/values.yaml) define optional
 grants. Package with `make helm-package-target-cluster`; keep intentional CRD
 copies synchronized with `make verify-crd-sync`. Existing targets require the
 explicit CRD upgrade procedure in the [target-cluster reference](../docs/reference/target-clusters.md).
 
-## Legacy entry points and compatibility
+## Path migration
 
-[`flux-system/`](flux-system/) remains the broad aggregate of namespaces,
-FluxInstance, sources, operators, shared OpenBao and c5c3.
-[`infrastructure/`](flux-system/infrastructure/) adds TLS, static MariaDB/MaxScale,
-Memcached, the development/CI Garage reference and shared ESO store after CRDs
-exist. These references retain environment assumptions, including storage defaults;
-“production” in older comments distinguishes them from kind sizing, not a complete
-production profile. Scripts retain their early TLS ordering.
+The old `flux-system/`, `openbao/`, `eso/`, `gitops/` and `target-cluster/`
+directories are removed. Update deployment-repository imports and raw-file callers:
 
-[`gitops/bases/`](gitops/bases/) keeps existing staged imports as aliases:
-
-| Existing import | Public import |
+| Previous location | Canonical location |
 | --- | --- |
-| `gitops/bases/operators` | `bases/operators` |
-| `gitops/bases/tls` | `bases/tls` |
-| `gitops/bases/openbao` | `bases/shared-openbao` |
-| `gitops/bases/secrets` or `eso` | `bases/eso-store` |
-| `gitops/bases/controlplane-operator` | `bases/controlplane-operator` |
+| `flux-system/fluxinstance.yaml` | `bases/flux/fluxinstance.yaml` |
+| `flux-system/namespaces.yaml`, `sources/`, `releases/` | `bases/operators/namespaces.yaml`, `sources/`, `releases/` |
+| `flux-system/releases/openbao/` | `bases/shared-openbao/` |
+| `flux-system/releases/c5c3-operator/` | `bases/controlplane-operator/` |
+| `flux-system/infrastructure/` and its `tls/` | `bases/infrastructure/` and `bases/tls/` |
+| `openbao/bootstrap/`, `openbao/policies/` | `bases/shared-openbao/bootstrap/`, `bases/shared-openbao/policies/` |
+| `eso/` | `bases/eso-store/` |
+| `target-cluster/target-cluster-access/` | `bases/target-cluster-access/` |
+| `gitops/bases/{operators,tls,openbao,secrets,controlplane-operator}` | `bases/{operators,tls,shared-openbao,eso-store,controlplane-operator}` |
+| `kind/`, `lab/metal-stack/` | `overlays/kind/`, `overlays/metal-stack/` |
 
-For a path-only migration, pin a revision containing the new base and compare
-rendered identities and fields. Keep patches, Flux reconciler/source identities,
-namespace prune protection and retention policies unchanged. Preserve the staged
-OpenBao base's absence of a storage-class pin. The broad aggregate has no
-one-for-one staged replacement: splitting its ownership is a separate migration.
-When transferring an object between Flux owners, prevent the old inventory from
-pruning it, remove it there, reconcile/verify the new owner, then restore the
-intended retention policy.
+The old broad Flux aggregate has no single replacement: compose the staged bases
+with the [deployment order](#deployment-order), as the development composition and
+sizing example do. Keep one owner per resource when transferring Flux inventories;
+prevent pruning by the old owner until the new owner has reconciled successfully.
+The reusable shared OpenBao stage leaves storage-class selection to the environment.
 
-Environment entry points moved from `deploy/kind/<stage>` to
-`deploy/overlays/kind/<stage>`, and from `deploy/lab/metal-stack/<stage>` to
-`deploy/overlays/metal-stack/<stage>`. Update external imports and custom scripts;
-the old environment directories are removed. Shared raw addon files and dashboards
-now live under `deploy/bases/<addon>`, and common controller/instance files under
-`deploy/bases/devstack/{base,infrastructure}`. Repository scripts, CI, tests and
-Renovate use those canonical paths. The custom `EXTERNAL_OVERLAY` child-directory
-contract and all lifecycle gates stay the same.
-
-The five staged compatibility aliases, low-level Flux manifests, bootstrap
-script/policy keys and target-cluster chart paths remain supported. Further Flux
-runtime/static-instance extraction, bootstrap custody or storage changes require
-their own migration. No removal date is assigned to the retained compatibility paths.
+Workload identities and bootstrap keys stay unchanged. Bootstrap scripts and
+policies reference the canonical paths throughout; their generated ConfigMap
+hashes change with those comment updates. Repository scripts, tests, CI, Renovate
+and chart packaging use the same paths. The custom `EXTERNAL_OVERLAY`
+child-directory contract remains unchanged.

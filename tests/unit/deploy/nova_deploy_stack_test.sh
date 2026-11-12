@@ -5,7 +5,7 @@
 
 # Verify the deploy-stack artifacts that install and expose a standalone Nova:
 #
-#   - deploy/flux-system renders the nova-operator HelmRelease in its own
+#   - deploy/bases/operators renders the nova-operator HelmRelease in its own
 #     nova-system Namespace, bound to the five operators it needs and to the
 #     optional image-digest ConfigMap. A sixth dependsOn entry naming a Flux
 #     Kustomization (the message bus) would never become Ready, and the release
@@ -37,21 +37,21 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
 RENOVATE_CONFIG="$PROJECT_ROOT/renovate.json"
 
 # Every file this work package adds, relative to the repository root.
 NEW_FILES=(
-  "deploy/flux-system/releases/nova-operator.yaml"
+  "deploy/bases/operators/releases/nova-operator.yaml"
   "deploy/overlays/kind/infrastructure/nova-nip-io-tls-certificate.yaml"
   "deploy/overlays/kind/infrastructure/nova-metadata-nip-io-tls-certificate.yaml"
   "deploy/overlays/kind/infrastructure/nova-console-nip-io-tls-certificate.yaml"
   "deploy/bases/devstack/infrastructure/nova-api-db-externalsecret.yaml"
   "deploy/bases/devstack/infrastructure/nova-db-externalsecret.yaml"
-  "deploy/openbao/policies/nova-api-db-dynamic.hcl"
-  "deploy/openbao/policies/nova-cell-db-dynamic.hcl"
+  "deploy/bases/shared-openbao/policies/nova-api-db-dynamic.hcl"
+  "deploy/bases/shared-openbao/policies/nova-cell-db-dynamic.hcl"
   "tests/e2e/infrastructure/nova-deploy-stack/chainsaw-test.yaml"
 )
 
@@ -145,7 +145,7 @@ test_renovate_names_none_of_the_new_files() {
 
 # --- Test 3: the production overlay renders the release ---
 test_flux_system_renders_the_release() {
-  echo "Test: kustomize build deploy/flux-system renders the nova-operator release"
+  echo "Test: kustomize build deploy/bases/operators renders the nova-operator release"
 
   tools_missing 8 && return
 

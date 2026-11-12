@@ -487,7 +487,7 @@ Turn it on, then declare the traits, for the pool and for one GPU node:
 
 ```bash
 helm upgrade --kube-context "$COMPUTE_CONTEXT" --reuse-values \
-  target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access \
+  target-cluster-access deploy/bases/target-cluster-access -n c5c3-access \
   --set hypervisorTraits=true
 kubectl patch novacompute controlplane-compute-a -n openstack --type=merge -p '{"spec":{
   "traits":["CUSTOM_POOL_A"],

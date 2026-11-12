@@ -21,7 +21,7 @@
 #      in openstack and nothing else (kustomize, yq).
 #   7. Nothing applies the overlay by default: no non-comment line of
 #      hack/deploy-infra.sh names fake-compute, and kustomize build of
-#      deploy/flux-system and deploy/overlays/kind/base render no
+#      deploy/bases/operators and deploy/overlays/kind/base render no
 #      controlplane-fake-compute object (kustomize).
 #
 # Checks 4-6 and the kustomize half of check 7 are counted as SKIP when yq or
@@ -43,7 +43,7 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 DEPLOY_INFRA_SCRIPT="$PROJECT_ROOT/hack/deploy-infra.sh"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 OVERLAY_DIR="$PROJECT_ROOT/deploy/overlays/kind/fake-compute"
 OVERLAY_KUSTOMIZATION="$OVERLAY_DIR/kustomization.yaml"
@@ -250,7 +250,7 @@ test_kustomize_build_renders_overlay() {
 
 # --- Test 7: the default overlays render no fake compute ---
 test_default_overlays_render_no_fake_compute() {
-  echo "Test: hack/deploy-infra.sh, deploy/flux-system and deploy/overlays/kind/base apply no fake compute"
+  echo "Test: hack/deploy-infra.sh, deploy/bases/operators and deploy/overlays/kind/base apply no fake compute"
 
   # deploy-infra.sh applies its kind overlays with kubectl apply -k directly,
   # not through the two kustomizations below. Comments may name the overlay;

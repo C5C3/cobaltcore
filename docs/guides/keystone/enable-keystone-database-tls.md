@@ -47,7 +47,7 @@ figure. `{name}` is `controlplane-keystone` here.
 
 ![Issuer chains as four trust domains under the ClusterIssuer selfsigned-cluster-issuer, which signs the four CA certificates. Database: openstack-db-ca signs the MariaDB and MaxScale certificates and the Keystone database client certificate. OVN: openstack-ovn-ca signs the Northbound and Southbound server certificates, one shared client certificate and the relay certificate. OpenBao: openbao-ca signs the server certificate openbao-tls and every client certificate the listener requires, for the OpenBao pods, both ESO stores and the database credential generators. Lab only: libvirt-migration-ca signs one certificate per hypervisor node for libvirt and QEMU migration. A server accepts any client certificate of its own CA, so a certificate of one domain opens nothing in another.](../../diagrams/secrets-issuer-chains.svg)
 
-1. **cert-manager installed.** The chart from `deploy/flux-system/releases/cert-manager.yaml`
+1. **cert-manager installed.** The chart from `deploy/bases/operators/releases/cert-manager.yaml`
    provides the `cert-manager.io/v1` CRDs (`Certificate`, `Issuer`, `ClusterIssuer`).
    Confirm the controller is healthy:
 
@@ -56,7 +56,7 @@ figure. `{name}` is `controlplane-keystone` here.
    ```
 
 2. **`openstack-db-ca-issuer` ClusterIssuer Ready.** The dedicated DB CA is
-   declared in `deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml`.
+   declared in `deploy/bases/tls/db-ca-issuer.yaml`.
    `hack/deploy-infra.sh` applies it in Phase 2. Verify:
 
    ```bash
@@ -89,13 +89,13 @@ figure. `{name}` is `controlplane-keystone` here.
   breaks the connection, and the child Keystone reports `DatabaseReady=False`.
    The kind overlay of the Quick Start devstacks turns server TLS off on
    `openstack-db` (`deploy/overlays/kind/infrastructure/kustomization.yaml`); the
-   production manifest `deploy/flux-system/infrastructure/mariadb.yaml` sets
+   production manifest `deploy/bases/infrastructure/mariadb.yaml` sets
    `spec.tls.enabled=true` and `required=true`. The standalone flow at the end
    of this guide needs a TLS-enabled MariaDB as well.
    :::
 
 4. **keystone-operator running.** Either via the Helm release in
-   `deploy/flux-system/releases/keystone-operator.yaml` or a locally built
+   `deploy/bases/operators/releases/keystone-operator.yaml` or a locally built
    image deployed with `hack/ci-deploy-operator.sh`. The operator's RBAC must
    include the `cert-manager.io/certificates` rule; the chart's
    ClusterRole carries it by default.

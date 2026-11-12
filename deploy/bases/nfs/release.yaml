@@ -16,7 +16,7 @@
 # Namespace.
 #
 # Not for production. Production clusters bring their own CSI mounter, and
-# shipping a privileged hostNetwork DaemonSet from deploy/flux-system/releases/
+# shipping a privileged hostNetwork DaemonSet from deploy/bases/operators/releases/
 # into every production deployment is rejected. Beside kind, the metal-stack
 # lab installs this release unchanged, through deploy/overlays/metal-stack/nfs
 # (#1196).

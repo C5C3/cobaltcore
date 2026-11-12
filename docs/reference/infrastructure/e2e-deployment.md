@@ -336,7 +336,7 @@ before its delete. Then:
 5. The FluxInstance, so the flux-operator uninstalls the toolkit.
 6. The `flux-system` namespace and the flux-operator's ClusterRoles and
    ClusterRoleBinding.
-7. The namespaces of `deploy/flux-system/namespaces.yaml`, `envoy-gateway-system`,
+7. The namespaces of `deploy/bases/operators/namespaces.yaml`, `envoy-gateway-system`,
    `headlamp-system`, `chaos-mesh`, `dizzy` and `rook-ceph`. Then every ClusterRole, ClusterRoleBinding,
    MutatingWebhookConfiguration and ValidatingWebhookConfiguration whose label
    `helm.toolkit.fluxcd.io/namespace` names one of these namespaces or
@@ -435,8 +435,8 @@ and `WITH_NFS`.
    `shared-services`, and under `WITH_REGISTRY_CACHE=true` it starts the
    pull-through caches.
 2. **Install Flux.** `kubectl apply -f` of the flux-operator `install.yaml`,
-   of `deploy/flux-system/namespaces.yaml` and of
-   `deploy/flux-system/fluxinstance.yaml`. `wait_for_fluxinstance` polls the
+   of `deploy/bases/operators/namespaces.yaml` and of
+   `deploy/bases/flux/fluxinstance.yaml`. `wait_for_fluxinstance` polls the
    `Ready` condition for `HELMRELEASE_TIMEOUT` seconds. Two CRD installs
    follow, each a `kubectl apply --server-side` of an upstream file:
    - Install Gateway API standard CRDs, from `standard-install.yaml` of
@@ -456,10 +456,10 @@ and `WITH_NFS`.
      exist, because they carry no version annotation to compare.
 3. **Apply the base overlay**, `deploy/overlays/kind/base/` or `base/` of
    `EXTERNAL_OVERLAY`: the Namespaces, the Flux sources, the HelmReleases and
-   the two Flux Kustomizations of `deploy/flux-system/`, and what the kind
+   the two Flux Kustomizations of `deploy/bases/operators/`, and what the kind
    overlay adds, among it the `envoy-gateway` HelmRelease, `GatewayClass/envoy`
    and `Gateway/openstack-gw` on port 443. The production
-   `deploy/flux-system/` ships no Gateway, and the lab overlay inherits this
+   `deploy/bases/operators/` ships no Gateway, and the lab overlay inherits this
    one. Still in Step 3:
    - Each of `WITH_CHAOS_MESH`, `WITH_PROMETHEUS`, `WITH_DIZZY` and `WITH_NFS`
      applies the directory of its name under `deploy/overlays/kind/` or under
@@ -489,7 +489,7 @@ and `WITH_NFS`.
      no hook, and for an overlay that turns the check off.
    - Phase 2: `kubectl apply -f` of the four TLS prerequisites
      `cluster-issuer.yaml`, `openbao-ca-issuer.yaml`, `openbao-tls-cert.yaml`
-     and `db-ca-issuer.yaml` from `deploy/flux-system/infrastructure/`.
+     and `db-ca-issuer.yaml` from `deploy/bases/infrastructure/`.
      OpenBao and MariaDB cannot start without them.
    - Phase 3: `prometheus-operator-crds`, `openbao`, `mariadb-operator-crds`,
      `mariadb-operator`, `external-secrets`, `memcached-operator`,
@@ -529,7 +529,7 @@ and `WITH_NFS`.
 7. **Bootstrap OpenBao.** `openbao_init_unseal` initialises and unseals it.
    `openbao_bootstrap` then runs `setup-secret-engines.sh`, `setup-auth.sh`,
    `setup-policies.sh` and `write-bootstrap-secrets.sh` from
-   `deploy/openbao/bootstrap/`. Under `WITH_CONTROLPLANE=true` the last one
+   `deploy/bases/shared-openbao/bootstrap/`. Under `WITH_CONTROLPLANE=true` the last one
    seeds the paths of `openstack/<CONTROLPLANE_NAME>`. The step ends when the
    OpenBao pods are Ready (`POD_TIMEOUT`), and the script asks ESO to validate
    `openbao-cluster-store` again.
@@ -562,7 +562,7 @@ render of the overlay's `controlplane/` directory, or the kind
 **Shared development ExternalSecret shims.** The `keystone-admin`,
 `keystone-db` and `mariadb-root-password` ExternalSecrets of Step 8 come from
 `deploy/bases/devstack/infrastructure/`, imported by both environments. The
-production base has none of them. The production `deploy/eso/` stack ships only
+production base has none of them. The production `deploy/bases/eso-store/` stack ships only
 the `ClusterSecretStore`: in a ControlPlane-based deployment the admin password
 is projected per ControlPlane by the c5c3-operator, and a non-kind Flux MariaDB
 baseline provides the `mariadb-root-password` Secret itself.
@@ -585,7 +585,7 @@ in five ways:
 | Step 1 to Step 8 | this page, the log of the script | the steps of `make deploy-infra` | the numbered boxes |
 | Phase 1, 2, 3 and 3b | this page, the log of the script | the four parts of the release wait | inside Step 4 |
 | base phase and infrastructure phase, "two-phase kustomize" | both pages | the two kustomize applies | Step 3 and Step 5 |
-| "Step 1: Apply base resources", "Step 2: Apply infrastructure resources" | [Deployment](infrastructure-manifests.md#deployment) | the same two applies, by hand on `deploy/flux-system/` | Step 3 and Step 5 |
+| "Step 1: Apply base resources", "Step 2: Apply infrastructure resources" | [Deployment](infrastructure-manifests.md#deployment) | the same two applies, by hand on `deploy/bases/operators/` | Step 3 and Step 5 |
 | step 0 to step 8, lower case | [`make teardown-infra`](#make-teardown-infra) | the order of the teardown | not part of the run |
 
 ### Idempotent Re-runs
@@ -618,8 +618,8 @@ failing — each step detects the work it already completed and skips it:
 
 ## Kustomize Overlay Structure
 
-The public catalog under `deploy/bases/` provides five stages for deployment
-repositories; `deploy/gitops/bases/` keeps the older import paths as aliases.
+The catalog under `deploy/bases/` owns the reusable manifests, bootstrap assets
+and access chart directly. Older implementation directories and aliases are removed.
 Kind and metal-stack are sibling overlays under `deploy/overlays/`. Both
 compose the shared development stages under `deploy/bases/devstack` and the
 shared addon bases; environment-specific gateways and storage stay in overlays. The figure
@@ -628,70 +628,61 @@ shows these compositions and who applies each directory. Arrows describe
 every directory under `deploy/` that holds a `kustomization.yaml`, with the
 bases it lists under `resources`.
 
-![Deployment composition: five public stages retain their implementation and GitOps compatibility paths. Both kind and metal-stack independently import the shared devstack controller and infrastructure bases plus shared addon bases. Kind adds local gateway, NodePort and storage settings; metal-stack adds public gateway, Gardener metadata, persistence and node preparation. Prometheus has one shared chart/dashboard base without a Namespace; the standalone kind entry point adds its Namespace. Arrows point from a base to its consumers, not between environments, and do not imply readiness order.](../../diagrams/deploy-overlay-inheritance.svg)
+![Deployment composition: canonical bases own their manifests directly, including Flux, operators, TLS, shared OpenBao, ESO and target-cluster access. Both kind and metal-stack independently import the shared devstack controller and infrastructure bases plus shared addon bases. Kind adds local gateway, NodePort and storage settings; metal-stack adds public gateway, Gardener metadata, persistence and node preparation. Prometheus has one shared chart/dashboard base without a Namespace; the standalone kind entry point adds its Namespace. Arrows point from a base to its consumers, not between environments, and do not imply readiness order.](../../diagrams/deploy-overlay-inheritance.svg)
 
 | Directory | Base | Applied by |
 | --- | --- | --- |
-| `deploy/flux-system` | `deploy/flux-system/sources`, `deploy/flux-system/releases`, `deploy/flux-system/releases/openbao`, `deploy/flux-system/releases/c5c3-operator` | a person, with `kubectl apply -k` ([Deployment](infrastructure-manifests.md#deployment)) |
-| `deploy/flux-system/sources` | none | included by the legacy aggregate; canonical source catalog |
-| `deploy/flux-system/releases` | none | included by the legacy aggregate; controller releases only |
-| `deploy/flux-system/infrastructure` | `deploy/flux-system/infrastructure/tls`, `deploy/eso` | a person, once the operators have installed their CRDs |
-| `deploy/flux-system/infrastructure/tls` | none | included by infrastructure and the public TLS stage |
-| `deploy/flux-system/releases/c5c3-operator` | none | included by the legacy aggregate and public ControlPlane operator stage |
-| `deploy/flux-system/releases/openbao` | none | included by the legacy aggregate and public shared OpenBao stage |
-| `deploy/bases/operators` | `deploy/flux-system` | Flux after its controllers/APIs exist; excludes FluxInstance, shared OpenBao and c5c3; protects Namespaces from pruning |
-| `deploy/bases/tls` | `deploy/flux-system/infrastructure/tls` | Flux after cert-manager is ready |
-| `deploy/bases/shared-openbao` | `deploy/flux-system/releases/openbao` | Flux with environment-owned storage settings and server TLS prerequisites |
-| `deploy/bases/eso-store` | `deploy/eso` | Flux after OpenBao bootstrap and External Secrets Operator are ready |
-| `deploy/bases/controlplane-operator` | `deploy/flux-system/releases/c5c3-operator` | Flux once its operator and secret dependencies are ready |
-| `deploy/gitops/bases/operators` | `deploy/bases/operators` | compatibility alias for existing deployment repositories |
-| `deploy/gitops/bases/tls` | `deploy/bases/tls` | compatibility alias for the TLS stage |
-| `deploy/gitops/bases/openbao` | `deploy/bases/shared-openbao` | compatibility alias for the shared OpenBao stage |
-| `deploy/gitops/bases/secrets` | `deploy/bases/eso-store` | compatibility alias for the ESO store stage |
-| `deploy/gitops/bases/controlplane-operator` | `deploy/bases/controlplane-operator` | compatibility alias for the ControlPlane operator stage |
-| `deploy/openbao/bootstrap` | none | an environment overlay that packages scripts for its bootstrap Jobs |
-| `deploy/openbao/policies` | none | an environment overlay that packages policies for its bootstrap Jobs |
-| `deploy/eso` | none | included by infrastructure and the public ESO store stage |
-| `deploy/examples/base-customization/operators` | `deploy/bases/operators` | a deployment repository; example Keystone controller resource overrides |
-| `deploy/examples/base-customization/shared-openbao` | `deploy/bases/shared-openbao` | a deployment repository after replacing the example storage class |
-| `deploy/examples/sizing-overlay` | `deploy/flux-system` | nothing: a template to copy ([Sizing and placement overrides](infrastructure-manifests.md#sizing-and-placement-overrides)) |
-| `deploy/examples/sizing-overlay/infrastructure` | `deploy/flux-system/infrastructure` | nothing: the second phase of that template |
 | `deploy/bases/chaos-mesh` | none | included by environment overlays; shared definitions |
-| `deploy/bases/devstack/base` | `deploy/flux-system` | included by environment overlays; shared definitions |
-| `deploy/bases/devstack/infrastructure` | `deploy/flux-system/infrastructure` | included by environment overlays; shared definitions |
+| `deploy/bases/controlplane-operator` | none | after its controller and secret dependencies are ready |
+| `deploy/bases/devstack/base` | `deploy/bases/operators`, `deploy/bases/flux`, `deploy/bases/shared-openbao`, `deploy/bases/controlplane-operator` | included by environment overlays; shared definitions |
+| `deploy/bases/devstack/infrastructure` | `deploy/bases/infrastructure` | included by environment overlays; shared definitions |
 | `deploy/bases/dizzy` | none | included by environment overlays; shared definitions |
+| `deploy/bases/eso-store` | none | after OpenBao bootstrap and ESO are ready; also composed by reference infrastructure |
+| `deploy/bases/flux` | none | bootstrap after flux-operator is installed; owns FluxInstance |
 | `deploy/bases/hypervisor-fixtures` | none | included by environment overlays; shared definitions |
+| `deploy/bases/infrastructure` | `deploy/bases/tls`, `deploy/bases/eso-store` | a person, once the operators have installed their CRDs |
 | `deploy/bases/messaging` | none | included by environment overlays; shared definitions |
 | `deploy/bases/nfs` | none | included by environment overlays; shared definitions |
+| `deploy/bases/operators` | `deploy/bases/operators/sources`, `deploy/bases/operators/releases` | Flux after its controllers/APIs exist; owns namespaces, sources and operator reconciliation objects |
+| `deploy/bases/operators/releases` | none | included by the operator base; controller releases only |
+| `deploy/bases/operators/sources` | none | included by the operator base; canonical source catalog |
 | `deploy/bases/prometheus` | none | included by environment overlays; shared definitions |
+| `deploy/bases/shared-openbao/bootstrap` | none | an environment overlay that packages scripts for its bootstrap Jobs |
+| `deploy/bases/shared-openbao` | none | after server TLS; environment supplies storage settings and bootstrap |
+| `deploy/bases/shared-openbao/policies` | none | an environment overlay that packages policies for its bootstrap Jobs |
+| `deploy/bases/tls` | none | after cert-manager is ready; also composed by reference infrastructure |
+| `deploy/examples/base-customization/operators` | `deploy/bases/operators` | a deployment repository; example Keystone controller resource overrides |
+| `deploy/examples/base-customization/shared-openbao` | `deploy/bases/shared-openbao` | a deployment repository after replacing the example storage class |
+| `deploy/examples/sizing-overlay/infrastructure` | `deploy/bases/infrastructure` | nothing: the second phase of that template |
+| `deploy/examples/sizing-overlay` | `deploy/bases/operators`, `deploy/bases/flux`, `deploy/bases/shared-openbao`, `deploy/bases/controlplane-operator` | nothing: a template to copy ([Sizing and placement overrides](infrastructure-manifests.md#sizing-and-placement-overrides)) |
 | `deploy/overlays/kind/base` | `deploy/bases/devstack/base` | `make deploy-infra`, Step 3 |
-| `deploy/overlays/kind/infrastructure` | `deploy/bases/devstack/infrastructure` | `make deploy-infra`, Step 5 |
 | `deploy/overlays/kind/chaos-mesh` | `deploy/bases/chaos-mesh` | Step 3 under `WITH_CHAOS_MESH=true` |
+| `deploy/overlays/kind/controlplane` | none | a person, as the file `controlplane.yaml` ([Quick Start (ControlPlane)](../../quick-start-controlplane.md)), or the script under `WITH_CONTROLPLANE_CR=true` |
 | `deploy/overlays/kind/dizzy` | `deploy/bases/dizzy` | Step 3 under `WITH_DIZZY=true` |
+| `deploy/overlays/kind/fake-compute` | none | a person ([Run a Fake Compute for Testing](../../guides/nova/run-a-fake-compute-for-testing.md)) |
+| `deploy/overlays/kind/hypervisor-operator-fixtures` | `deploy/bases/hypervisor-fixtures` | a person ([Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md)) |
+| `deploy/overlays/kind/infrastructure` | `deploy/bases/devstack/infrastructure` | `make deploy-infra`, Step 5 |
+| `deploy/overlays/kind/messaging` | `deploy/bases/messaging` | after the apply of Step 5 under `WITH_MESSAGING=true`, in both cluster modes |
+| `deploy/overlays/kind/metrics-server` | none | Step 3 under `WITH_METRICS_SERVER=true` or `WITH_VPA=true`, in kind mode only |
 | `deploy/overlays/kind/nfs` | `deploy/bases/nfs` | Step 3 under `WITH_NFS=true` |
 | `deploy/overlays/kind/prometheus` | `deploy/bases/prometheus` | direct consumers that need the Namespace; included by `prometheus-managed` |
 | `deploy/overlays/kind/prometheus-managed` | `deploy/bases/prometheus` | Step 3 under `WITH_PROMETHEUS=true`, leaving Namespace ownership to the base |
-| `deploy/overlays/kind/metrics-server` | none | Step 3 under `WITH_METRICS_SERVER=true` or `WITH_VPA=true`, in kind mode only |
 | `deploy/overlays/kind/vpa` | none | Step 3 under `WITH_VPA=true`, in kind mode only |
-| `deploy/overlays/kind/messaging` | `deploy/bases/messaging` | after the apply of Step 5 under `WITH_MESSAGING=true`, in both cluster modes |
-| `deploy/overlays/kind/controlplane` | none | a person, as the file `controlplane.yaml` ([Quick Start (ControlPlane)](../../quick-start-controlplane.md)), or the script under `WITH_CONTROLPLANE_CR=true` |
-| `deploy/overlays/kind/fake-compute` | none | a person ([Run a Fake Compute for Testing](../../guides/nova/run-a-fake-compute-for-testing.md)) |
-| `deploy/overlays/kind/hypervisor-operator-fixtures` | `deploy/bases/hypervisor-fixtures` | a person ([Connect a Compute Cluster](../../guides/nova/connect-a-compute-cluster.md)) |
 | `deploy/overlays/metal-stack/base` | `deploy/bases/devstack/base` | Step 3 under `EXTERNAL_CLUSTER=true` |
-| `deploy/overlays/metal-stack/infrastructure` | `deploy/bases/devstack/infrastructure` | Step 5 under `EXTERNAL_CLUSTER=true` |
-| `deploy/overlays/metal-stack/chaos-mesh` | `deploy/bases/chaos-mesh` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_CHAOS_MESH=true` |
-| `deploy/overlays/metal-stack/dizzy` | `deploy/bases/dizzy` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_DIZZY=true` |
-| `deploy/overlays/metal-stack/nfs` | `deploy/bases/nfs` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_NFS=true` |
-| `deploy/overlays/metal-stack/prometheus` | `deploy/bases/prometheus` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_PROMETHEUS=true` |
-| `deploy/overlays/metal-stack/ceph` | none | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_CEPH=true` ([Lab Ceph](infrastructure-manifests.md#lab-ceph)) |
 | `deploy/overlays/metal-stack/ceph/cluster` | none | Step 5 under `EXTERNAL_CLUSTER=true` and `WITH_CEPH=true` |
+| `deploy/overlays/metal-stack/ceph` | none | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_CEPH=true` ([Lab Ceph](infrastructure-manifests.md#lab-ceph)) |
+| `deploy/overlays/metal-stack/chaos-mesh` | `deploy/bases/chaos-mesh` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_CHAOS_MESH=true` |
 | `deploy/overlays/metal-stack/controlplane` | none | a person ([Quick Start (metal-stack)](../../quick-start-metal-stack.md)) |
 | `deploy/overlays/metal-stack/controlplane-nfs` | `deploy/overlays/metal-stack/controlplane` | a person, over `controlplane/` on a lab deployed with `WITH_NFS=true` as well ([Lab ControlPlane](infrastructure-manifests.md#lab-controlplane)) |
-| `deploy/overlays/metal-stack/hypervisor-fixtures` | `deploy/bases/hypervisor-fixtures` | a person, after the ControlPlane |
-| `deploy/overlays/metal-stack/hypervisor` | `deploy/overlays/metal-stack/migration-ports` | a person, after the ControlPlane |
-| `deploy/overlays/metal-stack/migration-ports` | none | a person, and as the base of `hypervisor/` |
-| `deploy/overlays/metal-stack/probe` | none | a person ([Node probe](infrastructure-manifests.md#node-probe)) |
+| `deploy/overlays/metal-stack/dizzy` | `deploy/bases/dizzy` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_DIZZY=true` |
 | `deploy/overlays/metal-stack/dizzy-soak` | none | `make dizzy-soak-start` ([Lab dizzy soak](infrastructure-manifests.md#lab-dizzy-soak)) |
+| `deploy/overlays/metal-stack/hypervisor` | `deploy/overlays/metal-stack/migration-ports` | a person, after the ControlPlane |
+| `deploy/overlays/metal-stack/hypervisor-fixtures` | `deploy/bases/hypervisor-fixtures` | a person, after the ControlPlane |
+| `deploy/overlays/metal-stack/infrastructure` | `deploy/bases/devstack/infrastructure` | Step 5 under `EXTERNAL_CLUSTER=true` |
+| `deploy/overlays/metal-stack/migration-ports` | none | a person, and as the base of `hypervisor/` |
+| `deploy/overlays/metal-stack/nfs` | `deploy/bases/nfs` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_NFS=true` |
+| `deploy/overlays/metal-stack/probe` | none | a person ([Node probe](infrastructure-manifests.md#node-probe)) |
+| `deploy/overlays/metal-stack/prometheus` | `deploy/bases/prometheus` | Step 3 under `EXTERNAL_CLUSTER=true` and `WITH_PROMETHEUS=true` |
 
 The overlays reference the production FluxCD manifests as their base and apply
 strategic merge patches to reduce resource requirements for a single-node kind
@@ -707,7 +698,7 @@ of the `e2e-controlplane` job enforces.
 | Replicas | 3 (HA) | 1 (standalone) |
 | HA enabled | `true` | `false` |
 | Raft config | `retry_join` with 3 peers | No `retry_join` (standalone) |
-| Storage class | `local-path` | `standard` |
+| Storage class | environment-selected | `standard` |
 | CPU request | `250m` | `100m` |
 
 ### Base Overlay Patches (operators and Flux)
@@ -1089,7 +1080,7 @@ make teardown-infra
 ## Related Resources
 
 - [OpenBao Bootstrap Procedure](openbao-bootstrap.md) — OpenBao deployment and bootstrap
-- `deploy/flux-system/` — Production FluxCD base manifests
+- `deploy/bases/operators/` — Production FluxCD base manifests
 - `deploy/overlays/kind/` — Kind-specific kustomize overlays
 - `tests/e2e/infrastructure/` — Chainsaw E2E test files
 - `.github/workflows/ci.yaml` — CI workflow with `e2e-infra` job

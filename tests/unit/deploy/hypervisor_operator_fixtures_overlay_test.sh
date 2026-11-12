@@ -19,7 +19,7 @@
 #      NovaHypervisorOperatorAccountName literal in controlplane_webhook.go (yq).
 #   6. Nothing applies the overlay by default: no non-comment line of
 #      hack/deploy-infra.sh names hypervisor-operator-fixtures, and kustomize
-#      build of deploy/flux-system and deploy/overlays/kind/base render no hvo- object
+#      build of deploy/bases/operators and deploy/overlays/kind/base render no hvo- object
 #      (kustomize).
 #
 # Checks 3-5 and the kustomize half of check 6 are counted as SKIP when yq or
@@ -40,7 +40,7 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 DEPLOY_INFRA_SCRIPT="$PROJECT_ROOT/hack/deploy-infra.sh"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
 KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 OVERLAY_DIR="$PROJECT_ROOT/deploy/overlays/kind/hypervisor-operator-fixtures"
 OVERLAY_KUSTOMIZATION="$PROJECT_ROOT/deploy/bases/hypervisor-fixtures/kustomization.yaml"
@@ -173,7 +173,7 @@ test_rendered_overlay() {
 
 # --- Test 6: the default overlays render no fixture ---
 test_default_overlays_render_no_fixtures() {
-  echo "Test: hack/deploy-infra.sh, deploy/flux-system and deploy/overlays/kind/base apply no hypervisor-operator fixture"
+  echo "Test: hack/deploy-infra.sh, deploy/bases/operators and deploy/overlays/kind/base apply no hypervisor-operator fixture"
 
   # deploy-infra.sh applies its kind overlays with kubectl apply -k directly,
   # not through the two kustomizations below. Comments may name the overlay;

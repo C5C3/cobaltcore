@@ -33,10 +33,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-ENGINES_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-secret-engines.sh"
-AUTH_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-auth.sh"
-SEED_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/write-bootstrap-secrets.sh"
-POLICY_FILE="$PROJECT_ROOT/deploy/openbao/policies/barbican-secretstore.hcl"
+ENGINES_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh"
+AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
+SEED_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh"
+POLICY_FILE="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/barbican-secretstore.hcl"
 
 # The static seal key of the proving OpenBao instance
 # (deploy/bases/devstack/infrastructure/openbao-instance.yaml).

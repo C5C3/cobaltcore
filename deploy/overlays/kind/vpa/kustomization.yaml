@@ -23,7 +23,7 @@
 # `LoadRestrictionsRootOnly` check without `--load-restrictor`
 # (kubernetes/kubectl#948), the same contract as the metrics-server overlay.
 #
-# Production overlays (deploy/flux-system/kustomization.yaml) never install
+# Production overlays (deploy/bases/operators/kustomization.yaml) never install
 # it. The recommender reads the resource-metrics API, so WITH_VPA=true also
 # installs the metrics-server overlay.
 apiVersion: kustomize.config.k8s.io/v1beta1

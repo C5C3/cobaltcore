@@ -14,7 +14,7 @@
 #   - the same render carries NO cpu request and NO cpu limit: a 500m request
 #     left pods Pending on the 4-vCPU keystone leg (#970), and a cpu limit
 #     would throttle the SELECT 1 liveness probe the overlay already relaxed.
-#   - kustomize build deploy/flux-system/infrastructure renders no resources
+#   - kustomize build deploy/bases/infrastructure renders no resources
 #     on the production MariaDB: the Galera posture is sized by its operators,
 #     not by the kind overlay.
 #
@@ -33,7 +33,7 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
-PROD_INFRA_DIR="$PROJECT_ROOT/deploy/flux-system/infrastructure"
+PROD_INFRA_DIR="$PROJECT_ROOT/deploy/bases/infrastructure"
 MARIADB_SELECT='select(.kind == "MariaDB" and .metadata.name == "openstack-db")'
 
 # render_field <dir> <yq path>
@@ -84,7 +84,7 @@ test_production_base_untouched() {
   fi
   local resources
   resources="$(render_field "$PROD_INFRA_DIR" '.spec.resources')"
-  assert_eq "deploy/flux-system/infrastructure renders MariaDB/openstack-db without resources" \
+  assert_eq "deploy/bases/infrastructure renders MariaDB/openstack-db without resources" \
     "null" "$resources"
 }
 

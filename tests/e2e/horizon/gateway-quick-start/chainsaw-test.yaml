@@ -21,7 +21,7 @@
 # Scope gating, runtime presence probe (first step): if GatewayClass/envoy,
 #   Gateway/openstack-gw or the horizons.horizon.openstack.c5c3.io CRD is
 #   missing, the probe script logs SKIP and exits 0. Production overlays
-#   (deploy/flux-system/) install neither Envoy Gateway nor the quick-start
+#   (deploy/bases/operators/) install neither Envoy Gateway nor the quick-start
 #   Gateway, so no chainsaw `--selector` flag is required from callers.
 #
 # Differs from tests/e2e/horizon/httproute/chainsaw-test.yaml: that suite
@@ -96,13 +96,13 @@ spec:
           # reconcile path downstream.
           if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
             echo "SKIP: GatewayClass/envoy not present on this cluster."
-            echo "      This is expected on non-kind overlays (deploy/flux-system/"
+            echo "      This is expected on non-kind overlays (deploy/bases/operators/"
             echo "      does not reference deploy/bases/devstack/base/envoy-gateway.yaml)."
             exit 0
           fi
           if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
             echo "SKIP: Gateway/openstack-gw not present in namespace openstack."
-            echo "      This is expected on non-kind overlays (deploy/flux-system/"
+            echo "      This is expected on non-kind overlays (deploy/bases/operators/"
             echo "      does not reference deploy/overlays/kind/base/openstack-gateway.yaml)."
             exit 0
           fi

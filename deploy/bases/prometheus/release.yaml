@@ -6,7 +6,7 @@
 # References the existing prometheus-community HelmRepository in flux-system; no
 # new source is introduced.
 # Kind-tuned values crds.enabled=false because the
-# prometheus-operator-crds HelmRelease at deploy/flux-system/releases/prometheus-operator-crds.yaml
+# prometheus-operator-crds HelmRelease at deploy/bases/operators/releases/prometheus-operator-crds.yaml
 # is the single CRD owner — avoids dual-owner reconcile flap. Alertmanager, nodeExporter,
 # and kubeStateMetrics are disabled since a single-node kind cluster does not need
 # cluster-wide kubelet/cadvisor scraping for this demo, and retention is capped at 6h
@@ -36,7 +36,7 @@ spec:
         name: prometheus-community
         namespace: flux-system
   # install.crds=CreateReplace and upgrade.crds=CreateReplace are
-  # set for symmetry with every other HelmRelease under deploy/flux-system/
+  # set for symmetry with every other HelmRelease under deploy/bases/operators/
   # (FluxCD-HelmRelease-common pattern). They have no effect here because
   # values.crds.enabled=false (below) makes the chart render zero CRDs —
   # the always-on prometheus-operator-crds HelmRelease is the single owner

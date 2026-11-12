@@ -112,7 +112,7 @@ bao kv put kv-v2/bootstrap/openstack/controlplane-keystone/admin password=<new-p
 > `controlplane-keystone-admin-credentials` ExternalSecret reads
 > (`remoteRef.key: bootstrap/openstack/controlplane-keystone/admin`,
 > `property: password`) and the path
-> `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` seeds. If your deployment
+> `deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh` seeds. If your deployment
 > uses a different KV mount or path, substitute it here and in step 2's
 > ExternalSecret name accordingly.
 
