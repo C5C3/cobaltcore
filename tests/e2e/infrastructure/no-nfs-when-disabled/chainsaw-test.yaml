@@ -10,13 +10,13 @@
 #
 # Why this test exists
 #   The only producers of those four resources are the manifests under
-#   deploy/kind/nfs/, applied by the single `kubectl apply -k deploy/kind/nfs`
+#   deploy/overlays/kind/nfs/, applied by the single `kubectl apply -k deploy/overlays/kind/nfs`
 #   that sits inside the WITH_NFS=true gate of hack/deploy-infra.sh. The shell
 #   unit tests (tests/unit/hack/deploy_infra_nfs_flag_test.sh,
 #   tests/unit/deploy/nfs_overlay_test.sh) exercise that gate and the overlay
 #   render at the source level. Neither asserts "a default cluster has no NFS
 #   footprint", so a regression that moves the apply outside the gate, or a
-#   kustomize edit that pulls the overlay into deploy/kind/base, would slip
+#   kustomize edit that pulls the overlay into deploy/overlays/kind/base, would slip
 #   through. This suite closes that gap against the running cluster, mirroring
 #   the sibling no-metrics-server-when-disabled and no-prometheus-when-disabled
 #   suites.
@@ -28,7 +28,7 @@
 #   four resources exist and it would rightly fail.
 #
 # Scope gating: none. The invariant also holds on production overlays
-# (deploy/flux-system/kustomization.yaml lists none of the deploy/kind/nfs/
+# (deploy/flux-system/kustomization.yaml lists none of the deploy/overlays/kind/nfs/
 # resources), so the test is environment-agnostic like its two siblings.
 #
 # Why a single script and not declarative `error` blocks: asserting "no
@@ -106,14 +106,14 @@ spec:
           }
 
           # ── Assertion 1: no csi-driver-nfs HelmRepository in flux-system ──
-          # The only producer is deploy/kind/nfs/source.yaml.
+          # The only producer is deploy/bases/nfs/source.yaml.
           lookup helmrepository.source.toolkit.fluxcd.io csi-driver-nfs \
             -n flux-system
           if [ -n "${FOUND}" ]; then
             echo "FAIL: HelmRepository 'csi-driver-nfs' exists in 'flux-system' on a default cluster."
             echo "      Source of regression: hack/deploy-infra.sh ran the NFS overlay"
             echo "      apply outside the WITH_NFS gate, or the overlay was pulled into"
-            echo "      deploy/kind/base."
+            echo "      deploy/overlays/kind/base."
             exit 1
           fi
           echo "OK: no HelmRepository 'csi-driver-nfs' in 'flux-system'"
@@ -131,14 +131,14 @@ spec:
           if [ -n "${FOUND}" ]; then
             echo "FAIL: HelmRelease 'csi-driver-nfs' exists on a default cluster:"
             printf '%s\n' "${FOUND}"
-            echo "      Source of regression: deploy/kind/nfs/release.yaml was applied"
+            echo "      Source of regression: deploy/bases/nfs/release.yaml was applied"
             echo "      without WITH_NFS=true."
             exit 1
           fi
           echo "OK: no HelmRelease 'csi-driver-nfs' exists"
 
           # ── Assertion 3: no nfs-server Deployment in openstack ──
-          # The only producer is deploy/kind/nfs/nfs-server.yaml.
+          # The only producer is deploy/bases/nfs/nfs-server.yaml.
           lookup deployment nfs-server -n openstack
           if [ -n "${FOUND}" ]; then
             echo "FAIL: Deployment 'nfs-server' exists in 'openstack' on a default cluster."

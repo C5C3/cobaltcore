@@ -45,7 +45,7 @@ CR named `controlplane` is `Ready` in the `openstack` namespace. Its Step 4 CR
 already carries the `services.barbican` block step 1 shows, so on a devstack
 brought up from it the service is reconciled and step 1 reads as a check. A
 ControlPlane created before that block existed, or from the bundled minimal CR
-(`deploy/kind/controlplane/controlplane.yaml`, keystone and horizon only), gets
+(`deploy/overlays/kind/controlplane/controlplane.yaml`, keystone and horizon only), gets
 the block added in step 1. Every resource name in the examples that follow is
 one this devstack produces.
 :::
@@ -400,7 +400,7 @@ spec:
       # ... the policy, approle, and kubernetes-auth requests
 ```
 
-`deploy/kind/infrastructure/openbao-instance.yaml` is the complete worked
+`deploy/bases/devstack/infrastructure/openbao-instance.yaml` is the complete worked
 example, with every self-init request spelled out and the objects that have to
 exist beside the CR: the two cert-manager `Certificate`s backing the fixed-name
 TLS Secrets, the provisioner `ServiceAccount`, and the `ClusterRoleBinding` that

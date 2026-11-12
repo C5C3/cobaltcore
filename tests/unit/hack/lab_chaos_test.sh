@@ -264,7 +264,7 @@ test_preflight() {
   run_lc preflight LAB_CHAOS_CONTEXT=garden-lab
   assert_eq "a lab without nfs1 fails" "1" "$RC"
   assert_eq "with one FAIL line naming the backend" \
-    "FAIL: the Cinder backend nfs1 is missing or not Ready (read 'Error from server (NotFound): cinderbackends.cinder.openstack.c5c3.io \"nfs1\" not found'); apply deploy/lab/metal-stack/controlplane-nfs as in Part 3, Step 1" \
+    "FAIL: the Cinder backend nfs1 is missing or not Ready (read 'Error from server (NotFound): cinderbackends.cinder.openstack.c5c3.io \"nfs1\" not found'); apply deploy/overlays/metal-stack/controlplane-nfs as in Part 3, Step 1" \
     "$(grep '^FAIL:' <<<"$OUT")"
 
   new_case

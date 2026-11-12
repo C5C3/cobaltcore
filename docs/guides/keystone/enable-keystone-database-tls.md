@@ -88,7 +88,7 @@ figure. `{name}` is `controlplane-keystone` here.
    Enabling `verify-full` client TLS against a MariaDB that offers no server TLS
   breaks the connection, and the child Keystone reports `DatabaseReady=False`.
    The kind overlay of the Quick Start devstacks turns server TLS off on
-   `openstack-db` (`deploy/kind/infrastructure/kustomization.yaml`); the
+   `openstack-db` (`deploy/overlays/kind/infrastructure/kustomization.yaml`); the
    production manifest `deploy/flux-system/infrastructure/mariadb.yaml` sets
    `spec.tls.enabled=true` and `required=true`. The standalone flow at the end
    of this guide needs a TLS-enabled MariaDB as well.

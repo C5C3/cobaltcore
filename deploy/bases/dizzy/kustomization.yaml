@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Shared dizzy resources; environment overlays select their settings.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# NO top-level `namespace:` on purpose: the two HelmRepository sources live
+# in `flux-system` while everything else lives in `dizzy`. A global
+# namespace would clobber the HelmRepositories into `dizzy` and break the
+# HelmRelease sourceRefs, so each resource carries its own namespace.
+
+resources:
+  - namespace.yaml
+  - source-victoria-metrics.yaml
+  - source-grafana.yaml
+  - release-victoria-metrics.yaml
+  - release-grafana.yaml
+  - httproute.yaml
+
+configMapGenerator:
+  # Wraps the three dizzy dashboard JSONs so the Grafana dashboard provider
+  # (dashboardsConfigMaps.dizzy in release-grafana.yaml) mounts them. The
+  # files below are staged at deploy time by hack/dizzy.sh stage-dashboards
+  # and are NOT tracked in git (see .gitignore); the canonical source is the
+  # pinned dizzy release tarball.
+  - name: grafana-dashboards
+    namespace: dizzy
+    files:
+      - dashboards/overview.json
+      - dashboards/api-operations.json
+      - dashboards/time-to-ready.json
+    options:
+      # disableNameSuffixHash keeps the ConfigMap name stable
+      # (`grafana-dashboards`, no `-<hash>` suffix) because the grafana
+      # chart references it by fixed name via dashboardsConfigMaps. The
+      # trade-off is that Grafana does NOT auto-reload on a dashboard edit
+      # — acceptable here since the dashboards are a version-pinned asset
+      # that only changes on a dizzy bump + redeploy.
+      disableNameSuffixHash: true

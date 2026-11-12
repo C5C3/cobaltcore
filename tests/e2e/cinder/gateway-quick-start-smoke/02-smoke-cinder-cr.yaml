@@ -32,7 +32,7 @@
 # unauthenticated `apiversions` application before the auth pipeline, so the
 # version document answers without a token, as it does under noauth. The
 # `keystone-admin` Secret the service user points at is the kind overlay's own
-# shim (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml), which is
+# shim (deploy/bases/devstack/infrastructure/keystone-admin-externalsecret.yaml), which is
 # what lets SecretsReady pass.
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: Cinder

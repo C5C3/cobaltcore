@@ -10,7 +10,7 @@
 #     chaos-mesh as an always-on entry.
 #   - A `### Chaos Mesh (kind-only opt-in)` subsection exists under the
 #     `## Kind Overlay Demo Addons` section and points at
-#     `deploy/kind/chaos-mesh/kustomization.yaml`.
+#     `deploy/overlays/kind/chaos-mesh/kustomization.yaml`.
 #   - The kind-only subsection documents the WITH_CHAOS_MESH opt-in flag.
 #
 #
@@ -138,9 +138,9 @@ test_kind_only_subsection_present() {
   fi
 }
 
-# --- Test 4: Subsection points at deploy/kind/chaos-mesh/kustomization.yaml ---
+# --- Test 4: Subsection points at deploy/overlays/kind/chaos-mesh/kustomization.yaml ---
 test_kind_only_subsection_points_at_overlay_file() {
-  echo "Test: Kind-only subsection 'File:' line points at deploy/kind/chaos-mesh/kustomization.yaml"
+  echo "Test: Kind-only subsection 'File:' line points at deploy/overlays/kind/chaos-mesh/kustomization.yaml"
 
   local subsection
   subsection="$(awk '
@@ -157,9 +157,9 @@ test_kind_only_subsection_points_at_overlay_file() {
   fi
 
   assert_contains \
-    "Kind-only subsection points at deploy/kind/chaos-mesh/kustomization.yaml" \
+    "Kind-only subsection points at deploy/overlays/kind/chaos-mesh/kustomization.yaml" \
     "$subsection" \
-    "deploy/kind/chaos-mesh/kustomization.yaml"
+    "deploy/overlays/kind/chaos-mesh/kustomization.yaml"
 
   # Also check that the obsolete deploy/flux-system/releases/chaos-mesh.yaml
   # path (used pre-) is NOT cited as the primary file in the

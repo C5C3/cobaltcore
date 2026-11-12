@@ -69,7 +69,7 @@ spec:
       backend: dogpile.cache.pymemcache
     # The shared message bus, referenced brownfield against a REAL broker: the
     # shared-rabbitmq the kind messaging stack runs in the openstack namespace
-    # (deploy/kind/messaging, WITH_MESSAGING=true on the CI job). The Secret
+    # (deploy/overlays/kind/messaging, WITH_MESSAGING=true on the CI job). The Secret
     # controlplane-keystone-messaging is not a fixture file. The chainsaw script
     # has tests/e2e/cinder/broker-vhost.sh write it against a vhost of this
     # suite's own, which is what keeps the suite's RPC topics out of the vhosts
@@ -140,7 +140,7 @@ spec:
         centralRef:
           name: controlplane-keystone-ovn
     # The block-storage service: one NFS volume backend and one NFS backup backend
-    # on the kind NFS export (deploy/kind/nfs, WITH_NFS=true), one API replica.
+    # on the kind NFS export (deploy/overlays/kind/nfs, WITH_NFS=true), one API replica.
     # The volume and backup Deployments are singletons the projection pins to
     # one replica. The image-volume cache is on so the verify Job can prove a
     # second create-from-image reuses the cached volume.

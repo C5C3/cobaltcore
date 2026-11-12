@@ -112,7 +112,7 @@ and the
 Every operator exports Prometheus metrics
 ([Keystone Operator Metrics](../reference/keystone-operator-metrics.md) is the
 reference set). The remaining pieces ship only with the kind overlay
-(`deploy/kind/`) for development and CI:
+(`deploy/overlays/kind/`) for development and CI:
 
 - **kube-prometheus-stack** and **metrics-server** for local metrics, plus
   **Chaos Mesh**, which drives the
@@ -122,7 +122,7 @@ reference set). The remaining pieces ship only with the kind overlay
 - **dizzy**, the load/chaos stack around victoria-metrics, used by
   [dizzy chaos testing](../reference/testing/dizzy-chaos-testing.md).
 - **Envoy Gateway** as the demo Gateway API implementation
-  (`deploy/kind/base/`); production overlays bring their own Gateway
+  (`deploy/overlays/kind/base/`); production overlays bring their own Gateway
   controller.
 - The **Tempest image** (`images/tempest/`) executed by the
   [Tempest test infrastructure](../reference/testing/tempest-test-infrastructure.md).

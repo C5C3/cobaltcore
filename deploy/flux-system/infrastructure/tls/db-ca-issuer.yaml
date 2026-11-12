@@ -24,7 +24,7 @@
 # ClusterIssuer of type CA looks up its secretName. Placing the
 # CA keypair Secret here is the standard cert-manager convention
 # (see https://cert-manager.io/docs/configuration/ca/). The kind
-# overlay inherits this resource via deploy/kind/infrastructure/
+# overlay inherits this resource via deploy/overlays/kind/infrastructure/
 # kustomization.yaml.
 #
 # DECISION: CA lifetime — 3 years (26280h) for the CA keypair with

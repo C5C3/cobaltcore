@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the VPA recommender opt-in overlay:
-#   - deploy/kind/vpa/{kustomization,source,release}.yaml exist with SPDX
+#   - deploy/overlays/kind/vpa/{kustomization,source,release}.yaml exist with SPDX
 #     headers, the kustomization references the local source/release files
 #     (no parent-directory paths), and the overlay does NOT create a Namespace
 #     (the release installs into the pre-existing kube-system Namespace).
@@ -15,7 +15,7 @@
 #     chart version stays within minor 0.13, whose values disable the
 #     admission controller and the updater, and whose recommender carries the
 #     two per-pod floor flags.
-#   - kustomize build of deploy/flux-system and deploy/kind/base renders ZERO
+#   - kustomize build of deploy/flux-system and deploy/overlays/kind/base renders ZERO
 #     vertical-pod-autoscaler resources (production / default posture).
 # Usage: bash tests/unit/deploy/vpa_overlay_test.sh
 
@@ -32,15 +32,15 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-KIND_VPA_DIR="$PROJECT_ROOT/deploy/kind/vpa"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+KIND_VPA_DIR="$PROJECT_ROOT/deploy/overlays/kind/vpa"
 KIND_VPA_KUSTOMIZATION="$KIND_VPA_DIR/kustomization.yaml"
 KIND_VPA_SOURCE="$KIND_VPA_DIR/source.yaml"
 KIND_VPA_RELEASE="$KIND_VPA_DIR/release.yaml"
 
 # --- Test 1: overlay files exist with SPDX headers ---
 test_overlay_files_exist_with_spdx() {
-  echo "Test: deploy/kind/vpa/{kustomization,source,release}.yaml exist with SPDX headers"
+  echo "Test: deploy/overlays/kind/vpa/{kustomization,source,release}.yaml exist with SPDX headers"
 
   local f
   for f in "$KIND_VPA_KUSTOMIZATION" "$KIND_VPA_SOURCE" "$KIND_VPA_RELEASE"; do
@@ -88,7 +88,7 @@ test_kustomization_is_self_contained() {
 # --- Test 3: kustomize build renders exactly the HelmRepository and the
 #             HelmRelease under the default LoadRestrictionsRootOnly check ---
 test_kustomize_build_renders_bundle() {
-  echo "Test: kustomize build deploy/kind/vpa renders HelmRepository + HelmRelease, recommender only"
+  echo "Test: kustomize build deploy/overlays/kind/vpa renders HelmRepository + HelmRelease, recommender only"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (11 checks skipped)"

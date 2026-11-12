@@ -87,7 +87,7 @@ spec:
 
           # ── Presence guard ──────────────────────────────
           # The kind overlay alone applies
-          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # `deploy/overlays/kind/base/openstack-gateway.yaml`, which materialises
           # GatewayClass/envoy and Gateway/openstack-gw. Their absence
           # unambiguously signals a non-kind cluster — exit 0 with a SKIP line.
           if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then

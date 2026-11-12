@@ -19,8 +19,8 @@
 # The suite is read-only: it applies no fixture and creates nothing.
 #
 # Scope gate (`metadata.labels.overlay: kind`): the Gateway Certificates come
-# from the kind overlay (deploy/kind/infrastructure/), which the metal-stack
-# lab takes as its base; the production stack ships none. Non-kind runs exclude
+# from deploy/overlays/kind/infrastructure/. Metal-stack supplies its own
+# CA and wildcard certificate; the production stack ships neither fixture. Non-kind runs exclude
 # this suite with `chainsaw test --selector 'overlay!=kind'
 # tests/e2e/infrastructure/`, the same gate nova-deploy-stack carries.
 ---

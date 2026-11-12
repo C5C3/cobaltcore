@@ -118,7 +118,7 @@
 #      out exits 1 with kubectl's line and deletes nothing after it; a second
 #      run, on which the Flux kinds are gone, and a cluster deployed without
 #      WITH_DIZZY=true, on which the deletes find nothing, exit 0.
-#   7. kube-prometheus-stack goes in step 3, after the base overlay: its
+#   7. kube-prometheus-stack goes in step 3, before the base overlay: its
 #      HelmRelease by file, then the PVCs in monitoring, then the Service and
 #      Endpoints kube-prometheus-stack-kubelet in kube-system, once each,
 #      logged, and before the dizzy HelmReleases and the PVCs of step 4; an
@@ -1265,7 +1265,7 @@ case "$args" in
     ;;
   "kustomize "*"/chaos-mesh")
     if [ -n "${KUBECTL_CHAOS_RENDER_RC:-}" ]; then
-      echo 'error: accumulating resources: accumulation err='"'"'accumulating resources from '"'"'../../../kind/chaos-mesh'"'"': must build at directory' >&2
+      echo 'error: accumulating resources: accumulation err='"'"'accumulating resources from '"'"'../../../bases/chaos-mesh'"'"': must build at directory' >&2
       exit 1
     fi
     cat "$dir/chaos-render.yaml"
@@ -1380,7 +1380,7 @@ case "$args" in
           exit "${KUBECTL_DIZZY_DELETE_RC}"
         fi
         ;;
-      "delete -f "*"/deploy/kind/prometheus/release.yaml "*)
+      "delete -f "*"/deploy/bases/prometheus/release.yaml "*)
         if [ "${KUBECTL_PROMETHEUS_DELETE_RC:-0}" != "0" ]; then
           echo "error: timed out waiting for the condition on helmreleases/kube-prometheus-stack" >&2
           exit "${KUBECTL_PROMETHEUS_DELETE_RC}"
@@ -1532,7 +1532,7 @@ test_knobs() {
   assert_eq "no line of the script sleeps a fixed number of seconds" "" \
     "$(grep -nE '\bsleep [0-9]' "$TEARDOWN_SH" || true)"
   assert_eq "OVERLAY_ROOT resolves the default overlay against the repository" \
-    "$PROJECT_ROOT/deploy/lab/metal-stack" "$(resolve '${OVERLAY_ROOT}')"
+    "$PROJECT_ROOT/deploy/overlays/metal-stack" "$(resolve '${OVERLAY_ROOT}')"
   assert_eq "an absolute EXTERNAL_OVERLAY is used unchanged" "/srv/overlays/lab" \
     "$(resolve '${OVERLAY_ROOT}' EXTERNAL_OVERLAY=/srv/overlays/lab)"
 }
@@ -1593,10 +1593,10 @@ test_external_teardown_order() {
     'kubectl delete schedules.chaos-mesh.org,workflows.chaos-mesh.org --all -A' \
     'kubectl delete networkchaos.chaos-mesh.org,podchaos.chaos-mesh.org,statuschecks.chaos-mesh.org,workflownodes.chaos-mesh.org --all -A' \
     'kubectl delete remoteclusters.chaos-mesh.org --all' \
-    'kubectl kustomize deploy/lab/metal-stack/chaos-mesh' \
+    'kubectl kustomize deploy/overlays/metal-stack/chaos-mesh' \
     'kubectl delete -f - [kinds: DaemonSet HelmRelease HelmRepository]' \
     'kubectl delete jobs.batch/dizzy-soak pod/dizzy-soak-reader -n dizzy --cascade=foreground' \
-    'kubectl kustomize deploy/lab/metal-stack/dizzy-soak' \
+    'kubectl kustomize deploy/overlays/metal-stack/dizzy-soak' \
     'kubectl delete -f - [kinds: ClusterRole ClusterRoleBinding Domain PersistentVolumeClaim Project Role RoleAssignment ServiceAccount User]' \
     'kubectl delete pod teardown-openstack-cleanup -n openstack' \
     'kubectl apply -f - [kinds: Pod]' \
@@ -1608,8 +1608,8 @@ test_external_teardown_order() {
     'kubectl delete evictions.kvm.cloud.sap --all' \
     'kubectl delete migrations.kvm.cloud.sap --all -A' \
     'kubectl patch domains.openstack.k-orc.cloud hvo-cc3test -n openstack' \
-    'kubectl delete -k deploy/lab/metal-stack/hypervisor-fixtures' \
-    'kubectl delete -k deploy/lab/metal-stack/hypervisor' \
+    'kubectl delete -k deploy/overlays/metal-stack/hypervisor-fixtures' \
+    'kubectl delete -k deploy/overlays/metal-stack/hypervisor' \
     'kubectl delete deployment,poddisruptionbudget maint-lab-a maint-lab-b -n kube-system' \
     "kubectl label nodes --all ${HYPERVISOR_LABELS_REMOVED}" \
     'kubectl annotate nodes --all nova.openstack.cloud.sap/custom-traits- nova.openstack.cloud.sap/aggregates-' \
@@ -1617,12 +1617,12 @@ test_external_teardown_order() {
     'kubectl delete controlplane --all -n openstack' \
     'kubectl delete ovncentrals.ovn.openstack.c5c3.io --all -n openstack' \
     'kubectl patch openbaoclusters.openbao.org openbao-instance -n openstack' \
-    'kubectl delete -k deploy/lab/metal-stack/infrastructure' \
-    'kubectl delete -k deploy/kind/messaging' \
-    'kubectl delete -k deploy/lab/metal-stack/nfs' \
-    'kubectl delete -f deploy/lab/metal-stack/nfs/client-policy.yaml' \
+    'kubectl delete -k deploy/overlays/metal-stack/infrastructure' \
+    'kubectl delete -k deploy/bases/messaging' \
+    'kubectl delete -k deploy/overlays/metal-stack/nfs' \
+    'kubectl delete -f deploy/overlays/metal-stack/nfs/client-policy.yaml' \
     'kubectl delete csidriver -l helm.toolkit.fluxcd.io/name=csi-driver-nfs,helm.toolkit.fluxcd.io/namespace=kube-system' \
-    'kubectl kustomize deploy/lab/metal-stack/ceph/cluster' \
+    'kubectl kustomize deploy/overlays/metal-stack/ceph/cluster' \
     'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes=2 --overwrite' \
     'kubectl patch cephcluster rook-ceph -n rook-ceph' \
     'kubectl delete cephcluster rook-ceph -n rook-ceph --ignore-not-found --wait=false' \
@@ -1630,16 +1630,16 @@ test_external_teardown_order() {
     'kubectl delete cephcluster rook-ceph -n rook-ceph' \
     'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-' \
     'kubectl delete pvc --all -n rook-ceph' \
-    'kubectl kustomize deploy/lab/metal-stack/ceph' \
+    'kubectl kustomize deploy/overlays/metal-stack/ceph' \
     'kubectl delete -f - [kinds: HelmRelease HelmRepository]' \
     'kubectl patch helmrelease c5c3-operator -n c5c3-system' \
     'kubectl patch kustomization k-orc -n flux-system' \
-    'kubectl kustomize deploy/lab/metal-stack/base' \
+    'kubectl kustomize deploy/overlays/metal-stack/base' \
     'kubectl delete -f - [kinds: Gateway GatewayClass]' \
-    'kubectl delete -f - [kinds: HelmRelease HelmRepository]' \
-    'kubectl delete -f deploy/kind/prometheus/release.yaml' \
+    'kubectl delete -f deploy/bases/prometheus/release.yaml' \
     'kubectl delete pvc --all -n monitoring' \
     'kubectl delete service,endpoints kube-prometheus-stack-kubelet -n kube-system' \
+    'kubectl delete -f - [kinds: HelmRelease HelmRepository]' \
     'kubectl delete helmreleases.helm.toolkit.fluxcd.io dizzy-victoria-metrics dizzy-grafana -n dizzy' \
     'kubectl delete helmrepositories.source.toolkit.fluxcd.io victoria-metrics grafana -n flux-system' \
     'kubectl delete pvc --all -n dizzy' \
@@ -1690,7 +1690,7 @@ test_external_teardown_order() {
   # platform kind is read. The Gateway, the eso-tenant Certificate and its
   # CertificateRequest are not being reaped, so the first read ends the wait.
   local messaging_line wait_line operators_line reads read_kinds
-  messaging_line="$(grep -n 'delete -k .*deploy/kind/messaging' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  messaging_line="$(grep -n 'delete -k .*deploy/bases/messaging' "$CALL_LOG" | cut -d: -f1 | head -n1)"
   wait_line="$(grep -n -- '^kubectl get [^ ]* -n openstack -o json$' "$CALL_LOG" | cut -d: -f1 | head -n1)"
   operators_line="$(grep -n 'patch helmrelease c5c3-operator' "$CALL_LOG" | cut -d: -f1 | head -n1)"
   assert_eq "the stack CRs in openstack are read after the message-bus overlay" "true" \
@@ -1715,7 +1715,7 @@ test_external_teardown_order() {
   release_line="$(grep -n -- '^kubectl get helmrelease csi-driver-nfs -n kube-system ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
   pods_line="$(grep -nx -- 'kubectl get pods -A -o json' "$CALL_LOG" | cut -d: -f1 | head -n1)"
   pvs_line="$(grep -nx -- 'kubectl get pv -o json' "$CALL_LOG" | cut -d: -f1 | head -n1)"
-  nfs_line="$(grep -n 'delete -k .*/deploy/lab/metal-stack/nfs ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  nfs_line="$(grep -n 'delete -k .*/deploy/overlays/metal-stack/nfs ' "$CALL_LOG" | cut -d: -f1 | head -n1)"
   assert_eq "the csi-driver-nfs HelmRelease is read after the stack CRs in openstack and before the pods" "true" \
     "$([[ -n "$release_line" && -n "$wait_line" && -n "$pods_line" &&
       "$release_line" -gt "$wait_line" && "$release_line" -lt "$pods_line" ]] && echo true || echo false)"
@@ -1911,7 +1911,7 @@ test_external_teardown_failures() {
   assert_eq "a pod that unmounts its share during the wait lets the teardown go on" "0" "$rc"
   assert_eq "after a second pod read" "2" "$(grep -cx -- 'kubectl get pods -A -o json' "$CALL_LOG")"
   assert_contains "and the NFS overlay is deleted then" "$(cat "$CALL_LOG")" \
-    "delete -k $PROJECT_ROOT/deploy/lab/metal-stack/nfs "
+    "delete -k $PROJECT_ROOT/deploy/overlays/metal-stack/nfs "
 
   # A read that keeps failing is not a cluster without mounts.
   : >"$CALL_LOG"
@@ -1954,7 +1954,7 @@ test_external_teardown_failures() {
   assert_not_contains "no pod is read" "$(cat "$CALL_LOG")" "get pods -A"
   assert_not_contains "nor a PersistentVolume" "$(cat "$CALL_LOG")" "get pv "
   assert_contains "and the NFS overlay delete still runs" "$(cat "$CALL_LOG")" \
-    "delete -k $PROJECT_ROOT/deploy/lab/metal-stack/nfs "
+    "delete -k $PROJECT_ROOT/deploy/overlays/metal-stack/nfs "
 
   # A read of that HelmRelease that fails is not an absent one.
   : >"$CALL_LOG"
@@ -2090,7 +2090,7 @@ test_external_teardown_failures() {
     "$(cat "$CALL_LOG")" "get pods -A"
   assert_not_contains "and no PersistentVolume" "$(cat "$CALL_LOG")" "get pv "
   assert_contains "and its NFS overlay delete, whose HelmRelease kind has no mapping, passes" \
-    "$(cat "$CALL_LOG")" "kubectl delete -k $PROJECT_ROOT/deploy/lab/metal-stack/nfs "
+    "$(cat "$CALL_LOG")" "kubectl delete -k $PROJECT_ROOT/deploy/overlays/metal-stack/nfs "
 
   # The chart objects cannot be read: exit 1 after the stack namespaces, with
   # kubectl's error, and before any CRD is deleted.
@@ -2121,7 +2121,7 @@ test_external_teardown_failures() {
   assert_contains "with kubectl's error" "$output" 'openbaoclusters.openbao.org "openbao-instance" is forbidden'
   # Step 0 deletes the hypervisor overlays before the patch; no other overlay goes.
   assert_eq "before any later overlay is deleted" "" \
-    "$(grep 'kubectl delete -k' "$CALL_LOG" | grep -v '/deploy/lab/metal-stack/hypervisor' || true)"
+    "$(grep 'kubectl delete -k' "$CALL_LOG" | grep -v '/deploy/overlays/metal-stack/hypervisor' || true)"
 
   : >"$CALL_LOG"
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true KUBECTL_OVNCENTRAL_DELETE_RC=1)"
@@ -2132,7 +2132,7 @@ test_external_teardown_failures() {
   assert_contains "the error names the OVNCentral still present" "$output" \
     "error: timed out waiting for the condition on ovncentrals/controlplane-ovn"
   assert_eq "and no later step deletes an overlay" "" \
-    "$(grep 'kubectl delete -k' "$CALL_LOG" | grep -v '/deploy/lab/metal-stack/hypervisor' || true)"
+    "$(grep 'kubectl delete -k' "$CALL_LOG" | grep -v '/deploy/overlays/metal-stack/hypervisor' || true)"
 
   # A Lease delete the cluster refuses: exit 1 before step 8 deletes a CRD.
   : >"$CALL_LOG"
@@ -2249,7 +2249,7 @@ test_hypervisor_step_zero() {
   assert_not_contains "nothing patches the domain" "$calls" "patch domains"
   assert_not_contains "nothing waits for it" "$calls" "wait domains"
   assert_contains "the fixtures are still deleted" "$calls" \
-    "kubectl delete -k $PROJECT_ROOT/deploy/lab/metal-stack/hypervisor-fixtures "
+    "kubectl delete -k $PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor-fixtures "
 
   # The same rerun while kubectl writes to stderr and exits 0: only the
   # domain's name in the read counts, not the noise beside it.
@@ -2293,7 +2293,7 @@ test_hypervisor_step_zero() {
   assert_not_contains "it patches no domain" "$calls" "patch domains"
   assert_not_contains "it lists no ControlPlane for the OpenStack cleanup" "$calls" "get controlplanes.c5c3.io"
   assert_contains "its fixtures delete finds nothing and passes" "$calls" \
-    "kubectl delete -k $PROJECT_ROOT/deploy/lab/metal-stack/hypervisor-fixtures "
+    "kubectl delete -k $PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor-fixtures "
   assert_contains "it reads the CRDs it would delete from" "$calls" "get crd hypervisors.kvm.cloud.sap"
   unset CALL_LOG
 }
@@ -2777,7 +2777,7 @@ test_chaos_mesh_step() {
   calls="$(cat "$CALL_LOG")"
   assert_eq "a chaos-mesh/ that does not render exits 1" "1" "$rc"
   assert_contains "says which overlay cannot be rendered" "$output" \
-    "ERROR: cannot render $PROJECT_ROOT/deploy/lab/metal-stack/chaos-mesh (kustomize's error is above)."
+    "ERROR: cannot render $PROJECT_ROOT/deploy/overlays/metal-stack/chaos-mesh (kustomize's error is above)."
   assert_not_contains "no overlay delete follows" "$calls" "delete -f -"
   assert_not_contains "and no step 0 delete" "$calls" "delete novacomputes"
 
@@ -2868,7 +2868,7 @@ test_dizzy_step() {
   calls="$(cat "$CALL_LOG")"
   assert_eq "the teardown exits 0" "0" "$rc"
   local monitoring_line releases_line repositories_line claims_line shared_line
-  monitoring_line="$(grep -nF 'kubectl delete -f '"$PROJECT_ROOT"'/deploy/kind/prometheus/release.yaml ' <<<"$calls" | cut -d: -f1 | head -n1)"
+  monitoring_line="$(grep -nF 'kubectl delete -f '"$PROJECT_ROOT"'/deploy/bases/prometheus/release.yaml ' <<<"$calls" | cut -d: -f1 | head -n1)"
   releases_line="$(grep -nxF "$releases" <<<"$calls" | cut -d: -f1 | head -n1)"
   repositories_line="$(grep -nxF "$repositories" <<<"$calls" | cut -d: -f1 | head -n1)"
   claims_line="$(grep -nxF "$claims" <<<"$calls" | cut -d: -f1 | head -n1)"
@@ -2965,13 +2965,13 @@ test_dizzy_soak_step() {
   local chaos_line job_line render_line objects_line hypervisor_line controlplane_line
   chaos_line="$(grep -nF '[kinds: DaemonSet HelmRelease HelmRepository]' <<<"$calls" | cut -d: -f1 | head -n1)"
   job_line="$(grep -nxF "$job" <<<"$calls" | cut -d: -f1 | head -n1)"
-  render_line="$(grep -nx "kubectl kustomize .*/deploy/lab/metal-stack/dizzy-soak" <<<"$calls" | cut -d: -f1 | head -n1)"
+  render_line="$(grep -nx "kubectl kustomize .*/deploy/overlays/metal-stack/dizzy-soak" <<<"$calls" | cut -d: -f1 | head -n1)"
   objects_line="$(grep -nxF "$objects" <<<"$calls" | cut -d: -f1 | head -n1)"
   hypervisor_line="$(grep -nE '^kubectl get crd controlplanes\.c5c3\.io' <<<"$calls" | cut -d: -f1 | head -n1)"
   controlplane_line="$(grep -n '^kubectl delete controlplane --all -n openstack ' <<<"$calls" | cut -d: -f1 | head -n1)"
   assert_eq "the Job and reader pod are deleted once, in the foreground, ignoring absence and waiting" "1" \
     "$(grep -cxF "$job" <<<"$calls")"
-  assert_eq "dizzy-soak/ is rendered once" "1" "$(grep -cx "kubectl kustomize .*/deploy/lab/metal-stack/dizzy-soak" <<<"$calls")"
+  assert_eq "dizzy-soak/ is rendered once" "1" "$(grep -cx "kubectl kustomize .*/deploy/overlays/metal-stack/dizzy-soak" <<<"$calls")"
   assert_eq "its nine objects are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$objects" <<<"$calls")"
   assert_eq "the Job goes after the Chaos Mesh overlay" "true" \
     "$([[ -n "$chaos_line" && -n "$job_line" && "$chaos_line" -lt "$job_line" ]] && echo true || echo false)"
@@ -2990,7 +2990,7 @@ test_dizzy_soak_step() {
   mkdir -p "$tmp/no-hypervisor/base" "$tmp/no-hypervisor/infrastructure"
   : >"$tmp/no-hypervisor/base/kustomization.yaml"
   : >"$tmp/no-hypervisor/infrastructure/kustomization.yaml"
-  cp -R "$PROJECT_ROOT/deploy/lab/metal-stack/dizzy-soak" "$tmp/no-hypervisor/dizzy-soak"
+  cp -R "$PROJECT_ROOT/deploy/overlays/metal-stack/dizzy-soak" "$tmp/no-hypervisor/dizzy-soak"
   : >"$CALL_LOG"
   output="$(run_teardown "$tmp/bin" EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY="$tmp/no-hypervisor")"
   rc=$?
@@ -3027,7 +3027,7 @@ test_dizzy_soak_step() {
   assert_contains "the error names the step" "$output" \
     "ERROR: deleting the dizzy soak Job and reader pod failed or did not finish within 600s:"
   assert_contains "and the Job kubectl still waits for" "$output" "error: timed out waiting for the condition on jobs/dizzy-soak"
-  assert_not_contains "dizzy-soak/ is not rendered" "$calls" "kubectl kustomize $PROJECT_ROOT/deploy/lab/metal-stack/dizzy-soak"
+  assert_not_contains "dizzy-soak/ is not rendered" "$calls" "kubectl kustomize $PROJECT_ROOT/deploy/overlays/metal-stack/dizzy-soak"
   assert_not_contains "no NovaCompute is deleted" "$calls" "delete novacomputes"
   assert_not_contains "nor the ControlPlane" "$calls" "delete controlplane"
 
@@ -3038,7 +3038,7 @@ test_dizzy_soak_step() {
   calls="$(cat "$CALL_LOG")"
   assert_eq "a dizzy-soak/ that does not render exits 1" "1" "$rc"
   assert_contains "says which overlay cannot be rendered" "$output" \
-    "ERROR: cannot render $PROJECT_ROOT/deploy/lab/metal-stack/dizzy-soak (kustomize's error is above)."
+    "ERROR: cannot render $PROJECT_ROOT/deploy/overlays/metal-stack/dizzy-soak (kustomize's error is above)."
   assert_not_contains "no objects' delete follows" "$calls" "[kinds: ClusterRole"
   assert_not_contains "and no step 0 delete" "$calls" "delete novacomputes"
 
@@ -3098,7 +3098,7 @@ test_ceph_step() {
   assert_eq "the teardown exits 0" "0" "$rc"
   local csidriver render deps_line crd_read cluster_read pods_read annotate patch mark delete jobs unannotate pvc render_op op_line resume
   csidriver="$(line 'kubectl delete csidriver -l helm.toolkit.fluxcd.io/name=csi-driver-nfs')"
-  render="$(line "kubectl kustomize $PROJECT_ROOT/deploy/lab/metal-stack/ceph/cluster")"
+  render="$(line "kubectl kustomize $PROJECT_ROOT/deploy/overlays/metal-stack/ceph/cluster")"
   deps_line="$(grep -nxF "$deps" "$CALL_LOG" | cut -d: -f1 | head -n1)"
   crd_read="$(line 'kubectl get crd cephclusters.ceph.rook.io')"
   cluster_read="$(line 'kubectl get cephcluster rook-ceph -n rook-ceph --ignore-not-found -o name')"
@@ -3110,7 +3110,7 @@ test_ceph_step() {
   jobs="$(line 'kubectl get jobs -n rook-ceph -l rook-ceph-cleanup=true -o json')"
   unannotate="$(line 'kubectl annotate namespace rook-ceph teardown.c5c3.io/ceph-nodes-')"
   pvc="$(line "kubectl delete pvc --all -n rook-ceph $flags")"
-  render_op="$(grep -nx "kubectl kustomize .*/deploy/lab/metal-stack/ceph" "$CALL_LOG" | cut -d: -f1 | head -n1)"
+  render_op="$(grep -nx "kubectl kustomize .*/deploy/overlays/metal-stack/ceph" "$CALL_LOG" | cut -d: -f1 | head -n1)"
   # The first of two: the base overlay's HelmReleases follow in step 3.
   op_line="$(grep -nxF "$operator" "$CALL_LOG" | cut -d: -f1 | head -n1)"
   resume="$(line 'kubectl patch helmrelease c5c3-operator')"
@@ -3349,7 +3349,7 @@ test_ceph_step() {
   calls="$(cat "$CALL_LOG")"
   assert_eq "a ceph/cluster/ that does not render exits 1" "1" "$rc"
   assert_contains "says which overlay cannot be rendered" "$output" \
-    "ERROR: cannot render $PROJECT_ROOT/deploy/lab/metal-stack/ceph/cluster (kustomize's error is above)."
+    "ERROR: cannot render $PROJECT_ROOT/deploy/overlays/metal-stack/ceph/cluster (kustomize's error is above)."
   assert_not_contains "no dependent is deleted" "$calls" "[kinds: CephBlockPool"
   assert_not_contains "nor the CephCluster" "$calls" "delete cephcluster"
   assert_not_contains "nor a claim in rook-ceph" "$calls" "-n rook-ceph"
@@ -3363,7 +3363,7 @@ test_ceph_step() {
   calls="$(cat "$CALL_LOG")"
   assert_eq "a ceph/ that does not render exits 1" "1" "$rc"
   assert_contains "says which overlay cannot be rendered" "$output" \
-    "ERROR: cannot render $PROJECT_ROOT/deploy/lab/metal-stack/ceph (kustomize's error is above)."
+    "ERROR: cannot render $PROJECT_ROOT/deploy/overlays/metal-stack/ceph (kustomize's error is above)."
   assert_contains "after the claims in rook-ceph" "$calls" "kubectl delete pvc --all -n rook-ceph"
   assert_not_contains "and before the operator's HelmRelease is deleted" "$calls" "[kinds: HelmRelease HelmRepository]"
 
@@ -3411,7 +3411,7 @@ test_prometheus_step() {
   make_stubs "$tmp/bin"
   export CALL_LOG="$tmp/calls.log"
   flags='--ignore-not-found --wait --timeout=600s'
-  release="kubectl delete -f $PROJECT_ROOT/deploy/kind/prometheus/release.yaml $flags"
+  release="kubectl delete -f $PROJECT_ROOT/deploy/bases/prometheus/release.yaml $flags"
   claims="kubectl delete pvc --all -n monitoring $flags"
   kubelet="kubectl delete service,endpoints kube-prometheus-stack-kubelet -n kube-system $flags"
 
@@ -3423,7 +3423,7 @@ test_prometheus_step() {
   calls="$(cat "$CALL_LOG")"
   assert_eq "the teardown exits 0" "0" "$rc"
   local base_line release_line claims_line kubelet_line dizzy_line shared_line
-  base_line="$(grep -nF '[kinds: HelmRelease HelmRepository]' <<<"$calls" | cut -d: -f1 | head -n1)"
+  base_line="$(grep -nE '^kubectl delete -f - .*\[kinds: HelmRelease HelmRepository\]$' <<<"$calls" | cut -d: -f1 | tail -n1)"
   release_line="$(grep -nxF "$release" <<<"$calls" | cut -d: -f1 | head -n1)"
   claims_line="$(grep -nxF "$claims" <<<"$calls" | cut -d: -f1 | head -n1)"
   kubelet_line="$(grep -nxF "$kubelet" <<<"$calls" | cut -d: -f1 | head -n1)"
@@ -3432,8 +3432,8 @@ test_prometheus_step() {
   assert_eq "the release is deleted by file once, ignoring absence and waiting" "1" "$(grep -cxF "$release" <<<"$calls")"
   assert_eq "the PVCs in monitoring are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$claims" <<<"$calls")"
   assert_eq "the kubelet Service and Endpoints are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$kubelet" <<<"$calls")"
-  assert_eq "the release goes after the base overlay" "true" \
-    "$([[ -n "$base_line" && -n "$release_line" && "$base_line" -lt "$release_line" ]] && echo true || echo false)"
+  assert_eq "the release is uninstalled before the base can remove its CRDs" "true" \
+    "$([[ -n "$base_line" && -n "$release_line" && "$release_line" -lt "$base_line" ]] && echo true || echo false)"
   assert_eq "the claims after the release" "true" \
     "$([[ -n "$release_line" && -n "$claims_line" && "$release_line" -lt "$claims_line" ]] && echo true || echo false)"
   assert_eq "the kubelet Service and Endpoints after the claims" "true" \
@@ -3469,6 +3469,8 @@ test_prometheus_step() {
     "ERROR: deleting the kube-prometheus-stack release failed or did not finish within 600s:"
   assert_contains "and the HelmRelease kubectl still waits for" "$output" \
     "error: timed out waiting for the condition on helmreleases/kube-prometheus-stack"
+  assert_not_contains "a failed uninstall preserves the base and its CRDs" "$output" \
+    "Deleting the base overlay (HelmReleases, Flux sources and Kustomizations)"
   assert_not_contains "no claim delete follows" "$calls" "delete pvc --all -n monitoring"
   assert_not_contains "nor the kubelet Service delete" "$calls" "delete service,endpoints kube-prometheus-stack-kubelet"
 

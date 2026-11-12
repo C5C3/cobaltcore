@@ -334,9 +334,9 @@ for svc in ${SERVICES}; do
   check "${svc}" P7 "namespace" "${t}" \
     "deploy/flux-system/namespaces.yaml declares ${svc}-system"
 
-  t=0; grep -qF "releases/${svc}-operator.yaml" deploy/flux-system/kustomization.yaml || t=1
+  t=0; grep -qE "^[[:space:]]*-[[:space:]]+${svc}-operator[.]yaml[[:space:]]*$" deploy/flux-system/releases/kustomization.yaml || t=1
   check "${svc}" P7 "kustomization" "${t}" \
-    "deploy/flux-system/kustomization.yaml lists releases/${svc}-operator.yaml"
+    "deploy/flux-system/releases/kustomization.yaml lists ${svc}-operator.yaml"
 
   # hack/deploy-infra.sh carries three literal per-service lists that no gate
   # cross-checks — the failure mode that left glance-operator suspended on the
@@ -345,10 +345,10 @@ for svc in ${SERVICES}; do
   # Each check is gated on the artefact that makes it required, so a service
   # that never enters the respective mechanism is not flagged.
 
-  # The kind base overlay suspends the self-built operator HelmReleases (dev
+  # The shared development base suspends the self-built operator HelmReleases (dev
   # image vs published chart); the WITH_CONTROLPLANE flux branch must
   # un-suspend every one of them.
-  if grep -qE "name: ${svc}-operator" deploy/kind/base/kustomization.yaml; then
+  if grep -qE "name: ${svc}-operator" deploy/bases/devstack/base/kustomization.yaml; then
     t=0
     grep -A1 "kubectl patch helmrelease ${svc}-operator -n ${svc}-system" hack/deploy-infra.sh \
       | grep -q '"suspend":false' || t=1

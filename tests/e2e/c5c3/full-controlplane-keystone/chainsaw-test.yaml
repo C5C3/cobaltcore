@@ -157,7 +157,7 @@
 #   7d. Hypervisor op. — the auth Secret ("…-nova-hypervisor-operator-auth")
 #                        carries exactly the seven keys of the hypervisor
 #                        operator's chart values; the K-ORC fixtures of
-#                        deploy/kind/hypervisor-operator-fixtures/fixtures.yaml
+#                        deploy/bases/hypervisor-fixtures/fixtures.yaml
 #                        become Available; and a Job authenticating as the
 #                        hypervisor operator's user
 #                        (07-hypervisor-operator-verify-job.yaml) proves one
@@ -2122,9 +2122,9 @@ spec:
           # by fixed names, from the example overlay. fixtures.yaml alone: the
           # overlay's image.yaml downloads cirros, which CI never does. The wait
           # reads the same file, so a fixture added there is waited for too.
-          kubectl apply -f ../../../../deploy/kind/hypervisor-operator-fixtures/fixtures.yaml
+          kubectl apply -f ../../../../deploy/bases/hypervisor-fixtures/fixtures.yaml
           kubectl wait --for=condition=Available --timeout=10m \
-            -f ../../../../deploy/kind/hypervisor-operator-fixtures/fixtures.yaml
+            -f ../../../../deploy/bases/hypervisor-fixtures/fixtures.yaml
           assert_korc_started_before_cp
 
           # The hypervisor operator does not run in kind; the Job makes its
@@ -2462,7 +2462,7 @@ spec:
           echo "=== Hypervisor-operator fixtures (K-ORC) ==="
           # The auth Secret is deliberately not dumped: it carries a cloud-admin
           # password.
-          kubectl get -o wide -f ../../../../deploy/kind/hypervisor-operator-fixtures/fixtures.yaml 2>&1 || true
+          kubectl get -o wide -f ../../../../deploy/bases/hypervisor-fixtures/fixtures.yaml 2>&1 || true
           echo "=== hypervisor-operator verify Job pod logs (every attempt) ==="
           for pod in $(kubectl get pods -n openstack -l job-name=cp-hypervisor-operator-verify -o name 2>/dev/null); do
             echo "--- ${pod} ---"
@@ -2534,7 +2534,7 @@ spec:
             -p '{"spec":{"resource":{"enabled":false}}}' 2>&1 || true
           kubectl wait domains.openstack.k-orc.cloud/hvo-cc3test -n openstack \
             --for=jsonpath='{.status.resource.enabled}'=false --timeout=1m 2>&1 || true
-          kubectl delete -f ../../../../deploy/kind/hypervisor-operator-fixtures/fixtures.yaml \
+          kubectl delete -f ../../../../deploy/bases/hypervisor-fixtures/fixtures.yaml \
             --ignore-not-found --wait --timeout=3m 2>&1 || true
           kubectl delete -f 06-fake-compute.yaml --ignore-not-found 2>&1 || true
           kubectl delete neutronmetadataagent controlplane-keystone-agent -n openstack --ignore-not-found 2>&1 || true

@@ -4,10 +4,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the kind-only Flux Web UI overlay:
-#   - deploy/kind/base/flux-web.yaml declares a ResourceSet/flux-web in
+#   - deploy/bases/devstack/base/flux-web.yaml declares a ResourceSet/flux-web in
 #     flux-system that renders the flux-operator chart with the Web UI
 #     sub-chart (web.serverOnly=true, installCRDs=false, fullnameOverride).
-#   - deploy/kind/base/kustomization.yaml lists flux-web.yaml immediately
+#   - deploy/overlays/kind/base/kustomization.yaml lists flux-web.yaml immediately
 #     after headlamp.yaml, keeping the kind-only overlay the single
 #     entry point for the Web UI demo addon.
 #   - deploy/flux-system/ (production overlay) is NOT affected: no
@@ -26,9 +26,9 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_WEB_FILE="$PROJECT_ROOT/deploy/kind/base/flux-web.yaml"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-KIND_KUSTOMIZATION="$KIND_BASE_DIR/kustomization.yaml"
+FLUX_WEB_FILE="$PROJECT_ROOT/deploy/bases/devstack/base/flux-web.yaml"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+KIND_KUSTOMIZATION="$PROJECT_ROOT/deploy/bases/devstack/base/kustomization.yaml"
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
 FLUX_SYSTEM_KUSTOMIZATION="$FLUX_SYSTEM_DIR/kustomization.yaml"
 FLUX_SYSTEM_FLUXINSTANCE="$FLUX_SYSTEM_DIR/fluxinstance.yaml"
@@ -36,7 +36,7 @@ DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 # --- Test 1: flux-web.yaml has SPDX header + Feature marker ---
 test_spdx_header() {
-  echo "Test: deploy/kind/base/flux-web.yaml has SPDX header and Feature marker"
+  echo "Test: deploy/bases/devstack/base/flux-web.yaml has SPDX header and Feature marker"
 
   if [[ ! -f "$FLUX_WEB_FILE" ]]; then
     echo "  FAIL: $FLUX_WEB_FILE does not exist"
@@ -58,10 +58,10 @@ test_spdx_header() {
     "$line3"
 }
 
-# --- Test 2: kustomize build of deploy/kind/base/ emits a ResourceSet with
+# --- Test 2: kustomize build of deploy/overlays/kind/base/ emits a ResourceSet with
 #             the required nested OCIRepository and HelmRelease ---
 test_kustomize_build_emits_resourceset() {
-  echo "Test: kustomize build deploy/kind/base/ emits ResourceSet/flux-web with required nested resources"
+  echo "Test: kustomize build deploy/overlays/kind/base/ emits ResourceSet/flux-web with required nested resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (7 checks skipped)"
@@ -191,7 +191,7 @@ test_chart_version_pin_matches_deploy_infra_minor_track() {
         exit
       }
     ' "$FLUX_WEB_FILE")"
-    assert_eq "deploy/kind/base/flux-web.yaml spec.inputs[0].version matches the FLUX_OPERATOR_VERSION minor track in hack/deploy-infra.sh" \
+    assert_eq "deploy/bases/devstack/base/flux-web.yaml spec.inputs[0].version matches the FLUX_OPERATOR_VERSION minor track in hack/deploy-infra.sh" \
       "$expected_range" \
       "$first_input"
     return
@@ -207,14 +207,14 @@ test_chart_version_pin_matches_deploy_infra_minor_track() {
     return
   fi
 
-  assert_eq "deploy/kind/base/flux-web.yaml spec.inputs[0].version matches the FLUX_OPERATOR_VERSION minor track in hack/deploy-infra.sh" \
+  assert_eq "deploy/bases/devstack/base/flux-web.yaml spec.inputs[0].version matches the FLUX_OPERATOR_VERSION minor track in hack/deploy-infra.sh" \
     "$expected_range" \
     "${raw_version%%$'\n'*}"
 }
 
 # --- Test 4: kind kustomization lists flux-web.yaml after headlamp.yaml ---
 test_kustomization_lists_flux_web() {
-  echo "Test: deploy/kind/base/kustomization.yaml resources list contains flux-web.yaml after headlamp.yaml"
+  echo "Test: deploy/overlays/kind/base/kustomization.yaml resources list contains flux-web.yaml after headlamp.yaml"
 
   if [[ ! -f "$KIND_KUSTOMIZATION" ]]; then
     echo "  FAIL: $KIND_KUSTOMIZATION does not exist"

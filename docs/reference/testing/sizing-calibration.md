@@ -787,7 +787,7 @@ was for the metadata agent.
 
 | Topic | CI on kind | The lab |
 | --- | --- | --- |
-| Recommender | `deploy/kind/vpa`: VPA 1.8.0, floors of 1 millicore and 1 MB per pod | The shoot's. Its image and flags run in the seed and cannot be read; `report` writes `recommender=-`. Gardener's source at `gardener/gardener@92a252c0` passes floors of 10 millicores and 10 MB |
+| Recommender | `deploy/overlays/kind/vpa`: VPA 1.8.0, floors of 1 millicore and 1 MB per pod | The shoot's. Its image and flags run in the seed and cannot be read; `report` writes `recommender=-`. Gardener's source at `gardener/gardener@92a252c0` passes floors of 10 millicores and 10 MB |
 | Sampling | `--memory-saver=false`: every pod from its start | The same source passes `--memory-saver=true`: a pod is sampled once a VPA selects it, at most 60 seconds after the workload appeared |
 | Updater and admission controller | not installed | Both run. A VPA in mode `Off` changes no pod; the run checks it |
 | MariaDB scale subresource | removed by `WITH_VPA=true make deploy-infra` | removed by `hack/ci-vpa-recommendations.sh prepare` |
@@ -879,7 +879,7 @@ The last four helpers read `recommendations.tsv` by column, below its comment
 line and its header (see [the column table](#running-a-measurement)): 3
 `workload`, 9 `container`, 12 `cpu_target_m`, 13 `memory_target_mi`, 16
 `cpu_request_m` and 17 `memory_request_mi`. `verdicts` picks the five
-DaemonSets that the CRs in `deploy/lab/metal-stack/hypervisor/compute.yaml`
+DaemonSets that the CRs in `deploy/overlays/metal-stack/hypervisor/compute.yaml`
 and the lab's libvirt manifest render:
 
 | Workload | Rendered from |
@@ -887,11 +887,11 @@ and the lab's libvirt manifest render:
 | `lab-nova-compute` | the `NovaCompute` `lab`, through `novaComputeDaemonSetName` in `operators/nova/internal/controller/reconcile_novacompute_daemonset.go` |
 | `lab-chassis-ovn-controller`, `lab-chassis-ovs` | the `OVNChassis` `lab-chassis`, through `chassisControllerName` and `chassisOVSName` in `operators/ovn/internal/controller/` |
 | `lab-metadata-agent-metadata-agent` | the `NeutronMetadataAgent` `lab-metadata-agent`, through `agentDaemonSetName` in `operators/neutron/internal/controller/reconcile_daemonset.go` |
-| `libvirt` | `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml` |
+| `libvirt` | `deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml` |
 
 A VPA reads a pod's cgroup. On the lab, libvirtd runs in the host scope
 `cobaltcore-libvirtd.scope` (the `systemd-run` line of
-`deploy/lab/metal-stack/hypervisor/libvirt-configmap.yaml`) and QEMU in
+`deploy/overlays/metal-stack/hypervisor/libvirt-configmap.yaml`) and QEMU in
 libvirt's own `/machine` cgroups, both outside the libvirt pod's cgroup, so
 the `libvirt` row covers bash and the probes. `libvirtd_scope` reads what no
 VPA gives: `memory.current`, `memory.peak` and the CPU time of libvirtd's
@@ -989,7 +989,7 @@ read:
 | `lab-nova-compute` | CPU request `150m`, memory `768Mi` as request and limit; none at the recorded run | `novaComputeCPU`, `novaComputeMemory` and `effectiveNovaComputeResources`, `operators/nova/internal/controller/reconcile_novacompute_daemonset.go` |
 | `lab-chassis-ovn-controller`, `lab-chassis-ovs` | none | `chassisResources`, `operators/ovn/internal/controller/reconcile_ovs.go` |
 | `lab-metadata-agent-metadata-agent` | CPU request `230m`, memory `2Gi` as request and limit; the CPU request was `70m` at the recorded run | `metadataAgentCPU`, `metadataAgentMemory` and `effectiveAgentResources`, `operators/neutron/internal/controller/reconcile_daemonset.go` |
-| `libvirt`, container `libvirtd` | CPU request `100m`, memory request `256Mi`, limit `512Mi`, for bash and the probes | the `libvirtd` container's `resources`, `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml` |
+| `libvirt`, container `libvirtd` | CPU request `100m`, memory request `256Mi`, limit `512Mi`, for bash and the probes | the `libvirtd` container's `resources`, `deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml` |
 
 Every other row is judged on memory alone: `over_request` lists the rows
 whose memory target exceeds the request. For a service row this contradicts
@@ -1099,7 +1099,7 @@ openstack nfs-server nfs-server memory target 75Mi above request 64Mi
 ```
 
 The `nfs-server` row contradicts the `64Mi` request of
-`deploy/kind/nfs/nfs-server.yaml`
+`deploy/bases/nfs/nfs-server.yaml`
 ([#1260](https://github.com/C5C3/cobaltcore/issues/1260)). That server was the
 kernel's `nfsd`. NFS-Ganesha replaced it on the day of the run, and its request
 of `640Mi` comes from a reading of its own (see

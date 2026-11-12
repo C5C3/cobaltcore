@@ -10,10 +10,10 @@
 #     optional image-digest ConfigMap. A sixth dependsOn entry naming a Flux
 #     Kustomization (the message bus) would never become Ready, and the release
 #     would wait forever.
-#   - deploy/kind/base suspends that release (the kind stack installs the chart
+#   - deploy/overlays/kind/base suspends that release (the kind stack installs the chart
 #     itself) and carries the three Nova Gateway listeners, each on its own
 #     hostname and its own certificate.
-#   - deploy/kind/infrastructure ships the three matching Certificates and the
+#   - deploy/overlays/kind/infrastructure ships the three matching Certificates and the
 #     two kind-only database shims, one per database block of a Nova.
 #   - every file the package adds, the deploy artifacts and the read-only e2e
 #     suite that proves them on a live cluster, carries its SPDX header, and
@@ -38,18 +38,18 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
 RENOVATE_CONFIG="$PROJECT_ROOT/renovate.json"
 
 # Every file this work package adds, relative to the repository root.
 NEW_FILES=(
   "deploy/flux-system/releases/nova-operator.yaml"
-  "deploy/kind/infrastructure/nova-nip-io-tls-certificate.yaml"
-  "deploy/kind/infrastructure/nova-metadata-nip-io-tls-certificate.yaml"
-  "deploy/kind/infrastructure/nova-console-nip-io-tls-certificate.yaml"
-  "deploy/kind/infrastructure/nova-api-db-externalsecret.yaml"
-  "deploy/kind/infrastructure/nova-db-externalsecret.yaml"
+  "deploy/overlays/kind/infrastructure/nova-nip-io-tls-certificate.yaml"
+  "deploy/overlays/kind/infrastructure/nova-metadata-nip-io-tls-certificate.yaml"
+  "deploy/overlays/kind/infrastructure/nova-console-nip-io-tls-certificate.yaml"
+  "deploy/bases/devstack/infrastructure/nova-api-db-externalsecret.yaml"
+  "deploy/bases/devstack/infrastructure/nova-db-externalsecret.yaml"
   "deploy/openbao/policies/nova-api-db-dynamic.hcl"
   "deploy/openbao/policies/nova-cell-db-dynamic.hcl"
   "tests/e2e/infrastructure/nova-deploy-stack/chainsaw-test.yaml"
@@ -190,7 +190,7 @@ test_flux_system_renders_the_release() {
 
 # --- Test 4: the kind base suspends the release and exposes the three hostnames ---
 test_kind_base_suspends_and_declares_the_nova_listeners() {
-  echo "Test: kustomize build deploy/kind/base suspends the release and declares each Nova listener once"
+  echo "Test: kustomize build deploy/overlays/kind/base suspends the release and declares each Nova listener once"
 
   tools_missing 13 && return
 
@@ -230,7 +230,7 @@ test_kind_base_suspends_and_declares_the_nova_listeners() {
 
 # --- Test 5: the kind infrastructure overlay renders the certificates and shims ---
 test_kind_infrastructure_renders_certificates_and_shims() {
-  echo "Test: kustomize build deploy/kind/infrastructure renders the nova certificates and shims"
+  echo "Test: kustomize build deploy/overlays/kind/infrastructure renders the nova certificates and shims"
 
   tools_missing 15 && return
 

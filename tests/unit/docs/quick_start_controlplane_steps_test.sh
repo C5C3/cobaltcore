@@ -95,7 +95,7 @@ test_step_references() {
   done < <(
     find "$PROJECT_ROOT/docs/guides" -type f -name '*.md'
     echo "$PROJECT_ROOT/hack/deploy-infra.sh"
-    find "$PROJECT_ROOT/deploy/lab" -type f
+    find "$PROJECT_ROOT/deploy/overlays/metal-stack" -type f
   )
   # The first input holds the entries. Every other file is folded into one
   # line, the indentation and a leading comment marker, quote mark or `log "`

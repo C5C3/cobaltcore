@@ -5,7 +5,7 @@
 
 # Verify renovate.json declares a customManagers entry that targets the
 # docker.io/library/debian image pin of the metal-stack node probe
-# (deploy/lab/metal-stack/probe/node-probe.yaml), plus the paired
+# (deploy/overlays/metal-stack/probe/node-probe.yaml), plus the paired
 # packageRules:
 #   - the docker-datasource matchStrings regex captures the image's depName,
 #     tag (currentValue) AND digest (currentDigest) from the manifest's real
@@ -15,7 +15,7 @@
 #     bookworm-slim is a codename tag that docker versioning never reads as a
 #     minor or major, so only the digest moves under it.
 #   - the manager and both rules also name the migration port reservation
-#     (deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml),
+#     (deploy/overlays/metal-stack/migration-ports/reservation-daemonset.yaml),
 #     whose two containers run the probe's image, and the regex captures the
 #     whole pin of both image: lines, so one group moves all three pins.
 #
@@ -41,11 +41,11 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
-MANIFEST_FILE="$PROJECT_ROOT/deploy/lab/metal-stack/probe/node-probe.yaml"
+MANIFEST_FILE="$PROJECT_ROOT/deploy/overlays/metal-stack/probe/node-probe.yaml"
 
 PROBE_PACKAGE="docker.io/library/debian"
-MANIFEST_PATH="deploy/lab/metal-stack/probe/node-probe.yaml"
-RESERVATION_PATH="deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml"
+MANIFEST_PATH="deploy/overlays/metal-stack/probe/node-probe.yaml"
+RESERVATION_PATH="deploy/overlays/metal-stack/migration-ports/reservation-daemonset.yaml"
 RESERVATION_FILE="$PROJECT_ROOT/$RESERVATION_PATH"
 
 # --- Test 1: customManager targets the manifest and captures depName/tag/digest ---
@@ -61,7 +61,7 @@ test_custom_manager_captures_image() {
   local entry
   entry="$(jq -c '.customManagers[]
     | select(.datasourceTemplate == "docker")
-    | select((.managerFilePatterns // []) | join(",") | contains("deploy/lab/metal-stack/probe/node-probe"))' \
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/overlays/metal-stack/probe/node-probe"))' \
     "$RENOVATE_FILE")"
 
   if [ -z "$entry" ]; then
@@ -78,7 +78,7 @@ test_custom_manager_captures_image() {
   local patterns
   patterns="$(jq -r '.managerFilePatterns | join(",")' <<<"$entry")"
   assert_contains "managerFilePatterns targets the probe manifest" \
-    "$patterns" "deploy/lab/metal-stack/probe/node-probe"
+    "$patterns" "deploy/overlays/metal-stack/probe/node-probe"
 
   if ! command -v perl >/dev/null 2>&1; then
     echo "  SKIP: perl not installed (4 checks skipped)"
@@ -174,11 +174,11 @@ test_reservation_is_covered() {
   local entry
   entry="$(jq -c '.customManagers[]
     | select(.datasourceTemplate == "docker")
-    | select((.managerFilePatterns // []) | join(",") | contains("deploy/lab/metal-stack/probe/node-probe"))' \
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/overlays/metal-stack/probe/node-probe"))' \
     "$RENOVATE_FILE")"
   assert_contains "managerFilePatterns targets the reservation manifest" \
     "$(jq -r '.managerFilePatterns | join(",")' <<<"$entry")" \
-    "deploy/lab/metal-stack/migration-ports/reservation-daemonset"
+    "deploy/overlays/metal-stack/migration-ports/reservation-daemonset"
 
   # Both image: lines, each with its whole pin captured: a line the regex
   # misses would keep its digest while the probe's moves.

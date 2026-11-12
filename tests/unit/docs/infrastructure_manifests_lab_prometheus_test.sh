@@ -25,7 +25,7 @@
 #      PrometheusRules' version label, which the section names too; those rows
 #      and the section name the chart the alerts and the query counts were
 #      read from, the ref.tag of hvo's chart in
-#      deploy/lab/metal-stack/hypervisor/sources.yaml, which is also the value
+#      deploy/overlays/metal-stack/hypervisor/sources.yaml, which is also the value
 #      of the version-label patch row; that row names the label the chart
 #      renders from ref.tag and ref.digest
 #   6. the run subsection holds either the sentence that no run is recorded
@@ -102,11 +102,11 @@ RUN="$(subsection '#### Lab Prometheus run')"
 HVO_CHART_TAG="$(awk '
   /^  name: / { inside = ($2 == "openstack-hypervisor-operator") }
   inside && /^    tag: / { gsub(/"/, "", $2); print $2; exit }
-' "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/sources.yaml")"
+' "$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/sources.yaml")"
 HVO_CHART_DIGEST="$(awk '
   /^  name: / { inside = ($2 == "openstack-hypervisor-operator") }
   inside && /^    digest: / { gsub(/"/, "", $2); print $2; exit }
-' "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/sources.yaml")"
+' "$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/sources.yaml")"
 
 # The run block: the fenced bash code of the run subsection.
 BLOCK="$(awk '/^```bash$/ { f = 1; next } f && /^```$/ { exit } f { print }' <<<"$RUN")"
@@ -141,8 +141,8 @@ test_section_content() {
   assert_not_empty "the section has a body" "$STACK"
   local text
   for text in \
-    '**Files:** `deploy/lab/metal-stack/prometheus/kustomization.yaml`,' \
-    '`deploy/lab/metal-stack/prometheus/hypervisor-operator.json`' \
+    '**Files:** `deploy/overlays/metal-stack/prometheus/kustomization.yaml`,' \
+    '`deploy/overlays/metal-stack/prometheus/hypervisor-operator.json`' \
     'EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true WITH_PROMETHEUS=true make deploy-infra' \
     '| Namespace `monitoring` |' \
     '| Scrape jobs |' \
@@ -187,7 +187,7 @@ test_run_commands() {
     "kubectl get service -n kube-system -o name | grep '^service/kube-prometheus-stack'" \
     'kubectl get servicemonitor,prometheusrule -n openstack' \
     "curl -fsS 'http://localhost:9090/api/v1/targets?state=active' |" \
-    "jq -r '.panels[].targets[].expr' deploy/lab/metal-stack/prometheus/hypervisor-operator.json |" \
+    "jq -r '.panels[].targets[].expr' deploy/overlays/metal-stack/prometheus/hypervisor-operator.json |" \
     'curl -fsS http://localhost:9090/api/v1/rules |' \
     "curl -fsS -u admin:prom-operator 'http://localhost:3000/api/search?type=dash-db' | jq -r '.[].uid' | sort" \
     'kubectl delete pod prometheus-kube-prometheus-stack-prometheus-0 -n monitoring' \
@@ -210,18 +210,18 @@ test_run_commands() {
 test_names_from_sources() {
   echo "Test: each name the section uses comes from its source"
   assert_file_contains_fixed "the kind release is named kube-prometheus-stack" \
-    "$PROJECT_ROOT/deploy/kind/prometheus/release.yaml" '  name: kube-prometheus-stack'
+    "$PROJECT_ROOT/deploy/bases/prometheus/release.yaml" '  name: kube-prometheus-stack'
   # The chart names the metrics Service <fullname>-controller-manager-metrics-service.
   assert_file_contains_fixed "the hvo release sets fullnameOverride hypervisor-operator" \
-    "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/hvo-release.yaml" 'fullnameOverride: hypervisor-operator'
+    "$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/hvo-release.yaml" 'fullnameOverride: hypervisor-operator'
   assert_contains "the section names the job of hvo's target" "$STACK" \
     '`hypervisor-operator-controller-manager-metrics-service`'
   assert_file_contains_fixed "the dashboard's uid is hypervisor-operator" \
-    "$PROJECT_ROOT/deploy/lab/metal-stack/prometheus/hypervisor-operator.json" '"uid": "hypervisor-operator"'
+    "$PROJECT_ROOT/deploy/overlays/metal-stack/prometheus/hypervisor-operator.json" '"uid": "hypervisor-operator"'
   assert_file_contains_fixed "hack/deploy-infra.sh logs the apply the run expects" \
     "$PROJECT_ROOT/hack/deploy-infra.sh" 'log "Prometheus overlay ${PROMETHEUS_OVERLAY_ROOT} applied (WITH_PROMETHEUS=true)."'
   assert_contains "the run expects that line with the lab overlay" "$RUN" \
-    '`Prometheus overlay <clone>/deploy/lab/metal-stack/prometheus applied (WITH_PROMETHEUS=true).`'
+    '`Prometheus overlay <clone>/deploy/overlays/metal-stack/prometheus applied (WITH_PROMETHEUS=true).`'
   assert_file_contains_fixed "hack/teardown-infra.sh logs the claim delete the run expects" \
     "$PROJECT_ROOT/hack/teardown-infra.sh" 'delete_and_wait "the PVCs in monitoring"'
   assert_file_contains_fixed "and the kubelet Service delete" \

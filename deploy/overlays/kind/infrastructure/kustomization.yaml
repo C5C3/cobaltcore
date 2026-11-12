@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kind infrastructure: common instances, local storage, NodePort proxy and loopback certificates.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../bases/devstack/infrastructure
+  - barbican-nip-io-tls-certificate.yaml
+  - cinder-nip-io-tls-certificate.yaml
+  - dizzy-nip-io-tls-certificate.yaml
+  - envoy-nodeport.yaml
+  - glance-nip-io-tls-certificate.yaml
+  - glance-upload-nip-io-tls-certificate.yaml
+  - horizon-nip-io-tls-certificate.yaml
+  - keystone-nip-io-tls-certificate.yaml
+  - neutron-nip-io-tls-certificate.yaml
+  - nova-console-nip-io-tls-certificate.yaml
+  - nova-metadata-nip-io-tls-certificate.yaml
+  - nova-nip-io-tls-certificate.yaml
+  - placement-nip-io-tls-certificate.yaml
+patches:
+  - target:
+      kind: MariaDB
+      name: openstack-db
+      namespace: openstack
+    patch: |
+      apiVersion: k8s.mariadb.com/v1alpha1
+      kind: MariaDB
+      metadata:
+        name: openstack-db
+        namespace: openstack
+      spec:
+        storage:
+          storageClassName: standard
+  - target:
+      kind: GarageCluster
+      name: garage
+      namespace: shared-services
+    patch: |
+      apiVersion: garage.rajsingh.info/v1beta2
+      kind: GarageCluster
+      metadata:
+        name: garage
+        namespace: shared-services
+      spec:
+        storage:
+          metadata:
+            storageClassName: standard
+          data:
+            storageClassName: standard

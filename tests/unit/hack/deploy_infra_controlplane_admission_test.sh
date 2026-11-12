@@ -542,7 +542,7 @@ test_main_probes_before_each_by_hand_hint() {
   local gate hint_overlay hint_kind
   gate="$(line_of 'elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then')"
   hint_overlay="$(line_of 'kubectl kustomize ${OVERLAY_ROOT}/controlplane | sed')"
-  hint_kind="$(line_of 'kubectl apply -f deploy/kind/controlplane/controlplane.yaml')"
+  hint_kind="$(line_of 'kubectl apply -f deploy/overlays/kind/controlplane/controlplane.yaml')"
   assert_not_empty "the overlay ending's gate found" "$gate"
   assert_not_empty "the overlay hint found" "$hint_overlay"
   assert_not_empty "the kind hint found" "$hint_kind"
@@ -564,11 +564,11 @@ test_main_probes_before_each_by_hand_hint() {
   probe="$(line_between 'wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}"' "$hint_overlay" "$hint_kind")"
   assert_not_empty "the kind ending probes before its hint" "$probe"
   assert_contains "the kind probe names the bundled CR the hint applies" \
-    "$(sed -n "${probe:-1}p" "$DEPLOY_INFRA_SH")" '"${REPO_ROOT}/deploy/kind/controlplane/controlplane.yaml"'
+    "$(sed -n "${probe:-1}p" "$DEPLOY_INFRA_SH")" '"${REPO_ROOT}/deploy/overlays/kind/controlplane/controlplane.yaml"'
   assert_file_contains_fixed "the bundled CR the kind probe names is a ControlPlane" \
-    "$PROJECT_ROOT/deploy/kind/controlplane/controlplane.yaml" 'kind: ControlPlane'
+    "$PROJECT_ROOT/deploy/overlays/kind/controlplane/controlplane.yaml" 'kind: ControlPlane'
   assert_contains "the kind probe adds the OVNCentral of Step 3" \
-    "$(sed -n "${probe:-1}p" "$DEPLOY_INFRA_SH")" '"${REPO_ROOT}/deploy/lab/metal-stack/controlplane/ovncentral.yaml"'
+    "$(sed -n "${probe:-1}p" "$DEPLOY_INFRA_SH")" '"${REPO_ROOT}/deploy/overlays/metal-stack/controlplane/ovncentral.yaml"'
 }
 
 test_main_gates_the_waits_on_infra_only() {
@@ -601,7 +601,7 @@ test_main_gates_the_waits_on_infra_only() {
   local gate hint_overlay hint_kind probe awaited_gate
   gate="$(line_of 'elif [[ "${EXTERNAL_CLUSTER}" == "true" && -f "${OVERLAY_ROOT}/controlplane/kustomization.yaml" ]]; then')"
   hint_overlay="$(line_of 'kubectl kustomize ${OVERLAY_ROOT}/controlplane | sed')"
-  hint_kind="$(line_of 'kubectl apply -f deploy/kind/controlplane/controlplane.yaml')"
+  hint_kind="$(line_of 'kubectl apply -f deploy/overlays/kind/controlplane/controlplane.yaml')"
   probe="$(line_between 'wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}"' "${gate:-0}" "${hint_overlay:-0}")"
   awaited_gate="$(last_line_between 'if [[ "${operators_awaited}" == "true" ]]; then' "${gate:-0}" "${probe:-0}")"
   assert_not_empty "the overlay probe runs only once the operators were awaited" "$awaited_gate"

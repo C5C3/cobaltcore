@@ -1254,7 +1254,7 @@ backup pods run, so the Secret has to exist there:
 
 An ExternalSecret through a SecretStore whose role may read the key's OpenBao
 path writes the Secret and keeps it in sync. The lab's
-`deploy/lab/metal-stack/ceph/cluster/keys-pull.yaml` is the worked example: it
+`deploy/overlays/metal-stack/ceph/cluster/keys-pull.yaml` is the worked example: it
 pulls both client keys into `openstack`. Where Rook runs in the same cluster and
 no ExternalSecret owns the name, a copy of Rook's Secret works too:
 
@@ -1541,7 +1541,7 @@ time as the same user, scoped to project `test` in domain `cc3test`, and exits
 when that fails, whether or not its smoke test is skipped. The smoke test then
 boots flavor ID `1` from image `cirros-kvm` onto a volume of type `premium`, on
 the first non-shared network that scope lists. The ControlPlane declares none of
-these. `deploy/kind/hypervisor-operator-fixtures/` is an example that declares
+these. `deploy/overlays/kind/hypervisor-operator-fixtures/` is an example that declares
 them as K-ORC resources, with the role assignment the user needs on `test`.
 Apply it only to a cloud that has none of its managed objects yet. K-ORC adopts
 an existing object with the name of a managed resource instead of creating one.

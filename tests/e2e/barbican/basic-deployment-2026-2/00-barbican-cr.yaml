@@ -7,7 +7,7 @@
 # barbican_basic_2026_2), cache via clusterRef to openstack-memcached. The database
 # credentials come from the ESO-synced barbican-db Secret and the service-user
 # password from the pre-seeded keystone-admin Secret (both
-# deploy/kind/infrastructure). Barbican exits at start-up without a secret store,
+# deploy/overlays/kind/infrastructure). Barbican exits at start-up without a secret store,
 # so 01-barbican-secretstore.yaml attaches one before Ready can settle.
 #
 # Apart from the release, the image tag, and the names, this is the plain

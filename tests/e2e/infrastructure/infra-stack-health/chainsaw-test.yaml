@@ -153,7 +153,7 @@ spec:
   # Ready=False here.
   #
   # keystone-db is the kind-only ExternalSecret
-  # (deploy/kind/infrastructure/keystone-db-externalsecret.yaml) serving
+  # (deploy/bases/devstack/infrastructure/keystone-db-externalsecret.yaml) serving
   # standalone Keystone CRs — it reads the standalone static path
   # openstack/keystone/standalone/db that the deploy-infra seed writes (the
   # stage-(a) per-ControlPlane static path is retired since #439:
@@ -166,7 +166,7 @@ spec:
   # here.
   #
   # keystone-admin and mariadb-root-password are now ALSO kind-only
-  # shims (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml and
+  # shims (deploy/bases/devstack/infrastructure/keystone-admin-externalsecret.yaml and
   # mariadb-root-password-externalsecret.yaml) — the production stack
   # (deploy/eso/) ships NONE of these static ExternalSecrets. The admin
   # password specifically is now operator-projected per-ControlPlane

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # hack/dizzy-soak-runner.sh — The runner of the dizzy soak (#1274), the
-# command of the container runner of deploy/lab/metal-stack/dizzy-soak/job.yaml.
+# command of the container runner of deploy/overlays/metal-stack/dizzy-soak/job.yaml.
 # hack/dizzy-soak.sh start ships it as the ConfigMap dizzy-soak-runner.
 #
 # It names the run after its UTC start and works in /reports/<run>/ on the
@@ -52,7 +52,7 @@ CLOUDS_FILE="/etc/openstack/clouds.yaml"
 # day on a cluster of 150 containers.
 MIN_FREE_KIB=524288
 # The OTLP metrics endpoint of the dizzy VictoriaMetrics in the cluster, the
-# Service the Grafana datasource of deploy/kind/dizzy/release-grafana.yaml
+# Service the Grafana datasource of deploy/bases/dizzy/release-grafana.yaml
 # reads.
 OTLP_ENDPOINT="http://dizzy-victoria-metrics-server.dizzy.svc:8428/opentelemetry/v1/metrics"
 # The namespaces an empty DIZZY_SOAK_NAMESPACES leaves out.

@@ -9,7 +9,7 @@
 #
 # Subcommands:
 #   stage-dashboards   Copy dizzy's three Grafana dashboards into
-#                      deploy/kind/dizzy/dashboards/ for the kind overlay's
+#                      deploy/bases/dizzy/dashboards/ for the kind overlay's
 #                      configMapGenerator.
 #   chaos <service>    Run the dizzy chaos soak against keystone or glance,
 #                      exporting per-operation metrics over OTLP.
@@ -55,7 +55,7 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 
 # The Gateway's Certificate in external mode, <namespace>/<name>: the one
 # hack/deploy-infra.sh issues in Step 5 from
-# deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml. Its first DNS
+# deploy/overlays/metal-stack/infrastructure/gateway-certificate.yaml. Its first DNS
 # name, *.<suffix>, names the Gateway's hostnames, and the ca.crt of its Secret
 # is the lab CA that signed it. tests/unit/hack/dizzy_sh_test.sh holds the
 # name equal to the template's.
@@ -78,7 +78,7 @@ Usage: hack/dizzy.sh <subcommand>
 
 Subcommands:
   stage-dashboards       Copy dizzy's three Grafana dashboards into
-                         deploy/kind/dizzy/dashboards/.
+                         deploy/bases/dizzy/dashboards/.
   chaos <keystone|glance>
                          Run the dizzy chaos soak against the named service
                          using the ControlPlane admin credentials.
@@ -178,7 +178,7 @@ ensure_binary() {
 stage_dashboards() {
   ensure_cache
 
-  local dest="${REPO_ROOT}/deploy/kind/dizzy/dashboards"
+  local dest="${REPO_ROOT}/deploy/bases/dizzy/dashboards"
   mkdir -p "${dest}"
 
   local dashboard

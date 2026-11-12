@@ -27,7 +27,7 @@
 #     Cross-namespace lookup is not supported, so a CR in
 #     `keystone-pss-restricted-test` cannot reach `openstack/openstack-db`
 #     through clusterRef. Brownfield wiring is the only path that satisfies
-#     the parent issue's "no new infra in deploy/kind/" constraint.
+#     the parent issue's "no new infra in deploy/overlays/kind/" constraint.
 #
 #   - ESO-managed Secrets (keystone-admin / keystone-db are ExternalSecrets,
 #     not plain Secrets): `reconcileSecrets` gates SecretsReady on the

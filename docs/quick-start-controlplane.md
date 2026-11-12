@@ -1019,14 +1019,14 @@ replaced since. No `nova-compute` row appears. The ControlPlane runs no compute
 node, so the plane accepts a server but has no host to place it on.
 
 ::: details Optional: boot a server on a fake compute
-The kind overlay `deploy/kind/fake-compute/` adds a `nova-compute` on nova's
+The kind overlay `deploy/overlays/kind/fake-compute/` adds a `nova-compute` on nova's
 fake virt driver. It is built from the compute contract
 `controlplane-nova-compute-config` the way a compute cluster would build one,
 and the servers it hosts run nothing. `make deploy-infra` never applies it.
 Apply it now that `NovaReady` is `True`, and wait for the rollout:
 
 ```bash
-kubectl apply -k deploy/kind/fake-compute
+kubectl apply -k deploy/overlays/kind/fake-compute
 kubectl rollout status deploy/controlplane-fake-compute -n openstack --timeout=5m
 ```
 

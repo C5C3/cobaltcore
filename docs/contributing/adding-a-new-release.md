@@ -279,7 +279,7 @@ moves to `<prev> -> <version>` as well:
   against the fixtures.
 
 `tests/unit/deploy/fake_compute_overlay_test.sh` compares `06-fake-compute.yaml`
-with `deploy/kind/fake-compute/fake-compute.yaml`, which pins the default
+with `deploy/overlays/kind/fake-compute/fake-compute.yaml`, which pins the default
 release, so a `<prev>` that is not the default release reddens that test until
 both agree.
 
@@ -349,7 +349,7 @@ each gains the new release by hand:
 None of these are mechanical; decide and record each in the PR description:
 
 - **Move the default release?** The default is named in the plain
-  `basic-deployment` suites, `deploy/kind/controlplane/controlplane.yaml`
+  `basic-deployment` suites, `deploy/overlays/kind/controlplane/controlplane.yaml`
   (`openStackRelease`), the `hack/deploy-infra.sh` image preload, the
   `${VAR:-YYYY.N}` fallbacks in `hack/` (`RELEASE` in
   `run-tempest.sh`; `IMAGE_TAG` in
@@ -357,9 +357,9 @@ None of these are mechanical; decide and record each in the PR description:
   slug fallbacks of `hack/ci-run-tempest.sh` (`CONFIG_DIR` defaults to
   `tests/tempest/${SERVICE}-<slug>` and `SERVICE_K8S_NAME` to
   `${SERVICE}-tempest-<slug>`), the two `ghcr.io/c5c3/nova:<default>` refs of
-  `deploy/kind/fake-compute/fake-compute.yaml` and the comment above them, the
-  lab manifests `deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`
-  and `deploy/lab/metal-stack/hypervisor/compute.yaml`, the `Makefile`
+  `deploy/overlays/kind/fake-compute/fake-compute.yaml` and the comment above them, the
+  lab manifests `deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml`
+  and `deploy/overlays/metal-stack/hypervisor/compute.yaml`, the `Makefile`
   comment that names `neutron:<default>` for the multicluster target, the
   quick-start step `tests/unit/deploy/metal_stack_controlplane_test.sh` ties
   to the lab ControlPlane (`docs/quick-start-controlplane.md`), the image

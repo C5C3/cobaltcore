@@ -27,8 +27,9 @@
   "flux": {
     "managerFilePatterns": [
       "/^deploy/flux-system/(releases|sources)/.+\\.yaml$/",
-      "/^deploy/kind/.+\\.yaml$/",
-      "/^deploy/lab/metal-stack/ceph/(release|source)\\.yaml$/"
+      "/^deploy/bases/.+\\.yaml$/",
+      "/^deploy/overlays/kind/.+\\.yaml$/",
+      "/^deploy/overlays/metal-stack/ceph/(release|source)\\.yaml$/"
     ]
   },
   "customManagers": [
@@ -186,7 +187,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/kind/base/flux-web\\.yaml$/"
+        "/deploy/bases/devstack/base/flux-web\\.yaml$/"
       ],
       "matchStrings": [
         "- version:\\s*\"(?<currentValue>[^\"]+)\""
@@ -290,7 +291,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/kind/infrastructure/openbao-instance\\.yaml$/"
+        "/deploy/bases/devstack/infrastructure/openbao-instance\\.yaml$/"
       ],
       "matchStrings": [
         "\\n  version: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
@@ -461,7 +462,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/kind/nfs/nfs-server\\.yaml$/",
+        "/deploy/bases/nfs/nfs-server\\.yaml$/",
         "/tests/e2e/infrastructure/nfs-health/chainsaw-test\\.yaml$/"
       ],
       "matchStrings": [
@@ -473,8 +474,8 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/lab/metal-stack/probe/node-probe\\.yaml$/",
-        "/deploy/lab/metal-stack/migration-ports/reservation-daemonset\\.yaml$/"
+        "/deploy/overlays/metal-stack/probe/node-probe\\.yaml$/",
+        "/deploy/overlays/metal-stack/migration-ports/reservation-daemonset\\.yaml$/"
       ],
       "matchStrings": [
         "image: (?<depName>docker\\.io/library/debian):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
@@ -485,7 +486,7 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/deploy/lab/metal-stack/dizzy-soak/job\\.yaml$/"
+        "/deploy/overlays/metal-stack/dizzy-soak/job\\.yaml$/"
       ],
       "matchStrings": [
         "image: (?<depName>docker\\.io/alpine/k8s):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
@@ -497,10 +498,10 @@
       "customType": "regex",
       "description": "Lab libvirt image: the keeper tag <libvirt-version>-r<N> the Nix-built image gets on main (hack/ci-tag-libvirt-keeper.sh) with its digest, in the eight pins of the lab manifests",
       "managerFilePatterns": [
-        "/deploy/lab/metal-stack/hypervisor/libvirt-daemonset\\.yaml$/",
-        "/deploy/lab/metal-stack/probe/nfs-module-load\\.yaml$/",
-        "/deploy/lab/metal-stack/nfs/client-modules-daemonset\\.yaml$/",
-        "/deploy/lab/metal-stack/chaos-mesh/modules-daemonset\\.yaml$/"
+        "/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset\\.yaml$/",
+        "/deploy/overlays/metal-stack/probe/nfs-module-load\\.yaml$/",
+        "/deploy/overlays/metal-stack/nfs/client-modules-daemonset\\.yaml$/",
+        "/deploy/overlays/metal-stack/chaos-mesh/modules-daemonset\\.yaml$/"
       ],
       "matchStrings": [
         "image: (?<depName>ghcr\\.io/c5c3/libvirt):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
@@ -609,8 +610,8 @@
       "customType": "regex",
       "description": "Ceph image of the lab Ceph: the CephCluster and the toolbox run the same tag and digest",
       "managerFilePatterns": [
-        "/deploy/lab/metal-stack/ceph/cluster/cluster\\.yaml$/",
-        "/deploy/lab/metal-stack/ceph/cluster/toolbox\\.yaml$/"
+        "/deploy/overlays/metal-stack/ceph/cluster/cluster\\.yaml$/",
+        "/deploy/overlays/metal-stack/ceph/cluster/toolbox\\.yaml$/"
       ],
       "matchStrings": [
         "image: (?<depName>quay\\.io/ceph/ceph):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
@@ -695,14 +696,14 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["hack/deploy-infra.sh", "hack/deploy-mgmt-cluster.sh", "deploy/kind/base/flux-web.yaml"],
+      "matchFileNames": ["hack/deploy-infra.sh", "hack/deploy-mgmt-cluster.sh", "deploy/bases/devstack/base/flux-web.yaml"],
       "matchPackageNames": ["controlplaneio-fluxcd/flux-operator"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["hack/deploy-infra.sh", "hack/deploy-mgmt-cluster.sh", "deploy/kind/base/flux-web.yaml"],
+      "matchFileNames": ["hack/deploy-infra.sh", "hack/deploy-mgmt-cluster.sh", "deploy/bases/devstack/base/flux-web.yaml"],
       "matchPackageNames": ["controlplaneio-fluxcd/flux-operator"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
@@ -803,7 +804,7 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/kind/infrastructure/openbao-instance.yaml",
+        "deploy/bases/devstack/infrastructure/openbao-instance.yaml",
         "operators/c5c3/internal/controller/reconcile_barbican_openbao.go"
       ],
       "matchPackageNames": ["openbao/openbao"],
@@ -813,7 +814,7 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/kind/infrastructure/openbao-instance.yaml",
+        "deploy/bases/devstack/infrastructure/openbao-instance.yaml",
         "operators/c5c3/internal/controller/reconcile_barbican_openbao.go"
       ],
       "matchPackageNames": ["openbao/openbao"],
@@ -1015,7 +1016,7 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/kind/nfs/nfs-server.yaml",
+        "deploy/bases/nfs/nfs-server.yaml",
         "tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
       ],
       "matchPackageNames": ["ghcr.io/kubernetes-sigs/nfs-ganesha"],
@@ -1025,7 +1026,7 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/kind/nfs/nfs-server.yaml",
+        "deploy/bases/nfs/nfs-server.yaml",
         "tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
       ],
       "matchPackageNames": ["ghcr.io/kubernetes-sigs/nfs-ganesha"],
@@ -1037,8 +1038,8 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/lab/metal-stack/probe/node-probe.yaml",
-        "deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml"
+        "deploy/overlays/metal-stack/probe/node-probe.yaml",
+        "deploy/overlays/metal-stack/migration-ports/reservation-daemonset.yaml"
       ],
       "matchPackageNames": ["docker.io/library/debian"],
       "matchUpdateTypes": ["major"],
@@ -1047,8 +1048,8 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/lab/metal-stack/probe/node-probe.yaml",
-        "deploy/lab/metal-stack/migration-ports/reservation-daemonset.yaml"
+        "deploy/overlays/metal-stack/probe/node-probe.yaml",
+        "deploy/overlays/metal-stack/migration-ports/reservation-daemonset.yaml"
       ],
       "matchPackageNames": ["docker.io/library/debian"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
@@ -1059,8 +1060,8 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/lab/metal-stack/ceph/cluster/cluster.yaml",
-        "deploy/lab/metal-stack/ceph/cluster/toolbox.yaml"
+        "deploy/overlays/metal-stack/ceph/cluster/cluster.yaml",
+        "deploy/overlays/metal-stack/ceph/cluster/toolbox.yaml"
       ],
       "matchPackageNames": ["quay.io/ceph/ceph"],
       "matchUpdateTypes": ["major"],
@@ -1070,8 +1071,8 @@
       "description": "A Ceph minor is a question of the versions the pinned Rook supports, so nothing automerges; one group moves the CephCluster and the toolbox together",
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/lab/metal-stack/ceph/cluster/cluster.yaml",
-        "deploy/lab/metal-stack/ceph/cluster/toolbox.yaml"
+        "deploy/overlays/metal-stack/ceph/cluster/cluster.yaml",
+        "deploy/overlays/metal-stack/ceph/cluster/toolbox.yaml"
       ],
       "matchPackageNames": ["quay.io/ceph/ceph"],
       "matchUpdateTypes": ["minor", "patch", "digest"],
@@ -1081,14 +1082,14 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/lab/metal-stack/dizzy-soak/job.yaml"],
+      "matchFileNames": ["deploy/overlays/metal-stack/dizzy-soak/job.yaml"],
       "matchPackageNames": ["docker.io/alpine/k8s"],
       "matchUpdateTypes": ["major", "minor"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/lab/metal-stack/dizzy-soak/job.yaml"],
+      "matchFileNames": ["deploy/overlays/metal-stack/dizzy-soak/job.yaml"],
       "matchPackageNames": ["docker.io/alpine/k8s"],
       "matchUpdateTypes": ["patch", "digest"],
       "automerge": true,
@@ -1098,10 +1099,10 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
-        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
-        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
-        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
+        "deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml",
+        "deploy/overlays/metal-stack/probe/nfs-module-load.yaml",
+        "deploy/overlays/metal-stack/nfs/client-modules-daemonset.yaml",
+        "deploy/overlays/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
       "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
       "description": "Lab libvirt image: only the Nix keeper tags <libvirt-version>-r<N>, the shape hack/ci-tag-libvirt-keeper.sh mints",
@@ -1110,10 +1111,10 @@
     {
       "matchManagers": ["custom.regex"],
       "matchFileNames": [
-        "deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml",
-        "deploy/lab/metal-stack/probe/nfs-module-load.yaml",
-        "deploy/lab/metal-stack/nfs/client-modules-daemonset.yaml",
-        "deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
+        "deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml",
+        "deploy/overlays/metal-stack/probe/nfs-module-load.yaml",
+        "deploy/overlays/metal-stack/nfs/client-modules-daemonset.yaml",
+        "deploy/overlays/metal-stack/chaos-mesh/modules-daemonset.yaml"
       ],
       "matchPackageNames": ["ghcr.io/c5c3/libvirt"],
       "description": "Lab libvirt image: every Nix keeper tag main mints, a libvirt major and the first move off the Docker-built keeper included, moves the eight pins together, reviewed by hand. The lab never pins a branch build: cleanup-images prunes its <sha> tag after 24 hours",
@@ -1283,9 +1284,9 @@
         "deploy/flux-system/releases/k-orc.yaml",
         "deploy/flux-system/releases/messaging-topology-operator.yaml",
         "deploy/flux-system/releases/rabbitmq-cluster-operator.yaml",
-        "deploy/kind/base/flux-web.yaml",
-        "deploy/kind/infrastructure/openbao-instance.yaml",
-        "deploy/kind/nfs/nfs-server.yaml"
+        "deploy/bases/devstack/base/flux-web.yaml",
+        "deploy/bases/devstack/infrastructure/openbao-instance.yaml",
+        "deploy/bases/nfs/nfs-server.yaml"
       ],
       "enabled": false
     },
@@ -1312,7 +1313,7 @@
     },
     {
       "matchManagers": ["flux"],
-      "matchFileNames": ["deploy/kind/base/envoy-gateway.yaml"],
+      "matchFileNames": ["deploy/bases/devstack/base/envoy-gateway.yaml"],
       "matchPackageNames": ["docker.io/envoyproxy/gateway-helm"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
@@ -1321,7 +1322,7 @@
     },
     {
       "matchManagers": ["flux"],
-      "matchFileNames": ["deploy/kind/base/headlamp.yaml"],
+      "matchFileNames": ["deploy/bases/devstack/base/headlamp.yaml"],
       "matchPackageNames": ["headlamp"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
@@ -1330,14 +1331,14 @@
     },
     {
       "matchManagers": ["flux"],
-      "matchFileNames": ["deploy/kind/nfs/release.yaml"],
+      "matchFileNames": ["deploy/bases/nfs/release.yaml"],
       "matchPackageNames": ["csi-driver-nfs"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["flux"],
-      "matchFileNames": ["deploy/kind/nfs/release.yaml"],
+      "matchFileNames": ["deploy/bases/nfs/release.yaml"],
       "matchPackageNames": ["csi-driver-nfs"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": false,
@@ -1346,7 +1347,7 @@
     },
     {
       "matchManagers": ["flux"],
-      "matchFileNames": ["deploy/lab/metal-stack/ceph/release.yaml"],
+      "matchFileNames": ["deploy/overlays/metal-stack/ceph/release.yaml"],
       "matchPackageNames": ["rook-ceph"],
       "matchUpdateTypes": ["major"],
       "enabled": false
@@ -1354,7 +1355,7 @@
     {
       "description": "The Rook operator of the lab Ceph: a privileged operator with the ceph.rook.io CRDs, pinned to one version; a minor changes the Ceph versions it supports, so nothing automerges",
       "matchManagers": ["flux"],
-      "matchFileNames": ["deploy/lab/metal-stack/ceph/release.yaml"],
+      "matchFileNames": ["deploy/overlays/metal-stack/ceph/release.yaml"],
       "matchPackageNames": ["rook-ceph"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": false,

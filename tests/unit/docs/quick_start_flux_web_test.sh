@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the Quick Start guide documents the Flux Web UI demo addon
-# introduced by deploy/kind/base/flux-web.yaml:
+# introduced by deploy/bases/devstack/base/flux-web.yaml:
 #   - Step 4a heading and anchor exist
 #   - Step 4a contains the port-forward command and URL
 #   - The "Quick Start does not enable it" disclaimer has been removed

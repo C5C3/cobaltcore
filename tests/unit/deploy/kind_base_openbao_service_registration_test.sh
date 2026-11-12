@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify that the OpenBao server config of the kind base overlay, which the
-# lab overlay deploy/lab/metal-stack/base builds on, has no Kubernetes service
+# lab overlay deploy/overlays/metal-stack/base builds on, has no Kubernetes service
 # registration:
 #   - the kind base renders OpenBao in standalone mode, and its standalone
 #     config has no service_registration stanza. The chart grants the Role
@@ -29,7 +29,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
 OPENBAO='.kind == "HelmRelease" and .metadata.name == "openbao"'
 

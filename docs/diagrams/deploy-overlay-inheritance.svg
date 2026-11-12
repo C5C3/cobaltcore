@@ -92,18 +92,18 @@
 <text x="1250" y="1081.2" font-size="20" font-weight="400" fill="#55606E">Flux controllers must already exist.</text>
 <text x="1250" y="1109.2" font-size="20" font-weight="400" fill="#55606E">Server TLS precedes OpenBao installation.</text>
 <text x="1250" y="1137.2" font-size="20" font-weight="400" fill="#55606E">Bootstrap precedes a usable ESO store.</text>
-<text x="48" y="1247.58" font-size="28" font-weight="700" fill="#2B3440">Existing environment flows</text>
-<text x="48" y="1279.2" font-size="20" font-weight="400" fill="#55606E">make deploy-infra applies kind roots, or the external overlay interface under EXTERNAL_CLUSTER=true.</text>
-<text x="48" y="1325.64" font-size="24" font-weight="700" fill="#2B3440">Legacy foundation</text>
-<text x="640" y="1325.64" font-size="24" font-weight="700" fill="#2B3440">deploy/kind</text>
-<text x="1232" y="1325.64" font-size="24" font-weight="700" fill="#2B3440">deploy/lab/metal-stack</text>
+<text x="48" y="1247.58" font-size="28" font-weight="700" fill="#2B3440">Sibling environment overlays</text>
+<text x="48" y="1279.2" font-size="20" font-weight="400" fill="#55606E">Each environment imports the same shared bases. Gateway, storage and host settings belong to its overlay.</text>
+<text x="48" y="1325.64" font-size="24" font-weight="700" fill="#2B3440">Shared bases</text>
+<text x="640" y="1325.64" font-size="24" font-weight="700" fill="#2B3440">deploy/overlays/kind</text>
+<text x="1232" y="1325.64" font-size="24" font-weight="700" fill="#2B3440">deploy/overlays/metal-stack</text>
 <rect x="48" y="1344" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
-<text x="66" y="1377.92" font-size="22" font-weight="700" fill="#2B3440">deploy/flux-system</text>
-<text x="66" y="1413.2" font-size="20" font-weight="400" fill="#55606E">Namespaces, FluxInstance, sources and releases</text>
-<text x="66" y="1441.2" font-size="20" font-weight="400" fill="#55606E">Direct legacy consumers: kubectl apply -k</text>
+<text x="66" y="1377.92" font-size="22" font-weight="700" fill="#2B3440">deploy/bases/devstack/base</text>
+<text x="66" y="1413.2" font-size="20" font-weight="400" fill="#55606E">Controllers, UI and development sizing</text>
+<text x="66" y="1441.2" font-size="20" font-weight="400" fill="#55606E">Includes the retained Flux aggregate</text>
 <rect x="640" y="1344" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="658" y="1377.92" font-size="22" font-weight="700" fill="#2B3440">base</text>
-<text x="658" y="1413.2" font-size="20" font-weight="400" fill="#55606E">Gateway and UI resources; one-node patches</text>
+<text x="658" y="1413.2" font-size="20" font-weight="400" fill="#55606E">Local gateway and standard storage class</text>
 <text x="658" y="1441.2" font-size="20" font-weight="400" fill="#55606E">make deploy-infra, Step 3</text>
 <rect x="1232" y="1344" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="1250" y="1377.92" font-size="22" font-weight="700" fill="#2B3440">base</text>
@@ -111,63 +111,70 @@
 <text x="1250" y="1441.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 3</text>
 <polyline points="576,1407 629.5,1407" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="640,1407 625,1414.2 625,1399.8" fill="#3A4452"/>
-<polyline points="1168,1407 1221.5,1407" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,1407 1217,1414.2 1217,1399.8" fill="#3A4452"/>
+<polyline points="576,1407 610,1407 610,1330 1496,1330 1496,1333.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1496,1344 1488.8,1329 1503.2,1329" fill="#3A4452"/>
 <rect x="48" y="1498" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
-<text x="66" y="1531.92" font-size="22" font-weight="700" fill="#2B3440">deploy/flux-system/infrastructure</text>
-<text x="66" y="1567.2" font-size="20" font-weight="400" fill="#55606E">TLS, ESO and static reference instances</text>
-<text x="66" y="1595.2" font-size="20" font-weight="400" fill="#55606E">Direct consumers: after controllers are ready</text>
+<text x="66" y="1531.56" font-size="21" font-weight="700" fill="#2B3440">deploy/bases/devstack/infrastructure</text>
+<text x="66" y="1567.2" font-size="20" font-weight="400" fill="#55606E">TLS, ESO, development instances and secret shims</text>
+<text x="66" y="1595.2" font-size="20" font-weight="400" fill="#55606E">Cluster-default storage; no environment gateway</text>
 <rect x="640" y="1498" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="658" y="1531.92" font-size="22" font-weight="700" fill="#2B3440">infrastructure</text>
-<text x="658" y="1567.2" font-size="20" font-weight="400" fill="#55606E">Gateway certificates, secrets, proving OpenBao</text>
+<text x="658" y="1567.2" font-size="20" font-weight="400" fill="#55606E">Loopback certificates, NodePort and local storage</text>
 <text x="658" y="1595.2" font-size="20" font-weight="400" fill="#55606E">make deploy-infra, Step 5</text>
 <rect x="1232" y="1498" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="1250" y="1531.92" font-size="22" font-weight="700" fill="#2B3440">infrastructure</text>
-<text x="1250" y="1567.2" font-size="20" font-weight="400" fill="#55606E">Lab CA and LoadBalancer; storage patches</text>
+<text x="1250" y="1567.2" font-size="20" font-weight="400" fill="#55606E">Lab CA and public proxy; cluster-default storage</text>
 <text x="1250" y="1595.2" font-size="20" font-weight="400" fill="#55606E">EXTERNAL_CLUSTER=true, Step 5</text>
 <polyline points="576,1561 629.5,1561" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="640,1561 625,1568.2 625,1553.8" fill="#3A4452"/>
-<polyline points="1168,1561 1221.5,1561" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,1561 1217,1568.2 1217,1553.8" fill="#3A4452"/>
+<polyline points="576,1561 610,1561 610,1484 1496,1484 1496,1487.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1496,1498 1488.8,1483 1503.2,1483" fill="#3A4452"/>
 <rect x="48" y="1652" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
-<text x="66" y="1685.56" font-size="21" font-weight="700" fill="#2B3440">deploy/kind/prometheus</text>
-<text x="66" y="1721.2" font-size="20" font-weight="400" fill="#55606E">Standalone compatibility root includes Namespace</text>
-<text x="66" y="1749.2" font-size="20" font-weight="400" fill="#55606E">Chart, dashboard ConfigMap; stage JSON first</text>
+<text x="66" y="1685.56" font-size="21" font-weight="700" fill="#2B3440">deploy/bases/prometheus</text>
+<text x="66" y="1721.2" font-size="20" font-weight="400" fill="#55606E">Shared chart and dashboard; no Namespace</text>
+<text x="66" y="1749.2" font-size="20" font-weight="400" fill="#55606E">Stage the real dashboard JSON here</text>
 <rect x="640" y="1652" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="658" y="1685.92" font-size="22" font-weight="700" fill="#2B3440">prometheus-managed</text>
-<text x="658" y="1721.2" font-size="20" font-weight="400" fill="#55606E">Omits Namespace/monitoring; base owns it</text>
-<text x="658" y="1749.2" font-size="20" font-weight="400" fill="#55606E">Step 3 with WITH_PROMETHEUS=true</text>
+<text x="658" y="1721.2" font-size="20" font-weight="400" fill="#55606E">prometheus-managed: base owns the Namespace</text>
+<text x="658" y="1749.2" font-size="20" font-weight="400" fill="#55606E">prometheus: standalone root adds the Namespace</text>
 <rect x="1232" y="1652" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="1250" y="1685.92" font-size="22" font-weight="700" fill="#2B3440">prometheus</text>
 <text x="1250" y="1721.2" font-size="20" font-weight="400" fill="#55606E">Managed base; persistent metrics, lab scrapes</text>
 <text x="1250" y="1749.2" font-size="20" font-weight="400" fill="#55606E">Step 3 with WITH_PROMETHEUS=true</text>
 <polyline points="576,1715 629.5,1715" fill="none" stroke="#3A4452" stroke-width="3"/>
 <polygon points="640,1715 625,1722.2 625,1707.8" fill="#3A4452"/>
-<polyline points="1168,1715 1221.5,1715" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,1715 1217,1722.2 1217,1707.8" fill="#3A4452"/>
+<polyline points="576,1715 610,1715 610,1638 1496,1638 1496,1641.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1496,1652 1488.8,1637 1503.2,1637" fill="#3A4452"/>
 <rect x="48" y="1810" width="528" height="146" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
-<text x="66" y="1843.92" font-size="22" font-weight="700" fill="#2B3440">Optional addons</text>
-<text x="66" y="1879.2" font-size="20" font-weight="400" fill="#55606E">Each flag selects one environment's root.</text>
-<text x="66" y="1907.2" font-size="20" font-weight="400" fill="#55606E">Shared output must have one reconciler.</text>
-<text x="66" y="1935.2" font-size="20" font-weight="400" fill="#55606E">See the table for exact paths and appliers.</text>
+<text x="66" y="1843.92" font-size="22" font-weight="700" fill="#2B3440">deploy/bases: shared addons</text>
+<text x="66" y="1879.2" font-size="20" font-weight="400" fill="#55606E">chaos-mesh, dizzy, nfs</text>
+<text x="66" y="1907.2" font-size="20" font-weight="400" fill="#55606E">messaging: shared broker in either mode</text>
+<text x="66" y="1935.2" font-size="20" font-weight="400" fill="#55606E">Sources/releases have one canonical location.</text>
 <rect x="640" y="1810" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="658" y="1843.92" font-size="22" font-weight="700" fill="#2B3440">chaos-mesh, dizzy, nfs</text>
-<text x="658" y="1879.2" font-size="20" font-weight="400" fill="#55606E">One root per addon; no directory base</text>
+<text x="658" y="1879.2" font-size="20" font-weight="400" fill="#55606E">Local storage and NodePort exposure</text>
 <text x="658" y="1907.2" font-size="20" font-weight="400" fill="#55606E">Step 3 with its WITH_* flag</text>
 <rect x="1232" y="1810" width="528" height="126" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="1250" y="1843.92" font-size="22" font-weight="700" fill="#2B3440">chaos-mesh, dizzy, nfs</text>
-<text x="1250" y="1879.2" font-size="20" font-weight="400" fill="#55606E">Each imports the same-named kind root</text>
+<text x="1250" y="1879.2" font-size="20" font-weight="400" fill="#55606E">Persistence, namespace labels and node modules</text>
 <text x="1250" y="1907.2" font-size="20" font-weight="400" fill="#55606E">Step 3 with its WITH_* flag</text>
-<polyline points="1168,1873 1221.5,1873" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,1873 1217,1880.2 1217,1865.8" fill="#3A4452"/>
+<polyline points="576,1873 629.5,1873" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="640,1873 625,1880.2 625,1865.8" fill="#3A4452"/>
+<polyline points="576,1873 610,1873 610,1796 1496,1796 1496,1799.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1496,1810 1488.8,1795 1503.2,1795" fill="#3A4452"/>
+<rect x="48" y="1964" width="528" height="94" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="66" y="1997.56" font-size="21" font-weight="700" fill="#2B3440">deploy/bases/hypervisor-fixtures</text>
+<text x="66" y="2033.2" font-size="20" font-weight="400" fill="#55606E">Common K-ORC fixtures and image</text>
 <rect x="640" y="1964" width="528" height="94" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="658" y="1997.92" font-size="22" font-weight="700" fill="#2B3440">hypervisor-operator-fixtures</text>
 <text x="658" y="2033.2" font-size="20" font-weight="400" fill="#55606E">Applied by hand</text>
 <rect x="1232" y="1964" width="528" height="94" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="1250" y="1997.92" font-size="22" font-weight="700" fill="#2B3440">hypervisor-fixtures</text>
 <text x="1250" y="2033.2" font-size="20" font-weight="400" fill="#55606E">Applied by hand, after the ControlPlane</text>
-<polyline points="1168,2011 1221.5,2011" fill="none" stroke="#3A4452" stroke-width="3"/>
-<polygon points="1232,2011 1217,2018.2 1217,2003.8" fill="#3A4452"/>
+<polyline points="576,2011 629.5,2011" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="640,2011 625,2018.2 625,2003.8" fill="#3A4452"/>
+<polyline points="576,2011 610,2011 610,1950 1496,1950 1496,1953.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1496,1964 1488.8,1949 1503.2,1949" fill="#3A4452"/>
 <rect x="48" y="2090" width="528" height="206" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="66" y="2123.92" font-size="22" font-weight="700" fill="#2B3440">Additional lab composition</text>
 <text x="66" y="2159.2" font-size="20" font-weight="400" fill="#55606E">controlplane -&gt; controlplane-nfs</text>
@@ -177,14 +184,13 @@
 <rect x="640" y="2090" width="528" height="206" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="658" y="2123.56" font-size="21" font-weight="700" fill="#2B3440">Other kind roots (no directory base)</text>
 <text x="658" y="2159.2" font-size="20" font-weight="400" fill="#55606E">metrics-server, vpa: opt-in Step 3</text>
-<text x="658" y="2187.2" font-size="20" font-weight="400" fill="#55606E">messaging: WITH_MESSAGING after Step 5</text>
-<text x="658" y="2215.2" font-size="20" font-weight="400" fill="#55606E">controlplane: by hand / WITH_CONTROLPLANE_CR</text>
-<text x="658" y="2243.2" font-size="20" font-weight="400" fill="#55606E">fake-compute: applied by hand</text>
+<text x="658" y="2187.2" font-size="20" font-weight="400" fill="#55606E">controlplane: by hand / WITH_CONTROLPLANE_CR</text>
+<text x="658" y="2215.2" font-size="20" font-weight="400" fill="#55606E">fake-compute: applied by hand</text>
 <rect x="1232" y="2090" width="528" height="206" rx="13" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
 <text x="1250" y="2123.56" font-size="21" font-weight="700" fill="#2B3440">Other lab roots (no directory base)</text>
 <text x="1250" y="2159.2" font-size="20" font-weight="400" fill="#55606E">controlplane, migration-ports, probe: by hand</text>
 <text x="1250" y="2187.2" font-size="20" font-weight="400" fill="#55606E">dizzy-soak: make dizzy-soak-start</text>
 <text x="1250" y="2215.2" font-size="20" font-weight="400" fill="#55606E">ceph: WITH_CEPH, Step 3</text>
 <text x="1250" y="2243.2" font-size="20" font-weight="400" fill="#55606E">ceph/cluster: WITH_CEPH, Step 5</text>
-<text x="48" y="2335.2" font-size="20" font-weight="400" fill="#55606E">Raw-file callers, bootstrap policy keys and chart paths remain supported. Publishing a new import path does not transfer resource ownership.</text>
+<text x="48" y="2335.2" font-size="20" font-weight="400" fill="#55606E">Repository callers use canonical paths. Bootstrap policy keys and chart paths are unchanged; keep one owner per resource.</text>
 </svg>

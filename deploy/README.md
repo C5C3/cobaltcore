@@ -1,7 +1,8 @@
 # Deploy CobaltCore
 
-This directory contains reusable bases, environment overlays, bootstrap inputs
-and examples. Run commands from the repository root; use the linked operational
+Shared resources live in `bases/`; each environment composes them under
+`overlays/`. Kind and metal-stack share the same bases and keep their own
+gateway, storage and host settings. Run commands from the repository root; use the linked operational
 guides for complete installation and teardown procedures.
 
 | Area | Purpose and entry point |
@@ -9,12 +10,25 @@ guides for complete installation and teardown procedures.
 | [Deployment order](#deployment-order) | Prerequisites, reconciliation and bootstrap gates |
 | [Reusable bases](#reusable-bases) | `bases/`: five stages for your deployment repository |
 | [Customization](#customization-and-examples) | `examples/`: controller sizing, service placement and storage patches |
-| [kind](#kind-development-environment) | `kind/`: local development with `make deploy-infra` |
-| [metal-stack](#metal-stack-and-external-environments) | `lab/`: an existing cluster with `EXTERNAL_CLUSTER=true` |
+| [kind](#kind-development-environment) | `overlays/kind/`: local development with `make deploy-infra` |
+| [metal-stack](#metal-stack-and-external-environments) | `overlays/metal-stack/`: an existing cluster with `EXTERNAL_CLUSTER=true` |
 | [Addons](#addons-and-generated-inputs) | Optional monitoring, storage and test fixtures |
 | [OpenBao and ESO](#openbao-and-eso) | `openbao/` scripts/policies and `eso/` shared store |
 | [Target-cluster access](#target-cluster-access) | `target-cluster/`: access chart for projected workloads |
 | [Compatibility](#legacy-entry-points-and-compatibility) | `flux-system/`, `gitops/` and migration of existing imports |
+
+```text
+deploy/
+  bases/
+    operators/  tls/  shared-openbao/  eso-store/  controlplane-operator/
+    devstack/                # shared development controller/instance stages
+    chaos-mesh/  dizzy/  nfs/  prometheus/  messaging/  hypervisor-fixtures/
+  overlays/
+    kind/                    # local gateway, storage and development fixtures
+    metal-stack/             # public gateway, Gardener, Ceph and physical hosts
+  openbao/  target-cluster/  examples/
+  flux-system/  gitops/  eso/ # retained low-level and staged compatibility paths
+```
 
 ## Deployment order
 
@@ -39,7 +53,9 @@ Preserve these lifecycle gates when composing the [bases](#reusable-bases):
 
 Bootstrap must run before the unsealed OpenBao readiness it establishes;
 database onboarding must precede the final ControlPlane readiness that needs
-those credentials. K-ORC is a Flux Kustomization, so its dependency requires a
+those credentials. During teardown, uninstall Prometheus before removing its
+shared CRD release so Helm can still resolve the resources it deletes.
+K-ORC is a Flux Kustomization, so its dependency requires a
 stage gate rather than a HelmRelease-only `dependsOn` list.
 
 [`make deploy-infra`](../hack/deploy-infra.sh) orchestrates kind/external-cluster
@@ -75,6 +91,15 @@ aggregate for an installation. The operators stage protects Namespaces with
 `kustomize.toolkit.fluxcd.io/prune: disabled`; that does not protect Helm releases
 or their data from uninstall. Preserve TLS issuer/Secret identities and make
 stateful-resource retention explicit when changing owners or removing stages.
+
+The environment overlays share [`bases/devstack/base`](bases/devstack/base/)
+for development controllers/sizing and [`bases/devstack/infrastructure`](bases/devstack/infrastructure/)
+for small instances and secret shims. These retain the development defaults;
+they are separate from the five reusable production-building-block stages above.
+Shared addon bases hold each release/source and generated dashboard once.
+Environment overlays provide their gateway resources, storage classes, persistence,
+namespace metadata and node preparation. For example, the lab never imports
+kind's loopback certificates or NodePort proxy and then deletes them.
 
 ## Customization and examples
 
@@ -124,15 +149,15 @@ the examples directory or supply their deployment-repository orchestration.
 
 ## kind development environment
 
-[`kind/`](kind/) configures a local development/CI stack. Start with
+[`overlays/kind/`](overlays/kind) configures a local development/CI stack. Start with
 `make deploy-infra`, or `WITH_CONTROLPLANE=true make deploy-infra` to prepare
 ControlPlane operators. `WITH_CONTROLPLANE_CR=true` additionally requests the
 bundled CR; `CONTROLPLANE_OPERATORS=external` lets development/CI provide builds.
 Follow the [ControlPlane quick start](../docs/quick-start-controlplane.md) for
 ports, prerequisites, CR submission and database onboarding.
 
-[`base/`](kind/base/) supplies sources, releases, development sizing and gateway/UI
-resources after Flux is ready. [`infrastructure/`](kind/infrastructure/) supplies
+[`base/`](overlays/kind/base) supplies sources, releases, development sizing and gateway/UI
+resources after Flux is ready. [`infrastructure/`](overlays/kind/infrastructure) supplies
 certificates, static instances, secret shims and the proving OpenBao instance
 after their CRDs exist. Shared OpenBao runs standalone here with TLS/mTLS and no
 Kubernetes service registration. Do not independently apply the full static
@@ -141,7 +166,7 @@ mode-specific filtering and suspension behavior.
 
 ## metal-stack and external environments
 
-[`lab/metal-stack/`](lab/metal-stack/) adapts kind to an existing metal-stack/Gardener
+[`overlays/metal-stack/`](overlays/metal-stack) adapts the shared bases to a metal-stack/Gardener
 cluster, with distinct namespace labels, default-class storage, gateway,
 networking, persistent metrics and optional Ceph/physical-hypervisor settings.
 It is not a generic production profile. Follow the
@@ -152,7 +177,7 @@ EXTERNAL_CLUSTER=true WITH_CONTROLPLANE=true WITH_CEPH=true make deploy-infra
 ```
 
 The script creates no kind cluster and defaults `EXTERNAL_OVERLAY` to
-`deploy/lab/metal-stack`. It prepares infrastructure; apply the lab ControlPlane
+`deploy/overlays/metal-stack`. It prepares infrastructure; apply the lab ControlPlane
 separately as the quick start describes. The platform supplies metrics-server
 and VPA, so the kind-specific flags do not substitute for that setup.
 
@@ -172,12 +197,12 @@ describe every addon/fixture and its caller.
 
 | Area | Selection and ownership |
 | --- | --- |
-| `kind/{chaos-mesh,dizzy,nfs}` and lab equivalents | Matching `WITH_*` flags after the base; lab variants add environment-specific storage/node preparation |
-| `kind/prometheus-managed` and `lab/metal-stack/prometheus` | `WITH_PROMETHEUS=true`; omit Namespace/monitoring already owned by the base |
-| [kind/prometheus](kind/prometheus/) | Compatible standalone root including its Namespace; shares chart/dashboard definitions with the managed variant |
-| `kind/{metrics-server,vpa}` | Kind measurement opt-ins; VPA also requires metrics-server |
-| [kind/messaging](kind/messaging/) | `WITH_MESSAGING=true` after infrastructure, in either cluster mode |
-| `lab/metal-stack/ceph` and `ceph/cluster` | `WITH_CEPH=true`: operator first, then cluster and credential handoff |
+| `overlays/{kind,metal-stack}/{chaos-mesh,dizzy,nfs}` | Matching `WITH_*` flags after the base; lab variants add environment-specific storage/node preparation |
+| `overlays/kind/prometheus-managed` and `overlays/metal-stack/prometheus` | `WITH_PROMETHEUS=true`; omit Namespace/monitoring already owned by the base |
+| [kind/prometheus](overlays/kind/prometheus) | Compatible standalone root including its Namespace; shares chart/dashboard definitions with the managed variant |
+| `overlays/kind/{metrics-server,vpa}` | Kind measurement opt-ins; VPA also requires metrics-server |
+| [bases/messaging](bases/messaging) | `WITH_MESSAGING=true` after infrastructure, in either cluster mode; `overlays/kind/messaging` remains a manual entry point |
+| `overlays/metal-stack/ceph` and `ceph/cluster` | `WITH_CEPH=true`: operator first, then cluster and credential handoff |
 | ControlPlane, compute and diagnostic fixtures | Manual entry points include kind `fake-compute`/`hypervisor-operator-fixtures` and lab `controlplane-nfs`, `hypervisor-fixtures`, `hypervisor`, `migration-ports`, `probe`; `dizzy-soak` uses `make dizzy-soak-start` |
 
 Prometheus and Dizzy require real dashboard files before a direct render. Their
@@ -186,10 +211,11 @@ Prometheus and Dizzy require real dashboard files before a direct render. Their
 ```sh
 make stage-prometheus-dashboard
 hack/dizzy.sh stage-dashboards
-kubectl kustomize deploy/kind/prometheus-managed
+kubectl kustomize deploy/overlays/kind/prometheus-managed
 ```
 
-Lab variants inherit these generated inputs. Keep default Kustomize load
+Both environments consume the dashboard inputs staged once under
+`bases/prometheus` and `bases/dizzy`. Keep default Kustomize load
 restrictions. The external overlay's `prometheus/` interface remains unchanged;
 the managed variant requires a prior owner of Namespace/monitoring and the usual
 Flux, chart-source and cert-manager prerequisites.
@@ -202,7 +228,7 @@ The apparently duplicated OpenBao definitions have distinct lifecycles:
 | --- | --- |
 | Shared/bootstrap server | [HelmRelease](flux-system/releases/openbao/helmrelease.yaml) in `shared-services`: bootstrap material, auth/policies, tenant secrets and dynamic database credentials |
 | OpenBao operator | [Separate controller](flux-system/releases/openbao-operator.yaml) for `OpenBaoCluster` and `OpenBaoTenant` resources |
-| Development proving instance | [kind instance](kind/infrastructure/openbao-instance.yaml), inherited by the lab: separate static-seal server for Barbican integration |
+| Development proving instance | [Shared development instance](bases/devstack/infrastructure/openbao-instance.yaml), selected by both environments: separate static-seal server for Barbican integration |
 | Dedicated service instances | Created by the [c5c3 operator](../operators/c5c3/internal/controller/reconcile_barbican_openbao.go) at runtime in service namespaces |
 
 “Management OpenBao” names the shared server's role: the split devstack places
@@ -277,9 +303,16 @@ When transferring an object between Flux owners, prevent the old inventory from
 pruning it, remove it there, reconcile/verify the new owner, then restore the
 intended retention policy.
 
-Existing raw manifests, bootstrap scripts/policy keys, chart paths and environment
-interfaces remain supported. Directory aliases alone cannot preserve raw-file
-callers. Separate Flux runtime/static-instance bases, physical environment moves,
-helper consolidation and bootstrap/storage changes remain deferred; future moves
-must update scripts, teardown, CI, tests, Renovate, generated-input staging and docs
-together. No removal date is assigned to compatibility paths.
+Environment entry points moved from `deploy/kind/<stage>` to
+`deploy/overlays/kind/<stage>`, and from `deploy/lab/metal-stack/<stage>` to
+`deploy/overlays/metal-stack/<stage>`. Update external imports and custom scripts;
+the old environment directories are removed. Shared raw addon files and dashboards
+now live under `deploy/bases/<addon>`, and common controller/instance files under
+`deploy/bases/devstack/{base,infrastructure}`. Repository scripts, CI, tests and
+Renovate use those canonical paths. The custom `EXTERNAL_OVERLAY` child-directory
+contract and all lifecycle gates stay the same.
+
+The five staged compatibility aliases, low-level Flux manifests, bootstrap
+script/policy keys and target-cluster chart paths remain supported. Further Flux
+runtime/static-instance extraction, bootstrap custody or storage changes require
+their own migration. No removal date is assigned to the retained compatibility paths.

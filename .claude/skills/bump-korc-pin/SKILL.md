@@ -67,7 +67,7 @@ reproducibility while retained, not permanent artifact storage.
    bash tests/unit/hack/ci_deploy_korc_main_image_test.sh
    bash tests/unit/deploy/korc_pin_lockstep_test.sh
    bash tests/unit/deploy/korc_flux_source_test.sh
-   bash tests/unit/deploy/kind_base_korc_suspend_test.sh
+   bash tests/unit/deploy/overlays/kind_base_korc_suspend_test.sh
    bash tests/unit/renovate/korc_source_custommanager_test.sh
    make test-operator OPERATOR=c5c3
    ```

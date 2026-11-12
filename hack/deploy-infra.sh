@@ -136,7 +136,7 @@ NODE_NOFILE_LIMIT="${NODE_NOFILE_LIMIT-1048576}"
 ALLOW_PRE_RELOCATION="${ALLOW_PRE_RELOCATION:-false}"
 
 # Gates the opt-in Chaos Mesh overlay, the chaos-mesh/ of OVERLAY_ROOT: in kind
-# mode deploy/kind/chaos-mesh and the host-side kernel-module load, under
+# mode deploy/overlays/kind/chaos-mesh and the host-side kernel-module load, under
 # EXTERNAL_CLUSTER=true the overlay's chaos-mesh/, whose DaemonSet
 # chaos-mesh-modules loads the modules on the nodes. Defaults to false so the
 # kind Quick Start stays minimal; set WITH_CHAOS_MESH=true to enable
@@ -152,21 +152,21 @@ WITH_OVN_KERNEL_MODULES="${WITH_OVN_KERNEL_MODULES:-false}"
 
 # Gates the opt-in kube-prometheus-stack overlay, the prometheus/ of
 # OVERLAY_ROOT, which installs Prometheus + Grafana for visualising the
-# operators' metrics: in kind mode deploy/kind/prometheus, under
+# operators' metrics: in kind mode deploy/overlays/kind/prometheus, under
 # EXTERNAL_CLUSTER=true the overlay's prometheus/, which keeps the metrics on a
 # volume and leaves the Namespace monitoring to the base. Defaults to false so
 # the kind Quick Start stays minimal; set WITH_PROMETHEUS=true to install the
 # monitoring stack.
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 
-# Gates the opt-in metrics-server kind overlay (deploy/kind/metrics-server)
+# Gates the opt-in metrics-server kind overlay (deploy/overlays/kind/metrics-server)
 # required by the HPA/autoscaling recipe: without a resource-metrics API the
 # generated HorizontalPodAutoscaler reports `unknown/80%` and never scales.
 # Defaults to false so the kind Quick Start stays minimal; set
 # WITH_METRICS_SERVER=true to install it.
 WITH_METRICS_SERVER="${WITH_METRICS_SERVER:-false}"
 
-# Gates the opt-in VPA recommender kind overlay (deploy/kind/vpa), which the
+# Gates the opt-in VPA recommender kind overlay (deploy/overlays/kind/vpa), which the
 # sizing measurement of hack/ci-vpa-recommendations.sh reads its
 # recommendations from. Defaults to false so the kind Quick Start stays
 # minimal; set WITH_VPA=true to install it. The recommender reads the
@@ -177,14 +177,14 @@ if [[ "${WITH_VPA}" == "true" ]]; then WITH_METRICS_SERVER=true; fi
 
 # Gates the opt-in dizzy overlay, the dizzy/ of OVERLAY_ROOT, which installs
 # VictoriaMetrics + Grafana for dizzy load/chaos runs: in kind mode
-# deploy/kind/dizzy, under EXTERNAL_CLUSTER=true the overlay's dizzy/, which
+# deploy/overlays/kind/dizzy, under EXTERNAL_CLUSTER=true the overlay's dizzy/, which
 # keeps the metrics on a volume behind a ClusterIP Service. Defaults to false so
 # the kind Quick Start stays minimal; set WITH_DIZZY=true to install.
 WITH_DIZZY="${WITH_DIZZY:-false}"
 
 # Gates the opt-in NFS storage stack: the NFS server in `openstack` plus the
 # csi-driver-nfs mounter in `kube-system`. In kind mode it applies
-# deploy/kind/nfs and gates the host-side load of the modules that stack needs,
+# deploy/overlays/kind/nfs and gates the host-side load of the modules that stack needs,
 # `nfs` plus `nfsv4` for the csi-driver-nfs node plugin; the server,
 # NFS-Ganesha, runs in userspace and needs none. Under EXTERNAL_CLUSTER=true it
 # applies the overlay's nfs/ instead, whose pods load those modules on the
@@ -203,7 +203,7 @@ WITH_NFS="${WITH_NFS:-false}"
 # stack stays opt-in.
 WITH_CEPH="${WITH_CEPH:-false}"
 
-# Gates the opt-in message-bus kind overlay (deploy/kind/messaging): a single
+# Gates the opt-in shared message-bus base (deploy/bases/messaging): a single
 # small RabbitmqCluster named `shared-rabbitmq` in `openstack`. The standalone
 # Cinder e2e suites need a real broker (each creates its own vhost on it), and
 # the ControlPlane suites of #989 use the same one. Defaults to false so the
@@ -294,7 +294,7 @@ REGISTRY_CACHE_UPSTREAMS=(
 WITH_CONTROLPLANE="${WITH_CONTROLPLANE:-false}"
 
 # Companion to WITH_CONTROLPLANE: when both are true, deploy-infra also applies
-# the bundled ControlPlane CR (deploy/kind/controlplane) automatically — the old
+# the bundled ControlPlane CR (deploy/overlays/kind/controlplane) automatically — the old
 # all-in-one behaviour, kept for demos and automation. Defaults to false so the
 # Quick Start's manual `kubectl apply` step is the norm. Ignored unless
 # WITH_CONTROLPLANE=true. Refused in preflight_checks under INFRA_ONLY=true,
@@ -382,8 +382,8 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 
 # The overlay root the external-cluster mode applies: its base/ in Step 3 and its
-# infrastructure/ in Step 5, in place of deploy/kind/base and
-# deploy/kind/infrastructure. A relative path resolves against REPO_ROOT. The
+# infrastructure/ in Step 5, in place of deploy/overlays/kind/base and
+# deploy/overlays/kind/infrastructure. A relative path resolves against REPO_ROOT. The
 # default is the metal-stack lab overlay; a later lab adds a sibling directory
 # and sets this. An overlay may also carry a controlplane/ kustomization, which
 # this script never applies and the WITH_CONTROLPLANE=true completion hint
@@ -393,7 +393,7 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # puts no Cinder backend or backup target on a monitor of the lab Ceph in
 # rook-ceph; without WITH_NFS=true Step 1 also checks the cluster for the NFS
 # CSI driver the other NFS backends mount. An overlay may carry an nfs/ kustomization too, which Step 3 applies
-# under WITH_NFS=true in place of deploy/kind/nfs. It has to render the
+# under WITH_NFS=true in place of deploy/overlays/kind/nfs. It has to render the
 # Deployment nfs-server and the DaemonSet nfs-client-modules in openstack and
 # the HelmRelease csi-driver-nfs in kube-system, the three names this script
 # waits for. Beside it nfs/ may ship client-policy.yaml, a NetworkPolicy
@@ -401,18 +401,18 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # node network Step 1 read from Gardener's ConfigMap kube-system/shoot-info in
 # place of its placeholder NODE_NETWORK. An overlay may carry a chaos-mesh/
 # kustomization as well, which Step 3 applies under WITH_CHAOS_MESH=true in
-# place of deploy/kind/chaos-mesh. It has to render the DaemonSet
+# place of deploy/overlays/kind/chaos-mesh. It has to render the DaemonSet
 # chaos-mesh-modules and the HelmRelease chaos-mesh in chaos-mesh, the two
 # names this script waits for. An overlay may carry a dizzy/ kustomization too,
-# which Step 3 applies under WITH_DIZZY=true in place of deploy/kind/dizzy. It
+# which Step 3 applies under WITH_DIZZY=true in place of deploy/overlays/kind/dizzy. It
 # has to render the HelmReleases dizzy-victoria-metrics and dizzy-grafana in
 # dizzy, the two names this script waits for and make teardown-infra deletes,
-# and it takes its dashboards from deploy/kind/dizzy/dashboards/, which Step 3
+# and it takes its dashboards from deploy/bases/dizzy/dashboards/, which Step 3
 # stages. An overlay may carry a prometheus/ kustomization as well, which Step 3
-# applies under WITH_PROMETHEUS=true in place of deploy/kind/prometheus. It has
+# applies under WITH_PROMETHEUS=true in place of deploy/overlays/kind/prometheus. It has
 # to render the HelmRelease kube-prometheus-stack in monitoring, the name this
 # script waits for and make teardown-infra deletes, and it takes the Keystone
-# dashboard from deploy/kind/prometheus/keystone-operator.json, which Step 3
+# dashboard from deploy/bases/prometheus/keystone-operator.json, which Step 3
 # stages. An overlay may carry a ceph/ and a ceph/cluster/ kustomization too,
 # which Steps 3 and 5 apply under WITH_CEPH=true; neither has a kind
 # counterpart. ceph/ has to render the HelmRelease rook-ceph in rook-ceph, the
@@ -424,7 +424,7 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # ExternalSecrets of the same names in openstack, the objects
 # wait_for_ceph_cluster and sync_ceph_client_keys read. Read only under
 # EXTERNAL_CLUSTER=true.
-EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
+EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/overlays/metal-stack}"
 
 # How the external-cluster mode publishes the Gateway openstack-gw; read only
 # under EXTERNAL_CLUSTER=true. With true, the default, the overlay's EnvoyProxy
@@ -466,7 +466,7 @@ if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then
   esac
   PUBLIC_PORT="443"
 else
-  OVERLAY_ROOT="${REPO_ROOT}/deploy/kind"
+  OVERLAY_ROOT="${REPO_ROOT}/deploy/overlays/kind"
   PUBLIC_PORT="${KIND_HOST_PORT}"
 fi
 # The base already owns monitoring. The built-in kind addon must not reapply
@@ -499,14 +499,14 @@ GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.6.3}"
 GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml}"
 
 # Envoy Gateway CRD release asset, applied right after the Gateway API bundle.
-# The envoy-gateway HelmRelease (deploy/kind/base/envoy-gateway.yaml) runs with
+# The envoy-gateway HelmRelease (deploy/bases/devstack/base/envoy-gateway.yaml) runs with
 # crds.enabled=false: the chart's bundled CRD copy carries the Gateway API
 # EXPERIMENTAL channel, which the standard bundle's safe-upgrades
 # ValidatingAdmissionPolicy refuses on top of GATEWAY_API_VERSION. The upstream
 # gateway-crds-helm chart cannot deliver the gateway.envoyproxy.io group either
 # (its release Secret exceeds the 1Mi limit), so this script owns the group
 # through the release's plain CRD asset — see the CRD-ownership decision in
-# deploy/kind/base/envoy-gateway.yaml. Keep the pin inside the chart's SemVer
+# deploy/bases/devstack/base/envoy-gateway.yaml. Keep the pin inside the chart's SemVer
 # range there; Renovate bumps both through the same envoy-gateway group.
 ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.9.3}"
 ENVOY_GATEWAY_CRDS_URL="${ENVOY_GATEWAY_CRDS_URL:-https://github.com/envoyproxy/gateway/releases/download/${ENVOY_GATEWAY_VERSION}/envoy-gateway-crds.yaml}"
@@ -1674,7 +1674,7 @@ install_gateway_api_crds() {
 # install_envoy_gateway_crds — Register the gateway.envoyproxy.io CRDs.
 #
 # Purpose: the envoy-gateway HelmRelease runs with crds.enabled=false (see the
-# CRD-ownership decision in deploy/kind/base/envoy-gateway.yaml), so nothing
+# CRD-ownership decision in deploy/bases/devstack/base/envoy-gateway.yaml), so nothing
 # else registers the controller's own API group. The upstream release asset
 # carries exactly the eight gateway.envoyproxy.io CRDs and none of the Gateway
 # API group, so applying it cannot collide with the safe-upgrades
@@ -1823,7 +1823,7 @@ preflight_checks() {
     # The lab Ceph needs raw block volumes and three OSDs per node; neither kind nor
     # CI runs it yet.
     if [[ "${WITH_CEPH}" == "true" ]]; then
-      log "ERROR: WITH_CEPH=true is not supported in kind mode: the Ceph overlay exists only under deploy/lab/metal-stack, and Ceph on kind and in CI is tracked by #1339."
+      log "ERROR: WITH_CEPH=true is not supported in kind mode: the Ceph overlay exists only under deploy/overlays/metal-stack, and Ceph on kind and in CI is tracked by #1339."
       exit 1
     fi
     # Check that Docker is running.
@@ -1897,12 +1897,12 @@ valid_ipv4_cidr() {
 #
 # Refuses every kind-bound opt-in that is set, then an EXTERNAL_OVERLAY without
 # the two kustomizations Steps 3 and 5 apply, then WITH_NFS=true for an overlay
-# without the nfs/ kustomization Step 3 applies in place of deploy/kind/nfs,
+# without the nfs/ kustomization Step 3 applies in place of deploy/overlays/kind/nfs,
 # then WITH_CHAOS_MESH=true for one without the chaos-mesh/ kustomization Step 3
-# applies in place of deploy/kind/chaos-mesh, then WITH_DIZZY=true for one
-# without the dizzy/ kustomization Step 3 applies in place of deploy/kind/dizzy,
+# applies in place of deploy/overlays/kind/chaos-mesh, then WITH_DIZZY=true for one
+# without the dizzy/ kustomization Step 3 applies in place of deploy/overlays/kind/dizzy,
 # then WITH_PROMETHEUS=true for one without the prometheus/ kustomization Step 3
-# applies in place of deploy/kind/prometheus, then WITH_CEPH=true for one
+# applies in place of deploy/overlays/kind/prometheus, then WITH_CEPH=true for one
 # without the ceph/ and ceph/cluster/ kustomizations Steps 3 and 5 apply, then
 # an overlay whose by-hand
 # controlplane/ does not render exactly one ControlPlane,
@@ -1956,7 +1956,7 @@ preflight_external_cluster() {
   # file is tested, so an nfs/ directory without a kustomization is refused as
   # well.
   if [[ "${WITH_NFS}" == "true" && ! -f "${OVERLAY_ROOT}/nfs/kustomization.yaml" ]]; then
-    log "ERROR: EXTERNAL_CLUSTER=true WITH_NFS=true needs ${OVERLAY_ROOT}/nfs/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/nfs is not applied to an external cluster: its clients need the nfs and nfsv4 modules on every node, which this mode does not load."
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_NFS=true needs ${OVERLAY_ROOT}/nfs/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/overlays/kind/nfs is not applied to an external cluster: its clients need the nfs and nfsv4 modules on every node, which this mode does not load."
     exit 1
   fi
 
@@ -1972,7 +1972,7 @@ preflight_external_cluster() {
   # NetworkChaos modules this mode does not load on the host, so
   # WITH_CHAOS_MESH=true takes the overlay's own chaos-mesh/, tested by file.
   if [[ "${WITH_CHAOS_MESH}" == "true" && ! -f "${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml" ]]; then
-    log "ERROR: EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true needs ${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/chaos-mesh is not applied to an external cluster: it lets an experiment select a pod in every namespace and relies on kernel modules that this mode does not load on the host."
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_CHAOS_MESH=true needs ${OVERLAY_ROOT}/chaos-mesh/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/overlays/kind/chaos-mesh is not applied to an external cluster: it lets an experiment select a pod in every namespace and relies on kernel modules that this mode does not load on the host."
     exit 1
   fi
 
@@ -1980,7 +1980,7 @@ preflight_external_cluster() {
   # kind node maps to a host port and keeps the metrics in an emptyDir, so
   # WITH_DIZZY=true takes the overlay's own dizzy/, tested by file.
   if [[ "${WITH_DIZZY}" == "true" && ! -f "${OVERLAY_ROOT}/dizzy/kustomization.yaml" ]]; then
-    log "ERROR: EXTERNAL_CLUSTER=true WITH_DIZZY=true needs ${OVERLAY_ROOT}/dizzy/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/dizzy is not applied to an external cluster: it publishes VictoriaMetrics on NodePort 30428, which only a kind node maps to a host port, and keeps the metrics in an emptyDir."
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_DIZZY=true needs ${OVERLAY_ROOT}/dizzy/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/overlays/kind/dizzy is not applied to an external cluster: it publishes VictoriaMetrics on NodePort 30428, which only a kind node maps to a host port, and keeps the metrics in an emptyDir."
     exit 1
   fi
 
@@ -1988,7 +1988,7 @@ preflight_external_cluster() {
   # the overlay's base/ sets on it and keeps the metrics in an emptyDir, so
   # WITH_PROMETHEUS=true takes the overlay's own prometheus/, tested by file.
   if [[ "${WITH_PROMETHEUS}" == "true" && ! -f "${OVERLAY_ROOT}/prometheus/kustomization.yaml" ]]; then
-    log "ERROR: EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true needs ${OVERLAY_ROOT}/prometheus/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/kind/prometheus is not applied to an external cluster: it applies the Namespace monitoring without the label and the annotation the overlay's base set, and keeps the metrics in an emptyDir."
+    log "ERROR: EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true needs ${OVERLAY_ROOT}/prometheus/kustomization.yaml, which does not exist (EXTERNAL_OVERLAY='${EXTERNAL_OVERLAY}'). deploy/overlays/kind/prometheus is not applied to an external cluster: it applies the Namespace monitoring without the label and the annotation the overlay's base set, and keeps the metrics in an emptyDir."
     exit 1
   fi
 
@@ -2569,7 +2569,7 @@ load_host_kernel_modules() {
 # chaos-daemon fails with "unable to flush ip sets for pod …" and AllInjected
 # stays False. Under EXTERNAL_CLUSTER=true main() does not call it: the
 # DaemonSet chaos-mesh-modules of the overlay's chaos-mesh/ loads the same
-# list on the nodes (deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml);
+# list on the nodes (deploy/overlays/metal-stack/chaos-mesh/modules-daemonset.yaml);
 # change both together.
 #
 # Best-effort: skipped on non-Linux, and on Linux we warn but don't abort if
@@ -2623,7 +2623,7 @@ load_nfs_kernel_modules() {
 # kind-base suspend patch) are preserved.
 #
 # DECISION: handle suspended HelmRelease in kind
-# Ambiguity: deploy/kind/base/kustomization.yaml suspends the operator
+# Ambiguity: deploy/bases/devstack/base/kustomization.yaml suspends the operator
 #   HelmReleases so CI can `helm install` them manually with a locally built
 #   image (and the ControlPlane path un-suspends them). A suspended HelmRelease
 #   never reconciles, so a wait-for-Ready against it would always time out.
@@ -3657,9 +3657,7 @@ main() {
 
   # Opt-in chaos-mesh overlay. Layered on top of the base so the
   # default Quick Start stays minimal; enable with WITH_CHAOS_MESH=true.
-  # The kind mode applies deploy/kind/chaos-mesh, which is self-contained (no
-  # `../../` parent-dir references); the external mode applies the overlay's
-  # chaos-mesh/, which references deploy/kind/chaos-mesh as a directory.
+  # Both environment overlays import deploy/bases/chaos-mesh as a directory.
   # kubectl's embedded kustomize renders both under the default
   # LoadRestrictionsRootOnly security check — no `--load-restrictor` flag
   # required (kubectl's embedded kustomize does not expose one,
@@ -3690,7 +3688,7 @@ main() {
   # overlay (no `--load-restrictor` flag required, kubernetes/kubectl#948).
   #
   # The dashboard JSON copy step stages the Grafana
-  # dashboard from operators/keystone/dashboards/ into deploy/kind/prometheus/
+  # dashboard from operators/keystone/dashboards/ into deploy/bases/prometheus/
   # so configMapGenerator can reference it without a parent-dir traversal; the
   # lab overlay reads the same file through its resource. The
   # single source of truth lives at operators/keystone/dashboards/; the
@@ -3699,8 +3697,8 @@ main() {
   # The copy MUST run immediately before `kubectl apply -k` so the file exists
   # when kustomize renders the ConfigMap.
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
-    cp -f "${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json" "${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"
-    log "Dashboard JSON copied into deploy/kind/prometheus/ for kustomize configMapGenerator (WITH_PROMETHEUS=true)."
+    cp -f "${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json" "${REPO_ROOT}/deploy/bases/prometheus/keystone-operator.json"
+    log "Dashboard JSON copied into deploy/bases/prometheus/ for kustomize configMapGenerator (WITH_PROMETHEUS=true)."
     kubectl apply -k "${PROMETHEUS_OVERLAY_ROOT}"
     log "Prometheus overlay ${PROMETHEUS_OVERLAY_ROOT} applied (WITH_PROMETHEUS=true)."
   fi
@@ -3713,7 +3711,7 @@ main() {
   # (no `--load-restrictor` flag required, kubernetes/kubectl#948). It installs
   # the resource-metrics API the autoscaling recipe's HPA depends on.
   if [[ "${WITH_METRICS_SERVER}" == "true" ]]; then
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/metrics-server"
+    kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/metrics-server"
     log "metrics-server kind overlay applied (WITH_METRICS_SERVER=true)."
   fi
 
@@ -3721,21 +3719,19 @@ main() {
   # after metrics-server, whose resource-metrics API the recommender reads.
   # Self-contained like the overlays above, so no `--load-restrictor` flag.
   if [[ "${WITH_VPA}" == "true" ]]; then
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/vpa"
+    kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/vpa"
     log "VPA recommender kind overlay applied (WITH_VPA=true)."
   fi
 
   # Opt-in dizzy overlay (VictoriaMetrics + Grafana). Layered on top of the base
   # so the default Quick Start stays minimal; enable with WITH_DIZZY=true. The
-  # kind mode applies deploy/kind/dizzy, which is self-contained (no `../../`
-  # parent-dir references); the external mode applies the overlay's dizzy/,
-  # which references deploy/kind/dizzy as a directory. kubectl's embedded
-  # kustomize renders both under the default LoadRestrictionsRootOnly security
+  # environment overlays import deploy/bases/dizzy as a directory. Kubectl's
+  # embedded kustomize renders both under the default LoadRestrictionsRootOnly
   # check — same contract as the chaos-mesh, prometheus, and metrics-server
   # overlays (no `--load-restrictor` flag required, kubernetes/kubectl#948).
   if [[ "${WITH_DIZZY}" == "true" ]]; then
     # Stage the three Grafana dashboard JSONs from the pinned dizzy release into
-    # the git-ignored deploy/kind/dizzy/dashboards/ so the overlay's
+    # the git-ignored deploy/bases/dizzy/dashboards/ so the overlay's
     # configMapGenerator can reference them without a parent-dir traversal (same
     # LoadRestrictionsRootOnly contract as the prometheus overlay's staged JSON).
     # This MUST run immediately before `kubectl apply -k` so the files exist when
@@ -3764,10 +3760,9 @@ main() {
 
   # Opt-in NFS overlay: the in-cluster NFS server plus the csi-driver-nfs
   # mounter. Layered on top of the base so the default Quick Start stays
-  # minimal; enable with WITH_NFS=true. The kind mode applies deploy/kind/nfs,
-  # which is self-contained (no `../../` parent-dir references); the external
-  # mode applies the overlay's nfs/, which references deploy/kind/nfs as a
-  # directory. kubectl's embedded kustomize renders both under the default
+  # minimal; enable with WITH_NFS=true. Both environment overlays import
+  # deploy/bases/nfs as a directory and keep their storage/node settings local.
+  # Kubectl's embedded kustomize renders both under the default
   # LoadRestrictionsRootOnly security check (no `--load-restrictor` flag
   # required, kubernetes/kubectl#948), same contract as the chaos-mesh,
   # prometheus, metrics-server and dizzy overlays.
@@ -3934,7 +3929,7 @@ main() {
     # stays status-less.
     # c5c3-operator and the c5c3-charts / k-orc sources are left un-suspended
     # (the base applied them active). The k-orc Kustomization is the exception:
-    # the base applies it suspended (see deploy/kind/base/kustomization.yaml),
+    # the base applies it suspended (see deploy/bases/devstack/base/kustomization.yaml),
     # so it is lifted here with the operators. The c5c3-operator cannot start
     # without the K-ORC CRDs, and its release has no dependsOn edge to hold the
     # pod back. Lifted at the end of this run, the CRDs landed minutes after the
@@ -4066,7 +4061,7 @@ main() {
   kubectl apply -f "${REPO_ROOT}/deploy/flux-system/infrastructure/tls/db-ca-issuer.yaml"
 
   # Phase 3: Wait for remaining HelmReleases now that OpenBao can mount its TLS secret.
-  # envoy-gateway is kind-only (deploy/kind/base/envoy-gateway.yaml) and provides
+  # envoy-gateway is kind-only (deploy/bases/devstack/base/envoy-gateway.yaml) and provides
   # the GatewayClass consumed by Gateway/openstack-gw; gating it here ensures
   # the wait_for_gateway_programmed poll below finds a reconciling controller
   log "Phase 3: Waiting for remaining HelmReleases..."
@@ -4222,7 +4217,7 @@ main() {
   # the API server — the operator pods may still be starting.
   # envoyproxies.gateway.envoyproxy.io is installed by the envoy-gateway
   # HelmRelease (Phase 3 above) and is required by the EnvoyProxy CR in
-  # deploy/kind/infrastructure/envoy-nodeport.yaml.
+  # deploy/overlays/kind/infrastructure/envoy-nodeport.yaml.
   # openbaoclusters.openbao.org is registered by the openbao-operator
   # HelmRelease (Phase 3 above); waiting on it keeps the overlay apply from
   # racing that registration.
@@ -4313,7 +4308,7 @@ main() {
   # by the wait_for_crds call above). The AllReplicasReady wait is a hard gate:
   # a suite that asked for the broker and got an unready one has no bus at all.
   if [[ "${WITH_MESSAGING}" == "true" ]]; then
-    kubectl apply -k "${REPO_ROOT}/deploy/kind/messaging"
+    kubectl apply -k "${REPO_ROOT}/deploy/bases/messaging"
     log "Message bus overlay applied (WITH_MESSAGING=true)."
     wait_for_rabbitmqcluster shared-rabbitmq openstack "${POD_TIMEOUT}"
   fi
@@ -4345,7 +4340,7 @@ main() {
   #
   # DECISION the default deployment's ControlPlane identity is
   # "openstack/${CONTROLPLANE_NAME}". The ControlPlane CR always lives in the
-  # "openstack" namespace (deploy/kind/controlplane/controlplane.yaml; there is no
+  # "openstack" namespace (deploy/overlays/kind/controlplane/controlplane.yaml; there is no
   # CONTROLPLANE_NAMESPACE knob), and its name is CONTROLPLANE_NAME (default
   # "controlplane"). Export it as KORC_CONTROLPLANES so write-bootstrap-secrets.sh
   # seeds bootstrap/openstack/${CONTROLPLANE_NAME}-keystone/admin — the exact path
@@ -4359,7 +4354,7 @@ main() {
   # the shell stack no longer seeds it or exports a K-ORC auth_url override.
   # (The admin-password ExternalSecret is now operator-projected per-ControlPlane
   # (reconcileAdminPassword); the kind overlay shim
-  # (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml) pins the
+  # (deploy/bases/devstack/infrastructure/keystone-admin-externalsecret.yaml) pins the
   # default identity. A non-default CONTROLPLANE_NAME therefore does NOT seed that
   # shim's source path, so on the ControlPlane path the three standalone-shim
   # ExternalSecrets are dropped from the overlay apply and skipped in Step 8
@@ -4428,7 +4423,7 @@ main() {
       keystone-admin keystone-db mariadb-root-password
   fi
 
-  # Proving OpenBao instance (deploy/kind/infrastructure/openbao-instance.yaml).
+  # Proving OpenBao instance (deploy/bases/devstack/infrastructure/openbao-instance.yaml).
   # Same apply-before-dependency reason as the Garage block below: Step 5 applies
   # the CR before Step 7 seeds its unseal key in OpenBao.
   #
@@ -4529,7 +4524,7 @@ main() {
 
   # The openbao-operator runs multi-tenant, so its controller reconciles only in
   # namespaces an OpenBaoTenant has admitted
-  # (deploy/kind/infrastructure/openbao-tenant.yaml). Wait for that onboarding
+  # (deploy/bases/devstack/infrastructure/openbao-tenant.yaml). Wait for that onboarding
   # first: in an un-admitted namespace the controller pauses silently at V(1),
   # and the Available wait below would burn its whole timeout on a CR with an
   # empty status. The tenant lives in the operator namespace, the only one whose
@@ -4659,7 +4654,7 @@ main() {
       # render_kind_config host-port discipline (yq is a hard dependency on this path).
       local cp_manifest
       cp_manifest="$(mktemp)"
-      kubectl kustomize "${REPO_ROOT}/deploy/kind/controlplane" > "${cp_manifest}"
+      kubectl kustomize "${REPO_ROOT}/deploy/overlays/kind/controlplane" > "${cp_manifest}"
       # The bundled CR is named "controlplane"; honour a CONTROLPLANE_NAME override
       # so the applied CR matches the {name}-keystone auth_url seeded above. Scope by
       # the original name so a growing overlay is not blindly renamed.
@@ -4749,11 +4744,11 @@ main() {
         # OVNCentral of docs/quick-start-controlplane.md, Step 3. The lab's
         # ovncentral.yaml is the only tracked copy of that manifest, and
         # tests/unit/deploy/metal_stack_controlplane_test.sh keeps the two equal.
-        wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${REPO_ROOT}/deploy/kind/controlplane/controlplane.yaml" "${REPO_ROOT}/deploy/lab/metal-stack/controlplane/ovncentral.yaml"
+        wait_for_controlplane_admission "${WEBHOOK_TIMEOUT}" "${REPO_ROOT}/deploy/overlays/kind/controlplane/controlplane.yaml" "${REPO_ROOT}/deploy/overlays/metal-stack/controlplane/ovncentral.yaml"
       fi
       log "  Operator stack is up. The ControlPlane CR is NOT applied automatically —"
       log "  create and apply it yourself (see docs/quick-start-controlplane.md), e.g.:"
-      log "    kubectl apply -f deploy/kind/controlplane/controlplane.yaml"
+      log "    kubectl apply -f deploy/overlays/kind/controlplane/controlplane.yaml"
       log "  Name the CR '${CONTROLPLANE_NAME}' (CONTROLPLANE_NAME must match the applied"
       log "  CR name — the per-CR Model B admin-password bootstrap path and the projected"
       log "  ${CONTROLPLANE_NAME}-keystone Service both derive from it; set CONTROLPLANE_NAME"

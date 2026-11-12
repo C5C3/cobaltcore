@@ -14,7 +14,7 @@
 #   (self-signed cert `glance-nip-io-tls`, SNI `glance.127-0-0-1.nip.io`)
 #   → HTTPRoute managed by the Glance Operator → Service → glance-api pod.
 # This is the ONLY suite that exercises the third Gateway listener the kind
-# overlay adds for the image service (deploy/kind/base/openstack-gateway.yaml);
+# overlay adds for the image service (deploy/overlays/kind/base/openstack-gateway.yaml);
 # the keystone and horizon smokes prove the first two listeners.
 #
 # Suite location: lives under `tests/e2e/glance/` (not
@@ -86,7 +86,7 @@ spec:
 
           # ── Presence guard ──────────────────────────────
           # The kind overlay alone applies
-          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # `deploy/overlays/kind/base/openstack-gateway.yaml`, which materialises
           # GatewayClass/envoy and Gateway/openstack-gw (with the
           # `https-glance` listener). Their absence unambiguously signals a
           # non-kind cluster — exit 0 with a SKIP line.

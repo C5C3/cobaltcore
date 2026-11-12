@@ -391,7 +391,8 @@ jobs:
               - 'tests/e2e/c5c3/multi-controlplane/**'
               - 'tests/e2e/c5c3/deletion-orchestration/**'
               # The full-chain suite applies this overlay's fixtures.yaml.
-              - 'deploy/kind/hypervisor-operator-fixtures/**'
+              - 'deploy/overlays/kind/hypervisor-operator-fixtures/**'
+              - 'deploy/bases/hypervisor-fixtures/**'
             tests_controlplane_sso:
               - 'tests/e2e-controlplane-sso/**'
             tests_external_keystone:
@@ -400,8 +401,8 @@ jobs:
             # job deploys, and the shared HPA and VPA code it drives.
             tests_autoscaling:
               - 'tests/e2e-autoscaling/**'
-              - 'deploy/kind/metrics-server/**'
-              - 'deploy/kind/vpa/**'
+              - 'deploy/overlays/kind/metrics-server/**'
+              - 'deploy/overlays/kind/vpa/**'
               - 'internal/common/deployment/builders.go'
               - 'internal/common/deployment/hpa_flow.go'
               - 'internal/common/deployment/vpa_flow.go'
@@ -416,7 +417,7 @@ jobs:
               - 'hack/chaos-random.sh'
               - 'hack/dizzy-soak.sh'
               - 'hack/dizzy-soak-runner.sh'
-              - 'deploy/lab/metal-stack/dizzy-soak/**'
+              - 'deploy/overlays/metal-stack/dizzy-soak/**'
               - 'tests/e2e-chaos/lib/consistency.sh'
             tests_multicluster:
               - 'tests/e2e-multicluster/**'
@@ -482,8 +483,9 @@ jobs:
             tests_prometheus:
               - 'tests/e2e/keystone/prometheus-stack/**'
               - 'tests/e2e/horizon/prometheus-stack/**'
-              - 'deploy/kind/prometheus/**'
-              - 'deploy/kind/prometheus-managed/**'
+              - 'deploy/overlays/kind/prometheus/**'
+              - 'deploy/bases/prometheus/**'
+              - 'deploy/overlays/kind/prometheus-managed/**'
               - 'operators/keystone/dashboards/**'
               - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
               - 'operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml'
@@ -1337,7 +1339,7 @@ jobs:
       # convergence run. `make deploy-infra` is convergent: a second run
       # re-applies every overlay and re-walks all eight steps, so a separate
       # WITH_NFS re-run would repeat the whole base install for the sake of
-      # one `kubectl apply -k deploy/kind/nfs` and one extra name on the
+      # one `kubectl apply -k deploy/overlays/kind/nfs` and one extra name on the
       # HelmRelease wait list. The gates that prove each opt-in landed live
       # inside this one invocation: the script's Phase-3 wait covers the
       # metrics-server and csi-driver-nfs HelmReleases, and its Step-3
@@ -3221,7 +3223,7 @@ jobs:
       # suite reads ServiceMonitor/horizon-operator in horizon-system and the
       # horizon diagnostics pass below derives horizon-system as well. The
       # kind Prometheus selects ServiceMonitors in every namespace
-      # (deploy/kind/prometheus/release.yaml).
+      # (deploy/bases/prometheus/release.yaml).
       - name: Deploy horizon-operator
         run: hack/ci-deploy-operator.sh
         env:

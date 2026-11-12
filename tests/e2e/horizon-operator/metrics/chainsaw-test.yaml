@@ -14,7 +14,7 @@
 # DEPLOYMENT NOTE — why this test installs its own Helm release:
 # The horizon-operator HelmRelease at horizon-system/horizon-operator is
 # intentionally suspended in the kind CI overlay (see
-# deploy/kind/base/kustomization.yaml: "horizon-operator: suspend Flux
+# deploy/overlays/kind/base/kustomization.yaml: "horizon-operator: suspend Flux
 # management in kind"). The operator that actually runs in the cluster is
 # installed by hack/ci-deploy-operator.sh, which `helm install`s the chart
 # into the default namespace with a locally built dev image. Patching the

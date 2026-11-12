@@ -29,7 +29,7 @@
 #                             compute's provider.
 #   OK: hvo test scope        a token scoped to test@cc3test, and the flavor,
 #                             volume type and network the fixtures in
-#                             deploy/kind/hypervisor-operator-fixtures declare.
+#                             deploy/overlays/kind/hypervisor-operator-fixtures declare.
 #
 # Neither live nor cold migration is called: the suite has one compute, so
 # there is no destination, and both check the same admin rule the compute

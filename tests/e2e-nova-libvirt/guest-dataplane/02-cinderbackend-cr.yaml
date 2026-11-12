@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The one volume backend of cinder-nova-pool, on the /volumes export the kind
-# NFS server pre-creates (deploy/kind/nfs/nfs-server.yaml). Its volume service
+# NFS server pre-creates (deploy/bases/nfs/nfs-server.yaml). Its volume service
 # runs in the Deployment cinder-nova-pool-volume-nfs1, which step 9 reads the
 # volume file through. nova-compute mounts the same export below
 # /var/lib/nova/mnt when it attaches the volume, and QEMU opens the file there.

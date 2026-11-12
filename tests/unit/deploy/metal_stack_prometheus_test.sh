@@ -4,12 +4,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the Prometheus overlay of the metal-stack lab,
-# deploy/lab/metal-stack/prometheus, which hack/deploy-infra.sh applies under
+# deploy/overlays/metal-stack/prometheus, which hack/deploy-infra.sh applies under
 # EXTERNAL_CLUSTER=true WITH_PROMETHEUS=true:
 #   1. The directory holds kustomization.yaml and hypervisor-operator.json
 #      alone; the kustomization carries the SPDX pair and lists
 #      ../../../kind/prometheus as its one resource.
-#   2. Without the staged deploy/kind/prometheus/keystone-operator.json its
+#   2. Without the staged deploy/bases/prometheus/keystone-operator.json its
 #      build fails, as the kind overlay's does.
 #   3. With the Keystone dashboard staged the render holds three objects, the
 #      HelmRelease kube-prometheus-stack and the ConfigMaps
@@ -30,11 +30,11 @@
 #      Operator, the tags hypervisor and operator, and four timeseries panels
 #      with the four expressions and legends of the upstream dashboard's
 #      controller-runtime panels, none of which reads kube_customresource_*.
-#   8. deploy/kind/prometheus still renders the Namespace monitoring without
+#   8. deploy/overlays/kind/prometheus still renders the Namespace monitoring without
 #      labels, retention 6h and no storageSpec.
 #
 # The Keystone dashboard is staged from operators/keystone/dashboards/ when
-# deploy/kind/prometheus/keystone-operator.json is absent, and removed on EXIT
+# deploy/bases/prometheus/keystone-operator.json is absent, and removed on EXIT
 # only when this test staged it; a file found at start is moved aside for
 # check 2 alone and is byte-identical afterwards. Checks 2 to 6 and 8 are
 # counted as SKIP when kustomize or yq is not on PATH, check 7 when jq is not;
@@ -57,11 +57,11 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
-LAB_PROMETHEUS_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/prometheus"
-KIND_PROMETHEUS_DIR="$PROJECT_ROOT/deploy/kind/prometheus"
+LAB_PROMETHEUS_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/prometheus"
+KIND_PROMETHEUS_DIR="$PROJECT_ROOT/deploy/overlays/kind/prometheus"
 DASHBOARD="$LAB_PROMETHEUS_DIR/hypervisor-operator.json"
 KEYSTONE_SOURCE="$PROJECT_ROOT/operators/keystone/dashboards/keystone-operator.json"
-KEYSTONE_STAGED="$KIND_PROMETHEUS_DIR/keystone-operator.json"
+KEYSTONE_STAGED="$PROJECT_ROOT/deploy/bases/prometheus/keystone-operator.json"
 
 RENDERED=""
 KIND_RENDERED=""
@@ -120,7 +120,7 @@ render_both() {
 test_files() {
   echo "Test: the overlay is one kustomization and the dashboard, with SPDX headers and the kind overlay as its one resource"
 
-  assert_eq "deploy/lab/metal-stack/prometheus holds the kustomization and the dashboard alone" \
+  assert_eq "deploy/overlays/metal-stack/prometheus holds the kustomization and the dashboard alone" \
     "hypervisor-operator.json kustomization.yaml" \
     "$(find "$LAB_PROMETHEUS_DIR" -type f 2>/dev/null | sed 's#.*/##' | LC_ALL=C sort | paste -sd' ' -)"
   if [[ ! -f "$LAB_PROMETHEUS_DIR/kustomization.yaml" ]]; then
@@ -132,7 +132,7 @@ test_files() {
     "$LAB_PROMETHEUS_DIR/kustomization.yaml" "SPDX-FileCopyrightText: Copyright 2026 SAP SE"
   assert_file_contains "kustomization.yaml has SPDX-License-Identifier: Apache-2.0" \
     "$LAB_PROMETHEUS_DIR/kustomization.yaml" "SPDX-License-Identifier: Apache-2.0"
-  assert_eq "kustomization.yaml lists the namespace-free Prometheus composition" "../../../kind/prometheus-managed" \
+  assert_eq "kustomization.yaml lists the namespace-free Prometheus composition" "../../../bases/prometheus" \
     "$(resource_entries "$LAB_PROMETHEUS_DIR/kustomization.yaml")"
 }
 
@@ -151,10 +151,10 @@ test_build_fails_without_keystone_dashboard() {
   local rc
   rc=0
   kustomize build "$KIND_PROMETHEUS_DIR" >/dev/null 2>&1 || rc=$?
-  assert_nonzero_exit "kustomize build deploy/kind/prometheus fails without keystone-operator.json" "$rc"
+  assert_nonzero_exit "kustomize build deploy/overlays/kind/prometheus fails without keystone-operator.json" "$rc"
   rc=0
   kustomize build "$LAB_PROMETHEUS_DIR" >/dev/null 2>&1 || rc=$?
-  assert_nonzero_exit "kustomize build deploy/lab/metal-stack/prometheus fails without it" "$rc"
+  assert_nonzero_exit "kustomize build deploy/overlays/metal-stack/prometheus fails without it" "$rc"
   mv "$ASIDE/keystone-operator.json" "$KEYSTONE_STAGED"
   rmdir "$ASIDE"
   ASIDE=""
@@ -162,7 +162,7 @@ test_build_fails_without_keystone_dashboard() {
 
 # --- Test 3: the three objects ---
 test_render_holds_three_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/prometheus renders the HelmRelease and the two dashboard ConfigMaps"
+  echo "Test: kustomize build deploy/overlays/metal-stack/prometheus renders the HelmRelease and the two dashboard ConfigMaps"
 
   render "$LAB_PROMETHEUS_DIR" 3 || return
 
@@ -267,7 +267,7 @@ test_dashboard_configmap() {
   local data
   data="$(printf '%s\n' "$RENDERED" |
     yq -N -r "select(.kind == \"ConfigMap\" and .metadata.name == \"$name\") | .data[\"hypervisor-operator.json\"]" -)"
-  assert_eq "whose value is deploy/lab/metal-stack/prometheus/hypervisor-operator.json" \
+  assert_eq "whose value is deploy/overlays/metal-stack/prometheus/hypervisor-operator.json" \
     "$(cat "$DASHBOARD")" "$data"
 }
 
@@ -310,7 +310,7 @@ test_dashboard() {
 
 # --- Test 8: the kind overlay is unchanged ---
 test_kind_overlay_unchanged() {
-  echo "Test: kustomize build deploy/kind/prometheus still renders its Namespace and keeps 6 hours in an emptyDir"
+  echo "Test: kustomize build deploy/overlays/kind/prometheus still renders its Namespace and keeps 6 hours in an emptyDir"
 
   render "$KIND_PROMETHEUS_DIR" 4 || return
 

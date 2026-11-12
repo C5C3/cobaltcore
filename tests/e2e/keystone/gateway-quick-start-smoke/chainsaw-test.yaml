@@ -20,7 +20,7 @@
 # Keystone CRD is registered and the operator can reconcile the smoke
 # Keystone CR into an HTTPRoute. The `e2e-infra` job intentionally
 # suspends the keystone-operator HelmRelease
-# (`deploy/kind/base/kustomization.yaml`), so a smoke suite under
+# (`deploy/overlays/kind/base/kustomization.yaml`), so a smoke suite under
 # `tests/e2e/infrastructure/` would never be able to apply a Keystone CR
 # and the curl step could never actually exercise.
 #
@@ -60,7 +60,7 @@
 # The first lines of the script probe for `GatewayClass/envoy`,
 # `Gateway/openstack-gw`, and the `keystones.keystone.openstack.c5c3.io`
 # CRD. If any is absent the script exits 0 with a SKIP log line.
-# Production overlays never apply `deploy/kind/base/openstack-gateway.yaml`
+# Production overlays never apply `deploy/overlays/kind/base/openstack-gateway.yaml`
 # nor install Envoy Gateway, so those probes default-skip the test off
 # any non-kind cluster — no chainsaw `--selector` flag is required from
 # callers.
@@ -122,7 +122,7 @@ spec:
 
           # ── Presence guard ──────────────────────────────
           # The kind overlay alone applies
-          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # `deploy/overlays/kind/base/openstack-gateway.yaml`, which materialises
           # GatewayClass/envoy and Gateway/openstack-gw. Their absence
           # unambiguously signals a non-kind cluster — exit 0 with a
           # SKIP line so the test passes without failing downstream.
@@ -130,14 +130,14 @@ spec:
             echo "SKIP: GatewayClass/envoy not present."
             echo "      This is expected on non-kind overlays"
             echo "      (deploy/flux-system/ does not reference"
-            echo "      deploy/kind/base/envoy-gateway.yaml)."
+            echo "      deploy/bases/devstack/base/envoy-gateway.yaml)."
             exit 0
           fi
           if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
             echo "SKIP: Gateway/openstack-gw not present in openstack namespace."
             echo "      This is expected on non-kind overlays"
             echo "      (deploy/flux-system/ does not reference"
-            echo "      deploy/kind/base/openstack-gateway.yaml)."
+            echo "      deploy/overlays/kind/base/openstack-gateway.yaml)."
             exit 0
           fi
           # Keystone CRD gate — the smoke test applies a Keystone CR

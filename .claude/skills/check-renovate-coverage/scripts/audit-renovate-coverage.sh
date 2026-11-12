@@ -10,7 +10,7 @@
 #   R1  every line in releases/*/source-refs.yaml matches the source-refs regex
 #   R2  every <NAME>_VERSION="…" constant in hack/*.sh is matched by a
 #       customManager managerFilePatterns entry
-#   R3  every version: "…" literal in deploy/kind/base/*.yaml is claimed by a
+#   R3  every version: "…" literal in deploy/bases/devstack/base/*.yaml is claimed by a
 #       customManager managerFilePatterns entry or by the native flux manager
 #   R4  every customManager's managerFilePatterns match at least one tracked
 #       file (a manager matching nothing is dead), and some packageRules entry
@@ -25,7 +25,7 @@
 #       .github/workflows/ci.yaml env block carries the same value (the
 #       Makefile comment "Must be kept in sync" is enforced mechanically)
 #   R8  every HelmRelease chart version under deploy/flux-system/releases/ and
-#       deploy/kind/ has one owner, the flux manager or a customManager (the
+#       deploy/overlays/kind/ has one owner, the flux manager or a customManager (the
 #       c5c3-charts releases are excluded by design), and is spelled x.y.z or
 #       >=…
 #   R9  every input of flake.lock has original.type github, the nix manager
@@ -185,11 +185,11 @@ for f in hack/*.sh; do
 done
 
 # ---------------------------------------------------------------------------
-# R3 — deploy/kind/base/*.yaml version: "…" literals are claimed
+# R3 — deploy/bases/devstack/base/*.yaml version: "…" literals are claimed
 # ---------------------------------------------------------------------------
-hdr "R3: deploy/kind/base/*.yaml version: \"…\" literals are claimed"
+hdr "R3: deploy/bases/devstack/base/*.yaml version: \"…\" literals are claimed"
 shopt -s nullglob
-for f in deploy/kind/base/*.yaml; do
+for f in deploy/bases/devstack/base/*.yaml; do
   if grep -qE '^\s*-?\s*version:\s*"' "${f}"; then
     owners_of "${f}"
     # The flux manager reads chart versions from HelmReleases only: a literal
@@ -655,7 +655,7 @@ if [[ "${have_jq}" -ne 1 ]]; then
 else
   XYZ_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
   r8_seen=0
-  hr_files=$(grep -rlE --include='*.yaml' '^kind: HelmRelease[[:space:]]*$' deploy/flux-system/releases deploy/kind 2>/dev/null | sort || true)
+  hr_files=$(grep -rlE --include='*.yaml' '^kind: HelmRelease[[:space:]]*$' deploy/flux-system/releases deploy/bases deploy/overlays/kind 2>/dev/null | sort || true)
   while IFS= read -r f; do
     [[ -z "${f}" ]] && continue
     # One line per HelmRelease document: the first indented version: value with

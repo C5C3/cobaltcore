@@ -6,7 +6,7 @@
 # CRs: static-seal auto-unseal, cert-manager TLS, declarative self-init, raft
 # snapshots, upgrade strategies. It delivers the per-service OpenBao instances
 # the Barbican secret store builds on and the in-repo proving instance
-# (deploy/kind/infrastructure/openbao-instance.yaml).
+# (deploy/bases/devstack/infrastructure/openbao-instance.yaml).
 #
 # The operator ships ValidatingAdmissionPolicies and requires Kubernetes >=
 # 1.33. It needs cert-manager for nothing itself, but the instance TLS
@@ -75,7 +75,7 @@ spec:
   #
   # ACCEPTED GAP: this repo ships no policy layer that stamps the labels instead.
   # Nothing here sets pod-security.kubernetes.io/* on a service namespace (the
-  # only occurrence in the tree is deploy/kind/chaos-mesh/namespace.yaml, which
+  # only occurrence in the tree is deploy/bases/chaos-mesh/namespace.yaml, which
   # sets privileged), and reconcileNamespaces stamps none either, so an onboarded
   # namespace admits pods at whatever the cluster default is. For a namespace
   # holding a dedicated OpenBao instance that is the seal key and the raft volume
@@ -91,7 +91,7 @@ spec:
   # leaving the OpenBaoCluster with an empty status and no StatefulSet. The c5c3
   # operator creates a tenant for each service namespace it projects into; the
   # kind overlay carries a static one for the proving instance in openstack
-  # (deploy/kind/infrastructure/openbao-tenant.yaml).
+  # (deploy/bases/devstack/infrastructure/openbao-tenant.yaml).
   values:
     tenancy:
       mode: multi

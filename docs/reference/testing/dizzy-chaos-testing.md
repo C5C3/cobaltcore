@@ -115,7 +115,7 @@ run ends with a report directory on the claim `dizzy-soak-reports` and a PASS
 or FAIL verdict. The workstation starts, watches, stops and fetches; it can go
 away while the soak runs.
 
-The overlay is `deploy/lab/metal-stack/dizzy-soak/`; see
+The overlay is `deploy/overlays/metal-stack/dizzy-soak/`; see
 [Lab dizzy soak](../infrastructure/infrastructure-manifests.md#lab-dizzy-soak)
 for its objects and posture.
 
@@ -218,7 +218,7 @@ under the service `mix`, as in [Watching the run](#watching-the-run).
 | `DIZZY_AUTH_URL` | `http://<DIZZY_CP_NAME>-keystone.<DIZZY_CP_NAMESPACE>.svc:5000/v3` | The Keystone URL of the soak's `clouds.yaml`. |
 | `DIZZY_CP_NAME` | `controlplane` | The ControlPlane whose Keystone Service the default URL names. |
 | `DIZZY_CP_NAMESPACE` | `openstack` | The namespace of the ControlPlanes, the Secret `k-orc-clouds-yaml`, the fixtures and the soak's identity. |
-| `EXTERNAL_OVERLAY` | `deploy/lab/metal-stack` | The overlay root; `start` applies its `dizzy-soak/`. |
+| `EXTERNAL_OVERLAY` | `deploy/overlays/metal-stack` | The overlay root; `start` applies its `dizzy-soak/`. |
 | `DIZZY_SOAK_NAMESPACES` | empty | The platform namespaces to sample, space-separated. Empty samples every namespace except `kube-system`, `kube-public`, `kube-node-lease`, `default` and `dizzy`. |
 | `DIZZY_SOAK_SAMPLE_INTERVAL` | `60` | Seconds between two platform samples. |
 | `DIZZY_SOAK_MAX_ERROR_RATE` | empty | The maximum share of failed operations in percent, from 0 to 100. Empty runs no `error-rate` check. |

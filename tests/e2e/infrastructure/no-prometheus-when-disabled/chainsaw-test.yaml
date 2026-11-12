@@ -17,7 +17,7 @@
 #   tests/e2e/keystone/prometheus-stack/ skips when the stack is absent.
 #   Neither positively asserts "default cluster has no kube-prometheus-stack
 #   footprint", so a regression that accidentally installs it (e.g. a stray
-#   `kubectl apply -k deploy/kind/prometheus` outside the WITH_PROMETHEUS
+#   `kubectl apply -k deploy/overlays/kind/prometheus` outside the WITH_PROMETHEUS
 #   gate, or a future kustomize merge that pulls the overlay into the base)
 #   would slip through. This suite closes that gap by asserting absence
 #   end-to-end against the running cluster.
@@ -94,7 +94,7 @@ spec:
           # ── Assertion 2: no kube-prometheus-stack HelmRelease anywhere ─────
           # Defensive: a HelmRelease named kube-prometheus-stack in any
           # namespace (not just monitoring) is a regression — the only
-          # producer is deploy/kind/prometheus/release.yaml.
+          # producer is deploy/bases/prometheus/release.yaml.
           # `kubectl get -A -o name` returns 0 even when the list is empty;
           # we count lines rather than relying on exit codes.
           hr_count=$(kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \

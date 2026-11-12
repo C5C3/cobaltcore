@@ -5,7 +5,7 @@
 
 # Verify the memory posture of the kind openstack-db MariaDB:
 #
-#   - kustomize build deploy/kind/infrastructure renders MariaDB/openstack-db
+#   - kustomize build deploy/overlays/kind/infrastructure renders MariaDB/openstack-db
 #     with a memory request equal to its memory limit. Without a request the
 #     single replica is BestEffort, the QoS class the kernel OOM killer takes
 #     first, while every operator workload requests memory; CI run 34718789784
@@ -32,7 +32,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
+KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
 PROD_INFRA_DIR="$PROJECT_ROOT/deploy/flux-system/infrastructure"
 MARIADB_SELECT='select(.kind == "MariaDB" and .metadata.name == "openstack-db")'
 

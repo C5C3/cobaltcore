@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the NFS opt-in overlay:
-#   - deploy/kind/nfs/{kustomization,source,release,nfs-server}.yaml exist
+#   - deploy/overlays/kind/nfs/{kustomization,source,release,nfs-server}.yaml exist
 #     with SPDX headers, the kustomization references the three local files
 #     and nothing outside the overlay (no parent-directory paths), and it
 #     creates no Namespace (both halves land in pre-existing ones).
@@ -32,8 +32,8 @@
 #     exports/backups to 42424:42424 mode 0770.
 #   - The Service exposes 2049/TCP alone (the server speaks NFSv4 only, so
 #     neither rpcbind's 111 nor a mountd port is reachable or needed).
-#   - kustomize build of deploy/flux-system, deploy/kind/base and
-#     deploy/kind/infrastructure renders ZERO NFS resources (default posture:
+#   - kustomize build of deploy/flux-system, deploy/overlays/kind/base and
+#     deploy/overlays/kind/infrastructure renders ZERO NFS resources (default posture:
 #     nothing is applied unless the overlay is asked for).
 # Usage: bash tests/unit/deploy/nfs_overlay_test.sh
 
@@ -50,13 +50,13 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
-KIND_NFS_DIR="$PROJECT_ROOT/deploy/kind/nfs"
-KIND_NFS_KUSTOMIZATION="$KIND_NFS_DIR/kustomization.yaml"
-KIND_NFS_SOURCE="$KIND_NFS_DIR/source.yaml"
-KIND_NFS_RELEASE="$KIND_NFS_DIR/release.yaml"
-KIND_NFS_SERVER="$KIND_NFS_DIR/nfs-server.yaml"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
+KIND_NFS_DIR="$PROJECT_ROOT/deploy/overlays/kind/nfs"
+KIND_NFS_KUSTOMIZATION="$PROJECT_ROOT/deploy/bases/nfs/kustomization.yaml"
+KIND_NFS_SOURCE="$PROJECT_ROOT/deploy/bases/nfs/source.yaml"
+KIND_NFS_RELEASE="$PROJECT_ROOT/deploy/bases/nfs/release.yaml"
+KIND_NFS_SERVER="$PROJECT_ROOT/deploy/bases/nfs/nfs-server.yaml"
 
 SERVER_IMAGE_PATTERN='^ghcr\.io/kubernetes-sigs/nfs-ganesha:[^@]+@sha256:[a-f0-9]{64}$'
 
@@ -117,7 +117,7 @@ assert_renders_no_nfs() {
 
 # --- Test 1: overlay files exist with SPDX headers ---
 test_overlay_files_exist_with_spdx() {
-  echo "Test: deploy/kind/nfs/{kustomization,source,release,nfs-server}.yaml exist with SPDX headers"
+  echo "Test: deploy/overlays/kind/nfs/{kustomization,source,release,nfs-server}.yaml exist with SPDX headers"
 
   local f
   for f in "$KIND_NFS_KUSTOMIZATION" "$KIND_NFS_SOURCE" "$KIND_NFS_RELEASE" "$KIND_NFS_SERVER"; do
@@ -167,7 +167,7 @@ test_kustomization_is_self_contained() {
 
 # --- Test 3: kustomize build renders the five expected documents ---
 test_kustomize_build_renders_five_documents() {
-  echo "Test: kustomize build deploy/kind/nfs renders the five expected documents"
+  echo "Test: kustomize build deploy/overlays/kind/nfs renders the five expected documents"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"
@@ -565,12 +565,12 @@ test_flux_system_renders_no_nfs() {
 }
 
 test_kind_base_renders_no_nfs() {
-  echo "Test: kustomize build deploy/kind/base renders no NFS resources"
+  echo "Test: kustomize build deploy/overlays/kind/base renders no NFS resources"
   assert_renders_no_nfs "kind/base" "$KIND_BASE_DIR"
 }
 
 test_kind_infrastructure_renders_no_nfs() {
-  echo "Test: kustomize build deploy/kind/infrastructure renders no NFS resources"
+  echo "Test: kustomize build deploy/overlays/kind/infrastructure renders no NFS resources"
   assert_renders_no_nfs "kind/infrastructure" "$KIND_INFRA_DIR"
 }
 

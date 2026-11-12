@@ -36,6 +36,13 @@ def link(y, left=0):
     fig.arrow([(X[left] + W, y), (X[left + 1], y)])
 
 
+def fork(y, top):
+    link(y)
+    fig.arrow([(X[0] + W, y), (X[1] - 30, y),
+               (X[1] - 30, top - 14), (X[2] + W / 2, top - 14),
+               (X[2] + W / 2, top)])
+
+
 def section(y, label, detail):
     text(48, y, label, fs=28, bold=True)
     text(48, y + 40, detail)
@@ -96,35 +103,32 @@ card(X[2], 1012, "Composition and readiness are separate", [
     "Bootstrap precedes a usable ESO store.",
 ], height=154)
 
-section(1218, "Existing environment flows", "make deploy-infra applies kind roots, or the external overlay interface under EXTERNAL_CLUSTER=true.")
-for x, label in zip(X, ("Legacy foundation", "deploy/kind", "deploy/lab/metal-stack")):
+section(1218, "Sibling environment overlays", "Each environment imports the same shared bases. Gateway, storage and host settings belong to its overlay.")
+for x, label in zip(X, ("Shared bases", "deploy/overlays/kind", "deploy/overlays/metal-stack")):
     text(x, 1300, label, fs=24, bold=True)
-card(X[0], 1344, "deploy/flux-system", ["Namespaces, FluxInstance, sources and releases", "Direct legacy consumers: kubectl apply -k"], height=126)
-card(X[1], 1344, "base", ["Gateway and UI resources; one-node patches", "make deploy-infra, Step 3"], height=126)
+card(X[0], 1344, "deploy/bases/devstack/base", ["Controllers, UI and development sizing", "Includes the retained Flux aggregate"], height=126)
+card(X[1], 1344, "base", ["Local gateway and standard storage class", "make deploy-infra, Step 3"], height=126)
 card(X[2], 1344, "base", ["Namespace metadata, storage and Gateway patches", "EXTERNAL_CLUSTER=true, Step 3"], height=126)
-link(1407)
-link(1407, 1)
-card(X[0], 1498, "deploy/flux-system/infrastructure", ["TLS, ESO and static reference instances", "Direct consumers: after controllers are ready"], height=126)
-card(X[1], 1498, "infrastructure", ["Gateway certificates, secrets, proving OpenBao", "make deploy-infra, Step 5"], height=126)
-card(X[2], 1498, "infrastructure", ["Lab CA and LoadBalancer; storage patches", "EXTERNAL_CLUSTER=true, Step 5"], height=126)
-link(1561)
-link(1561, 1)
+fork(1407, 1344)
+card(X[0], 1498, "deploy/bases/devstack/infrastructure", ["TLS, ESO, development instances and secret shims", "Cluster-default storage; no environment gateway"], height=126, fs=21)
+card(X[1], 1498, "infrastructure", ["Loopback certificates, NodePort and local storage", "make deploy-infra, Step 5"], height=126)
+card(X[2], 1498, "infrastructure", ["Lab CA and public proxy; cluster-default storage", "EXTERNAL_CLUSTER=true, Step 5"], height=126)
+fork(1561, 1498)
 
-# Prometheus has its own row: standalone -> managed -> lab. The other addons
-# below have a direct kind -> lab edge, so the distinction cannot be missed.
-card(X[0], 1652, "deploy/kind/prometheus", ["Standalone compatibility root includes Namespace", "Chart, dashboard ConfigMap; stage JSON first"], height=126, fs=21)
-card(X[1], 1652, "prometheus-managed", ["Omits Namespace/monitoring; base owns it", "Step 3 with WITH_PROMETHEUS=true"], height=126)
+# Every environment row branches from the shared base into sibling overlays.
+card(X[0], 1652, "deploy/bases/prometheus", ["Shared chart and dashboard; no Namespace", "Stage the real dashboard JSON here"], height=126, fs=21)
+card(X[1], 1652, "prometheus-managed", ["prometheus-managed: base owns the Namespace", "prometheus: standalone root adds the Namespace"], height=126)
 card(X[2], 1652, "prometheus", ["Managed base; persistent metrics, lab scrapes", "Step 3 with WITH_PROMETHEUS=true"], height=126)
-link(1715)
-link(1715, 1)
+fork(1715, 1652)
 
-card(X[0], 1810, "Optional addons", ["Each flag selects one environment's root.", "Shared output must have one reconciler.", "See the table for exact paths and appliers."], height=146)
-card(X[1], 1810, "chaos-mesh, dizzy, nfs", ["One root per addon; no directory base", "Step 3 with its WITH_* flag"], height=126)
-card(X[2], 1810, "chaos-mesh, dizzy, nfs", ["Each imports the same-named kind root", "Step 3 with its WITH_* flag"], height=126)
-link(1873, 1)
+card(X[0], 1810, "deploy/bases: shared addons", ["chaos-mesh, dizzy, nfs", "messaging: shared broker in either mode", "Sources/releases have one canonical location."], height=146)
+card(X[1], 1810, "chaos-mesh, dizzy, nfs", ["Local storage and NodePort exposure", "Step 3 with its WITH_* flag"], height=126)
+card(X[2], 1810, "chaos-mesh, dizzy, nfs", ["Persistence, namespace labels and node modules", "Step 3 with its WITH_* flag"], height=126)
+fork(1873, 1810)
+card(X[0], 1964, "deploy/bases/hypervisor-fixtures", ["Common K-ORC fixtures and image"], height=94, fs=21)
 card(X[1], 1964, "hypervisor-operator-fixtures", ["Applied by hand"], height=94)
 card(X[2], 1964, "hypervisor-fixtures", ["Applied by hand, after the ControlPlane"], height=94)
-link(2011, 1)
+fork(2011, 1964)
 
 card(X[0], 2090, "Additional lab composition", [
     "controlplane -> controlplane-nfs",
@@ -134,7 +138,6 @@ card(X[0], 2090, "Additional lab composition", [
 ], height=206)
 card(X[1], 2090, "Other kind roots (no directory base)", [
     "metrics-server, vpa: opt-in Step 3",
-    "messaging: WITH_MESSAGING after Step 5",
     "controlplane: by hand / WITH_CONTROLPLANE_CR",
     "fake-compute: applied by hand",
 ], height=206, fs=21)
@@ -144,7 +147,7 @@ card(X[2], 2090, "Other lab roots (no directory base)", [
     "ceph: WITH_CEPH, Step 3",
     "ceph/cluster: WITH_CEPH, Step 5",
 ], height=206, fs=21)
-text(48, 2314, "Raw-file callers, bootstrap policy keys and chart paths remain supported. Publishing a new import path does not transfer resource ownership.")
+text(48, 2314, "Repository callers use canonical paths. Bootstrap policy keys and chart paths are unchanged; keep one owner per resource.")
 
 OUT.mkdir(parents=True, exist_ok=True)
 fig.write(str(OUT / "deploy-overlay-inheritance"))

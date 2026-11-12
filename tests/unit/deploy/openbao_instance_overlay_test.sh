@@ -5,7 +5,7 @@
 
 # Verify the kind-only posture of the proving OpenBao instance:
 #
-#   - kustomize build deploy/kind/infrastructure renders exactly one
+#   - kustomize build deploy/overlays/kind/infrastructure renders exactly one
 #     OpenBaoCluster/openbao-instance, and it renders `paused: true` — the
 #     operator blind-creates the fixed-name unseal Secret on its first
 #     reconcile, so it must not run before hack/deploy-infra.sh has
@@ -49,9 +49,9 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
+KIND_INFRA_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
 PROD_INFRA_DIR="$PROJECT_ROOT/deploy/flux-system/infrastructure"
-INSTANCE_FILE="$KIND_INFRA_DIR/openbao-instance.yaml"
+INSTANCE_FILE="$PROJECT_ROOT/deploy/bases/devstack/infrastructure/openbao-instance.yaml"
 OPERATOR_RELEASE_FILE="$PROJECT_ROOT/deploy/flux-system/releases/openbao-operator.yaml"
 DEPLOY_SCRIPT="$PROJECT_ROOT/hack/deploy-infra.sh"
 
@@ -62,7 +62,7 @@ provisioner_k8s_role"
 
 # --- Test 1: the kind overlay renders the paused CR and its ExternalSecret ---
 test_kind_overlay_renders_paused_instance() {
-  echo "Test: kustomize build deploy/kind/infrastructure renders the paused OpenBaoCluster + its ExternalSecret"
+  echo "Test: kustomize build deploy/overlays/kind/infrastructure renders the paused OpenBaoCluster + its ExternalSecret"
 
   if ! command -v kustomize >/dev/null 2>&1 || ! command -v yq >/dev/null 2>&1; then
     echo "  SKIP: kustomize or yq not installed (4 checks skipped)"

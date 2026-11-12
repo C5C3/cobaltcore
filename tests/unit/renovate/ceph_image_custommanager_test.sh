@@ -5,7 +5,7 @@
 
 # Verify renovate.json declares a customManagers entry that targets the
 # quay.io/ceph/ceph image pin of the lab Ceph, plus the paired packageRules:
-#   - the manager reads deploy/lab/metal-stack/ceph/cluster/cluster.yaml, the
+#   - the manager reads deploy/overlays/metal-stack/ceph/cluster/cluster.yaml, the
 #     CephCluster, and toolbox.yaml, the toolbox that runs the same image,
 #     with docker as datasource and versioning;
 #   - its matchStrings regex captures depName, the tag (currentValue) and the
@@ -38,14 +38,14 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 
 CEPH_PACKAGE="quay.io/ceph/ceph"
-CLUSTER_PATH="deploy/lab/metal-stack/ceph/cluster/cluster.yaml"
-TOOLBOX_PATH="deploy/lab/metal-stack/ceph/cluster/toolbox.yaml"
+CLUSTER_PATH="deploy/overlays/metal-stack/ceph/cluster/cluster.yaml"
+TOOLBOX_PATH="deploy/overlays/metal-stack/ceph/cluster/toolbox.yaml"
 
 # ceph_manager — the docker-datasource customManagers entry for the CephCluster.
 ceph_manager() {
   jq -c '.customManagers[]
     | select(.datasourceTemplate == "docker")
-    | select((.managerFilePatterns // []) | join(",") | contains("deploy/lab/metal-stack/ceph/cluster/cluster"))' \
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/overlays/metal-stack/ceph/cluster/cluster"))' \
     "$RENOVATE_FILE"
 }
 
@@ -72,7 +72,7 @@ test_custom_manager_captures_image() {
   assert_eq "customManagers.versioningTemplate is docker" \
     "docker" "$(jq -r '.versioningTemplate' <<<"$entry")"
   assert_eq "managerFilePatterns names the CephCluster and the toolbox alone" \
-    '["/deploy/lab/metal-stack/ceph/cluster/cluster\\.yaml$/","/deploy/lab/metal-stack/ceph/cluster/toolbox\\.yaml$/"]' \
+    '["/deploy/overlays/metal-stack/ceph/cluster/cluster\\.yaml$/","/deploy/overlays/metal-stack/ceph/cluster/toolbox\\.yaml$/"]' \
     "$(jq -c '.managerFilePatterns' <<<"$entry")"
 
   if ! command -v perl >/dev/null 2>&1; then

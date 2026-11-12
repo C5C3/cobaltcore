@@ -25,7 +25,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 FLUXINSTANCE_FILE="$PROJECT_ROOT/deploy/flux-system/fluxinstance.yaml"
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 
 # --- Test 1: fluxinstance.yaml has SPDX header ---
 test_spdx_header() {
@@ -123,10 +123,10 @@ test_kustomize_build_flux_system() {
   assert_eq "spec.sync is NOT present" "false" "$has_sync"
 }
 
-# --- Test 3: kustomize build deploy/kind/base/ includes the FluxInstance
+# --- Test 3: kustomize build deploy/overlays/kind/base/ includes the FluxInstance
 #             unchanged ---
 test_kustomize_build_kind_base() {
-  echo "Test: kustomize build deploy/kind/base/ renders the FluxInstance unchanged"
+  echo "Test: kustomize build deploy/overlays/kind/base/ renders the FluxInstance unchanged"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"

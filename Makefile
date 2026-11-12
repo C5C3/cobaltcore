@@ -1076,7 +1076,7 @@ tempest-test:
 
 .PHONY: stage-prometheus-dashboard
 # stage-prometheus-dashboard copies the canonical Keystone Operator Grafana
-# dashboard JSON into deploy/kind/prometheus/ so that local kustomize flows
+# dashboard JSON into deploy/bases/prometheus/ so that local kustomize flows
 # (kustomize build, kubectl apply -k, chainsaw lint) can render the
 # configMapGenerator without a parent-dir traversal.
 #
@@ -1088,8 +1088,8 @@ tempest-test:
 # docs/reference/infrastructure/infrastructure-manifests.md for the
 # overlay's staging contract.
 stage-prometheus-dashboard:
-	cp -f operators/keystone/dashboards/keystone-operator.json deploy/kind/prometheus/keystone-operator.json
-	@echo "Staged dashboard JSON into deploy/kind/prometheus/."
+	cp -f operators/keystone/dashboards/keystone-operator.json deploy/bases/prometheus/keystone-operator.json
+	@echo "Staged dashboard JSON into deploy/bases/prometheus/."
 
 .PHONY: deploy-infra
 deploy-infra:
@@ -1207,7 +1207,7 @@ keystone-pressure-ab:
 #   DIZZY_AUTH_URL              in-cluster Keystone URL override.
 #   DIZZY_CP_NAME               ControlPlane name (default controlplane).
 #   DIZZY_CP_NAMESPACE          ControlPlane namespace (default openstack).
-#   EXTERNAL_OVERLAY            overlay root (default deploy/lab/metal-stack).
+#   EXTERNAL_OVERLAY            overlay root (default deploy/overlays/metal-stack).
 #   DIZZY_SOAK_NAMESPACES       platform namespaces to sample.
 #   DIZZY_SOAK_SAMPLE_INTERVAL  seconds between samples (default 60).
 #   DIZZY_SOAK_MAX_ERROR_RATE   error-rate threshold in percent (default none).

@@ -87,7 +87,7 @@ it offline. Answer the PR with the lockstep bump, not a tag-only edit.
 `kustomize-controller` and `containers[name="manager"].image` in "Deploy
 K-ORC" means the Flux `k-orc` Kustomization reconciled before the CI install.
 The kind base overlay applies it suspended since #1007
-(`tests/unit/deploy/kind_base_korc_suspend_test.sh`); check that patch, not
+(`tests/unit/deploy/overlays/kind_base_korc_suspend_test.sh`); check that patch, not
 the pin.
 
 ## Local tooling

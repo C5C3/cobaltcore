@@ -10,7 +10,7 @@
 #
 # CI-ONLY posture (decided 2026-07-15): plain HTTP in-cluster (the glance S3
 # driver's s3_store_cacert covers TLS when a suite later needs it) and a single
-# storage tier. The kind overlay (deploy/kind/infrastructure/kustomization.yaml)
+# storage tier. The kind overlay (deploy/overlays/kind/infrastructure/kustomization.yaml)
 # patches this to a single node with small PVCs.
 #
 # Credential flow — OpenBao stays the single source of truth, no read-back from

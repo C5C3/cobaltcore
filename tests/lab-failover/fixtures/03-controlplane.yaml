@@ -12,7 +12,7 @@
 # members on 100Gi, three broker and three cache replicas, and three replicas
 # of every API.
 #
-# The data is that of deploy/lab/metal-stack/controlplane/controlplane-lab.yaml
+# The data is that of deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
 # with these changes:
 #   - spec.sizing.profile: Standard.
 #   - no gateway and no publicEndpoint on any service: the plane is reached

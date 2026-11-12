@@ -107,7 +107,7 @@ lab_nfs_controlplane() {
   yq -P ".spec.services.cinder.backends = [{\"name\": \"nfs1\", \"type\": \"NFS\", \"nfs\": ($nfs + {\"path\": \"/volumes\"})}] |
     .spec.services.cinder.backupBackend = {\"name\": \"nfsbk\", \"type\": \"NFS\", \"nfs\": ($nfs + {\"path\": \"/backups\"})} |
     ... comments = \"\"" \
-    "$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/controlplane-lab.yaml" >"$1"
+    "$PROJECT_ROOT/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml" >"$1"
 }
 
 # make_kubectl_stub <dir>
@@ -342,7 +342,7 @@ test_knobs_and_derived_variables() {
   echo "Test: EXTERNAL_CLUSTER, EXTERNAL_OVERLAY, OVERLAY_ROOT and PUBLIC_PORT"
 
   assert_eq "EXTERNAL_CLUSTER defaults to false" "false" "$(resolve '${EXTERNAL_CLUSTER}')"
-  assert_eq "EXTERNAL_OVERLAY defaults to deploy/lab/metal-stack" "deploy/lab/metal-stack" \
+  assert_eq "EXTERNAL_OVERLAY defaults to deploy/overlays/metal-stack" "deploy/overlays/metal-stack" \
     "$(resolve '${EXTERNAL_OVERLAY}')"
   assert_eq "EXTERNAL_CLUSTER=true is preserved" "true" \
     "$(resolve '${EXTERNAL_CLUSTER}' EXTERNAL_CLUSTER=true)"
@@ -351,15 +351,15 @@ test_knobs_and_derived_variables() {
   assert_eq "EXTERNAL_OVERLAY passes through verbatim" "deploy/lab/other" \
     "$(resolve '${EXTERNAL_OVERLAY}' EXTERNAL_OVERLAY=deploy/lab/other)"
 
-  assert_eq "OVERLAY_ROOT is deploy/kind by default" "$PROJECT_ROOT/deploy/kind" \
+  assert_eq "OVERLAY_ROOT is deploy/overlays/kind by default" "$PROJECT_ROOT/deploy/overlays/kind" \
     "$(resolve '${OVERLAY_ROOT}')"
   assert_eq "OVERLAY_ROOT is the lab overlay under EXTERNAL_CLUSTER=true" \
-    "$PROJECT_ROOT/deploy/lab/metal-stack" "$(resolve '${OVERLAY_ROOT}' EXTERNAL_CLUSTER=true)"
+    "$PROJECT_ROOT/deploy/overlays/metal-stack" "$(resolve '${OVERLAY_ROOT}' EXTERNAL_CLUSTER=true)"
   assert_eq "an absolute EXTERNAL_OVERLAY is used unchanged" "/srv/overlays/lab" \
     "$(resolve '${OVERLAY_ROOT}' EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY=/srv/overlays/lab)"
-  assert_eq "EXTERNAL_OVERLAY is ignored in kind mode" "$PROJECT_ROOT/deploy/kind" \
+  assert_eq "EXTERNAL_OVERLAY is ignored in kind mode" "$PROJECT_ROOT/deploy/overlays/kind" \
     "$(resolve '${OVERLAY_ROOT}' EXTERNAL_OVERLAY=/srv/overlays/lab)"
-  assert_eq "EXTERNAL_CLUSTER=yes keeps the kind overlay" "$PROJECT_ROOT/deploy/kind" \
+  assert_eq "EXTERNAL_CLUSTER=yes keeps the kind overlay" "$PROJECT_ROOT/deploy/overlays/kind" \
     "$(resolve '${OVERLAY_ROOT}' EXTERNAL_CLUSTER=yes)"
 
   assert_eq "PUBLIC_PORT is 443 by default" "443" "$(resolve '${PUBLIC_PORT}')"
@@ -497,9 +497,9 @@ YAML
     # WITH_NFS=true. The stub renders the overlay's two manifests as its
     # kustomization lists them.
     {
-      cat "$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/controlplane-lab.yaml"
+      cat "$PROJECT_ROOT/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml"
       echo "---"
-      cat "$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/ovncentral.yaml"
+      cat "$PROJECT_ROOT/deploy/overlays/metal-stack/controlplane/ovncentral.yaml"
     } >"$tmp/metal-stack-render.yaml"
     export KUBECTL_LOG="$tmp/kubectl.log"
     : >"$KUBECTL_LOG"
@@ -763,7 +763,7 @@ test_chaos_mesh_overlay_preflight() {
   assert_eq "WITH_CHAOS_MESH=true is refused for an overlay without chaos-mesh/" "1" "$rc"
   assert_contains "the refusal names the missing kustomization" "$output" "$refusal"
   assert_contains "and says the kind overlay makes every namespace selectable" "$output" \
-    "deploy/kind/chaos-mesh is not applied to an external cluster: it lets an experiment select a pod in every namespace"
+    "deploy/overlays/kind/chaos-mesh is not applied to an external cluster: it lets an experiment select a pod in every namespace"
   assert_eq "and comes before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
 
   # The check tests the file, not the directory.
@@ -828,7 +828,7 @@ test_dizzy_overlay_preflight() {
   assert_eq "WITH_DIZZY=true is refused for an overlay without dizzy/" "1" "$rc"
   assert_contains "the refusal names the missing kustomization" "$output" "$refusal"
   assert_contains "and says why the kind overlay does not fit" "$output" \
-    "deploy/kind/dizzy is not applied to an external cluster: it publishes VictoriaMetrics on NodePort 30428, which only a kind node maps to a host port, and keeps the metrics in an emptyDir."
+    "deploy/overlays/kind/dizzy is not applied to an external cluster: it publishes VictoriaMetrics on NodePort 30428, which only a kind node maps to a host port, and keeps the metrics in an emptyDir."
   assert_eq "and comes before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
 
   # The check tests the file, not the directory.
@@ -894,7 +894,7 @@ test_prometheus_overlay_preflight() {
   assert_eq "WITH_PROMETHEUS=true is refused for an overlay without prometheus/" "1" "$rc"
   assert_contains "the refusal names the missing kustomization" "$output" "ERROR: $refusal"
   assert_contains "and says why the kind overlay does not fit" "$output" \
-    "deploy/kind/prometheus is not applied to an external cluster: it applies the Namespace monitoring without the label and the annotation the overlay's base set, and keeps the metrics in an emptyDir."
+    "deploy/overlays/kind/prometheus is not applied to an external cluster: it applies the Namespace monitoring without the label and the annotation the overlay's base set, and keeps the metrics in an emptyDir."
   assert_eq "and comes before the cluster is contacted" "" "$(cat "$KUBECTL_LOG")"
 
   # The check tests the file, not the directory.
@@ -1090,7 +1090,7 @@ test_check_external_cluster() {
   assert_contains "says it names no node network" "$output" \
     "ERROR: ConfigMap kube-system/shoot-info names no IPv4 node network"
   assert_contains "quotes the empty value and names the template" "$output" \
-    "(data.nodeNetwork: ''). $PROJECT_ROOT/deploy/lab/metal-stack/nfs/client-policy.yaml"
+    "(data.nodeNetwork: ''). $PROJECT_ROOT/deploy/overlays/metal-stack/nfs/client-policy.yaml"
 
   output="$(run_fn "$tmp/bin" check_external_cluster EXTERNAL_CLUSTER=true WITH_NFS=true \
     KUBECTL_NODE_NETWORK=fd00:10::/64 \
@@ -1164,7 +1164,7 @@ test_check_external_cluster() {
   # lifecycle mode. The stub renders the lab ControlPlane with both backends on
   # NFS and on a filer, which preflight lets through.
   if command -v yq >/dev/null 2>&1; then
-    local cp_lab="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/controlplane-lab.yaml"
+    local cp_lab="$PROJECT_ROOT/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml"
     local modes_read='kubectl get csidriver nfs.csi.k8s.io --ignore-not-found -o jsonpath={.spec.volumeLifecycleModes}'
     lab_nfs_controlplane "$tmp/nfs-render.yaml"
     sed 's/nfs-server[.]openstack[.]svc[.]cluster[.]local$/filer.example.com/' "$tmp/nfs-render.yaml" >"$tmp/filer-render.yaml"
@@ -1205,7 +1205,7 @@ test_check_external_cluster() {
     rc=$?
     assert_nonzero_exit "refuses a controlplane/ that does not render" "$rc"
     assert_contains "naming the directory" "$output" \
-      "cannot render $PROJECT_ROOT/deploy/lab/metal-stack/controlplane"
+      "cannot render $PROJECT_ROOT/deploy/overlays/metal-stack/controlplane"
 
     # No driver to look for: WITH_NFS=true installs it, WITH_CONTROLPLANE_CR=true
     # applies the bundled CR in place of the overlay's, a ControlPlane without
@@ -1228,7 +1228,7 @@ test_check_external_cluster() {
 
   # apply_nfs_client_policy: the template with the network in place of its
   # placeholder, and nothing else changed.
-  local template="$PROJECT_ROOT/deploy/lab/metal-stack/nfs/client-policy.yaml"
+  local template="$PROJECT_ROOT/deploy/overlays/metal-stack/nfs/client-policy.yaml"
   : >"$KUBECTL_LOG"
   output="$(run_fn "$tmp/bin" apply_nfs_client_policy EXTERNAL_CLUSTER=true \
     NFS_NODE_NETWORK=10.128.44.0/22 KUBECTL_APPLY_STDIN="$tmp/applied.yaml")"
@@ -1333,11 +1333,11 @@ test_main_gates() {
   assert_file_contains_fixed "Step 3 applies the overlay root's base" \
     "$DEPLOY_INFRA_SH" 'kubectl apply -k "${OVERLAY_ROOT}/base"'
   assert_file_not_contains "Step 3 no longer hardcodes the kind base" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/base"'
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/base"'
   assert_file_contains_fixed "the WITH_CONTROLPLANE render of Step 5 reads the overlay root" \
     "$DEPLOY_INFRA_SH" 'kubectl kustomize "${OVERLAY_ROOT}/infrastructure"'
 
-  # WITH_NFS=true: the overlay's nfs/ in place of deploy/kind/nfs, no modprobe
+  # WITH_NFS=true: the overlay's nfs/ in place of deploy/overlays/kind/nfs, no modprobe
   # on this machine, and a rollout gate on the client modules of every node.
   assert_file_contains_fixed "Step 3 applies the overlay root's nfs/" \
     "$DEPLOY_INFRA_SH" 'kubectl apply -k "${OVERLAY_ROOT}/nfs"'
@@ -1370,13 +1370,13 @@ test_main_gates() {
   assert_contains "and exits 1" "$ds_failure" "exit 1"
 
   # WITH_CHAOS_MESH=true: the overlay's chaos-mesh/ in place of
-  # deploy/kind/chaos-mesh, no modprobe on this machine in external mode, and
+  # deploy/overlays/kind/chaos-mesh, no modprobe on this machine in external mode, and
   # a rollout gate on the modules of every node.
   local chaos_apply='kubectl apply -k "${OVERLAY_ROOT}/chaos-mesh"'
   assert_file_contains_fixed "Step 3 applies the overlay root's chaos-mesh/" \
     "$DEPLOY_INFRA_SH" "$chaos_apply"
   assert_file_not_contains "Step 3 no longer hardcodes the kind Chaos Mesh overlay" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/chaos-mesh"'
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/chaos-mesh"'
   assert_eq "the host Chaos Mesh module load is the else branch of the EXTERNAL_CLUSTER gate, the skip log its then branch" \
     "$(printf '%s\n' \
       'if [[ "${EXTERNAL_CLUSTER}" == "true" ]]; then' \
@@ -1395,13 +1395,13 @@ test_main_gates() {
     "ERROR: DaemonSet chaos-mesh/chaos-mesh-modules did not roll out, so not every node has the NetworkChaos kernel modules. Read 'kubectl logs -n chaos-mesh -l app.kubernetes.io/name=chaos-mesh-modules -c load --prefix --tail=-1'."
   assert_contains "and exits 1" "$chaos_failure" "exit 1"
 
-  # WITH_DIZZY=true: the overlay root's dizzy/, deploy/kind/dizzy in kind mode,
+  # WITH_DIZZY=true: the overlay root's dizzy/, deploy/overlays/kind/dizzy in kind mode,
   # and the probe of the kind node's published port in kind mode only.
   local dizzy_apply='kubectl apply -k "${OVERLAY_ROOT}/dizzy"'
   assert_file_contains_fixed "Step 3 applies the overlay root's dizzy/" \
     "$DEPLOY_INFRA_SH" "$dizzy_apply"
   assert_file_not_contains "Step 3 no longer hardcodes the kind dizzy overlay" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"'
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/dizzy"'
   assert_file_contains_fixed "the apply logs the directory it applied" \
     "$DEPLOY_INFRA_SH" 'log "dizzy overlay ${OVERLAY_ROOT}/dizzy applied (WITH_DIZZY=true)."'
   local dizzy_probe='dizzy_metrics_port="$(docker port "${CLUSTER_NAME}-control-plane" 30428/tcp'
@@ -1423,11 +1423,11 @@ test_main_gates() {
   assert_file_contains_fixed "Step 3 applies the overlay root's prometheus/" \
     "$DEPLOY_INFRA_SH" "$prometheus_apply"
   assert_file_not_contains "Step 3 no longer hardcodes the kind Prometheus overlay" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"'
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/prometheus"'
   assert_file_contains_fixed "the apply logs the directory it applied" \
     "$DEPLOY_INFRA_SH" 'log "Prometheus overlay ${PROMETHEUS_OVERLAY_ROOT} applied (WITH_PROMETHEUS=true)."'
-  assert_before "the Keystone dashboard is staged into deploy/kind/prometheus/ before the apply" \
-    "$(line_of '"${REPO_ROOT}/deploy/kind/prometheus/keystone-operator.json"')" "$(line_of "$prometheus_apply")"
+  assert_before "the Keystone dashboard is staged into deploy/overlays/kind/prometheus/ before the apply" \
+    "$(line_of '"${REPO_ROOT}/deploy/bases/prometheus/keystone-operator.json"')" "$(line_of "$prometheus_apply")"
 
   assert_contains "the Keystone preload sits behind an EXTERNAL_CLUSTER gate" \
     "$(grep -B3 -F 'docker pull "ghcr.io/c5c3/keystone:' "$DEPLOY_INFRA_SH")" \
@@ -1468,7 +1468,7 @@ test_main_gates() {
   assert_file_contains_fixed "the overlay hint names the CR by CONTROLPLANE_NAME" \
     "$DEPLOY_INFRA_SH" "(the CR is named '\${CONTROLPLANE_NAME}')"
   assert_file_contains_fixed "the kind by-hand hint still names the bundled CR" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -f deploy/kind/controlplane/controlplane.yaml'
+    "$DEPLOY_INFRA_SH" 'kubectl apply -f deploy/overlays/kind/controlplane/controlplane.yaml'
 
   local banner
   banner="$(awk '/Infrastructure deployment complete!/,/^}/' "$DEPLOY_INFRA_SH")"

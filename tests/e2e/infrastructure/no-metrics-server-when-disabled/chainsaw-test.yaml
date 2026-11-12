@@ -13,7 +13,7 @@
 #   tests/unit/deploy/metrics_server_overlay_test.sh) exercise the gating logic
 #   and overlay render at the source level. Neither positively asserts "default
 #   cluster has no metrics-server footprint", so a regression that accidentally
-#   installs it (a stray `kubectl apply -k deploy/kind/metrics-server` outside
+#   installs it (a stray `kubectl apply -k deploy/overlays/kind/metrics-server` outside
 #   the WITH_METRICS_SERVER gate, or a future kustomize merge that pulls the
 #   overlay into the base) would slip through. This suite closes that gap by
 #   asserting absence end-to-end against the running cluster, mirroring the
@@ -58,14 +58,14 @@ spec:
           set -euo pipefail
 
           # ── Assertion 1: no metrics-server HelmRepository in flux-system ──
-          # The only producer is deploy/kind/metrics-server/source.yaml, applied
+          # The only producer is deploy/overlays/kind/metrics-server/source.yaml, applied
           # solely inside the WITH_METRICS_SERVER=true gate.
           if kubectl get helmrepository.source.toolkit.fluxcd.io metrics-server \
                 -n flux-system >/dev/null 2>&1; then
             echo "FAIL: HelmRepository 'metrics-server' exists in 'flux-system' on a default cluster."
             echo "      Source of regression: hack/deploy-infra.sh ran the metrics-server"
             echo "      overlay apply outside the WITH_METRICS_SERVER gate, or the overlay was"
-            echo "      pulled into deploy/kind/base."
+            echo "      pulled into deploy/overlays/kind/base."
             exit 1
           fi
           echo "OK: no HelmRepository 'metrics-server' in 'flux-system'"

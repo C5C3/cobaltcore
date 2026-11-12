@@ -43,7 +43,7 @@ socket, so the CR reaches `Ready=True/AllReady` with no Keystone, Placement,
 Neutron or Glance in the cluster. The CRD requires `spec.keystoneEndpoint` and
 `spec.serviceUser` all the same, so these fixtures set the endpoint to a
 convention URL nothing serves and point the service user at the kind-only
-`keystone-admin` Secret from `deploy/kind/infrastructure`. Nothing validates
+`keystone-admin` Secret from `deploy/overlays/kind/infrastructure`. Nothing validates
 that password here.
 
 `remote-compute-contract` runs lighter still, with no broker either. It asserts

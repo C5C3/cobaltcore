@@ -21,18 +21,18 @@
 #   Step 2  — ServiceMonitor/keystone-operator exists in the namespace where
 #             the operator chart is installed in CI (default: hack/ci-deploy-
 #             operator.sh runs `helm install` without `--namespace`, and
-#             deploy/kind/base/kustomization.yaml suspends the openstack
+#             deploy/overlays/kind/base/kustomization.yaml suspends the openstack
 #             FluxCD HelmRelease to avoid an ownership-annotation conflict).
 #             The presence proves the deploy script's WITH_PROMETHEUS=true
 #             plumbing enabled the operator's monitoring.serviceMonitor.enabled
 #             value.
 #   Step 3  — Prometheus is scraping the keystone-operator job successfully
 #             (.health == "up" via /api/v1/targets), proving the cross-namespace
-#             ServiceMonitor selector tuning in deploy/kind/prometheus/release.yaml
+#             ServiceMonitor selector tuning in deploy/bases/prometheus/release.yaml
 #             actually works end-to-end.
 #   Step 4  — Grafana has loaded the bundled keystone-operator dashboard via
 #             the sidecar-discovered grafana_dashboard=1 ConfigMap, proving
-#             the dashboard plumbing in deploy/kind/prometheus/kustomization.yaml
+#             the dashboard plumbing in deploy/overlays/kind/prometheus/kustomization.yaml
 #             and hack/deploy-infra.sh works.
 #   Step 4b — The keystone-operator-dashboard ConfigMap.data.keystone-operator.json
 #             is byte-identical (sha256) to the canonical source file at
@@ -54,7 +54,7 @@
 #      `kubectl get helmrelease kube-prometheus-stack -n monitoring` probe.
 #      If the HelmRelease is absent, the script exits 0 with a SKIP log
 #      line. The kube-prometheus-stack HelmRelease is created exclusively
-#      by deploy/kind/prometheus/release.yaml under WITH_PROMETHEUS=true —
+#      by deploy/bases/prometheus/release.yaml under WITH_PROMETHEUS=true —
 #      its absence unambiguously signals that the opt-in flag was not set,
 #      and the test is therefore default-safe on any cluster regardless of
 #      selector use.
@@ -68,7 +68,7 @@
 #      valid WITH_PROMETHEUS=true signal. The kube-prometheus-stack
 #      HelmRelease is still installed only by the kind opt-in overlay
 #      (production flux-system never lists it — see
-#      deploy/kind/prometheus/kustomization.yaml), so it is the correct
+#      deploy/overlays/kind/prometheus/kustomization.yaml), so it is the correct
 #      runtime gate.
 #
 # The two gates are belt-and-braces: the label lets callers skip without
@@ -144,7 +144,7 @@ spec:
           set -euo pipefail
 
           # ── Presence guard ──────────────────────
-          # The opt-in overlay deploy/kind/prometheus/ creates the
+          # The opt-in overlay deploy/overlays/kind/prometheus/ creates the
           # kube-prometheus-stack HelmRelease; its absence unambiguously
           # signals WITH_PROMETHEUS=false (or a non-kind cluster). The
           # `monitoring` Namespace is no longer a valid signal — since
@@ -192,7 +192,7 @@ spec:
 
   # ── Step 1b — kind posture: values, workload absence, CRD ownership ─────
   #These three assertions guard the
-  # kind-tuned posture documented in deploy/kind/prometheus/release.yaml
+  # kind-tuned posture documented in deploy/bases/prometheus/release.yaml
   # against silent drift:
   #   (a) HelmRelease.spec.values renders the documented kind tuning —
   #       crds.enabled=false, alertmanager/nodeExporter/kubeStateMetrics
@@ -305,7 +305,7 @@ spec:
           # "${NAMESPACE}" --create-namespace`, which puts the release
           # (and its rendered ServiceMonitor) in the keystone-system
           # Namespace by default. The FluxCD HelmRelease in
-          # keystone-system is suspended by deploy/kind/base/kustomization.yaml
+          # keystone-system is suspended by deploy/overlays/kind/base/kustomization.yaml
           # to avoid an ownership-annotation conflict with that install,
           # so only the helm-installed ServiceMonitor renders here. The
           # release name is "keystone-operator" (helm install argument),
@@ -458,7 +458,7 @@ spec:
           # (https://github.com/prometheus-community/helm-charts/blob/main/charts/kube-prometheus-stack/values.yaml).
           # The Grafana sidecar discovers ConfigMaps labelled
           # grafana_dashboard=1 and loads them as dashboards — see
-          # deploy/kind/prometheus/kustomization.yaml configMapGenerator.
+          # deploy/overlays/kind/prometheus/kustomization.yaml configMapGenerator.
           # length>=1 proves the bundled keystone-operator.json was
           # discovered and parsed.
           kubectl delete pod grafana-search-probe -n monitoring \

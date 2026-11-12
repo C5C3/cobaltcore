@@ -88,9 +88,9 @@ scripts it calls. Nothing runs because Go code changed somewhere else.
 | `images_base` | `flake.nix`, `flake.lock`, `nix/lib/**`, `nix/pkgs/**`, `releases/**`, `scripts/**`, `overrides/**`, `hack/ci-nix-build-e2e-images.sh`, `hack/ci-service-image-releases.sh` | every service image, every Tempest image (one per release), every service operator's e2e leg |
 | `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts, the Tempest and plugin pins in `releases/*/test-refs.yaml` | `tempest`, narrowed to the services whose configuration changed; a pin bump runs every service |
 | `tests_e2e_<op>` | `tests/e2e/<op>/**` and `tests/e2e/<op>-operator/**` (`tests/e2e/c5c3/**` and `tests/e2e/c5c3-operator/**` for c5c3); `tests/e2e/lib/**` for the seven service operators that run a `namespace-scoped-rbac` suite (keystone, horizon, glance, placement, barbican, cinder, nova); for ovn and neutron the three shared scripts their suites run, `tests/e2e/lib/assert-operator-env-clean.sh`, `assert-operator-metric-families.sh` and `assert-steady-state-events.sh`, and for both also `tests/e2e/lib/assert-networkpolicy-enforced.sh`, the NetworkPolicy probe their `network-policy-egress` suites and neutron's `network-policy` suite run; and the first two of them for c5c3, whose `env-key-material` suite runs the scan and whose `sizing-profile` suite runs the metric-family check | that operator's `e2e-operator` leg |
-| `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
+| `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites; `tests_controlplane` also covers `deploy/overlays/kind/hypervisor-operator-fixtures/**`, whose `fixtures.yaml` the full-chain suite applies | the job that runs that suite |
 | `tests_chaos`, `tests_multicluster`, `tests_orders_multicluster`, `tests_prometheus` | each suite's own tree; the two multicluster classes also cover `deploy/target-cluster/**` | the job that runs it |
-| `tests_chaos_random` | `tests/chaos-random/**`, `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`, `deploy/lab/metal-stack/dizzy-soak/**`, `tests/e2e-chaos/lib/consistency.sh` | `e2e-chaos-random` |
+| `tests_chaos_random` | `tests/chaos-random/**`, `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`, `deploy/overlays/metal-stack/dizzy-soak/**`, `tests/e2e-chaos/lib/consistency.sh` | `e2e-chaos-random` |
 | `tests_operator_upgrade` | the inputs every operator upgrade suite shares: `tests/e2e-operator-upgrade/chainsaw-config.yaml`, `hack/ci-fetch-released-operator.sh`, `hack/ci-read-chart-version.sh`, `hack/ci-operator-upgrade-leg.sh`, `hack/ci-deploy-operator.sh`, `.github/workflows/e2e-operator-upgrade.yaml` | every `e2e-operator-upgrade` job |
 | `tests_operator_upgrade_<op>` (one per operator) | `tests/e2e-operator-upgrade/<op>-helm-upgrade/**`; cinder and nova also `tests/e2e/cinder/broker-vhost.sh`; keystone also `hack/ci-operator-upgrade-crd-window.sh`, which its suite calls, and `tests/e2e-operator-upgrade/keystone-helm-upgrade-pod-kill/**` with the `tests/e2e-chaos/lib/workload.sh` and `workload.py` that suite calls | that operator's `e2e-operator-upgrade` job |
 | `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
@@ -137,7 +137,7 @@ for the workloads in `openstack`, using four additions to the job:
 
 | Addition | What it does |
 | --- | --- |
-| `WITH_VPA` on `Setup E2E infrastructure` | `true` under the label, empty otherwise. `hack/deploy-infra.sh` installs metrics-server and the recommender of `deploy/kind/vpa`, and removes the MariaDB CRD's scale subresource so the database StatefulSet can carry a VPA |
+| `WITH_VPA` on `Setup E2E infrastructure` | `true` under the label, empty otherwise. `hack/deploy-infra.sh` installs metrics-server and the recommender of `deploy/overlays/kind/vpa`, and removes the MariaDB CRD's scale subresource so the database StatefulSet can carry a VPA |
 | `Start the sizing measurement` | Right after the setup: starts `hack/ci-vpa-recommendations.sh watch _output/sizing openstack` in the background. The watch applies an `updateMode: "Off"` VPA for every workload and saves each recommendation once a minute, so a workload a suite deletes keeps its last one |
 | `Collect the sizing measurement` | After the last suite step, `always()`: stops the watch, takes a last snapshot and writes `recommendations.tsv` and `recommendations.md`, printing the table to the log. It fails the job when nothing was recorded; `gh run rerun --failed` repeats such a leg. The tempest legs set `MEASURE_LEG=<service>-<release>` for the TSV's comment line |
 | `Upload the sizing measurement` | `always()`: uploads `_output/sizing/` as `sizing-e2e-controlplane`, `sizing-e2e-controlplane-sso` or `sizing-tempest-<service>-<release>`, kept 14 days |
@@ -923,7 +923,7 @@ contract: the unchanged-parameter re-run must converge against the provisioned
 cluster, and the additive re-run must install only the newly enabled
 components while leaving the base stack untouched. Both opt-ins ride that one
 additive run: `make deploy-infra` is convergent, so a separate `WITH_NFS` leg
-would repeat the whole base install for one `kubectl apply -k deploy/kind/nfs`
+would repeat the whole base install for one `kubectl apply -k deploy/overlays/kind/nfs`
 and one extra name on the HelmRelease wait list.
 
 ### build-e2e-images
@@ -1820,7 +1820,7 @@ of that job.
 
 The `setup-e2e-infra` composite action is invoked with `WITH_PROMETHEUS: "true"`
 in its step `env`, which threads through to `hack/deploy-infra.sh` and gates the
-`kube-prometheus-stack` overlay (`deploy/kind/prometheus/`) plus the
+`kube-prometheus-stack` overlay (`deploy/overlays/kind/prometheus/`) plus the
 post-deploy `enable_operator_servicemonitor` patch (applied to the keystone-operator,
 horizon-operator, glance-operator, placement-operator, barbican-operator, ovn-operator,
 neutron-operator, cinder-operator and nova-operator HelmReleases). The Deploy operator
@@ -1854,7 +1854,7 @@ kind-only Quick Start observability story.
 | 11 | `hack/ci-delete-kind-cluster.sh` (always) | Deletes the kind cluster; a cluster that survives is a warning, never a job failure |
 
 **Path filter:** `tests/e2e/keystone/prometheus-stack/**`,
-`tests/e2e/horizon/prometheus-stack/**`, `deploy/kind/prometheus/**`,
+`tests/e2e/horizon/prometheus-stack/**`, `deploy/overlays/kind/prometheus/**`,
 `operators/keystone/dashboards/**`,
 `operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml` and
 `operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml` (the
@@ -2123,9 +2123,9 @@ Forked pull requests skip it, as they do every job that pulls the E2E images.
 
 The `setup-e2e-infra` composite action threads `WITH_METRICS_SERVER` from the
 step `env` to `hack/deploy-infra.sh`, which deploys the kind metrics-server
-overlay (`deploy/kind/metrics-server/`) the HPAs read their CPU utilization
+overlay (`deploy/overlays/kind/metrics-server/`) the HPAs read their CPU utilization
 from. It threads `WITH_VPA: "true"` the same way, which deploys the kind VPA
-overlay (`deploy/kind/vpa/`): the operators need its VerticalPodAutoscaler CRD
+overlay (`deploy/overlays/kind/vpa/`): the operators need its VerticalPodAutoscaler CRD
 to create the opt-in VPAs, and its recommender answers the Northbound
 database's VPA, which step 5 of the suite waits for. The job passes
 `CONTROLPLANE_NAME: cp-autoscaling`, so the OpenBao bootstrap seeds the
@@ -2154,7 +2154,7 @@ are estimates to confirm against the first green run.
 
 **Path filter:** the shared ControlPlane triggers (`FILTER_c5c3` or the
 `ci:controlplane` label) plus `tests_autoscaling`: `tests/e2e-autoscaling/**`,
-`deploy/kind/metrics-server/**`, `deploy/kind/vpa/**`,
+`deploy/overlays/kind/metrics-server/**`, `deploy/overlays/kind/vpa/**`,
 `internal/common/deployment/builders.go`,
 `internal/common/deployment/hpa_flow.go` and
 `internal/common/deployment/vpa_flow.go`. `ci:full` and a `v*` tag force it on,

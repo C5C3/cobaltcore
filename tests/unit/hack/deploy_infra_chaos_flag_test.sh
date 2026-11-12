@@ -115,7 +115,7 @@ test_non_true_value_does_not_trigger_install() {
 # Test 5: chaos-mesh overlay apply is conditional
 # The kustomize apply of the overlay root's chaos-mesh/ must live inside the
 # WITH_CHAOS_MESH gate so the default Quick Start does not install it. In kind
-# mode that directory is deploy/kind/chaos-mesh.
+# mode that directory is deploy/overlays/kind/chaos-mesh.
 # ---------------------------------------------------------------------------
 test_chaos_mesh_kustomize_is_gated() {
   echo "Test: chaos-mesh kustomize apply is gated by WITH_CHAOS_MESH"
@@ -127,9 +127,9 @@ test_chaos_mesh_kustomize_is_gated() {
     "$DEPLOY_INFRA_SH" \
     'kubectl apply -k "${OVERLAY_ROOT}/chaos-mesh"'
   assert_file_not_contains \
-    "no line applies deploy/kind/chaos-mesh by its own path" \
+    "no line applies deploy/overlays/kind/chaos-mesh by its own path" \
     "$DEPLOY_INFRA_SH" \
-    'kubectl apply -k "${REPO_ROOT}/deploy/kind/chaos-mesh"'
+    'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/chaos-mesh"'
   local kind_root
   kind_root="$(
     unset EXTERNAL_CLUSTER
@@ -137,8 +137,8 @@ test_chaos_mesh_kustomize_is_gated() {
     source "$DEPLOY_INFRA_SH"
     printf '%s' "${OVERLAY_ROOT}"
   )"
-  assert_eq "in kind mode the overlay root's chaos-mesh/ is deploy/kind/chaos-mesh" \
-    "$PROJECT_ROOT/deploy/kind/chaos-mesh/kustomization.yaml" "$kind_root/chaos-mesh/kustomization.yaml"
+  assert_eq "in kind mode the overlay root's chaos-mesh/ is deploy/overlays/kind/chaos-mesh" \
+    "$PROJECT_ROOT/deploy/overlays/kind/chaos-mesh/kustomization.yaml" "$kind_root/chaos-mesh/kustomization.yaml"
 
   # The line must be preceded by a WITH_CHAOS_MESH gate. Use awk to confirm
   # the most recent if-line above the apply tests WITH_CHAOS_MESH.
@@ -212,7 +212,7 @@ test_chaos_mesh_not_in_default_helm_releases() {
 #   (a) deploy-infra.sh's chaos-mesh apply line uses plain `kubectl apply -k`
 #       (no `--load-restrictor`, no pipe through `kustomize build` to
 #       `kubectl apply -f -`); and
-#   (b) deploy/kind/chaos-mesh/kustomization.yaml has zero `../../` parent-
+#   (b) deploy/overlays/kind/chaos-mesh/kustomization.yaml has zero `../../` parent-
 #       directory resource entries, so the default LoadRestrictionsRootOnly
 #       check is satisfied and the apply succeeds without any flag. The lab
 #       overlay the external mode applies references it as a directory, which
@@ -251,9 +251,9 @@ test_production_caller_matches_self_contained_overlay() {
     PASS=$((PASS + 1))
   fi
 
-  # (b) The overlay must have zero `../../` parent-directory resource entries
-  # so the default LoadRestrictionsRootOnly check is satisfied.
-  local kust="$PROJECT_ROOT/deploy/kind/chaos-mesh/kustomization.yaml"
+  # (b) The overlay must have zero parent-directory raw-file imports
+  # Directory bases are allowed by LoadRestrictionsRootOnly.
+  local kust="$PROJECT_ROOT/deploy/overlays/kind/chaos-mesh/kustomization.yaml"
   if [[ ! -f "$kust" ]]; then
     echo "  FAIL: $kust does not exist"
     FAIL=$((FAIL + 1))
@@ -261,8 +261,8 @@ test_production_caller_matches_self_contained_overlay() {
   fi
 
   local parent_refs
-  parent_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./\.\.' "$kust" || true; } | wc -l)"
-  assert_eq "deploy/kind/chaos-mesh/kustomization.yaml has no '../../' resource entries" \
+  parent_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./.*\.(ya?ml|json)[[:space:]]*$' "$kust" || true; } | wc -l)"
+  assert_eq "deploy/overlays/kind/chaos-mesh/kustomization.yaml has no parent-directory raw-file imports" \
     "0" "${parent_refs// /}"
 }
 

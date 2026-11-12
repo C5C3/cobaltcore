@@ -29,7 +29,7 @@ TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 cp -R "$PROJECT_ROOT/deploy" "$TEST_ROOT/deploy"
 cp "$PROJECT_ROOT/operators/keystone/dashboards/keystone-operator.json" \
-  "$TEST_ROOT/deploy/kind/prometheus/keystone-operator.json"
+  "$TEST_ROOT/deploy/bases/prometheus/keystone-operator.json"
 
 # Canonicalize complete objects, retaining list order and every field value.
 # Resource ordering and YAML key ordering are not deployment behavior.
@@ -184,11 +184,29 @@ for raw in cert-manager external-secrets garage-operator mariadb-operator openba
       (.[0].kind == "HelmRepository" or .[0].kind == "GitRepository" or .[0].kind == "OCIRepository")'
 done
 
+echo "Test: environment overlays are independent consumers of shared bases"
+# A base may not depend on an environment. An overlay may depend on its own
+# environment and shared bases, but not on a sibling environment's choices.
+while IFS= read -r recipe; do
+  recipe_dir="$(dirname "$recipe")"
+  while IFS= read -r resource; do
+    [[ -d "$recipe_dir/$resource" ]] || continue
+    resolved="$(cd "$recipe_dir/$resource" && pwd -P)"
+    case "$recipe" in
+      */deploy/bases/*) forbidden="/deploy/overlays/" ;;
+      */deploy/overlays/kind/*) forbidden="/deploy/overlays/metal-stack/" ;;
+      */deploy/overlays/metal-stack/*) forbidden="/deploy/overlays/kind/" ;;
+    esac
+    assert_eq "${recipe#"$TEST_ROOT/"} does not import a dependent/sibling environment" \
+      "false" "$(case "$resolved/" in *"$forbidden"*) echo true ;; *) echo false ;; esac)"
+  done < <(yq -r '.resources[]' "$recipe")
+done < <(find "$TEST_ROOT/deploy/bases" "$TEST_ROOT/deploy/overlays" -name kustomization.yaml -type f | sort)
+
 echo "Test: monitoring namespace has one owner in managed deployments"
-render "deploy/kind/prometheus" "$TEST_ROOT/prometheus-standalone"
-render "deploy/kind/prometheus-managed" "$TEST_ROOT/prometheus-managed"
-render "deploy/lab/metal-stack/prometheus" "$TEST_ROOT/prometheus-lab"
-render "deploy/kind/base" "$TEST_ROOT/kind-base"
+render "deploy/overlays/kind/prometheus" "$TEST_ROOT/prometheus-standalone"
+render "deploy/overlays/kind/prometheus-managed" "$TEST_ROOT/prometheus-managed"
+render "deploy/overlays/metal-stack/prometheus" "$TEST_ROOT/prometheus-lab"
+render "deploy/overlays/kind/base" "$TEST_ROOT/kind-base"
 assert_json "standalone Prometheus still supplies monitoring" \
   "$TEST_ROOT/prometheus-standalone.json" '[.[] | select(.kind == "Namespace" and .metadata.name == "monitoring")] | length == 1'
 assert_json "managed Prometheus delegates namespaces to the environment base" \

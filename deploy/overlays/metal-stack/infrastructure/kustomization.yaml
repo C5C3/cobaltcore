@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Metal-stack infrastructure: common instances, public proxy and lab CA. The gateway certificate is a runtime template.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../bases/devstack/infrastructure
+  - envoy-public.yaml
+  - lab-ca.yaml

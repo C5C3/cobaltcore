@@ -5,7 +5,7 @@
 
 # Verify the hypervisor-operator fixture overlay, the K-ORC example of the
 # OpenStack objects openstack-hypervisor-operator expects:
-#   1. deploy/kind/hypervisor-operator-fixtures/{kustomization,fixtures,image}.yaml
+#   1. deploy/overlays/kind/hypervisor-operator-fixtures/{kustomization,fixtures,image}.yaml
 #      exist with SPDX headers.
 #   2. The kustomization's resources list names fixtures.yaml and image.yaml
 #      and nothing else, and the file names no parent-directory path
@@ -19,7 +19,7 @@
 #      NovaHypervisorOperatorAccountName literal in controlplane_webhook.go (yq).
 #   6. Nothing applies the overlay by default: no non-comment line of
 #      hack/deploy-infra.sh names hypervisor-operator-fixtures, and kustomize
-#      build of deploy/flux-system and deploy/kind/base render no hvo- object
+#      build of deploy/flux-system and deploy/overlays/kind/base render no hvo- object
 #      (kustomize).
 #
 # Checks 3-5 and the kustomize half of check 6 are counted as SKIP when yq or
@@ -41,11 +41,11 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 DEPLOY_INFRA_SCRIPT="$PROJECT_ROOT/hack/deploy-infra.sh"
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-OVERLAY_DIR="$PROJECT_ROOT/deploy/kind/hypervisor-operator-fixtures"
-OVERLAY_KUSTOMIZATION="$OVERLAY_DIR/kustomization.yaml"
-OVERLAY_FIXTURES="$OVERLAY_DIR/fixtures.yaml"
-OVERLAY_IMAGE="$OVERLAY_DIR/image.yaml"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+OVERLAY_DIR="$PROJECT_ROOT/deploy/overlays/kind/hypervisor-operator-fixtures"
+OVERLAY_KUSTOMIZATION="$PROJECT_ROOT/deploy/bases/hypervisor-fixtures/kustomization.yaml"
+OVERLAY_FIXTURES="$PROJECT_ROOT/deploy/bases/hypervisor-fixtures/fixtures.yaml"
+OVERLAY_IMAGE="$PROJECT_ROOT/deploy/bases/hypervisor-fixtures/image.yaml"
 WEBHOOK_SOURCE="$PROJECT_ROOT/operators/c5c3/api/v1alpha1/controlplane_webhook.go"
 
 CIRROS_URL="https://download.cirros-cloud.net/0.6.3/cirros-0.6.3-x86_64-disk.img"
@@ -62,7 +62,7 @@ rendered_value() {
 
 # --- Test 1: overlay files exist with SPDX headers ---
 test_overlay_files_exist_with_spdx() {
-  echo "Test: deploy/kind/hypervisor-operator-fixtures/{kustomization,fixtures,image}.yaml exist with SPDX headers"
+  echo "Test: deploy/overlays/kind/hypervisor-operator-fixtures/{kustomization,fixtures,image}.yaml exist with SPDX headers"
 
   local f
   for f in "$OVERLAY_KUSTOMIZATION" "$OVERLAY_FIXTURES" "$OVERLAY_IMAGE"; do
@@ -173,7 +173,7 @@ test_rendered_overlay() {
 
 # --- Test 6: the default overlays render no fixture ---
 test_default_overlays_render_no_fixtures() {
-  echo "Test: hack/deploy-infra.sh, deploy/flux-system and deploy/kind/base apply no hypervisor-operator fixture"
+  echo "Test: hack/deploy-infra.sh, deploy/flux-system and deploy/overlays/kind/base apply no hypervisor-operator fixture"
 
   # deploy-infra.sh applies its kind overlays with kubectl apply -k directly,
   # not through the two kustomizations below. Comments may name the overlay;

@@ -975,7 +975,7 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   so a CR in `keystone-pss-restricted-test` cannot reach
   `openstack/openstack-db` through `clusterRef`. Brownfield wiring
   (`database.host` + `cache.servers`) is therefore the **only** path that
-  satisfies the parent issue's "no new infra in `deploy/kind/`" constraint.
+  satisfies the parent issue's "no new infra in `deploy/overlays/kind/`" constraint.
   Mirrors [`brownfield-database`](#brownfield-database) for the no-MariaDB-CRs
   invariant.
 - **PSS label shape: `enforce-version=latest`.** Without the version label the

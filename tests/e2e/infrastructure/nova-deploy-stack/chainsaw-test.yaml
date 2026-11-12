@@ -9,7 +9,7 @@
 #
 # Covers:
 #   - HelmRelease/nova-operator in nova-system, suspended by the kind base
-#     overlay (deploy/kind/base/kustomization.yaml) so the CI job can install
+#     overlay (deploy/overlays/kind/base/kustomization.yaml) so the CI job can install
 #     the chart itself with a locally built dev image
 #   - The three per-listener Certificates in openstack (nova-nip-io-tls,
 #     nova-metadata-nip-io-tls, nova-console-nip-io-tls) reporting Ready

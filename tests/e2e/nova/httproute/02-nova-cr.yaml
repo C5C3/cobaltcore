@@ -9,7 +9,7 @@
 # the API and metadata probes GET the API root and the scheduler and conductor
 # probes read the broker socket. spec.keystoneEndpoint is a convention URL
 # nothing serves, and spec.serviceUser reads the kind-only keystone-admin
-# Secret from deploy/kind/infrastructure. The routes are a function of the spec
+# Secret from deploy/overlays/kind/infrastructure. The routes are a function of the spec
 # rather than of a validated token, so the API's auth pipeline is not on the
 # path of anything asserted here.
 #

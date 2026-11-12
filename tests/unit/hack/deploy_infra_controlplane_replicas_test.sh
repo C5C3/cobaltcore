@@ -24,7 +24,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
-BUNDLED_CR="$PROJECT_ROOT/deploy/kind/controlplane/controlplane.yaml"
+BUNDLED_CR="$PROJECT_ROOT/deploy/overlays/kind/controlplane/controlplane.yaml"
 
 PASS=0
 FAIL=0

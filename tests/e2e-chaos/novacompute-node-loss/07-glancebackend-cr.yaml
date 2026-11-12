@@ -9,7 +9,7 @@
 # in-cluster Garage S3 endpoint (deploy/flux-system/infrastructure/garage.yaml):
 # the GarageCluster "garage" listens on port 3900 with SigV4 region "garage",
 # the glance-images bucket is pre-created, and the garage-s3-credentials Secret
-# is ESO-synced (deploy/kind/infrastructure). glance-api registers no store
+# is ESO-synced (deploy/overlays/kind/infrastructure). glance-api registers no store
 # without it, so it must go Ready before the Glance CR can.
 #
 # Every Glance on the leg writes into the one glance-images bucket, keyed by

@@ -6,10 +6,10 @@
 # Verify renovate.json points Renovate's native flux manager at the Flux
 # HelmReleases, so a chart release past the ceiling of a range opens a reviewed
 # PR that raises the ceiling and keeps the floor. The test pins:
-#   - the three flux.managerFilePatterns, replayed with Perl against every
+#   - the four flux.managerFilePatterns, replayed with Perl against every
 #     HelmRelease and HelmRepository file under deploy/flux-system/ and
-#     deploy/kind/, and against deploy/lab/ and deploy/examples/, of which only
-#     the release.yaml and source.yaml of deploy/lab/metal-stack/ceph match:
+#     deploy/overlays/kind/, and against deploy/overlays/metal-stack/ and deploy/examples/, of which only
+#     the release.yaml and source.yaml of deploy/overlays/metal-stack/ceph match:
 #     the lab Ceph has no kind sibling
 #   - the order of the flux packageRules: the base rule (widen, no automerge,
 #     3-day cooldown, timestamp-optional) is the first flux rule, so every later
@@ -72,11 +72,11 @@ paths_matching() {
   ' <<<"$2"
 }
 
-# helmrelease_files — the files under deploy/flux-system/ and deploy/kind/ that
+# helmrelease_files — the files under deploy/flux-system/ and deploy/overlays/kind/ that
 # carry a HelmRelease, as repo-relative paths.
 helmrelease_files() {
   (cd "$PROJECT_ROOT" \
-    && grep -rlE '^kind: HelmRelease[[:space:]]*$' deploy/flux-system deploy/kind 2>/dev/null \
+    && grep -rlE '^kind: HelmRelease[[:space:]]*$' deploy/flux-system deploy/bases deploy/overlays/kind 2>/dev/null \
     | sort)
 }
 
@@ -126,7 +126,7 @@ package_of() {
 }
 
 test_flux_file_patterns() {
-  echo "Test: the flux manager reads deploy/flux-system/, deploy/kind/ and the lab Ceph's chart, nothing else under deploy/lab/ or deploy/examples/"
+  echo "Test: the flux manager reads deploy/flux-system/, deploy/overlays/kind/ and the lab Ceph's chart, nothing else under deploy/overlays/metal-stack/ or deploy/examples/"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (4 checks skipped)"
@@ -141,8 +141,8 @@ test_flux_file_patterns() {
     FAIL=$((FAIL + 1))
     return
   fi
-  assert_eq "flux.managerFilePatterns names the two Flux trees and the two Flux files of the lab Ceph" \
-    '["/^deploy/flux-system/(releases|sources)/.+\\.yaml$/","/^deploy/kind/.+\\.yaml$/","/^deploy/lab/metal-stack/ceph/(release|source)\\.yaml$/"]' \
+  assert_eq "flux.managerFilePatterns names the shared and kind Flux trees and the two Flux files of the lab Ceph" \
+    '["/^deploy/flux-system/(releases|sources)/.+\\.yaml$/","/^deploy/bases/.+\\.yaml$/","/^deploy/overlays/kind/.+\\.yaml$/","/^deploy/overlays/metal-stack/ceph/(release|source)\\.yaml$/"]' \
     "$patterns"
 
   if ! command -v perl >/dev/null 2>&1; then
@@ -154,10 +154,10 @@ test_flux_file_patterns() {
   local pattern_lines flux_files matched f missed=0
   pattern_lines="$(jq -r '.flux.managerFilePatterns[]' "$RENOVATE_FILE")"
   flux_files="$(cd "$PROJECT_ROOT" \
-    && grep -rlE '^kind: Helm(Release|Repository)[[:space:]]*$' deploy/flux-system deploy/kind 2>/dev/null \
+    && grep -rlE '^kind: Helm(Release|Repository)[[:space:]]*$' deploy/flux-system deploy/bases deploy/overlays/kind 2>/dev/null \
     | sort)"
   if [ -z "$flux_files" ]; then
-    echo "  FAIL: no HelmRelease or HelmRepository manifest found under deploy/flux-system/ or deploy/kind/"
+    echo "  FAIL: no HelmRelease or HelmRepository manifest found under deploy/flux-system/ or deploy/overlays/kind/"
     FAIL=$((FAIL + 1))
   else
     matched="$(paths_matching "$pattern_lines" "$flux_files")"
@@ -175,21 +175,21 @@ test_flux_file_patterns() {
   fi
 
   # The lab Ceph has no kind overlay to inherit, so its HelmRelease and
-  # HelmRepository are the two files under deploy/lab/ the flux manager reads.
+  # HelmRepository are the two files under deploy/overlays/metal-stack/ the flux manager reads.
   local outside strays ceph
-  ceph="$(printf '%s\n' deploy/lab/metal-stack/ceph/release.yaml deploy/lab/metal-stack/ceph/source.yaml)"
-  outside="$(cd "$PROJECT_ROOT" && find deploy/lab deploy/examples -type f 2>/dev/null | sort)"
+  ceph="$(printf '%s\n' deploy/overlays/metal-stack/ceph/release.yaml deploy/overlays/metal-stack/ceph/source.yaml)"
+  outside="$(cd "$PROJECT_ROOT" && find deploy/overlays/metal-stack deploy/examples -type f 2>/dev/null | sort)"
   strays="$(paths_matching "$pattern_lines" "$outside" | grep -vxF -- "$ceph" || true)"
   if [ -z "$strays" ]; then
-    echo "  PASS: no other file under deploy/lab/ or deploy/examples/ matches a flux pattern"
+    echo "  PASS: no other file under deploy/overlays/metal-stack/ or deploy/examples/ matches a flux pattern"
     PASS=$((PASS + 1))
   else
     while IFS= read -r f; do
-      echo "  FAIL: $f is outside the two Flux trees but matches a flux pattern"
+      echo "  FAIL: $f is outside the shared and kind Flux trees but matches a flux pattern"
       FAIL=$((FAIL + 1))
     done <<<"$strays"
   fi
-  assert_eq "the release.yaml and source.yaml of deploy/lab/metal-stack/ceph match a flux pattern" \
+  assert_eq "the release.yaml and source.yaml of deploy/overlays/metal-stack/ceph match a flux pattern" \
     "$ceph" "$(paths_matching "$pattern_lines" "$ceph")"
 }
 
@@ -263,7 +263,7 @@ test_oci_ranges_use_helm_versioning() {
   done <<<"$(helmrelease_files)"
 
   if [ "$checked" -eq 0 ]; then
-    echo "  FAIL: no HelmRelease chart version found under deploy/flux-system/ or deploy/kind/"
+    echo "  FAIL: no HelmRelease chart version found under deploy/flux-system/ or deploy/overlays/kind/"
     FAIL=$((FAIL + 1))
   elif [ "$bad" -eq 0 ]; then
     echo "  PASS: all $checked HelmRelease chart versions are x.y.z or start with >="
@@ -377,8 +377,8 @@ test_floor_tracked_charts() {
     return
   fi
 
-  local gw_file="deploy/kind/base/envoy-gateway.yaml"
-  local hl_file="deploy/kind/base/headlamp.yaml"
+  local gw_file="deploy/bases/devstack/base/envoy-gateway.yaml"
+  local hl_file="deploy/bases/devstack/base/headlamp.yaml"
   local url gw_chart gateway headlamp
   url="$(awk '/^  url: oci:\/\// { print $2; exit }' "$PROJECT_ROOT/$gw_file")"
   gw_chart="$(chart_of "$gw_file")"
@@ -449,7 +449,7 @@ test_csi_driver_nfs_rules() {
     return
   fi
 
-  local path="deploy/kind/nfs/release.yaml" pkg
+  local path="deploy/bases/nfs/release.yaml" pkg
   pkg="$(chart_of "$path")"
   assert_not_empty "$path carries a chart name" "$pkg"
 
@@ -499,7 +499,7 @@ test_rook_ceph_rules() {
     return
   fi
 
-  local path="deploy/lab/metal-stack/ceph/release.yaml" pkg version
+  local path="deploy/overlays/metal-stack/ceph/release.yaml" pkg version
   pkg="$(chart_of "$path")"
   version="$(chart_versions "$path")"
   assert_eq "$path carries the chart rook-ceph" "rook-ceph" "$pkg"
@@ -568,7 +568,7 @@ test_crd_coupled_charts_grouped() {
       "$group" "$(jq -r '.[0].groupName // empty' <<<"$rules")"
   done <<EOF
 deploy/flux-system/releases/mariadb-operator.yaml|deploy/flux-system/releases/mariadb-operator-crds.yaml|mariadb-operator chart
-deploy/kind/prometheus/release.yaml|deploy/flux-system/releases/prometheus-operator-crds.yaml|prometheus-operator charts
+deploy/bases/prometheus/release.yaml|deploy/flux-system/releases/prometheus-operator-crds.yaml|prometheus-operator charts
 EOF
 }
 

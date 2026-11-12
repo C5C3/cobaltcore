@@ -34,7 +34,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
 FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
 
 SERVICE_OPERATORS="keystone horizon glance placement barbican ovn neutron cinder nova"

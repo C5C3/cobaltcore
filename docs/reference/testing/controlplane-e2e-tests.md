@@ -406,7 +406,7 @@ paths any other chassis or metadata agent would share.
    container restart each start a new K-ORC process, which logs in with the full
    catalog and so needs no refresh. It then applies
    `fixtures.yaml` of the example overlay
-   `deploy/kind/hypervisor-operator-fixtures/` (not its `image.yaml`, so CI
+   `deploy/overlays/kind/hypervisor-operator-fixtures/` (not its `image.yaml`, so CI
    downloads no cirros image), waits up to 10 minutes for every K-ORC
    resource in that file to report `Available`, and repeats the start-time check.
    `07-hypervisor-operator-verify-job.yaml` follows, a Job that

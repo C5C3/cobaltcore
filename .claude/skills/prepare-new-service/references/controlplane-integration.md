@@ -143,7 +143,7 @@ this and registers itself: see
 Ingress is `commonv1.GatewaySpec` / HTTPRoute via
 `internal/common/gateway` — plus the full public surface that hangs off
 it: an `https-<svc>` listener + hostname on the shared kind Gateway
-(`deploy/kind/base/openstack-gateway.yaml`) with a
+(`deploy/overlays/kind/base/openstack-gateway.yaml`) with a
 `<svc>-nip-io-tls-certificate.yaml` Certificate — one pair per public
 hostname (glance: `glance` + `glance-upload`; nova: `nova`,
 `nova-metadata`, `nova-console`, one `GatewaySpec` each) —, a `publicEndpoint`

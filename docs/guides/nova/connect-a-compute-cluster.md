@@ -512,7 +512,7 @@ hvo authenticates a second time at start, scoped to a project `test` in the
 domain `cc3test`, and exits when that fails, `skip-tests` or not. The smoke
 test that `skip-tests` skips also boots flavor ID `1` from the image
 `cirros-kvm` onto a volume of type `premium`, on a network.
-`deploy/kind/hypervisor-operator-fixtures/` declares all of them as K-ORC
+`deploy/overlays/kind/hypervisor-operator-fixtures/` declares all of them as K-ORC
 resources, and names the flavor, the network and its subnet `hvo-smoke-test`.
 K-ORC adopts an existing object of a managed name, and the overlay's teardown
 deletes what it adopted, so apply the overlay only to a cloud that has none of
@@ -530,7 +530,7 @@ openstack --insecure network show hvo-smoke-test
 Then apply it on the management cluster once `CinderReady` is `True`:
 
 ```bash
-kubectl apply -k deploy/kind/hypervisor-operator-fixtures
+kubectl apply -k deploy/overlays/kind/hypervisor-operator-fixtures
 ```
 
 On a cloud that has one of them, declare only what hvo needs under
@@ -565,7 +565,7 @@ trait differs. hvo dials only the `public` catalog endpoints. kvm-node-agent
 runs as uid 42438 and exits at start on a host without that account.
 [Lab hypervisors](../../reference/infrastructure/infrastructure-manifests.md#lab-hypervisors)
 records each item and the patched images this repository publishes for hvo and
-kvm-node-agent. `deploy/lab/metal-stack/hypervisor/hvo-release.yaml` is a worked
+kvm-node-agent. `deploy/overlays/metal-stack/hypervisor/hvo-release.yaml` is a worked
 release; it sets `osAuthUrl` by value, because hvo there runs beside Keystone
 and reaches it in-cluster.
 

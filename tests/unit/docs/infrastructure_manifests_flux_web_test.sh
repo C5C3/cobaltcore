@@ -5,7 +5,7 @@
 
 # Verify docs/reference/infrastructure-manifests.md documents the new
 # kind-only Flux Web UI addon
-#   - a subsection references deploy/kind/base/flux-web.yaml
+#   - a subsection references deploy/bases/devstack/base/flux-web.yaml
 #   - the chart URL oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator
 #     is cited in that subsection
 #   - the Renovate customManager / pin story is mentioned
@@ -42,14 +42,14 @@ test_doc_exists() {
   fi
 }
 
-# --- Test 2: new subsection references deploy/kind/base/flux-web.yaml
+# --- Test 2: new subsection references deploy/bases/devstack/base/flux-web.yaml
 #             ---
 test_subsection_references_flux_web_manifest() {
-  echo "Test: a subsection references deploy/kind/base/flux-web.yaml"
+  echo "Test: a subsection references deploy/bases/devstack/base/flux-web.yaml"
 
   assert_file_contains "docs reference the kind-only flux-web manifest path" \
     "$MANIFESTS_DOC" \
-    'deploy/kind/base/flux-web.yaml'
+    'deploy/bases/devstack/base/flux-web.yaml'
 }
 
 # --- Test 3: chart URL cited in the subsection ---

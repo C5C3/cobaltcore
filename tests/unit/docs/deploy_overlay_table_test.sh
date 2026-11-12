@@ -16,7 +16,7 @@
 # .drawio and of the .svg, by its path or by its last path element as a word
 # of its own, and every label that is a path deploy/<path> names a
 # directory. The figure groups the kind and lab directories of one name in a
-# box each ("chaos-mesh, dizzy, nfs" under "deploy/kind", with
+# box each ("chaos-mesh, dizzy, nfs" under "deploy/overlays/kind", with
 # Prometheus on its own composition row), so a last path element that several
 # directories share (base, chaos-mesh, controlplane, dizzy, infrastructure, nfs,
 # prometheus)
@@ -479,12 +479,12 @@ test_repository_table_matches_the_tree() {
   local copy
   assert_eq "no problems" "" "$(check_overlay_table "$PROJECT_ROOT" "$page" "$diagrams")"
 
-  # The same check on a copy of the page without the deploy/kind/vpa row
+  # The same check on a copy of the page without the deploy/overlays/kind/vpa row
   # proves it reads the real table and the real tree.
   copy="$(mktemp -d "$TMP_ROOT/copy.XXXXXX")"
   cp "$page" "$copy/e2e-deployment.md"
-  rewrite "$copy/e2e-deployment.md" '/^| `deploy\/kind\/vpa` |/d'
-  assert_eq "a copy without deploy/kind/vpa" "directory without a row: deploy/kind/vpa" \
+  rewrite "$copy/e2e-deployment.md" '/^| `deploy\/overlays\/kind\/vpa` |/d'
+  assert_eq "a copy without deploy/overlays/kind/vpa" "directory without a row: deploy/overlays/kind/vpa" \
     "$(check_overlay_table "$PROJECT_ROOT" "$copy/e2e-deployment.md" "$diagrams")"
 
   # A copy of the figure without vpa in the svg proves it reads the real
@@ -492,7 +492,7 @@ test_repository_table_matches_the_tree() {
   copy="$(mktemp -d "$TMP_ROOT/copy.XXXXXX")"
   cp "$diagrams/$FIGURE.drawio" "$diagrams/$FIGURE.svg" "$copy/"
   rewrite "$copy/$FIGURE.svg" 's/>metrics-server, vpa: />metrics-server: /'
-  assert_eq "a figure copy without vpa" "not in the figure: deploy/kind/vpa ($FIGURE.svg)" \
+  assert_eq "a figure copy without vpa" "not in the figure: deploy/overlays/kind/vpa ($FIGURE.svg)" \
     "$(check_overlay_table "$PROJECT_ROOT" "$page" "$copy")"
 }
 

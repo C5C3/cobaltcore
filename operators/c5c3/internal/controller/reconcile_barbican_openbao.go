@@ -42,7 +42,7 @@ import (
 // The dedicated secret store (services.barbican.secretStore.dedicated) gives one
 // Barbican an OpenBao instance of its own, in the Barbican service namespace. The
 // ensemble below is the operator-side equivalent of the proving instance
-// deploy/kind/infrastructure/openbao-instance.yaml declares by hand, together with
+// deploy/bases/devstack/infrastructure/openbao-instance.yaml declares by hand, together with
 // the choreography hack/deploy-infra.sh runs around it: seed the static-seal key
 // before the CR reconciles, attach the instance's ownerReference to that Secret,
 // and grant the TokenReview the instance's Kubernetes auth method needs.
@@ -134,7 +134,7 @@ const (
 
 // The guardrails of the OpenBaoTenant that admits a dedicated Barbican store's
 // namespace: the ResourceQuota and the LimitRange the openbao-operator's
-// provisioner writes into that namespace. deploy/kind/infrastructure/
+// provisioner writes into that namespace. deploy/overlays/kind/infrastructure/
 // openbao-tenant.yaml carries the same spec for the kind and lab openstack
 // namespace, and tests/unit/deploy/openbao_tenant_guardrails_contract_test.sh
 // compares the two, which is why each value is a single-line string literal.

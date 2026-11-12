@@ -5,7 +5,7 @@
 
 # Verify that the two OpenBaoTenants of the stack carry one guardrail spec:
 #
-#   - deploy/kind/infrastructure/openbao-tenant.yaml admits the kind and lab
+#   - deploy/bases/devstack/infrastructure/openbao-tenant.yaml admits the kind and lab
 #     openstack namespace, and the c5c3 operator builds the tenant of a
 #     dedicated Barbican store's namespace from the openBaoTenant* consts in
 #     operators/c5c3/internal/controller/reconcile_barbican_openbao.go. The
@@ -32,7 +32,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-TENANT_FILE="$PROJECT_ROOT/deploy/kind/infrastructure/openbao-tenant.yaml"
+TENANT_FILE="$PROJECT_ROOT/deploy/bases/devstack/infrastructure/openbao-tenant.yaml"
 CONTROLLER_FILE="$PROJECT_ROOT/operators/c5c3/internal/controller/reconcile_barbican_openbao.go"
 
 # go_const <file> <name> — Echo the string literal the Go const <name> in

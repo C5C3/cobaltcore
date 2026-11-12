@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the OpenBao bootstrap legs of the lab Ceph's key hand-off
-# (deploy/lab/metal-stack/ceph/cluster/keys-push.yaml and keys-pull.yaml).
+# (deploy/overlays/metal-stack/ceph/cluster/keys-push.yaml and keys-pull.yaml).
 #
 #   - setup-auth.sh must write BOTH kubernetes/management roles once each:
 #     push-ceph-keys bound to the ServiceAccount ceph-keys-push in rook-ceph,

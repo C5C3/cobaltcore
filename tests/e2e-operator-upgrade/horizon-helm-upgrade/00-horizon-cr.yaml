@@ -10,7 +10,7 @@
 
 # Horizon CR fixture. Managed cache via clusterRef to openstack-memcached;
 # the SECRET_KEY comes from the ESO-synced horizon-secret-key Secret
-# (deploy/kind/infrastructure). keystoneEndpoint points at the cluster-local
+# (deploy/overlays/kind/infrastructure). keystoneEndpoint points at the cluster-local
 # convention URL — the login page renders without a live Keystone (Keystone
 # is only contacted on login submit).
 apiVersion: horizon.openstack.c5c3.io/v1alpha1

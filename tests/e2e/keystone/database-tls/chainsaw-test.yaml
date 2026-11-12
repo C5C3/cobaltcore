@@ -16,7 +16,7 @@
 #
 # Production (deploy/flux-system/infrastructure/mariadb.yaml) enables TLS via
 # serverCertIssuerRef/clientCertIssuerRef on a full Galera+MaxScale cluster.
-# The kind overlay (deploy/kind/infrastructure/kustomization.yaml) patches
+# The kind overlay (deploy/overlays/kind/infrastructure/kustomization.yaml) patches
 # spec.tls.enabled=false because Galera+MaxScale are disabled in the single-node
 # shape this CI runs on, so MariaDB cannot terminate TLS against the shared
 # openstack-db-ca-issuer. The chainsaw assertions below would time out at
@@ -78,7 +78,7 @@ spec:
           if [ "${TLS_ENABLED}" != "true" ]; then
             echo "SKIP: MariaDB openstack-db has spec.tls.enabled != true (got '${TLS_ENABLED}')."
             echo "      Production (deploy/flux-system/infrastructure/mariadb.yaml) enables TLS;"
-            echo "      the kind overlay (deploy/kind/infrastructure/kustomization.yaml) disables"
+            echo "      the kind overlay (deploy/overlays/kind/infrastructure/kustomization.yaml) disables"
             echo "      it for single-node Galera/MaxScale constraints. Re-enable spec.tls in the"
             echo " kind overlay (and Galera/MaxScale) to exercise the full path here."
             exit 0

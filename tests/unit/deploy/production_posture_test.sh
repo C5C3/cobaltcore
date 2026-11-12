@@ -5,7 +5,7 @@
 
 # Verify the Envoy Gateway work did NOT alter the production overlay
 # The operator stays platform-agnostic; kind-only
-# addons must live under deploy/kind/ and deploy/flux-system/ must be
+# addons must live under deploy/overlays/kind/ and deploy/flux-system/ must be
 # byte-identical to origin/main for the following paths:
 #
 #   - deploy/flux-system/fluxinstance.yaml
@@ -19,7 +19,7 @@
 # entirely:
 #   - the `sources/chaos-mesh.yaml` and `releases/chaos-mesh.yaml` files
 #     are relocated into the kind-only opt-in overlay at
-#     deploy/kind/chaos-mesh/ so the overlay is self-contained (no
+#     deploy/overlays/kind/chaos-mesh/ so the overlay is self-contained (no
 #     parent-directory references — kubectl#948); and
 #   - kustomization.yaml drops the corresponding entries from `resources:`.
 # kustomization.yaml and the two relocated chaos-mesh files are therefore
@@ -114,7 +114,7 @@ test_production_overlay_unchanged() {
   # `git diff --exit-code` returns non-zero when the worktree differs from
   # the ref. The chaos-mesh relocation deliberately removes
   # deploy/flux-system/releases/chaos-mesh.yaml (now at
-  # deploy/kind/chaos-mesh/release.yaml), so it is carved out per-path with
+  # deploy/bases/chaos-mesh/release.yaml), so it is carved out per-path with
   # `:(exclude)…` pathspecs. fluxinstance.yaml has no carve-out — it must
   # remain byte-identical.
   local groups_label=(

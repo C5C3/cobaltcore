@@ -200,7 +200,7 @@ The figure shows the run with its waits and with the step each opt-in changes.
 describes every step of the run in full, with each wait and the variable that
 bounds it.
 
-![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](./diagrams/deploy-infra-run.svg)
+![The run of make deploy-infra as eight numbered steps from top to bottom, with the opt-ins beside the step each one changes. Before Step 1 the script runs its preflight checks and, in kind mode, loads the kernel modules some opt-ins need. Step 1 forks: kind mode creates the cluster from hack/kind-config.yaml or keeps the one that exists, and EXTERNAL_CLUSTER=true creates none and checks the cluster of the current context. Step 2 installs the flux-operator, the Namespaces and the FluxInstance, waits for the FluxInstance to be Ready, and installs the Gateway API and Envoy Gateway CRDs. Step 3 applies the base overlay, deploy/overlays/kind/base or base/ of EXTERNAL_OVERLAY. Step 4 waits for the releases in four phases: cert-manager and its webhook, the four TLS prerequisites, the infrastructure releases, and the Kustomization rabbitmq-cluster-operator. Once the operator CRDs are registered, Step 5 applies the infrastructure overlay and waits for the Gateway openstack-gw to be Programmed. Step 6 waits for the OpenBao pods to run. Step 7 initialises, unseals and configures OpenBao and waits for its pods to be Ready. Step 8 waits for the ExternalSecrets keystone-admin, keystone-db and mariadb-root-password. After Step 8 the script waits for the proving OpenBao instance, for Garage and, without a ControlPlane, for the MariaDB openstack-db. The opt-in boxes: KIND_HOST_PORT, KIND_CONFIG, SKIP_KIND_CREATE and WITH_REGISTRY_CACHE act on the cluster creation. WITH_CHAOS_MESH, WITH_PROMETHEUS, WITH_DIZZY, WITH_NFS, WITH_CEPH, WITH_METRICS_SERVER and WITH_VPA each add an overlay in Step 3 and a release to the wait of Step 4. WITH_CEPH also applies ceph/cluster in Step 5 and, after Step 8, waits for the Ceph cluster and syncs its client keys. WITH_CONTROLPLANE resumes the service-operator releases in Step 3, leaves MariaDB, Memcached and the three ExternalSecrets out of Step 5, skips the wait of Step 8, and ends with the operator stack Ready and a dry-run of the ControlPlane admitted. WITH_MESSAGING adds a RabbitMQ broker after Step 5.](./diagrams/deploy-infra-run.svg)
 
 The table sums the steps up. Rows 2a and 2b are the two CRD installs that end
 Step 2. The Deployment Sequence linked above has the details of every step.
@@ -211,9 +211,9 @@ Step 2. The Deployment Sequence linked above has the details of every step.
 | 2 | **Install flux-operator** and apply `FluxInstance/flux`, then wait until the instance is `Ready`. |
 | 2a | **Install the Gateway API CRDs** of `GATEWAY_API_VERSION`. The keystone-operator watches `HTTPRoute`. |
 | 2b | **Install the Envoy Gateway CRDs** of `ENVOY_GATEWAY_VERSION`. The `envoy-gateway` release and `Gateway/openstack-gw` follow in Step 3, and Keystone attaches its HTTPRoute in Step 7 of this page. |
-| 3 | Apply the base overlay `deploy/kind/base`: namespaces, sources, releases and the Gateway. |
+| 3 | Apply the base overlay `deploy/overlays/kind/base`: namespaces, sources, releases and the Gateway. |
 | 4 | Wait for the releases in four phases, cert-manager first and the `rabbitmq-cluster-operator` Kustomization last. |
-| 5 | Apply the infrastructure overlay `deploy/kind/infrastructure` and wait until `Gateway/openstack-gw` is `Programmed`. |
+| 5 | Apply the infrastructure overlay `deploy/overlays/kind/infrastructure` and wait until `Gateway/openstack-gw` is `Programmed`. |
 | 6 | Wait for the OpenBao pod to reach the phase `Running`. |
 | 7 | **Bootstrap OpenBao**: initialise, unseal, configure, and seed the bootstrap secrets. |
 | 8 | Wait for the ExternalSecrets `keystone-admin`, `keystone-db` and `mariadb-root-password` to sync. |
@@ -224,7 +224,7 @@ become `Ready` before returning.
 ::: tip ExternalSecret shims of the kind overlay
 The `keystone-admin`, `keystone-db`, and `mariadb-root-password` ExternalSecrets applied
 in Step 5 and awaited in Step 8 are **kind-overlay shims**
-(`deploy/kind/infrastructure/`) that keep this standalone Keystone flow self-contained.
+(`deploy/overlays/kind/infrastructure/`) that keep this standalone Keystone flow self-contained.
 The production stack (`deploy/eso/`) ships only the `ClusterSecretStore`: in a
 ControlPlane-based deployment the admin password is projected per ControlPlane by the
 c5c3-operator, and the MariaDB root password is expected from a non-kind Flux MariaDB
@@ -307,7 +307,7 @@ Opt in by setting `WITH_CHAOS_MESH=true` before `make deploy-infra`:
 WITH_CHAOS_MESH=true make deploy-infra
 ```
 
-This applies the kind-only overlay at `deploy/kind/chaos-mesh/`, loads the
+This applies the kind-only overlay at `deploy/overlays/kind/chaos-mesh/`, loads the
 chaos-daemon kernel modules on the kind node, and waits for the Chaos Mesh
 HelmRelease to become Ready alongside the other operators. It is required
 before running the chaos E2E suites;
@@ -345,7 +345,7 @@ Opt in by setting `WITH_PROMETHEUS=true` before `make deploy-infra`:
 WITH_PROMETHEUS=true make deploy-infra
 ```
 
-This applies the kind-only overlay at `deploy/kind/prometheus/`, waits for the
+This applies the kind-only overlay at `deploy/overlays/kind/prometheus/`, waits for the
 `kube-prometheus-stack` HelmRelease to become Ready, and patches the
 keystone-operator HelmRelease to enable its `ServiceMonitor`. Use it when you
 want to visualise the keystone-operator metrics live (reconcile p95,
@@ -365,14 +365,14 @@ Opt in by setting `WITH_METRICS_SERVER=true` before `make deploy-infra`:
 WITH_METRICS_SERVER=true make deploy-infra
 ```
 
-This applies the kind-only overlay at `deploy/kind/metrics-server/` and waits
+This applies the kind-only overlay at `deploy/overlays/kind/metrics-server/` and waits
 for the `metrics-server` HelmRelease to become Ready. It is the prerequisite
 for the [Autoscaling (HPA) recipe](./guides/advanced-configuration.md#autoscaling-hpa):
 without it the generated HorizontalPodAutoscaler reports `unknown/80%` and never
 scales.
 
 `WITH_VPA=true make deploy-infra` installs metrics-server too, together with
-the VPA CRDs and the kind-only VPA recommender at `deploy/kind/vpa/`. The CI
+the VPA CRDs and the kind-only VPA recommender at `deploy/overlays/kind/vpa/`. The CI
 sizing measurement reads the recommender, and the `e2e-autoscaling` job
 deploys it so the operators create the VerticalPodAutoscalers a
 `verticalAutoscaling` block opts into
@@ -388,7 +388,7 @@ Opt in by setting `WITH_DIZZY=true` before `make deploy-infra`:
 WITH_DIZZY=true make deploy-infra
 ```
 
-This applies the kind-only overlay at `deploy/kind/dizzy/` and waits for the
+This applies the kind-only overlay at `deploy/overlays/kind/dizzy/` and waits for the
 `dizzy-victoria-metrics` and `dizzy-grafana` HelmReleases to become Ready.
 Grafana serves the dizzy dashboards at `https://dizzy.127-0-0-1.nip.io`; append
 `:<KIND_HOST_PORT>` when that override is set to something other than 443. To

@@ -115,7 +115,7 @@ describes them and holds their record.
 | Prerequisite | Details |
 | --- | --- |
 | Infrastructure stack | Deployed via `WITH_CHAOS_MESH=true make deploy-infra` (opt-in path; see [Infrastructure E2E Deployment](../infrastructure/e2e-deployment.md)) |
-| Chaos Mesh | Installed in `chaos-mesh` namespace by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/`; CI sets `WITH_CHAOS_MESH=true` on every matrix entry of the job |
+| Chaos Mesh | Installed in `chaos-mesh` namespace by the kind-only opt-in overlay at `deploy/overlays/kind/chaos-mesh/`; CI sets `WITH_CHAOS_MESH=true` on every matrix entry of the job |
 | Keystone operator | Deployed to the cluster with CRDs installed |
 | ESO ExternalSecrets | `keystone-admin`, `keystone-db` synced in `openstack` namespace |
 | MariaDB instance | `openstack-db` MariaDB CR Ready in `openstack` namespace |
@@ -417,7 +417,7 @@ A push to `main` or of a `v*` tag never runs the job.
 [random chaos run](#random-runs) every night, on a pull request that changes
 its own files, the `tests_chaos_random` filter (`tests/chaos-random/**`,
 `hack/chaos-random.sh`, `hack/dizzy-soak.sh`, `hack/dizzy-soak-runner.sh`,
-`deploy/lab/metal-stack/dizzy-soak/**` and
+`deploy/overlays/metal-stack/dizzy-soak/**` and
 `tests/e2e-chaos/lib/consistency.sh`), and under `ci:full`. It gates on a pull
 request like every entry. `ci:chaos` and `run-chaos` leave it off, and a change
 under `tests/e2e-chaos/` alone does not run it.
@@ -922,7 +922,7 @@ these lists fails the generator.
 Every platform component under the OpenStack services has a fault suite except
 Flux. The FluxInstance has no `spec.sync` (`deploy/flux-system/fluxinstance.yaml`),
 and the operators under test are installed by `helm` with their HelmReleases
-suspended (`deploy/kind/base/kustomization.yaml`). No HelmRelease enables drift
+suspended (`deploy/overlays/kind/base/kustomization.yaml`). No HelmRelease enables drift
 detection, so a killed Flux is on no request path and leaves no state for a suite
 to judge. A restarted helm-controller, on the other hand, reconciles every
 HelmRelease and can upgrade a platform chart within its semver range in the

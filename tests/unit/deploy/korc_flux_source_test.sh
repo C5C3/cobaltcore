@@ -86,7 +86,7 @@ test_kustomization_path_is_checked_out() {
 test_overlays_render_sparse_checkout() {
   echo "Test: the production, kind and metal-stack overlays render GitRepository/k-orc with spec.sparseCheckout"
 
-  local overlays=(deploy/flux-system deploy/kind/base deploy/lab/metal-stack/base)
+  local overlays=(deploy/flux-system deploy/overlays/kind/base deploy/overlays/metal-stack/base)
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (${#overlays[@]} checks skipped)"

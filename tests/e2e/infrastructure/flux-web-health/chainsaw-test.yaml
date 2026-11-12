@@ -4,7 +4,7 @@
 
 # Chainsaw E2E test for the Flux Web UI kind-only demo addon.
 # Exercises the health invariants of the flux-web Helm release deployed
-# by deploy/kind/base/flux-web.yaml:
+# by deploy/bases/devstack/base/flux-web.yaml:
 #   - HelmRelease/flux-web in flux-system has Ready=True
 #   - Deployment/flux-web has at least one available replica
 #   - Service/flux-web exposes TCP port 9080
@@ -83,7 +83,7 @@ spec:
           set -euo pipefail
 
           # ── Presence guard ──────────────────────────────
-          # The kind overlay alone deploys deploy/kind/base/flux-web.yaml,
+          # The kind overlay alone deploys deploy/bases/devstack/base/flux-web.yaml,
           # which materialises ResourceSet/flux-web in flux-system.
           # Its absence unambiguously signals a non-kind cluster — exit
           # 0 with a SKIP line so the test passes without failing on the
@@ -91,7 +91,7 @@ spec:
           if ! kubectl get resourceset flux-web -n flux-system >/dev/null 2>&1; then
             echo "SKIP: flux-web ResourceSet not present in flux-system namespace."
             echo "      This is expected on non-kind overlays (deploy/flux-system/"
-            echo "      does not reference deploy/kind/base/flux-web.yaml)."
+            echo "      does not reference deploy/bases/devstack/base/flux-web.yaml)."
             exit 0
           fi
           echo "OK: flux-web ResourceSet present — running health checks"
@@ -186,7 +186,7 @@ spec:
     # silently produce an empty log dump on failure. Select by
     # `app.kubernetes.io/instance=flux-web` instead — the `instance`
     # label tracks the release name, which we pin via `releaseName:
-    # flux-web` in deploy/kind/base/flux-web.yaml.
+    # flux-web` in deploy/bases/devstack/base/flux-web.yaml.
     - podLogs:
         namespace: flux-system
         selector: app.kubernetes.io/instance=flux-web
