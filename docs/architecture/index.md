@@ -25,7 +25,7 @@ infrastructure stack, the operators come up in dependency order, and a single
 Service workloads either stay on the management cluster or run on registered
 target clusters.
 
-![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC resources. The service operators for Keystone, Horizon, Glance, Placement, Barbican, Neutron, Cinder, and Nova manage those OpenStack services, which are exposed via the Gateway API. The OVN operator manages the OVN central and chassis layer. The infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) is managed by its own operators. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../diagrams/cobaltcore-management-cluster.svg)
+![The management cluster: GitOps (flux-operator, FluxInstance) and Secrets & PKI (cert-manager, OpenBao, External Secrets Operator) next to the c5c3-operator, whose ControlPlane CR creates infrastructure CRs, service CRs, and K-ORC (OpenStack Resource Controller) resources. The service operators for Keystone, Horizon, Glance, Placement, Barbican, Neutron, Cinder, and Nova manage those OpenStack services, which can be exposed via the Gateway API. The OVN operator manages the OVN central and chassis layer. Managed infrastructure (MariaDB Galera, Memcached, opt-in RabbitMQ, Garage S3) has operators of its own. Optional target clusters, registered via kubeconfig Secrets, receive projected service workloads.](../diagrams/cobaltcore-management-cluster.svg)
 
 ## A composable control plane
 
@@ -39,17 +39,18 @@ adding, removing, or replacing one part is a change to one resource.
 
 The `ControlPlane` creates one service resource per block under
 `spec.services`, and every block is optional. A ControlPlane without
-`services.cinder` runs no block storage, and `CinderReady` reports the service
-as not managed instead of holding back `Ready`. A block can also give its
+`services.cinder` does not manage a Cinder service, and `CinderReady` reports
+it as not managed instead of holding back `Ready`. A block can also give its
 service a namespace, a target cluster, or a database and cache of its own; see
 [Multi-cluster placement](#multi-cluster-placement) and
 [DedicatedBackingServices](../reference/c5c3/controlplane-crd.md#dedicatedbackingservices).
 
 A backend attaches to its service by reference. The backend resource names the
 service in a `spec.*Ref` field. The service collects every backend that names
-it and renders them into its configuration, and the backend reports
-`ConfigProjected` once the service's pods run with that configuration
-([the handshake](../reference/backend/kubernetes-packages.md#satellite-handshake)).
+it and renders them into its configuration. The backend reports
+`ConfigProjected` when the parent service's Deployment mounts the resulting
+configuration or Secret reference. Keystone identity backends also wait for the
+Deployment rollout ([the handshake](../reference/backend/kubernetes-packages.md#satellite-handshake)).
 Deleting the resource detaches the backend the same way. Compute and network
 nodes join through pool resources. A `NovaCompute` or an `OVNChassis` selects
 nodes by label and puts the agents of its service onto them.
@@ -100,9 +101,10 @@ The stack is built in three declarative layers.
 **Infrastructure manifests** (`deploy/flux-system/`). A `FluxInstance`
 installs the Flux controllers, and HelmReleases install cert-manager, the External Secrets
 Operator, OpenBao, and the infrastructure and service operators along an
-explicit `dependsOn` graph; K-ORC and the RabbitMQ Cluster Operator are
-applied by Flux `Kustomization`s of their own. The full stack, its namespaces,
-and the dependency order are documented in
+explicit `dependsOn` graph; [K-ORC (OpenStack Resource
+Controller)](../reference/infrastructure/infrastructure-manifests.md#k-orc-openstack-resource-controller)
+and the RabbitMQ Cluster Operator are applied by Flux `Kustomization`s of
+their own. The full stack, its namespaces, and the dependency order are documented in
 [Infrastructure Manifests](../reference/infrastructure/infrastructure-manifests.md).
 
 The figure draws that graph: four layers of HelmReleases, and the two
@@ -123,13 +125,14 @@ Barbican, Neutron, Cinder, and Nova are onboarded on the same scaffolding
 one-operator-per-service rule: it runs no OpenStack service of its own, only
 the OVN and Open vSwitch layer that the Neutron ML2/OVN driver programs.
 
-**Orchestration** (`operators/c5c3/`). The c5c3-operator turns one
-`ControlPlane` CR into a running control plane: it creates the MariaDB,
-Memcached, and RabbitMQ CRs, projects the service CRs, mints the admin
-application credential through K-ORC, stewards the service-catalog entries,
-and aggregates readiness into the `ControlPlane` status. The OVN control plane
-stays outside it: the network service names an existing `OVNCentral`, which
-the c5c3-operator reads but never creates. Nova is projected through
+**Orchestration** (`operators/c5c3/`). The c5c3-operator turns one `ControlPlane` CR into a running control plane: it
+reconciles managed MariaDB and Memcached resources and an optional managed
+RabbitMQ broker, projects the service CRs, and creates K-ORC resources for the
+admin application credential and service-catalog entries. K-ORC reconciles
+those resources into Keystone, and the c5c3-operator aggregates readiness into
+the `ControlPlane` status. The OVN control plane stays outside it: the network
+service names an existing `OVNCentral`, which the c5c3-operator reads but never
+creates. Nova is projected through
 `services.nova`, and compute nodes join it through `NovaCompute` pools, on the
 same cluster or on a compute cluster
 ([Connect a Compute Cluster](../guides/nova/connect-a-compute-cluster.md)). See
@@ -137,12 +140,15 @@ same cluster or on a compute cluster
 
 ## Secret flow
 
-OpenBao is the source of truth for credentials, and ESO moves them in both
-directions: `ExternalSecret` resources deliver admin and database credentials
-to the services, `PushSecret` resources write operator-generated secrets back
-to OpenBao. Every ControlPlane reaches OpenBao through a tenant store of its
-own, which the c5c3-operator provisions in the ControlPlane namespace. A shared
-cluster store serves standalone service CRs. The credentials of a
+In the default stack, OpenBao is the source of truth for credentials, and ESO
+moves them in both directions: `ExternalSecret` resources deliver admin and
+database credentials to the services, and `PushSecret` resources write
+operator-generated secrets back to the selected store. By default, each
+ControlPlane uses an OpenBao tenant store provisioned by the c5c3-operator in
+its namespace; an explicit
+[`spec.secretStoreRef`](../reference/c5c3/controlplane-crd.md#secretstorerefspec)
+can override it. Standalone service CRs default to a shared cluster store. The
+credentials of a
 ControlPlane's managed database are by default issued per lease by OpenBao's
 database engine. The bootstrap sequence and the credential chain are
 documented in
@@ -151,7 +157,7 @@ documented in
 
 The figure shows the three paths and the store each one uses.
 
-![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. A ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant. The ClusterSecretStore openbao-cluster-store, with the role eso-management, serves standalone service CRs in the openstack namespace.](../diagrams/secrets-flow.svg)
+![Secret flow on the management cluster. OpenBao in shared-services holds a KV engine and a database engine, and the External Secrets Operator moves three kinds of secret. Read: an ExternalSecret copies a value from the KV engine through a secret store into a Secret that pods and Jobs consume. Write-back: a PushSecret copies a Secret an operator wrote through the store into the KV engine. Dynamic: a VaultDynamicSecret generator draws a short-lived MariaDB user from the database engine with a login of its own and no store. By default, a ControlPlane namespace uses the SecretStore openbao-tenant-store, which the c5c3-operator creates and which logs in with the role eso-tenant; an explicit spec.secretStoreRef can override it. Standalone service CRs default to the ClusterSecretStore openbao-cluster-store, with the role eso-management, in the openstack namespace.](../diagrams/secrets-flow.svg)
 
 ## Service exposure
 
@@ -355,7 +361,7 @@ in production across many regions. This chapter describes the model and sets
 CobaltCore OpenStack beside it, so that a reader who knows one can place the
 other.
 
-![Two ways to deploy OpenStack on Kubernetes. Left, charts, values, and a central CI: a charts repository with one chart per service, each with its own database, bus, and cache, several hundred charts in all, and a values repository with the differences per region, for example MariaDB and OVN on in region A and Galera and OVN off in region B, with secrets from a vault at deploy time. Both feed a central CI that runs one job per release and region: keystone, nova, neutron, cinder, and more for region A, the same again for region B, and a pipeline of its own for every further region. The CI pushes the releases with helm upgrade into each region, where every release, such as nova and neutron, brings its own database, bus, and cache. Right, CobaltCore OpenStack: a Git repository holds one ControlPlane per region, for example sizing Standard in A and Minimal in B, with every field checked at admission. A CI builds and tests the operators and the images once. The operators carry the install order, the database migrations, the upgrades, and the key rotation, run in every region, and report the state of every resource as conditions. Flux in every region pulls its ControlPlane, and each region runs Flux, the ControlPlane, the operators, and one database, bus, and cache that all services share.](../diagrams/cobaltcore-deployment-models.svg)
+![Two ways to deploy OpenStack on Kubernetes. Left, charts, values, and a central CI: a charts repository with one chart per service, each with its own database, bus, and cache, several hundred charts in all, and a values repository with the differences per region, for example MariaDB and OVN on in region A and Galera and OVN off in region B, with secrets from a vault at deploy time. Both feed a central CI that runs one job per release and region: keystone, nova, neutron, cinder, and more for region A, the same again for region B, and a pipeline of its own for every further region. The CI pushes the releases with helm upgrade into each region, where every release, such as nova and neutron, brings its own database, bus, and cache. Right, CobaltCore OpenStack: a Git repository holds one ControlPlane per region, for example sizing Standard in A and Minimal in B, with every field checked at admission. A CI builds and tests the operators and the images once. The operators carry the install order, the database migrations, the upgrades, and the key rotation, run in every region, and report the state of every resource as conditions. Flux in every region pulls its ControlPlane, and each region runs Flux, the ControlPlane, the operators, and a shared database, bus, and cache; services can request dedicated backing services.](../diagrams/cobaltcore-deployment-models.svg)
 
 ### Charts, values, and a central CI
 
