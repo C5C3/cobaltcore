@@ -34,12 +34,12 @@ if [[ ! -f "$QUICK_START" ]]; then
   exit 1
 fi
 
-# Extract the section between "## Step 3 — Deploy the infrastructure stack"
+# Extract the section between "## Step 3: Deploy the infrastructure stack"
 # and the next "## Step" so we can scope assertions to Step 3 only. The
 # `::: tip Enabling Chaos Mesh` block lives inside Step 3 details.
 extract_step3_block() {
   awk '
-    /^## Step 3 / { in_block = 1; print; next }
+    /^## Step 3[^[:alnum:]]/ { in_block = 1; print; next }
     in_block && /^## Step / { exit }
     in_block { print }
   ' "$QUICK_START"

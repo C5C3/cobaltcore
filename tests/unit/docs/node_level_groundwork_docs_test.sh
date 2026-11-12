@@ -93,7 +93,7 @@ test_operator_guide_documents_node_level_workloads() {
   # reintroduces the Node annotation has to revisit the grant too.
   assert_file_contains "per-node values route the system-id to the namespaced object" \
     "$OPERATOR_DOC" \
-    'into that same namespaced per-node object'
+    'stores it in the same namespaced per-node object'
   assert_file_contains "per-node values reject the Node-annotation alternative" \
     "$OPERATOR_DOC" \
     'grants `nodes` read-only and has no `patch` opt-in at all'
