@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2040" height="1060" viewBox="0 0 2040 1060" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Two racks of chassis-bearing nodes attached to an EVPN/VXLAN fabric over eBGP from a fabric VRF">
+<title>Two racks of chassis-bearing nodes attached to an EVPN/VXLAN fabric over eBGP from a fabric VRF</title>
+<rect width="2040" height="1060" fill="#F6F5F1"/>
+<rect x="360" y="40" width="320" height="100" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="520" y="75.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">spine</text>
+<rect x="414" y="94" width="213" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="520.5" y="115.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">EVPN route reflector</text>
+<rect x="1360" y="40" width="320" height="100" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1520" y="75.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">spine</text>
+<rect x="1414" y="94" width="213" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1520.5" y="115.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">EVPN route reflector</text>
+<rect x="40" y="226" width="960" height="654" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="60" y="260.36" font-size="26" font-weight="700" fill="#2B3440">rack 1</text>
+<rect x="80" y="300" width="360" height="120" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="259.5" y="337.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">leaf A</text>
+<rect x="95" y="364" width="80" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="135" y="385.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">VTEP</text>
+<rect x="187" y="364" width="238" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="306" y="385.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">VRF cobaltcore, L3VNI</text>
+<rect x="600" y="300" width="360" height="120" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="779.5" y="337.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">leaf B</text>
+<rect x="615" y="364" width="80" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="655" y="385.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">VTEP</text>
+<rect x="707" y="364" width="238" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="826" y="385.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">VRF cobaltcore, L3VNI</text>
+<polyline points="260,300 260,190 780,190 780,300" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polyline points="520,190 520,150.5" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polygon points="520,140 527.2,155 512.8,155" fill="#B38A00"/>
+<text x="534" y="169.2" font-size="20" font-weight="400" fill="#6F5600">Type-5 /32 over leaf A and leaf B</text>
+<rect x="60" y="570" width="430" height="256" rx="12" fill="#FDFCF9" stroke="#C6343C" stroke-width="3"/>
+<rect x="78" y="584" width="84" height="36" rx="18" fill="#C6343C"/>
+<text x="120" y="610.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="176" y="610.64" font-size="24" font-weight="700" fill="#2B3440">node 1</text>
+<rect x="76" y="632" width="398" height="76" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="92" y="678.64" font-size="24" font-weight="700" fill="#2B3440">fabric VRF</text>
+<rect x="290" y="655" width="170" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="375" y="676.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">lo 192.0.2.x/32</text>
+<rect x="76" y="728" width="398" height="76" rx="6" fill="#EEEAF7" stroke="#5E43A8" stroke-width="2"/>
+<text x="92" y="774.64" font-size="24" font-weight="700" fill="#4B3592">node network</text>
+<rect x="264" y="751" width="196" height="30" rx="15" fill="#FDFCF9" stroke="#5E43A8" stroke-width="2"/>
+<text x="362" y="772.48" font-size="18" font-weight="700" fill="#4B3592" text-anchor="middle">InternalIP, Geneve</text>
+<polyline points="120,804 120,910" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<rect x="550" y="570" width="430" height="256" rx="12" fill="#FDFCF9" stroke="#C6343C" stroke-width="3" stroke-dasharray="9 6"/>
+<rect x="568" y="584" width="84" height="36" rx="18" fill="#C6343C"/>
+<text x="610" y="610.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="666" y="610.64" font-size="24" font-weight="700" fill="#2B3440">+ more</text>
+<rect x="566" y="632" width="398" height="76" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="582" y="678.64" font-size="24" font-weight="700" fill="#2B3440">fabric VRF</text>
+<rect x="780" y="655" width="170" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="865" y="676.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">lo 192.0.2.x/32</text>
+<rect x="566" y="728" width="398" height="76" rx="6" fill="#EEEAF7" stroke="#5E43A8" stroke-width="2"/>
+<text x="582" y="774.64" font-size="24" font-weight="700" fill="#4B3592">node network</text>
+<rect x="754" y="751" width="196" height="30" rx="15" fill="#FDFCF9" stroke="#5E43A8" stroke-width="2"/>
+<text x="852" y="772.48" font-size="18" font-weight="700" fill="#4B3592" text-anchor="middle">InternalIP, Geneve</text>
+<polyline points="610,804 610,910" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<polyline points="280,632 280,430.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="280,420 287.2,435 272.8,435" fill="#3A4452"/>
+<polyline points="440,632 440,540 660,540 660,430.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="660,420 667.2,435 652.8,435" fill="#3A4452"/>
+<text x="296" y="471.2" font-size="20" font-weight="400" fill="#55606E">eBGP unnumbered, BFD 300 ms × 3</text>
+<text x="296" y="501.2" font-size="20" font-weight="400" fill="#55606E">MTU 9000</text>
+<text x="520" y="273.2" font-size="20" font-weight="400" fill="#55606E" text-anchor="middle">accepts /32, /128 only, max 8192, exports Type-5</text>
+<text x="140" y="857.2" font-size="20" font-weight="400" fill="#55606E">announces /32, /128 only, accepts default</text>
+<rect x="1040" y="226" width="960" height="654" rx="13" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1060" y="260.36" font-size="26" font-weight="700" fill="#2B3440">rack 2</text>
+<rect x="1080" y="300" width="360" height="120" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1259.5" y="337.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">leaf A</text>
+<rect x="1095" y="364" width="80" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1135" y="385.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">VTEP</text>
+<rect x="1187" y="364" width="238" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1306" y="385.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">VRF cobaltcore, L3VNI</text>
+<rect x="1600" y="300" width="360" height="120" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1779.5" y="337.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">leaf B</text>
+<rect x="1615" y="364" width="80" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1655" y="385.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">VTEP</text>
+<rect x="1707" y="364" width="238" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1826" y="385.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">VRF cobaltcore, L3VNI</text>
+<polyline points="1260,300 1260,190 1780,190 1780,300" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polyline points="1520,190 1520,150.5" fill="none" stroke="#B38A00" stroke-width="3"/>
+<polygon points="1520,140 1527.2,155 1512.8,155" fill="#B38A00"/>
+<text x="1534" y="169.2" font-size="20" font-weight="400" fill="#6F5600">Type-5 /32 over leaf A and leaf B</text>
+<rect x="1060" y="570" width="430" height="256" rx="12" fill="#FDFCF9" stroke="#C6343C" stroke-width="3"/>
+<rect x="1078" y="584" width="84" height="36" rx="18" fill="#C6343C"/>
+<text x="1120" y="610.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="1176" y="610.64" font-size="24" font-weight="700" fill="#2B3440">node 1</text>
+<rect x="1076" y="632" width="398" height="76" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1092" y="678.64" font-size="24" font-weight="700" fill="#2B3440">fabric VRF</text>
+<rect x="1290" y="655" width="170" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1375" y="676.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">lo 192.0.2.x/32</text>
+<rect x="1076" y="728" width="398" height="76" rx="6" fill="#EEEAF7" stroke="#5E43A8" stroke-width="2"/>
+<text x="1092" y="774.64" font-size="24" font-weight="700" fill="#4B3592">node network</text>
+<rect x="1264" y="751" width="196" height="30" rx="15" fill="#FDFCF9" stroke="#5E43A8" stroke-width="2"/>
+<text x="1362" y="772.48" font-size="18" font-weight="700" fill="#4B3592" text-anchor="middle">InternalIP, Geneve</text>
+<polyline points="1120,804 1120,910" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<rect x="1550" y="570" width="430" height="256" rx="12" fill="#FDFCF9" stroke="#C6343C" stroke-width="3" stroke-dasharray="9 6"/>
+<rect x="1568" y="584" width="84" height="36" rx="18" fill="#C6343C"/>
+<text x="1610" y="610.64" font-size="24" font-weight="700" fill="#FBFAF7" text-anchor="middle">node</text>
+<text x="1666" y="610.64" font-size="24" font-weight="700" fill="#2B3440">+ more</text>
+<rect x="1566" y="632" width="398" height="76" rx="6" fill="#EEF0F3" stroke="#7D8794" stroke-width="2"/>
+<text x="1582" y="678.64" font-size="24" font-weight="700" fill="#2B3440">fabric VRF</text>
+<rect x="1780" y="655" width="170" height="30" rx="15" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="1865" y="676.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">lo 192.0.2.x/32</text>
+<rect x="1566" y="728" width="398" height="76" rx="6" fill="#EEEAF7" stroke="#5E43A8" stroke-width="2"/>
+<text x="1582" y="774.64" font-size="24" font-weight="700" fill="#4B3592">node network</text>
+<rect x="1754" y="751" width="196" height="30" rx="15" fill="#FDFCF9" stroke="#5E43A8" stroke-width="2"/>
+<text x="1852" y="772.48" font-size="18" font-weight="700" fill="#4B3592" text-anchor="middle">InternalIP, Geneve</text>
+<polyline points="1610,804 1610,910" fill="none" stroke="#5E43A8" stroke-width="3"/>
+<polyline points="1280,632 1280,430.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1280,420 1287.2,435 1272.8,435" fill="#3A4452"/>
+<polyline points="1440,632 1440,540 1660,540 1660,430.5" fill="none" stroke="#3A4452" stroke-width="3"/>
+<polygon points="1660,420 1667.2,435 1652.8,435" fill="#3A4452"/>
+<text x="1296" y="471.2" font-size="20" font-weight="400" fill="#55606E">eBGP unnumbered, BFD 300 ms × 3</text>
+<text x="1296" y="501.2" font-size="20" font-weight="400" fill="#55606E">MTU 9000</text>
+<polyline points="1780,632 1780,430.5" fill="none" stroke="#3A4452" stroke-width="3" stroke-dasharray="9 6"/>
+<polygon points="1780,420 1787.2,435 1772.8,435" fill="#3A4452"/>
+<rect x="1738" y="455" width="84" height="30" rx="15" fill="#FDFCF9" stroke="#C6343C" stroke-width="2"/>
+<text x="1780" y="476.48" font-size="18" font-weight="700" fill="#A3262E" text-anchor="middle">never</text>
+<text x="1834" y="477.2" font-size="20" font-weight="700" fill="#2B3440">l2vpn evpn</text>
+<text x="1796" y="515.2" font-size="20" font-weight="400" fill="#55606E">no EVPN to the node</text>
+<text x="1796" y="543.2" font-size="20" font-weight="400" fill="#55606E">(#1365)</text>
+<rect x="40" y="910" width="1960" height="100" rx="6" fill="#EEEAF7" stroke="#5E43A8" stroke-width="2"/>
+<text x="60" y="945.64" font-size="24" font-weight="700" fill="#4B3592">node network (platform)</text>
+<polygon points="1120,980 1105,987.2 1105,972.8" fill="#B38A00"/>
+<polygon points="120,980 135,972.8 135,987.2" fill="#B38A00"/>
+<polyline points="130.5,980 1109.5,980" fill="none" stroke="#B38A00" stroke-width="3"/>
+<text x="619.5" y="961.2" font-size="20" font-weight="700" fill="#6F5600" text-anchor="middle">Geneve UDP 6081</text>
+</svg>
