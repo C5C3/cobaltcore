@@ -8,7 +8,7 @@ SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# How-to: Deploy to a Target Cluster
+# Deploy to a Target Cluster
 
 A Keystone CR that carries `spec.targetClusterRef` stays where it was created,
 with its status, its finalizers and the webhook that admitted it, and writes
@@ -53,8 +53,13 @@ the examples below resolve on the target: `openstack-db`,
 
    ```bash
    RELEASE=2026.1
-   docker pull ghcr.io/c5c3/keystone:${RELEASE}
-   kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore-target
+   image="ghcr.io/c5c3/keystone:${RELEASE}"
+   if [[ "${KIND_EXPERIMENTAL_PROVIDER:-docker}" == podman ]]; then
+     podman pull "$image"
+   else
+     docker pull "$image"
+   fi
+   kind load docker-image "$image" --name cobaltcore-target
    ```
 
 2. **The management cluster.** `hack/deploy-mgmt-cluster.sh` creates the
@@ -63,6 +68,8 @@ the examples below resolve on the target: `openstack-db`,
    external-secrets, openbao-operator, and the Prometheus operator CRDs. Every
    controller-runtime watch registers against this cluster at builder time, so
    those kinds have to be installed here even though no child is written here.
+    The script's preflight also requires the Docker CLI and a running Docker
+    daemon, including when the target cluster uses Podman.
   The rabbitmq-cluster-operator controller also runs here. A ControlPlane's
   shared message bus is provisioned in the ControlPlane's own
    namespace on this cluster, so the controller that turns a `RabbitmqCluster`
@@ -83,8 +90,13 @@ the examples below resolve on the target: `openstack-db`,
 
    ```bash
    for op in keystone barbican; do
-     docker pull ghcr.io/c5c3/${op}-operator:latest
-     kind load docker-image ghcr.io/c5c3/${op}-operator:latest --name cobaltcore-mgmt
+     image="ghcr.io/c5c3/${op}-operator:latest"
+     if [[ "${KIND_EXPERIMENTAL_PROVIDER:-docker}" == podman ]]; then
+       podman pull "$image"
+     else
+       docker pull "$image"
+     fi
+     kind load docker-image "$image" --name cobaltcore-mgmt
    done
 
    OPERATOR=keystone IMAGE_REPO=ghcr.io/c5c3/keystone-operator IMAGE_TAG=latest \
@@ -151,6 +163,11 @@ kubectl --context kind-cobaltcore-target -n c5c3-access get secret target-cluste
   -o jsonpath='{.data.token}' | base64 -d > "$workdir/token"
 kubectl --context kind-cobaltcore-target -n c5c3-access get secret target-cluster-access-token \
   -o jsonpath='{.data.ca\.crt}' | base64 -d > "$workdir/ca.crt"
+
+if [[ ! -s "$workdir/token" || ! -s "$workdir/ca.crt" ]]; then
+  echo "target-cluster-access-token is not populated yet; wait for its controller and retry" >&2
+  exit 1
+fi
 ```
 
 The server URL has to be the one an operator pod on `cobaltcore-mgmt` can dial.
@@ -294,13 +311,12 @@ where they are:
 kubectl --context kind-cobaltcore-mgmt -n c5c3-clusters delete secret cobaltcore-target
 ```
 
-Revoking the grants themselves is a `helm uninstall target-cluster-access -n
-c5c3-access` on the target, which takes the ServiceAccount and its token with
-it. Deleting the account is the part that revokes: the token it minted never
-expires, so deleting the token Secret alone leaves a leaked copy valid until an
-account of the same name is gone. The namespaces stay because they carry
-`helm.sh/resource-policy: keep`, so the uninstall takes the access away and not
-the workloads placed there. See
+Deleting the token Secret invalidates a copied token immediately, even though
+the token has no expiration. Uninstalling the chart also removes the
+ServiceAccount and its RBAC grants, so it revokes access and prevents a
+replacement token from retaining those grants. The namespaces stay because
+they carry `helm.sh/resource-policy: keep`, so the uninstall leaves the
+workloads placed there. See
 [Rotating and revoking the target token](../reference/target-clusters.md#rotating-and-revoking-the-target-token)
 for the rotation that keeps the placement running.
 
