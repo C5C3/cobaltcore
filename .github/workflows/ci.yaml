@@ -391,7 +391,8 @@ jobs:
               - 'tests/e2e/c5c3/multi-controlplane/**'
               - 'tests/e2e/c5c3/deletion-orchestration/**'
               # The full-chain suite applies this overlay's fixtures.yaml.
-              - 'deploy/kind/hypervisor-operator-fixtures/**'
+              - 'deploy/overlays/kind/hypervisor-operator-fixtures/**'
+              - 'deploy/bases/hypervisor-fixtures/**'
             tests_controlplane_sso:
               - 'tests/e2e-controlplane-sso/**'
             tests_external_keystone:
@@ -400,8 +401,8 @@ jobs:
             # job deploys, and the shared HPA and VPA code it drives.
             tests_autoscaling:
               - 'tests/e2e-autoscaling/**'
-              - 'deploy/kind/metrics-server/**'
-              - 'deploy/kind/vpa/**'
+              - 'deploy/overlays/kind/metrics-server/**'
+              - 'deploy/overlays/kind/vpa/**'
               - 'internal/common/deployment/builders.go'
               - 'internal/common/deployment/hpa_flow.go'
               - 'internal/common/deployment/vpa_flow.go'
@@ -416,14 +417,14 @@ jobs:
               - 'hack/chaos-random.sh'
               - 'hack/dizzy-soak.sh'
               - 'hack/dizzy-soak-runner.sh'
-              - 'deploy/lab/metal-stack/dizzy-soak/**'
+              - 'deploy/overlays/metal-stack/dizzy-soak/**'
               - 'tests/e2e-chaos/lib/consistency.sh'
             tests_multicluster:
               - 'tests/e2e-multicluster/**'
-              - 'deploy/target-cluster/**'
+              - 'deploy/bases/target-cluster-access/**'
             tests_orders_multicluster:
               - 'tests/e2e-orders-multicluster/**'
-              - 'deploy/target-cluster/**'
+              - 'deploy/bases/target-cluster-access/**'
             tests_ovn_overlay:
               - 'tests/e2e-ovn-overlay/**'
             # The libvirt suite and the compute-node-pool fixtures it applies by
@@ -482,7 +483,9 @@ jobs:
             tests_prometheus:
               - 'tests/e2e/keystone/prometheus-stack/**'
               - 'tests/e2e/horizon/prometheus-stack/**'
-              - 'deploy/kind/prometheus/**'
+              - 'deploy/overlays/kind/prometheus/**'
+              - 'deploy/bases/prometheus/**'
+              - 'deploy/overlays/kind/prometheus-managed/**'
               - 'operators/keystone/dashboards/**'
               - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
               - 'operators/horizon/helm/horizon-operator/templates/servicemonitor.yaml'
@@ -514,13 +517,13 @@ jobs:
             # OpenBao is one piece of the substrate with an operator that
             # exercises it directly, so barbican joins the canary for it.
             e2e_openbao:
-              - 'deploy/openbao/**'
+              - 'deploy/bases/shared-openbao/**'
             # K-ORC is the other: only the jobs that run hack/ci-deploy-korc.sh
             # deploy its pinned commit and image, so the c5c3 leg (the
             # cheapest of them) joins the canary for a change to the pin.
             e2e_korc:
-              - 'deploy/flux-system/sources/k-orc.yaml'
-              - 'deploy/flux-system/releases/k-orc.yaml'
+              - 'deploy/bases/operators/sources/k-orc.yaml'
+              - 'deploy/bases/operators/releases/k-orc.yaml'
               - 'hack/ci-deploy-korc.sh'
             ci_plumbing:
               - '.github/workflows/ci.yaml'
@@ -544,7 +547,7 @@ jobs:
             # validation.
             helm:
               - 'operators/*/helm/**'
-              - 'deploy/target-cluster/**'
+              - 'deploy/bases/target-cluster-access/**'
               - 'hack/gen-helm-values-schema.py'
               - 'hack/gen-helm-rbac-rules.py'
               - 'hack/verify-helm-released-values.sh'
@@ -553,7 +556,7 @@ jobs:
             # The target-cluster-access chart is published outside the
             # per-operator helm-push matrix, so it needs its own gate.
             target_cluster_chart:
-              - 'deploy/target-cluster/**'
+              - 'deploy/bases/target-cluster-access/**'
             # Push events only, and ignored on pull requests. Reproduces the
             # operator set today's go_common and e2e-test unions publish on a
             # push to main, so what lands in GHCR after a merge does not change
@@ -1275,7 +1278,7 @@ jobs:
       # scenarios turn on the namespace list, which is a required value.
       - name: Validate target-cluster-access chart
         run: |
-          chart=deploy/target-cluster/target-cluster-access
+          chart=deploy/bases/target-cluster-access
           echo "--- lint $chart ---"
           helm lint "$chart" --set 'namespaces={openstack}'
           echo "--- Scenario 1: one namespace ---"
@@ -1336,7 +1339,7 @@ jobs:
       # convergence run. `make deploy-infra` is convergent: a second run
       # re-applies every overlay and re-walks all eight steps, so a separate
       # WITH_NFS re-run would repeat the whole base install for the sake of
-      # one `kubectl apply -k deploy/kind/nfs` and one extra name on the
+      # one `kubectl apply -k deploy/overlays/kind/nfs` and one extra name on the
       # HelmRelease wait list. The gates that prove each opt-in landed live
       # inside this one invocation: the script's Phase-3 wait covers the
       # metrics-server and csi-driver-nfs HelmReleases, and its Step-3
@@ -2673,7 +2676,7 @@ jobs:
           NAMESPACE: ovn-system
       # The controlplane leg's planes need K-ORC for their admin credential
       # and registrations, installed from the upstream installer at the pin
-      # of deploy/flux-system/sources/k-orc.yaml as in e2e-controlplane. The
+      # of deploy/bases/operators/sources/k-orc.yaml as in e2e-controlplane. The
       # c5c3-operator's cache needs the Placement CRD; the `!= 'ovn'` steps
       # above already deploy the keystone, horizon, glance and barbican
       # operators here, and the `!= 'pod'` one the ovn-operator.
@@ -3220,7 +3223,7 @@ jobs:
       # suite reads ServiceMonitor/horizon-operator in horizon-system and the
       # horizon diagnostics pass below derives horizon-system as well. The
       # kind Prometheus selects ServiceMonitors in every namespace
-      # (deploy/kind/prometheus/release.yaml).
+      # (deploy/bases/prometheus/release.yaml).
       - name: Deploy horizon-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -3513,7 +3516,7 @@ jobs:
         if: needs.changes.outputs.measure-sizing == 'true'
         run: mkdir -p _output/sizing && nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack >_output/sizing/watch.log 2>&1 &
       # Deploy K-ORC (CRDs + controller) from the upstream installer at the tag
-      # pinned in deploy/flux-system/sources/k-orc.yaml.
+      # pinned in deploy/bases/operators/sources/k-orc.yaml.
       - name: Set up Buildx for K-ORC provenance
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
         with:
@@ -4249,7 +4252,7 @@ jobs:
       # path), which the External ControlPlanes here — in their own namespaces,
       # authenticating from user-supplied Secrets — never read. The suite asserts
       # the External CP's own per-CR OpenBao paths are never-seeded, so no seed
-      # must target them (see deploy/openbao/bootstrap/write-bootstrap-secrets.sh).
+      # must target them (see deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh).
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
@@ -4470,7 +4473,7 @@ jobs:
       - name: Install the target-cluster-access chart on the target
         run: |
           helm install --kube-context "kind-$TARGET_CLUSTER" \
-            target-cluster-access deploy/target-cluster/target-cluster-access \
+            target-cluster-access deploy/bases/target-cluster-access \
             -n c5c3-access --create-namespace \
             --set 'namespaces={openstack}' \
             --set createNamespaces=false
@@ -4678,7 +4681,7 @@ jobs:
       - name: Install the target-cluster-access chart on the target
         run: |
           helm install --kube-context "kind-$TARGET_CLUSTER" \
-            target-cluster-access deploy/target-cluster/target-cluster-access \
+            target-cluster-access deploy/bases/target-cluster-access \
             -n c5c3-access --create-namespace \
             --set 'namespaces={openstack}' \
             --set 'assignedNamespaces={orders-tenant,orders-outsider}'

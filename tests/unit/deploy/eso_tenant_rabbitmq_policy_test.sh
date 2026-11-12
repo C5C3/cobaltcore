@@ -25,7 +25,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-ESO_TENANT_POLICY="$PROJECT_ROOT/deploy/openbao/policies/eso-tenant.hcl"
+ESO_TENANT_POLICY="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/eso-tenant.hcl"
 
 # The ACL template every per-tenant policy path is scoped by.
 NS_TEMPLATE='{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}'

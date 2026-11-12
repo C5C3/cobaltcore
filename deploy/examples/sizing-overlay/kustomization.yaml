@@ -8,7 +8,7 @@
 # tests/unit/deploy/sizing_overlay_example_test.sh renders it and pins every
 # patched field. A deployer copies the directory, points the resources entry
 # below at a checkout or a remote base, and runs kubectl apply -k on the copy
-# in place of deploy/flux-system/. infrastructure/ does the same for the
+# to compose the four controller stages. infrastructure/ does the same for the
 # second apply phase. The recipe is in
 # docs/reference/infrastructure/infrastructure-manifests.md, section "Sizing
 # and placement overrides".
@@ -26,10 +26,36 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../../flux-system
+  - ../../bases/operators
+  - ../../bases/flux
+  - ../../bases/shared-openbao
+  - ../../bases/controlplane-operator
   - priorityclass.yaml
 
 patches:
+  # Preserve this imperative example's namespace ownership and storage choice
+  # when composing the staged bases. Select your own storage class when copying.
+  - target:
+      kind: Namespace
+      annotationSelector: kustomize.toolkit.fluxcd.io/prune=disabled
+    patch: |-
+      - op: remove
+        path: /metadata/annotations
+  - target:
+      kind: HelmRelease
+      name: openbao
+      namespace: shared-services
+    patch: |-
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: openbao
+        namespace: shared-services
+      spec:
+        values:
+          server:
+            dataStorage:
+              storageClass: local-path
   # A CobaltCore OpenStack operator chart: a merge patch on
   # spec.chart.spec.version and spec.values. nodeSelector, tolerations and
   # priorityClassName need keystone-operator chart 0.11.0 or later
@@ -159,7 +185,7 @@ patches:
 
   # The RabbitMQ cluster operator: the placement plus the two request
   # operations the base release
-  # (deploy/flux-system/releases/rabbitmq-cluster-operator.yaml) already
+  # (deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml) already
   # carries. spec.patches is a list, and the merge patch replaces the base's
   # list whole (merge rule 1 in
   # docs/reference/infrastructure/infrastructure-manifests.md), so an entry

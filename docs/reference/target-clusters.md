@@ -173,7 +173,7 @@ on its own:
 ```bash
 kubectl --context "$TARGET" -n c5c3-access delete secret target-cluster-access-token
 helm upgrade --kube-context "$TARGET" --reuse-values \
-  target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access
+  target-cluster-access deploy/bases/target-cluster-access -n c5c3-access
 ```
 
 Then rebuild the registration kubeconfig from the new token, exactly as
@@ -276,7 +276,7 @@ services in, on both clusters (see
 [ControlPlane placement](#controlplane-placement)).
 
 The access a target cluster grants is packaged as the
-`deploy/target-cluster/target-cluster-access` chart: a ServiceAccount, a
+`deploy/bases/target-cluster-access` chart: a ServiceAccount, a
 long-lived token Secret the registration kubeconfig carries, one Role per entry
 in `values.namespaces`, and a ClusterRole for the kinds that have no namespace.
 `values.namespaces`, together with `values.assignedNamespaces` (see
@@ -331,7 +331,7 @@ compute cluster whose pools declare traits:
 
 ```bash
 helm upgrade --kube-context "$TARGET" --reuse-values \
-  target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access \
+  target-cluster-access deploy/bases/target-cluster-access -n c5c3-access \
   --set hypervisorTraits=true
 ```
 
@@ -344,7 +344,7 @@ the c5c3 operator:
 
 ```bash
 helm upgrade --kube-context "$TARGET" --reuse-values \
-  target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access
+  target-cluster-access deploy/bases/target-cluster-access -n c5c3-access
 ```
 
 The same holds for `verticalpodautoscalers` in `autoscaling.k8s.io`, which the
@@ -544,7 +544,7 @@ client Secret it produces carries no `ca.crt`. `TLSReady` then holds reason
 `CertificateError` and the message
 `issuer <kind>/<name> issued no ca.crt; spec.tls.issuerRef must name a CA issuer`.
 The devstack ships the `ClusterIssuer` `openstack-ovn-ca-issuer` from
-`deploy/flux-system/infrastructure/tls/ovn-ca-issuer.yaml`, a CA issuer whose root is
+`deploy/bases/tls/ovn-ca-issuer.yaml`, a CA issuer whose root is
 a self-signed CA Certificate in the `cert-manager` namespace. The field is
 described under [`OVNTLSSpec`](./ovn/ovn-central-crd.md#ovntlsspec).
 
@@ -732,7 +732,7 @@ On a cluster registered before the chart shipped a CRD, keep this order:
 1. Run `helm upgrade`. It adds read on the order kinds to every placed Role and
    widens the Roles of the assigned namespaces.
 2. Apply the CRDs with
-   `kubectl apply -f deploy/target-cluster/target-cluster-access/crds/`.
+   `kubectl apply -f deploy/bases/target-cluster-access/crds/`.
 3. Change the registration Secret, which engages the cluster again.
 
 A cluster that serves an order kind while the Role of a registration namespace

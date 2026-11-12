@@ -45,7 +45,7 @@ with option catalogs. Every hand-maintained row applies once per service.
 | Per-release e2e variant | `tests/e2e/<svc>/basic-deployment-<slug>/` for each of the eight services | **no** — hand-cloned, hard-coded names and image refs |
 | Upgrade-path e2e | eight `release-upgrade/`, keystone `upgrade-flow/` and `upgrade-abort/` | **no** — must move to the newest transition |
 | Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` and the ci.yaml `e2e-multicluster` preloads | **no** — one pinned release; bumped only when that pin moves |
-| Default-release references | kind ControlPlane, `deploy-infra` preload, `${VAR:-YYYY.N}` fallbacks in `hack/`, the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks of `hack/ci-run-tempest.sh`, the nova refs of `deploy/kind/fake-compute/fake-compute.yaml`, the metal-stack lab manifests, `ci.yaml` image tags, the eight plain `basic-deployment` suites | **no** — a decision, not a mechanical bump |
+| Default-release references | kind ControlPlane, `deploy-infra` preload, `${VAR:-YYYY.N}` fallbacks in `hack/`, the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks of `hack/ci-run-tempest.sh`, the nova refs of `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the metal-stack lab manifests, `ci.yaml` image tags, the eight plain `basic-deployment` suites | **no** — a decision, not a mechanical bump |
 
 ## Procedure
 
@@ -238,14 +238,14 @@ None of these are mechanical; decide and record each:
 
 - **Move the default release?** The eight plain `basic-deployment`
   suites, the kind quick-start ControlPlane
-  (`deploy/kind/controlplane/controlplane.yaml`), the
+  (`deploy/overlays/kind/controlplane/controlplane.yaml`), the
   `hack/deploy-infra.sh` preload, the `${VAR:-YYYY.N}` fallbacks
   (`RELEASE` in three `hack/` scripts, `IMAGE_TAG` in
   `perf-reconcile-benchmark.sh`), the `CONFIG_DIR` and `SERVICE_K8S_NAME`
   slug fallbacks of `hack/ci-run-tempest.sh`, the two nova refs of
-  `deploy/kind/fake-compute/fake-compute.yaml`, the metal-stack lab
-  manifests (`deploy/lab/metal-stack/controlplane/controlplane-lab.yaml`,
-  `deploy/lab/metal-stack/hypervisor/compute.yaml`; the lab may lag, #1321
+  `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the metal-stack lab
+  manifests (`deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml`,
+  `deploy/overlays/metal-stack/hypervisor/compute.yaml`; the lab may lag, #1321
   D4), the `ci.yaml` image-tag pins across
   eight e2e jobs, the tempest client image the e2e fixtures run, and
   ~900 fixture pins under `tests/e2e*/` all name the default. Moving it

@@ -5,7 +5,7 @@
 #
 # korc-pin-status.sh — report the K-ORC upstream main-commit pin from every
 # site that carries it and check that the sites agree:
-#   K1  deploy/flux-system/sources/k-orc.yaml ref.commit is a full 40-hex SHA
+#   K1  deploy/bases/operators/sources/k-orc.yaml ref.commit is a full 40-hex SHA
 #   K2  image tag is branch-main (or legacy commit-<short SHA>); digest is
 #       sha256:<64 hex>
 #   K3  the separately managed c5c3 Go API version has both go.sum hashes;
@@ -32,8 +32,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 cd "${REPO_ROOT}"
 
-SOURCE_YAML="deploy/flux-system/sources/k-orc.yaml"
-RELEASE_YAML="deploy/flux-system/releases/k-orc.yaml"
+SOURCE_YAML="deploy/bases/operators/sources/k-orc.yaml"
+RELEASE_YAML="deploy/bases/operators/releases/k-orc.yaml"
 GOMOD="operators/c5c3/go.mod"
 GOSUM="operators/c5c3/go.sum"
 DOCS="docs/reference/infrastructure/infrastructure-manifests.md"

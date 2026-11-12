@@ -304,7 +304,7 @@ spec:
                           MariaDB's spec.storage.size); operators that adopt an existing MariaDB
                           (the c5c3 adopted-infra path, and every service operator) ignore it. When
                           unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
-                          the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                          the production baseline of deploy/bases/infrastructure/mariadb.yaml);
                           a constrained cluster such as a single-node kind can pin a far smaller
                           value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
                           Immutable after creation: the mariadb-operator rejects
@@ -1189,7 +1189,7 @@ spec:
                                   MariaDB's spec.storage.size); operators that adopt an existing MariaDB
                                   (the c5c3 adopted-infra path, and every service operator) ignore it. When
                                   unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
-                                  the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                                  the production baseline of deploy/bases/infrastructure/mariadb.yaml);
                                   a constrained cluster such as a single-node kind can pin a far smaller
                                   value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
                                   Immutable after creation: the mariadb-operator rejects
@@ -2202,7 +2202,7 @@ spec:
                                   MariaDB's spec.storage.size); operators that adopt an existing MariaDB
                                   (the c5c3 adopted-infra path, and every service operator) ignore it. When
                                   unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
-                                  the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                                  the production baseline of deploy/bases/infrastructure/mariadb.yaml);
                                   a constrained cluster such as a single-node kind can pin a far smaller
                                   value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
                                   Immutable after creation: the mariadb-operator rejects
@@ -2805,7 +2805,7 @@ spec:
                                   MariaDB's spec.storage.size); operators that adopt an existing MariaDB
                                   (the c5c3 adopted-infra path, and every service operator) ignore it. When
                                   unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
-                                  the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                                  the production baseline of deploy/bases/infrastructure/mariadb.yaml);
                                   a constrained cluster such as a single-node kind can pin a far smaller
                                   value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
                                   Immutable after creation: the mariadb-operator rejects
@@ -4134,7 +4134,7 @@ spec:
                                   MariaDB's spec.storage.size); operators that adopt an existing MariaDB
                                   (the c5c3 adopted-infra path, and every service operator) ignore it. When
                                   unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
-                                  the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                                  the production baseline of deploy/bases/infrastructure/mariadb.yaml);
                                   a constrained cluster such as a single-node kind can pin a far smaller
                                   value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
                                   Immutable after creation: the mariadb-operator rejects
@@ -4917,7 +4917,7 @@ spec:
                                   MariaDB's spec.storage.size); operators that adopt an existing MariaDB
                                   (the c5c3 adopted-infra path, and every service operator) ignore it. When
                                   unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
-                                  the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                                  the production baseline of deploy/bases/infrastructure/mariadb.yaml);
                                   a constrained cluster such as a single-node kind can pin a far smaller
                                   value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
                                   Immutable after creation: the mariadb-operator rejects
@@ -5607,7 +5607,7 @@ spec:
                                   MariaDB's spec.storage.size); operators that adopt an existing MariaDB
                                   (the c5c3 adopted-infra path, and every service operator) ignore it. When
                                   unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
-                                  the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                                  the production baseline of deploy/bases/infrastructure/mariadb.yaml);
                                   a constrained cluster such as a single-node kind can pin a far smaller
                                   value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
                                   Immutable after creation: the mariadb-operator rejects
@@ -6229,7 +6229,7 @@ spec:
                                   MariaDB's spec.storage.size); operators that adopt an existing MariaDB
                                   (the c5c3 adopted-infra path, and every service operator) ignore it. When
                                   unset, the ControlPlane takes the value from its sizing (Standard: 100Gi,
-                                  the production baseline of deploy/flux-system/infrastructure/mariadb.yaml);
+                                  the production baseline of deploy/bases/infrastructure/mariadb.yaml);
                                   a constrained cluster such as a single-node kind can pin a far smaller
                                   value (e.g. 512Mi) so CI does not request a 100Gi volume it never fills.
                                   Immutable after creation: the mariadb-operator rejects

@@ -147,7 +147,7 @@ spec:
             exit 1
           fi
 
-          ../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          ../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
           echo "OK: OpenBao database-engine tenant onboarded."
     - assert:
         resource:

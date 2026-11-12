@@ -129,7 +129,7 @@ test_filter_covers_the_suite_and_the_chart() {
   # target only through the ServiceAccount token it mints, so a missing verb
   # surfaces as a CR that never goes Ready.
   assert_contains "the filter lists the target-cluster chart" \
-    "$block" "deploy/target-cluster/**"
+    "$block" "deploy/bases/target-cluster-access/**"
   # The infra scripts reach this job through the canary instead. Listing
   # hack/** here is what made every helper-script edit bring up two clusters.
   assert_not_contains "the filter does not carry the hack scripts" \

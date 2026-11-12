@@ -517,7 +517,7 @@ func TestMariaDBDatabase_WaitsForDBCredentials(t *testing.T) {
 	got := mdbGet(t, h)
 	expectMDBBothConditions(t, got, reasonMariaDBDatabaseWaitingForDBCredentials)
 	g.Expect(mdbCondition(got, conditionTypeMariaDBDatabaseDeliveryReady).Message).To(
-		ContainSubstring("deploy/openbao/bootstrap/setup-database-tenant.sh"))
+		ContainSubstring("deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh"))
 	g.Expect(h.bao.recorded()).To(BeEmpty())
 	g.Expect(mdbProjectedIdentity(t, h.mgmt)).To(BeFalse())
 }

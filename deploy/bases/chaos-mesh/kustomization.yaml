@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Shared chaos-mesh resources; environment overlays select their settings.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Namespace defined inline so the privileged PodSecurity label travels with
+  # the opt-in bundle; the namespace MUST exist before the HelmRelease creates
+  # the chaos-daemon DaemonSet.
+  - namespace.yaml
+  # HelmRepository + HelmRelease are local to this overlay — production
+  # overlays no longer include them.
+  - source.yaml
+  - release.yaml
+
+patches:
+  # Chaos Mesh: configure containerd runtime for kind, disable the dashboard
+  # (unnecessary in CI), and reduce resource requests for single-node clusters.
+  # Kept in the optional Chaos Mesh base so the patch target
+  # (HelmRelease/chaos-mesh) lives in the same overlay.
+  # Feature: (original kind-tuning rationale)
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: chaos-mesh
+      namespace: chaos-mesh
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: chaos-mesh
+        namespace: chaos-mesh
+      spec:
+        values:
+          chaosDaemon:
+            runtime: containerd
+            socketPath: /run/containerd/containerd.sock
+            resources:
+              requests:
+                cpu: 25m
+                memory: 64Mi
+              limits:
+                memory: 128Mi
+          dashboard:
+            create: false
+          controllerManager:
+            resources:
+              requests:
+                cpu: 25m
+                memory: 64Mi
+              limits:
+                memory: 128Mi

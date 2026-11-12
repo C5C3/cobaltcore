@@ -8,7 +8,7 @@
 # openstack-db MariaDB cluster (cell0 is derived as nova_basic_2026_2_cell0), the
 # openstack-memcached cache, the ESO-synced nova-api-db and nova-db credentials
 # and the pre-seeded keystone-admin service-user password (all from
-# deploy/kind/infrastructure).
+# deploy/overlays/kind/infrastructure).
 #
 # The bus is the per-suite vhost broker-vhost.sh writes into
 # nova-basic-2026-2-messaging. Managed messaging is not usable here: the URL it renders

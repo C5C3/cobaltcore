@@ -11,7 +11,7 @@
 # Every name it references is resolved on the TARGET cluster: the openstack-db
 # schema neutron_mc, the openstack-memcached cache, the ESO-synced neutron-db
 # credentials and the pre-seeded keystone-admin service-user password from
-# deploy/kind/infrastructure, and the messaging Secret 03-messaging-secret.yaml
+# deploy/overlays/kind/infrastructure, and the messaging Secret 03-messaging-secret.yaml
 # applies there. The CR itself lives on the management cluster and reaches none
 # of them from it.
 #

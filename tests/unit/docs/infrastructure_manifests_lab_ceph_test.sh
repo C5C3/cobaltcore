@@ -7,7 +7,7 @@
 # docs/reference/infrastructure/infrastructure-manifests.md (#1344):
 #   1. the heading occurs once, directly after `### Lab NFS stack`, and the
 #      next heading is `### Lab Chaos Mesh`
-#   2. its Files line names every file of deploy/lab/metal-stack/ceph and
+#   2. its Files line names every file of deploy/overlays/metal-stack/ceph and
 #      ceph/cluster, read from the directories, and no other
 #   3. the deploy command, the toolbox commands, the keyGeneration patch and
 #      the teardown command are on the page, each toolbox command a whole line
@@ -40,7 +40,7 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 DOC="${INFRA_MANIFESTS_DOC:-$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md}"
-CEPH_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/ceph"
+CEPH_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/ceph"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
 TEARDOWN_SH="$PROJECT_ROOT/hack/teardown-infra.sh"
 
@@ -101,9 +101,9 @@ test_position() {
 test_files() {
   echo "Test: the Files line names every file of ceph/ and ceph/cluster/ and no other"
   local files named
-  files="$(cd "$PROJECT_ROOT" && find deploy/lab/metal-stack/ceph -type f -name '*.yaml' | sort)"
+  files="$(cd "$PROJECT_ROOT" && find deploy/overlays/metal-stack/ceph -type f -name '*.yaml' | sort)"
   named="$(awk '/^\*\*Files:\*\*/ { f = 1 } f && /^$/ { exit } f' <<<"$SECTION" |
-    grep -oE '`deploy/lab/metal-stack/ceph/[^`]+`' | tr -d '`' | sort)"
+    grep -oE '`deploy/overlays/metal-stack/ceph/[^`]+`' | tr -d '`' | sort)"
   assert_not_empty "the overlay has files" "$files"
   assert_eq "the Files line names exactly the overlay's files" "$files" "$named"
 }

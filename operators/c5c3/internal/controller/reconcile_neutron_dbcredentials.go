@@ -23,7 +23,7 @@ import (
 
 const (
 	// neutronDBDynamicVaultRole is the OpenBao Kubernetes-auth role the Neutron
-	// generator authenticates against (see deploy/openbao/bootstrap/setup-auth.sh);
+	// generator authenticates against (see deploy/bases/shared-openbao/bootstrap/setup-auth.sh);
 	// it is bound to the neutron-db-dynamic policy scoping reads to the per-tenant
 	// creds path.
 	neutronDBDynamicVaultRole = "neutron-db"
@@ -72,7 +72,7 @@ func neutronDBCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
 // cluster-unique) and the neutron-db-dynamic policy can scope reads by the
 // caller's service_account_namespace with an EXACT match. It MUST stay in sync
 // with the role-name derivation in
-// deploy/openbao/bootstrap/setup-database-tenant.sh: the operator reads
+// deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh: the operator reads
 // credentials from the engine role that script provisions per service, which for
 // Neutron is neutron-<neutron-ns>. Both OpenBao halves are pre-wired — the
 // neutron-db auth role and the neutron-db-dynamic policy cluster-wide, the engine

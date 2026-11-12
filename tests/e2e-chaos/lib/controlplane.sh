@@ -22,7 +22,7 @@
 # cp_apply_file and cp_delete_file.
 
 CP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CP_BOOTSTRAP_DIR="${CP_LIB_DIR}/../../../deploy/openbao/bootstrap"
+CP_BOOTSTRAP_DIR="${CP_LIB_DIR}/../../../deploy/bases/shared-openbao/bootstrap"
 # shellcheck source=tests/e2e-chaos/lib/openbao.sh
 . "${CP_LIB_DIR}/openbao.sh"
 # The K-ORC kinds a Keystone-only ControlPlane and its registrations project.

@@ -12,7 +12,7 @@
 # DEPLOYMENT NOTE — why this test installs its own Helm release:
 # The keystone-operator HelmRelease at keystone-system/keystone-operator is
 # intentionally suspended in the kind CI overlay (see
-# deploy/kind/base/kustomization.yaml: "keystone-operator: suspend Flux
+# deploy/overlays/kind/base/kustomization.yaml: "keystone-operator: suspend Flux
 # management in kind"). The operator that actually runs in the cluster is
 # installed by hack/ci-deploy-operator.sh, which `helm install`s the chart
 # into the default namespace with a locally built dev image. Patching the
@@ -25,7 +25,7 @@
 # The plan calls for "poll Prometheus API until
 # keystone_operator_reconcile_duration_seconds target is Up", but the test
 # cluster only installs prometheus-operator-crds (see
-# deploy/flux-system/releases/prometheus-operator-crds.yaml) and does NOT run
+# deploy/bases/operators/releases/prometheus-operator-crds.yaml) and does NOT run
 # a Prometheus instance — so there is no /api/v1/targets endpoint to poll.
 # This deferral is recorded against in
 # planwerk/progress/-add-prometheus-metrics-and-servicemonitor-sub.json

@@ -3,17 +3,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the NFS overlay of the metal-stack lab, deploy/lab/metal-stack/nfs,
+# Verify the NFS overlay of the metal-stack lab, deploy/overlays/metal-stack/nfs,
 # which hack/deploy-infra.sh applies under EXTERNAL_CLUSTER=true WITH_NFS=true:
 #   1. The three files carry SPDX headers, and the kustomization lists
-#      exactly ../../../kind/nfs and client-modules-daemonset.yaml.
+#      exactly ../../../bases/nfs and client-modules-daemonset.yaml.
 #   2. The render holds six objects, the five of the kind overlay and the
 #      DaemonSet nfs-client-modules, and no Namespace.
 #   3. The export claim asks for 100Gi, ReadWriteOnce, and names no storage
 #      class; no line of the render sets one.
 #   4. The server pod is the kind one: one init container, prepare-exports,
 #      one volume, the claim exports, no hostPath, and on both containers the
-#      image and the mounts of deploy/kind/nfs/nfs-server.yaml.
+#      image and the mounts of deploy/bases/nfs/nfs-server.yaml.
 #   5. The mounter is the kind release: its chart version, inline volumes on.
 #   6. nfs-client-modules mounts no token, shares no host namespace, rolls
 #      out with RollingUpdate, tolerates every taint, loads in a privileged
@@ -23,7 +23,7 @@
 #   7. The load script of nfs-client-modules, run with a stub modprobe first
 #      on PATH, reports success and exits 0, or names the module that failed
 #      and exits 1 without loading the next one.
-#   8. deploy/kind/nfs still renders five documents, its claim on `standard`
+#   8. deploy/overlays/kind/nfs still renders five documents, its claim on `standard`
 #      with 5Gi, and one init container.
 #   9. client-policy.yaml, the template hack/deploy-infra.sh applies outside
 #      the kustomization, is one NetworkPolicy that selects the server's pods
@@ -51,9 +51,9 @@ source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 # shellcheck source=tests/lib/module_loader.sh
 source "$PROJECT_ROOT/tests/lib/module_loader.sh"
 
-NFS_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/nfs"
-KIND_NFS_DIR="$PROJECT_ROOT/deploy/kind/nfs"
-LIBVIRT_DAEMONSET="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml"
+NFS_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/nfs"
+KIND_NFS_DIR="$PROJECT_ROOT/deploy/overlays/kind/nfs"
+LIBVIRT_DAEMONSET="$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml"
 
 # The kernel the stub uname reports, the lab's on 2026-10-03.
 STUB_KERNEL="6.1.0-49-amd64"
@@ -82,14 +82,14 @@ test_files_have_spdx_and_two_resources() {
     assert_file_contains "$f has SPDX-License-Identifier: Apache-2.0" \
       "$NFS_DIR/$f" "SPDX-License-Identifier: Apache-2.0"
   done
-  assert_eq "kustomization.yaml lists ../../../kind/nfs and client-modules-daemonset.yaml alone" \
-    "$(printf '%s\n' ../../../kind/nfs client-modules-daemonset.yaml)" \
+  assert_eq "kustomization.yaml lists ../../../bases/nfs and client-modules-daemonset.yaml alone" \
+    "$(printf '%s\n' ../../../bases/nfs client-modules-daemonset.yaml)" \
     "$(resource_entries "$NFS_DIR/kustomization.yaml" 2>/dev/null)"
 }
 
 # --- Test 2: the six objects ---
 test_render_holds_the_six_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/nfs renders the six objects and no Namespace"
+  echo "Test: kustomize build deploy/overlays/metal-stack/nfs renders the six objects and no Namespace"
 
   render "$NFS_DIR" 3 || return
 
@@ -139,9 +139,9 @@ test_server_pod_is_the_kind_one() {
   local shape='.image + " " + (.volumeMounts | map(.name + ":" + .mountPath + ":" + (.subPath // "")) | join(" "))'
   local kind_server kind_init
   kind_server="$(yq -N -r "select(.kind == \"Deployment\") | $SERVER_POD.containers[] | select(.name == \"nfs-server\") | $shape" \
-    "$KIND_NFS_DIR/nfs-server.yaml")"
+    "$PROJECT_ROOT/deploy/bases/nfs/nfs-server.yaml")"
   kind_init="$(yq -N -r "select(.kind == \"Deployment\") | $SERVER_POD.initContainers[] | select(.name == \"prepare-exports\") | $shape" \
-    "$KIND_NFS_DIR/nfs-server.yaml")"
+    "$PROJECT_ROOT/deploy/bases/nfs/nfs-server.yaml")"
 
   assert_eq "the one init container is prepare-exports" "prepare-exports" \
     "$(val Deployment nfs-server "$SERVER_POD.initContainers | map(.name) | join(\" \")")"
@@ -151,9 +151,9 @@ test_server_pod_is_the_kind_one() {
     "$(val Deployment nfs-server "[$SERVER_POD.volumes[] | select(has(\"hostPath\"))] | length")"
   assert_eq "the one container is nfs-server" "nfs-server" \
     "$(val Deployment nfs-server "$SERVER_POD.containers | map(.name) | join(\" \")")"
-  assert_same_nonempty "the server container keeps the image and mounts of deploy/kind/nfs/nfs-server.yaml" \
+  assert_same_nonempty "the server container keeps the image and mounts of deploy/bases/nfs/nfs-server.yaml" \
     "$(val Deployment nfs-server "$SERVER_POD.containers[] | select(.name == \"nfs-server\") | $shape")" "$kind_server"
-  assert_same_nonempty "prepare-exports keeps the image and mount of deploy/kind/nfs/nfs-server.yaml" \
+  assert_same_nonempty "prepare-exports keeps the image and mount of deploy/bases/nfs/nfs-server.yaml" \
     "$(val Deployment nfs-server "$SERVER_POD.initContainers[] | select(.name == \"prepare-exports\") | $shape")" "$kind_init"
   assert_eq "the server mounts exports/ at /exports and ganesha/ at /var/lib/nfs/ganesha" \
     "exports:/exports:exports exports:/var/lib/nfs/ganesha:ganesha" \
@@ -167,8 +167,8 @@ test_mounter_is_the_kind_release() {
   render "$NFS_DIR" 2 || return
 
   local kind_version
-  kind_version="$(yq -N -r 'select(.kind == "HelmRelease") | .spec.chart.spec.version' "$KIND_NFS_DIR/release.yaml")"
-  assert_same_nonempty "the chart version equals the one in deploy/kind/nfs/release.yaml" \
+  kind_version="$(yq -N -r 'select(.kind == "HelmRelease") | .spec.chart.spec.version' "$PROJECT_ROOT/deploy/bases/nfs/release.yaml")"
+  assert_same_nonempty "the chart version equals the one in deploy/bases/nfs/release.yaml" \
     "$(val HelmRelease csi-driver-nfs '.spec.chart.spec.version')" "$kind_version"
   assert_eq "inline volumes stay enabled" "true" \
     "$(val HelmRelease csi-driver-nfs '.spec.values.feature.enableInlineVolume')"
@@ -283,7 +283,7 @@ test_load_script_reports_and_fails_loudly() {
 
 # --- Test 8: the kind overlay is unchanged ---
 test_kind_overlay_unchanged() {
-  echo "Test: kustomize build deploy/kind/nfs still renders the kind claim and one init container"
+  echo "Test: kustomize build deploy/overlays/kind/nfs still renders the kind claim and one init container"
 
   render "$KIND_NFS_DIR" 4 || return
 

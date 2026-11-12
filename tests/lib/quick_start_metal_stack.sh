@@ -13,9 +13,9 @@
 
 # shellcheck disable=SC2016,SC2034 # the page's literal text, read by the sourcing tests
 METAL_STACK_RUN_SEQUENCE=(
-  'kubectl kustomize deploy/lab/metal-stack/controlplane'
-  'kubectl kustomize deploy/lab/metal-stack/controlplane-nfs'
-  'kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures'
+  'kubectl kustomize deploy/overlays/metal-stack/controlplane'
+  'kubectl kustomize deploy/overlays/metal-stack/controlplane-nfs'
+  'kubectl apply -k deploy/overlays/metal-stack/hypervisor-fixtures'
   'server create "lab-${i}"'
   'server add volume lab-0 lab-vol'
 )

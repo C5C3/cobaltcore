@@ -41,7 +41,7 @@ const defaultHorizonRepository = "ghcr.io/c5c3/horizon"
 // defaultHorizonSecretKeyName / defaultHorizonSecretKeyKey identify the
 // Django SECRET_KEY Secret the projection defaults to when
 // spec.services.horizon.secretKeyRef is nil. The default is the
-// kind-infrastructure shim (deploy/kind/infrastructure/
+// kind-infrastructure shim (deploy/overlays/kind/infrastructure/
 // horizon-secret-key-externalsecret.yaml), which is pinned to the default
 // ControlPlane identity — multi-ControlPlane deployments must set
 // secretKeyRef explicitly (documented on ServiceHorizonSpec).

@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kind NFS uses the local standard storage class.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../bases/nfs
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: nfs-server-exports
+      namespace: openstack
+    patch: |
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: nfs-server-exports
+        namespace: openstack
+      spec:
+        storageClassName: standard

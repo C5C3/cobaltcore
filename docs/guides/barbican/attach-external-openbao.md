@@ -74,7 +74,7 @@ instead.
 
 **A policy scoping an identity to that mount.** This is the policy the delivered
 bootstrap writes, and it is the exact grant the operator probes for
-(`deploy/openbao/policies/barbican-secretstore.hcl`):
+(`deploy/bases/shared-openbao/policies/barbican-secretstore.hcl`):
 
 ```bash
 bao policy write barbican-secretstore - <<'EOF'
@@ -96,7 +96,7 @@ delete. On a mount other than `barbican`, substitute the mount path in both
 policy blocks before applying them.
 
 **An AppRole carrying that policy.** The shape the bootstrap writes
-(`deploy/openbao/bootstrap/setup-auth.sh`):
+(`deploy/bases/shared-openbao/bootstrap/setup-auth.sh`):
 
 Enable AppRole auth at `auth/approle` if it is not already enabled:
 
@@ -227,7 +227,7 @@ so a repeat on an already-onboarded ControlPlane refreshes the pair in place:
 ```bash
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
-deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN
 ```
 

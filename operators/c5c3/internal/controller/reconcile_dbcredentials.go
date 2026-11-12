@@ -41,7 +41,7 @@ const dbCredentialSecretNameSuffix = "-db-credentials" //nolint:gosec // G101 fa
 
 const (
 	// dbDynamicVaultRole is the OpenBao Kubernetes-auth role the generator
-	// authenticates against (see deploy/openbao/bootstrap/setup-auth.sh); it is
+	// authenticates against (see deploy/bases/shared-openbao/bootstrap/setup-auth.sh); it is
 	// bound to the keystone-db-dynamic policy scoping reads to the per-tenant
 	// creds path.
 	dbDynamicVaultRole = "keystone-db"
@@ -58,11 +58,11 @@ const (
 	dbCredentialClientCertSuffix = "-db-openbao-client" //nolint:gosec // G101 false positive: cert name suffix, not a credential.
 	// openBaoDefaultServer / openBaoDefaultKubernetesMount are the fallbacks used
 	// when the openbao-cluster-store's provider config cannot be read; they match
-	// deploy/eso/clustersecretstore.yaml.
+	// deploy/bases/eso-store/clustersecretstore.yaml.
 	openBaoDefaultServer          = "https://openbao.shared-services.svc:8200"
 	openBaoDefaultKubernetesMount = "kubernetes/management"
 	// openBaoCAIssuerName is the cluster-scoped cert-manager CA issuer that signs
-	// the per-ControlPlane client certificate (deploy/flux-system/infrastructure/tls/openbao-ca-issuer.yaml).
+	// the per-ControlPlane client certificate (deploy/bases/tls/openbao-ca-issuer.yaml).
 	openBaoCAIssuerName = "openbao-ca-issuer"
 	// dbCredentialClientCertDuration / renewBefore mirror the shared openbao TLS
 	// leaves (openbao-client-tls-cert.yaml) so client-cert rotation cadences align.
@@ -124,7 +124,7 @@ var certificateGVK = schema.GroupVersionKind{
 //
 // NOTHING SEEDS THIS PATH. The per-ControlPlane static seed was retired when
 // managed mode moved to engine-issued credentials
-// (deploy/openbao/bootstrap/write-bootstrap-secrets.sh), so a ControlPlane on the
+// (deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh), so a ControlPlane on the
 // Static branch — the explicit opt-out on the shared database, and every DEDICATED
 // managed database, which is Static-only — must have the path seeded out-of-band
 // (username, password) before ESO can sync the credential. Until then the
@@ -169,7 +169,7 @@ func dbCredentialNotReadyMessage(cp *c5c3v1alpha1.ControlPlane) string {
 // that caller is the generator's ServiceAccount in the Keystone namespace, so
 // keying on the ControlPlane's namespace instead would put the role outside the
 // policy's reach. It MUST stay in sync with the role-name derivation in
-// deploy/openbao/bootstrap/setup-database-tenant.sh — the operator reads
+// deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh — the operator reads
 // credentials from a role that script provisions.
 func dbDynamicRoleFor(cp *c5c3v1alpha1.ControlPlane) string {
 	return "keystone-" + cp.KeystoneNamespace()
@@ -420,7 +420,7 @@ func dbCredentialStaticExternalSecret(t dbCredentialTarget) *esov1.ExternalSecre
 // while another service stays on the other.
 //
 // A DEDICATED database is never Dynamic. The OpenBao database engine carries one
-// connection and one role per NAMESPACE (deploy/openbao/bootstrap/
+// connection and one role per NAMESPACE (deploy/bases/shared-openbao/bootstrap/
 // setup-database-tenant.sh), bootstrapped against the SHARED cluster, so no
 // engine role exists that could issue credentials for a dedicated instance — it
 // takes the Static branch, the same documented contract the shared block's own
@@ -686,7 +686,7 @@ func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, 
 			Reason:             "WaitingFor" + service + "DBCredential",
 			Message: fmt.Sprintf("%s DB credential ExternalSecret %q is not yet Ready: credentialsMode "+
 				"Dynamic draws engine-issued credentials from OpenBao path %q, which only exists once the "+
-				"database-engine tenant has been onboarded (deploy/openbao/bootstrap/setup-database-tenant.sh); "+
+				"database-engine tenant has been onboarded (deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh); "+
 				"%s projection deferred until the credential lands",
 				service, t.secretName, t.credsPath, service),
 		})

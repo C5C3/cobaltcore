@@ -74,7 +74,7 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   Documents in another `*.c5c3.io` group belong to an external
   operator's CRD — `memcached.c5c3.io/v1beta1` `Memcached`, installed by
   the memcached-operator chart
-  (`deploy/flux-system/releases/memcached-operator.yaml`), which the
+  (`deploy/bases/operators/releases/memcached-operator.yaml`), which the
   nova suites' `00-keystone-cr.yaml` fixtures instantiate — and get one
   `[INFO]` line per group with a document count; X1/X2 do not check
   them. An undeclared group shaped like a repo group (ending in

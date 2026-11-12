@@ -4,11 +4,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify renovate.json declares a customManagers entry that targets the
-# chart `version` input inside deploy/kind/base/flux-web.yaml, plus the
+# chart `version` input inside deploy/bases/devstack/base/flux-web.yaml, plus the
 # paired packageRules that mirror the hack/deploy-infra.sh rule
 #
 #   - the matchStrings regex captures the chart pin currently declared in
-#     deploy/kind/base/flux-web.yaml
+#     deploy/bases/devstack/base/flux-web.yaml
 #   - packageRules disable major bumps and automerge minor/patch with a
 #     3-day minimumReleaseAge
 #
@@ -38,18 +38,18 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
-FLUX_WEB_FILE="$PROJECT_ROOT/deploy/kind/base/flux-web.yaml"
+FLUX_WEB_FILE="$PROJECT_ROOT/deploy/bases/devstack/base/flux-web.yaml"
 
 # NOTE renovate-config-validator schema check is run by the
 # sibling tests/unit/renovate/fluxoperator_custommanager_test.sh
 # — see the header of this file for the rationale behind not duplicating
 # the npx-driven validation here.
 
-# --- Test 1: customManager targets deploy/kind/base/flux-web.yaml and
+# --- Test 1: customManager targets deploy/bases/devstack/base/flux-web.yaml and
 #             captures the chart pin currently declared in that file
 #             ---
 test_custom_manager_regex_captures_chart_pin() {
-  echo "Test: customManagers regex matches chart version input in deploy/kind/base/flux-web.yaml"
+  echo "Test: customManagers regex matches chart version input in deploy/bases/devstack/base/flux-web.yaml"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (6 checks skipped)"
@@ -58,16 +58,16 @@ test_custom_manager_regex_captures_chart_pin() {
   fi
 
   # Locate the flux-web customManagers entry — identified by the
-  # deploy/kind/base/flux-web.yaml managerFilePatterns so the assertions
+  # deploy/bases/devstack/base/flux-web.yaml managerFilePatterns so the assertions
   # don't collide with the existing hack/deploy-infra.sh entry that also
   # targets controlplaneio-fluxcd/flux-operator.
   local entry
   entry="$(jq -c '.customManagers[]
-    | select((.managerFilePatterns // []) | join(",") | contains("deploy/kind/base/flux-web"))' \
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/bases/devstack/base/flux-web"))' \
     "$RENOVATE_FILE")"
 
   if [ -z "$entry" ]; then
-    echo "  FAIL: no customManagers entry with managerFilePatterns targeting deploy/kind/base/flux-web.yaml"
+    echo "  FAIL: no customManagers entry with managerFilePatterns targeting deploy/bases/devstack/base/flux-web.yaml"
     FAIL=$((FAIL + 6))
     return
   fi
@@ -100,7 +100,7 @@ test_custom_manager_regex_captures_chart_pin() {
   local expected_value
   expected_value="$(grep -E '^[[:space:]]+- version:' "$FLUX_WEB_FILE" \
     | head -1 | sed -E 's/^[[:space:]]+- version:[[:space:]]*"([^"]+)".*/\1/')"
-  assert_not_empty "chart version input present in deploy/kind/base/flux-web.yaml" \
+  assert_not_empty "chart version input present in deploy/bases/devstack/base/flux-web.yaml" \
     "$expected_value"
 
   local match_string
@@ -126,7 +126,7 @@ test_custom_manager_regex_captures_chart_pin() {
 #             rules — disable major, automerge minor/patch with
 #             minimumReleaseAge=3 days ---
 test_package_rules_cover_flux_web() {
-  echo "Test: packageRules disable major bumps and automerge minor/patch for deploy/kind/base/flux-web.yaml"
+  echo "Test: packageRules disable major bumps and automerge minor/patch for deploy/bases/devstack/base/flux-web.yaml"
 
   if ! command -v jq >/dev/null 2>&1; then
     echo "  SKIP: jq not installed (6 checks skipped)"
@@ -135,26 +135,26 @@ test_package_rules_cover_flux_web() {
   fi
 
   # A packageRule covers the new file if it scopes flux-operator via
-  # matchPackageNames AND lists deploy/kind/base/flux-web.yaml in
+  # matchPackageNames AND lists deploy/bases/devstack/base/flux-web.yaml in
   # matchFileNames. Select by file so the assertions don't accidentally
   # match rules scoped only to hack/deploy-infra.sh.
   local major_rule minor_rule
   major_rule="$(jq -c '.packageRules[]
     | select(
         (((.matchPackageNames // []) | index("controlplaneio-fluxcd/flux-operator")) != null)
-        and (((.matchFileNames   // []) | index("deploy/kind/base/flux-web.yaml")) != null)
+        and (((.matchFileNames   // []) | index("deploy/bases/devstack/base/flux-web.yaml")) != null)
         and (((.matchUpdateTypes // []) | index("major")) != null)
       )' "$RENOVATE_FILE" | head -1)"
 
   minor_rule="$(jq -c '.packageRules[]
     | select(
         (((.matchPackageNames // []) | index("controlplaneio-fluxcd/flux-operator")) != null)
-        and (((.matchFileNames   // []) | index("deploy/kind/base/flux-web.yaml")) != null)
+        and (((.matchFileNames   // []) | index("deploy/bases/devstack/base/flux-web.yaml")) != null)
         and (((.matchUpdateTypes // []) | index("minor")) != null)
       )' "$RENOVATE_FILE" | head -1)"
 
   if [ -z "$major_rule" ]; then
-    echo "  FAIL: no packageRule scoping major flux-operator updates to deploy/kind/base/flux-web.yaml"
+    echo "  FAIL: no packageRule scoping major flux-operator updates to deploy/bases/devstack/base/flux-web.yaml"
     FAIL=$((FAIL + 2))
   else
     assert_eq "major flux-operator updates are disabled for flux-web.yaml" \
@@ -163,7 +163,7 @@ test_package_rules_cover_flux_web() {
   fi
 
   if [ -z "$minor_rule" ]; then
-    echo "  FAIL: no packageRule scoping minor/patch flux-operator updates to deploy/kind/base/flux-web.yaml"
+    echo "  FAIL: no packageRule scoping minor/patch flux-operator updates to deploy/bases/devstack/base/flux-web.yaml"
     FAIL=$((FAIL + 4))
     return
   fi

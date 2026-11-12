@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Shared nfs resources; environment overlays select their settings.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # HelmRepository (flux-system) + HelmRelease (kube-system) are local to
+  # this overlay; production overlays do not include them.
+  - source.yaml
+  - release.yaml
+  # The NFS server itself (PVC + Deployment + Service in `openstack`).
+  - nfs-server.yaml

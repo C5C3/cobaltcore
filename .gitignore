@@ -55,10 +55,11 @@ tests/lab/bgp-fabric/clab-bgp-fabric/
 
 # Local developer scratch — throwaway CRs kept out of version control. Bare
 # names match by basename in any directory; already-tracked manifests such as
-# deploy/kind/controlplane/controlplane.yaml stay tracked regardless.
+# deploy/overlays/kind/controlplane/controlplane.yaml stay tracked regardless.
 keystone.yaml
 keystone-ca.crt
 controlplane.yaml
+!deploy/overlays/kind/controlplane/controlplane.yaml
 controlplane-ovn.yaml
 cp2.yml
 demo/
@@ -81,13 +82,13 @@ openbao-init-keys*
 # Build artifact: copied at deploy time from operators/keystone/dashboards/
 # (WITH_PROMETHEUS=true) so kustomize's configMapGenerator can reference it from
 # the overlay root without a `../../` parent traversal (LoadRestrictionsRootOnly).
-deploy/kind/prometheus/keystone-operator.json
+deploy/bases/prometheus/keystone-operator.json
 
 # Build artifact: staged at deploy time by hack/dizzy.sh stage-dashboards from
 # the pinned dizzy release tarball (WITH_DIZZY=true) so the dizzy overlay's
 # configMapGenerator can reference the dashboard JSONs from the overlay root
 # without a `../../` parent traversal (LoadRestrictionsRootOnly).
-deploy/kind/dizzy/dashboards/
+deploy/bases/dizzy/dashboards/
 
 # Vendored Helm subchart dependencies. The charts under operators/*/helm/ depend
 # on the operator-library library chart via a file:// path; `helm dependency

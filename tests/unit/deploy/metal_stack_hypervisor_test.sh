@@ -3,9 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the lab hypervisors under deploy/lab/metal-stack/hypervisor,
-# deploy/lab/metal-stack/migration-ports and
-# deploy/lab/metal-stack/hypervisor-fixtures, applied by hand on the lab:
+# Verify the lab hypervisors under deploy/overlays/metal-stack/hypervisor,
+# deploy/overlays/metal-stack/migration-ports and
+# deploy/overlays/metal-stack/hypervisor-fixtures, applied by hand on the lab:
 #   1. The twelve files exist with SPDX headers, and each kustomization
 #      lists exactly its resources.
 #   2. The fixtures render is the kind fixtures without the volume type, the
@@ -99,10 +99,10 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
-HYPERVISOR_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor"
-MIGRATION_PORTS_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/migration-ports"
-FIXTURES_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor-fixtures"
-PROBE_FILE="$PROJECT_ROOT/deploy/lab/metal-stack/probe/node-probe.yaml"
+HYPERVISOR_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor"
+MIGRATION_PORTS_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/migration-ports"
+FIXTURES_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor-fixtures"
+PROBE_FILE="$PROJECT_ROOT/deploy/overlays/metal-stack/probe/node-probe.yaml"
 NODE_PORTS_SH="$PROJECT_ROOT/hack/lab-node-ports.sh"
 CONFIGMAP_FILE="$HYPERVISOR_DIR/libvirt-configmap.yaml"
 SOURCES_FILE="$HYPERVISOR_DIR/sources.yaml"
@@ -219,7 +219,7 @@ test_files_spdx_and_resources() {
   fi
   if [[ -f "$FIXTURES_DIR/kustomization.yaml" ]]; then
     assert_eq "the fixtures kustomization lists the kind fixtures alone" \
-      "../../../kind/hypervisor-operator-fixtures" \
+      "../../../bases/hypervisor-fixtures" \
       "$(resource_entries "$FIXTURES_DIR/kustomization.yaml")"
   else
     echo "  FAIL: no fixtures kustomization.yaml whose resources could be read"
@@ -229,7 +229,7 @@ test_files_spdx_and_resources() {
 
 # --- Test 2: the fixtures render ---
 test_fixtures_render() {
-  echo "Test: kustomize build deploy/lab/metal-stack/hypervisor-fixtures"
+  echo "Test: kustomize build deploy/overlays/metal-stack/hypervisor-fixtures"
 
   render "$FIXTURES_DIR" 11 || return
 
@@ -253,7 +253,7 @@ test_fixtures_render() {
 
 # --- Test 3: the hypervisor render ---
 test_hypervisor_render_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/hypervisor"
+  echo "Test: kustomize build deploy/overlays/metal-stack/hypervisor"
 
   render "$HYPERVISOR_DIR" 4 || return
 

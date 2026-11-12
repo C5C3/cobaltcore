@@ -51,9 +51,9 @@
 #
 # Optional env vars:
 #   KORC_SOURCE  — Flux GitRepository manifest holding the pinned commit
-#                  (default: deploy/flux-system/sources/k-orc.yaml).
+#                  (default: deploy/bases/operators/sources/k-orc.yaml).
 #   KORC_RELEASE — Flux Kustomization manifest holding the image override
-#                  (default: deploy/flux-system/releases/k-orc.yaml).
+#                  (default: deploy/bases/operators/releases/k-orc.yaml).
 #   WAIT_TIMEOUT — kubectl wait timeout for the controller Deployment
 #                  (default: 180s).
 #   GITHUB_TOKEN — Authenticates the clone from github.com; CI passes the
@@ -70,8 +70,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-KORC_SOURCE="${KORC_SOURCE:-deploy/flux-system/sources/k-orc.yaml}"
-KORC_RELEASE="${KORC_RELEASE:-deploy/flux-system/releases/k-orc.yaml}"
+KORC_SOURCE="${KORC_SOURCE:-deploy/bases/operators/sources/k-orc.yaml}"
+KORC_RELEASE="${KORC_RELEASE:-deploy/bases/operators/releases/k-orc.yaml}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-180s}"
 KORC_REPO_URL="https://github.com/k-orc/openstack-resource-controller"
 

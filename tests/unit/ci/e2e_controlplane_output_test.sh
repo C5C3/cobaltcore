@@ -220,7 +220,7 @@ test_filter_covers_the_machinery_and_the_suites() {
   # The full-chain suite applies the fixtures of this overlay, so an edit to it
   # has to schedule that suite and not only the canary.
   assert_contains "the filter lists the hypervisor-operator fixture overlay" \
-    "$block" "deploy/kind/hypervisor-operator-fixtures/**"
+    "$block" "deploy/overlays/kind/hypervisor-operator-fixtures/**"
   # The operator code and the shared scripts reach this job through the c5c3
   # filter and the canary respectively, not through the suite filter. Listing
   # them here again is what made every Go change schedule three 240-minute jobs.
@@ -243,9 +243,9 @@ test_filter_covers_the_machinery_and_the_suites() {
   assert_contains "the autoscaling suite has a filter of its own" \
     "$block" "tests/e2e-autoscaling/**"
   assert_contains "the autoscaling filter lists the metrics-server overlay" \
-    "$block" "deploy/kind/metrics-server/**"
+    "$block" "deploy/overlays/kind/metrics-server/**"
   assert_contains "the autoscaling filter lists the VPA overlay" \
-    "$block" "deploy/kind/vpa/**"
+    "$block" "deploy/overlays/kind/vpa/**"
   assert_contains "the autoscaling filter lists the HPA builder" \
     "$block" "internal/common/deployment/builders.go"
   assert_contains "the autoscaling filter lists the HPA flow" \

@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Chainsaw E2E test for the proving OpenBaoCluster instance
-# (deploy/kind/infrastructure/openbao-instance.yaml) and the openbao-operator
+# (deploy/bases/devstack/infrastructure/openbao-instance.yaml) and the openbao-operator
 # that manages it. Auto-discovered by the e2e-infra job, which runs
 # `chainsaw test tests/e2e/infrastructure/` after `make deploy-infra`.
 #
@@ -69,7 +69,7 @@ spec:
             - status: "True"
   # ── Step 2: The tenant guardrails in openstack ──────────────────────────
   # The provisioner writes the spec of OpenBaoTenant
-  # openbao-operator-system/openstack (deploy/kind/infrastructure/
+  # openbao-operator-system/openstack (deploy/overlays/kind/infrastructure/
   # openbao-tenant.yaml) into the namespace it admits, by Server-Side Apply,
   # which prunes a key the spec drops. tests/unit/deploy/
   # openbao_tenant_guardrails_contract_test.sh pins the file; this step reads

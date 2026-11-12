@@ -40,11 +40,11 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
-SOURCE_FILE="$PROJECT_ROOT/deploy/flux-system/sources/rabbitmq-cluster-operator.yaml"
+SOURCE_FILE="$PROJECT_ROOT/deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml"
 
 OPERATOR_PACKAGE="rabbitmq/cluster-operator"
 OPERATOR_REPO="https://github.com/rabbitmq/cluster-operator"
-SOURCE_PATH="deploy/flux-system/sources/rabbitmq-cluster-operator.yaml"
+SOURCE_PATH="deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml"
 
 # Read the customManager entry once; every test that needs it re-reads through
 # this helper so a missing entry is reported per test instead of aborting.

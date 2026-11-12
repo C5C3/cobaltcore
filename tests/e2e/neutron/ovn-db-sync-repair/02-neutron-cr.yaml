@@ -7,7 +7,7 @@
 # Managed mode throughout: the schema neutron_dbsync on the openstack-db MariaDB
 # cluster, the openstack-memcached cache, the ESO-synced neutron-db credentials
 # and the pre-seeded keystone-admin service-user password (both from
-# deploy/kind/infrastructure). The broker and the OVN control plane come from
+# deploy/overlays/kind/infrastructure). The broker and the OVN control plane come from
 # the two sibling fixtures.
 #
 # One API replica and one worker replica: nothing here calls the API, and the

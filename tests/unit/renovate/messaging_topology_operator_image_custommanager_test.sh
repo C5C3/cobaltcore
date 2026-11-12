@@ -40,11 +40,11 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
-RELEASE_FILE="$PROJECT_ROOT/deploy/flux-system/releases/messaging-topology-operator.yaml"
+RELEASE_FILE="$PROJECT_ROOT/deploy/bases/operators/releases/messaging-topology-operator.yaml"
 
 IMAGE_PACKAGE="ghcr.io/rabbitmq/messaging-topology-operator"
-RELEASE_PATH="deploy/flux-system/releases/messaging-topology-operator.yaml"
-SOURCE_PATH="deploy/flux-system/sources/messaging-topology-operator.yaml"
+RELEASE_PATH="deploy/bases/operators/releases/messaging-topology-operator.yaml"
+SOURCE_PATH="deploy/bases/operators/sources/messaging-topology-operator.yaml"
 
 # Read the customManager entry once; every test that needs it re-reads through
 # this helper so a missing entry is reported per test instead of aborting.

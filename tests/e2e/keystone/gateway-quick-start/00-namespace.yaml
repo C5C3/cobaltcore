@@ -5,7 +5,7 @@
 # Namespace fixture for the Gateway quick-start E2E test.
 #
 # The `openstack` namespace is already created by the kind overlay
-# (`deploy/kind/base/`) because it holds the Keystone operator and the
+# (`deploy/overlays/kind/base/`) because it holds the Keystone operator and the
 # Gateway/Certificate objects wired in `openstack-gateway.yaml`. We still
 # apply it here defensively so the suite is self-contained — chainsaw's
 # `apply` is idempotent on an existing Namespace, which makes the test

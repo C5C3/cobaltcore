@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify hack/deploy-infra.sh gates the kind message bus behind WITH_MESSAGING:
-# the deploy/kind/messaging overlay apply and the AllReplicasReady wait on
+# the deploy/bases/messaging overlay apply and the AllReplicasReady wait on
 # rabbitmqcluster/shared-rabbitmq. The default Quick Start must install
 # neither, a typo like WITH_MESSAGING=yes must take the skip branch, and the
 # two actions must run in that order after the infrastructure overlay.
@@ -183,11 +183,11 @@ test_apply_and_wait_follow_step_5() {
 
   local infra_line apply_line wait_line
   infra_line="$(grep -nF 'kubectl apply -k "${OVERLAY_ROOT}/infrastructure"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
-  apply_line="$(grep -nF 'kubectl apply -k "${REPO_ROOT}/deploy/kind/messaging"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -nF 'kubectl apply -k "${REPO_ROOT}/deploy/bases/messaging"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   wait_line="$(grep -nF 'wait_for_rabbitmqcluster shared-rabbitmq openstack' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 
   assert_not_empty "the Step 5 infrastructure apply is found" "$infra_line"
-  assert_not_empty "the deploy/kind/messaging apply is found" "$apply_line"
+  assert_not_empty "the deploy/bases/messaging apply is found" "$apply_line"
   assert_not_empty "the wait_for_rabbitmqcluster call is found" "$wait_line"
 
   assert_gte "the messaging apply follows the infrastructure apply" \

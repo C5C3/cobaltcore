@@ -584,7 +584,7 @@ per-tenant identity; follow the migration steps below when upgrading.
 per-tenant namespaced store automatically. Upgrade the operators;
 each ControlPlane provisions its per-tenant store and re-points its ExternalSecrets
 and PushSecrets in place. On a cluster whose OpenBao was bootstrapped before
-this feature, re-run `deploy/openbao/bootstrap/setup-auth.sh` and
+this feature, re-run `deploy/bases/shared-openbao/bootstrap/setup-auth.sh` and
 `setup-policies.sh` so the `eso-tenant` role and policy exist. Until they do, the
 per-tenant stores stay `NotReady` and reconciliation of new secret objects is
 gated, but existing Secrets keep serving and no key material is lost (a `403`
@@ -605,7 +605,7 @@ in-cluster side is created per namespace by `setup-eso-tenant.sh`:
 
 ```bash
 # Run once per tenant namespace, then wait for the SecretStore to be Ready.
-deploy/openbao/bootstrap/setup-eso-tenant.sh team-alpha
+deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh team-alpha
 kubectl wait --for=condition=Ready secretstore/openbao-tenant-store \
   -n team-alpha --timeout=120s
 ```

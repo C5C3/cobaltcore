@@ -19,8 +19,8 @@
 #   1. the EXTERNAL_CLUSTER=true preflight check for the overlay's
 #      prometheus/kustomization.yaml
 #   2. Step 3: dashboard JSON copy (operators/keystone/dashboards →
-#      deploy/kind/prometheus) and kustomize apply of the prometheus/ of
-#      OVERLAY_ROOT (deploy/kind/prometheus in kind mode)
+#      deploy/overlays/kind/prometheus) and kustomize apply of the prometheus/ of
+#      PROMETHEUS_OVERLAY_ROOT (deploy/overlays/kind/prometheus-managed in kind mode)
 #   3. Phase 3 helm-release wait list append (kube-prometheus-stack)
 #   4. enable_operator_servicemonitor call sites (keystone + horizon)
 # The configuration-banner line is asserted via grep so the user-visible
@@ -141,7 +141,7 @@ test_banner_includes_prometheus_line() {
 
 # ---------------------------------------------------------------------------
 # Test 6: prometheus overlay apply is conditional
-# The kustomize apply of the prometheus/ of OVERLAY_ROOT (deploy/kind/prometheus
+# The kustomize apply of the selected Prometheus root (deploy/overlays/kind/prometheus-managed
 # in kind mode) must live inside the WITH_PROMETHEUS gate so the default Quick
 # Start does not install it.
 # ---------------------------------------------------------------------------
@@ -149,17 +149,17 @@ test_prometheus_kustomize_is_gated() {
   echo "Test: prometheus kustomize apply is gated by WITH_PROMETHEUS"
 
   # There is exactly one apply of the Prometheus overlay, and it reads the
-  # overlay root, which is deploy/kind in kind mode.
+  # overlay root, which is deploy/overlays/kind in kind mode.
   local apply_hits
-  apply_hits="$(grep -cF 'kubectl apply -k "${OVERLAY_ROOT}/prometheus"' "$DEPLOY_INFRA_SH" || true)"
+  apply_hits="$(grep -cF 'kubectl apply -k "${PROMETHEUS_OVERLAY_ROOT}"' "$DEPLOY_INFRA_SH" || true)"
   assert_eq "deploy-infra.sh applies the Prometheus overlay exactly once" "1" "$apply_hits"
   assert_file_not_contains "deploy-infra.sh no longer hardcodes the kind Prometheus overlay" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/prometheus"'
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/prometheus"'
 
   # The line must be preceded by a WITH_PROMETHEUS gate. Use awk to confirm
   # the most recent if-line above the apply tests WITH_PROMETHEUS.
   local apply_line gate_line
-  apply_line="$(grep -nF 'kubectl apply -k "${OVERLAY_ROOT}/prometheus"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -nF 'kubectl apply -k "${PROMETHEUS_OVERLAY_ROOT}"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   gate_line="$(grep -n '"${WITH_PROMETHEUS}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${apply_line:-0}" '$1 < target { last = $1 } END { print last }')"
 
   assert_not_empty "kustomize apply line for prometheus is found" "$apply_line"
@@ -178,7 +178,7 @@ test_dashboard_copy_precedes_apply() {
 
   local copy_line apply_line gate_line
   copy_line="$(grep -n 'cp -f "\${REPO_ROOT}/operators/keystone/dashboards/keystone-operator.json"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
-  apply_line="$(grep -nF 'kubectl apply -k "${OVERLAY_ROOT}/prometheus"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -nF 'kubectl apply -k "${PROMETHEUS_OVERLAY_ROOT}"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
 
   assert_not_empty "dashboard copy line is found" "$copy_line"
   assert_not_empty "kustomize apply line for prometheus is found" "$apply_line"
@@ -278,7 +278,7 @@ test_servicemonitor_helper_is_defined_and_gated() {
 #   (a) deploy-infra.sh's prometheus apply line uses plain `kubectl apply -k`
 #       (no `--load-restrictor`, no pipe through `kustomize build` to
 #       `kubectl apply -f -`); and
-#   (b) deploy/kind/prometheus/kustomization.yaml has zero `../../` parent-
+#   (b) deploy/overlays/kind/prometheus/kustomization.yaml has zero `../../` parent-
 #       directory resource entries, so the default LoadRestrictionsRootOnly
 #       check is satisfied and the apply succeeds without any flag.
 # ---------------------------------------------------------------------------
@@ -287,7 +287,7 @@ test_production_caller_matches_self_contained_overlay() {
 
   # (a) The apply line is the bare kubectl form — no pipe, no flag.
   local raw
-  raw="$(grep -F 'kubectl apply -k "${OVERLAY_ROOT}/prometheus"' "$DEPLOY_INFRA_SH" | head -1)"
+  raw="$(grep -F 'kubectl apply -k "${PROMETHEUS_OVERLAY_ROOT}"' "$DEPLOY_INFRA_SH" | head -1)"
   assert_not_empty "deploy-infra.sh has the prometheus kubectl apply line" "$raw"
 
   if grep -q -- '--load-restrictor' <<<"$raw"; then
@@ -298,8 +298,8 @@ test_production_caller_matches_self_contained_overlay() {
     PASS=$((PASS + 1))
   fi
 
-  # (b) The overlay must have zero `../../` parent-directory resource entries.
-  local kust="$PROJECT_ROOT/deploy/kind/prometheus/kustomization.yaml"
+  # (b) The overlay must have zero parent-directory raw-file imports.
+  local kust="$PROJECT_ROOT/deploy/overlays/kind/prometheus/kustomization.yaml"
   if [[ ! -f "$kust" ]]; then
     echo "  FAIL: $kust does not exist"
     FAIL=$((FAIL + 1))
@@ -307,14 +307,41 @@ test_production_caller_matches_self_contained_overlay() {
   fi
 
   local parent_refs
-  parent_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./\.\.' "$kust" || true; } | wc -l)"
-  assert_eq "deploy/kind/prometheus/kustomization.yaml has no '../../' resource entries" \
+  parent_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./.*\.(ya?ml|json)[[:space:]]*$' "$kust" || true; } | wc -l)"
+  assert_eq "deploy/overlays/kind/prometheus/kustomization.yaml has no parent-directory raw-file imports" \
     "0" "${parent_refs// /}"
 }
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+# Resolve the actual selected path without running main() or touching a cluster.
+resolve_prometheus_overlay() {
+  (
+    for assignment in "$@"; do
+      export "${assignment?}"
+    done
+    # shellcheck source=/dev/null
+    source "$DEPLOY_INFRA_SH"
+    printf '%s' "$PROMETHEUS_OVERLAY_ROOT"
+  )
+}
+
+test_prometheus_namespace_ownership_selection() {
+  local actual
+  actual="$(unset EXTERNAL_CLUSTER EXTERNAL_OVERLAY; resolve_prometheus_overlay)"
+  assert_eq "kind uses the platform-owned namespace composition" \
+    "$PROJECT_ROOT/deploy/overlays/kind/prometheus-managed" "$actual"
+  actual="$(resolve_prometheus_overlay EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY=/example/site)"
+  assert_eq "external overlays retain their own prometheus directory" \
+    "/example/site/prometheus" "$actual"
+  actual="$(resolve_prometheus_overlay EXTERNAL_CLUSTER=true EXTERNAL_OVERLAY=deploy/overlays/metal-stack)"
+  assert_eq "relative external overlay resolves against repository root" \
+    "$PROJECT_ROOT/deploy/overlays/metal-stack/prometheus" "$actual"
+}
+
+test_prometheus_namespace_ownership_selection
+
 test_default_is_false
 test_explicit_true
 test_explicit_false

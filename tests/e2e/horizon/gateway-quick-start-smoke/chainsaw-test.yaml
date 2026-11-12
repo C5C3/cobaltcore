@@ -14,7 +14,7 @@
 #   (self-signed cert `horizon-nip-io-tls`, SNI `horizon.127-0-0-1.nip.io`)
 #   → HTTPRoute managed by the Horizon Operator → Service → Horizon pod.
 # Two suites attach to the second Gateway listener the kind overlay adds for
-# the dashboard (deploy/kind/base/openstack-gateway.yaml): this one and
+# the dashboard (deploy/overlays/kind/base/openstack-gateway.yaml): this one and
 # ../gateway-quick-start, whose route matches `/`. The smoke route attaches
 # on `/auth`, which still matches `/auth/login/`, so the two routes never
 # overlap entirely (see 01-smoke-horizon-cr.yaml). The keystone smoke only
@@ -89,7 +89,7 @@ spec:
 
           # ── Presence guard ──────────────────────────────
           # The kind overlay alone applies
-          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # `deploy/overlays/kind/base/openstack-gateway.yaml`, which materialises
           # GatewayClass/envoy and Gateway/openstack-gw (with the
           # `https-horizon` listener). Their absence unambiguously signals a
           # non-kind cluster — exit 0 with a SKIP line.

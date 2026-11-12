@@ -5,7 +5,7 @@
 
 # Verify hack/deploy-infra.sh gates the NFS storage stack behind WITH_NFS, in
 # both modes: the host-side nfs/nfsv4 module load of the kind mode, the
-# overlay apply (deploy/kind/nfs in kind mode, the overlay's nfs/ under
+# overlay apply (deploy/overlays/kind/nfs in kind mode, the overlay's nfs/ under
 # EXTERNAL_CLUSTER=true) with its rollout wait on the nfs-server Deployment,
 # and the csi-driver-nfs HelmRelease wait. The default Quick Start must install
 # none of it, and a typo like WITH_NFS=yes must take the skip branch at all
@@ -190,12 +190,12 @@ test_kernel_module_call_is_gated() {
 
 # ---------------------------------------------------------------------------
 # Test 7: the overlay apply is gated
-# The one kustomize apply of ${OVERLAY_ROOT}/nfs, deploy/kind/nfs in kind mode
+# The one kustomize apply of ${OVERLAY_ROOT}/nfs, deploy/overlays/kind/nfs in kind mode
 # and the overlay's nfs/ under EXTERNAL_CLUSTER=true, must live inside the
 # WITH_NFS gate.
 # ---------------------------------------------------------------------------
 test_nfs_kustomize_is_gated() {
-  echo "Test: the NFS overlay apply (deploy/kind/nfs, or the overlay's nfs/ under EXTERNAL_CLUSTER=true) is gated by WITH_NFS"
+  echo "Test: the NFS overlay apply (deploy/overlays/kind/nfs, or the overlay's nfs/ under EXTERNAL_CLUSTER=true) is gated by WITH_NFS"
 
   local apply_line gate_line
   apply_line="$(grep -n 'kubectl apply -k "${OVERLAY_ROOT}/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
@@ -470,12 +470,12 @@ test_entry_point_delegates_to_the_shared_loader() {
 # refusal itself.
 # ---------------------------------------------------------------------------
 test_external_refusal_names_the_client_modules() {
-  echo "Test: the external-mode refusal of deploy/kind/nfs names the client modules"
+  echo "Test: the external-mode refusal of deploy/overlays/kind/nfs names the client modules"
 
   assert_file_contains_literal \
     "the refusal says the clients need nfs and nfsv4 on every node" \
     "$DEPLOY_INFRA_SH" \
-    "deploy/kind/nfs is not applied to an external cluster: its clients need the nfs and nfsv4 modules on every node, which this mode does not load."
+    "deploy/overlays/kind/nfs is not applied to an external cluster: its clients need the nfs and nfsv4 modules on every node, which this mode does not load."
 }
 
 # ---------------------------------------------------------------------------
@@ -542,10 +542,9 @@ test_loader_survives_failing_modprobe() {
 #   (a) deploy-infra.sh's NFS apply line uses plain `kubectl apply -k` (no
 #       `--load-restrictor`, no pipe through `kustomize build` to
 #       `kubectl apply -f -`); and
-#   (b) deploy/kind/nfs/kustomization.yaml has zero parent-directory resource
-#       entries. The lab's deploy/lab/metal-stack/nfs, which the same line
-#       applies under EXTERNAL_CLUSTER=true, references it as a directory
-#       (../../../kind/nfs), which LoadRestrictionsRootOnly allows; a file
+#   (b) deploy/overlays/kind/nfs/kustomization.yaml has zero parent raw-file imports.
+#       Both environments import the shared directory base
+#       (../../../bases/nfs), which LoadRestrictionsRootOnly allows; a file
 #       reference outside the root would not be.
 #       tests/unit/deploy/metal_stack_nfs_test.sh pins that resource list and
 #       renders it under the default restrictor.
@@ -579,9 +578,9 @@ test_production_caller_matches_self_contained_overlay() {
     PASS=$((PASS + 1))
   fi
 
-  # (b) The overlay must have zero parent-directory resource entries so the
-  # default LoadRestrictionsRootOnly check is satisfied.
-  local kust="$PROJECT_ROOT/deploy/kind/nfs/kustomization.yaml"
+  # (b) The overlay must have zero parent-directory raw-file imports while
+  # directory bases remain allowed by LoadRestrictionsRootOnly.
+  local kust="$PROJECT_ROOT/deploy/overlays/kind/nfs/kustomization.yaml"
   if [[ ! -f "$kust" ]]; then
     echo "  FAIL: $kust does not exist"
     FAIL=$((FAIL + 1))
@@ -589,8 +588,8 @@ test_production_caller_matches_self_contained_overlay() {
   fi
 
   local parent_refs
-  parent_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./' "$kust" || true; } | wc -l)"
-  assert_eq "deploy/kind/nfs/kustomization.yaml has no parent-directory resource entries" \
+  parent_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./.*\.(ya?ml|json)[[:space:]]*$' "$kust" || true; } | wc -l)"
+  assert_eq "deploy/overlays/kind/nfs/kustomization.yaml has no parent-directory raw-file imports" \
     "0" "${parent_refs// /}"
 }
 

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the metrics-server opt-in overlay:
-#   - deploy/kind/metrics-server/{kustomization,source,release}.yaml exist
+#   - deploy/overlays/kind/metrics-server/{kustomization,source,release}.yaml exist
 #     with SPDX headers, the kustomization references the local
 #     source/release files (no parent-directory paths), and the overlay does
 #     NOT create a Namespace (the chart installs into the pre-existing
@@ -15,7 +15,7 @@
 #     the upstream chart index, and HelmRelease/metrics-server in kube-system
 #     whose chart version stays within major 3 and whose values carry
 #     `--kubelet-insecure-tls`.
-#   - kustomize build of deploy/flux-system and deploy/kind/base renders ZERO
+#   - kustomize build of deploy/bases/operators and deploy/overlays/kind/base renders ZERO
 #     metrics-server resources (production / default posture).
 # Usage: bash tests/unit/deploy/metrics_server_overlay_test.sh
 
@@ -31,9 +31,9 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-KIND_MS_DIR="$PROJECT_ROOT/deploy/kind/metrics-server"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/operators"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+KIND_MS_DIR="$PROJECT_ROOT/deploy/overlays/kind/metrics-server"
 KIND_MS_KUSTOMIZATION="$KIND_MS_DIR/kustomization.yaml"
 KIND_MS_SOURCE="$KIND_MS_DIR/source.yaml"
 KIND_MS_RELEASE="$KIND_MS_DIR/release.yaml"
@@ -53,7 +53,7 @@ count_metrics_server_resources() {
 
 # --- Test 1: overlay files exist with SPDX headers ---
 test_overlay_files_exist_with_spdx() {
-  echo "Test: deploy/kind/metrics-server/{kustomization,source,release}.yaml exist with SPDX headers"
+  echo "Test: deploy/overlays/kind/metrics-server/{kustomization,source,release}.yaml exist with SPDX headers"
 
   local f
   for f in "$KIND_MS_KUSTOMIZATION" "$KIND_MS_SOURCE" "$KIND_MS_RELEASE"; do
@@ -103,7 +103,7 @@ test_kustomization_is_self_contained() {
 # --- Test 3: kustomize build renders the metrics-server bundle with kind
 #             tuning under the default LoadRestrictionsRootOnly check ---
 test_kustomize_build_renders_bundle() {
-  echo "Test: kustomize build deploy/kind/metrics-server renders HelmRepository + HelmRelease with kind tuning"
+  echo "Test: kustomize build deploy/overlays/kind/metrics-server renders HelmRepository + HelmRelease with kind tuning"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (5 checks skipped)"
@@ -168,7 +168,7 @@ test_kustomize_build_renders_bundle() {
 
 # --- Test 4: production flux-system renders zero metrics-server resources ---
 test_flux_system_renders_no_metrics_server() {
-  echo "Test: kustomize build deploy/flux-system renders no metrics-server resources"
+  echo "Test: kustomize build deploy/bases/operators renders no metrics-server resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (2 checks skipped)"
@@ -193,7 +193,7 @@ test_flux_system_renders_no_metrics_server() {
 
 # --- Test 5: kind/base renders zero metrics-server resources ---
 test_kind_base_renders_no_metrics_server() {
-  echo "Test: kustomize build deploy/kind/base renders no metrics-server resources"
+  echo "Test: kustomize build deploy/overlays/kind/base renders no metrics-server resources"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (1 check skipped)"

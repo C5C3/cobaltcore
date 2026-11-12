@@ -32,7 +32,7 @@ EXTERNAL_CLUSTER="${EXTERNAL_CLUSTER:-false}"
 # The overlay root the deploy applied, resolved the way hack/deploy-infra.sh
 # resolves it: relative to REPO_ROOT unless absolute. Read only under
 # EXTERNAL_CLUSTER=true.
-EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/lab/metal-stack}"
+EXTERNAL_OVERLAY="${EXTERNAL_OVERLAY:-deploy/overlays/metal-stack}"
 case "${EXTERNAL_OVERLAY}" in
   /*) OVERLAY_ROOT="${EXTERNAL_OVERLAY}" ;;
   *) OVERLAY_ROOT="${REPO_ROOT}/${EXTERNAL_OVERLAY}" ;;
@@ -49,13 +49,13 @@ TEARDOWN_POLL_SECONDS="${TEARDOWN_POLL_SECONDS:-5}"
 
 # The API groups whose CRDs the stack registers: the CobaltCore OpenStack
 # operators (operators/*/config/crd/bases: c5c3.io and <svc>.openstack.c5c3.io),
-# the HelmReleases and Flux Kustomizations of deploy/flux-system, the two
+# the HelmReleases and Flux Kustomizations of deploy/bases/operators, the two
 # bundles hack/deploy-infra.sh installs itself (Gateway API, Envoy Gateway), the
 # kvm.cloud.sap CRDs the charts of the lab hypervisors install
-# (deploy/lab/metal-stack/hypervisor; Helm leaves them behind), and the
+# (deploy/overlays/metal-stack/hypervisor; Helm leaves them behind), and the
 # chaos-mesh.org CRDs the opt-in Chaos Mesh release installs from its chart's
 # crds/, which Helm never deletes either. The rook-ceph chart of the lab Ceph
-# (deploy/lab/metal-stack/ceph) installs the ceph.rook.io and objectbucket.io
+# (deploy/overlays/metal-stack/ceph) installs the ceph.rook.io and objectbucket.io
 # CRDs as templates marked helm.sh/resource-policy: keep, so its uninstall
 # leaves them too; csi.ceph.io is the group of the ceph-csi-operator, of which
 # the lab applies the one CRD clientprofiles.csi.ceph.io beside the HelmRelease
@@ -203,7 +203,7 @@ resume_installed_flux_objects() {
 
 # ---------------------------------------------------------------------------
 # stack_namespaces — The namespaces the stack creates, one per line: every
-# Namespace of deploy/flux-system/namespaces.yaml, the two the kind base files
+# Namespace of deploy/bases/operators/namespaces.yaml, the two the kind base files
 # declare (envoy-gateway-system, headlamp-system), chaos-mesh and dizzy, which
 # the opt-in Chaos Mesh and dizzy overlays declare, rook-ceph, which the lab's
 # Ceph overlay declares, and flux-system. No other namespace is ever deleted.
@@ -211,7 +211,7 @@ resume_installed_flux_objects() {
 # ---------------------------------------------------------------------------
 stack_namespaces() {
   yq -N -r 'select(.kind == "Namespace") | .metadata.name' \
-    "${REPO_ROOT}/deploy/flux-system/namespaces.yaml" || return 1
+    "${REPO_ROOT}/deploy/bases/operators/namespaces.yaml" || return 1
   printf '%s\n' envoy-gateway-system headlamp-system chaos-mesh dizzy rook-ceph flux-system
 }
 
@@ -1056,7 +1056,7 @@ teardown_openstack_workloads() {
 
 # ---------------------------------------------------------------------------
 # teardown_hypervisors — Step 0 of teardown_external_cluster: remove the lab
-# hypervisors (deploy/lab/metal-stack/hypervisor and hypervisor-fixtures,
+# hypervisors (deploy/overlays/metal-stack/hypervisor and hypervisor-fixtures,
 # applied by hand) while the ControlPlane, the operators, K-ORC,
 # openstack-hypervisor-operator and kvm-node-agent still run. A no-op unless
 # ${OVERLAY_ROOT}/hypervisor/kustomization.yaml exists. Each kind is deleted
@@ -1079,7 +1079,7 @@ teardown_openstack_workloads() {
 #      change to an object that is being deleted, so a domain deleted while
 #      enabled could never be disabled;
 #   5. the hypervisor overlay, the two operators and the migration port
-#      reservation (deploy/lab/metal-stack/migration-ports) with it;
+#      reservation (deploy/overlays/metal-stack/migration-ports) with it;
 #   6. the Deployment and PodDisruptionBudget maint-<node> the hypervisor
 #      operator leaves in kube-system for every node. Its lifecycle controller
 #      recreates them while it runs, hence after sub-step 5;
@@ -1385,7 +1385,7 @@ teardown_ceph() {
 # namespace monitoring with the dashboard ConfigMaps.
 # ---------------------------------------------------------------------------
 teardown_prometheus() {
-  delete_and_wait "the kube-prometheus-stack release" -f "${REPO_ROOT}/deploy/kind/prometheus/release.yaml"
+  delete_and_wait "the kube-prometheus-stack release" -f "${REPO_ROOT}/deploy/bases/prometheus/release.yaml"
   delete_and_wait "the PVCs in monitoring" pvc --all -n monitoring
   delete_and_wait "the kubelet Service and Endpoints the Prometheus Operator left in kube-system" \
     service,endpoints kube-prometheus-stack-kubelet -n kube-system
@@ -1585,7 +1585,7 @@ teardown_external_cluster() {
       -p '{"spec":{"deletionPolicy":"DeletePVCs"}}' >/dev/null
   fi
   delete_and_wait "the infrastructure overlay" -k "${OVERLAY_ROOT}/infrastructure"
-  delete_and_wait "the message-bus overlay" -k "${REPO_ROOT}/deploy/kind/messaging"
+  delete_and_wait "the message-bus overlay" -k "${REPO_ROOT}/deploy/bases/messaging"
   # What the ControlPlane owned: garbage collection reaps it after step 1's
   # delete has returned, and its finalizers need the operators step 3 removes.
   wait_for_stack_crs_gone openstack
@@ -1635,7 +1635,7 @@ teardown_external_cluster() {
   # in step 9.
   local namespace_list namespaces=() namespaces_to_delete=() line
   if ! namespace_list="$(stack_namespaces)"; then
-    log "ERROR: cannot read the stack namespaces from deploy/flux-system/namespaces.yaml (yq's error is above)."
+    log "ERROR: cannot read the stack namespaces from deploy/bases/operators/namespaces.yaml (yq's error is above)."
     exit 1
   fi
   while IFS= read -r line; do

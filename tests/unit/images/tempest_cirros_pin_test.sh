@@ -6,7 +6,7 @@
 # Verify the cirros pin of the tempest image stays in lockstep with the one of
 # the kind fixture:
 #   1. The URL and the sha256 the fetchurl of images/tempest/image.nix names
-#      equal url and hash.value of deploy/kind/hypervisor-operator-fixtures/
+#      equal url and hash.value of deploy/overlays/kind/hypervisor-operator-fixtures/
 #      image.yaml. Neither pin has a Renovate rule, so a bump of one has to
 #      move the other by hand.
 #   2. A copy of the two files whose image.nix carries another sha256 fails,
@@ -29,7 +29,7 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 NIX_FILE="images/tempest/image.nix"
-YAML_FILE="deploy/kind/hypervisor-operator-fixtures/image.yaml"
+YAML_FILE="deploy/bases/hypervisor-fixtures/image.yaml"
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT

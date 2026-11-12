@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Namespace for the standalone Prometheus entry point. The platform aggregate
+# also declares monitoring. Composed installs use ../prometheus-managed, which
+# excludes this object so platform labels and annotations have a single owner.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring

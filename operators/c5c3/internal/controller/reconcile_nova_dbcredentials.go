@@ -32,7 +32,7 @@ import (
 const (
 	// novaAPIDBDynamicVaultRole is the OpenBao Kubernetes-auth role the Nova API
 	// credential generator authenticates against. Its counterpart is the role
-	// deploy/openbao/bootstrap/setup-auth.sh writes, bound to the
+	// deploy/bases/shared-openbao/bootstrap/setup-auth.sh writes, bound to the
 	// nova-api-db-dynamic policy that scopes reads to the per-tenant creds path.
 	novaAPIDBDynamicVaultRole = "nova-api-db"
 	// novaCellDBDynamicVaultRole is the same for the cell schema, bound to the
@@ -111,7 +111,7 @@ func novaCellDBCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
 // it actually live in), so it is collision-free (namespaces are cluster-unique)
 // and the nova-api-db-dynamic policy can scope reads by the caller's
 // service_account_namespace with an EXACT match. It MUST stay in sync with the
-// role-name derivation in deploy/openbao/bootstrap/setup-database-tenant.sh,
+// role-name derivation in deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh,
 // whose "nova-api nova nova_api" row provisions the engine pair this reads from.
 func novaAPIDBDynamicRoleFor(cp *c5c3v1alpha1.ControlPlane) string {
 	return "nova-api-" + cp.NovaNamespace()

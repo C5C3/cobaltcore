@@ -27,8 +27,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-ENGINES_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-secret-engines.sh"
-AUTH_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-auth.sh"
+ENGINES_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh"
+AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
 
 # The engine and auth maps of an instance both scripts have already run
 # against: every mount they enable, plus the ones OpenBao always carries.

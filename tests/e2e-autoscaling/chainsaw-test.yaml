@@ -162,7 +162,7 @@ spec:
           # policy lets the namespace read. A Static user logs in as the child
           # CR's name, so that is the username each path carries. The password
           # is generated inside the OpenBao pod, as write_secret_if_missing in
-          # deploy/openbao/bootstrap/write-bootstrap-secrets.sh does, so no
+          # deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh does, so no
           # cleartext travels as an exec argument; an existing path is kept.
           seed() { # <kv-path> <username>
             bao_exec sh -c 'bao kv get "$1" >/dev/null 2>&1 || bao kv put "$1" username="$2" password="$(bao write -field=random_bytes sys/tools/random/32 format=hex)" >/dev/null' \

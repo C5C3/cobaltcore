@@ -86,11 +86,11 @@
 #  21. the Caveats link the Lab Ceph of
 #      docs/reference/infrastructure/infrastructure-manifests.md#lab-ceph
 #  22. Parts 1 and 2 name the Ceph entries of
-#      deploy/lab/metal-stack/controlplane/controlplane-lab.yaml: the RBD
+#      deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml: the RBD
 #      volume backend with its volume Deployment, pool and libvirt secret UUID,
 #      and the backup target with its pool; Part 3 names the NFS volume
 #      backend of the JSON patch of
-#      deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml with its
+#      deploy/overlays/metal-stack/controlplane-nfs/kustomization.yaml with its
 #      volume Deployment and its share, and the page names no backend that
 #      neither file declares
 #
@@ -119,8 +119,8 @@ GUIDE_CONVENTIONS="$PROJECT_ROOT/docs/contributing/guide-conventions.md"
 INFRA_MANIFESTS="$PROJECT_ROOT/docs/reference/infrastructure/infrastructure-manifests.md"
 GUIDE_SCAFFOLD="$PROJECT_ROOT/.claude/skills/prepare-new-guide/scripts/scaffold-guide.sh"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
-LAB_CONTROLPLANE="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane/controlplane-lab.yaml"
-NFS_VARIANT="$PROJECT_ROOT/deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml"
+LAB_CONTROLPLANE="$PROJECT_ROOT/deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml"
+NFS_VARIANT="$PROJECT_ROOT/deploy/overlays/metal-stack/controlplane-nfs/kustomization.yaml"
 
 if [[ ! -f "$QUICK_START_DOC" ]]; then
   echo "FAIL: $QUICK_START_DOC does not exist"
@@ -281,10 +281,10 @@ test_sections() {
 test_references_resolve() {
   echo "Test: the applied directories, the named files, the code imports and the anchors exist"
   local dirs dir paths path imports import found=0 links link target page fragment
-  dirs="$(grep -oE 'kubectl apply -k deploy/lab/metal-stack/[A-Za-z0-9_-]+' "$QUICK_START_DOC" |
+  dirs="$(grep -oE 'kubectl apply -k deploy/overlays/metal-stack/[A-Za-z0-9_-]+' "$QUICK_START_DOC" |
     sed 's|^kubectl apply -k ||' | sort -u || true)"
   if [[ -z "$dirs" ]]; then
-    echo "  FAIL: the page applies no deploy/lab/metal-stack/ directory"
+    echo "  FAIL: the page applies no deploy/overlays/metal-stack/ directory"
     FAIL=$((FAIL + 1))
   fi
   while IFS= read -r dir; do
@@ -495,9 +495,9 @@ test_blocks_pass_on_first_run() {
     'kubectl wait crd/hypervisors.kvm.cloud.sap --for=condition=Established' \
     'kubectl wait --for=create "hypervisor/${node}"'
 
-  count="$(grep -cF -- 'kubectl apply -k deploy/lab/metal-stack/migration-ports' "$QUICK_START_DOC" || true)"
+  count="$(grep -cF -- 'kubectl apply -k deploy/overlays/metal-stack/migration-ports' "$QUICK_START_DOC" || true)"
   assert_eq "the apply of the migration port reservation occurs on one line" "1" "$count"
-  line="$(grep -nF -- 'kubectl apply -k deploy/lab/metal-stack/migration-ports' "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
+  line="$(grep -nF -- 'kubectl apply -k deploy/overlays/metal-stack/migration-ports' "$QUICK_START_DOC" | head -n 1 | cut -d: -f1)"
   assert_contains "the wait for its rollout follows it on the next line" \
     "$(if [[ -n "$line" ]]; then sed -n "$((line + 1))p" "$QUICK_START_DOC"; fi)" \
     'kubectl rollout status daemonset/migration-port-reservation -n hypervisor-system'
@@ -797,7 +797,7 @@ test_rotation_and_part_3_order() {
   assert_not_empty "Part 3 holds Step 1" "$step"
   assert_once_in_order "the checks, the apply and the waits" "$step" \
     'kubectl -n openstack rollout status deployment/nfs-server' \
-    'kubectl kustomize deploy/lab/metal-stack/controlplane-nfs' \
+    'kubectl kustomize deploy/overlays/metal-stack/controlplane-nfs' \
     'kubectl wait --for=create cinderbackend/nfs1' \
     '--for=jsonpath='"'"'{.spec.template.spec.volumes[?(@.name=="share-nfs1")].csi.driver}'"'"'=nfs.csi.k8s.io' \
     'kubectl -n openstack rollout status deploy/controlplane-cinder-backup'
@@ -810,7 +810,7 @@ test_rotation_and_part_3_order() {
     "$(printf '%s\n' \
       'kubectl -n openstack rollout status deployment/nfs-server --timeout=60s &&' \
       '  kubectl get csidriver nfs.csi.k8s.io &&' \
-      '  kubectl kustomize deploy/lab/metal-stack/controlplane-nfs |' \
+      '  kubectl kustomize deploy/overlays/metal-stack/controlplane-nfs |' \
       '  sed "s/127-0-0-1\.nip\.io/${PUBLIC_SUFFIX}/g" | kubectl apply -f -')" \
     "$block"
   assert_not_empty "Part 3 defines host=" "$(grep -E '^host=' <<<"$body" || true)"

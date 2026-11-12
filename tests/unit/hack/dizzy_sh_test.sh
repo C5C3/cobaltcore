@@ -26,7 +26,7 @@
 #      VictoriaMetrics warning and the port-forward to open. In kind mode it
 #      warns about a missing 30428 mapping and names no port-forward.
 #   5. EXTERNAL_GATEWAY_CERTIFICATE names the namespace and name of
-#      deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml, the
+#      deploy/overlays/metal-stack/infrastructure/gateway-certificate.yaml, the
 #      Certificate hack/deploy-infra.sh issues.
 #   6. Run without a subcommand, the script prints a usage that names
 #      EXTERNAL_CLUSTER and exits 1.
@@ -367,7 +367,7 @@ test_gateway_certificate_matches_the_template() {
   # shellcheck source=/dev/null
   dizzy_cert="$(unset EXTERNAL_CLUSTER; source "$DIZZY_SH"; printf '%s' "$EXTERNAL_GATEWAY_CERTIFICATE")"
   template_cert="$(yq -N -r '.metadata.namespace + "/" + .metadata.name' \
-    "$PROJECT_ROOT/deploy/lab/metal-stack/infrastructure/gateway-certificate.yaml")"
+    "$PROJECT_ROOT/deploy/overlays/metal-stack/infrastructure/gateway-certificate.yaml")"
   assert_not_empty "the template names its Certificate" "$template_cert"
   assert_eq "the two are equal" "$template_cert" "$dizzy_cert"
 }
@@ -406,7 +406,7 @@ test_stage_dashboards_download_fails() {
   assert_contains "and names the URL" "$output" \
     "ERROR: failed to download dizzy sources from https://github.com/B42Labs/dizzy/archive/refs/tags/v0.0.0.tar.gz"
   assert_eq "no dashboard is staged" "false" \
-    "$([[ -e "$tmp/repo/deploy/kind/dizzy/dashboards" ]] && echo true || echo false)"
+    "$([[ -e "$tmp/repo/deploy/bases/dizzy/dashboards" ]] && echo true || echo false)"
   assert_eq "no cache directory is left" "false" \
     "$([[ -e "$tmp/repo/_output/dizzy/v0.0.0" ]] && echo true || echo false)"
   unset CALL_LOG

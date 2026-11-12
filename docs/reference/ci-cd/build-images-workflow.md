@@ -1095,7 +1095,7 @@ rebuild QEMU, Ceph or glibc while libvirt keeps its version. A version that is n
 prune's keep pattern and Renovate's `allowedVersions` assume that shape. The
 Docker-built image before #1407 carried `<libvirt-package-version>-r<N>`, such as
 `10.0.0-2ubuntu8.19-r2`; the prune keeps those as the lab's rollback target. The lab
-manifests under `deploy/lab/metal-stack/` pin the current tag by digest (see
+manifests under `deploy/overlays/metal-stack/` pin the current tag by digest (see
 [Lab hypervisors](../infrastructure/infrastructure-manifests.md#lab-hypervisors)).
 
 ## Retention

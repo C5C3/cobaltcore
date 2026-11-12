@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify renovate.json tracks the OpenBaoCluster version pin in
-# deploy/kind/infrastructure/openbao-instance.yaml and pairs it with the
+# deploy/bases/devstack/infrastructure/openbao-instance.yaml and pairs it with the
 # expected packageRules.
 #
 # The pin rides no Flux chart: the openbao-operator resolves it into the
@@ -45,10 +45,10 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
-INSTANCE_FILE="$PROJECT_ROOT/deploy/kind/infrastructure/openbao-instance.yaml"
+INSTANCE_FILE="$PROJECT_ROOT/deploy/bases/devstack/infrastructure/openbao-instance.yaml"
 
 PKG_NAME="openbao/openbao"
-INSTANCE_PATH="deploy/kind/infrastructure/openbao-instance.yaml"
+INSTANCE_PATH="deploy/bases/devstack/infrastructure/openbao-instance.yaml"
 
 test_manager_exists_and_regex_matches() {
   echo "Test: the OpenBaoCluster version pin has a customManager whose regex matches"

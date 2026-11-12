@@ -8,7 +8,7 @@
 #
 # The sizing measurement of the `ci:measure-sizing` label runs this script in
 # the e2e-controlplane, e2e-controlplane-sso and tempest jobs, on a cluster
-# deployed with WITH_VPA=true (deploy/kind/vpa). It creates one VPA per
+# deployed with WITH_VPA=true (deploy/overlays/kind/vpa). It creates one VPA per
 # Deployment, StatefulSet and DaemonSet with updateMode "Off", so the
 # recommender recommends requests without changing any pod, and copies each
 # recommendation into a snapshot file together with the workload's current

@@ -5,7 +5,7 @@
 
 # Verify the metal-stack node probe, the read-only survey Job of #1138, and
 # the NFS module load test of #1194 beside it:
-#   1. deploy/lab/metal-stack/probe/{kustomization,node-probe,nfs-module-load}.yaml
+#   1. deploy/overlays/metal-stack/probe/{kustomization,node-probe,nfs-module-load}.yaml
 #      exist with SPDX headers.
 #   2. The kustomization's resources list names node-probe.yaml alone, and no
 #      non-comment line names a parent-directory path (kubectl's embedded
@@ -48,7 +48,7 @@
 #      hostPID, no hostNetwork, no ServiceAccount token, no init container,
 #      and one privileged container with a read-only root filesystem and a
 #      memory limit, on the image of host-prepare in
-#      deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml pulled
+#      deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml pulled
 #      IfNotPresent, with /lib/modules as its one volume, mounted under the
 #      volume's name read-only at /lib/modules. Its /bin/bash -c script
 #      removes what it loaded with rmmod and never with modprobe -r, ends with
@@ -94,11 +94,11 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-PROBE_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/probe"
+PROBE_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/probe"
 PROBE_KUSTOMIZATION="$PROBE_DIR/kustomization.yaml"
 PROBE_MANIFEST="$PROBE_DIR/node-probe.yaml"
 LOAD_MANIFEST="$PROBE_DIR/nfs-module-load.yaml"
-LIBVIRT_DAEMONSET="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml"
+LIBVIRT_DAEMONSET="$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml"
 
 IMAGE_PATTERN='^docker\.io/library/debian:[^@]+@sha256:[a-f0-9]{64}$'
 
@@ -158,7 +158,7 @@ render_probe() {
 
 # --- Test 1: probe files exist with SPDX headers ---
 test_probe_files_exist_with_spdx() {
-  echo "Test: deploy/lab/metal-stack/probe/{kustomization,node-probe,nfs-module-load}.yaml exist with SPDX headers"
+  echo "Test: deploy/overlays/metal-stack/probe/{kustomization,node-probe,nfs-module-load}.yaml exist with SPDX headers"
 
   local f
   for f in "$PROBE_KUSTOMIZATION" "$PROBE_MANIFEST" "$LOAD_MANIFEST"; do

@@ -5,11 +5,11 @@
 
 # Verify docs/reference/infrastructure-manifests.md documents the new
 # kind-only Flux Web UI addon
-#   - a subsection references deploy/kind/base/flux-web.yaml
+#   - a subsection references deploy/bases/devstack/base/flux-web.yaml
 #   - the chart URL oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator
 #     is cited in that subsection
 #   - the Renovate customManager / pin story is mentioned
-#   - an explicit note clarifies that deploy/flux-system/kustomization.yaml
+#   - an explicit note clarifies that deploy/bases/operators/kustomization.yaml
 #     does NOT reference this file (production stays opt-out)
 #   - the document still parses as a sequence of well-formed Markdown
 #     headers (monotonically non-decreasing depth, no malformed '#' lines)
@@ -42,14 +42,14 @@ test_doc_exists() {
   fi
 }
 
-# --- Test 2: new subsection references deploy/kind/base/flux-web.yaml
+# --- Test 2: new subsection references deploy/bases/devstack/base/flux-web.yaml
 #             ---
 test_subsection_references_flux_web_manifest() {
-  echo "Test: a subsection references deploy/kind/base/flux-web.yaml"
+  echo "Test: a subsection references deploy/bases/devstack/base/flux-web.yaml"
 
   assert_file_contains "docs reference the kind-only flux-web manifest path" \
     "$MANIFESTS_DOC" \
-    'deploy/kind/base/flux-web.yaml'
+    'deploy/bases/devstack/base/flux-web.yaml'
 }
 
 # --- Test 3: chart URL cited in the subsection ---
@@ -97,11 +97,11 @@ test_renovate_cross_reference() {
 # --- Test 7: explicit note that production flux-system does NOT reference
 #             this file ---
 test_production_opt_out_note() {
-  echo "Test: the flux-web subsection notes that deploy/flux-system/kustomization.yaml does not reference this file"
+  echo "Test: the flux-web subsection notes that deploy/bases/operators/kustomization.yaml does not reference this file"
 
   assert_file_contains "production kustomization opt-out note present" \
     "$MANIFESTS_DOC" \
-    'deploy/flux-system/kustomization.yaml'
+    'deploy/bases/operators/kustomization.yaml'
 }
 
 # --- Test 8: Kind Overlay Demo Addons heading present ---

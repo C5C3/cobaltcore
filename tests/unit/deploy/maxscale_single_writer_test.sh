@@ -7,7 +7,7 @@
 # primary, the condition under which the OpenStack operators route a service
 # through it (database.ResolveEndpoint). No CI job or lab run deploys
 # MaxScale, so this render is CI's only check of the service. kustomize build
-# deploy/flux-system/infrastructure runs once, and the test checks:
+# deploy/bases/infrastructure runs once, and the test checks:
 #
 #   1. MaxScale/openstack-db-maxscale renders exactly once.
 #   2. spec.services has exactly one entry.
@@ -27,7 +27,7 @@
 #  12. MariaDB/openstack-db names openstack-db-maxscale in spec.maxScaleRef,
 #  13. in no namespace other than openstack.
 #
-# kustomize build deploy/kind/infrastructure runs second, and the test checks:
+# kustomize build deploy/overlays/kind/infrastructure runs second, and the test checks:
 #
 #  14. The kind overlay renders no MaxScale/openstack-db-maxscale.
 #
@@ -90,15 +90,15 @@ test_maxscale_single_writer() {
 # --- Check 14: the kind overlay deletes the MaxScale ---
 test_kind_overlay_has_no_maxscale() {
   echo "Test: the kind overlay renders no MaxScale"
-  assert_eq "deploy/kind/infrastructure renders no MaxScale/openstack-db-maxscale" "0" \
+  assert_eq "deploy/overlays/kind/infrastructure renders no MaxScale/openstack-db-maxscale" "0" \
     "$(count_named MaxScale openstack-db-maxscale)"
 }
 
 # --- Run ---
-if render "$PROJECT_ROOT/deploy/flux-system/infrastructure" 13; then
+if render "$PROJECT_ROOT/deploy/bases/infrastructure" 13; then
   test_maxscale_single_writer
 fi
-if render "$PROJECT_ROOT/deploy/kind/infrastructure" 1; then
+if render "$PROJECT_ROOT/deploy/overlays/kind/infrastructure" 1; then
   test_kind_overlay_has_no_maxscale
 fi
 

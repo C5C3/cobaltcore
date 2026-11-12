@@ -9,7 +9,7 @@
 # With WITH_CONTROLPLANE=true the script pulls ghcr.io/c5c3/keystone:<release>
 # and loads it into kind, so the Keystone the ControlPlane projects starts
 # without an in-cluster pull. The release is the literal cp_release, a copy of
-# spec.openStackRelease in deploy/kind/controlplane/controlplane.yaml that the
+# spec.openStackRelease in deploy/overlays/kind/controlplane/controlplane.yaml that the
 # release-wiring audit and the new-release inventory read. The preload is
 # best-effort and silent when it fails, so a copy that falls behind the CR
 # loads an image nothing runs and leaves kind to pull the right one, with no
@@ -22,7 +22,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 DEPLOY_INFRA_SH="$PROJECT_ROOT/hack/deploy-infra.sh"
-CONTROLPLANE_YAML="$PROJECT_ROOT/deploy/kind/controlplane/controlplane.yaml"
+CONTROLPLANE_YAML="$PROJECT_ROOT/deploy/overlays/kind/controlplane/controlplane.yaml"
 
 PASS=0
 FAIL=0

@@ -206,7 +206,7 @@ spec:
             skip_or_fail "no c5c3-operator is running."
           fi
 
-          # The two deploy/openbao/bootstrap scripts below read the token from
+          # The two deploy/bases/shared-openbao/bootstrap scripts below read the token from
           # their environment, so the export stays. Every bao call of this script
           # reads it from a file staged in openbao-0 instead, which keeps the root
           # token out of argv and the API server's audit log (see the
@@ -711,7 +711,7 @@ spec:
 
           # ── Seed the per-CR OpenBao paths this plane reads ────────────────
           KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
-            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+            ../../../../deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh
           echo "OK: the per-CR admin-password path is seeded."
 
           # ── Apply the ControlPlane ────────────────────────────────────────
@@ -720,7 +720,7 @@ spec:
 
           wait_cp_condition InfrastructureReady 600
           kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=600s
-          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
           echo "OK: OpenBao database-engine tenant onboarded."
 
           wait_cp_condition DBCredentialsReady 300

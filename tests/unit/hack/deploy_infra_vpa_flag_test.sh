@@ -16,7 +16,7 @@
 # the bottom of deploy-infra.sh keeps main() from auto-running) to assert the
 # runtime values of WITH_VPA and WITH_METRICS_SERVER for each env scenario, and
 # grep the script source to lock in the three gated locations:
-#   1. kustomize apply (deploy/kind/vpa)
+#   1. kustomize apply (deploy/overlays/kind/vpa)
 #   2. Phase 3 helm-release wait list append (vertical-pod-autoscaler)
 #   3. the MariaDB CRD scale-subresource removal (subresources.scale), after
 #      the CRD wait, so the recommender accepts a VPA on the database
@@ -127,10 +127,10 @@ test_non_true_value_does_not_trigger_install() {
 # and the MariaDB scale subresource
 # ---------------------------------------------------------------------------
 test_overlay_and_release_are_gated() {
-  echo "Test: deploy/kind/vpa, vertical-pod-autoscaler and subresources.scale appear once each, under a WITH_VPA gate"
+  echo "Test: deploy/overlays/kind/vpa, vertical-pod-autoscaler and subresources.scale appear once each, under a WITH_VPA gate"
 
   local needle gates count ungated
-  for needle in 'deploy/kind/vpa' 'vertical-pod-autoscaler' 'subresources.scale'; do
+  for needle in 'deploy/overlays/kind/vpa' 'vertical-pod-autoscaler' 'subresources.scale'; do
     gates="$(gating_if_of "$needle")"
     count="$(printf '%s' "$gates" | grep -c . || true)"
     ungated="$(printf '%s\n' "$gates" | grep -vcF '"${WITH_VPA}" == "true"' || true)"
@@ -139,12 +139,12 @@ test_overlay_and_release_are_gated() {
   done
 
   assert_file_contains_fixed "the overlay is applied with plain kubectl apply -k" \
-    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/kind/vpa"'
+    "$DEPLOY_INFRA_SH" 'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/vpa"'
   assert_file_contains_fixed "the release joins the Phase 3 wait list" \
     "$DEPLOY_INFRA_SH" 'helm_releases+=(vertical-pod-autoscaler)'
 
   local apply_line
-  apply_line="$(grep -F 'deploy/kind/vpa"' "$DEPLOY_INFRA_SH" | grep -v '^[[:space:]]*#' | head -1)"
+  apply_line="$(grep -F 'deploy/overlays/kind/vpa"' "$DEPLOY_INFRA_SH" | grep -v '^[[:space:]]*#' | head -1)"
   if grep -q -- '--load-restrictor' <<<"$apply_line"; then
     echo "  FAIL: the VPA apply line passes --load-restrictor (kubectl's embedded kustomize does not accept it)"
     FAIL=$((FAIL + 1))

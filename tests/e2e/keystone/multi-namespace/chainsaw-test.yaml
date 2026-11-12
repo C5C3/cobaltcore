@@ -40,7 +40,7 @@
 #     isolation the brownfield wiring already gives.
 #
 #   - Per-tenant store: each namespace gets its own openbao-tenant-store from
-#     deploy/openbao/bootstrap/setup-eso-tenant.sh, and the step 1 script
+#     deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh, and the step 1 script
 #     seeds the namespace-scoped OpenBao paths the ExternalSecrets read. The
 #     OpenBao root token is staged in openbao-0 over stdin under a name unique
 #     to this suite, so a parallel suite's cleanup cannot remove it, and every
@@ -119,7 +119,7 @@ spec:
             copy_field openstack/keystone/openstack/standalone/db "openstack/keystone/$ns/mns/db" password patch
             copy_field bootstrap/openstack/controlplane-keystone/admin "bootstrap/$ns/mns/admin" password put
             echo "OK: seeded openstack/keystone/$ns/mns/db and bootstrap/$ns/mns/admin"
-            ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "$ns"
+            ../../../../deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh "$ns"
           done
     - assert:
         resource:

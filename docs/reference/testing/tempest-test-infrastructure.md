@@ -129,7 +129,7 @@ configuration. `hack/tempest/run-tests.sh` sets `HOME=/tmp`, so the read-only
 | `tempest` CLI | Available via `PATH` (`/var/lib/openstack/bin/tempest`) |
 | `openstack` CLI | Available via `PATH`; verified by `verify_tempest.sh` (`openstack --version`) |
 | `subunit2junitxml` | Available via `PATH` |
-| `/usr/share/cirros/cirros-0.6.3-x86_64-disk.img` | The cirros 0.6.3 qcow2 (21,692,416 bytes) the libvirt guest suite boots, fetched at build time and checked against the sha256 `deploy/kind/hypervisor-operator-fixtures/image.yaml` pins; `tests/unit/images/tempest_cirros_pin_test.sh` keeps the two pins equal, and `verify_tempest.sh` hashes the file |
+| `/usr/share/cirros/cirros-0.6.3-x86_64-disk.img` | The cirros 0.6.3 qcow2 (21,692,416 bytes) the libvirt guest suite boots, fetched at build time and checked against the sha256 `deploy/bases/hypervisor-fixtures/image.yaml` pins; `tests/unit/images/tempest_cirros_pin_test.sh` keeps the two pins equal, and `verify_tempest.sh` hashes the file |
 | Build tools | Absent (`gcc`, `cc`, `uv` and `python3-config` are not on `PATH`; `/nix/store` holds no compiler, binutils or uv package) |
 
 ### Local Build

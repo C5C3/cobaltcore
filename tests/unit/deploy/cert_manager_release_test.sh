@@ -6,9 +6,9 @@
 # Verify that the cert-manager HelmRelease turns Ready only once its webhook
 # admits a request:
 #
-#   1. The production release (deploy/flux-system/releases/cert-manager.yaml)
+#   1. The production release (deploy/bases/operators/releases/cert-manager.yaml)
 #      enables the chart's startupapicheck Job, and the three renders that
-#      carry it (deploy/flux-system, the kind base overlay and the metal-stack
+#      carry it (deploy/bases/operators, the kind base overlay and the metal-stack
 #      lab base overlay) show the value.
 #   2. No render disables install hooks, which is what runs the Job.
 #   3. Neither base overlay carries a startupapicheck patch of its own: both
@@ -44,7 +44,7 @@ RENDERED=""
 test_renders_enable_the_check() {
   echo "Test: the production, the kind and the lab base render enable the startup API check"
   local dir
-  for dir in deploy/flux-system deploy/kind/base deploy/lab/metal-stack/base; do
+  for dir in deploy/bases/operators deploy/overlays/kind/base deploy/overlays/metal-stack/base; do
     render "$PROJECT_ROOT/$dir" 2 || continue
     assert_eq "$dir renders HelmRelease/cert-manager with the check enabled" "true" \
       "$(val HelmRelease cert-manager '.spec.values.startupapicheck.enabled')"
@@ -57,7 +57,7 @@ test_renders_enable_the_check() {
 test_overlays_carry_no_patch() {
   echo "Test: neither base overlay carries a startupapicheck patch"
   local file
-  for file in deploy/kind/base/kustomization.yaml deploy/lab/metal-stack/base/kustomization.yaml; do
+  for file in deploy/overlays/kind/base/kustomization.yaml deploy/overlays/metal-stack/base/kustomization.yaml; do
     assert_file_not_contains "$file carries no startupapicheck patch" \
       "$PROJECT_ROOT/$file" "startupapicheck"
   done

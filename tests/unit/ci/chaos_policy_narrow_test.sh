@@ -5,7 +5,7 @@
 
 # Verify narrow() of the openbao-tenant-policy-narrowed chaos suite
 # (tests/e2e-chaos/openbao-tenant-policy-narrowed/probe-lib.sh, #1390) offline,
-# against deploy/openbao/policies/eso-tenant.hcl with the accessor substituted
+# against deploy/bases/shared-openbao/policies/eso-tenant.hcl with the accessor substituted
 # the way setup-policies.sh writes it into OpenBao:
 #   1. On the shipped policy it exits 0 and drops exactly the stanza that
 #      grants read on the caller's own Keystone subtree, three lines.
@@ -24,7 +24,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PROBE_LIB="$PROJECT_ROOT/tests/e2e-chaos/openbao-tenant-policy-narrowed/probe-lib.sh"
-POLICY_FILE="$PROJECT_ROOT/deploy/openbao/policies/eso-tenant.hcl"
+POLICY_FILE="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/eso-tenant.hcl"
 
 PASS=0
 FAIL=0

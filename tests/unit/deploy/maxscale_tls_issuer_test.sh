@@ -7,7 +7,7 @@
 # REST API certificates from the OpenStack DB trust domain. No CI job or lab
 # run deploys MaxScale: the kind overlay deletes the CR, and the metal-stack
 # lab builds on that overlay. This render is CI's only check of the refs.
-# kustomize build deploy/flux-system/infrastructure runs once, and the test
+# kustomize build deploy/bases/infrastructure runs once, and the test
 # checks its output:
 #
 #   1. MaxScale/openstack-db-maxscale renders exactly once.
@@ -47,7 +47,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
-INFRA_DIR="deploy/flux-system/infrastructure"
+INFRA_DIR="deploy/bases/infrastructure"
 RENDERED=""
 
 # The yq suffix that prints a value as compact JSON with sorted keys, and the

@@ -1,8 +1,8 @@
 # Baseline of tolerated reviewer markers, one 'path:count' per line.
 # Maintained by scripts/check-no-review-markers.sh --update-baseline.
 # Counts may only shrink: resolve a marker, then regenerate this file.
-deploy/eso/clustersecretstore.yaml:1
-deploy/openbao/policies/push-app-credentials.hcl:1
+deploy/bases/eso-store/clustersecretstore.yaml:1
+deploy/bases/shared-openbao/policies/push-app-credentials.hcl:1
 docs/reference/backend/rotation-scripts.md:1
 hack/deploy-infra.sh:1
 internal/common/job/job.go:1

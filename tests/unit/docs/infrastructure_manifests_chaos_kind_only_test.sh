@@ -8,9 +8,9 @@
 #     production namespace.
 #   - The HelmRelease–HelmRepository cross-reference table no longer lists
 #     chaos-mesh as an always-on entry.
-#   - A `### Chaos Mesh (kind-only opt-in)` subsection exists under the
+#   - A `### Chaos Mesh (development opt-in)` subsection exists under the
 #     `## Kind Overlay Demo Addons` section and points at
-#     `deploy/kind/chaos-mesh/kustomization.yaml`.
+#     `deploy/overlays/kind/chaos-mesh/kustomization.yaml`.
 #   - The kind-only subsection documents the WITH_CHAOS_MESH opt-in flag.
 #
 #
@@ -118,7 +118,7 @@ test_cross_reference_table_has_no_chaos_mesh_row() {
 
 # --- Test 3: Kind-only opt-in subsection exists ---
 test_kind_only_subsection_present() {
-  echo "Test: '### Chaos Mesh (kind-only opt-in)' subsection exists in 'Kind Overlay Demo Addons'"
+  echo "Test: '### Chaos Mesh (development opt-in)' subsection exists in 'Kind Overlay Demo Addons'"
 
   local kind_section
   kind_section="$(extract_kind_overlay_section)"
@@ -129,23 +129,23 @@ test_kind_only_subsection_present() {
     return
   fi
 
-  if grep -qE '^### Chaos Mesh \(kind-only opt-in\)' <<<"$kind_section"; then
-    echo "  PASS: '### Chaos Mesh (kind-only opt-in)' subsection found"
+  if grep -qE '^### Chaos Mesh \(development opt-in\)' <<<"$kind_section"; then
+    echo "  PASS: '### Chaos Mesh (development opt-in)' subsection found"
     PASS=$((PASS + 1))
   else
-    echo "  FAIL: '### Chaos Mesh (kind-only opt-in)' subsection missing"
+    echo "  FAIL: '### Chaos Mesh (development opt-in)' subsection missing"
     FAIL=$((FAIL + 1))
   fi
 }
 
-# --- Test 4: Subsection points at deploy/kind/chaos-mesh/kustomization.yaml ---
+# --- Test 4: Subsection points at deploy/overlays/kind/chaos-mesh/kustomization.yaml ---
 test_kind_only_subsection_points_at_overlay_file() {
-  echo "Test: Kind-only subsection 'File:' line points at deploy/kind/chaos-mesh/kustomization.yaml"
+  echo "Test: Kind-only subsection 'File:' line points at deploy/overlays/kind/chaos-mesh/kustomization.yaml"
 
   local subsection
   subsection="$(awk '
-    /^### Chaos Mesh \(kind-only opt-in\)/ { in_block = 1 }
-    in_block && /^### / && !/Chaos Mesh \(kind-only opt-in\)/ { exit }
+    /^### Chaos Mesh \(development opt-in\)/ { in_block = 1 }
+    in_block && /^### / && !/Chaos Mesh \(development opt-in\)/ { exit }
     in_block && /^## / && !/Kind Overlay Demo Addons/ { exit }
     in_block { print }
   ' "$DOC")"
@@ -157,16 +157,16 @@ test_kind_only_subsection_points_at_overlay_file() {
   fi
 
   assert_contains \
-    "Kind-only subsection points at deploy/kind/chaos-mesh/kustomization.yaml" \
+    "Kind-only subsection points at deploy/overlays/kind/chaos-mesh/kustomization.yaml" \
     "$subsection" \
-    "deploy/kind/chaos-mesh/kustomization.yaml"
+    "deploy/overlays/kind/chaos-mesh/kustomization.yaml"
 
-  # Also check that the obsolete deploy/flux-system/releases/chaos-mesh.yaml
+  # Also check that the obsolete deploy/bases/operators/releases/chaos-mesh.yaml
   # path (used pre-) is NOT cited as the primary file in the
   # subsection's "File:" line. The on-disk file is reused from the kind
   # overlay, which the subsection prose can mention, but the **File:**
   # marker should point at the new overlay-root kustomization.
-  if grep -qE '^\*\*File:\*\*[[:space:]]+`deploy/flux-system/releases/chaos-mesh\.yaml`' <<<"$subsection"; then
+  if grep -qE '^\*\*File:\*\*[[:space:]]+`deploy/bases/operators/releases/chaos-mesh\.yaml`' <<<"$subsection"; then
     echo "  FAIL: subsection 'File:' marker still points at the legacy production-base release path"
     FAIL=$((FAIL + 1))
   else

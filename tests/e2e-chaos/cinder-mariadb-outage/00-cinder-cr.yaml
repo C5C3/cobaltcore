@@ -6,7 +6,7 @@
 #
 # Managed mode throughout: the schema cinder_db_chaos on the openstack-db
 # MariaDB cluster, the openstack-memcached cache and the ESO-synced cinder-db
-# credentials (deploy/kind/infrastructure). The transport URL comes from the
+# credentials (deploy/overlays/kind/infrastructure). The transport URL comes from the
 # Secret ../../e2e/cinder/broker-vhost.sh writes for this suite's own vhost on
 # the kind-only shared-rabbitmq broker.
 #

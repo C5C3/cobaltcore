@@ -89,9 +89,9 @@ the bootstrap scripts.
 
 ```bash
 # From the repo root, with BAO_TOKEN exported (the OpenBao root token).
-bash deploy/openbao/bootstrap/setup-secret-engines.sh
-bash deploy/openbao/bootstrap/setup-auth.sh
-bash deploy/openbao/bootstrap/setup-policies.sh
+bash deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh
+bash deploy/bases/shared-openbao/bootstrap/setup-auth.sh
+bash deploy/bases/shared-openbao/bootstrap/setup-policies.sh
 ```
 
 `make deploy-infra` runs these for you on a fresh kind cluster.
@@ -170,7 +170,7 @@ connection and role that issue short-lived Keystone users:
 
 ```bash
 # BAO_TOKEN must be exported; <namespace>/<controlplane> identify the tenant.
-bash deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
+bash deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
 ```
 
 This writes:

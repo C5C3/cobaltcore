@@ -45,7 +45,7 @@ The lab assumes a cluster of this shape:
 | The lab assumes | Where it shows |
 | --- | --- |
 | A Gardener shoot on metal-stack with two or more Ready workers that carry the same `topology.kubernetes.io/zone` label | `kubectl get nodes -L topology.kubernetes.io/zone` |
-| `/dev/kvm` on every worker and the same CPU model; `deploy/lab/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
+| `/dev/kvm` on every worker and the same CPU model; `deploy/overlays/metal-stack/hypervisor/compute.yaml` names `Skylake-Server-IBRS`, the host-model of a `c1-medium-x86` (Xeon D-2141I), and other hardware changes `cpuModels` there | probe, `== kvm device` and `== cpu` |
 | The module files `vhost_net`, `openvswitch` and `geneve` for the running kernel | probe, `== module files for <kernel>` |
 | Only with the optional `WITH_NFS=true` of Part 3: the module files `nfs` and `nfsv4` for the running kernel | probe, `== module files for <kernel>` |
 | Only with the optional `WITH_CHAOS_MESH=true`: the module files `ip_set`, `ip_set_hash_ip`, `ip_set_hash_net`, `xt_set`, `sch_netem` and `sch_tbf` for the running kernel | probe, `== module files for <kernel>` |
@@ -103,7 +103,7 @@ fail and print another node's facts:
 for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
   echo "=== ${node}"
   kubectl delete job -n default node-probe --ignore-not-found
-  yq ".spec.template.spec.nodeName = \"${node}\"" deploy/lab/metal-stack/probe/node-probe.yaml | kubectl apply -f - || continue
+  yq ".spec.template.spec.nodeName = \"${node}\"" deploy/overlays/metal-stack/probe/node-probe.yaml | kubectl apply -f - || continue
   kubectl wait --for=condition=complete job/node-probe -n default --timeout=5m
   kubectl logs -n default job/node-probe
   kubectl delete job -n default node-probe
@@ -112,7 +112,7 @@ done
 
 Compare each node's output with the [Prerequisites](#prerequisites) table and
 with the expected output in the header of
-`deploy/lab/metal-stack/probe/node-probe.yaml`, which a lab-ready node printed
+`deploy/overlays/metal-stack/probe/node-probe.yaml`, which a lab-ready node printed
 on 2026-10-04. The probe completes whatever it finds, so a missing piece shows
 up as `absent`, `none` or `NOT FOUND` in the output and not as a failed Job.
 
@@ -233,7 +233,7 @@ certificate, then apply the directory with the suffix in place:
 ```bash
 export PUBLIC_SUFFIX=$(kubectl get certificate openstack-gw-tls -n openstack -o jsonpath='{.spec.dnsNames[0]}' | cut -c3-)
 echo "${PUBLIC_SUFFIX}"
-kubectl kustomize deploy/lab/metal-stack/controlplane |
+kubectl kustomize deploy/overlays/metal-stack/controlplane |
   sed "s/127-0-0-1\.nip\.io/${PUBLIC_SUFFIX}/g" | kubectl apply -f -
 kubectl wait ovncentral/controlplane-ovn -n openstack --for=condition=Ready --timeout=10m
 ```
@@ -265,9 +265,9 @@ gives the reason behind each setting and the source of every value of the Ceph
 entries.
 
 ::: details The two manifests
-<<< ../deploy/lab/metal-stack/controlplane/ovncentral.yaml
+<<< ../deploy/overlays/metal-stack/controlplane/ovncentral.yaml
 
-<<< ../deploy/lab/metal-stack/controlplane/controlplane-lab.yaml
+<<< ../deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml
 :::
 
 ### Step 5: Onboard the database-engine tenant {#cp-tenant}
@@ -281,7 +281,7 @@ kubectl wait --for=create mariadb/openstack-db -n openstack --timeout=10m
 kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready --timeout=10m
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
-deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN
 ```
 
@@ -424,7 +424,7 @@ prints one line per ordered pair of nodes and exits 0 when all 65 ports are
 open in both directions:
 
 ```bash
-kubectl apply -k deploy/lab/metal-stack/migration-ports
+kubectl apply -k deploy/overlays/metal-stack/migration-ports
 kubectl rollout status daemonset/migration-port-reservation -n hypervisor-system --timeout=5m
 hack/lab-node-ports.sh
 ```
@@ -464,8 +464,8 @@ them the flavor `1` and the image `cirros-kvm` the servers boot. K-ORC creates
 them:
 
 ```bash
-kubectl apply -k deploy/lab/metal-stack/hypervisor-fixtures
-kubectl kustomize deploy/lab/metal-stack/hypervisor-fixtures |
+kubectl apply -k deploy/overlays/metal-stack/hypervisor-fixtures
+kubectl kustomize deploy/overlays/metal-stack/hypervisor-fixtures |
   kubectl wait -f - --for=condition=Available --timeout=15m
 ```
 
@@ -476,7 +476,7 @@ agent, the `NovaCompute` pool `lab`, and the upstream
 openstack-hypervisor-operator and kvm-node-agent:
 
 ```bash
-kubectl apply -k deploy/lab/metal-stack/hypervisor
+kubectl apply -k deploy/overlays/metal-stack/hypervisor
 kubectl wait helmrelease/openstack-hypervisor-operator -n openstack --for=condition=Ready --timeout=10m
 kubectl wait crd/hypervisors.kvm.cloud.sap --for=condition=Established --timeout=2m
 for node in "${nodes[@]}"; do
@@ -663,7 +663,7 @@ openstack server migration list --server lab-0
 `lab-0` now runs on another node, which the second command prints, and the
 migration list shows the migration `completed`. libvirt carried it over TLS
 between the nodes, with the CPU model that `cpuModels` names in
-`deploy/lab/metal-stack/hypervisor/compute.yaml`, which every node provides.
+`deploy/overlays/metal-stack/hypervisor/compute.yaml`, which every node provides.
 
 The volume moved with the server. Read its disk on the destination node, with
 `domain` from Step 6, and open the console there:
@@ -900,7 +900,7 @@ Check the NFS stack and apply the variant behind that check:
 ```bash
 kubectl -n openstack rollout status deployment/nfs-server --timeout=60s &&
   kubectl get csidriver nfs.csi.k8s.io &&
-  kubectl kustomize deploy/lab/metal-stack/controlplane-nfs |
+  kubectl kustomize deploy/overlays/metal-stack/controlplane-nfs |
   sed "s/127-0-0-1\.nip\.io/${PUBLIC_SUFFIX}/g" | kubectl apply -f -
 ```
 
@@ -938,7 +938,7 @@ The backup Deployment gains the inline volume `share-nfs1` of the CSI driver
 describes the way back to `ceph1` alone.
 
 ::: details The NFS variant
-<<< ../deploy/lab/metal-stack/controlplane-nfs/kustomization.yaml
+<<< ../deploy/overlays/metal-stack/controlplane-nfs/kustomization.yaml
 :::
 
 ### Step 2: Attach an NFS volume {#nfs-volume}

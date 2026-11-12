@@ -3,10 +3,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the opt-in dizzy observability overlay (deploy/kind/dizzy):
+# Verify the opt-in dizzy observability overlay (deploy/overlays/kind/dizzy):
 #   - all 7 tracked overlay files carry the repo SPDX header.
 #   - with the three dashboard JSONs staged into the git-ignored
-#     deploy/kind/dizzy/dashboards/ dir, `kustomize build deploy/kind/dizzy`
+#     deploy/bases/dizzy/dashboards/ dir, `kustomize build deploy/overlays/kind/dizzy`
 #     renders exactly the expected resource set under the default
 #     LoadRestrictionsRootOnly security check (no --load-restrictor flag):
 #     one Namespace (dizzy), two HelmRepositories (victoria-metrics + grafana in
@@ -20,7 +20,7 @@
 #     since a 0.x chart may break on any minor bump.
 #
 # STAGED-ASSET SAFETY a developer may have REAL dashboards staged at
-# deploy/kind/dizzy/dashboards/ (hack/dizzy.sh stage-dashboards writes them
+# deploy/bases/dizzy/dashboards/ (hack/dizzy.sh stage-dashboards writes them
 # there). This test moves any pre-existing dir aside up front and restores it
 # via an EXIT trap, with the guard of tests/lib/dizzy_dashboards.sh, so it
 # never destroys staged assets and never fails spuriously; the placeholder
@@ -43,7 +43,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/dizzy_dashboards.sh
 source "$PROJECT_ROOT/tests/lib/dizzy_dashboards.sh"
 
-DIZZY_DIR="$PROJECT_ROOT/deploy/kind/dizzy"
+DIZZY_DIR="$PROJECT_ROOT/deploy/overlays/kind/dizzy"
 
 # Count documents of a given kind in a rendered manifest stream read on stdin.
 count_kind() {
@@ -53,14 +53,14 @@ count_kind() {
 
 # --- Test 1: all 7 tracked overlay files carry the SPDX header ---
 test_overlay_files_have_spdx() {
-  echo "Test: every tracked deploy/kind/dizzy file carries the SPDX header"
+  echo "Test: every tracked deploy/overlays/kind/dizzy file carries the SPDX header"
 
   local tracked
-  tracked="$(git -C "$PROJECT_ROOT" ls-files 'deploy/kind/dizzy')"
+  tracked="$(git -C "$PROJECT_ROOT" ls-files 'deploy/bases/dizzy')"
 
   local count
   count="$(printf '%s\n' "$tracked" | grep -c . || true)"
-  assert_eq "deploy/kind/dizzy has exactly 7 tracked files" "7" "$count"
+  assert_eq "deploy/bases/dizzy has exactly 7 tracked files" "7" "$count"
 
   local f
   while IFS= read -r f; do
@@ -74,7 +74,7 @@ test_overlay_files_have_spdx() {
 
 # --- Test 2: kustomize build FAILS when dashboards/ is unstaged ---
 test_build_fails_without_dashboards() {
-  echo "Test: kustomize build deploy/kind/dizzy FAILS when dashboards/ is absent"
+  echo "Test: kustomize build deploy/overlays/kind/dizzy FAILS when dashboards/ is absent"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (1 check skipped)"
@@ -93,7 +93,7 @@ test_build_fails_without_dashboards() {
 
 # --- Test 3: kustomize build renders the expected set with dashboards staged ---
 test_build_renders_expected_set() {
-  echo "Test: kustomize build deploy/kind/dizzy renders the expected resource set"
+  echo "Test: kustomize build deploy/overlays/kind/dizzy renders the expected resource set"
 
   if ! command -v kustomize >/dev/null 2>&1; then
     echo "  SKIP: kustomize not installed (13 checks skipped)"
@@ -173,7 +173,7 @@ test_victoria_metrics_version_is_single_minor() {
   fi
 
   local version
-  version="$(yq -r '.spec.chart.spec.version' "$DIZZY_DIR/release-victoria-metrics.yaml")"
+  version="$(yq -r '.spec.chart.spec.version' "$PROJECT_ROOT/deploy/bases/dizzy/release-victoria-metrics.yaml")"
 
   # victoria-metrics-single is a 0.x chart, so SemVer permits breaking changes
   # on every minor bump and the constraint MUST bound a single minor

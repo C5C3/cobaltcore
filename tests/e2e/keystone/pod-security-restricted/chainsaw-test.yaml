@@ -27,7 +27,7 @@
 #     Cross-namespace lookup is not supported, so a CR in
 #     `keystone-pss-restricted-test` cannot reach `openstack/openstack-db`
 #     through clusterRef. Brownfield wiring is the only path that satisfies
-#     the parent issue's "no new infra in deploy/kind/" constraint.
+#     the parent issue's "no new infra in deploy/overlays/kind/" constraint.
 #
 #   - ESO-managed Secrets (keystone-admin / keystone-db are ExternalSecrets,
 #     not plain Secrets): `reconcileSecrets` gates SecretsReady on the
@@ -42,7 +42,7 @@
 #     `openstack/keystone/standalone/db` (the stage-(a) per-ControlPlane
 #     static path is retired since #439 — managed-mode ControlPlanes draw
 #     engine-issued credentials); the `eso-management` policy
-#     (deploy/openbao/policies/eso-management.hcl) covers both paths so no
+#     (deploy/bases/shared-openbao/policies/eso-management.hcl) covers both paths so no
 #     new OpenBao policy work is required.
 #
 #   - Manual fernet rotation Job: Ready=True alone does not exercise the
@@ -127,7 +127,7 @@ spec:
             username="${DB_USER}" password="${DB_PASS}" >/dev/null
           bao_exec bao kv put -mount=kv-v2 "bootstrap/${TENANT_NS}/pss/admin" \
             password="${ADMIN_PASS}" >/dev/null
-          ../../../../deploy/openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
+          ../../../../deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh "${TENANT_NS}"
     - assert:
         resource:
           apiVersion: v1
