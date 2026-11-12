@@ -8,7 +8,7 @@
 # A Cinder without an attached backend reports VolumeServicesReady=False under
 # reason NoBackends and never reaches Ready, so the baseline needs one.
 #
-# The export is the kind-only NFS server (deploy/kind/nfs/nfs-server.yaml),
+# The export is the kind-only NFS server (deploy/bases/nfs/nfs-server.yaml),
 # whose /volumes directory is pre-created 42424:42424 with mode 0770, so the
 # cinder-volume pod writes into it under its own uid.
 #

@@ -4,7 +4,7 @@ description: >-
   Audit whether every pinned version in the CobaltCore OpenStack repo —
   OpenStack release tags under releases/<version>/source-refs.yaml, shell-script
   VERSION constants under hack/, kind / FluxCD HelmRelease versions under
-  deploy/kind/ and deploy/flux-system/, and tool-version pins in Makefile +
+  deploy/overlays/kind/ and deploy/bases/operators/, and tool-version pins in Makefile +
   .github/workflows — is covered by either a native Renovate manager or a
   customManager rule in renovate.json with a paired packageRules entry, and that
   tool pins duplicated between the Makefile and ci.yaml stay in lockstep. Use
@@ -34,9 +34,9 @@ all of which Renovate has to understand:
 | OpenStack release tags | `releases/<release>/source-refs.yaml` (one line per component: `keystone: "29.0.0"`) | customManager — `^(?<depName>[\w.-]+):\s*"(?<currentValue>\d+\.\d+\.\d+)"` over `releases/.*/source-refs.yaml`, git-tags on opendev |
 | Release test and constraint pins | `releases/<release>/test-refs.yaml`, `overrides/<release>/constraints.txt` | customManager each (pypi) |
 | Shell script constants | `hack/deploy-infra.sh` + `hack/deploy-mgmt-cluster.sh` (`FLUX_OPERATOR_VERSION="v…"`, deliberately duplicated, one customManager over both files; `GATEWAY_API_VERSION`, `ENVOY_GATEWAY_VERSION`, `REGISTRY_CACHE_IMAGE`), `hack/install-test-deps.sh` (chainsaw, flux, kind, kubectl), `hack/dizzy.sh` | customManager, one regex per constant |
-| kind manifests | `deploy/kind/base/flux-web.yaml`, `deploy/kind/infrastructure/openbao-instance.yaml`, `deploy/kind/nfs/nfs-server.yaml` | customManager, one regex per file shape |
-| Flux sources and images pinned by tag/commit/digest | `deploy/flux-system/sources/{k-orc,openbao-operator,rabbitmq-cluster-operator}.yaml`, `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml` | customManager each. The K-ORC image in `deploy/flux-system/releases/k-orc.yaml` tracks `branch-main` digests in the same group as the source (pattern 7) |
-| FluxCD HelmRelease chart versions | third-party charts under `deploy/flux-system/releases/` and `deploy/kind/` (`spec.chart.spec.version: ">=0.10.0 <1.0.0"`) | native `flux` manager over `flux.managerFilePatterns`. `widen` stays silent inside the range and, on a release past the ceiling, raises the ceiling and keeps the floor; `bump` for `gateway-helm` and `headlamp` (minor/patch automerged); an exact pin for `csi-driver-nfs` (majors disabled). The `c5c3-charts` releases are switched off by design, and so is every file a customManager reads |
+| kind manifests | `deploy/bases/devstack/base/flux-web.yaml`, `deploy/bases/devstack/infrastructure/openbao-instance.yaml`, `deploy/bases/nfs/nfs-server.yaml` | customManager, one regex per file shape |
+| Flux sources and images pinned by tag/commit/digest | `deploy/bases/operators/sources/{k-orc,openbao-operator,rabbitmq-cluster-operator}.yaml`, `deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml` | customManager each. The K-ORC image in `deploy/bases/operators/releases/k-orc.yaml` tracks `branch-main` digests in the same group as the source (pattern 7) |
+| FluxCD HelmRelease chart versions | third-party charts under `deploy/bases/` and `deploy/overlays/kind/` (`spec.chart.spec.version: ">=0.10.0 <1.0.0"`) | native `flux` manager over `flux.managerFilePatterns`. `widen` stays silent inside the range and, on a release past the ceiling, raises the ceiling and keeps the floor; `bump` for `gateway-helm` and `headlamp` (minor/patch automerged); an exact pin for `csi-driver-nfs` (majors disabled). The `c5c3-charts` releases are switched off by design, and so is every file a customManager reads |
 | Pins in Go source | `operators/c5c3/internal/controller/reconcile_barbican_openbao.go` (`defaultOpenBaoVersion`), `operators/ovn/internal/controller/image.go` (`defaultOVNVersion`) | customManager each, paired with the matching manifest or image pin |
 | Go module deps | `operators/*/go.mod`, `internal/common/go.mod` | native `gomod` manager |
 | GitHub Actions versions | `.github/workflows/*.yaml` (`uses: org/action@v…`) | native `github-actions` manager |
@@ -84,7 +84,7 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   Renovate ignores it. Runtime-resolved values — command substitutions,
   `${VAR:?}` required-env passthroughs and empty `${VAR:-}` defaults —
   are exempt; they are not pins Renovate could bump.
-- **R3** — every `version: "…"` literal in `deploy/kind/base/*.yaml`
+- **R3** — every `version: "…"` literal in `deploy/bases/devstack/base/*.yaml`
   is claimed by a customManager pattern or by the native `flux`
   manager. The flux manager claims a file only when it carries a
   HelmRelease, since it reads chart versions from nothing else.
@@ -131,7 +131,7 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   or PATH-resolved locally (`controller-gen`, `golangci-lint`).
 - **R8** — every HelmRelease chart version (the first indented
   `version:` of each `kind: HelmRelease` document, in any quoting)
-  under `deploy/flux-system/releases/` and `deploy/kind/` has one
+  under `deploy/bases/` and `deploy/overlays/kind/` has one
   owner. A HelmRelease with neither a version nor a `chartRef` fails.
   A release from the `c5c3-charts` source is checked first and
   reported as `[INFO] … excluded by design (c5c3-charts)`. Otherwise
@@ -248,7 +248,7 @@ These recurring shapes are worth grepping for first:
    to triage its PRs. Renovate raises untriaged PRs (major bumps not
    gated, no minimumReleaseAge), so reviewers waste time closing them.
 4. **New HelmRelease, range spelled for Renovate.** A new HelmRelease
-   under `deploy/flux-system/releases/` or `deploy/kind/` needs no
+   under `deploy/bases/operators/releases/` or `deploy/overlays/kind/` needs no
    manager: the native `flux` manager reads it. Spell its range
    `>=X <Y`. A `^X` or `~X` range is skipped as `invalid-value` on an
    OCI source, and R8 fails it. A file that gets a customManager must

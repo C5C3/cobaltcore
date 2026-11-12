@@ -6,8 +6,8 @@
 # spec with one replica and the quick start's route.
 #
 # The CR is pinned to the real `openstack-gw` Gateway installed by
-# `deploy/kind/base/openstack-gateway.yaml` and the real Envoy Gateway
-# controller installed by `deploy/kind/base/envoy-gateway.yaml`. The hostname
+# `deploy/overlays/kind/base/openstack-gateway.yaml` and the real Envoy Gateway
+# controller installed by `deploy/bases/devstack/base/envoy-gateway.yaml`. The hostname
 # MUST match the `https-horizon` listener hostname AND the dnsName on
 # `Certificate/horizon-nip-io-tls`, so the listener's TLS Secret matches the
 # SNI the client presents.

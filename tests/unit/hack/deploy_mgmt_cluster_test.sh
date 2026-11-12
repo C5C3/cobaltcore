@@ -10,7 +10,7 @@
 # pinned structurally, on the parts that fail silently or expensively:
 #   - the flux-operator pin equals hack/deploy-infra.sh's, so the two clusters
 #     bootstrap the same Flux and one Renovate bump moves both
-#   - every deploy/flux-system/ manifest it applies exists (a renamed source or
+#   - every deploy/bases/operators/ manifest it applies exists (a renamed source or
 #     release file otherwise surfaces as a failed deploy minutes in)
 #   - cert-manager is waited for before the rest, since hack/ci-deploy-operator.sh
 #     needs its CA injection and two releases declare a dependsOn on it
@@ -113,23 +113,23 @@ test_applied_manifests_exist_in_order() {
     rest="${entry#*|}"
     release_file="${rest%%|*}"
     for file in "$source_file" "$release_file"; do
-      if [ -f "$PROJECT_ROOT/deploy/flux-system/$file" ]; then
-        echo "  PASS: deploy/flux-system/$file exists"
+      if [ -f "$PROJECT_ROOT/deploy/bases/operators/$file" ]; then
+        echo "  PASS: deploy/bases/operators/$file exists"
         PASS=$((PASS + 1))
       else
-        echo "  FAIL: deploy/flux-system/$file does not exist (the script would abort mid-deploy)"
+        echo "  FAIL: deploy/bases/operators/$file does not exist (the script would abort mid-deploy)"
         FAIL=$((FAIL + 1))
       fi
     done
   done
 
   # The bootstrap pair is applied outside the loop and has to exist too.
-  for file in namespaces.yaml fluxinstance.yaml; do
-    if [ -f "$PROJECT_ROOT/deploy/flux-system/$file" ]; then
-      echo "  PASS: deploy/flux-system/$file exists"
+  for file in operators/namespaces.yaml flux/fluxinstance.yaml; do
+    if [ -f "$PROJECT_ROOT/deploy/bases/$file" ]; then
+      echo "  PASS: deploy/bases/$file exists"
       PASS=$((PASS + 1))
     else
-      echo "  FAIL: deploy/flux-system/$file does not exist"
+      echo "  FAIL: deploy/bases/$file does not exist"
       FAIL=$((FAIL + 1))
     fi
   done
@@ -153,10 +153,10 @@ test_wait_entries_match_the_release_manifests() {
 
     actual_name="$(awk '/^kind: HelmRelease$/ { hr = 1 }
                         hr && /^  name: / { print $2; exit }' \
-      "$PROJECT_ROOT/deploy/flux-system/$release_file")"
+      "$PROJECT_ROOT/deploy/bases/operators/$release_file")"
     actual_ns="$(awk '/^kind: HelmRelease$/ { hr = 1 }
                       hr && /^  namespace: / { print $2; exit }' \
-      "$PROJECT_ROOT/deploy/flux-system/$release_file")"
+      "$PROJECT_ROOT/deploy/bases/operators/$release_file")"
 
     assert_eq "$release_file declares HelmRelease $expected_name" "$expected_name" "$actual_name"
     assert_eq "$release_file declares namespace $expected_ns" "$expected_ns" "$actual_ns"
@@ -190,19 +190,19 @@ test_cert_manager_is_waited_for_first() {
 # ---------------------------------------------------------------------------
 # Test 6: the openstack namespace exists after the run
 # The placed CRs live in it on the management cluster. It comes with
-# deploy/flux-system/namespaces.yaml, so both halves of that have to hold.
+# deploy/bases/operators/namespaces.yaml, so both halves of that have to hold.
 # ---------------------------------------------------------------------------
 test_openstack_namespace_is_created() {
   echo "Test: the openstack namespace is created"
 
-  assert_file_contains "the script applies deploy/flux-system/namespaces.yaml" \
-    "$MGMT_SH" 'deploy/flux-system/namespaces.yaml'
+  assert_file_contains "the script applies deploy/bases/operators/namespaces.yaml" \
+    "$MGMT_SH" 'deploy/bases/operators/namespaces.yaml'
 
   local declared
   declared="$(awk '/^kind: Namespace$/ { ns = 1; next }
                    ns && /^  name: / { print $2; ns = 0 }' \
-    "$PROJECT_ROOT/deploy/flux-system/namespaces.yaml" | grep -cx openstack)"
-  assert_eq "deploy/flux-system/namespaces.yaml declares the openstack namespace" \
+    "$PROJECT_ROOT/deploy/bases/operators/namespaces.yaml" | grep -cx openstack)"
+  assert_eq "deploy/bases/operators/namespaces.yaml declares the openstack namespace" \
     "1" "${declared// /}"
 }
 
@@ -250,16 +250,16 @@ test_rabbitmq_kustomization_applied_and_waited() {
   local file
   for file in sources/rabbitmq-cluster-operator.yaml releases/rabbitmq-cluster-operator.yaml \
     sources/messaging-topology-operator.yaml releases/messaging-topology-operator.yaml; do
-    if [ -f "$PROJECT_ROOT/deploy/flux-system/$file" ]; then
-      echo "  PASS: deploy/flux-system/$file exists"
+    if [ -f "$PROJECT_ROOT/deploy/bases/operators/$file" ]; then
+      echo "  PASS: deploy/bases/operators/$file exists"
       PASS=$((PASS + 1))
     else
-      echo "  FAIL: deploy/flux-system/$file does not exist (the script would abort mid-deploy)"
+      echo "  FAIL: deploy/bases/operators/$file does not exist (the script would abort mid-deploy)"
       FAIL=$((FAIL + 1))
     fi
 
-    assert_file_contains "the script applies deploy/flux-system/$file" \
-      "$MGMT_SH" "deploy/flux-system/$file"
+    assert_file_contains "the script applies deploy/bases/operators/$file" \
+      "$MGMT_SH" "deploy/bases/operators/$file"
   done
 
   local remaining_wait_line
@@ -270,7 +270,7 @@ test_rabbitmq_kustomization_applied_and_waited() {
   for name in rabbitmq-cluster-operator messaging-topology-operator; do
     # The object each wait names has to be the object the release file
     # declares, or the wait passes on a Kustomization that was never applied.
-    local release_file="$PROJECT_ROOT/deploy/flux-system/releases/$name.yaml"
+    local release_file="$PROJECT_ROOT/deploy/bases/operators/releases/$name.yaml"
     local actual_kind actual_name actual_ns
     actual_kind="$(awk '/^kind: Kustomization$/ { print $2; exit }' "$release_file")"
     actual_name="$(awk '/^kind: Kustomization$/ { ks = 1 }

@@ -7,7 +7,7 @@
 # openstack-db (schema glance_release_upgrade), cache via clusterRef to
 # openstack-memcached. The database credentials come from the ESO-synced
 # glance-db Secret and the service-user password from the pre-seeded
-# keystone-admin Secret (both deploy/kind/infrastructure). glance-api cannot
+# keystone-admin Secret (both deploy/overlays/kind/infrastructure). glance-api cannot
 # start without a default image store, so 01-glance-backend.yaml attaches one
 # before Ready can settle. A single replica keeps the rollout observable when
 # 02-patch-upgrade.yaml bumps the release to 2026.2.

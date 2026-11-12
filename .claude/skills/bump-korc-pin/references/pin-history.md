@@ -1,7 +1,7 @@
 # K-ORC pin history and CI symptoms
 
 Reference for [bump-korc-pin](../SKILL.md). Verified against
-`git log -- deploy/flux-system/sources/k-orc.yaml deploy/flux-system/releases/k-orc.yaml`
+`git log -- deploy/bases/operators/sources/k-orc.yaml deploy/bases/operators/releases/k-orc.yaml`
 and the quay tag API on 2026-09-23.
 
 ## Bumps since the main-commit pin
@@ -70,7 +70,7 @@ moves `ref.commit` alone. Wherever `hack/ci-deploy-korc.sh` runs, the drift
 guard stops it before the clone:
 
 ```text
-::error::K-ORC image tag commit-<old7> in deploy/flux-system/releases/k-orc.yaml does not match the pinned commit <new40> in deploy/flux-system/sources/k-orc.yaml (expected commit-<new7>); bump spec.images[].newTag in lockstep with ref.commit
+::error::K-ORC image tag commit-<old7> in deploy/bases/operators/releases/k-orc.yaml does not match the pinned commit <new40> in deploy/bases/operators/sources/k-orc.yaml (expected commit-<new7>); bump spec.images[].newTag in lockstep with ref.commit
 ```
 
 The manifest headers call this the block against automerge. Since 1a0daf83
@@ -87,7 +87,7 @@ it offline. Answer the PR with the lockstep bump, not a tag-only edit.
 `kustomize-controller` and `containers[name="manager"].image` in "Deploy
 K-ORC" means the Flux `k-orc` Kustomization reconciled before the CI install.
 The kind base overlay applies it suspended since #1007
-(`tests/unit/deploy/kind_base_korc_suspend_test.sh`); check that patch, not
+(`tests/unit/deploy/overlays/kind_base_korc_suspend_test.sh`); check that patch, not
 the pin.
 
 ## Local tooling

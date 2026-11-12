@@ -16,7 +16,7 @@ X1 — every document whose apiVersion is in an API group the repo's own CRDs
 declare (spec.group under operators/*/config/crd/bases/) names a kind some CRD
 declares, on a version that CRD still serves. Documents in any other *.c5c3.io
 group come from an external operator (memcached.c5c3.io: the memcached-operator
-chart deploy/flux-system/releases/memcached-operator.yaml installs) and are
+chart deploy/bases/operators/releases/memcached-operator.yaml installs) and are
 reported as one [INFO] line per group. A group that looks like the repo's own
 but is not declared — it ends in .openstack.c5c3.io, or its first label names a
 repo group (keystone.opnestack.c5c3.io) — is a typo and fails.

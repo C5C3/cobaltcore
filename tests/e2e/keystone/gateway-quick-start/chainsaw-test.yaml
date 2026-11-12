@@ -22,7 +22,7 @@
 #   an early `kubectl get gateway openstack-gw -n openstack` /
 #   `kubectl get gatewayclass envoy` check. If either is missing, the
 #   probe script logs SKIP and exits 0, short-circuiting the suite.
-#   Production overlays (deploy/flux-system/) do not install Envoy
+#   Production overlays (deploy/bases/operators/) do not install Envoy
 #   Gateway nor the quick-start Gateway, so this probe default-skips the
 #   test off any non-kind cluster — no chainsaw `--selector` flag is
 #   required from callers.
@@ -84,7 +84,7 @@ spec:
   # exit 0 with a SKIP line; subsequent steps still execute, but
   # because the cluster truly lacks a Gateway controller, asserting
   # Programmed=True would fail. CI pipelines that cannot install Envoy
-  # Gateway never deploy `deploy/kind/base/openstack-gateway.yaml`, so
+  # Gateway never deploy `deploy/overlays/kind/base/openstack-gateway.yaml`, so
   # the runtime probe alone is sufficient to default-skip this test
   # off non-kind clusters.
   - try:
@@ -99,22 +99,22 @@ spec:
 
           # ── Presence guard ──────────────────────────────
           # The kind overlay alone deploys
-          # deploy/kind/base/envoy-gateway.yaml +
-          # deploy/kind/base/openstack-gateway.yaml, which between them
+          # deploy/bases/devstack/base/envoy-gateway.yaml +
+          # deploy/overlays/kind/base/openstack-gateway.yaml, which between them
           # materialise GatewayClass/envoy and Gateway/openstack-gw.
           # Their absence unambiguously signals a non-kind cluster — exit
           # 0 with a SKIP line so the suite passes without failing on
           # the missing reconcile path downstream.
           if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
             echo "SKIP: GatewayClass/envoy not present on this cluster."
-            echo "      This is expected on non-kind overlays (deploy/flux-system/"
-            echo "      does not reference deploy/kind/base/envoy-gateway.yaml)."
+            echo "      This is expected on non-kind overlays (deploy/bases/operators/"
+            echo "      does not reference deploy/bases/devstack/base/envoy-gateway.yaml)."
             exit 0
           fi
           if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
             echo "SKIP: Gateway/openstack-gw not present in namespace openstack."
-            echo "      This is expected on non-kind overlays (deploy/flux-system/"
-            echo "      does not reference deploy/kind/base/openstack-gateway.yaml)."
+            echo "      This is expected on non-kind overlays (deploy/bases/operators/"
+            echo "      does not reference deploy/overlays/kind/base/openstack-gateway.yaml)."
             exit 0
           fi
           echo "OK: GatewayClass/envoy and Gateway/openstack-gw present — running real-controller assertions"
@@ -225,7 +225,7 @@ spec:
   # ── Step 5: Envoy proxy Service is NodePort with nodePort 31443
   # The Envoy Gateway controller generates a Service per Gateway, labelled
   # `gateway.envoyproxy.io/owning-gateway-name=<gateway-name>`. The
-  # EnvoyProxy JSONPatch in deploy/kind/base/envoy-gateway.yaml pins
+  # EnvoyProxy JSONPatch in deploy/bases/devstack/base/envoy-gateway.yaml pins
   # `/spec/ports/0/nodePort` to 31443 so kind's extraPortMappings can
   # bridge host :443 to it.
   #

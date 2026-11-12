@@ -5,7 +5,7 @@
 
 # Verify the service loop in openbao_onboard_database_tenant
 # (hack/deploy-infra.sh) covers exactly the services
-# deploy/openbao/bootstrap/setup-database-tenant.sh reads a MariaDB root Secret
+# deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh reads a MariaDB root Secret
 # for, i.e. the spec-service column of its SERVICE_TENANTS table.
 #
 # The loop resolves the service namespaces the onboarding waits for. A service
@@ -158,8 +158,8 @@ fi
 exit 0
 STUB
   chmod +x "$tmp/kubectl"
-  mkdir -p "$tmp/repo/deploy/openbao/bootstrap"
-  printf '#!/bin/bash\nexit 0\n' >"$tmp/repo/deploy/openbao/bootstrap/setup-database-tenant.sh"
+  mkdir -p "$tmp/repo/deploy/bases/shared-openbao/bootstrap"
+  printf '#!/bin/bash\nexit 0\n' >"$tmp/repo/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh"
 
   local exit_code
   (
@@ -207,8 +207,8 @@ fi
 exit 0
 STUB
   chmod +x "$tmp/kubectl"
-  mkdir -p "$tmp/repo/deploy/openbao/bootstrap"
-  printf '#!/bin/bash\necho tenant-script-ran\nexit 0\n' >"$tmp/repo/deploy/openbao/bootstrap/setup-database-tenant.sh"
+  mkdir -p "$tmp/repo/deploy/bases/shared-openbao/bootstrap"
+  printf '#!/bin/bash\necho tenant-script-ran\nexit 0\n' >"$tmp/repo/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh"
 
   local exit_code
   (

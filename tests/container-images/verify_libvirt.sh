@@ -97,7 +97,7 @@ test_lab_commands() {
   local tool exit_code output
   # libvirt-configmap.yaml, nfs/client-modules-daemonset.yaml,
   # chaos-mesh/modules-daemonset.yaml and probe/nfs-module-load.yaml under
-  # deploy/lab/metal-stack run these by name.
+  # deploy/overlays/metal-stack run these by name.
   for tool in systemctl systemd-run rmmod sha256sum comm cut sort tr awk grep getent; do
     exit_code=0
     docker run --rm "$IMAGE" sh -c "command -v $tool" > /dev/null 2>&1 || exit_code=$?
@@ -269,7 +269,7 @@ test_ceph_secret() {
   echo "Test: virsh defines a private, ephemeral ceph secret and sets it from a base64 file"
   local output exit_code=0 key=AQDhK2VnAAAAABAA7q3+8z9Hq1lnO4JmNo2Gkw==
   # The calls of the lab's ceph-secret.sh
-  # (deploy/lab/metal-stack/hypervisor/libvirt-configmap.yaml) against this
+  # (deploy/overlays/metal-stack/hypervisor/libvirt-configmap.yaml) against this
   # libvirtd, with a made-up key and the trailing newline a Secret volume
   # carries. A second secret, not private, reads the value back:
   # secret-get-value prints the stored bytes as base64, so it equals the

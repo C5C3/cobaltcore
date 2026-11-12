@@ -34,11 +34,11 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-AUTH_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-auth.sh"
-SEED_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/write-bootstrap-secrets.sh"
-API_POLICY="$PROJECT_ROOT/deploy/openbao/policies/nova-api-db-dynamic.hcl"
-CELL_POLICY="$PROJECT_ROOT/deploy/openbao/policies/nova-cell-db-dynamic.hcl"
-ESO_TENANT_POLICY="$PROJECT_ROOT/deploy/openbao/policies/eso-tenant.hcl"
+AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
+SEED_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh"
+API_POLICY="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/nova-api-db-dynamic.hcl"
+CELL_POLICY="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/nova-cell-db-dynamic.hcl"
+ESO_TENANT_POLICY="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/eso-tenant.hcl"
 
 # The two standalone seeds: one per database block of a Nova. spec.database
 # selects the cell credential, spec.apiDatabase the API one.
@@ -187,7 +187,7 @@ test_nova_policies_grant_exactly_their_creds_path() {
 
   local half policy path_count path_line
   for half in api cell; do
-    policy="$PROJECT_ROOT/deploy/openbao/policies/nova-${half}-db-dynamic.hcl"
+    policy="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/nova-${half}-db-dynamic.hcl"
     if [[ ! -f "$policy" ]]; then
       echo "  FAIL: $policy does not exist, so the nova-${half}-db role is bound to a policy that is never written"
       FAIL=$((FAIL + 1))

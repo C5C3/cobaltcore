@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the Ceph overlays of the metal-stack lab, which hack/deploy-infra.sh
-# applies under EXTERNAL_CLUSTER=true WITH_CEPH=true: deploy/lab/metal-stack/ceph
-# in Step 3 and deploy/lab/metal-stack/ceph/cluster in Step 5.
+# applies under EXTERNAL_CLUSTER=true WITH_CEPH=true: deploy/overlays/metal-stack/ceph
+# in Step 3 and deploy/overlays/metal-stack/ceph/cluster in Step 5.
 #   1. Every file of ceph/ carries the SPDX header, and its kustomization lists
 #      namespace.yaml, source.yaml and release.yaml, no entry naming a parent
 #      directory.
@@ -68,7 +68,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
-CEPH_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/ceph"
+CEPH_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/ceph"
 CLUSTER_DIR="$CEPH_DIR/cluster"
 
 # The image pattern of the CephCluster, Tentacle by tag and digest.
@@ -108,7 +108,7 @@ objects() {
 
 # --- Test 1: the files of ceph/ ---
 test_operator_files() {
-  echo "Test: the files of deploy/lab/metal-stack/ceph carry SPDX headers and the kustomization lists the four local files"
+  echo "Test: the files of deploy/overlays/metal-stack/ceph carry SPDX headers and the kustomization lists the four local files"
 
   local f
   for f in kustomization.yaml namespace.yaml source.yaml release.yaml csi-clientprofile-crd.yaml; do
@@ -122,7 +122,7 @@ test_operator_files() {
 
 # --- Test 2: the four objects of ceph/ ---
 test_operator_render_holds_four_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/ceph renders the Namespace, the HelmRepository, the HelmRelease and the ClientProfile CRD"
+  echo "Test: kustomize build deploy/overlays/metal-stack/ceph renders the Namespace, the HelmRepository, the HelmRelease and the ClientProfile CRD"
 
   render "$CEPH_DIR" 1 || return
 
@@ -202,7 +202,7 @@ rendered() {
 
 # --- Test 5: the files of ceph/cluster/ ---
 test_cluster_files() {
-  echo "Test: the files of deploy/lab/metal-stack/ceph/cluster carry SPDX headers and the kustomization lists the six local files"
+  echo "Test: the files of deploy/overlays/metal-stack/ceph/cluster carry SPDX headers and the kustomization lists the six local files"
 
   local f
   for f in kustomization.yaml cluster.yaml pools.yaml clients.yaml toolbox.yaml keys-push.yaml keys-pull.yaml; do
@@ -214,7 +214,7 @@ test_cluster_files() {
 
 # --- Test 6: the sixteen objects of ceph/cluster/ ---
 test_cluster_render_holds_sixteen_objects() {
-  echo "Test: kustomize build deploy/lab/metal-stack/ceph/cluster renders the Ceph, its dependents and both halves of the key hand-off"
+  echo "Test: kustomize build deploy/overlays/metal-stack/ceph/cluster renders the Ceph, its dependents and both halves of the key hand-off"
 
   render "$CLUSTER_DIR" 1 || return
 

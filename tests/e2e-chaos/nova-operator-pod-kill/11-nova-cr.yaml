@@ -15,7 +15,7 @@
 # nova_chaos_op on the openstack-db MariaDB cluster (cell0 is derived as
 # nova_chaos_op_cell0), the openstack-memcached cache, the ESO-synced
 # nova-api-db and nova-db credentials and the pre-seeded keystone-admin
-# service-user password (all from deploy/kind/infrastructure).
+# service-user password (all from deploy/overlays/kind/infrastructure).
 #
 # One API replica, so the scale patch of 15-patch-scale.yaml has a rollout to
 # make after the kill; the node already carries five services. The conductor,

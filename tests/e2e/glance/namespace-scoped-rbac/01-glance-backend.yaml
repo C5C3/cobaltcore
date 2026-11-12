@@ -4,10 +4,10 @@
 
 # Default S3 image store for the glance-ns-scoped CR, the healthcheck backend
 # under this suite's names. It points at the in-cluster Garage S3 endpoint
-# (deploy/flux-system/infrastructure/garage.yaml): the GarageCluster "garage"
+# (deploy/bases/infrastructure/garage.yaml): the GarageCluster "garage"
 # listens on port 3900 with SigV4 region "garage", the glance-images bucket is
 # pre-created, and the garage-s3-credentials Secret is ESO-synced
-# (deploy/kind/infrastructure). glance-api registers no store without it, so
+# (deploy/overlays/kind/infrastructure). glance-api registers no store without it, so
 # it must go Ready before the Glance CR can.
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: GlanceBackend

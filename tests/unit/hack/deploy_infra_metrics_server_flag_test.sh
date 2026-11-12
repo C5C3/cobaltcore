@@ -17,7 +17,7 @@
 # the bottom of deploy-infra.sh keeps main() from auto-running) to assert the
 # runtime default of WITH_METRICS_SERVER for each env scenario, and grep the
 # script source to lock in the two gate locations:
-#   1. kustomize apply (deploy/kind/metrics-server)
+#   1. kustomize apply (deploy/overlays/kind/metrics-server)
 #   2. Phase 3 helm-release wait list append (metrics-server)
 # Unlike the prometheus flag there is NO dashboard copy and NO servicemonitor
 # patch, so the strict gate count is 2, not 3. The configuration-banner line
@@ -137,7 +137,7 @@ test_banner_includes_metrics_server_line() {
 
 # ---------------------------------------------------------------------------
 # Test 6: metrics-server overlay apply is conditional
-# The kustomize apply for deploy/kind/metrics-server must live inside the
+# The kustomize apply for deploy/overlays/kind/metrics-server must live inside the
 # WITH_METRICS_SERVER gate so the default Quick Start does not install it.
 # ---------------------------------------------------------------------------
 test_metrics_server_kustomize_is_gated() {
@@ -145,14 +145,14 @@ test_metrics_server_kustomize_is_gated() {
 
   # The apply line itself exists.
   assert_file_contains \
-    "deploy-infra.sh references the deploy/kind/metrics-server overlay" \
+    "deploy-infra.sh references the deploy/overlays/kind/metrics-server overlay" \
     "$DEPLOY_INFRA_SH" \
-    'deploy/kind/metrics-server'
+    'deploy/overlays/kind/metrics-server'
 
   # The line must be preceded by a WITH_METRICS_SERVER gate. Use awk to confirm
   # the most recent if-line above the apply tests WITH_METRICS_SERVER.
   local apply_line gate_line
-  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/metrics-server"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/overlays/kind/metrics-server"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
   gate_line="$(grep -n '"${WITH_METRICS_SERVER}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${apply_line:-0}" '$1 < target { last = $1 } END { print last }')"
 
   assert_not_empty "kustomize apply line for metrics-server is found" "$apply_line"
@@ -199,7 +199,7 @@ test_metrics_server_appended_dynamically() {
 #   (a) deploy-infra.sh's metrics-server apply line uses plain
 #       `kubectl apply -k` (no `--load-restrictor`, no pipe through
 #       `kustomize build` to `kubectl apply -f -`); and
-#   (b) deploy/kind/metrics-server/kustomization.yaml has zero `../../`
+#   (b) deploy/overlays/kind/metrics-server/kustomization.yaml has zero `../../`
 #       parent-directory resource entries, so the default
 #       LoadRestrictionsRootOnly check is satisfied and the apply succeeds
 #       without any flag.
@@ -209,7 +209,7 @@ test_production_caller_matches_self_contained_overlay() {
 
   # (a) The apply line is the bare kubectl form — no pipe, no flag.
   local raw
-  raw="$(grep -E 'kubectl apply -k "\$\{REPO_ROOT\}/deploy/kind/metrics-server"' "$DEPLOY_INFRA_SH" | head -1)"
+  raw="$(grep -E 'kubectl apply -k "\$\{REPO_ROOT\}/deploy/overlays/kind/metrics-server"' "$DEPLOY_INFRA_SH" | head -1)"
   assert_not_empty "deploy-infra.sh has the metrics-server kubectl apply line" "$raw"
 
   if grep -q -- '--load-restrictor' <<<"$raw"; then
@@ -221,7 +221,7 @@ test_production_caller_matches_self_contained_overlay() {
   fi
 
   # (b) The overlay must have zero `../../` parent-directory resource entries.
-  local kust="$PROJECT_ROOT/deploy/kind/metrics-server/kustomization.yaml"
+  local kust="$PROJECT_ROOT/deploy/overlays/kind/metrics-server/kustomization.yaml"
   if [[ ! -f "$kust" ]]; then
     echo "  FAIL: $kust does not exist"
     FAIL=$((FAIL + 1))
@@ -230,7 +230,7 @@ test_production_caller_matches_self_contained_overlay() {
 
   local parent_refs
   parent_refs="$( { grep -E '^[[:space:]]*-[[:space:]]+\.\./\.\.' "$kust" || true; } | wc -l)"
-  assert_eq "deploy/kind/metrics-server/kustomization.yaml has no '../../' resource entries" \
+  assert_eq "deploy/overlays/kind/metrics-server/kustomization.yaml has no '../../' resource entries" \
     "0" "${parent_refs// /}"
 }
 

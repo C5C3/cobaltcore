@@ -24,7 +24,7 @@ import (
 const (
 	// cinderDBDynamicVaultRole is the OpenBao Kubernetes-auth role the Cinder
 	// generator authenticates against. Its counterpart is the role
-	// deploy/openbao/bootstrap/setup-auth.sh writes, bound to the cinder-db-dynamic
+	// deploy/bases/shared-openbao/bootstrap/setup-auth.sh writes, bound to the cinder-db-dynamic
 	// policy that scopes reads to the per-tenant creds path.
 	cinderDBDynamicVaultRole = "cinder-db"
 	// cinderDBCredentialServiceAccountName is the fixed name of the
@@ -71,7 +71,7 @@ func cinderDBCredentialRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane) string {
 // it actually live in), so it is collision-free (namespaces are cluster-unique)
 // and the cinder-db-dynamic policy can scope reads by the caller's
 // service_account_namespace with an EXACT match. It MUST stay in sync with the
-// role-name derivation in deploy/openbao/bootstrap/setup-database-tenant.sh: the
+// role-name derivation in deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh: the
 // operator reads credentials from the engine role that script provisions per
 // service, which for Cinder is cinder-<cinder-ns>. The engine pair is written per
 // ControlPlane onboarding, the cinder-db auth role and the cinder-db-dynamic

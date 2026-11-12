@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # The dizzy scenario of the random chaos runs on kind (#1395):
-# deploy/lab/metal-stack/dizzy-soak/scenario.yaml with three departures:
+# deploy/overlays/metal-stack/dizzy-soak/scenario.yaml with three departures:
 #   - name: ci-random;
 #   - image: chaos-random and flavor: chaos-random, the public image and
 #     flavor seed-job.yaml creates; the kind plane has neither the lab's

@@ -10,7 +10,7 @@
 #     that disables majors and automerges minor/patch with
 #     minimumReleaseAge=3 days, groupName=envoy-gateway
 #   - the ENVOY_GATEWAY_VERSION pin inside the gateway-helm chart range of
-#     deploy/kind/base/envoy-gateway.yaml
+#     deploy/bases/devstack/base/envoy-gateway.yaml
 #
 # The gateway-helm chart range in the kind base manifest belongs to
 # Renovate's native flux manager and is pinned by
@@ -202,12 +202,12 @@ test_crd_pin_inside_chart_range() {
   pin="$(sed -nE "s/^ENVOY_GATEWAY_VERSION=.*:-v(${xyz})\}.*/\1/p" \
     "$PROJECT_ROOT/hack/deploy-infra.sh")"
   range="$(sed -nE "s/^ +version: \"(>=${xyz} <${xyz})\"\$/\1/p" \
-    "$PROJECT_ROOT/deploy/kind/base/envoy-gateway.yaml")"
+    "$PROJECT_ROOT/deploy/bases/devstack/base/envoy-gateway.yaml")"
   floor="$(sed -E "s/^>=(${xyz}) .*/\1/" <<<"$range")"
   ceiling="$(sed -E "s/.* <(${xyz})\$/\1/" <<<"$range")"
 
   if [ -z "$pin" ] || [ -z "$range" ]; then
-    echo "  FAIL: cannot read the vX.Y.Z pin from hack/deploy-infra.sh (\"$pin\") or the \">=X <Y\" chart range from deploy/kind/base/envoy-gateway.yaml (\"$range\")"
+    echo "  FAIL: cannot read the vX.Y.Z pin from hack/deploy-infra.sh (\"$pin\") or the \">=X <Y\" chart range from deploy/bases/devstack/base/envoy-gateway.yaml (\"$range\")"
     FAIL=$((FAIL + 1))
     return
   fi

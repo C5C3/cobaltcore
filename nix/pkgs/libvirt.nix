@@ -9,7 +9,7 @@
 #
 # nixpkgs' libvirt passes --sysconfdir=/var/lib and reads
 # /var/lib/libvirt/libvirtd.conf and its TLS files below /var/lib/pki. The
-# lab (deploy/lab/metal-stack/hypervisor/libvirt-configmap.yaml) and the e2e
+# lab (deploy/overlays/metal-stack/hypervisor/libvirt-configmap.yaml) and the e2e
 # suite (tests/e2e-nova-libvirt/server-boot/00-libvirt.yaml) write
 # /etc/libvirt/libvirtd.conf and /etc/libvirt/qemu.conf, mount the TLS files
 # below /etc/pki and start libvirtd without --config. With --sysconfdir=/etc

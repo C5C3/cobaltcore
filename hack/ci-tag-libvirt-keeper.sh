@@ -16,7 +16,7 @@
 #              its version
 # The tag is minted once and never moved: a build whose tag already exists
 # leaves it on the digest it names. The lab manifests under
-# deploy/lab/metal-stack/ pin that digest, and hack/ghcr-prune-stale-versions.py
+# deploy/overlays/metal-stack/ pin that digest, and hack/ghcr-prune-stale-versions.py
 # keeps every version that carries a tag of this shape. A registry that cannot
 # say whether the tag exists is an error, never a reason to mint: moving an
 # existing tag would take the keeper off a pinned digest.

@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify that the OpenBao server config of the kind base overlay, which the
-# lab overlay deploy/lab/metal-stack/base builds on, has no Kubernetes service
+# lab overlay deploy/overlays/metal-stack/base builds on, has no Kubernetes service
 # registration:
 #   - the kind base renders OpenBao in standalone mode, and its standalone
 #     config has no service_registration stanza. The chart grants the Role
@@ -12,7 +12,7 @@
 #     GET of the pod gets a 403, the server retries every 5 seconds, and
 #     OpenBao 2.7.1 leaks one goroutine per retry until the pod is OOMKilled
 #     and comes back sealed;
-#   - deploy/flux-system/ (production) keeps HA mode and its
+#   - deploy/bases/shared-openbao/ (production) keeps HA mode and its
 #     service_registration stanza, for which the chart grants that Role.
 #
 # Usage: bash tests/unit/deploy/kind_base_openbao_service_registration_test.sh
@@ -29,8 +29,8 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-KIND_BASE_DIR="$PROJECT_ROOT/deploy/kind/base"
-FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/flux-system"
+KIND_BASE_DIR="$PROJECT_ROOT/deploy/overlays/kind/base"
+FLUX_SYSTEM_DIR="$PROJECT_ROOT/deploy/bases/shared-openbao"
 OPENBAO='.kind == "HelmRelease" and .metadata.name == "openbao"'
 
 # render <dir> <file>
@@ -72,7 +72,7 @@ test_kind_base() {
 # ---------------------------------------------------------------------------
 test_production() {
   local file="$1"
-  echo "Test: deploy/flux-system/ keeps HA mode and its service registration"
+  echo "Test: deploy/bases/shared-openbao/ keeps HA mode and its service registration"
 
   assert_eq "production OpenBao runs in HA mode" \
     "true" "$(field "$file" '.spec.values.server.ha.enabled')"

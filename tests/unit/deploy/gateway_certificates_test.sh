@@ -7,7 +7,7 @@
 # metal-stack quick start (docs/quick-start-metal-stack.md, Part 1, Step 7)
 # holds every TLS Secret in openstack whose name ends in -nip-io-tls, so the
 # suite checks every Certificate of that Secret name in the render of
-# deploy/kind/infrastructure, which the lab's infrastructure overlay takes as
+# deploy/overlays/kind/infrastructure, which the lab's infrastructure overlay takes as
 # its base, whatever file declares it:
 #
 #   1. There are twelve, the count the page names, and each has one dnsNames
@@ -38,7 +38,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
-INFRASTRUCTURE_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
+INFRASTRUCTURE_DIR="$PROJECT_ROOT/deploy/overlays/kind/infrastructure"
 
 # gateway_certificates <yq expression>
 # <expression> over every rendered Certificate in openstack whose Secret name

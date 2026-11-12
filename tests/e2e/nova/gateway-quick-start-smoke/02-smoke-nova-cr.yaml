@@ -12,7 +12,7 @@
 # Each hostname MUST match a listener on the kind overlay's `openstack-gw`
 # Gateway AND the dnsName of that listener's Certificate, so the listener's TLS
 # Secret matches the SNI the client presents
-# (deploy/kind/base/openstack-gateway.yaml):
+# (deploy/overlays/kind/base/openstack-gateway.yaml):
 #
 #   spec.gateway                → https-nova          nova.127-0-0-1.nip.io
 #   spec.metadata.gateway       → https-nova-metadata nova-metadata.127-0-0-1.nip.io
@@ -37,7 +37,7 @@
 # auth pipeline, the metadata API answers its own version list there, and the
 # console proxy serves a static page. The `keystone-admin` Secret the service
 # user points at is the kind overlay's own shim
-# (deploy/kind/infrastructure/keystone-admin-externalsecret.yaml), which is what
+# (deploy/bases/devstack/infrastructure/keystone-admin-externalsecret.yaml), which is what
 # lets SecretsReady pass.
 apiVersion: nova.openstack.c5c3.io/v1alpha1
 kind: Nova

@@ -13,7 +13,7 @@
 #   tests/unit/deploy/dizzy_overlay_test.sh) exercise the gating logic and
 #   overlay render at the source level. Neither positively asserts "default
 #   cluster has no dizzy footprint", so a regression that accidentally installs
-#   it (a stray `kubectl apply -k deploy/kind/dizzy` outside the WITH_DIZZY gate,
+#   it (a stray `kubectl apply -k deploy/overlays/kind/dizzy` outside the WITH_DIZZY gate,
 #   or a future kustomize merge that pulls the overlay into the base) would slip
 #   through. This suite closes that gap by asserting absence end-to-end against
 #   the running cluster, mirroring the sibling no-metrics-server-when-disabled
@@ -26,7 +26,7 @@
 #   primary end-to-end coverage of the default posture.
 #
 # Scope gating — none. This absence invariant is also true on production
-# overlays (deploy/flux-system/ does not install the dizzy stack at all), so the
+# overlays (deploy/bases/operators/ does not install the dizzy stack at all), so the
 # test is environment-agnostic like no-metrics-server-when-disabled.
 #
 # Why a single script and not declarative `error` blocks: asserting "no
@@ -57,26 +57,26 @@ spec:
           set -euo pipefail
 
           # ── Assertion 1: no dizzy Namespace ──
-          # The only producer is deploy/kind/dizzy/namespace.yaml, applied solely
+          # The only producer is deploy/bases/dizzy/namespace.yaml, applied solely
           # inside the WITH_DIZZY=true gate.
           if kubectl get namespace dizzy >/dev/null 2>&1; then
             echo "FAIL: Namespace 'dizzy' exists on a default cluster."
             echo "      Source of regression: hack/deploy-infra.sh ran the dizzy overlay"
             echo "      apply outside the WITH_DIZZY gate, or the overlay was pulled into"
-            echo "      deploy/kind/base."
+            echo "      deploy/overlays/kind/base."
             exit 1
           fi
           echo "OK: no Namespace 'dizzy'"
 
           # ── Assertion 2: no dizzy HelmRepositories in flux-system ──
-          # The only producers are deploy/kind/dizzy/source-{victoria-metrics,
+          # The only producers are deploy/overlays/kind/dizzy/source-{victoria-metrics,
           # grafana}.yaml, applied solely inside the WITH_DIZZY=true gate.
           for repo in victoria-metrics grafana; do
             if kubectl get helmrepository.source.toolkit.fluxcd.io "${repo}" \
                   -n flux-system >/dev/null 2>&1; then
               echo "FAIL: HelmRepository '${repo}' exists in 'flux-system' on a default cluster."
               echo "      Source of regression: the dizzy overlay was applied without"
-              echo "      WITH_DIZZY=true, or a source was pulled into deploy/flux-system."
+              echo "      WITH_DIZZY=true, or a source was pulled into deploy/bases/operators."
               exit 1
             fi
             echo "OK: no HelmRepository '${repo}' in 'flux-system'"

@@ -26,7 +26,7 @@
 #       must name a release that has no releases/ directory, are exempt; L8
 #       checks them), and the placed-services pins match the ci.yaml
 #       e2e-multicluster preloads
-#   L4  every default-release reference (deploy/kind ControlPlane, deploy-infra
+#   L4  every default-release reference (deploy/overlays/kind ControlPlane, deploy-infra
 #       preload, ${VAR:-YYYY.N} fallbacks and the ci-run-tempest.sh slug
 #       fallbacks in hack/, image tags in ci.yaml, the kind fake compute, the
 #       metal-stack lab manifests) points at an existing releases/<version>/
@@ -201,7 +201,7 @@ if [[ -z "${RELEASES}" ]]; then
 fi
 
 DEFAULT_RELEASE="$(sed -nE 's/.*openStackRelease:[[:space:]]*"([0-9]{4}\.[12])".*/\1/p' \
-  deploy/kind/controlplane/controlplane.yaml 2>/dev/null | first)"
+  deploy/overlays/kind/controlplane/controlplane.yaml 2>/dev/null | first)"
 
 TEMPEST_GEN="hack/ci-generate-tempest-matrix.sh"
 TEMPEST_SERVICES="$(sed -nE 's/^ALL_TEMPEST_SERVICES=\(([^)]*)\).*/\1/p' "${TEMPEST_GEN}" 2>/dev/null | first)"
@@ -211,7 +211,7 @@ for r in ${RELEASES}; do
   svcs="$(services_of "${r}" | tr '\n' ' ')"
   info "release ${r}: services: ${svcs:-<none>}"
 done
-info "default release (deploy/kind/controlplane/controlplane.yaml): ${DEFAULT_RELEASE:-<unparsed>}"
+info "default release (deploy/overlays/kind/controlplane/controlplane.yaml): ${DEFAULT_RELEASE:-<unparsed>}"
 info "Tempest services (${TEMPEST_GEN} ALL_TEMPEST_SERVICES): ${TEMPEST_SERVICES:-<unparsed>}"
 
 # ---------------------------------------------------------------------------
@@ -604,7 +604,7 @@ check_ref() { # <file> <version> <what>
   fi
 }
 
-check_ref deploy/kind/controlplane/controlplane.yaml "${DEFAULT_RELEASE}" "openStackRelease"
+check_ref deploy/overlays/kind/controlplane/controlplane.yaml "${DEFAULT_RELEASE}" "openStackRelease"
 
 v="$(sed -nE 's/.*cp_release="([0-9]{4}\.[12])".*/\1/p' hack/deploy-infra.sh | first)"
 check_ref hack/deploy-infra.sh "${v}" "cp_release preload default"
@@ -636,7 +636,7 @@ check_ref "${f}" "${v}" "SERVICE_K8S_NAME fallback"
 
 # The kind fake compute runs the nova image of the kind ControlPlane's release,
 # so both of its nova refs must name that default.
-f=deploy/kind/fake-compute/fake-compute.yaml
+f=deploy/overlays/kind/fake-compute/fake-compute.yaml
 fc_tags="$(noncomment "${f}" | grep -oE 'ghcr\.io/c5c3/nova:[0-9]{4}\.[12]' | sed 's/.*://' || true)"
 if [[ -z "${fc_tags}" ]]; then
   fail "${f}: could not extract the nova image tags — the reference shape changed, update this audit"
@@ -651,8 +651,8 @@ fi
 
 # The metal-stack lab may lag the kind default (decision D4 of #1321), so its
 # manifests only have to name a wired release.
-for f in deploy/lab/metal-stack/controlplane/controlplane-lab.yaml \
-         deploy/lab/metal-stack/hypervisor/compute.yaml; do
+for f in deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml \
+         deploy/overlays/metal-stack/hypervisor/compute.yaml; do
   check_ref "${f}" "$(first_pin openStackRelease "${f}")" "openStackRelease"
 done
 

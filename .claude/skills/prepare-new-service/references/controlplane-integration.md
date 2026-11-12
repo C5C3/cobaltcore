@@ -16,8 +16,8 @@ credential chain**: the shared `credentialsMode` on `DatabaseSpec`, a
 per-service `databaseCredentialsMode` override on its c5c3 service spec,
 a `SERVICE_TENANTS` row (`"<role> <spec-service> <schemas>"`, which
 `provision_service_tenant` consumes) in
-`deploy/openbao/bootstrap/setup-database-tenant.sh`, a `<role>-db` auth
-role in `setup-auth.sh` + a `deploy/openbao/policies/<role>-db-dynamic.hcl`
+`deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh`, a `<role>-db` auth
+role in `setup-auth.sh` + a `deploy/bases/shared-openbao/policies/<role>-db-dynamic.hcl`
 policy, the generator-backed ExternalSecret
 glue (`reconcile_<svc>_dbcredentials.go` on the shared builders in
 `reconcile_dbcredentials.go`), and a
@@ -25,7 +25,7 @@ glue (`reconcile_<svc>_dbcredentials.go` on the shared builders in
 placement, barbican and cinder ship one). The row, the policy path and the
 auth role must agree on one name, so they land in one change with one
 test (#1037). Also extend the per-service loops the kind devstack keeps:
-the seed loop in `deploy/openbao/bootstrap/write-bootstrap-secrets.sh` and
+the seed loop in `deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh` and
 the MariaDB tenant wait set in `hack/deploy-infra.sh`.
 
 **Several databases** (#1012, consumed by Nova): a second `DatabaseSpec`
@@ -143,7 +143,7 @@ this and registers itself: see
 Ingress is `commonv1.GatewaySpec` / HTTPRoute via
 `internal/common/gateway` — plus the full public surface that hangs off
 it: an `https-<svc>` listener + hostname on the shared kind Gateway
-(`deploy/kind/base/openstack-gateway.yaml`) with a
+(`deploy/overlays/kind/base/openstack-gateway.yaml`) with a
 `<svc>-nip-io-tls-certificate.yaml` Certificate — one pair per public
 hostname (glance: `glance` + `glance-upload`; nova: `nova`,
 `nova-metadata`, `nova-console`, one `GatewaySpec` each) —, a `publicEndpoint`

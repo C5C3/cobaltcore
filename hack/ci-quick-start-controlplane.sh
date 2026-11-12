@@ -50,7 +50,7 @@
 #
 # Optional env vars (defaults in brackets):
 #   QUICK_START_DOC    [<repo root>/docs/quick-start-controlplane.md]
-#   ONBOARD_SCRIPT     [<repo root>/deploy/openbao/bootstrap/setup-database-tenant.sh]
+#   ONBOARD_SCRIPT     [<repo root>/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh]
 #   STATE_DIR          [_output/flux-path]
 #   CONTROLPLANE_NAME  [controlplane]
 #   KIND_HOST_PORT     [443]
@@ -78,7 +78,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 QUICK_START_DOC="${QUICK_START_DOC:-${REPO_ROOT}/docs/quick-start-controlplane.md}"
-ONBOARD_SCRIPT="${ONBOARD_SCRIPT:-${REPO_ROOT}/deploy/openbao/bootstrap/setup-database-tenant.sh}"
+ONBOARD_SCRIPT="${ONBOARD_SCRIPT:-${REPO_ROOT}/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh}"
 STATE_DIR="${STATE_DIR:-_output/flux-path}"
 CONTROLPLANE_NAME="${CONTROLPLANE_NAME:-controlplane}"
 KIND_HOST_PORT="${KIND_HOST_PORT:-443}"

@@ -7,7 +7,7 @@ description: >-
   patches, the per-service Tempest config directories the CI matrix generator
   hard-requires, every service's per-release basic-deployment e2e variant and
   the release pins across the e2e fixture trees, the placed-services pins and
-  their ci.yaml preloads, the default-release references in deploy/kind/, hack/,
+  their ci.yaml preloads, the default-release references in deploy/overlays/kind/, hack/,
   and ci.yaml, the Renovate regression tests and per-release rules, the
   upgrade-path suites of every service, and the version-pattern lockstep across
   every OpenStackRelease CRD marker, webhook, and release.ParseRelease. Use when
@@ -48,7 +48,7 @@ suite; every table row below applies per service.
 | Per-release e2e variant | `tests/e2e/<svc>/basic-deployment` (pins the default release) plus `basic-deployment-<slug>/` for every other release, for each of the eight services | hand-maintained fixtures with hard-coded names and image refs; [[check-service-parity]] P6 checks the latest-release variant exists |
 | E2E fixture release pins | every `tag:`, `openStackRelease:`, `installedRelease:`, and `ghcr.io/c5c3/<img>:<YYYY.N>` in `tests/e2e*/` (~1,000 today, the tempest client image included) | the `releases/` directory set |
 | Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` (`repository:` + `tag:`) and the ci.yaml `e2e-multicluster` job's image preloads | hand-maintained; the suite runs one release, not a matrix |
-| Default-release references | `deploy/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, every `${VAR:-YYYY.N}` fallback in `hack/*.sh` (three `RELEASE:-`, `IMAGE_TAG:-` in `perf-reconcile-benchmark.sh`), the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks in `hack/ci-run-tempest.sh`, the two `ghcr.io/c5c3/nova:<v>` refs of `deploy/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of `deploy/lab/metal-stack/controlplane/controlplane-lab.yaml` and `deploy/lab/metal-stack/hypervisor/compute.yaml`, image tags in `.github/workflows/ci.yaml` | the `releases/` directory set |
+| Default-release references | `deploy/overlays/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, every `${VAR:-YYYY.N}` fallback in `hack/*.sh` (three `RELEASE:-`, `IMAGE_TAG:-` in `perf-reconcile-benchmark.sh`), the `CONFIG_DIR`/`SERVICE_K8S_NAME` slug fallbacks in `hack/ci-run-tempest.sh`, the two `ghcr.io/c5c3/nova:<v>` refs of `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of `deploy/overlays/metal-stack/controlplane/controlplane-lab.yaml` and `deploy/overlays/metal-stack/hypervisor/compute.yaml`, image tags in `.github/workflows/ci.yaml` | the `releases/` directory set |
 | Release floor | `release.MinimumSupported` in `internal/common/release/release.go` and the `*-openstackrelease-below-floor.yaml` / `*-image-tag-below-floor.yaml` rejection fixtures of the `invalid-*` corpora | the oldest `releases/<version>/` directory |
 | Renovate | `tests/unit/renovate/*_test.sh` probes and the per-release `packageRules` in `renovate.json` (the `neutron-tempest-plugin` holds) | the `releases/` directory set |
 | Upgrade-path e2e | `tests/e2e/<svc>/release-upgrade/` (barbican, cinder, glance, horizon, keystone, neutron, nova, placement), `tests/e2e/keystone/upgrade-flow/`, `upgrade-flow/02-patch-skip-level.yaml`, `tests/e2e/keystone/upgrade-abort/`, and the ControlPlane hop of `tests/e2e/c5c3/full-controlplane-keystone/` (`00-controlplane-cr.yaml` -> `08-patch-upgrade.yaml`, read by `openStackRelease`) | `release.IsSequentialUpgrade` and the sorted release list |
@@ -129,7 +129,7 @@ inventory. Interpret:
   preload, every `${VAR:-YYYY.N}` fallback in `hack/*.sh`, the
   `CONFIG_DIR` and `SERVICE_K8S_NAME` slug fallbacks of
   `hack/ci-run-tempest.sh`, the two nova image refs of
-  `deploy/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of
+  `deploy/overlays/kind/fake-compute/fake-compute.yaml`, the `openStackRelease` of
   the two metal-stack lab manifests, and every `:<YYYY.N>` image tag
   hard-coded in `ci.yaml`. The fake compute's nova tags must also equal
   the kind ControlPlane default; the lab manifests need only name a

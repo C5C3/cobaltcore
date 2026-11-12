@@ -27,7 +27,7 @@ import (
 
 // rabbitMQVhostTopologyManifest is the file that installs the topology
 // operator, which TopologyOperatorNotInstalled names.
-const rabbitMQVhostTopologyManifest = "deploy/flux-system/releases/messaging-topology-operator.yaml"
+const rabbitMQVhostTopologyManifest = "deploy/bases/operators/releases/messaging-topology-operator.yaml"
 
 // provisionVhost keeps the order's vhost provisioned and its user rotated and
 // writes VhostReady. ok is true once a user generation is live, so the delivery

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify deploy/openbao/bootstrap/setup-database-tenant.sh fails loudly when the
+# Verify deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh fails loudly when the
 # ControlPlane CR cannot be read, instead of silently falling back to the
 # projection defaults (openstack-db / keystone).
 #
@@ -20,7 +20,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SCRIPT_UNDER_TEST="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-database-tenant.sh"
+SCRIPT_UNDER_TEST="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh"
 
 PASS=0
 FAIL=0

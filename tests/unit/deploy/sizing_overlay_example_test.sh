@@ -32,7 +32,7 @@
 #     keystone-operator values into its Deployment, so the example cannot go
 #     stale against the chart's values schema. The chart's operator-library
 #     dependency is rebuilt first. Skipped without helm.
-#   - kustomize build deploy/flux-system renders no PriorityClass, no
+#   - kustomize build deploy/bases/operators renders no PriorityClass, no
 #     spec.patches on the k-orc Flux Kustomization, only the base release's
 #     own two request operations on the rabbitmq-cluster-operator one, and
 #     no spec.kustomize on the FluxInstance: the example leaves the
@@ -57,8 +57,8 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 OVERLAY_DIR="${SIZING_OVERLAY_DIR:-$PROJECT_ROOT/deploy/examples/sizing-overlay}"
 INFRA_OVERLAY_DIR="$OVERLAY_DIR/infrastructure"
-BASE_DIR="$PROJECT_ROOT/deploy/flux-system"
-INFRA_BASE_DIR="$BASE_DIR/infrastructure"
+BASE_DIR="$PROJECT_ROOT/deploy/bases/operators"
+INFRA_BASE_DIR="$PROJECT_ROOT/deploy/bases/infrastructure"
 
 # The example's placement values as compact JSON with sorted keys, the form
 # cjson and op_value print.
@@ -76,7 +76,15 @@ results() {
 build() {
   local out err_file
   err_file="$(mktemp)"
-  if out="$(kustomize build "$2" 2>"$err_file")"; then
+  if out="$(
+    kustomize build "$2" || exit
+    if [[ "$2" == "$BASE_DIR" ]]; then
+      for stage in flux shared-openbao controlplane-operator; do
+        printf '\n---\n'
+        kustomize build "$PROJECT_ROOT/deploy/bases/$stage" || exit
+      done
+    fi
+  2>"$err_file")"; then
     printf -v "$1" '%s' "$out"
     echo "  PASS: kustomize build $2"
     PASS=$((PASS + 1))
@@ -129,7 +137,7 @@ test_object_counts() {
     return
   fi
 
-  assert_eq "the overlay renders one object more than deploy/flux-system" \
+  assert_eq "the overlay renders one object more than deploy/bases/operators" \
     "$(($(count "$BASE" 'select(.kind != null)') + 1))" \
     "$(count "$OVERLAY" 'select(.kind != null)')"
   assert_eq "the overlay renders exactly one PriorityClass" \
@@ -366,10 +374,10 @@ test_infrastructure_patches() {
 
 # --- Test 8: the production base carries none of the example's placement patches ---
 test_production_base_unchanged() {
-  echo "Test: kustomize build deploy/flux-system carries none of the example's placement patches"
+  echo "Test: kustomize build deploy/bases/operators carries none of the example's placement patches"
 
   if [ "$BASE_OK" != true ]; then
-    echo "  SKIP: deploy/flux-system did not build (5 checks skipped)"
+    echo "  SKIP: deploy/bases/operators did not build (5 checks skipped)"
     SKIP=$((SKIP + 5))
     return
   fi

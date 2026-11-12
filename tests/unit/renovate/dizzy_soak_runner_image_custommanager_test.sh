@@ -5,7 +5,7 @@
 
 # Verify renovate.json declares a customManagers entry that targets the
 # docker.io/alpine/k8s image pin of the dizzy soak's runner
-# (deploy/lab/metal-stack/dizzy-soak/job.yaml), plus the paired
+# (deploy/overlays/metal-stack/dizzy-soak/job.yaml), plus the paired
 # packageRules:
 #   - the docker-datasource matchStrings regex captures the image's depName,
 #     tag (currentValue) AND digest (currentDigest) from the manifest's real
@@ -17,7 +17,7 @@
 #     `dizzy soak runner image`.
 #
 # This is the regression test the check-renovate-coverage skill requires for
-# every customManager; that skill's audit does not scan deploy/lab/. It does
+# every customManager; that skill's audit does not scan deploy/overlays/metal-stack/. It does
 # NOT run renovate-config-validator itself: the sibling
 # fluxoperator_custommanager_test.sh exercises that gate over the whole file.
 #
@@ -36,7 +36,7 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
-MANIFEST_PATH="deploy/lab/metal-stack/dizzy-soak/job.yaml"
+MANIFEST_PATH="deploy/overlays/metal-stack/dizzy-soak/job.yaml"
 MANIFEST_FILE="$PROJECT_ROOT/$MANIFEST_PATH"
 RUNNER_PACKAGE="docker.io/alpine/k8s"
 
@@ -53,7 +53,7 @@ test_custom_manager_captures_image() {
   local entry
   entry="$(jq -c '.customManagers[]
     | select(.datasourceTemplate == "docker")
-    | select((.managerFilePatterns // []) | join(",") | contains("deploy/lab/metal-stack/dizzy-soak/job"))' \
+    | select((.managerFilePatterns // []) | join(",") | contains("deploy/overlays/metal-stack/dizzy-soak/job"))' \
     "$RENOVATE_FILE")"
 
   if [ -z "$entry" ]; then
@@ -67,7 +67,7 @@ test_custom_manager_captures_image() {
   assert_eq "customManagers.versioningTemplate is docker" \
     "docker" "$(jq -r '.versioningTemplate' <<<"$entry")"
   assert_eq "managerFilePatterns targets job.yaml alone" \
-    '["/deploy/lab/metal-stack/dizzy-soak/job\\.yaml$/"]' "$(jq -c '.managerFilePatterns' <<<"$entry")"
+    '["/deploy/overlays/metal-stack/dizzy-soak/job\\.yaml$/"]' "$(jq -c '.managerFilePatterns' <<<"$entry")"
 
   if ! command -v perl >/dev/null 2>&1; then
     echo "  SKIP: perl not installed (5 checks skipped)"

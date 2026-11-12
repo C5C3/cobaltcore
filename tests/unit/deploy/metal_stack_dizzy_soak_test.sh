@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify the overlay of the dizzy soak, deploy/lab/metal-stack/dizzy-soak
+# Verify the overlay of the dizzy soak, deploy/overlays/metal-stack/dizzy-soak
 # (#1274):
 #   1. The directory holds kustomization.yaml, identity.yaml, rbac.yaml,
 #      reports-pvc.yaml, job.yaml and scenario.yaml and nothing else, each
@@ -52,10 +52,10 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/kustomize_render.sh
 source "$PROJECT_ROOT/tests/lib/kustomize_render.sh"
 
-SOAK_DIR="$PROJECT_ROOT/deploy/lab/metal-stack/dizzy-soak"
+SOAK_DIR="$PROJECT_ROOT/deploy/overlays/metal-stack/dizzy-soak"
 JOB="$SOAK_DIR/job.yaml"
 SCENARIO="$SOAK_DIR/scenario.yaml"
-FIXTURES_DIR="$PROJECT_ROOT/deploy/kind/hypervisor-operator-fixtures"
+FIXTURES_DIR="$PROJECT_ROOT/deploy/bases/hypervisor-fixtures"
 DIZZY_SH="$PROJECT_ROOT/hack/dizzy.sh"
 RUNNER_SH="$PROJECT_ROOT/hack/dizzy-soak-runner.sh"
 

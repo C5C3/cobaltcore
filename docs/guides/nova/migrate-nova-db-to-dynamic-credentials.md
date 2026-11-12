@@ -121,9 +121,9 @@ the bootstrap scripts.
 
 ```bash
 # From the repo root, with BAO_TOKEN exported (the OpenBao root token).
-bash deploy/openbao/bootstrap/setup-secret-engines.sh
-bash deploy/openbao/bootstrap/setup-auth.sh
-bash deploy/openbao/bootstrap/setup-policies.sh
+bash deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh
+bash deploy/bases/shared-openbao/bootstrap/setup-auth.sh
+bash deploy/bases/shared-openbao/bootstrap/setup-policies.sh
 ```
 
 `make deploy-infra` runs these for you on a fresh kind cluster.
@@ -142,7 +142,7 @@ The engine roles for a tenant exist only once its MariaDB is Ready and
 ```bash
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
-bash deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+bash deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN
 ```
 

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Legacy reference instances. Apply only after their controllers and CRDs exist.
+# TLS has one resource list, also used by the public TLS stage.
+# See ../../README.md#reusable-bases for staged consumption.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../tls
+  - mariadb.yaml
+  - memcached.yaml
+  - garage.yaml
+  - ../eso-store

@@ -15,7 +15,7 @@
 # the API and metadata probes GET the API root and the scheduler and conductor
 # probes read the broker socket. spec.keystoneEndpoint is a convention URL
 # nothing serves, and spec.serviceUser reads the kind-only keystone-admin
-# Secret from deploy/kind/infrastructure.
+# Secret from deploy/overlays/kind/infrastructure.
 #
 # Both database blocks are managed (clusterRef), which is what puts the seven
 # MariaDB objects the suite asserts on into the namespace: Database, User and

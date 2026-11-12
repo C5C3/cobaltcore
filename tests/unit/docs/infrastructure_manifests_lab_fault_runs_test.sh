@@ -256,9 +256,9 @@ test_label_sources() {
     '"F3 lab-ovn-controller-kill app.kubernetes.io/name=ovnchassis,app.kubernetes.io/instance=lab-chassis,app.kubernetes.io/component=ovn-controller node 600"'
   assert_contains "F4 the NFS server wherever it runs" "$selectors" '"F4 lab-nfs-server-kill app.kubernetes.io/name=nfs-server any 900"'
   assert_file_contains_fixed "the libvirt DaemonSet labels its pods app.kubernetes.io/name: libvirt" \
-    "$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml" 'app.kubernetes.io/name: libvirt'
+    "$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml" 'app.kubernetes.io/name: libvirt'
   assert_file_contains_fixed "the NFS server labels its pods app.kubernetes.io/name: nfs-server" \
-    "$PROJECT_ROOT/deploy/kind/nfs/nfs-server.yaml" 'app.kubernetes.io/name: nfs-server'
+    "$PROJECT_ROOT/deploy/bases/nfs/nfs-server.yaml" 'app.kubernetes.io/name: nfs-server'
   assert_file_contains_fixed "the nova operator names the pool's pods novacompute" \
     "$PROJECT_ROOT/operators/nova/internal/controller/novacompute_controller.go" 'novaComputeAppName = "novacompute"'
   assert_file_contains_fixed "the nova operator names their component nova-compute" \
@@ -268,13 +268,13 @@ test_label_sources() {
   assert_file_contains_fixed "the ovn operator names their component ovn-controller" \
     "$PROJECT_ROOT/operators/ovn/internal/controller/reconcile_controller.go" 'componentOVNController = "ovn-controller"'
   # The operators set app.kubernetes.io/instance to the name of their CR.
-  local compute="$PROJECT_ROOT/deploy/lab/metal-stack/hypervisor/compute.yaml"
+  local compute="$PROJECT_ROOT/deploy/overlays/metal-stack/hypervisor/compute.yaml"
   assert_eq "the lab's NovaCompute is named lab, the instance label of F2" "lab" \
     "$(awk '/^kind: NovaCompute$/ { k = 1 } k && /^  name: / { print $2; exit }' "$compute")"
   assert_eq "the lab's OVNChassis is named lab-chassis, the instance label of F3" "lab-chassis" \
     "$(awk '/^kind: OVNChassis$/ { k = 1 } k && /^  name: / { print $2; exit }' "$compute")"
   assert_eq "the NFS server is deployment/nfs-server, which F5 scales" "nfs-server" \
-    "$(awk '/^kind: Deployment$/ { k = 1 } k && /^  name: / { print $2; exit }' "$PROJECT_ROOT/deploy/kind/nfs/nfs-server.yaml")"
+    "$(awk '/^kind: Deployment$/ { k = 1 } k && /^  name: / { print $2; exit }' "$PROJECT_ROOT/deploy/bases/nfs/nfs-server.yaml")"
   assert_contains "F5 scales deployment/nfs-server to 0 and back to 1" "$(cat "$LAB_CHAOS_SH")" \
     'kubectl scale deployment/nfs-server -n "$NAMESPACE" --replicas=1'
 }

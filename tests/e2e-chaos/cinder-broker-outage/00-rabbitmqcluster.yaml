@@ -18,7 +18,7 @@
 # self-hosted e2e-chaos network leg that request takes the last schedulable
 # CPU and leaves the next pod Pending on "Insufficient cpu".
 # tests/e2e-chaos/neutron-broker-outage/01-rabbitmqcluster.yaml and
-# deploy/kind/messaging/shared-rabbitmq.yaml record the same reason. This suite
+# deploy/bases/messaging/shared-rabbitmq.yaml record the same reason. This suite
 # pushes one volume create through the bus, so 100m and 512Mi are what it needs
 # on kind.
 #

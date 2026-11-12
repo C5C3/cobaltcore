@@ -54,9 +54,9 @@ deployment brought up before this operator version runs them once more before
 its first database order:
 
 ```bash
-deploy/openbao/bootstrap/setup-auth.sh
-deploy/openbao/bootstrap/setup-policies.sh
-deploy/openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
+deploy/bases/shared-openbao/bootstrap/setup-auth.sh
+deploy/bases/shared-openbao/bootstrap/setup-policies.sh
+deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh <namespace> <controlplane>
 ```
 
 Until then the order reports `DatabaseReady=False/OpenBaoError` naming the three

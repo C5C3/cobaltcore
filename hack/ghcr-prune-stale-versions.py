@@ -94,7 +94,7 @@ DEFAULT_KEEP_PATTERNS = (
     r"^upstream-[0-9a-f]{40}$",
     # 12.2.0-r57 -- the libvirt image's <libvirt-version>-r<N>, minted once by
     # hack/ci-tag-libvirt-keeper.sh; the lab manifests under
-    # deploy/lab/metal-stack/ pin that build by digest. The shape is copied in
+    # deploy/overlays/metal-stack/ pin that build by digest. The shape is copied in
     # that script's version check and in allowedVersions in renovate.json. No
     # other image carries a -r<N> tag.
     r"^[0-9]+(\.[0-9]+)+-r[0-9]+$",

@@ -5,7 +5,7 @@
 
 # Verify that the kind EnvoyProxy override pins the proxy Service to
 # externalTrafficPolicy: Cluster:
-#   - deploy/kind/infrastructure/envoy-nodeport.yaml sets
+#   - deploy/overlays/kind/infrastructure/envoy-nodeport.yaml sets
 #     spec.provider.kubernetes.envoyService.externalTrafficPolicy: Cluster.
 #     EnvoyProxy defaults the field to Local, and with a NodePort Service
 #     Envoy Gateway then assigns the Gateway only the addresses of nodes that
@@ -28,7 +28,7 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-ENVOY_NODEPORT="$PROJECT_ROOT/deploy/kind/infrastructure/envoy-nodeport.yaml"
+ENVOY_NODEPORT="$PROJECT_ROOT/deploy/overlays/kind/infrastructure/envoy-nodeport.yaml"
 
 # The value of a direct child key of the envoyService block, or empty when the
 # key is absent. Comment lines are skipped, so the DECISION notes in the file

@@ -149,7 +149,7 @@ Point the admin ExternalSecret at the per-CR path. The ExternalSecret feeding
 the admin Secret must read the same per-CR path this rotation writes, or the
 rotated password never reaches Keystone. On the kind Quick Start the admin Secret
 `keystone-admin` is fed by the shim ExternalSecret
-`deploy/kind/infrastructure/keystone-admin-externalsecret.yaml`. Its
+`deploy/bases/devstack/infrastructure/keystone-admin-externalsecret.yaml`. Its
 `remoteRef.key` is `bootstrap/openstack/controlplane-keystone/admin`, the path
 seeded for the default ControlPlane identity. For this standalone CR, change it
 to `bootstrap/openstack/keystone/admin`:
@@ -166,7 +166,7 @@ spec:
 ```
 
 > Use a dedicated ExternalSecret for a durable setup. If your devstack continuously
-> reconciles `deploy/kind/infrastructure/` (Flux/GitOps), a manual patch to the
+> reconciles `deploy/overlays/kind/infrastructure/` (Flux/GitOps), a manual patch to the
 > shim is reverted. Create a dedicated ExternalSecret for your CR that reads the per-CR
 > path instead, as the `admin-password-scheduled-rotation` chainsaw suite
 > ships its own CR + ExternalSecret (`tests/e2e/keystone/admin-password-scheduled-rotation/00-keystone-cr.yaml`).
@@ -416,7 +416,7 @@ Keystone CRs concurrently.
 > `bootstrap/{namespace}/{name}/admin`. On a ControlPlane deployment the
 > operator-projected `controlplane-keystone-admin-credentials` ExternalSecret
 > reads `bootstrap/openstack/controlplane-keystone/admin`, and the bootstrap seed
-> (`deploy/openbao/bootstrap/write-bootstrap-secrets.sh`) seeds that path for each
+> (`deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh`) seeds that path for each
 > ControlPlane identity in `KORC_CONTROLPLANES`. Scheduled rotation is not
 > configured on the projected child (see
 > [On a ControlPlane deployment](#on-a-controlplane-deployment)).

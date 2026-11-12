@@ -17,7 +17,7 @@ import (
 )
 
 // OpenBaoClusterStoreName is the ClusterSecretStore that fronts the OpenBao
-// backend used by deploy/eso. The operators check this store's Ready
+// backend used by deploy/bases/eso-store. The operators check this store's Ready
 // condition on every reconcile so their secret-derived conditions reflect
 // upstream backend outages within the ESO store-reconcile interval —
 // ExternalSecrets themselves use a 1h refreshInterval and would otherwise

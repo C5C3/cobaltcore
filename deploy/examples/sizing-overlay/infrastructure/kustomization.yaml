@@ -8,7 +8,7 @@
 # This directory is an example to copy. No script applies it;
 # tests/unit/deploy/sizing_overlay_example_test.sh renders it and pins every
 # patched field. A deployer runs kubectl apply -k on the copy in place of
-# deploy/flux-system/infrastructure/, after the base phase (../). The MariaDB
+# deploy/bases/infrastructure/, after the base phase (../). The MariaDB
 # and MaxScale patches reference the cobaltcore-platform PriorityClass that
 # the base phase applies; this phase takes it from there, as it takes its namespace, CRDs
 # and operators. It does not include the class: kubectl delete -k on either
@@ -20,7 +20,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - ../../../flux-system/infrastructure
+  - ../../../bases/infrastructure
 
 patches:
   # MariaDB: spec.resources, spec.nodeSelector, spec.tolerations and

@@ -9,7 +9,7 @@
 # The suite narrows OpenBao policy eso-tenant, the identity of every per-tenant
 # SecretStore, and restores it from ConfigMap policy-narrowed-orig.
 # setup-policies.sh substitutes the auth-mount accessor when it writes the
-# policy, so the file in deploy/openbao/policies/ is not what OpenBao holds:
+# policy, so the file in deploy/bases/shared-openbao/policies/ is not what OpenBao holds:
 # the suite captures the live text and writes that back.
 
 POLICY=eso-tenant

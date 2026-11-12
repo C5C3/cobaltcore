@@ -10,7 +10,7 @@
 # The constant is the image tag every OpenBao instance the ControlPlane projects
 # for Barbican runs. It is a Go string literal, so no native manager sees it,
 # and left untracked it drifts away from the proving instance in
-# deploy/kind/infrastructure/openbao-instance.yaml until the two run different
+# deploy/bases/devstack/infrastructure/openbao-instance.yaml until the two run different
 # OpenBao lines.
 #
 # Asserts:
@@ -43,7 +43,7 @@ CONTROLLER_FILE="$PROJECT_ROOT/operators/c5c3/internal/controller/reconcile_barb
 
 PKG_NAME="openbao/openbao"
 CONTROLLER_PATH="operators/c5c3/internal/controller/reconcile_barbican_openbao.go"
-INSTANCE_PATH="deploy/kind/infrastructure/openbao-instance.yaml"
+INSTANCE_PATH="deploy/bases/devstack/infrastructure/openbao-instance.yaml"
 
 test_manager_exists_and_regex_matches() {
   echo "Test: the defaultOpenBaoVersion pin has a customManager whose regex matches"

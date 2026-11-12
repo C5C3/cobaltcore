@@ -33,13 +33,13 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-ENGINES_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-secret-engines.sh"
-AUTH_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-auth.sh"
-SEED_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/write-bootstrap-secrets.sh"
-POLICY_FILE="$PROJECT_ROOT/deploy/openbao/policies/barbican-secretstore.hcl"
+ENGINES_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-secret-engines.sh"
+AUTH_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-auth.sh"
+SEED_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh"
+POLICY_FILE="$PROJECT_ROOT/deploy/bases/shared-openbao/policies/barbican-secretstore.hcl"
 
 # The static seal key of the proving OpenBao instance
-# (deploy/kind/infrastructure/openbao-instance.yaml).
+# (deploy/bases/devstack/infrastructure/openbao-instance.yaml).
 UNSEAL_PATH="kv-v2/bootstrap/openstack/openbao-instance/unseal-key"
 
 # A typical engine map of an already-bootstrapped instance, minus barbican/.

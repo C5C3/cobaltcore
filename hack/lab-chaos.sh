@@ -64,7 +64,7 @@ LC_CLOUDS="${LC_REPO_ROOT}/_output/dizzy/clouds.yaml"
 LC_CLOUD="devstack-c5c3"
 # Keystone's URL on the Gateway, the auth_url of LC_CLOUDS; lc_clouds sets it.
 LC_KEYSTONE_URL=""
-LC_MODULES_DAEMONSET="${LC_REPO_ROOT}/deploy/lab/metal-stack/chaos-mesh/modules-daemonset.yaml"
+LC_MODULES_DAEMONSET="${LC_REPO_ROOT}/deploy/overlays/metal-stack/chaos-mesh/modules-daemonset.yaml"
 LC_CHAOS_RANDOM="${LC_REPO_ROOT}/hack/chaos-random.sh"
 LC_CHAOS_RANDOM_OUTPUT="${LC_REPO_ROOT}/_output/chaos-random"
 LC_IMAGE="cirros-kvm"
@@ -314,12 +314,12 @@ lc_preflight() {
   if ! out="$(kubectl get images.openstack.k-orc.cloud/hvo-cirros-kvm flavors.openstack.k-orc.cloud/hvo-smoke-test-flavor \
       -n "$NAMESPACE" -o json 2>&1)" ||
     [[ "$(jq '[.items[] | select(any(.status.conditions[]?; .type == "Available" and .status == "True"))] | length' <<<"$out" 2>/dev/null)" != 2 ]]; then
-    lc_check_fail "image hvo-cirros-kvm and flavor hvo-smoke-test-flavor are missing or not Available; apply deploy/lab/metal-stack/hypervisor-fixtures"
+    lc_check_fail "image hvo-cirros-kvm and flavor hvo-smoke-test-flavor are missing or not Available; apply deploy/overlays/metal-stack/hypervisor-fixtures"
   fi
   echo "OK: image hvo-cirros-kvm and flavor hvo-smoke-test-flavor are Available"
   if ! out="$(kubectl get cinderbackend nfs1 -n "$NAMESPACE" -o 'jsonpath={.status.conditions[?(@.type=="Ready")].status}' 2>&1)" ||
     [[ "$out" != True ]]; then
-    lc_check_fail "the Cinder backend nfs1 is missing or not Ready (read '$(lc_first_line "$out")'); apply deploy/lab/metal-stack/controlplane-nfs as in Part 3, Step 1"
+    lc_check_fail "the Cinder backend nfs1 is missing or not Ready (read '$(lc_first_line "$out")'); apply deploy/overlays/metal-stack/controlplane-nfs as in Part 3, Step 1"
   fi
   echo "OK: the Cinder backend nfs1 is Ready"
   if ! out="$(os volume type show nfs -f value -c name 2>&1)"; then

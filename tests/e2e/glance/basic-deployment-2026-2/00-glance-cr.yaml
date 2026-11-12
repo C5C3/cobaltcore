@@ -6,7 +6,7 @@
 # Managed mode: database via clusterRef to openstack-db (schema glance_basic_2026_2),
 # cache via clusterRef to openstack-memcached. The database credentials come
 # from the ESO-synced glance-db Secret and the service-user password from the
-# pre-seeded keystone-admin Secret (both deploy/kind/infrastructure). glance-api
+# pre-seeded keystone-admin Secret (both deploy/overlays/kind/infrastructure). glance-api
 # cannot start without a default image store, so 01-glance-backend.yaml attaches
 # one before Ready can settle. From 2026.1 the API launches under uWSGI rather
 # than the eventlet glance-api server.

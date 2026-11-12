@@ -86,8 +86,8 @@ If the first run fails because a download or image pull flakes out, run
 ## Step 3: Keystone operator
 
 ```bash
-kubectl apply -f deploy/flux-system/sources/c5c3-charts.yaml
-kubectl apply -f deploy/flux-system/releases/keystone-operator.yaml
+kubectl apply -f deploy/bases/operators/sources/c5c3-charts.yaml
+kubectl apply -f deploy/bases/operators/releases/keystone-operator.yaml
 kubectl wait helmrelease/keystone-operator -n keystone-system \
   --for=condition=Ready --timeout=120s
 ```

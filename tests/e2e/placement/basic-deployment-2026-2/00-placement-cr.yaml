@@ -7,7 +7,7 @@
 # placement_basic_2026_2), cache via clusterRef to openstack-memcached. The
 # database credentials come from the ESO-synced placement-db Secret and the
 # service-user password from the pre-seeded keystone-admin Secret (both
-# deploy/kind/infrastructure). Apart from the release, the image tag, and the
+# deploy/overlays/kind/infrastructure). Apart from the release, the image tag, and the
 # names, this is the plain basic-deployment suite's fixture: placement has
 # shipped the same WSGI application across every release, so the operator
 # renders the same launch command and the same placement.conf for each of them.

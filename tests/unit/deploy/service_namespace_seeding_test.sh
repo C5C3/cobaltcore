@@ -29,8 +29,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-DB_TENANT_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/setup-database-tenant.sh"
-SEED_SCRIPT="$PROJECT_ROOT/deploy/openbao/bootstrap/write-bootstrap-secrets.sh"
+DB_TENANT_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh"
+SEED_SCRIPT="$PROJECT_ROOT/deploy/bases/shared-openbao/bootstrap/write-bootstrap-secrets.sh"
 
 PASS=0
 FAIL=0

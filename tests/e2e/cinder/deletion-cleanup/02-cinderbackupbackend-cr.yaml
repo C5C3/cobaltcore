@@ -12,7 +12,7 @@
 # CinderBackend does: the namespace is shared and spec.cinderRef is immutable.
 #
 # The export is the /backups directory the kind NFS server pre-creates
-# 42424:42424 mode 0770 (deploy/kind/nfs/nfs-server.yaml).
+# 42424:42424 mode 0770 (deploy/bases/nfs/nfs-server.yaml).
 apiVersion: cinder.openstack.c5c3.io/v1alpha1
 kind: CinderBackupBackend
 metadata:

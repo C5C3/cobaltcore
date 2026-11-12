@@ -66,7 +66,7 @@ hdr "D3: deploy/<component>/ references in docs/ and README.md exist"
 if [[ -d docs && -d deploy ]]; then
   refs=$(grep -rhoE --include='*.md' --exclude-dir=.vitepress 'deploy/[a-z][a-z0-9-]+/' docs/ README.md 2>/dev/null | sort -u || true)
   for ref in ${refs}; do
-    # ref is like "deploy/openbao/"; strip trailing slash for the dir test
+    # ref is like "deploy/bases/shared-openbao/"; strip trailing slash for the dir test
     path="${ref%/}"
     if [[ -d "${path}" ]]; then
       pass "doc reference ${ref} exists on disk"
@@ -90,8 +90,8 @@ if [[ -d docs ]]; then
 fi
 
 hdr "Inventory — FluxCD HelmReleases declared under deploy/"
-if [[ -d deploy/flux-system/releases ]]; then
-  find deploy/flux-system/releases -name '*.yaml' -exec basename {} .yaml \; 2>/dev/null | sort | sed 's/^/[INFO] flux release: /'
+if [[ -d deploy/bases/operators/releases ]]; then
+  find deploy/bases/operators/releases -name '*.yaml' -exec basename {} .yaml \; 2>/dev/null | sort | sed 's/^/[INFO] flux release: /'
 fi
 
 # ---------------------------------------------------------------------------

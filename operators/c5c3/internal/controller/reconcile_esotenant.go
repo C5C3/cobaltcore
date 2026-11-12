@@ -34,7 +34,7 @@ import (
 const (
 	// esoTenantStoreName is the namespaced SecretStore the operator provisions
 	// per ControlPlane and defaults the control plane onto. It MUST match the
-	// name set by deploy/openbao/bootstrap/setup-eso-tenant.sh (the manual
+	// name set by deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh (the manual
 	// onboarding path for standalone Keystone/Horizon) so both provisioning
 	// routes converge on the same store, and it is the name standalone CRs set in
 	// spec.secretStoreRef.
@@ -56,7 +56,7 @@ const (
 	// namespace.
 	esoTenantVaultRole = "eso-tenant"
 	// esoTenantKVMountPath is the KV-v2 secrets-engine mount the tenant store
-	// reads from, matching the shared cluster store (deploy/eso/clustersecretstore.yaml).
+	// reads from, matching the shared cluster store (deploy/bases/eso-store/clustersecretstore.yaml).
 	esoTenantKVMountPath = "kv-v2"
 	// esoTenantClientCertDuration / renewBefore reuse the DB-credential client
 	// certificate lifetimes (dbCredentialClientCert*) so client-cert rotation
@@ -137,7 +137,7 @@ func applyESOTenantCertificateSpec(u *unstructured.Unstructured, namespace strin
 // them locally): the client cert/key and CA all come from the tenant client
 // Certificate's Secret. server and mountPath are the OpenBao connection resolved
 // from the SHARED cluster store (the tenant store cannot describe its own
-// bootstrap). Mirrors deploy/openbao/bootstrap/setup-eso-tenant.sh.
+// bootstrap). Mirrors deploy/bases/shared-openbao/bootstrap/setup-eso-tenant.sh.
 func esoTenantSecretStore(namespace, server, mountPath string) *esov1.SecretStore {
 	return &esov1.SecretStore{
 		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: namespace},

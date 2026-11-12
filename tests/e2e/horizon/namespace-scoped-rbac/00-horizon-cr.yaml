@@ -5,7 +5,7 @@
 # Horizon CR fixture for the namespace-scoped RBAC E2E test, the healthcheck
 # fixture under the horizon-ns-scoped name with one replica. Managed cache via
 # clusterRef to openstack-memcached; the SECRET_KEY comes from the ESO-synced
-# horizon-secret-key Secret (deploy/kind/infrastructure). keystoneEndpoint
+# horizon-secret-key Secret (deploy/overlays/kind/infrastructure). keystoneEndpoint
 # points at the cluster-local convention URL: the login page renders without
 # a live Keystone, which is only contacted on login submit.
 # spec.secretStoreRef selects the namespaced SecretStore: a namespace-scoped

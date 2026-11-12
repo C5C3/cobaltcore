@@ -40,11 +40,11 @@ one that devstack produces.
 
 ## The manifest
 
-The manifest lives in `deploy/kind/fake-compute/`, an opt-in kind overlay that
+The manifest lives in `deploy/overlays/kind/fake-compute/`, an opt-in kind overlay that
 `make deploy-infra` never applies. It holds a ConfigMap with the compute's own
 overlay and the Deployment that mounts it beside the contract Secret:
 
-<<< ../../../deploy/kind/fake-compute/fake-compute.yaml
+<<< ../../../deploy/overlays/kind/fake-compute/fake-compute.yaml
 
 The names assume the quick start's ControlPlane. For a ControlPlane named `<cp>`,
 replace every `controlplane-` prefix in the file with `<cp>-`, and for a release
@@ -86,7 +86,7 @@ publishes once the projected Nova is up. Wait for `NovaReady`, then apply:
 ```bash
 kubectl wait controlplane/controlplane -n openstack \
   --for=condition=NovaReady --timeout=15m
-kubectl apply -k deploy/kind/fake-compute
+kubectl apply -k deploy/overlays/kind/fake-compute
 kubectl rollout status deploy/controlplane-fake-compute -n openstack --timeout=5m
 ```
 
@@ -239,7 +239,7 @@ Remove it in this order:
 openstack --insecure server delete --wait demo-server
 
 # 2. The compute itself. Wait until its pod is gone, so it cannot report again.
-kubectl delete -k deploy/kind/fake-compute
+kubectl delete -k deploy/overlays/kind/fake-compute
 kubectl wait --for=delete pod -l app.kubernetes.io/name=nova-fake-compute \
   -n openstack --timeout=2m
 

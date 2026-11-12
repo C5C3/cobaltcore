@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Kind controller stage: shared development profile plus local gateway and storage.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../bases/devstack/base
+  - openstack-gateway.yaml
+patches:
+  - target:
+      kind: HelmRelease
+      name: openbao
+      namespace: shared-services
+    patch: |
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: openbao
+        namespace: shared-services
+      spec:
+        values:
+          server:
+            dataStorage:
+              storageClass: standard

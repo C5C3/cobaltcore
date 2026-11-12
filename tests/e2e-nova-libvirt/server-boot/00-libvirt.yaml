@@ -5,7 +5,7 @@
 # libvirtd and QEMU on the one kind node, for the nova-compute of
 # 01-novacompute-libvirt.yaml. The image is the one the lab runs, built from
 # images/libvirt/image.nix, but the lab's manifests under
-# deploy/lab/metal-stack/hypervisor/ are not reused: they fail the pod on a
+# deploy/overlays/metal-stack/hypervisor/ are not reused: they fail the pod on a
 # node without /dev/kvm, wait for the TLS files kvm-node-agent writes, and move
 # libvirtd into a host systemd scope. None of that holds on kind.
 #

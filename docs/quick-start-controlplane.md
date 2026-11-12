@@ -590,7 +590,7 @@ DB credentials: ESO draws short-lived MySQL users from the OpenBao
 database engine at `database/mariadb/creds/keystone-<namespace>`. The
 c5c3-operator only reads from that path. The engine connection and the
 per-tenant role are provisioned out-of-band, once per ControlPlane, by
-`deploy/openbao/bootstrap/setup-database-tenant.sh`.
+`deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh`.
 
 The right half of the figure is the path this step completes: the script
 writes the role that the "by hand" chip marks.
@@ -613,7 +613,7 @@ kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready --timeout=1
 
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
-deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
+deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN
 ```
 
@@ -1019,14 +1019,14 @@ replaced since. No `nova-compute` row appears. The ControlPlane runs no compute
 node, so the plane accepts a server but has no host to place it on.
 
 ::: details Optional: boot a server on a fake compute
-The kind overlay `deploy/kind/fake-compute/` adds a `nova-compute` on nova's
+The kind overlay `deploy/overlays/kind/fake-compute/` adds a `nova-compute` on nova's
 fake virt driver. It is built from the compute contract
 `controlplane-nova-compute-config` the way a compute cluster would build one,
 and the servers it hosts run nothing. `make deploy-infra` never applies it.
 Apply it now that `NovaReady` is `True`, and wait for the rollout:
 
 ```bash
-kubectl apply -k deploy/kind/fake-compute
+kubectl apply -k deploy/overlays/kind/fake-compute
 kubectl rollout status deploy/controlplane-fake-compute -n openstack --timeout=5m
 ```
 

@@ -41,7 +41,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PORTS_SH="$PROJECT_ROOT/hack/lab-node-ports.sh"
-PROBE_MANIFEST="$PROJECT_ROOT/deploy/lab/metal-stack/probe/node-probe.yaml"
+PROBE_MANIFEST="$PROJECT_ROOT/deploy/overlays/metal-stack/probe/node-probe.yaml"
 
 PASS=0
 FAIL=0
@@ -256,7 +256,7 @@ test_defaults() {
   rc=$?
   assert_eq "an unset image without the probe manifest exits 2" "2" "$rc"
   assert_contains "the error names both" "$out" \
-    "NODE_PORTS_IMAGE is unset and deploy/lab/metal-stack/probe/node-probe.yaml is missing"
+    "NODE_PORTS_IMAGE is unset and deploy/overlays/metal-stack/probe/node-probe.yaml is missing"
 }
 
 # ---------------------------------------------------------------------------

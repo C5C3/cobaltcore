@@ -98,7 +98,7 @@ test_helm_filter_covers_the_chart() {
   ' "$CI_YAML")
 
   assert_contains "the helm filter lists the target-cluster path" \
-    "$helm_block" "deploy/target-cluster/**"
+    "$helm_block" "deploy/bases/target-cluster-access/**"
 }
 
 # ---------------------------------------------------------------------------

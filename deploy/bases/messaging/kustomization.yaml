@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Shared messaging resources; environment overlays select their settings.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # The broker itself (a RabbitmqCluster in `openstack`), local to this
+  # overlay; production overlays do not include it.
+  - shared-rabbitmq.yaml

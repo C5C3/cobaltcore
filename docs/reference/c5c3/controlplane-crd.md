@@ -1285,7 +1285,7 @@ backup pods run, so the Secret has to exist there:
 
 An ExternalSecret through a SecretStore whose role may read the key's OpenBao
 path writes the Secret and keeps it in sync. The lab's
-`deploy/lab/metal-stack/ceph/cluster/keys-pull.yaml` is the worked example: it
+`deploy/overlays/metal-stack/ceph/cluster/keys-pull.yaml` is the worked example: it
 pulls both client keys into `openstack`. Where Rook runs in the same cluster and
 no ExternalSecret owns the name, a copy of Rook's Secret works too:
 
@@ -1572,7 +1572,7 @@ time as the same user, scoped to project `test` in domain `cc3test`, and exits
 when that fails, whether or not its smoke test is skipped. The smoke test then
 boots flavor ID `1` from image `cirros-kvm` onto a volume of type `premium`, on
 the first non-shared network that scope lists. The ControlPlane declares none of
-these. `deploy/kind/hypervisor-operator-fixtures/` is an example that declares
+these. `deploy/overlays/kind/hypervisor-operator-fixtures/` is an example that declares
 them as K-ORC resources, with the role assignment the user needs on `test`.
 Apply it only to a cloud that has none of its managed objects yet. K-ORC adopts
 an existing object with the name of a managed resource instead of creating one.
@@ -2202,8 +2202,8 @@ no longer forced onto `Static`. It carries a glance-scoped engine role, the
 carry the same three under their own names (`placement-{namespace}`,
 `placement-db-dynamic`, `placement-db` and `barbican-{namespace}`,
 `barbican-db-dynamic`, `barbican-db`). All three sets come from
-`deploy/openbao/bootstrap/setup-database-tenant.sh` and `setup-auth.sh`, with
-the policies under `deploy/openbao/policies/`, the way Keystone's do.
+`deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh` and `setup-auth.sh`, with
+the policies under `deploy/bases/shared-openbao/policies/`, the way Keystone's do.
 
 The mode is resolved from ControlPlane-wide to per-service:
 
@@ -2229,7 +2229,7 @@ per-service path (`openstack/keystone/{namespace}/{name}/db` for Keystone,
 A dedicated **managed** database uses `credentialsMode: Static`. The defaulting
 webhook materializes it, and an explicit `Dynamic` is **rejected at admission**:
 the OpenBao database engine carries exactly one connection and one role **per
-namespace** (`deploy/openbao/bootstrap/setup-database-tenant.sh`), bootstrapped
+namespace** (`deploy/bases/shared-openbao/bootstrap/setup-database-tenant.sh`), bootstrapped
 against the *shared* cluster, so no engine role exists that could issue
 credentials for a dedicated instance — an admitted `Dynamic` dedicated database
 would wedge on an ExternalSecret that can never sync. It reads the same

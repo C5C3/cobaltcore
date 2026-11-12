@@ -10,7 +10,7 @@
 # No maxScaleRef, so the operator routes through galera-route-db-primary
 # (database.ResolveEndpoint). No TLS, as on openstack-db in the kind overlay.
 #
-# The sizing follows openstack-db in deploy/kind/infrastructure/
+# The sizing follows openstack-db in deploy/overlays/kind/infrastructure/
 # kustomization.yaml: a memory request takes mariadbd out of BestEffort, the
 # class the OOM killer picks first (CI run 34718789784 restarted a BestEffort
 # openstack-db-0 five times), and the equal limit makes an undersized value

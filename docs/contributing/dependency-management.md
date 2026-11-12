@@ -54,19 +54,19 @@ The custom managers cover:
 
 - **OpenStack release refs**: git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
 - **Test tooling in `hack/`**: Chainsaw, Flux CLI, kind, and kubectl versions in `hack/install-test-deps.sh`, plus `FLUX_OPERATOR_VERSION` and `ENVOY_GATEWAY_VERSION` (the Envoy Gateway CRD pin, grouped with the `gateway-helm` chart) in `hack/deploy-infra.sh`.
-- **kind deploy components**: `flux-web.yaml` under `deploy/kind/base/`.
-- **K-ORC Flux source**: the `ref.commit` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (git-refs on upstream `main`, digest updates). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the `k-orc/openstack-resource-controller` Go module the operator compiles against. A commit bump is not complete on its own: the `commit-<short sha>` image tag and digest in `deploy/flux-system/releases/k-orc.yaml` and the Go pseudo-version in `operators/c5c3/go.mod` move in the same change, and the `hack/ci-deploy-korc.sh` drift guard fails CI until the image is re-pinned.
+- **Shared development components**: `flux-web.yaml` under `deploy/bases/devstack/base/`.
+- **K-ORC main-line pins**: the source `ref.commit` in `deploy/bases/operators/sources/k-orc.yaml` follows upstream `main` via `git-refs`. The image digest in `deploy/bases/operators/releases/k-orc.yaml` follows `branch-main` via `docker`. Both share one `k-orc` group. Renovate updates these pins and automerges digest updates after required CI, with no release-age delay for the moving branch. CI checks every image platform's build provenance against the source pin before deploying. Go API dependencies remain managed separately, so routine source/image updates require no manual Go or Nix refresh. Updates must merge before old images are garbage-collected; grouping cannot extend upstream retention.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`**: `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`, plus the envtest Kubernetes minor (`ENVTEST_K8S_VERSION`), which follows the `envtest-vX.Y.Z` releases of `kubernetes-sigs/controller-tools` that `setup-envtest` downloads its assets from.
 - **Helm CLI of the `setup-helm` jobs**: `HELM_VERSION` in the `env:` block of `.github/workflows/ci.yaml` (github-releases on `helm/helm`), the version every `azure/setup-helm` step installs. Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged: `helm-push` runs only on a push to `main`, so no pull request run pushes a chart with the new Helm before it merges. `tests/unit/renovate/workflow_pins_custommanager_test.sh` pins the manager and both rules.
 - **`renovate-config-validator` pin**: the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
 - **OVN image pin**: the `version` and `rev` keys of `images/ovn/source.json` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the hashes and the OVS commit of the `ovs` gitlink (see [Derived keys of the image pins](#derived-keys-of-the-image-pins)). Digest updates are disabled, as for noVNC. A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesSourcePin` fails when they diverge.
 - **openstack-hypervisor-operator image pin**: the `rev` key of `images/openstack-hypervisor-operator/source.json` (git-refs on upstream `main` of `cobaltcore-dev/openstack-hypervisor-operator`, digest updates, like the K-ORC source); `make nix-lock` then writes its `hash` and `vendorHash`. The rule runs on the weekly schedule (`before 6am on monday`) behind the 3-day cooldown and is **not** automerged. Every upstream `main` commit is a new digest, so without the schedule each one would open a PR. A move also needs a human: a downstream patch may no longer apply, and from #1142 on the lab's chart reference has to move with the pin. A failed patch phase in `build-hvo` means that patch has to be re-cut; see [Re-cutting the openstack-hypervisor-operator patch](#re-cutting-the-openstack-hypervisor-operator-patch).
-- **kvm-node-agent image pin**: the `rev` key of `images/kvm-node-agent/source.json` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown, `make nix-lock` step and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/lab/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed patch phase in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
+- **kvm-node-agent image pin**: the `rev` key of `images/kvm-node-agent/source.json` (git-refs on upstream `main` of `cobaltcore-dev/kvm-node-agent`, digest updates), with the same weekly schedule, 3-day cooldown, `make nix-lock` step and no automerge as the hvo pin. The lab's chart reference, `ref.tag` and `ref.digest` of the `kvm-node-agent` `OCIRepository` in `deploy/overlays/metal-stack/hypervisor/sources.yaml`, has no manager of its own and moves with the pin in the same PR; `tests/unit/deploy/metal_stack_hypervisor_test.sh` fails while its short SHA differs from the pin. A failed patch phase in `build-kna` means the patch has to be re-cut; see [Re-cutting the kvm-node-agent patch](#re-cutting-the-kvm-node-agent-patch).
 - **noVNC console assets**: the `version` and `rev` keys of `images/nova/novnc.json` (github-tags on `novnc/noVNC`, regex versioning because the tags carry a `v` prefix). One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Nix locks](#nix-locks)). Majors are disabled; minors and patches wait the 3-day cooldown and are **not** automerged, because the console page is user-facing and no e2e suite loads it before #1018. Digest updates are disabled: a tag moved upstream to another commit is not a release, and the pin stays on the reviewed commit.
 - **mod_auth_openidc of the federation proxy**: the `version` and `rev` keys of `images/keystone-federation-proxy/source.json` (github-tags on `OpenIDC/mod_auth_openidc`, regex versioning because the tags carry a `v` prefix and a fourth component). Renovate reads the fourth component as a build number, so every `2.4.x.y` release is a patch. One `matchStrings` entry spans both adjacent keys, so the tag and the commit it names move in a single PR; `make nix-lock` then writes the `hash` of the new commit (see [Derived keys of the image pins](#derived-keys-of-the-image-pins)). Majors are disabled; minors and patches wait the 3-day cooldown in the group `mod_auth_openidc releases` and are **not** automerged. The module authenticates every federated login in front of Keystone, and a reviewer reads upstream's ChangeLog: 2.4.20, for one, changed the key derivation of the session cookies. Digest updates are disabled, as for noVNC. The PR rebuilds the image through the `proxy` filter of the build-images workflow and runs the keystone `e2e-operator` job through the `image_proxy` filter of the CI workflow.
-- **Lab libvirt image**: the eight `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` image lines of the metal-stack lab in `deploy/lab/metal-stack/hypervisor/libvirt-daemonset.yaml`, `probe/nfs-module-load.yaml`, `nfs/client-modules-daemonset.yaml` and `chaos-mesh/modules-daemonset.yaml` (docker datasource, `deb` versioning). The tag is a keeper tag. `hack/ci-tag-libvirt-keeper.sh` creates `<libvirt-version>-r<N>`, such as `12.2.0-r57`, once on `main` for the Nix-built image; `N` counts the commits under `images/libvirt`, `nix/pkgs/libvirt.nix`, `nix/lib/image-defaults.nix` and `flake.lock`, so a `nixpkgs-images` re-lock that rebuilds QEMU while libvirt keeps its version still gets a new tag. The `<libvirt-package-version>-r<N>` keepers of the Docker-built image, such as `10.0.0-2ubuntu8.19-r2`, stay in GHCR as the lab's rollback target. `deb` reads `12.2.0-r57` as upstream `12.2.0` and revision `r57` and compares both; `docker` versioning would read `-r57` as a compatibility suffix and never offer another. `deb` also parses `latest` and a commit SHA and sorts both above `12.x`, so `allowedVersions` admits the Nix keeper shape alone, which also keeps out the Docker-built keepers. Every update type, majors included, moves all eight lines in one PR (`metal-stack lab libvirt image`): a pin on a Docker-built keeper moves to the newest Nix keeper as a major (10 to 12), and a libvirt major that a `nixpkgs-images` re-lock brings is one too. The lab never pins a branch build, because `cleanup-images.yaml` removes a branch's `<sha>` tag after 24 hours, so a pull request that changes the image leaves the pins alone and Renovate proposes the keeper `main` mints after the merge. The PR has no cooldown, since this repository's own `main` builds the image from a reviewed commit. It is **not** automerged: the image runs privileged as root on the lab's nodes, and the reviewed bump, rolled node by node as [libvirt 12 on the lab](../reference/infrastructure/infrastructure-manifests.md#libvirt-12-on-the-lab) describes, is what the pin is for.
-- **Lab Ceph image**: the `quay.io/ceph/ceph:<tag>@sha256:<digest>` image lines of the lab Ceph in `deploy/lab/metal-stack/ceph/cluster/cluster.yaml`, the CephCluster, and `toolbox.yaml`, the toolbox that runs the same image (docker datasource, `docker` versioning). Majors are disabled. Minor, patch and digest updates move both lines in one PR (`ceph image`) after the 3-day cooldown and are **not** automerged: a Ceph minor is a question of the versions the pinned Rook operator supports. `tests/unit/renovate/ceph_image_custommanager_test.sh` pins the manager and both rules.
-- **Lab soak runner image**: the `docker.io/alpine/k8s:<tag>@sha256:<digest>` image line of the dizzy soak's runner in `deploy/lab/metal-stack/dizzy-soak/job.yaml` (docker datasource, `docker` versioning). The tag is the kubectl release, and it stays on the lab's Kubernetes minor, so major and minor updates are disabled. Patch and digest updates are automerged after the 3-day cooldown in the group `dizzy soak runner image`; `tests/unit/renovate/dizzy_soak_runner_image_custommanager_test.sh` pins the manager and both rules. The dizzy image of the same Job carries no tag of its own: `hack/dizzy-soak.sh start` takes it from the one `DIZZY_VERSION` pin in `hack/dizzy.sh`.
+- **Lab libvirt image**: the eight `ghcr.io/c5c3/libvirt:<tag>@sha256:<digest>` image lines of the metal-stack lab in `deploy/overlays/metal-stack/hypervisor/libvirt-daemonset.yaml`, `probe/nfs-module-load.yaml`, `nfs/client-modules-daemonset.yaml` and `chaos-mesh/modules-daemonset.yaml` (docker datasource, `deb` versioning). The tag is a keeper tag. `hack/ci-tag-libvirt-keeper.sh` creates `<libvirt-version>-r<N>`, such as `12.2.0-r57`, once on `main` for the Nix-built image; `N` counts the commits under `images/libvirt`, `nix/pkgs/libvirt.nix`, `nix/lib/image-defaults.nix` and `flake.lock`, so a `nixpkgs-images` re-lock that rebuilds QEMU while libvirt keeps its version still gets a new tag. The `<libvirt-package-version>-r<N>` keepers of the Docker-built image, such as `10.0.0-2ubuntu8.19-r2`, stay in GHCR as the lab's rollback target. `deb` reads `12.2.0-r57` as upstream `12.2.0` and revision `r57` and compares both; `docker` versioning would read `-r57` as a compatibility suffix and never offer another. `deb` also parses `latest` and a commit SHA and sorts both above `12.x`, so `allowedVersions` admits the Nix keeper shape alone, which also keeps out the Docker-built keepers. Every update type, majors included, moves all eight lines in one PR (`metal-stack lab libvirt image`): a pin on a Docker-built keeper moves to the newest Nix keeper as a major (10 to 12), and a libvirt major that a `nixpkgs-images` re-lock brings is one too. The lab never pins a branch build, because `cleanup-images.yaml` removes a branch's `<sha>` tag after 24 hours, so a pull request that changes the image leaves the pins alone and Renovate proposes the keeper `main` mints after the merge. The PR has no cooldown, since this repository's own `main` builds the image from a reviewed commit. It is **not** automerged: the image runs privileged as root on the lab's nodes, and the reviewed bump, rolled node by node as [libvirt 12 on the lab](../reference/infrastructure/infrastructure-manifests.md#libvirt-12-on-the-lab) describes, is what the pin is for.
+- **Lab Ceph image**: the `quay.io/ceph/ceph:<tag>@sha256:<digest>` image lines of the lab Ceph in `deploy/overlays/metal-stack/ceph/cluster/cluster.yaml`, the CephCluster, and `toolbox.yaml`, the toolbox that runs the same image (docker datasource, `docker` versioning). Majors are disabled. Minor, patch and digest updates move both lines in one PR (`ceph image`) after the 3-day cooldown and are **not** automerged: a Ceph minor is a question of the versions the pinned Rook operator supports. `tests/unit/renovate/ceph_image_custommanager_test.sh` pins the manager and both rules.
+- **Lab soak runner image**: the `docker.io/alpine/k8s:<tag>@sha256:<digest>` image line of the dizzy soak's runner in `deploy/overlays/metal-stack/dizzy-soak/job.yaml` (docker datasource, `docker` versioning). The tag is the kubectl release, and it stays on the lab's Kubernetes minor, so major and minor updates are disabled. Patch and digest updates are automerged after the 3-day cooldown in the group `dizzy soak runner image`; `tests/unit/renovate/dizzy_soak_runner_image_custommanager_test.sh` pins the manager and both rules. The dizzy image of the same Job carries no tag of its own: `hack/dizzy-soak.sh start` takes it from the one `DIZZY_VERSION` pin in `hack/dizzy.sh`.
 
 Major updates are **disabled** for all custom-regex managers: these touch deploy-time
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
@@ -140,43 +140,44 @@ shell, whose uv wrote the committed locks
 
 ### Flux HelmRelease chart versions
 
-Renovate's native `flux` manager reads the Flux manifests through the three
+Renovate's native `flux` manager reads the Flux manifests through the four
 `flux.managerFilePatterns` entries in `renovate.json`:
 
-- `/^deploy/flux-system/(releases|sources)/.+\.yaml$/`
-- `/^deploy/kind/.+\.yaml$/`
-- `/^deploy/lab/metal-stack/ceph/(release|source)\.yaml$/`
+- `/^deploy/bases/operators/(releases|sources)/.+\.yaml$/`
+- `/^deploy/bases/.+\.yaml$/`
+- `/^deploy/overlays/kind/.+\.yaml$/`
+- `/^deploy/overlays/metal-stack/ceph/(release|source)\.yaml$/`
 
 The manager resolves the `sourceRef` of a HelmRelease against the HelmRepository
 manifests it has parsed, so the sources directory has to match as well:
-`deploy/kind/prometheus/release.yaml` references the `prometheus-community`
-HelmRepository in `deploy/flux-system/sources/`. Under `deploy/lab/` only the
+`deploy/bases/prometheus/release.yaml` references the `prometheus-community`
+HelmRepository in `deploy/bases/operators/sources/`. Under `deploy/overlays/metal-stack/` only the
 HelmRelease and the HelmRepository of the lab Ceph match, because that overlay has no
-kind sibling to inherit; nothing else under `deploy/lab/` or `deploy/examples/` does. The patterns use no regex lookahead, because the hosted bot
+shared chart base; nothing else under `deploy/overlays/metal-stack/` or `deploy/examples/` does. The patterns use no regex lookahead, because the hosted bot
 compiles them with RE2, which has none.
 
 It tracks seventeen third-party charts and one image:
 
 | Chart | File | Strategy | Automerge |
 | --- | --- | --- | --- |
-| `cert-manager` | `deploy/flux-system/releases/cert-manager.yaml` | `widen` | no |
-| `external-secrets` | `deploy/flux-system/releases/external-secrets.yaml` | `widen` | no |
-| `garage-operator` | `deploy/flux-system/releases/garage-operator.yaml` | `widen` | no |
-| `mariadb-operator` | `deploy/flux-system/releases/mariadb-operator.yaml` | `widen`, group `mariadb-operator chart` | no |
-| `mariadb-operator-crds` | `deploy/flux-system/releases/mariadb-operator-crds.yaml` | `widen`, group `mariadb-operator chart` | no |
-| `openbao` | `deploy/flux-system/releases/openbao/helmrelease.yaml` | `widen` | no |
-| `prometheus-operator-crds` | `deploy/flux-system/releases/prometheus-operator-crds.yaml` | `widen`, group `prometheus-operator charts` | no |
-| `chaos-mesh` | `deploy/kind/chaos-mesh/release.yaml` | `widen` | no |
-| `grafana` | `deploy/kind/dizzy/release-grafana.yaml` | `widen` | no |
-| `victoria-metrics-single` | `deploy/kind/dizzy/release-victoria-metrics.yaml` | `widen` | no |
-| `metrics-server` | `deploy/kind/metrics-server/release.yaml` | `widen` | no |
-| `kube-prometheus-stack` | `deploy/kind/prometheus/release.yaml` | `widen`, group `prometheus-operator charts` | no |
-| `vertical-pod-autoscaler` | `deploy/kind/vpa/release.yaml` | `widen` | no |
-| `gateway-helm` | `deploy/kind/base/envoy-gateway.yaml` | `bump`, group `envoy-gateway` | minor/patch after 3 days |
-| `headlamp` | `deploy/kind/base/headlamp.yaml` | `bump`, group `headlamp` | minor/patch after 3 days |
-| `csi-driver-nfs` | `deploy/kind/nfs/release.yaml` | exact pin, majors disabled, group `csi-driver-nfs chart` | no |
-| `rook-ceph` | `deploy/lab/metal-stack/ceph/release.yaml` | exact pin, majors disabled, group `rook-ceph chart` | no |
-| image `ghcr.io/headlamp-k8s/headlamp-plugin-flux` | `deploy/kind/base/headlamp.yaml` (HelmRelease values) | tag | no |
+| `cert-manager` | `deploy/bases/operators/releases/cert-manager.yaml` | `widen` | no |
+| `external-secrets` | `deploy/bases/operators/releases/external-secrets.yaml` | `widen` | no |
+| `garage-operator` | `deploy/bases/operators/releases/garage-operator.yaml` | `widen` | no |
+| `mariadb-operator` | `deploy/bases/operators/releases/mariadb-operator.yaml` | `widen`, group `mariadb-operator chart` | no |
+| `mariadb-operator-crds` | `deploy/bases/operators/releases/mariadb-operator-crds.yaml` | `widen`, group `mariadb-operator chart` | no |
+| `openbao` | `deploy/bases/shared-openbao/helmrelease.yaml` | `widen` | no |
+| `prometheus-operator-crds` | `deploy/bases/operators/releases/prometheus-operator-crds.yaml` | `widen`, group `prometheus-operator charts` | no |
+| `chaos-mesh` | `deploy/bases/chaos-mesh/release.yaml` | `widen` | no |
+| `grafana` | `deploy/bases/dizzy/release-grafana.yaml` | `widen` | no |
+| `victoria-metrics-single` | `deploy/bases/dizzy/release-victoria-metrics.yaml` | `widen` | no |
+| `metrics-server` | `deploy/overlays/kind/metrics-server/release.yaml` | `widen` | no |
+| `kube-prometheus-stack` | `deploy/bases/prometheus/release.yaml` | `widen`, group `prometheus-operator charts` | no |
+| `vertical-pod-autoscaler` | `deploy/overlays/kind/vpa/release.yaml` | `widen` | no |
+| `gateway-helm` | `deploy/bases/devstack/base/envoy-gateway.yaml` | `bump`, group `envoy-gateway` | minor/patch after 3 days |
+| `headlamp` | `deploy/bases/devstack/base/headlamp.yaml` | `bump`, group `headlamp` | minor/patch after 3 days |
+| `csi-driver-nfs` | `deploy/bases/nfs/release.yaml` | exact pin, majors disabled, group `csi-driver-nfs chart` | no |
+| `rook-ceph` | `deploy/overlays/metal-stack/ceph/release.yaml` | exact pin, majors disabled, group `rook-ceph chart` | no |
+| image `ghcr.io/headlamp-k8s/headlamp-plugin-flux` | `deploy/bases/devstack/base/headlamp.yaml` (HelmRelease values) | tag | no |
 
 `widen` is the `rangeStrategy` of the base rule. A release inside the range changes
 nothing in Git: Flux installs it on its next reconcile and Renovate stays silent. A
@@ -203,19 +204,19 @@ Two more rules make the manager work on the sources of this repository:
   `ghcr.io` dependencies automerges.
 
 Two rules switch the manager off. The `c5c3-charts` releases match
-`ghcr.io/c5c3/charts/**`, the `url` of `deploy/flux-system/sources/c5c3-charts.yaml`
+`ghcr.io/c5c3/charts/**`, the `url` of `deploy/bases/operators/sources/c5c3-charts.yaml`
 without `oci://`: this repository publishes those charts and sets their ranges itself.
 The other rule lists every file a customManager reads, including both K-ORC
 source and image pins:
 
-- `deploy/flux-system/sources/k-orc.yaml`
-- `deploy/flux-system/sources/openbao-operator.yaml`
-- `deploy/flux-system/sources/rabbitmq-cluster-operator.yaml`
-- `deploy/flux-system/releases/k-orc.yaml`
-- `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`
-- `deploy/kind/base/flux-web.yaml`
-- `deploy/kind/infrastructure/openbao-instance.yaml`
-- `deploy/kind/nfs/nfs-server.yaml`
+- `deploy/bases/operators/sources/k-orc.yaml`
+- `deploy/bases/operators/sources/openbao-operator.yaml`
+- `deploy/bases/operators/sources/rabbitmq-cluster-operator.yaml`
+- `deploy/bases/operators/releases/k-orc.yaml`
+- `deploy/bases/operators/releases/rabbitmq-cluster-operator.yaml`
+- `deploy/bases/devstack/base/flux-web.yaml`
+- `deploy/bases/devstack/infrastructure/openbao-instance.yaml`
+- `deploy/bases/nfs/nfs-server.yaml`
 
 Every pin has one owner. A customManager moves a tag together with its digest or commit
 in one match, which the flux manager does not do for these pairs, so a file that gets a
@@ -235,8 +236,8 @@ until the pin is inside the range.
 A PR that raises a ceiling lets Flux install every release up to the new one. Before
 merging, the reviewer handles the coupling the e2e legs do not see:
 
-- `victoria-metrics-single` (`deploy/kind/dizzy/release-victoria-metrics.yaml`) and
-  `vertical-pod-autoscaler` (`deploy/kind/vpa/release.yaml`) hold a one-minor window on
+- `victoria-metrics-single` (`deploy/bases/dizzy/release-victoria-metrics.yaml`) and
+  `vertical-pod-autoscaler` (`deploy/overlays/kind/vpa/release.yaml`) hold a one-minor window on
   purpose. `widen` keeps the old floor, so lift the floor by hand on the PR branch and
   keep the window one minor wide.
 - A `gateway-helm` major needs `ENVOY_GATEWAY_VERSION` in `hack/deploy-infra.sh` moved by
@@ -251,7 +252,7 @@ merging, the reviewer handles the coupling the e2e legs do not see:
   upgrade guides (`docs/releases/UPGRADE_<version>.md` in the mariadb-operator repository)
   for removed fields: 25.10.3 dropped the embedded `spec.maxScale` of the MariaDB CR.
 - `prometheus-operator-crds` owns the CRDs `kube-prometheus-stack` runs against
-  (`deploy/kind/prometheus/release.yaml` sets `crds.enabled=false`), so the two share the
+  (`deploy/bases/prometheus/release.yaml` sets `crds.enabled=false`), so the two share the
   `prometheus-operator charts` group. A PR that raises only the `kube-prometheus-stack`
   ceiling needs a check that the CRDs below the `prometheus-operator-crds` ceiling carry
   what the new operator expects.
@@ -281,7 +282,7 @@ current value, `tracked` or the skip reason, and any proposed update. The run ha
 by `matchUpdateTypes` (the `csi-driver-nfs` major, the two automerge rules) do not show
 in the report; `flux_helmrelease_manager_test.sh` covers them. And `bump` proposes
 nothing while a floor equals the newest release: lower the floor in the copy, for
-example to `>=1.9.0 <2.0.0` in `deploy/kind/base/envoy-gateway.yaml`, to see
+example to `>=1.9.0 <2.0.0` in `deploy/bases/devstack/base/envoy-gateway.yaml`, to see
 `>=1.9.2 <2.0.0` proposed for the `renovate/envoy-gateway` branch.
 
 ### Derived keys of the image pins
@@ -393,7 +394,7 @@ process may give a file any group. The image build runs both tests as a Nix buil
 user and fails unless both print their `--- PASS:` line. Turn the `git format-patch`
 output into the house header as for the hvo patch (the SPDX pair, the bare subject,
 the rationale, `Applies-to:` naming the new commit, `Upstream status:`, and no
-diffstat), move the chart ref in `deploy/lab/metal-stack/hypervisor/sources.yaml` to
+diffstat), move the chart ref in `deploy/overlays/metal-stack/hypervisor/sources.yaml` to
 the chart of the new commit, run `make nix-lock`, commit the result onto the Renovate
 branch and let `build-kna` prove the patch.
 

@@ -29,7 +29,7 @@ splits the corpus into three areas, each with a single source of truth:
 |---|---|---|
 | Operator reference | `docs/reference/<op>/` reconciler pages (e.g. `keystone-reconciler.md`, `controlplane-reconciler.md`, `horizon-reconciler.md`, `keystoneservice-reconciler.md`) | `operators/<op>/internal/controller/reconcile_*.go` + `operators/<op>/api/v1alpha1/*_types.go` + `internal/common/` |
 | CRD reference | `docs/reference/<op>/*-crd.md` | `operators/<op>/api/v1alpha1/*_types.go` and the generated CRDs under `operators/<op>/config/crd/bases/` |
-| Infrastructure stack | `docs/guides/`, `docs/quick-start*.md`, `docs/reference/infrastructure/` | `deploy/` kustomize tree + `hack/deploy-infra.sh` (incl. `INFRA_ONLY`) + `hack/deploy-mgmt-cluster.sh` + the `deploy/target-cluster/target-cluster-access` helm chart + `releases/<version>/source-refs.yaml` |
+| Infrastructure stack | `docs/guides/`, `docs/quick-start*.md`, `docs/reference/infrastructure/` | `deploy/` kustomize tree + `hack/deploy-infra.sh` (incl. `INFRA_ONLY`) + `hack/deploy-mgmt-cluster.sh` + the `deploy/bases/target-cluster-access` helm chart + `releases/<version>/source-refs.yaml` |
 | Cross-cluster reference | `docs/reference/target-clusters.md` (the placement contract: ownership labels, teardown order, capability probing, per-service placement notes) | `internal/common/multicluster/` + the placement paths in `operators/*/internal/controller/` + the `Makefile` `e2e-multicluster` target |
 
 A doc that contradicts its source is a defect even when the build is

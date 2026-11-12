@@ -8,7 +8,7 @@
 #   - the condition table of Step 6 runs CinderReady -> NovaReady ->
 #     ServiceAccountsReady, the aggregate's count matches the operator's
 #     subConditionTypes, and the table names every entry of it once
-#   - the optional server boot applies the deploy/kind/fake-compute overlay and
+#   - the optional server boot applies the deploy/overlays/kind/fake-compute overlay and
 #     boots with --nic none, since the devstack runs no OVN chassis
 #   - the `# controlplane.yaml` CR of Step 4 publishes the compute API on
 #     nova.127-0-0-1.nip.io with the :8443 public endpoint, carries none of the
@@ -35,7 +35,7 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 source "$PROJECT_ROOT/tests/lib/quick_start_controlplane.sh"
 
 QUICK_START_DOC="${QUICK_START_DOC:-$PROJECT_ROOT/docs/quick-start-controlplane.md}"
-GATEWAY_MANIFEST="$PROJECT_ROOT/deploy/kind/base/openstack-gateway.yaml"
+GATEWAY_MANIFEST="$PROJECT_ROOT/deploy/overlays/kind/base/openstack-gateway.yaml"
 CONTROLPLANE_CONTROLLER="$PROJECT_ROOT/operators/c5c3/internal/controller/controlplane_controller.go"
 NOVA_HOSTNAME="nova.127-0-0-1.nip.io"
 
@@ -99,7 +99,7 @@ test_fake_compute_boot() {
   echo "Test: the optional server boot applies the fake compute and boots without a network"
   assert_file_contains_fixed "the fake-compute overlay is applied with kubectl apply -k" \
     "$QUICK_START_DOC" \
-    'kubectl apply -k deploy/kind/fake-compute'
+    'kubectl apply -k deploy/overlays/kind/fake-compute'
   assert_file_contains_fixed "the server boots with --nic none" \
     "$QUICK_START_DOC" \
     '--nic none'
