@@ -118,7 +118,7 @@
 #      out exits 1 with kubectl's line and deletes nothing after it; a second
 #      run, on which the Flux kinds are gone, and a cluster deployed without
 #      WITH_DIZZY=true, on which the deletes find nothing, exit 0.
-#   7. kube-prometheus-stack goes in step 3, after the base overlay: its
+#   7. kube-prometheus-stack goes in step 3, before the base overlay: its
 #      HelmRelease by file, then the PVCs in monitoring, then the Service and
 #      Endpoints kube-prometheus-stack-kubelet in kube-system, once each,
 #      logged, and before the dizzy HelmReleases and the PVCs of step 4; an
@@ -1636,10 +1636,10 @@ test_external_teardown_order() {
     'kubectl patch kustomization k-orc -n flux-system' \
     'kubectl kustomize deploy/lab/metal-stack/base' \
     'kubectl delete -f - [kinds: Gateway GatewayClass]' \
-    'kubectl delete -f - [kinds: HelmRelease HelmRepository]' \
     'kubectl delete -f deploy/kind/prometheus/release.yaml' \
     'kubectl delete pvc --all -n monitoring' \
     'kubectl delete service,endpoints kube-prometheus-stack-kubelet -n kube-system' \
+    'kubectl delete -f - [kinds: HelmRelease HelmRepository]' \
     'kubectl delete helmreleases.helm.toolkit.fluxcd.io dizzy-victoria-metrics dizzy-grafana -n dizzy' \
     'kubectl delete helmrepositories.source.toolkit.fluxcd.io victoria-metrics grafana -n flux-system' \
     'kubectl delete pvc --all -n dizzy' \
@@ -3423,7 +3423,7 @@ test_prometheus_step() {
   calls="$(cat "$CALL_LOG")"
   assert_eq "the teardown exits 0" "0" "$rc"
   local base_line release_line claims_line kubelet_line dizzy_line shared_line
-  base_line="$(grep -nF '[kinds: HelmRelease HelmRepository]' <<<"$calls" | cut -d: -f1 | head -n1)"
+  base_line="$(grep -nE '^kubectl delete -f - .*\[kinds: HelmRelease HelmRepository\]$' <<<"$calls" | cut -d: -f1 | tail -n1)"
   release_line="$(grep -nxF "$release" <<<"$calls" | cut -d: -f1 | head -n1)"
   claims_line="$(grep -nxF "$claims" <<<"$calls" | cut -d: -f1 | head -n1)"
   kubelet_line="$(grep -nxF "$kubelet" <<<"$calls" | cut -d: -f1 | head -n1)"
@@ -3432,8 +3432,8 @@ test_prometheus_step() {
   assert_eq "the release is deleted by file once, ignoring absence and waiting" "1" "$(grep -cxF "$release" <<<"$calls")"
   assert_eq "the PVCs in monitoring are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$claims" <<<"$calls")"
   assert_eq "the kubelet Service and Endpoints are deleted once, ignoring absence and waiting" "1" "$(grep -cxF "$kubelet" <<<"$calls")"
-  assert_eq "the release goes after the base overlay" "true" \
-    "$([[ -n "$base_line" && -n "$release_line" && "$base_line" -lt "$release_line" ]] && echo true || echo false)"
+  assert_eq "the release is uninstalled before the base can remove its CRDs" "true" \
+    "$([[ -n "$base_line" && -n "$release_line" && "$release_line" -lt "$base_line" ]] && echo true || echo false)"
   assert_eq "the claims after the release" "true" \
     "$([[ -n "$release_line" && -n "$claims_line" && "$release_line" -lt "$claims_line" ]] && echo true || echo false)"
   assert_eq "the kubelet Service and Endpoints after the claims" "true" \
@@ -3469,6 +3469,8 @@ test_prometheus_step() {
     "ERROR: deleting the kube-prometheus-stack release failed or did not finish within 600s:"
   assert_contains "and the HelmRelease kubectl still waits for" "$output" \
     "error: timed out waiting for the condition on helmreleases/kube-prometheus-stack"
+  assert_not_contains "a failed uninstall preserves the base and its CRDs" "$output" \
+    "Deleting the base overlay (HelmReleases, Flux sources and Kustomizations)"
   assert_not_contains "no claim delete follows" "$calls" "delete pvc --all -n monitoring"
   assert_not_contains "nor the kubelet Service delete" "$calls" "delete service,endpoints kube-prometheus-stack-kubelet"
 
