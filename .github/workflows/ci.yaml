@@ -1853,6 +1853,11 @@ jobs:
       # reconciler. Install the sibling operators' CRDs (charts only — their
       # controllers stay undeployed; suites that need them run in the
       # e2e-controlplane job) and K-ORC via the shared pinned installer.
+      - name: Set up Buildx for K-ORC provenance
+        if: matrix.operator == 'c5c3'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
       - name: Install CRDs watched by the c5c3-operator
         if: matrix.operator == 'c5c3'
         env:
@@ -2672,6 +2677,11 @@ jobs:
       # c5c3-operator's cache needs the Placement CRD; the `!= 'ovn'` steps
       # above already deploy the keystone, horizon, glance and barbican
       # operators here, and the `!= 'pod'` one the ovn-operator.
+      - name: Set up Buildx for K-ORC provenance
+        if: matrix.suite == 'controlplane'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
       - name: Deploy K-ORC (controlplane leg)
         if: matrix.suite == 'controlplane'
         env:
@@ -2974,6 +2984,10 @@ jobs:
           WITH_CHAOS_MESH: "true"
           WITH_DIZZY: "true"
           WITH_METRICS_SERVER: "true"
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
       - name: Deploy K-ORC
         env:
           # Authenticates the K-ORC clone from github.com; see the script.
@@ -3500,6 +3514,10 @@ jobs:
         run: mkdir -p _output/sizing && nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack >_output/sizing/watch.log 2>&1 &
       # Deploy K-ORC (CRDs + controller) from the upstream installer at the tag
       # pinned in deploy/flux-system/sources/k-orc.yaml.
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
       - name: Deploy K-ORC
         env:
           # Authenticates the K-ORC clone from github.com; see the script.
@@ -3863,6 +3881,10 @@ jobs:
       - name: Start the sizing measurement
         if: needs.changes.outputs.measure-sizing == 'true'
         run: mkdir -p _output/sizing && nohup hack/ci-vpa-recommendations.sh watch _output/sizing openstack >_output/sizing/watch.log 2>&1 &
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
       - name: Deploy K-ORC
         env:
           # Authenticates the K-ORC clone from github.com; see the script.
@@ -4056,6 +4078,10 @@ jobs:
           WITH_MESSAGING: "true"
           WITH_METRICS_SERVER: "true"
           WITH_VPA: "true"
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
       - name: Deploy K-ORC
         env:
           # Authenticates the K-ORC clone from github.com; see the script.
@@ -4230,6 +4256,10 @@ jobs:
           WITH_CONTROLPLANE: "true"
           CONTROLPLANE_OPERATORS: external
           WITH_CONTROLPLANE_CR: "false"
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
       - name: Deploy K-ORC
         env:
           # Authenticates the K-ORC clone from github.com; see the script.
@@ -4612,6 +4642,10 @@ jobs:
       # The c5c3-operator watches the Keystone, Horizon, Glance and Placement
       # kinds; without their CRDs its informers never sync. The e2e-operator
       # (c5c3) leg installs the same set.
+      - name: Set up Buildx for K-ORC provenance
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+        with:
+          driver: docker
       - name: Install CRDs watched by the c5c3-operator
         env:
           # Authenticates the K-ORC clone from github.com; see the script.

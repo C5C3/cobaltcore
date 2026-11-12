@@ -6,17 +6,14 @@
 # korc-pin-status.sh — report the K-ORC upstream main-commit pin from every
 # site that carries it and check that the sites agree:
 #   K1  deploy/flux-system/sources/k-orc.yaml ref.commit is a full 40-hex SHA
-#   K2  deploy/flux-system/releases/k-orc.yaml newTag == commit-<first 7 of
-#       ref.commit> (the hack/ci-deploy-korc.sh drift guard) and digest is
+#   K2  image tag is branch-main (or legacy commit-<short SHA>); digest is
 #       sha256:<64 hex>
-#   K3  operators/c5c3/go.mod pseudo-version commit == ref.commit; a go.mod
-#       that lags the source is accepted only when the upstream range touches
-#       no api/ or config/ file (the 653b3f12 expiry re-pin); go.sum carries
-#       the go.mod version
+#   K3  the separately managed c5c3 Go API version has both go.sum hashes;
+#       historical commit-image pins also check its source relationship
 #   K4  docs/reference/infrastructure/infrastructure-manifests.md mirrors the
-#       commit and the tag
+#       source link and image tag (legacy pins also mirror the commit)
 # Network checks (skipped with --offline, degrade to [INFO] when unreachable):
-#   Q1  quay tag commit-<short>: present, not expired, expiry more than
+#   Q1  quay image tag: present, not expired, expiry more than
 #       --warn-days away, and pointing at the pinned digest
 #   Q2  the pinned digest still resolves (crane manifest, else quay API) and
 #       carries linux/amd64
@@ -245,10 +242,10 @@ info "newName = ${NEW_NAME:-<missing>}, newTag = ${NEW_TAG:-<missing>}, digest =
 if [ "${NEW_NAME}" != "${IMAGE_REPO}" ]; then
   warn "newName is '${NEW_NAME}', expected ${IMAGE_REPO} — this script checks quay for the upstream repository only"
 fi
-if [ "${NEW_TAG}" = "commit-${SHORT7}" ]; then
-  pass "newTag ${NEW_TAG} matches ref.commit (the ci-deploy-korc.sh drift guard holds)"
+if [ "${NEW_TAG}" = "branch-main" ] || [ "${NEW_TAG}" = "commit-${SHORT7}" ]; then
+  pass "newTag ${NEW_TAG} is accepted; CI checks branch-main image provenance against ref.commit"
 else
-  fail "newTag '${NEW_TAG}' != commit-${SHORT7} — hack/ci-deploy-korc.sh fails every K-ORC leg with 'does not match the pinned commit'"
+  fail "newTag '${NEW_TAG}' is neither branch-main nor commit-${SHORT7} — hack/ci-deploy-korc.sh fails every K-ORC leg with 'does not match the pinned commit'"
 fi
 if grep -Eq '^sha256:[0-9a-f]{64}$' <<<"${DIGEST}"; then
   pass "digest has the sha256:<64 hex> form"
@@ -270,7 +267,9 @@ else
     warn "${GOMOD} carries a replace directive for ${MODULE} — the pseudo-version below is not what builds"
   fi
   suffix="${GOMOD_VER##*-}"
-  if is_hex "${suffix}" 12; then
+  if [ "${NEW_TAG}" = "branch-main" ]; then
+    info "Go API ${GOMOD_VER} is managed separately; source/image digest updates do not change Go dependencies"
+  elif is_hex "${suffix}" 12; then
     GOMOD_COMMIT="${suffix}"
     stamp="${GOMOD_VER%-*}"
     stamp="${stamp##*[.-]}"
@@ -283,7 +282,7 @@ else
       warn "go.mod pins ${GOMOD_COMMIT}, the Flux source pins ${SHORT12} — allowed only for an image-only re-pin whose upstream range touches no api/ or config/ file; rerun without --offline to classify"
     fi
   else
-    fail "go.mod pins ${GOMOD_VER}, not a main pseudo-version — no released K-ORC ships the RoleAssignment and Region kinds the c5c3-operator owns"
+    fail "go.mod pins ${GOMOD_VER}, not a main pseudo-version — main-line updates require a Go pseudo-version so Renovate can track its commit"
   fi
   if grep -qF "${MODULE} ${GOMOD_VER} h1:" "${GOSUM}" && grep -qF "${MODULE} ${GOMOD_VER}/go.mod h1:" "${GOSUM}"; then
     pass "${GOSUM} carries both hashes for ${GOMOD_VER}"
@@ -296,7 +295,9 @@ fi
 # K4 — the docs mirror
 # ---------------------------------------------------------------------------
 hdr "K4: reference docs mirror (${DOCS})"
-if grep -qF "commit \`${SRC_COMMIT}\`" "${DOCS}"; then
+if [ "${NEW_TAG}" = "branch-main" ] && grep -qF 'sources/k-orc.yaml' "${DOCS}"; then
+  pass "docs link to the source manifest instead of duplicating its changing commit"
+elif grep -qF "commit \`${SRC_COMMIT}\`" "${DOCS}"; then
   pass "docs name commit ${SRC_COMMIT}"
 else
   row="$(grep -nE 'GitRepository.*[(]commit' "${DOCS}" | head -1 | cut -c1-160 || true)"

@@ -766,27 +766,37 @@ Flux merges `valuesFrom` first and `spec.values` on top per-key, so
 | --- | --- |
 | Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
 | Target namespace | `orc-system` (the upstream installer self-namespaces) |
-| Source | `k-orc` `GitRepository` (commit `da276e44b40ca218ed9bb7b62114f6a461a29689` on `main`) |
+| Source | `k-orc` `GitRepository` ([pinned main commit](https://github.com/C5C3/cobaltcore/blob/main/deploy/flux-system/sources/k-orc.yaml)) |
 | Path | `./config/default` |
-| Image | `quay.io/orc/openstack-resource-controller:commit-da276e4`, pulled by digest |
+| Image | `quay.io/orc/openstack-resource-controller:branch-main`, pulled by digest |
 | Dependencies | None |
 
 K-ORC (the OpenStack Resource Controller) installs the declarative Keystone resource
 CRDs — `ApplicationCredential`, `Service`, `Endpoint`, and related kinds — that the
 c5c3-operator drives to project a `ControlPlane`'s desired state into Keystone.
 
-K-ORC ships no Helm chart, so it is applied as a Flux `Kustomization` rather than a
-HelmRelease. Upstream flattens its installer into `dist/install.yaml` only at release
-time, and no release ships the `RoleAssignment` and `Region` kinds the c5c3-operator
-owns. The `GitRepository` source is therefore pinned to a `main` commit and vendors
-`./config`, and the Kustomization builds `./config/default` (`prune: true`,
-`wait: true`). That base references the placeholder image `controller:latest`, so
-`spec.images` rewrites it to the per-commit image upstream publishes. The digest is
-what resolves the pull, and the `commit-<short sha>` tag next to it is the drift anchor
-`hack/ci-deploy-korc.sh` checks against the source commit. A commit bump moves the
-source commit, the image tag and digest, and the Go pseudo-version in
-`operators/c5c3/go.mod` together. The base declares the `orc-system` Namespace and
-namespaces every resource into it, so no `spec.targetNamespace` is set.
+The `GitRepository` pins an immutable commit from upstream `main`, vendors
+`./config`, and builds `./config/default` with a digest-pinned image. Upstream
+publishes `branch-main` on each main push; there is no `latest` image tag.
+The tag is used for discovering updates, while the digest determines the
+image deployed. The base declares `orc-system` and namespaces its resources,
+so no `spec.targetNamespace` is set.
+
+Renovate groups the source commit, the image digest discovered through
+`branch-main` in one `k-orc` update.
+Digest updates are eligible for automerge after required CI passes, without
+waiting for a continuously moving branch to reach a minimum age.
+`hack/ci-deploy-korc.sh` requires full source/image pins, then checks every
+image platform's build provenance against the source commit before applying
+resources. This blocks partial or mismatched updates. The Go API dependency
+is managed separately; routine controller updates do not change Go modules
+or require regenerating Nix vendor hashes.
+
+Upstream expires `commit-*` image tags after 28 days. `branch-main` has no
+configured expiry, but moves after each build, so old digests can still be
+collected. Renovate updates must keep merging; fixed digests provide
+reproducibility while retained, not permanent artifact storage.
+
 The short, stable name `k-orc` (not the upstream `openstack-resource-controller`) keeps
 diagnostics and cross-references terse.
 

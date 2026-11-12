@@ -16,12 +16,30 @@ and the quay tag API on 2026-09-23.
 | 6a0dc505 | 2026-09-20 | `ae54590` | upstream PR 913: transport errors retryable | moved; docs mirror moved | 9 commits, 22 `api/` files, no `config/` file |
 | ca34b418 | 2026-10-14 | `da276e4` | upstream PR 967 evicts the stale catalog; #1202 | moved across the v3 module path (`/v2` to `/v3`) | 98 commits, 35 `api/` + 20 `config/` files: DNSZone and SubnetPool kinds, `Unrestricted` and `Enabled` status fields to `*bool` |
 
-The current pin's tag `commit-da276e4` expires **2026-11-11 16:03:22 UTC**
+The former pin's tag `commit-da276e4` expired **2026-11-11 16:03:22 UTC**
 (quay `expiration`; `end_ts` 1794413002). Every `commit-*` tag expires
 28 days after its push (`end_ts - start_ts` = 2419200 s, give or take a
 second), so a fresh candidate buys four weeks at most.
 
-## CI symptoms
+## Renovate main-line updates (#1672)
+
+On 2026-11-12 the deployment source moved to main commit
+`c48889697d73221e39497dac0ae89e2000d6a0c7`; the controller uses `branch-main`
+with digest `sha256:9874744fe80230eb13f76ce4f56fbc318da43164c81ab50b61bb13a75a09a915`.
+All four platforms' BuildKit provenance records that source commit. The Go
+API remains on `v3.0.0-pre1`; its consumed fields remain compatible.
+
+Renovate now groups source and image digest updates for CI-gated
+automerge. The image was previously untracked. Unlike commit tags, the
+`branch-main` discovery tag has no expiration, but its old digests can still
+be collected after it moves; prompt updates remain necessary.
+
+The range from `da276e44` adds RecordSet and optional DNSZone/RoleAssignment
+fields, including system-scoped role assignments. Existing project/domain
+assignments remain valid. The deployed c5c3 operator reaches Ready with
+these CRDs. Go API updates remain a separate maintenance concern.
+
+## Historical commit-pin CI symptoms
 
 **Expired or pruned tag.** The four legs that call `hack/ci-deploy-korc.sh`
 go red together, on `main` as well as on every PR that runs them:

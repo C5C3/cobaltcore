@@ -2,30 +2,21 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# K-ORC (OpenStack Resource Controller) provides the
-# declarative Keystone resource CRDs (ApplicationCredential, Service, Endpoint,
-# RoleAssignment, ...) that the c5c3-operator drives.
+# K-ORC supplies the Keystone resource CRDs consumed by c5c3. Track upstream
+# main through Renovate while retaining an immutable source commit. Its grouped
+# update also refreshes the digest of the branch-main image. CI verifies the
+# image's build provenance against this commit.
 #
-# DECISION: GitRepository, not HelmRepository. K-ORC does NOT publish a Helm
-# chart — https://k-orc.github.io/openstack-resource-controller serves no Helm
-# index (404). At release time upstream ships a single flattened installer
-# manifest as a release asset (releases/download/<tag>/install.yaml), byte-
-# identical to the dist/install.yaml committed at the tag. So we vendor a
-# GitRepository and apply it via a Flux Kustomization (releases/k-orc.yaml).
-#
-# TEMPORARY main-commit pin (ref.commit, not ref.tag): the c5c3-operator Owns()
-# the RoleAssignment and Region kinds, neither of which a released K-ORC ships
-# (the latest is v2.6.0) and which only upstream main's controller reconciles.
-# dist/install.yaml is regenerated ONLY at release time, so a main commit carries
-# no refreshed ./dist — the Kustomization therefore builds ./config/default with
-# an image override (see releases/k-orc.yaml) instead of applying ./dist. REVERT
-# to the tag + ./dist form once the first release shipping both kinds exists.
+# Upstream expires commit-* image tags after 28 days. branch-main is the rolling
+# discovery tag; deployments still pull the digest in releases/k-orc.yaml.
+# Renovate updates must merge before an old image is garbage-collected. A fixed
+# digest is reproducible while retained, but does not extend registry retention.
 #
 # SPARSE CHECKOUT, not only spec.ignore. For a ref.commit the source-controller
 # clones the tip of upstream main and then hard-resets the worktree to the pinned
 # commit, which removes every path the tip has and the pin lacks. go-git fails on
 # one kind of path: a symlink to a non-empty directory. Upstream added
-# charts/orc-crds/crds -> ../../config/crd/bases after this pin, and the reset
+# charts/orc-crds/crds -> ../../config/crd/bases after an earlier pin, and the reset
 # then ended in "remove .../config/crd/bases: directory not empty", so the source
 # never became Ready and the c5c3-operator crash-looped for want of the K-ORC
 # CRDs. With spec.sparseCheckout the clone starts from an empty worktree and
@@ -57,7 +48,7 @@ spec:
   interval: 1h
   url: https://github.com/k-orc/openstack-resource-controller
   ref:
-    commit: da276e44b40ca218ed9bb7b62114f6a461a29689
+    commit: c48889697d73221e39497dac0ae89e2000d6a0c7
   sparseCheckout:
     - config
   ignore: |
