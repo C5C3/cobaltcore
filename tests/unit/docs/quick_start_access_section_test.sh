@@ -11,13 +11,13 @@
 #
 # Assertions:
 #   1. `## Access Keystone from your local machine` exists
-#   2. Between that heading and the `## Fallback — kubectl port-forward`
+#   2. Between that heading and the `### Fallback: kubectl port-forward`
 #      subheading, there is NO `kubectl port-forward svc/keystone`
 #      command (the primary flow must not rely on port-forward).
 #   3. A nip.io explainer paragraph sits inside the primary section
 #      (searches for `nip.io` between the two headings).
 #   4. An `### Accept the self-signed certificate` subsection exists.
-#   5. The `## Fallback — kubectl port-forward` subsection exists and
+#   5. The `### Fallback: kubectl port-forward` subsection exists and
 #      contains the port-forward command.
 #
 # Usage: bash tests/unit/docs/quick_start_access_section_test.sh
@@ -43,7 +43,7 @@ if [[ ! -f "$QUICK_START" ]]; then
 fi
 
 access_line="$( { grep -n '^## Access Keystone from your local machine$' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
-fallback_line="$( { grep -n '^### Fallback — ' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
+fallback_line="$( { grep -n '^### Fallback: ' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
 accept_line="$( { grep -n '^### Accept the self-signed certificate$' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
 
 # --- Test 1: primary section heading exists ---

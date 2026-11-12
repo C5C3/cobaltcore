@@ -40,7 +40,7 @@ QUICK_START="$PROJECT_ROOT/docs/quick-start-extended.md"
 
 # --- Test 1: Step 4a heading + anchor exist ---
 test_step_4a_heading_and_anchor() {
-  echo "Test: docs/quick-start.md has '## Step 4a — Open the Flux Web UI' heading with {#step-4a-flux-web-ui} anchor"
+  echo "Test: docs/quick-start.md has '## Step 4a: Open the Flux Web UI' heading with {#step-4a-flux-web-ui} anchor"
 
   if [[ ! -f "$QUICK_START" ]]; then
     echo "  FAIL: $QUICK_START does not exist"
@@ -50,7 +50,7 @@ test_step_4a_heading_and_anchor() {
 
   assert_file_contains "Step 4a heading with Flux Web UI title and anchor" \
     "$QUICK_START" \
-    '^## Step 4a — Open the Flux Web UI {#step-4a-flux-web-ui}$'
+    '^## Step 4a: Open the Flux Web UI {#step-4a-flux-web-ui}$'
 }
 
 # --- Test 2: Step 4a contains the port-forward command + URL ---
@@ -118,8 +118,8 @@ test_step_4a_positioned_before_step_4b() {
   echo "Test: Step 4a appears before Step 4b in docs/quick-start.md"
 
   local step_4a_line step_4b_line
-  step_4a_line="$( { grep -n '^## Step 4a — Open the Flux Web UI' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
-  step_4b_line="$( { grep -n '^## Step 4b — Open the OpenBao UI' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
+  step_4a_line="$( { grep -n '^## Step 4a: Open the Flux Web UI' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
+  step_4b_line="$( { grep -n '^## Step 4b: Open the OpenBao UI' "$QUICK_START" || true; } | head -n1 | cut -d: -f1)"
 
   if [[ -z "$step_4a_line" || -z "$step_4b_line" ]]; then
     echo "  FAIL: could not locate both Step 4a and Step 4b headings"

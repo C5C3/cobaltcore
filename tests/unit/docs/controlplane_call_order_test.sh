@@ -166,7 +166,7 @@ In call order the condition types are `AlphaReady`, `BetaReady` and
 `OtherReady` stands in the next paragraph.
 EOF
   cat >"$root/quick-start.md" <<'EOF'
-## Step 6 — Watch the chain reconcile
+## Step 6: Watch the chain reconcile
 
 | Condition | Waits for |
 | --- | --- |
@@ -174,7 +174,7 @@ EOF
 | `BetaReady` | `AlphaReady` |
 | `GammaReady` | Nothing |
 
-## Step 7 — Use it
+## Step 7: Use it
 EOF
   printf '%s\n' "$root"
 }

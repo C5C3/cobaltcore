@@ -19,7 +19,7 @@
 # empty line when the page has no such table.
 step6_chain() {
   awk '
-    /^## Step 6 / { in_step = 1; next }
+    /^## Step 6[^[:alnum:]]/ { in_step = 1; next }
     in_step && /^## / { exit }
     in_step && /^\| `[A-Za-z]+Ready` \|/ {
       split($0, cell, "`")
