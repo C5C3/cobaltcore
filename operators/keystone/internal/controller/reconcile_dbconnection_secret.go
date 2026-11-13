@@ -54,6 +54,7 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ch
 	return database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
 		Client:        children,
 		Scheme:        r.Scheme,
+		Recorder:      r.Recorder,
 		Owner:         keystone,
 		InstanceName:  keystone.Name,
 		Namespace:     keystone.Namespace,

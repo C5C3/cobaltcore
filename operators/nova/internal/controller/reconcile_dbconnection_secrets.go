@@ -87,6 +87,7 @@ func (r *NovaReconciler) reconcileDBConnectionSecrets(ctx context.Context, child
 	result, apiDigest, err := database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
 		Client:        children,
 		Scheme:        r.Scheme,
+		Recorder:      r.Recorder,
 		Owner:         nova,
 		InstanceName:  apiInstanceName(nova),
 		Namespace:     nova.Namespace,
@@ -107,6 +108,7 @@ func (r *NovaReconciler) reconcileDBConnectionSecrets(ctx context.Context, child
 	result, cellDigest, err := database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
 		Client:        children,
 		Scheme:        r.Scheme,
+		Recorder:      r.Recorder,
 		Owner:         nova,
 		InstanceName:  nova.Name,
 		Namespace:     nova.Namespace,

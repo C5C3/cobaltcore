@@ -54,6 +54,7 @@ func (r *NeutronReconciler) reconcileDBConnectionSecret(ctx context.Context, chi
 	return database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
 		Client:        children,
 		Scheme:        r.Scheme,
+		Recorder:      r.Recorder,
 		Owner:         neutron,
 		InstanceName:  neutron.Name,
 		Namespace:     neutron.Namespace,

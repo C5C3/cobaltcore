@@ -54,6 +54,7 @@ func (r *BarbicanReconciler) reconcileDBConnectionSecret(ctx context.Context, ch
 	return database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
 		Client:        children,
 		Scheme:        r.Scheme,
+		Recorder:      r.Recorder,
 		Owner:         barbican,
 		InstanceName:  barbican.Name,
 		Namespace:     barbican.Namespace,
