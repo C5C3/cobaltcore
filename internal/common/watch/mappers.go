@@ -8,8 +8,10 @@ import (
 	"context"
 	"fmt"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -238,6 +240,31 @@ func ClusterRefMapper(c client.Reader, newList func() client.ObjectList, cluster
 			}
 		}
 		return requests
+	}
+}
+
+// MaxScaleToClusterRefMapper returns a MapFunc that maps a MaxScale event to
+// reconcile requests for the CRs in the MaxScale's namespace whose clusterRef
+// names the MariaDB that the MaxScale's spec.mariaDbRef names: those are the
+// CRs whose database endpoint (database.ResolveEndpoint) the MaxScale's spec
+// decides. A MaxScale without mariaDbRef, one whose mariaDbRef names another
+// namespace, and an object that is not a MaxScale, map to nil. The list and
+// the match are ClusterRefMapper's, including its nil result on a List or
+// extract error.
+func MaxScaleToClusterRefMapper(c client.Reader, newList func() client.ObjectList, clusterRefName func(client.Object) string) handler.MapFunc {
+	byCluster := ClusterRefMapper(c, newList, clusterRefName)
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		mxs, ok := obj.(*mariadbv1alpha1.MaxScale)
+		if !ok || mxs.Spec.MariaDBRef == nil {
+			return nil
+		}
+		if ns := mxs.Spec.MariaDBRef.Namespace; ns != "" && ns != mxs.Namespace {
+			return nil
+		}
+		return byCluster(ctx, &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{
+			Namespace: mxs.Namespace,
+			Name:      mxs.Spec.MariaDBRef.Name,
+		}})
 	}
 }
 
