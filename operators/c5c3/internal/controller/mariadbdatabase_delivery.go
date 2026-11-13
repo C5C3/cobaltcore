@@ -7,6 +7,7 @@ package controller
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -47,30 +48,35 @@ func (r *MariaDBDatabaseReconciler) deliverCredentials(
 	location := orderRef{Cluster: cluster}.location()
 	db := effectiveKeystoneDatabase(cp)
 
-	// Off the database's cluster the address is the published endpoint, and only
-	// a ControlPlane edit can publish one, so there is no requeue.
-	endpoint := mariaDBDatabaseEndpoint(cp, db, cluster)
-	if endpoint == "" {
-		fail(reasonMariaDBDatabaseNotPublished, fmt.Sprintf(
-			"the order lives on %s, which cannot reach the in-cluster MariaDB Service %s; set "+
-				"spec.infrastructure.publishedDatabaseEndpoint on ControlPlane %s/%s",
-			location, database.ResolveHost(db, cp.KeystoneNamespace()), cp.Namespace, cp.Name))
-		return ctrl.Result{}, nil
-	}
-	host, port, err := splitDatabaseEndpoint(endpoint)
+	// The MariaDB, the MaxScale it names and the CA bundle are read beside
+	// Keystone, through its cluster's client.
+	dbClient, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, cp.KeystoneTargetClusterRef())
 	if err != nil {
-		fail(reasonMariaDBDatabaseDeliveryError, fmt.Sprintf(
-			"spec.infrastructure.publishedDatabaseEndpoint %q is not host:port: %v", endpoint, err))
+		fail(commonmulticluster.TargetClusterUnavailable, err.Error())
+		return requeue, nil
+	}
+
+	// Off the database's cluster the address is the published endpoint, and only
+	// a ControlPlane edit can publish or repair one, so there is no requeue.
+	ep, err := mariaDBDatabaseEndpoint(ctx, dbClient, cp, db, cluster)
+	var invalid *invalidPublishedEndpointError
+	switch {
+	case errors.As(err, &invalid):
+		fail(reasonMariaDBDatabaseDeliveryError, invalid.Error())
+		return ctrl.Result{}, nil
+	case err != nil:
+		fail(reasonMariaDBDatabaseDeliveryError, err.Error())
+		return ctrl.Result{}, err
+	case ep.Host == "":
+		fail(reasonMariaDBDatabaseNotPublished, fmt.Sprintf(
+			"the order lives on %s, which cannot reach the in-cluster MariaDB %s/%s; set "+
+				"spec.infrastructure.publishedDatabaseEndpoint on ControlPlane %s/%s",
+			location, cp.KeystoneNamespace(), db.ClusterRef.Name, cp.Namespace, cp.Name))
 		return ctrl.Result{}, nil
 	}
 
 	var caBundle []byte
 	if db.TLS.IsEnabled() {
-		dbClient, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, cp.KeystoneTargetClusterRef())
-		if err != nil {
-			fail(commonmulticluster.TargetClusterUnavailable, err.Error())
-			return requeue, nil
-		}
 		caKey := types.NamespacedName{Namespace: cp.KeystoneNamespace(), Name: db.TLS.CABundleSecretRef.Name}
 		caSecret := &corev1.Secret{}
 		if err := dbClient.Get(ctx, caKey, caSecret); client.IgnoreNotFound(err) != nil {
@@ -127,8 +133,8 @@ func (r *MariaDBDatabaseReconciler) deliverCredentials(
 		mariaDBDatabaseUsernameKey, mariaDBDatabasePasswordKey,
 	}
 	data := map[string][]byte{
-		mariaDBDatabaseHostKey:     []byte(host),
-		mariaDBDatabasePortKey:     []byte(strconv.Itoa(int(port))),
+		mariaDBDatabaseHostKey:     []byte(ep.Host),
+		mariaDBDatabasePortKey:     []byte(strconv.Itoa(int(ep.Port))),
 		mariaDBDatabaseDatabaseKey: []byte(order.Status.DatabaseName),
 		mariaDBDatabaseUsernameKey: username,
 		mariaDBDatabasePasswordKey: password,
@@ -169,17 +175,22 @@ func (r *MariaDBDatabaseReconciler) deliverCredentials(
 			"username", string(username), "refreshTime", es.Status.RefreshTime)
 	}
 
-	order.Status.Host = host
-	order.Status.Port = port
+	order.Status.Host = ep.Host
+	order.Status.Port = ep.Port
 	order.Status.CredentialsRefreshedAt = nil
 	if !es.Status.RefreshTime.IsZero() {
 		order.Status.CredentialsRefreshedAt = es.Status.RefreshTime.DeepCopy()
 	}
 	order.Status.SecretName = secretKey.Name
 	order.Status.SecretKeys = keys
-	mariaDBDatabaseSetTrue(order, conditionTypeMariaDBDatabaseDeliveryReady, reasonMariaDBDatabaseDelivered, fmt.Sprintf(
-		"credentials are delivered in Secret %q (keys %s) in namespace %q on %s",
-		secretKey.Name, strings.Join(keys, ", "), secretKey.Namespace, location))
+	delivered := fmt.Sprintf("credentials are delivered in Secret %q (keys %s) in namespace %q on %s",
+		secretKey.Name, strings.Join(keys, ", "), secretKey.Namespace, location)
+	// The order reconciler records no Events, so a MaxScale the address does not
+	// go through is named in the condition message instead.
+	if ep.BypassReason != "" {
+		delivered += ". " + ep.BypassMessage(cp.KeystoneNamespace(), db.ClusterRef.Name) + "."
+	}
+	mariaDBDatabaseSetTrue(order, conditionTypeMariaDBDatabaseDeliveryReady, reasonMariaDBDatabaseDelivered, delivered)
 	return ctrl.Result{}, nil
 }
 

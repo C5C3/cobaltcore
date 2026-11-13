@@ -170,6 +170,23 @@ tests:
               - update
               - watch
 
+  # A MariaDBDatabase order on the database's cluster receives the address of
+  # the MaxScale the MariaDB names when it sends every statement to the
+  # primary, so the operator reads maxscales and never writes them.
+  - it: should grant read-only on maxscales
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - maxscales
+            verbs:
+              - get
+              - list
+              - watch
+
   # The ControlPlane projects the RabbitmqCluster of a managed bus, and the
   # RabbitMQVhost controller writes the topology operator's Vhost, User and
   # Permission children; those write verbs are the order's only new reach.

@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
@@ -190,7 +191,7 @@ func TestMariaDBDatabase_Delivery_PublishedEndpointOnAnotherCluster(t *testing.T
 		cond := expectMDBCondition(t, mdbGet(t, h), conditionTypeMariaDBDatabaseDeliveryReady, metav1.ConditionFalse,
 			reasonMariaDBDatabaseNotPublished)
 		g.Expect(cond.Message).To(Equal(`the order lives on target cluster "edge-1", which cannot reach the in-cluster ` +
-			`MariaDB Service openstack-db.default.svc:3306; set spec.infrastructure.publishedDatabaseEndpoint on ` +
+			`MariaDB default/openstack-db; set spec.infrastructure.publishedDatabaseEndpoint on ` +
 			`ControlPlane default/cp`))
 		g.Expect(mdbDelivered(t, h)).To(BeNil())
 	})
@@ -401,6 +402,171 @@ func TestMariaDBDatabase_Delivery_RefusesASecretItDoesNotControl(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("Secret tenant-a/app-db-credentials exists and is not owned by this order; " +
 		"delete it or rename the order"))
 	g.Expect(string(mdbDelivered(t, h).Data["password"])).To(Equal("theirs"))
+}
+
+// mdbConvergedWith is mdbConverged with the shared MariaDB replaced by mdb,
+// plus extra objects.
+func mdbConvergedWith(order *c5c3v1alpha1.MariaDBDatabase, cluster string, mdb *mariadbv1alpha1.MariaDB,
+	extra ...client.Object,
+) []client.Object {
+	objs := mdbConverged(order, cluster)
+	for i, obj := range objs {
+		if _, ok := obj.(*mariadbv1alpha1.MariaDB); ok {
+			objs[i] = mdb
+		}
+	}
+	return append(objs, extra...)
+}
+
+// mdbGaleraMariaDB is the shared MariaDB with Galera on and, when maxScale is
+// set, spec.maxScaleRef naming it.
+func mdbGaleraMariaDB(maxScale string) *mariadbv1alpha1.MariaDB {
+	mdb := mdbReadyMariaDB()
+	mdb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: true}
+	if maxScale != "" {
+		mdb.Spec.MaxScaleRef = &mariadbv1alpha1.ObjectReference{Name: maxScale}
+	}
+	return mdb
+}
+
+// mdbMaxScale is a MaxScale for the shared MariaDB in "default" whose only
+// service is a readwritesplit router with max_slave_connections set to
+// maxSlaveConnections on port 3306.
+func mdbMaxScale(maxSlaveConnections string) *mariadbv1alpha1.MaxScale {
+	return &mariadbv1alpha1.MaxScale{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db-maxscale", Namespace: "default"},
+		Spec: mariadbv1alpha1.MaxScaleSpec{
+			MariaDBRef: &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: "openstack-db"}},
+			Services: []mariadbv1alpha1.MaxScaleService{{
+				Name:     "rw-router",
+				Router:   mariadbv1alpha1.ServiceRouterReadWriteSplit,
+				Params:   map[string]string{"max_slave_connections": maxSlaveConnections},
+				Listener: mariadbv1alpha1.MaxScaleListener{Port: 3306},
+			}},
+		},
+	}
+}
+
+// TestMariaDBDatabase_Delivery_HostFollowsTheRoute delivers the address an
+// OpenStack service on the same database connects to: the primary Service of
+// a Galera MariaDB, a single-writer MaxScale, or the Service of a single
+// instance.
+func TestMariaDBDatabase_Delivery_HostFollowsTheRoute(t *testing.T) {
+	cases := []struct {
+		name     string
+		mdb      *mariadbv1alpha1.MariaDB
+		extra    []client.Object
+		wantHost string
+	}{
+		{name: "galera", mdb: mdbGaleraMariaDB(""), wantHost: "openstack-db-primary.default.svc"},
+		{
+			name: "single-writer MaxScale", mdb: mdbGaleraMariaDB("openstack-db-maxscale"),
+			extra: []client.Object{mdbMaxScale("0")}, wantHost: "openstack-db-maxscale.default.svc",
+		},
+		{name: "single instance", mdb: mdbReadyMariaDB(), wantHost: "openstack-db.default.svc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			order := mariaDBDatabaseCR()
+			h := newMDBHarness(t, c5c3v1alpha1.ManagementCluster, nil, nil,
+				append([]client.Object{order, mdbControlPlane("")}, mdbConvergedWith(order, "", tc.mdb, tc.extra...)...)...)
+
+			_, err := h.reconcile(context.Background())
+
+			g.Expect(err).NotTo(HaveOccurred())
+			got := mdbGet(t, h)
+			cond := expectMDBCondition(t, got, conditionTypeMariaDBDatabaseDeliveryReady, metav1.ConditionTrue,
+				reasonMariaDBDatabaseDelivered)
+			g.Expect(cond.Message).NotTo(ContainSubstring("MaxScale"))
+			secret := mdbDelivered(t, h)
+			g.Expect(string(secret.Data["host"])).To(Equal(tc.wantHost))
+			g.Expect(string(secret.Data["port"])).To(Equal("3306"))
+			g.Expect(got.Status.Host).To(Equal(tc.wantHost))
+		})
+	}
+}
+
+// TestMariaDBDatabase_Delivery_BypassNamesTheMaxScale delivers the primary
+// Service when the MariaDB names a MaxScale that splits reads, and names the
+// MaxScale and the reason in the DeliveryReady message, because the order
+// reconciler records no Events.
+func TestMariaDBDatabase_Delivery_BypassNamesTheMaxScale(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	order := mariaDBDatabaseCR()
+	h := newMDBHarness(t, c5c3v1alpha1.ManagementCluster, nil, nil,
+		append([]client.Object{order, mdbControlPlane("")},
+			mdbConvergedWith(order, "", mdbGaleraMariaDB("openstack-db-maxscale"), mdbMaxScale("1"))...)...)
+
+	_, err := h.reconcile(context.Background())
+
+	g.Expect(err).NotTo(HaveOccurred())
+	got := mdbGet(t, h)
+	cond := expectMDBCondition(t, got, conditionTypeMariaDBDatabaseDeliveryReady, metav1.ConditionTrue,
+		reasonMariaDBDatabaseDelivered)
+	g.Expect(cond.Message).To(Equal(`credentials are delivered in Secret "app-db-credentials" (keys host, port, ` +
+		`database, username, password) in namespace "tenant-a" on the management cluster. MariaDB ` +
+		`default/openstack-db names MaxScale openstack-db-maxscale, which the operator does not route through ` +
+		`(MaxScaleNotSingleWriter).`))
+	g.Expect(string(mdbDelivered(t, h).Data["host"])).To(Equal("openstack-db-primary.default.svc"))
+
+	events := &corev1.EventList{}
+	g.Expect(h.mgmt.List(context.Background(), events)).To(Succeed())
+	g.Expect(events.Items).To(BeEmpty(), "the order reconciler records no Events")
+}
+
+// TestMariaDBDatabase_Delivery_DatabaseClusterUnavailable resolves Keystone's
+// cluster before the address, so an unreachable database cluster waits with a
+// requeue. Through Reconcile the provisioning leg fails first on the same
+// client, so the leg is called directly.
+func TestMariaDBDatabase_Delivery_DatabaseClusterUnavailable(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	order := mariaDBDatabaseCR()
+	cp := mdbControlPlane("")
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-db"},
+	}
+	cp.Spec.Infrastructure.PublishedDatabaseEndpoint = "db.example.test:3306"
+	mgmt := orderFakeClient(t, nil, append([]client.Object{order, cp}, mdbConverged(order, "")...)...)
+	r := &MariaDBDatabaseReconciler{
+		Client: mgmt, Scheme: mgmt.Scheme(),
+		Resolver: &childrenResolver{errNames: map[string]error{"edge-db": errors.New("cluster edge-db is not engaged")}},
+	}
+
+	result, err := r.deliverCredentials(context.Background(), mgmt, order, cp, c5c3v1alpha1.ManagementCluster)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(dbCredentialsRequeueAfter))
+	cond := expectMDBCondition(t, order, conditionTypeMariaDBDatabaseDeliveryReady, metav1.ConditionFalse,
+		commonmulticluster.TargetClusterUnavailable)
+	g.Expect(cond.Message).To(ContainSubstring("cluster edge-db is not engaged"))
+}
+
+// TestMariaDBDatabase_Delivery_ResolverErrorIsReturned fails the read of the
+// MariaDB with something other than NotFound: the leg reports DeliveryError
+// and returns the error, so the pass retries with backoff.
+func TestMariaDBDatabase_Delivery_ResolverErrorIsReturned(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	order := mariaDBDatabaseCR()
+	cp := mdbControlPlane("")
+	mgmt := orderFakeClient(t, &interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*mariadbv1alpha1.MariaDB); ok {
+				return apierrors.NewServiceUnavailable("etcd leader lost")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}, append([]client.Object{order, cp}, mdbConverged(order, "")...)...)
+	r := &MariaDBDatabaseReconciler{Client: mgmt, Scheme: mgmt.Scheme()}
+
+	_, err := r.deliverCredentials(context.Background(), mgmt, order, cp, c5c3v1alpha1.ManagementCluster)
+
+	g.Expect(err).To(MatchError(ContainSubstring("resolving database endpoint: getting MariaDB default/openstack-db")))
+	expectMDBCondition(t, order, conditionTypeMariaDBDatabaseDeliveryReady, metav1.ConditionFalse,
+		reasonMariaDBDatabaseDeliveryError)
 }
 
 // TestMariaDBDatabase_Delivery_PortOutOfRangeIsDeliveryError refuses a
