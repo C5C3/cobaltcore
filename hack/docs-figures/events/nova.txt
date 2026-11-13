@@ -5,6 +5,9 @@ NovaReconciler.Reconcile()
   │     ├─ MariaDB cleanup done    → Normal  DatabaseFinalized
   │     └─ target cluster gone     → Warning RemoteChildrenAbandoned
   │
+  ├── reconcileDBConnectionSecrets()
+  │     └─ MaxScale named, not routed through → Warning DatabaseMaxScaleBypassed
+  │
   ├── reconcileConfig()
   │     └─ extraConfig overrides an operator-owned key
   │                                    → Warning ExtraConfigOwnedKeyOverride

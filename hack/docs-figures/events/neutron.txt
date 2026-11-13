@@ -5,6 +5,9 @@ NeutronReconciler.Reconcile()
   │     ├─ MariaDB cleanup done        → Normal  DatabaseFinalized
   │     └─ target cluster unresolvable → Warning RemoteChildrenAbandoned
   │
+  ├── reconcileDBConnectionSecret()
+  │     └─ MaxScale named, not routed through → Warning DatabaseMaxScaleBypassed
+  │
   ├── reconcileConfig()
   │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
   │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)

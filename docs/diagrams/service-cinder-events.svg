@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1166" height="1972" viewBox="0 0 1166 1972" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Cinder operator">
+<svg xmlns="http://www.w3.org/2000/svg" width="1166" height="2084" viewBox="0 0 1166 2084" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Cinder operator">
 <title>Event flow of the Cinder operator</title>
-<rect width="1166" height="1972" fill="#F6F5F1"/>
+<rect width="1166" height="2084" fill="#F6F5F1"/>
 <rect x="60" y="40" width="402" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="261" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">CinderReconciler.Reconcile()</text>
 <rect x="130" y="114" width="511" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
@@ -40,123 +40,132 @@
 <text x="465" y="490.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
 <text x="528" y="491.2" font-size="20" font-weight="700" fill="#2B3440">CinderBackupBackendSkipped</text>
 <polyline points="160,450 160,484" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="514" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="246.5" y="545.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
+<rect x="130" y="514" width="391" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="325.5" y="545.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBConnectionSecret()</text>
 <polyline points="90,538 130,538" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,596 188,596" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="603.2" font-size="20" font-weight="400" fill="#2B3440">extraConfig overrides an operator-owned key</text>
-<rect x="661" y="582" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="710" y="602.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="773" y="603.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<text x="200" y="603.2" font-size="20" font-weight="400" fill="#2B3440">MaxScale named, not routed through</text>
+<rect x="579" y="582" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="628" y="602.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="691" y="603.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseMaxScaleBypassed</text>
 <polyline points="160,562 160,596" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="626" width="266" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="263" y="657.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase()</text>
+<rect x="130" y="626" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="246.5" y="657.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
 <polyline points="90,650 130,650" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,708 188,708" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="715.2" font-size="20" font-weight="400" fill="#2B3440">db_sync fails</text>
-<rect x="450" y="694" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="499" y="714.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="562" y="715.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncFailed</text>
-<polyline points="160,740 188,740" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="747.2" font-size="20" font-weight="400" fill="#2B3440">db_sync succeeds</text>
-<rect x="450" y="726" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="493" y="746.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="550" y="747.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
-<polyline points="160,772 188,772" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="779.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
-<rect x="450" y="758" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="499" y="778.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="562" y="779.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred</text>
-<polyline points="160,804 188,804" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="811.2" font-size="20" font-weight="400" fill="#2B3440">migrate phase terminal</text>
-<rect x="450" y="790" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="493" y="810.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="550" y="811.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeCheckCompleted</text>
-<rect x="450" y="822" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="499" y="842.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="562" y="843.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeCheckWarnings</text>
-<polyline points="160,868 188,868" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="875.2" font-size="20" font-weight="400" fill="#2B3440">release upgrade</text>
-<rect x="450" y="854" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="493" y="874.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="550" y="875.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeInitiated / ExpandComplete /</text>
-<text x="550" y="907.2" font-size="20" font-weight="700" fill="#2B3440">MigrateComplete / UpgradeComplete /</text>
-<text x="550" y="939.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeAborted</text>
-<rect x="450" y="950" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="499" y="970.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="562" y="971.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError / DowngradeNotSupported /</text>
-<text x="562" y="1003.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid / UpgradeTargetChanged /</text>
-<text x="562" y="1035.2" font-size="20" font-weight="700" fill="#2B3440">ExpandFailed / MigrateFailed / ContractFailed</text>
-<polyline points="160,674 160,868" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1058" width="343" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="301.5" y="1089.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileVolumeServices()</text>
-<polyline points="90,1082 130,1082" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,1140 188,1140" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1147.2" font-size="20" font-weight="400" fill="#2B3440">detach completed</text>
-<rect x="486" y="1126" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="529" y="1146.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="586" y="1147.2" font-size="20" font-weight="700" fill="#2B3440">ServiceRemoved</text>
-<polyline points="160,1172 188,1172" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1179.2" font-size="20" font-weight="400" fill="#2B3440">service-remove Job failed</text>
-<rect x="486" y="1158" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="535" y="1178.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="598" y="1179.2" font-size="20" font-weight="700" fill="#2B3440">ServiceRemoveJobFailed</text>
-<polyline points="160,1204 188,1204" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1211.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
-<rect x="486" y="1190" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="535" y="1210.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="598" y="1211.2" font-size="20" font-weight="700" fill="#2B3440">ServiceRemoveMetricEmissionDeferred</text>
-<polyline points="160,1106 160,1204" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1234" width="330" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="295" y="1265.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileBackupService()</text>
-<polyline points="90,1258 130,1258" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="715.2" font-size="20" font-weight="400" fill="#2B3440">extraConfig overrides an operator-owned key</text>
+<rect x="661" y="694" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="710" y="714.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="773" y="715.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<polyline points="160,674 160,708" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="738" width="266" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="263" y="769.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase()</text>
+<polyline points="90,762 130,762" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,820 188,820" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="827.2" font-size="20" font-weight="400" fill="#2B3440">db_sync fails</text>
+<rect x="450" y="806" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="499" y="826.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="562" y="827.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncFailed</text>
+<polyline points="160,852 188,852" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="859.2" font-size="20" font-weight="400" fill="#2B3440">db_sync succeeds</text>
+<rect x="450" y="838" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="493" y="858.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="550" y="859.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
+<polyline points="160,884 188,884" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="891.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
+<rect x="450" y="870" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="499" y="890.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="562" y="891.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred</text>
+<polyline points="160,916 188,916" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="923.2" font-size="20" font-weight="400" fill="#2B3440">migrate phase terminal</text>
+<rect x="450" y="902" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="493" y="922.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="550" y="923.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeCheckCompleted</text>
+<rect x="450" y="934" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="499" y="954.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="562" y="955.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeCheckWarnings</text>
+<polyline points="160,980 188,980" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="987.2" font-size="20" font-weight="400" fill="#2B3440">release upgrade</text>
+<rect x="450" y="966" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="493" y="986.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="550" y="987.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeInitiated / ExpandComplete /</text>
+<text x="550" y="1019.2" font-size="20" font-weight="700" fill="#2B3440">MigrateComplete / UpgradeComplete /</text>
+<text x="550" y="1051.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeAborted</text>
+<rect x="450" y="1062" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="499" y="1082.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="562" y="1083.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError / DowngradeNotSupported /</text>
+<text x="562" y="1115.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid / UpgradeTargetChanged /</text>
+<text x="562" y="1147.2" font-size="20" font-weight="700" fill="#2B3440">ExpandFailed / MigrateFailed / ContractFailed</text>
+<polyline points="160,786 160,980" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1170" width="343" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="301.5" y="1201.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileVolumeServices()</text>
+<polyline points="90,1194 130,1194" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1252 188,1252" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1259.2" font-size="20" font-weight="400" fill="#2B3440">detach completed</text>
+<rect x="486" y="1238" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="529" y="1258.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="586" y="1259.2" font-size="20" font-weight="700" fill="#2B3440">ServiceRemoved</text>
+<polyline points="160,1284 188,1284" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1291.2" font-size="20" font-weight="400" fill="#2B3440">service-remove Job failed</text>
+<rect x="486" y="1270" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="535" y="1290.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="598" y="1291.2" font-size="20" font-weight="700" fill="#2B3440">ServiceRemoveJobFailed</text>
 <polyline points="160,1316 188,1316" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1323.2" font-size="20" font-weight="400" fill="#2B3440">shared export, divergent mountOptions</text>
-<rect x="598" y="1302" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="647" y="1322.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="710" y="1323.2" font-size="20" font-weight="700" fill="#2B3440">SharedExportMountOptionsIgnored</text>
-<polyline points="160,1348 188,1348" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1355.2" font-size="20" font-weight="400" fill="#2B3440">one keyring file, two keys</text>
-<rect x="598" y="1334" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="647" y="1354.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="710" y="1355.2" font-size="20" font-weight="700" fill="#2B3440">CephKeyringConflict</text>
-<polyline points="160,1282 160,1348" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1378" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="276.5" y="1409.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
-<polyline points="90,1402 130,1402" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1323.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
+<rect x="486" y="1302" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="535" y="1322.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="598" y="1323.2" font-size="20" font-weight="700" fill="#2B3440">ServiceRemoveMetricEmissionDeferred</text>
+<polyline points="160,1218 160,1316" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1346" width="330" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="295" y="1377.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileBackupService()</text>
+<polyline points="90,1370 130,1370" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1428 188,1428" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1435.2" font-size="20" font-weight="400" fill="#2B3440">shared export, divergent mountOptions</text>
+<rect x="598" y="1414" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="647" y="1434.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="710" y="1435.2" font-size="20" font-weight="700" fill="#2B3440">SharedExportMountOptionsIgnored</text>
 <polyline points="160,1460 188,1460" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1467.2" font-size="20" font-weight="400" fill="#2B3440">rollout ready mid-upgrade</text>
-<rect x="479" y="1446" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="522" y="1466.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="579" y="1467.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
-<polyline points="160,1426 160,1460" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1490" width="258" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="259" y="1521.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBPurge()</text>
+<text x="200" y="1467.2" font-size="20" font-weight="400" fill="#2B3440">one keyring file, two keys</text>
+<rect x="598" y="1446" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="647" y="1466.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="710" y="1467.2" font-size="20" font-weight="700" fill="#2B3440">CephKeyringConflict</text>
+<polyline points="160,1394 160,1460" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1490" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="276.5" y="1521.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
 <polyline points="90,1514 130,1514" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,1572 188,1572" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1579.2" font-size="20" font-weight="400" fill="#2B3440">newest run failed</text>
-<rect x="422" y="1558" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="471" y="1578.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="534" y="1579.2" font-size="20" font-weight="700" fill="#2B3440">DBPurgeJobFailed</text>
-<polyline points="160,1604 188,1604" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1611.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
-<rect x="422" y="1590" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="471" y="1610.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="534" y="1611.2" font-size="20" font-weight="700" fill="#2B3440">DBPurgeMetricEmissionDeferred</text>
-<polyline points="160,1538 160,1604" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="90,96 90,1514" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="60" y="1684" width="507" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="313.5" y="1720.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">CinderBackendReconciler.Reconcile()</text>
-<rect x="130" y="1758" width="576" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="418" y="1789.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeleting() (parent Cinder already gone)</text>
-<polyline points="90,1782 130,1782" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,1840 188,1840" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1847.2" font-size="20" font-weight="400" fill="#2B3440">finalizer released</text>
-<rect x="399" y="1826" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="442" y="1846.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="499" y="1847.2" font-size="20" font-weight="700" fill="#2B3440">ServiceRemoveSkipped</text>
-<polyline points="160,1806 160,1840" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="90,1740 90,1782" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="40" y="1915.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
-<text x="40" y="1941.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
+<text x="200" y="1579.2" font-size="20" font-weight="400" fill="#2B3440">rollout ready mid-upgrade</text>
+<rect x="479" y="1558" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="522" y="1578.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="579" y="1579.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
+<polyline points="160,1538 160,1572" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1602" width="258" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="259" y="1633.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBPurge()</text>
+<polyline points="90,1626 130,1626" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1684 188,1684" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1691.2" font-size="20" font-weight="400" fill="#2B3440">newest run failed</text>
+<rect x="422" y="1670" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="471" y="1690.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="534" y="1691.2" font-size="20" font-weight="700" fill="#2B3440">DBPurgeJobFailed</text>
+<polyline points="160,1716 188,1716" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1723.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
+<rect x="422" y="1702" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="471" y="1722.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="534" y="1723.2" font-size="20" font-weight="700" fill="#2B3440">DBPurgeMetricEmissionDeferred</text>
+<polyline points="160,1650 160,1716" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,1626" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="60" y="1796" width="507" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="313.5" y="1832.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">CinderBackendReconciler.Reconcile()</text>
+<rect x="130" y="1870" width="576" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="418" y="1901.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeleting() (parent Cinder already gone)</text>
+<polyline points="90,1894 130,1894" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1952 188,1952" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1959.2" font-size="20" font-weight="400" fill="#2B3440">finalizer released</text>
+<rect x="399" y="1938" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="442" y="1958.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="499" y="1959.2" font-size="20" font-weight="700" fill="#2B3440">ServiceRemoveSkipped</text>
+<polyline points="160,1918 160,1952" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,1852 90,1894" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="2027.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
+<text x="40" y="2053.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
 </svg>

@@ -85,6 +85,23 @@ All events follow these conventions:
 > `SecretStoresReady=False / NoDefaultSecretStore` and `MultipleOpenBaoStores`
 > raise **no** event; read those off the condition.
 
+### Database Endpoint
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `DatabaseMaxScaleBypassed` | Warning | The MariaDB names a MaxScale in `spec.maxScaleRef` that the connection does not go through, and the operator connects to `<name>-primary` or `<name>` instead | `MariaDB openstack/openstack-db names MaxScale openstack-db-maxscale, which the operator does not route through (MaxScaleNotSingleWriter); connecting to openstack-db-primary.openstack.svc:3306` |
+
+**Source:** the shared `ReconcileConnectionSecret` in
+`internal/common/database/connection.go`, called from `reconcileDBConnectionSecret` in
+`reconcile_dbconnection_secret.go`
+
+> **Note:** The reason in parentheses is `MaxScaleOtherNamespace`,
+> `MaxScaleNotFound`, `MaxScaleServesOtherMariaDB` or `MaxScaleNotSingleWriter`.
+> The [Keystone CRD reference](../keystone/keystone-crd.md#managed-database-routes)
+> describes each and the routes. The event repeats on every reconcile that
+> bypasses the MaxScale, and the event recorder folds the repeats into one
+> event with a count.
+
 ### Database Sync
 
 | Reason | Type | Trigger Condition | Example Message |
@@ -261,7 +278,7 @@ groups:
 
 ## Event Flow
 
-![The event flow of the Barbican operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. BarbicanReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; reconcileSecretStores() emits Warning BarbicanSecretStoreSkipped when credentials unreadable; Warning SecretStoreDetached when store de-projected; nothing when no/several defaults (condition only); reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileDBClean() emits Warning DBCleanJobFailed when newest terminal run failed; Warning DBCleanMetricEmissionDeferred when Job-UID patch fails; reconcileDatabase() emits nothing when tag/release mismatch (condition only); Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or ImageReleaseMismatch when release gate refuses; Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; BarbicanSecretStoreReconciler.Reconcile(): Warning InstanceNotFound or WaitingForInstance or WaitingForInstanceTLS or InstanceNotProvisioned or ProvisioningDenied or OpenBaoUnreachable or InvalidCredentials when reconcileManaged(); Warning WaitingForCredentials or InvalidCredentials or InsufficientCapabilities or OpenBaoUnreachable when reconcileBrownfield(); nothing when config projection observed (condition only);](../../diagrams/service-barbican-events.svg)
+![The event flow of the Barbican operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. BarbicanReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; reconcileSecretStores() emits Warning BarbicanSecretStoreSkipped when credentials unreadable; Warning SecretStoreDetached when store de-projected; nothing when no/several defaults (condition only); reconcileDBConnectionSecret() emits Warning DatabaseMaxScaleBypassed when MaxScale named, not routed through; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileDBClean() emits Warning DBCleanJobFailed when newest terminal run failed; Warning DBCleanMetricEmissionDeferred when Job-UID patch fails; reconcileDatabase() emits nothing when tag/release mismatch (condition only); Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or ImageReleaseMismatch when release gate refuses; Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; BarbicanSecretStoreReconciler.Reconcile(): Warning InstanceNotFound or WaitingForInstance or WaitingForInstanceTLS or InstanceNotProvisioned or ProvisioningDenied or OpenBaoUnreachable or InvalidCredentials when reconcileManaged(); Warning WaitingForCredentials or InvalidCredentials or InsufficientCapabilities or OpenBaoUnreachable when reconcileBrownfield(); nothing when config projection observed (condition only);](../../diagrams/service-barbican-events.svg)
 
 The figure draws which sub-reconciler emits which event, and on what. The
 [Event Reasons Reference](#event-reasons-reference) describes every reason.

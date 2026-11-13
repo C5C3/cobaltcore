@@ -61,6 +61,24 @@ All events follow these conventions:
 > rejects outright never reach it; they are listed under
 > [extraConfig](./nova-crd.md#extraconfig).
 
+### Database endpoint
+
+| Reason | Type | Trigger condition | Example message |
+| --- | --- | --- | --- |
+| `DatabaseMaxScaleBypassed` | Warning | The MariaDB names a MaxScale in `spec.maxScaleRef` that the connection does not go through, and the operator connects to `<name>-primary` or `<name>` instead | `MariaDB openstack/openstack-db names MaxScale openstack-db-maxscale, which the operator does not route through (MaxScaleNotSingleWriter); connecting to openstack-db-primary.openstack.svc:3306` |
+
+**Source:** the shared `ReconcileConnectionSecret` in
+`internal/common/database/connection.go`, called from `reconcileDBConnectionSecrets` in
+`reconcile_dbconnection_secrets.go`
+
+> **Note:** The reason in parentheses is `MaxScaleOtherNamespace`,
+> `MaxScaleNotFound`, `MaxScaleServesOtherMariaDB` or `MaxScaleNotSingleWriter`.
+> The [Keystone CRD reference](../keystone/keystone-crd.md#managed-database-routes)
+> describes each and the routes. The event repeats on every reconcile that
+> bypasses the MaxScale, and the event recorder folds the repeats into one
+> event with a count. Nova resolves the endpoint once per database block, so
+> a MaxScale that both blocks reach records the event twice per pass.
+
 ### Database sync
 
 | Reason | Type | Trigger condition | Example message |
@@ -270,7 +288,7 @@ Job the terminal state was read off.
 
 ## Event flow
 
-![The event flow of the Nova operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. NovaReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; Warning RemoteChildrenAbandoned when target cluster gone; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides an operator-owned key; reconcileDatabase() emits Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Normal CellsReportUnavailable when cell map unreadable; Warning DBSyncMetricEmissionDeferred or CellsReportEmissionDeferred when Job-UID patch fails; Normal UpgradeCheckCompleted and Warning UpgradeCheckWarnings when expand phase terminal; Normal UpgradeInitiated or ExpandComplete or MigrateComplete or UpgradeComplete or UpgradeAborted and Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or UpgradeTargetChanged or ExpandFailed or MigrateFailed or ContractFailed when release upgrade; reconcileDeployment() emits Normal DeploymentRolloutComplete when every role rolled out mid-upgrade; reconcileDBArchive() emits Warning DBArchiveJobFailed when newest run failed; Warning DBArchiveMetricEmissionDeferred when Job-UID patch fails; NovaComputeReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal ComputeConfigMirrorReaped when last pool on the cluster (one per mirror); Warning RemoteChildrenAbandoned when target cluster gone; reconcileNovaComputeNodes() emits Warning NodeConflict when new conflict; reconcileNovaComputeConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides a [libvirt] key; reconcileNovaComputeAggregates() emits Normal AggregateCreated when aggregate created; Normal AggregateDeleted when unneeded aggregate deleted; Warning AggregateKept when unneeded aggregate with foreign metadata; reconcileNovaComputeServices() emits Normal ComputeServiceDisabled when leaving node disabled; Normal ComputeServiceDeleted when released node deleted;](../../diagrams/compute-nova-events.svg)
+![The event flow of the Nova operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. NovaReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; Warning RemoteChildrenAbandoned when target cluster gone; reconcileDBConnectionSecrets() emits Warning DatabaseMaxScaleBypassed when MaxScale named, not routed through; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides an operator-owned key; reconcileDatabase() emits Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Normal CellsReportUnavailable when cell map unreadable; Warning DBSyncMetricEmissionDeferred or CellsReportEmissionDeferred when Job-UID patch fails; Normal UpgradeCheckCompleted and Warning UpgradeCheckWarnings when expand phase terminal; Normal UpgradeInitiated or ExpandComplete or MigrateComplete or UpgradeComplete or UpgradeAborted and Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or UpgradeTargetChanged or ExpandFailed or MigrateFailed or ContractFailed when release upgrade; reconcileDeployment() emits Normal DeploymentRolloutComplete when every role rolled out mid-upgrade; reconcileDBArchive() emits Warning DBArchiveJobFailed when newest run failed; Warning DBArchiveMetricEmissionDeferred when Job-UID patch fails; NovaComputeReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal ComputeConfigMirrorReaped when last pool on the cluster (one per mirror); Warning RemoteChildrenAbandoned when target cluster gone; reconcileNovaComputeNodes() emits Warning NodeConflict when new conflict; reconcileNovaComputeConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides a [libvirt] key; reconcileNovaComputeAggregates() emits Normal AggregateCreated when aggregate created; Normal AggregateDeleted when unneeded aggregate deleted; Warning AggregateKept when unneeded aggregate with foreign metadata; reconcileNovaComputeServices() emits Normal ComputeServiceDisabled when leaving node disabled; Normal ComputeServiceDeleted when released node deleted;](../../diagrams/compute-nova-events.svg)
 
 The figure draws which sub-reconciler emits which event, and on what. The
 [Event Reasons Reference](#event-reasons) describes every reason.
