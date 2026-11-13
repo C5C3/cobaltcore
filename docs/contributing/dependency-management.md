@@ -426,7 +426,7 @@ modules; partial bumps fail because all module directives must agree.
 | `internal/common/go.mod` | `go 1.X.Y` | Shared library module. |
 | `operators/*/go.mod` | `go 1.X.Y` in every module listed in `go.work` | There are ten operator modules today; `make build` and `make test` use the `OPERATORS` list. |
 | `nix/lib/operator-image.nix` and `flake.nix` | For a minor bump, move `buildGo127Module` and the `go_1_27` check to the new minor. | The operator images build with the Go package from the locked `nixpkgs-images`. `nix eval --raw .#packages.x86_64-linux.keystone-operator-image.manager.go.version` prints its version. |
-| `flake.lock` | No change for a patch bump; update the lock when the `nixpkgs-images` channel must advance to provide the target minor. | |
+| `flake.lock` | Advance `nixpkgs-images` whenever its Go package is older than the target version, including patch bumps. | |
 | `.github/workflows/ci.yaml` | No change. | All `actions/setup-go` steps use `go-version-file: go.work`. |
 
 There is **no `toolchain` directive** anywhere in the workspace. We rely on
@@ -437,7 +437,7 @@ to support contributors on an older local Go, add a `toolchain go1.X.Y` line to
 
 ### Worked example: 1.25.10 → 1.26.3
 
-An illustrative past minor upgrade. The workspace currently uses `go 1.27.3` in
+An illustrative past minor upgrade. The workspace currently uses `go 1.27.4` in
 `go.work` and every module. Substitute the current and target versions for your
 own bump; the mechanics below are unchanged.
 
