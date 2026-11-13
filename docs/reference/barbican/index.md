@@ -63,7 +63,9 @@ The v1 operator resolves the onboarding decisions as follows:
   every pending revision in one pass. Status tracks the release through
   `installedRelease`, `installedImage`, and `targetRelease`, the same posture
   the Placement operator uses. Upgrade paths stay sequential and a downgrade is
-  refused before any Job runs.
+  refused before any Job runs. The `{name}-db-index` Job that follows db-sync
+  builds the operator's list-query indexes outside Alembic and is no migration
+  phase.
 - **Config mounted at `/etc/barbican`.** Barbican accepts no `--config-dir` and
   resolves both of its startup files by name: oslo.config loads `barbican.conf`
   from its fixed search path, and the API app looks `barbican-api-paste.ini` up
@@ -71,7 +73,8 @@ The v1 operator resolves the onboarding decisions as follows:
   the rendered config Secret mounts as that whole directory
   (`barbicanConfigDir` in `operators/barbican/internal/controller/reconcile_config.go`)
   and shadows the image's own copy. The db-sync Job and the clean-up CronJob
-  mount it at the same path and therefore pass no `--config-file`.
+  mount it at the same path and therefore pass no `--config-file`. The db-index
+  Job carries the same mount, though its script reads only the connection URL.
 - **The clean-up CronJob is always scheduled.** Barbican never hard-deletes:
   deleting a secret, container, or order flips its row to deleted, so the tables
   grow for the lifetime of the deployment. Every Barbican gets the
@@ -99,6 +102,7 @@ For a Barbican CR named `{name}` the operator manages:
 | Secret | `{name}-config-<hash>` | Immutable, content-hashed `barbican.conf` and `barbican-api-paste.ini` (plus `policy.yaml` when applicable; 3 historical retained) |
 | Secret | `{name}-db-connection` | Derived pymysql DSN, consumed via `OS_DATABASE__CONNECTION` |
 | Job | `{name}-db-sync` | Schema migration (`barbican-manage db upgrade`) |
+| Job | `{name}-db-index` | The list-query indexes on `secrets`, `orders` and `containers`, built after each db-sync |
 | CronJob | `{name}-db-clean` | The recurring `barbican-manage db clean` sweep |
 | MariaDB `Database` / `User` / `Grant` | `{name}` | Managed mode only (`spec.database.clusterRef`); a brownfield database is left alone |
 

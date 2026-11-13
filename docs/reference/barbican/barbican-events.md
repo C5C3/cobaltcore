@@ -106,12 +106,15 @@ All events follow these conventions:
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `DatabaseSynced` | Normal | The `db-sync` Job completes successfully | `Database schema is up to date` |
+| `DatabaseSynced` | Normal | The `db-sync` and `db-index` Jobs complete successfully | `Database schema is up to date` |
 | `DBSyncFailed` | Warning | The `db-sync` Job fails | `db_sync job failed: <error>` |
+| `DBIndexFailed` | Warning | The `{name}-db-index` Job used up its backoff limit, or the API server refused its create; raised on every pass that observes it | `Job barbican-db-index failed: job has permanently failed: openstack/barbican-db-index` |
 | `DBSyncMetricEmissionDeferred` | Warning | Patching the last-observed Job UID annotation fails, deferring `db_sync` metric emission to the next reconcile | `Patching last-observed db-sync Job UID failed; metric emission deferred to the next reconcile: <error>` |
 
 **Source:** the shared `ReconcileSyncJobs` in `internal/common/database/flow.go`
-(`DatabaseSynced` / `DBSyncFailed`); the shared `RecordJobTerminalState` in
+(`DatabaseSynced` / `DBSyncFailed`, and `DBIndexFailed`, the `FailedReason` of
+the post-sync Job that `reconcileDatabase` passes from `reconcile_dbindex.go`);
+the shared `RecordJobTerminalState` in
 `internal/common/job/terminal.go`, wired through `recordDBJobTerminalState` in
 `db_job_metrics.go` (`DBSyncMetricEmissionDeferred`)
 
@@ -225,7 +228,7 @@ therefore identical to the condition reasons documented under
 | --- | --- |
 | `SchemaDriftDetected` | The Job set carries no schema-check command (`SchemaCheckCommand: nil`). `barbican-manage db upgrade` is an idempotent alembic upgrade to head, so a second read-only Job would assert nothing the sync itself has not already established |
 | `UpgradeInitiated`, `ExpandComplete`, `MigrateComplete`, `DeploymentRolloutComplete`, `UpgradeComplete`, `UpgradeAborted`, `UpgradeTargetChanged`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` | These belong to the shared expand-migrate-contract flow. Barbican runs no phase machine and its CR carries no `upgradePhase`; a release bump takes the same single db-sync Job a fresh install takes |
-| `DBSyncInProgress` | A `DatabaseReady=False` condition reason while the Job runs, never an event: the polling states raise none |
+| `DBSyncInProgress`, `DBIndexInProgress` | `DatabaseReady=False` condition reasons while the db-sync or the db-index Job runs, never an event: the polling states raise none |
 
 ---
 
@@ -278,7 +281,7 @@ groups:
 
 ## Event Flow
 
-![The event flow of the Barbican operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. BarbicanReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; reconcileSecretStores() emits Warning BarbicanSecretStoreSkipped when credentials unreadable; Warning SecretStoreDetached when store de-projected; nothing when no/several defaults (condition only); reconcileDBConnectionSecret() emits Warning DatabaseMaxScaleBypassed when MaxScale named, not routed through; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileDBClean() emits Warning DBCleanJobFailed when newest terminal run failed; Warning DBCleanMetricEmissionDeferred when Job-UID patch fails; reconcileDatabase() emits nothing when tag/release mismatch (condition only); Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or ImageReleaseMismatch when release gate refuses; Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; BarbicanSecretStoreReconciler.Reconcile(): Warning InstanceNotFound or WaitingForInstance or WaitingForInstanceTLS or InstanceNotProvisioned or ProvisioningDenied or OpenBaoUnreachable or InvalidCredentials when reconcileManaged(); Warning WaitingForCredentials or InvalidCredentials or InsufficientCapabilities or OpenBaoUnreachable when reconcileBrownfield(); nothing when config projection observed (condition only);](../../diagrams/service-barbican-events.svg)
+![The event flow of the Barbican operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. BarbicanReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; reconcileSecretStores() emits Warning BarbicanSecretStoreSkipped when credentials unreadable; Warning SecretStoreDetached when store de-projected; nothing when no/several defaults (condition only); reconcileDBConnectionSecret() emits Warning DatabaseMaxScaleBypassed when MaxScale named, not routed through; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when spec.extraConfig overrides operator-owned keys (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden); reconcileDBClean() emits Warning DBCleanJobFailed when newest terminal run failed; Warning DBCleanMetricEmissionDeferred when Job-UID patch fails; reconcileDatabase() emits nothing when tag/release mismatch (condition only); Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or ImageReleaseMismatch when release gate refuses; Warning DBSyncFailed when db_sync fails; Warning DBIndexFailed when db-index fails; Normal DatabaseSynced when both Jobs succeed; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; BarbicanSecretStoreReconciler.Reconcile(): Warning InstanceNotFound or WaitingForInstance or WaitingForInstanceTLS or InstanceNotProvisioned or ProvisioningDenied or OpenBaoUnreachable or InvalidCredentials when reconcileManaged(); Warning WaitingForCredentials or InvalidCredentials or InsufficientCapabilities or OpenBaoUnreachable when reconcileBrownfield(); nothing when config projection observed (condition only);](../../diagrams/service-barbican-events.svg)
 
 The figure draws which sub-reconciler emits which event, and on what. The
 [Event Reasons Reference](#event-reasons-reference) describes every reason.

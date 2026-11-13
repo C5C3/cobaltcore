@@ -46,7 +46,7 @@ describes that pattern in full. The table lists what each step does.
 | SecretStores | Aggregates the attached, credential-ready `BarbicanSecretStore`s into the secret-store sections of `barbican.conf`, records what it projected, and resolves the OpenBao egress hosts | `SecretStoresReady` |
 | Config | Renders `barbican.conf` and `barbican-api-paste.ini` (plus `policy.yaml` when applicable) into an immutable content-hashed Secret, prunes the history down to three, and records the `ExtraConfigHealthy` guard. On an invalid projection it re-renders nothing and returns the Secret name the live Deployment mounts. **Reports through `SecretsReady`** (failure reason `ConfigError`) | `SecretsReady` |
 | DBClean | Projects the `{name}-db-clean` CronJob against the rendered config and reports the newest terminal run it spawned; once that run completed, deletes the failed runs created before it, with background propagation | `DBCleanReady` |
-| Database | Provisions the schema (MariaDB cluster gate, `Database`/`User`/`Grant` in managed mode), gates the requested release against the installed one, runs the `{name}-db-sync` Job, and promotes `installedRelease` | `DatabaseReady` |
+| Database | Provisions the schema (MariaDB cluster gate, `Database`/`User`/`Grant` in managed mode), gates the requested release against the installed one, runs the `{name}-db-sync` Job, promotes `installedRelease`, then runs the `{name}-db-index` Job that builds the list-query indexes | `DatabaseReady` |
 | Deployment | Ensures the API Deployment, Service (port 9311), and PDB, narrows the Service selector to the API component once the rollout has converged, and stamps `status.endpoint`. It creates nothing while the projection is invalid | `DeploymentReady` |
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition. It renders no request timeout, since barbican answers short JSON requests and the gateway implementation's default is the right cap | `HTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local `/healthcheck` app through the shared TTL probe cache. The paste composite routes that path outside the authtoken pipeline, so a 2xx means the WSGI app serves requests without a token or a database round trip | `BarbicanAPIReady` |
@@ -68,7 +68,12 @@ Two orderings in that chain are decisions rather than data dependencies:
   for as long as the sync Job runs, which means a step placed behind it is never
   reached during the one window that needs pausing. Its only input is the
   rendered config the CronJob mounts, which the Config step above already
-  produced.
+  produced. The pause ends when `installedRelease` is promoted, which happens
+  before the `{name}-db-index` Job runs, so a clean-up that fires during an
+  index build runs its `DELETE`s beside it. A single MariaDB admits them as
+  concurrent writes; on a Galera cluster they wait behind the build like every
+  other write. The window is as long as the build: seconds on a fresh install,
+  24.5 seconds for 5,370,391 `secrets` rows on one node.
 - **SecretStores never short-circuits.** Every waiting state of that step (no
   default, several defaults, several OpenBao stores, an unreadable credentials
   Secret) returns a zero result and no error, so a first install proceeds to the
@@ -91,7 +96,7 @@ sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 | `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `ClusterSecretStoreUnsupported`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `SecretStoresReady` | `AllStoresProjected` | `NoDefaultSecretStore`, `MultipleOpenBaoStores`, `WaitingForSecretStores` |
 | `DBCleanReady` | `DBCleanScheduled`, `DBCleanSuspended` | `DBCleanJobFailed`, `DBCleanBlocked`, `WaitingForSecretStores` |
-| `DatabaseReady` | `DatabaseSynced` | `WaitingForSecretStores`, `WaitingForDatabase`, `DBSyncInProgress`, `DBSyncFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch`, plus the shared cluster-gate reason the provisioning flow sets while the referenced MariaDB is unavailable |
+| `DatabaseReady` | `DatabaseSynced` | `WaitingForSecretStores`, `WaitingForDatabase`, `DBSyncInProgress`, `DBSyncFailed`, `DBIndexInProgress`, `DBIndexFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch`, plus the shared cluster-gate reason the provisioning flow sets while the referenced MariaDB is unavailable |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForSecretStores`, `WaitingForDeployment` |
 | `BarbicanAPIReady` | `APIHealthy` | `APIUnhealthy`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed`, plus the shared pre-endpoint wait the probe flow sets before `status.endpoint` is stamped |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
@@ -221,6 +226,56 @@ pods read the identical file. Because that one pass is idempotent, the Job set
 carries no schema-check command, and `SchemaDriftDetected` never fires for
 Barbican.
 
+Once db-sync has completed and `installedRelease` is promoted, the step runs the
+`{name}-db-index` Job. Barbican deletes a secret, order or container by flagging
+its row, and the list queries of the three filter on the project and on
+`deleted = false` and sort by `created_at`. The upstream schema indexes
+`project_id` alone, so every list request reads every row the project has ever
+had. The Job runs `python3 -c <script> secrets orders containers` with the
+image, connection override, mounts and pod settings of the db-sync Job. For each
+table the script creates `c5c3_<table>_project_id_deleted_created_at` on
+`(project_id, deleted, created_at)` and logs `created index`, unless an index on
+that column list exists under any name, which it logs as
+`an index on (project_id, deleted, created_at) exists`. On a project with 1,130 live and
+293,261 soft-deleted rows in each table, the three list calls took 0.28 to
+0.31 seconds for a page of 100 without the index and 0.003 to 0.007 seconds with
+it (MariaDB 12.3.3, the 2026.1 image). The indexes sit outside Alembic's
+history: `barbican-manage db upgrade` neither knows nor touches them. While the
+Job runs, `DatabaseReady` is `False / DBIndexInProgress` and the step requeues
+after 5 seconds, and the Deployment step waits as it does for db-sync. The Job
+runs again whenever its pod template changes (a new `spec.image`, or an operator
+that renders another template), finds the indexes, and exits.
+
+A Job that used up its five attempts sets `DatabaseReady=False / DBIndexFailed`,
+raises a Warning event of the same reason on every pass that observes it, and
+returns an error. The controller backs off, and
+`barbican_operator_reconcile_errors_total{sub_reconciler="Database"}` counts
+the failure. The API pods keep serving, but the steps behind Database are not
+reached until the Job completes. `kubectl logs job/{name}-db-index` shows the
+driver's error: `NoSuchTableError` for a missing table, `OperationalError` 1142
+(`INDEX command denied`) for a database user without the privilege, and 2003
+for an unreachable database. The managed user holds `ALL PRIVILEGES`; a
+brownfield user needs `INDEX` on the schema. A failed Job stays failed until its
+pod template changes or `kubectl delete job {name}-db-index` removes it, after
+which the next pass creates it again. Until then the release gate refuses a
+release bump that keeps the image, as described below.
+
+An operator upgrade finds no `{name}-db-index` Job on an existing Barbican,
+creates it, and the Job builds the three indexes on the tables as they are.
+`CREATE INDEX` on InnoDB builds in place and admits concurrent writes. Each
+statement commits on its own, so a run that fails at one table keeps the indexes
+it built, and the retry skips them. On a single MariaDB node the build took
+0.5 seconds per table on the tables of the measurement above, and 24.5 seconds
+on a `secrets` table of 5,370,391 rows. On a Galera cluster `CREATE INDEX`
+replicates in total order isolation, so writes to every database on that
+cluster wait for the build; that stall has not been measured, and no option
+skips the Job.
+`DROP INDEX c5c3_<table>_project_id_deleted_created_at ON <table>` removes an
+index, and the next run of the Job creates it again. An
+operator downgrade leaves the indexes in place, where they keep serving the
+list queries. Each insert and soft delete on the three tables maintains one more
+index entry; that write cost has not been measured.
+
 A release transition is a `spec.openStackRelease` bump with the image in
 lockstep. There is no phase machine: the release gate validates the requested
 release against `status.installedRelease` before any Job runs, and rejects an
@@ -231,7 +286,8 @@ reason, raises a Warning event, and returns an error so the controller backs off
 An accepted bump stamps `status.targetRelease`, the db-sync Job runs on the new
 image, the Deployment rolls onto it, and the sync flow promotes
 `status.installedRelease` on Job success, at which point `targetRelease` is
-cleared and `status.installedImage` records the image that ran the migration.
+cleared. `status.installedImage` records the image that ran the migration once
+the db-sync and db-index Jobs have both completed.
 The second panel of the figure under
 [Phase Transitions](../keystone/keystone-upgrade-flow.md#phase-transitions)
 draws this single pass beside the phase machine it does without.
@@ -244,22 +300,26 @@ untouched is refused under the same reason, because the Job's pod template would
 be identical, the shared flow would short-circuit on the already-completed Job,
 and `installedRelease` would advance off a run of the previous release's binary.
 The second guard compares `status.installedImage`, so it covers a digest-pinned
-image the first one cannot read.
+image the first one cannot read. While the index Job of a promoted release runs
+or has failed, `installedImage` still names the image of the release before, so
+for a bump the gate has not accepted yet the second guard also compares
+`spec.image` with the image of the completed `{name}-db-sync` Job.
 
 The single pass has one consequence the phased flow does not. This step runs
-ahead of the Deployment step and requeues while the Job runs, so the schema
+ahead of the Deployment step and requeues while either Job runs, so the schema
 reaches release N before a single pod of release N exists: from Job completion
 until the last old pod terminates, release N-1 code serves traffic against a
 release N schema. Whether that window is safe is a property of the alembic
 revisions the target release carries. A release with a non-additive revision (a
 dropped or renamed column) needs the API drained before the upgrade;
-`DatabaseReady` goes True the moment the Job completes and reports nothing about
+`DatabaseReady` goes True the moment both Jobs complete and reports nothing about
 the rollout that follows.
 
 ## Requeue semantics
 
 | Interval | Used by |
 | --- | --- |
+| 5s | The `{name}-db-index` Job wait |
 | 10s | Deployment readiness polling, HTTPRoute acceptance, health-check retry |
 | 15s | ESO secret-gate polling (Secrets, DBConnectionSecret), the store controller's `WaitingForParent` and `TargetClusterUnavailable` states, and its remote-children finalizer hold while a deleted store's target cluster does not resolve or nothing names it |
 | 30s | MariaDB and db-sync database wait, the finalizer hold while the MariaDB CRs tear down, and every other waiting or failure state of the store controller |

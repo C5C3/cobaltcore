@@ -25,7 +25,8 @@ BarbicanReconciler.Reconcile()
         ├─ release gate refuses      → Warning VersionParseError / DowngradeNotSupported /
         │                                      UpgradePathInvalid / ImageReleaseMismatch
         ├─ db_sync fails             → Warning DBSyncFailed
-        ├─ db_sync succeeds          → Normal  DatabaseSynced
+        ├─ db-index fails            → Warning DBIndexFailed
+        ├─ both Jobs succeed         → Normal  DatabaseSynced
         └─ Job-UID patch fails       → Warning DBSyncMetricEmissionDeferred
 
 BarbicanSecretStoreReconciler.Reconcile()
