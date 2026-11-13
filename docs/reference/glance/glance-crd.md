@@ -489,7 +489,7 @@ node filesystem. This block caps them.
 The figure shows the two volumes of this block and the cache volume of
 [ImageCacheSpec](#imagecachespec), with the paths that write to each.
 
-![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. Each size limit is an eviction threshold: once a volume grows past it, the kubelet evicts the pod. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
+![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. A sizeLimit is an eviction threshold, not a quota; periodic kubelet checks mean usage can exceed it before a pod is evicted. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -639,15 +639,19 @@ multiplication, which keeps the truncation below the true 80% and never above
 it. The band matters because glance's pruner only prunes *down to*
 `image_cache_max_size`, and only when the maintenance loop runs it, so the cache
 legitimately sits above that mark between two passes. The remaining 20% is the
-headroom those writes have before they cross the `emptyDir` bound and the
-kubelet evicts the pod. What bounds how much of that headroom one burst of
-downloads may eat is the sidecar's 30-second size poll, not
-`maintenanceInterval` — see the maintenance loop below.
+buffer between the pruner threshold and the `emptyDir` eviction threshold. The
+kubelet checks volume usage periodically, so actual use can exceed the limit
+before it detects an over-limit volume. The sidecar polls every 30 seconds and
+starts a pass when it observes reclaimable cache entries above the threshold.
+In-progress downloads are excluded from that measurement, so the poll cannot
+limit how much space they consume.
 
 A single image larger than `image_cache_max_size` is still cached in full: the
-size check happens after the download, and the next pruner pass removes it. Such
-an image only becomes a problem once it approaches `sizeLimit` itself, the bound
-the kubelet enforces and the one glance knows nothing about.
+download is written under `incomplete/` before it becomes a prunable cache
+entry, and the size poll excludes that directory. A later pass can prune the
+completed entry, but a large or concurrent download can exceed `sizeLimit`
+before the kubelet's next check. Leave room for the largest images and
+concurrent downloads; the kubelet can evict the pod if they exceed `sizeLimit`.
 
 **The driver is pinned to `sqlite`.** Upstream marks that driver deprecated in
 favour of `centralized_db`, and the operator chooses it anyway.
@@ -696,11 +700,13 @@ which is why `spec.networkPolicy` needs no rule for them.
 write barrier of its own — `image_cache_max_size` is read by the pruner, never
 by the API's cache filter — so a purely time-driven loop would let concurrent
 downloads pile into the `emptyDir` between two passes and cross the bound the
-kubelet does enforce. The sidecar therefore re-reads the directory every 30
-seconds and prunes as soon as it sits above `image_cache_max_size`, whatever
-`maintenanceInterval` says. That interval remains the cadence for the passes
-that run while the cache is under the mark, which is what bounds how long a
-stalled entry survives.
+kubelet does enforce. The sidecar re-reads the reclaimable cache size every 30
+seconds. It starts a prune when it observes that size above
+`image_cache_max_size`, whatever `maintenanceInterval` says. It does not prune
+at the instant the threshold is crossed, and in-progress downloads are not
+included in the measurement. The interval remains the cadence for passes that
+run while the cache is under the mark, which bounds how long a stalled entry
+survives.
 
 The size poll deliberately measures less than the directory holds: the
 `incomplete/`, `invalid/` and `queue/` subdirectories are excluded, because
@@ -714,20 +720,21 @@ an unreadable directory as an empty cache.
 plane.** The loop reports each failed pass and retries on the next one, however
 long the failure lasts. The sidecar shares the pod with the API container, so an
 exiting loop would `CrashLoopBackOff` the pod into `NotReady` and drop that
-replica from the Service — and a permanently broken pruner (a corrupted sqlite
-index, a renamed CLI after an image bump) is a property of the image and the
-shared config, so it fails on every replica at once. Escalating it would turn a
-degraded cache into an immediate Glance outage.
+replica from the Service. A renamed CLI after an image bump can affect every
+replica, while a corrupted sqlite index can affect only the replica that owns
+it. Escalating either failure would turn a degraded cache into an immediate
+Glance outage.
 
 Absorbing it is not free either, and the CR will not tell you so. Nothing else
-enforces `image_cache_max_size`, so under a pruner that never succeeds every
-replica's cache climbs to the `emptyDir` bound and the kubelet evicts it on
+enforces `image_cache_max_size`, so a replica whose pruner never succeeds can
+grow its cache to the `emptyDir` bound and be evicted by the kubelet on
 ephemeral-storage pressure. That eviction is a node-local decision that never
 passes through the eviction API, so the `PodDisruptionBudget` the operator
-creates does **not** stagger it: replicas under even traffic cross their
-identical bound at roughly the same time and go together. What the `Glance` CR
-shows is `DeploymentReady=False` with reason `WaitingForDeployment` and nothing
-naming the cause — no condition, no event, and no metric tracks this loop.
+creates does **not** stagger it. If a shared failure affects every replica,
+replicas under even traffic can cross their identical bounds at roughly the
+same time and go together. What the `Glance` CR shows is
+`DeploymentReady=False` with reason `WaitingForDeployment` and nothing naming
+the cause — no condition, no event, and no metric tracks this loop.
 
 The sidecar's log is therefore the only signal, and it is the one to alert on:
 
