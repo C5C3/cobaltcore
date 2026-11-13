@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="1652" viewBox="0 0 1540 1652" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Barbican operator">
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="1684" viewBox="0 0 1540 1684" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Barbican operator">
 <title>Event flow of the Barbican operator</title>
-<rect width="1540" height="1652" fill="#F6F5F1"/>
+<rect width="1540" height="1684" fill="#F6F5F1"/>
 <rect x="60" y="40" width="431" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="275.5" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">BarbicanReconciler.Reconcile()</text>
 <rect x="130" y="114" width="511" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
@@ -87,38 +87,43 @@
 <text x="491" y="1082.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
 <text x="554" y="1083.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncFailed</text>
 <polyline points="160,1108 188,1108" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1115.2" font-size="20" font-weight="400" fill="#2B3440">db_sync succeeds</text>
-<rect x="442" y="1094" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="485" y="1114.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="542" y="1115.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
+<text x="200" y="1115.2" font-size="20" font-weight="400" fill="#2B3440">db-index fails</text>
+<rect x="442" y="1094" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="491" y="1114.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="554" y="1115.2" font-size="20" font-weight="700" fill="#2B3440">DBIndexFailed</text>
 <polyline points="160,1140 188,1140" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1147.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
-<rect x="442" y="1126" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="491" y="1146.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="554" y="1147.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred</text>
-<polyline points="160,914 160,1140" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1147.2" font-size="20" font-weight="400" fill="#2B3440">both Jobs succeed</text>
+<rect x="442" y="1126" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="485" y="1146.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="542" y="1147.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
+<polyline points="160,1172 188,1172" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1179.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
+<rect x="442" y="1158" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="491" y="1178.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="554" y="1179.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred</text>
+<polyline points="160,914 160,1172" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="90,96 90,890" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="60" y="1220" width="572" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="346" y="1256.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">BarbicanSecretStoreReconciler.Reconcile()</text>
-<polyline points="90,1310 118,1310" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="130" y="1317.2" font-size="20" font-weight="400" fill="#2B3440">reconcileManaged()</text>
-<rect x="415" y="1296" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="464" y="1316.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="527" y="1317.2" font-size="20" font-weight="700" fill="#2B3440">InstanceNotFound / WaitingForInstance /</text>
-<text x="527" y="1349.2" font-size="20" font-weight="700" fill="#2B3440">WaitingForInstanceTLS / InstanceNotProvisioned /</text>
-<text x="527" y="1381.2" font-size="20" font-weight="700" fill="#2B3440">ProvisioningDenied / OpenBaoUnreachable /</text>
-<text x="527" y="1413.2" font-size="20" font-weight="700" fill="#2B3440">InvalidCredentials</text>
-<polyline points="90,1438 118,1438" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="130" y="1445.2" font-size="20" font-weight="400" fill="#2B3440">reconcileBrownfield()</text>
-<rect x="415" y="1424" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="464" y="1444.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="527" y="1445.2" font-size="20" font-weight="700" fill="#2B3440">WaitingForCredentials / InvalidCredentials /</text>
-<text x="527" y="1477.2" font-size="20" font-weight="700" fill="#2B3440">InsufficientCapabilities / OpenBaoUnreachable</text>
-<polyline points="90,1502 118,1502" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="130" y="1509.2" font-size="20" font-weight="400" fill="#2B3440">config projection observed</text>
-<text x="415" y="1509.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
+<rect x="60" y="1252" width="572" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="346" y="1288.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">BarbicanSecretStoreReconciler.Reconcile()</text>
+<polyline points="90,1342 118,1342" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="1349.2" font-size="20" font-weight="400" fill="#2B3440">reconcileManaged()</text>
+<rect x="415" y="1328" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="464" y="1348.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="527" y="1349.2" font-size="20" font-weight="700" fill="#2B3440">InstanceNotFound / WaitingForInstance /</text>
+<text x="527" y="1381.2" font-size="20" font-weight="700" fill="#2B3440">WaitingForInstanceTLS / InstanceNotProvisioned /</text>
+<text x="527" y="1413.2" font-size="20" font-weight="700" fill="#2B3440">ProvisioningDenied / OpenBaoUnreachable /</text>
+<text x="527" y="1445.2" font-size="20" font-weight="700" fill="#2B3440">InvalidCredentials</text>
+<polyline points="90,1470 118,1470" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="1477.2" font-size="20" font-weight="400" fill="#2B3440">reconcileBrownfield()</text>
+<rect x="415" y="1456" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="464" y="1476.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="527" y="1477.2" font-size="20" font-weight="700" fill="#2B3440">WaitingForCredentials / InvalidCredentials /</text>
+<text x="527" y="1509.2" font-size="20" font-weight="700" fill="#2B3440">InsufficientCapabilities / OpenBaoUnreachable</text>
+<polyline points="90,1534 118,1534" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="130" y="1541.2" font-size="20" font-weight="400" fill="#2B3440">config projection observed</text>
 <text x="415" y="1541.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
-<polyline points="90,1276 90,1502" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="40" y="1595.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
-<text x="40" y="1621.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
+<text x="415" y="1573.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
+<polyline points="90,1308 90,1534" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="1627.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
+<text x="40" y="1653.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
 </svg>

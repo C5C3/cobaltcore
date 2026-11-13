@@ -8,9 +8,9 @@
 #   1. The section heading "## Sub-Resource Naming Convention" exists.
 #   2. The section asserts the bare-CR-name convention — checks for the bare
 #      `barbican.openstack.svc.cluster.local:9311` Service DNS example.
-#   3. The section names the four derived-resource exceptions: the
+#   3. The section names the five derived-resource exceptions: the
 #      content-hashed config Secret, the derived db-connection Secret, the
-#      db-sync Job, and the db-clean CronJob.
+#      db-sync and db-index Jobs, and the db-clean CronJob.
 #
 # Usage: bash tests/unit/docs/barbican_crd_naming_convention_test.sh
 
@@ -76,7 +76,7 @@ test_bare_name_dns_example() {
 
 # --- Test 3: the derived-resource exceptions are documented ---
 test_derived_names_documented() {
-  echo "Test: section documents the four derived-resource naming exceptions"
+  echo "Test: section documents the five derived-resource naming exceptions"
 
   local body
   body="$(section_body)"
@@ -93,6 +93,10 @@ test_derived_names_documented() {
     "the section documents the {name}-db-sync Job" \
     "$body" \
     "-db-sync"
+  assert_contains \
+    "the section documents the {name}-db-index Job" \
+    "$body" \
+    "-db-index"
   assert_contains \
     "the section documents the {name}-db-clean CronJob" \
     "$body" \

@@ -181,7 +181,7 @@ path would break the suite as soon as the e2e suite adopted a new field.
 | horizon | `tests/e2e/horizon/basic-deployment/` | every sub-condition and Ready | none | Deployment `horizon-basic` | none | `spec.deployment.replicas` 3 to 2 |
 | glance | `tests/e2e/glance/basic-deployment/` | every sub-condition and Ready, and the GlanceBackend | `2026.1` | Deployment `glance-basic` | `glance-basic-db-sync` | `spec.deployment.replicas` 3 to 2 |
 | placement | `tests/e2e/placement/basic-deployment/` | every sub-condition and Ready | `2026.1` | Deployment `placement-basic` | `placement-basic-db-sync` | `spec.deployment.replicas` 3 to 2 |
-| barbican | `tests/e2e/barbican/basic-deployment/` | every sub-condition, Ready and `projectedSecretStores`, and the BarbicanSecretStore | `2026.1` | Deployment `barbican-basic` | `barbican-basic-db-sync` | `spec.deployment.replicas` 3 to 2 |
+| barbican | `tests/e2e/barbican/basic-deployment/` | every sub-condition, Ready and `projectedSecretStores`, and the BarbicanSecretStore | `2026.1` | Deployment `barbican-basic` | `barbican-basic-db-sync`, then `barbican-basic-db-index` and an `information_schema.statistics` query for its `c5c3_` index on `(project_id, deleted, created_at)` in each of `containers`, `orders` and `secrets` | `spec.deployment.replicas` 3 to 2 |
 | ovn | `tests/e2e/ovn/central-deletion-cleanup/` | Ready | none | StatefulSets `ovn-deletion-nb`, `ovn-deletion-sb`, Deployment `ovn-deletion-northd` | none | `spec.northd.deployment.replicas` 1 to 2 |
 | neutron | `tests/e2e/neutron/basic-deployment/` | every sub-condition and Ready | `2026.1` | Deployments `neutron-basic`, `neutron-basic-periodic-workers`, `neutron-basic-ovn-maintenance-worker` | `neutron-basic-db-sync` | `spec.deployment.replicas` 2 to 1 |
 | cinder | `tests/e2e/cinder/basic-deployment/` | every sub-condition, Ready and `volumeServices` | `2026.1` | Deployments `cinder-basic`, `cinder-basic-scheduler`, `cinder-basic-volume-basic-nfs1` | `cinder-basic-db-sync` | `spec.api.deployment.replicas` 2 to 1 |
@@ -205,6 +205,8 @@ Notes on single suites:
   cleanup.
 - nova uses the light tier: a Nova reaches Ready on Secrets and the broker alone,
   about eight minutes after the apply, so no sibling operator runs.
+- barbican's released baseline creates no `barbican-basic-db-index` Job, so the
+  index check proves that an operator upgrade indexes an existing database.
 - Patching to fewer replicas keeps the four three-replica fixtures inside one kind
   node.
 
