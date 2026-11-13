@@ -193,17 +193,6 @@ func serviceHost(name, namespace string) string {
 	return fmt.Sprintf("%s.%s.svc", name, namespace)
 }
 
-// ResolveHost returns the database host:port for the shared DatabaseSpec.
-// In managed mode (ClusterRef set), it constructs the MariaDB Service DNS
-// name in the given namespace. In brownfield mode (Host set), it uses the
-// explicit host:port.
-func ResolveHost(db *commonv1.DatabaseSpec, namespace string) string {
-	if db.ClusterRef != nil {
-		return fmt.Sprintf("%s.%s.svc:%d", db.ClusterRef.Name, namespace, Port(db))
-	}
-	return fmt.Sprintf("%s:%d", db.Host, Port(db))
-}
-
 // Port returns the database port, defaulting to 3306 if not set.
 func Port(db *commonv1.DatabaseSpec) int32 {
 	if db.Port > 0 {
