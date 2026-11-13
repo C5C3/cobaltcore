@@ -238,7 +238,7 @@ the same opt-in convention [ImageCacheSpec](#imagecachespec) follows.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `outputFormat` | `string` (Enum: `qcow2`, `raw`, `vmdk`) | no | `raw` | The disk format every imported image is converted to (`[image_conversion] output_format`). `raw` is the format an RBD store clones copy-on-write; `qcow2` stays sparse on a filesystem store |
+| `outputFormat` | `string` (Enum: `qcow2`, `raw`, `vmdk`) | no | `raw` | The target disk format for imported images (`[image_conversion] output_format`). Glance preserves images declared and detected as ISO even when this is `raw`. `raw` is the format an RBD store clones copy-on-write; `qcow2` stays sparse on a filesystem store |
 
 `injectMetadata` carries two:
 
