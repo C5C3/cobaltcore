@@ -165,6 +165,71 @@ test_uwsgi_runnable() {
   assert_uwsgi_graceful_shutdown
 }
 
+# --- Test 9: a clean-up batch that lost to a concurrent write is retried ---
+test_db_clean_retry_patch_applied() {
+  echo "Test: a deadlocked db clean-up batch is retried and committed"
+  # Proves both build paths applied
+  # patches/barbican/2026.1/0001-add-batched-db-cleanup-to-prevent-innodb-buffer-pool-exhaustion.patch
+  # and patches/barbican/<release>/000N-retry-a-clean-up-batch-that-conflicts-with-a-concurrent-write.patch.
+  # One soft-deleted transport key is committed to an in-memory database,
+  # and the first commit of the clean-up raises DBDeadlock, which oslo.db
+  # raises for 1213 and 1205 and subclasses for MariaDB's 1020
+  # (DBConsistencyError). The patched image rolls the batch back,
+  # runs it again and commits it: one row in two commits. An unpatched 2026.2
+  # image lets the DBDeadlock escape, and an unpatched 2026.1 image deletes
+  # the row without any commit, because 22.0.0 commits once at the end of
+  # barbican-manage db clean. The second commit calls the real one, the
+  # retry's wait is mocked, and stderr is echoed on failure so the reason is
+  # named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+
+from oslo_db import exception as db_exc
+from oslo_utils import timeutils
+
+from barbican.common import config
+from barbican.model import clean
+from barbican.model import models
+from barbican.model import repositories as repo
+
+CONF = config.CONF
+CONF.set_override("connection", "sqlite://", "database")
+CONF.set_override("db_auto_create", True)
+repo.setup_database_engine_and_factory()
+
+key = models.TransportKey("plugin", "key")
+key.deleted = True
+key.deleted_at = timeutils.utcnow()
+repo.get_session().add(key)
+repo.commit()
+
+real_commit = repo.commit
+calls = []
+
+
+def commit():
+    calls.append(None)
+    if len(calls) == 1:
+        raise db_exc.DBDeadlock()
+    real_commit()
+
+
+with mock.patch.object(clean.repo, "commit", side_effect=commit) as commits, \
+        mock.patch("time.sleep"):
+    removed = clean.cleanup_softdeletes(models.TransportKey)
+left = repo.get_session().query(models.TransportKey).count()
+if removed != 1 or commits.call_count != 2 or left != 0:
+    sys.exit("removed %d rows in %d commits with %d left, want 1 row in "
+             "2 commits with 0 left" % (removed, commits.call_count, left))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "a deadlocked clean-up batch is retried and committed" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== barbican container verification tests ==="
 echo "Image: $IMAGE"
@@ -184,6 +249,8 @@ echo ""
 test_no_build_tools_in_final_image
 echo ""
 test_uwsgi_runnable
+echo ""
+test_db_clean_retry_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
