@@ -42,11 +42,11 @@ is running (namespace `barbican-system`) alongside the projected
 `controlplane-barbican` key manager.
 :::
 
-1. A running `barbican-operator` Helm release (namespace `barbican-system`).
-2. The ControlPlane declares `spec.services.barbican`. Without it no
-   `controlplane-barbican` child exists and the Step 2 verification has nothing
-   to roll. See
-   [Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
+The cluster's CNI must enforce Kubernetes NetworkPolicy. Confirm that the
+`barbican-operator` Helm release is running in namespace `barbican-system` and
+that the ControlPlane declares `spec.services.barbican`; without it, no
+`controlplane-barbican` child exists for the Step 2 verification to roll. See
+[Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
 
 ## Step 1: Enable the policy
 
@@ -94,9 +94,10 @@ kubectl wait helmrelease/barbican-operator -n barbican-system \
 ```
 
 The rendered policy declares `policyTypes: [Ingress, Egress]`, so both
-directions default-deny and only the rules the chart emits get through: egress
-to the kube-apiserver, to DNS, to OpenBao on TCP 8200 and to the Barbican API on
-TCP 9311, plus ingress to the webhook and metrics ports.
+directions default-deny. The chart allows egress to the kube-apiserver, DNS,
+OpenBao on TCP 8200, and the Barbican API on TCP 9311. It also allows ingress
+from webhook clients when the webhook is enabled, and from metrics peers only
+when `networkPolicy.allowMetricsFrom` is configured.
 
 ### Barbican API egress
 
@@ -224,27 +225,38 @@ Then confirm reconciliation still works end-to-end by driving a change through
 the `ControlPlane` CR and watching the projected key manager roll out. The
 block records the ControlPlane's current count, which is empty while the
 ControlPlane leaves it at the default, scales the API one replica above the size
-it runs at, and puts the count back:
+it runs at, and puts the count back. Its subshell restores the count if a patch,
+wait, or rollout command fails and preserves a nonzero exit status for that
+failure:
 
 ```bash
-if CUR=$(kubectl get controlplane controlplane -n openstack \
-     -o jsonpath='{.spec.sizing.barbican.api.replicas}') &&
-   RUN=$(kubectl get deploy/controlplane-barbican -n openstack \
-     -o jsonpath='{.spec.replicas}'); then
-  NEW=$((RUN + 1))
+(
+  set -e
+  if CUR=$(kubectl get controlplane controlplane -n openstack \
+       -o jsonpath='{.spec.sizing.barbican.api.replicas}') &&
+     RUN=$(kubectl get deploy/controlplane-barbican -n openstack \
+       -o jsonpath='{.spec.replicas}'); then
+    NEW=$((RUN + 1))
 
-  kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"sizing\":{\"barbican\":{\"api\":{\"replicas\":$NEW}}}}}"
-  kubectl wait deploy/controlplane-barbican -n openstack --timeout=5m \
-    --for=jsonpath='{.spec.replicas}'="$NEW"
-  kubectl rollout status deploy/controlplane-barbican -n openstack --timeout=5m
+    restore_replicas() {
+      # null drops the override when the ControlPlane used its default.
+      kubectl patch controlplane controlplane -n openstack --type merge \
+        -p "{\"spec\":{\"sizing\":{\"barbican\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+    }
+    trap restore_replicas EXIT
 
-  # revert to the recorded count; null drops the override again
-  kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"sizing\":{\"barbican\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
-else
-  echo "could not read the replica counts; nothing was patched" >&2
-fi
+    kubectl patch controlplane controlplane -n openstack --type merge \
+      -p "{\"spec\":{\"sizing\":{\"barbican\":{\"api\":{\"replicas\":$NEW}}}}}"
+    kubectl wait deploy/controlplane-barbican -n openstack --timeout=5m \
+      --for=jsonpath='{.spec.replicas}'="$NEW"
+    kubectl rollout status deploy/controlplane-barbican -n openstack --timeout=5m
+
+    trap - EXIT
+    restore_replicas
+  else
+    echo "could not read the replica counts; nothing was patched" >&2
+  fi
+)
 ```
 
 The `if` stops the block before the first patch when either read fails. A
