@@ -21,9 +21,10 @@ required for correct reconciliation.
 > (`spec.networkPolicy` on a `Cinder`), see the
 > [Cinder CRD API Reference](../../reference/cinder/cinder-crd.md#spec). That
 > policy restricts ingress to TCP 8776 from the sources you list (at least one
-> is required, so an empty list is refused) and derives its egress from the CR:
-> DNS, the database, the cache, the Keystone, Glance and Barbican endpoints, the
-> broker port, and the NFS exports, with `additionalEgress` appended after them.
+> is required, so an empty list is refused) and derives egress from the CR: DNS,
+> the database, cache, Keystone, Glance and Barbican endpoints, the broker port,
+> NFS exports, and the Ceph monitor and OSD ports to the networks configured on
+> RBD volume and backup backends, with `additionalEgress` appended.
 > One policy covers the API pods, the scheduler, every volume service, the
 > backup service and the Job pods, because its selector carries no component
 > key.
@@ -45,10 +46,13 @@ child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
 
-1. A running `cinder-operator` Helm release (namespace `cinder-system`).
-2. The ControlPlane declares `spec.services.cinder`. Without it no
-   `controlplane-cinder` child exists and the Step 2 verification has nothing to
-   roll.
+Use a workstation whose `kubectl` context targets the cluster and with `jq`
+installed for the endpoint-discovery and connection-check commands; direct
+Helm installs also require `helm`. The cluster's container network interface
+(CNI) must enforce Kubernetes NetworkPolicy. Confirm that the `cinder-operator`
+Helm release runs in `cinder-system` and that the ControlPlane declares
+`spec.services.cinder`; otherwise no `controlplane-cinder` child exists for the
+Step 2 verification.
 
 ## Step 1 — Enable the policy
 
@@ -56,15 +60,23 @@ The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
 template refuses to render. Gather the API server CIDRs and ports from the
 `kubernetes` **Endpoints**, which carry the real API server addresses. The
-`10.96.0.1` Service VIP that `kubectl get service kubernetes` reports is the
-wrong source: an enforcing CNI
-(Calico, Cilium, and kindnet on kind v0.32 and later) evaluates policy after the
-Service DNAT has rewritten a packet aimed at the VIP to one of those endpoint
-IPs, so a rule naming the VIP never matches:
+devstack's kindnet evaluates egress after Service DNAT, so the `kubernetes`
+Service VIP (`10.96.0.1` on this devstack) is rewritten to an endpoint IP before
+policy evaluation; a rule for the VIP does not match. Kubernetes leaves the
+ordering of Service translation and NetworkPolicy evaluation to each CNI; see
+the [NetworkPolicy documentation](https://kubernetes.io/docs/concepts/services-networking/network-policies/#behavior-of-to-and-from-selectors).
+On other CNIs, check which destination IP their policy evaluates and configure
+those CIDRs.
 
 ```bash
 kubectl get endpoints kubernetes -n default -o json \
-  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
+  | jq -r '
+      .subsets[]
+      | (.addresses[].ip) as $ip
+      | (.ports[].port) as $p
+      | ($ip | if contains(":") then "/128" else "/32" end) as $mask
+      | "\($ip)\($mask) port=\($p)"
+    '
 ```
 
 Record **every** endpoint IP the command prints. A kind
@@ -88,6 +100,22 @@ kubectl wait helmrelease/cinder-operator -n cinder-system \
   --for=condition=Ready --timeout=5m
 ```
 
+::: details Helm-managed installations (non-Flux)
+For a direct Helm installation, substitute the CIDRs and ports from the
+discovery command. This example uses one IPv4 endpoint:
+
+```bash
+helm upgrade cinder-operator oci://ghcr.io/c5c3/charts/cinder-operator \
+  --namespace cinder-system --reuse-values \
+  --set networkPolicy.enabled=true \
+  --set 'networkPolicy.kubeApiServer.cidrs[0]=172.18.0.2/32' \
+  --set 'networkPolicy.kubeApiServer.ports[0]=6443' \
+  --wait --timeout 5m
+```
+
+Add an indexed `--set` entry for every additional CIDR or port.
+:::
+
 The rendered policy allows egress to the kube-apiserver, to DNS and to the
 Cinder API, and ingress to the webhook port. The chart adds the Cinder API rule
 through the `operator-library.chart.networkPolicyEgress` hook, the hook a chart
@@ -99,11 +127,12 @@ Service, and the CNI judges that connection after the Service DNAT, at the API
 pod and its port, so the rule selects the API pods by the labels the operator
 sets on them. One deployment shape does need more: with a `Cinder` placed on a
 registered target cluster, the operator talks to that cluster's API server too,
-so add its address and port to the same `kubeApiServer` lists.
-
-The reverse direction needs nothing: the per-CR policy appends an ingress peer
-selecting the operator's namespace to every policy it renders, so a workload
-namespace running `spec.networkPolicy` already admits the probe.
+so add its address and port to the same `kubeApiServer` lists. For a local
+`Cinder`, the Cinder reconciler adds the operator namespace as an ingress peer
+to the per-CR policy, which admits the local health check. A `Cinder` placed on
+a target cluster is probed through that cluster's API-server Service proxy.
+Verify that cluster's CNI permits the resulting traffic; the local
+operator-namespace peer does not represent that path.
 
 Metrics ingress is opt-in and separate. `networkPolicy.allowMetricsFrom` is
 empty by default, and with the policy on, an empty list means no ingress rule
@@ -148,16 +177,17 @@ kubectl -n cinder-system rollout restart deploy/cinder-operator
 kubectl -n cinder-system rollout status deploy/cinder-operator --timeout=5m
 ```
 
-What the restart shows depends on the CNI. A CNI that isolates a new pod before
-its containers start, as the
+What the restart shows depends on the CNI. After the CNI has processed the
+NetworkPolicy, a conformant implementation isolates newly created selected
+pods before their containers start, as the
 [Kubernetes NetworkPolicy contract](https://kubernetes.io/docs/concepts/services-networking/network-policies/#pod-lifecycle)
-requires, judges the new pod's first API server connection: under a wrong
-`kubeApiServer` rule the rollout does not finish within the timeout and the new
-pod never turns `Ready`. kindnet adds a new pod to its policy set a moment after
-the pod starts. The operator opens its API server connection in that moment and
-keeps it, so on the kind devstack the rollout finishes and the pod turns `Ready`
-under a wrong rule too. On kind, only the fresh-connection check at the end of
-this step judges the rule.
+requires. Under a wrong `kubeApiServer` rule, the new pod's first API server
+connection then fails, so the rollout does not finish within the timeout. A pod
+created before the CNI has processed the policy may start unprotected. kindnet
+adds a new pod to its policy set a moment after the pod starts. The operator
+opens its API server connection in that moment and keeps it, so on the kind
+devstack the rollout finishes and the pod turns `Ready` under a wrong rule too.
+On kind, only the fresh-connection check at the end of this step judges the rule.
 
 When the rollout times out, see
 [Reconcile timeouts / leader-election churn](#reconcile-timeouts-leader-election-churn).
@@ -176,31 +206,41 @@ ControlPlane leaves it at the default, scales the API one replica above the size
 it runs at, and puts the count back:
 
 ```bash
-if CUR=$(kubectl get controlplane controlplane -n openstack \
-     -o jsonpath='{.spec.sizing.cinder.api.replicas}') &&
-   RUN=$(kubectl get deploy/controlplane-cinder -n openstack \
-     -o jsonpath='{.spec.replicas}'); then
-  NEW=$((RUN + 1))
+(
+  set -e
+  if CUR=$(kubectl get controlplane controlplane -n openstack \
+       -o jsonpath='{.spec.sizing.cinder.api.replicas}') &&
+     RUN=$(kubectl get deploy/controlplane-cinder -n openstack \
+       -o jsonpath='{.spec.replicas}'); then
+    NEW=$((RUN + 1))
 
-  kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"sizing\":{\"cinder\":{\"api\":{\"replicas\":$NEW}}}}}"
-  kubectl wait deploy/controlplane-cinder -n openstack --timeout=5m \
-    --for=jsonpath='{.spec.replicas}'="$NEW"
-  kubectl rollout status deploy/controlplane-cinder -n openstack --timeout=5m
+    restore_replicas() {
+      # null drops the override again when the ControlPlane used its default.
+      kubectl patch controlplane controlplane -n openstack --type merge \
+        -p "{\"spec\":{\"sizing\":{\"cinder\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
+    }
+    trap restore_replicas EXIT
 
-  # revert to the recorded count; null drops the override again
-  kubectl patch controlplane controlplane -n openstack --type merge \
-    -p "{\"spec\":{\"sizing\":{\"cinder\":{\"api\":{\"replicas\":${CUR:-null}}}}}}"
-else
-  echo "could not read the replica counts; nothing was patched" >&2
-fi
+    kubectl patch controlplane controlplane -n openstack --type merge \
+      -p "{\"spec\":{\"sizing\":{\"cinder\":{\"api\":{\"replicas\":$NEW}}}}}"
+    kubectl wait deploy/controlplane-cinder -n openstack --timeout=5m \
+      --for=jsonpath='{.spec.replicas}'="$NEW"
+    kubectl rollout status deploy/controlplane-cinder -n openstack --timeout=5m
+
+    restore_replicas
+    trap - EXIT
+  else
+    echo "could not read the replica counts; nothing was patched" >&2
+    exit 1
+  fi
+)
 ```
 
-The `if` stops the block before the first patch when either read fails. A
-failed read prints the same empty string as a ControlPlane without an override,
-so without the guard the revert would drop an override the ControlPlane
-carries, and a failed Deployment read would set `NEW` to 1 and shrink the API
-instead of growing it.
+The two reads finish before the first patch. If either fails, the block prints
+an error, exits nonzero and leaves the ControlPlane unchanged. If the patch,
+wait or rollout fails after scaling, the exit trap restores the recorded count.
+An unset replica override reads as an empty string, so the restore uses `null`
+to remove that override again.
 
 The `kubectl wait` is the check that proves the operator still reconciles: the
 patch travels from the ControlPlane to the `Cinder` CR to the Deployment, and
@@ -341,11 +381,14 @@ webhooks between them (`mcinder.kb.io`, `mcinderbackend.kb.io`,
 `mcinderbackupbackend.kb.io`, `vcinder.kb.io`, `vcinderbackend.kb.io`,
 `vcinderbackupbackend.kb.io`), all with `failurePolicy: Fail` on create and
 update, so an unreachable operator turns into a cluster-wide rejection of every
-write to all three kinds. Deletes pass: the rules list `CREATE` and `UPDATE`
-only, which is what keeps a down operator from blocking CR and namespace
-teardown. The usual cause is an API server that calls webhooks from an IP that
-is **not** in `endpoints/kubernetes`, for example because it sits behind a
-front-end proxy. `networkPolicy.webhookClients.cidrs` falls back to
+write to all three kinds. The admission rules do not match `DELETE`, so the
+webhook cannot reject delete requests. Finalizers still gate removal: the Cinder
+controller releases the database finalizer after issuing cleanup and handles a
+remote-children finalizer for target-cluster CRs. If the controller is
+unavailable, a `Cinder` can stay `Terminating` and hold up namespace deletion.
+The usual cause is an API server that calls webhooks from an IP outside
+`endpoints/kubernetes`, for example because it sits behind a front-end proxy.
+`networkPolicy.webhookClients.cidrs` falls back to
 `kubeApiServer.cidrs` when empty, which is wrong in that topology.
 
 **Fix:** discover the actual caller IP (check the API-server audit log or the
@@ -357,10 +400,25 @@ kubectl patch helmrelease cinder-operator -n cinder-system --type=merge \
   -p '{"spec":{"values":{"networkPolicy":{"webhookClients":{"cidrs":["10.1.0.0/24"]}}}}}'
 ```
 
-If the wedge blocks you from recovering, set `networkPolicy.enabled=false` with
-the same patch shape. The policy object is removed on the next reconcile, and
-the operator reverts to unrestricted pod networking without a pod restart unless
-a `cinder-operator-api-probe` policy from an earlier version of this guide still
+If the policy blocks recovery, disable it using the release's management
+method. For a Flux-owned release:
+
+```bash
+kubectl patch helmrelease cinder-operator -n cinder-system --type=merge \
+  -p '{"spec":{"values":{"networkPolicy":{"enabled":false}}}}'
+```
+
+For a direct Helm installation:
+
+```bash
+helm upgrade cinder-operator oci://ghcr.io/c5c3/charts/cinder-operator \
+  --namespace cinder-system --reuse-values \
+  --set networkPolicy.enabled=false
+```
+
+The policy object is removed on the next reconcile, and the operator reverts to
+unrestricted pod networking without a pod restart unless a
+`cinder-operator-api-probe` policy from an earlier version of this guide still
 selects the pod. That policy allows 8776 alone, so delete it as well:
 
 ```bash
