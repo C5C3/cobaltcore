@@ -98,8 +98,8 @@ See [KeystoneIdentityBackend CRD](./identity-backend-crd.md) and the
 - **In-place key rotation, no rollout.** The operator replaces the data of the
   key Secret and the kubelet projects it into the running pods. The pod
   template carries no hash of the key Secrets. Its one hash annotation,
-  `keystone.c5c3.io/db-connection-hash`, rolls the Deployment when a Dynamic
-  database credential changes.
+  `keystone.c5c3.io/db-connection-hash`, rolls the Deployment when the database
+  connection string changes: a Dynamic credential or a new database route.
 - **OpenBao backup via ESO PushSecret.** Keys are mirrored to OpenBao for
   disaster recovery; staging Secrets are owner-referenced for cache eviction
   on rotation.

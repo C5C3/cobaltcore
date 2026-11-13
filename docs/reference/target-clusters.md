@@ -356,6 +356,14 @@ engagement, and a forbidden list fails the teardown sweep and holds every
 placed CR in `Terminating`. Upgrade the release on every registered target
 cluster before the service operators, with the command above.
 
+The same holds for `maxscales` in `k8s.mariadb.com`, which the chart grants
+read-only. Every service operator watches MaxScale on each cluster it places a
+service on, because the MaxScale a MariaDB names decides the database route
+([Managed database routes](./keystone/keystone-crd.md#managed-database-routes)).
+Without the grant the MaxScale watch never syncs, which fails the cluster's
+engagement. Upgrade the release on every registered target cluster before the
+service operators, with the command above.
+
 The same holds for the order kinds in `c5c3.io` (`keystoneusers`,
 `keystoneprojects`, `keystoneroleassignments`, `keystonecatalogentries`,
 `keystoneapplicationcredentials` and `mariadbdatabases`),

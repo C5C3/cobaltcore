@@ -214,10 +214,11 @@ an engine-issued username. Watch for:
   `VaultDynamicSecret`).
 - The Kubernetes Secret's `username` becoming an engine-issued login (not
   `keystone`).
-- A Keystone Deployment rollout: the operator sets a
-  `keystone.c5c3.io/db-connection-hash` pod-template annotation in Dynamic mode,
-  so a rotated credential rolls the Deployment (the DSN is consumed via the
-  `OS_DATABASE__CONNECTION` env var, which only takes effect on a Pod restart).
+- A Keystone Deployment rollout: the operator sets the digest of the DSN as the
+  `keystone.c5c3.io/db-connection-hash` pod-template annotation in every
+  credentials mode, so the engine-issued username rolls the Deployment (the DSN
+  is consumed via the `OS_DATABASE__CONNECTION` env var, which only takes effect
+  on a Pod restart).
 
 Because the engine's GRANT overlaps any pre-existing operator-provisioned
 `User`/`Grant` from the static deployment, Keystone keeps serving throughout.

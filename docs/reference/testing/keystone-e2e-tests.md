@@ -23,7 +23,7 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **60 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **61 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
@@ -105,6 +105,7 @@ Deployment rollout, bootstrap Job).
 | [policy-overrides](#policy-overrides) | `keystone-policy` | oslo.policy integration via ConfigMap reference |
 | [middleware-config](#middleware-config) | `keystone-middleware` | WSGI middleware pipeline customization in api-paste.ini |
 | [brownfield-database](#brownfield-database) | `keystone-brownfield` | Explicit database host (no MariaDB CRs created) |
+| [galera-primary-route](#galera-primary-route) | `keystone-galera-route` | On a three-member Galera MariaDB of its own the connection names `galera-route-db-primary`, the Keystone user connects to the current primary only, and after a planned primary switch auth and the one writer return within 120 s without a new DSN or a rollout |
 | [db-sync-partial-schema](#db-sync-partial-schema) | `keystone-partial-schema` | The db-sync pre-step drops the rowless schema an interrupted first `db_sync` leaves, and the first Job attempt rebuilds it |
 | [image-upgrade](#image-upgrade) | `keystone-upgrade` | Rolling image update without losing Ready status |
 | [image-pull-policy](#image-pull-policy) | `keystone-ipp` | Without `spec.image.pullPolicy` every container of the Deployment and the db-sync Job carries the operator default `IfNotPresent`; `pullPolicy: Never` reaches every container of the Deployment and the CronJobs, re-runs db-sync and keeps the bootstrap Job |
@@ -439,6 +440,41 @@ reconciliation completes to Ready=True.
 | 4 | Verify keystone.conf connection | `script` | Gets ConfigMap matching `keystone-brownfield-config-*`, verifies `keystone.conf` `[database]` section contains `openstack-db.openstack.svc.cluster.local` |
 
 **Fixtures:** `00-keystone-cr.yaml`
+
+---
+
+### galera-primary-route
+
+**File:** `tests/e2e/keystone/galera-primary-route/chainsaw-test.yaml`
+
+**Purpose:** Validates the `Primary` database route
+([Managed database routes](../keystone/keystone-crd.md#managed-database-routes)).
+On a Galera MariaDB without MaxScale the operator connects Keystone to the
+`<name>-primary` Service, so every replica writes on the one member that Service
+selects, and a primary switch reaches Keystone without a new DSN or a rollout. No
+other CI suite runs Galera: the shared `openstack-db` of the kind overlay is a
+single instance.
+
+The suite runs alone (`concurrent: false`): three `mariadbd` members with a 1Gi
+memory request each, beside three Keystone pods, do not fit next to the parallel
+suites on the 4-vCPU runner. Its timeouts are `assert: 10m`, `delete: 5m` and
+`cleanup: 5m`, and every script sets its own timeout. The Keystone sets
+`extraConfig.cache.enabled: "false"`, as `admin-password-rotation` does, because
+the shared `openstack-memcached` would answer its auth with another suite's
+`admin` user.
+
+**Steps:**
+
+| # | Step Name | Type | Details |
+| --- | --- | --- | --- |
+| 1 | `db-secret` | `script` (30s) | Creates Secret `keystone-galera-route-db` with `username` and a password generated at run time, so none sits in Git. The step's cleanup deletes it |
+| 2 | `galera` | `apply` + `assert` (10m) + `assert` | Applies `00-mariadb.yaml`, MariaDB `galera-route-db` (3 replicas, `galera.enabled: true`, 512Mi storage, generated root password, 1Gi memory request and limit, no TLS, no `maxScaleRef`). Asserts `Ready=True` within 10 minutes and that Service `galera-route-db-primary` exists |
+| 3 | `keystone` | `apply` + `assert` | Applies `02-keystone-cr.yaml`, the `basic-deployment` CR as `keystone-galera-route` on `galera-route-db` in Static mode. Asserts `Ready=True` with reason `AllReady` |
+| 4 | `connection-names-primary` | `script` (60s) | The `connection` key of Secret `keystone-galera-route-db-connection` contains `@galera-route-db-primary.openstack.svc:3306/` |
+| 5 | `one-writer-and-switch` | `script` (14m) | A password auth as `admin` against `http://localhost:5000/v3/auth/tokens` from an API pod returns 201. `information_schema.processlist`, read as root in each member, shows connections of user `keystone-galera-route` on the member `status.currentPrimary` names and none on the others. The script patches `spec.galera.primary.podIndex` to the next index, waits up to 180 s for `status.currentPrimary` to follow, and deletes the former primary's pod, which closes the connections it still pools. Within 120 s the auth returns 201 and the connections sit on the new primary only. After the recreated pod and the MariaDB are `Ready` again the check holds for all three members, the `connection` value is byte-identical and the Deployment's `metadata.generation` is unchanged |
+| 6 | `teardown` | `delete` + `error` × 2, `script` (2m) | Deletes the Keystone first, because its finalizer needs the MariaDB to drop the Database, User and Grant CRs, then the MariaDB, and asserts both are gone. The script deletes the members' PVCs and the generated root password Secret, which the MariaDB does not own |
+
+**Fixtures:** `00-mariadb.yaml`, `02-keystone-cr.yaml`
 
 ---
 
@@ -1421,6 +1457,10 @@ tests/e2e/keystone/
 │   ├── 04-patch-schedule-weekly.yaml   Patch to restore the weekly schedule
 │   ├── 05-refuse-staging-patch.yaml    Admission policy that refuses the staging PATCH
 │   └── key-helpers.sh                  Key and token helpers that steps 7 and 8 source
+├── galera-primary-route/
+│   ├── chainsaw-test.yaml              Primary route across a Galera primary switch
+│   ├── 00-mariadb.yaml                 Three-member Galera MariaDB
+│   └── 02-keystone-cr.yaml             Keystone CR on the Galera MariaDB
 ├── gateway-quick-start/
 │   ├── chainsaw-test.yaml              Envoy Gateway quick-start wiring
 │   ├── 00-namespace.yaml               Test namespace
