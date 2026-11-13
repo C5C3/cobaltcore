@@ -10,6 +10,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -148,7 +149,8 @@ func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, children cli
 		return res, nil
 	}
 
-	if err := r.gateReleaseTransition(barbican); err != nil {
+	jobs := barbicanJobSetParams(barbican, configSecretName)
+	if err := r.gateReleaseTransition(ctx, children, barbican, client.ObjectKeyFromObject(database.SyncJob(jobs))); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -156,7 +158,6 @@ func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, children cli
 	// revision in one pass, so there is no schema-check step (SchemaCheckCommand
 	// nil). InstalledRelease is promoted to spec.openStackRelease on Job success,
 	// before the db-index Job runs.
-	jobs := barbicanJobSetParams(barbican, configSecretName)
 	res, err = database.ReconcileSyncJobs(ctx, database.SyncFlowParams{
 		Client:   children,
 		Scheme:   r.Scheme,
@@ -215,7 +216,14 @@ func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, children cli
 // expand-migrate-contract flow applies in InitiateUpgrade. The reason vocabulary
 // is the shared one (database.Reason*), so the conditions read the same as on
 // the operators that do run the phase machine.
-func (r *BarbicanReconciler) gateReleaseTransition(barbican *barbicanv1alpha1.Barbican) error {
+//
+// syncJobKey names the db-sync Job the sync flow runs. status.installedImage
+// lags a promoted status.installedRelease while the db-index Job runs or has
+// failed, so the completed db-sync Job is then the record of the image that
+// migrated the schema, and the gate compares spec.image with it too. A bump the
+// gate accepted on an earlier pass (status.targetRelease equals the request)
+// skips that read: the completed Job is then the bump's own migration.
+func (r *BarbicanReconciler) gateReleaseTransition(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican, syncJobKey client.ObjectKey) error {
 	installed := barbican.Status.InstalledRelease
 	requested := barbican.Spec.OpenStackRelease
 	if installed == "" {
@@ -264,17 +272,42 @@ func (r *BarbicanReconciler) gateReleaseTransition(barbican *barbicanv1alpha1.Ba
 	// status — and the earlier pass therefore ran the migration and credited the
 	// new image to the old release. The message names both readings, because only
 	// the operator knows which one applies, and the recovery differs.
-	if barbican.Status.InstalledImage != "" && barbican.Status.InstalledImage == barbican.Spec.Image.Reference() {
+	specImage := barbican.Spec.Image.Reference()
+	unchanged := barbican.Status.InstalledImage != "" && barbican.Status.InstalledImage == specImage
+	if !unchanged && barbican.Status.TargetRelease != requested {
+		synced, err := completedJobImage(ctx, children, syncJobKey)
+		if err != nil {
+			return fmt.Errorf("reading the db-sync Job for the release gate: %w", err)
+		}
+		unchanged = synced != "" && synced == specImage
+	}
+	if unchanged {
 		return r.rejectReleaseTransition(barbican, conditionReasonImageReleaseMismatch,
 			fmt.Errorf("upgrade from %s to %s leaves spec.image unchanged (%s), so no migration would run: "+
 				"either bump spec.image in lockstep with spec.openStackRelease, or — if that image already migrated the "+
 				"schema on an earlier pass, because its digest was bumped before spec.openStackRelease was — patch "+
 				"status.installedRelease to %s to record the migration that has already run",
-				from.Raw, to.Raw, barbican.Status.InstalledImage, to.Raw))
+				from.Raw, to.Raw, specImage, to.Raw))
 	}
 
 	barbican.Status.TargetRelease = requested
 	return nil
+}
+
+// completedJobImage returns the image of the Job at key once it has completed,
+// and "" when the Job does not exist, has not completed, or has no container.
+func completedJobImage(ctx context.Context, c client.Client, key client.ObjectKey) (string, error) {
+	var j batchv1.Job
+	if err := c.Get(ctx, key, &j); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting Job %s: %w", key, err)
+	}
+	if job.TerminalCondition(&j) != batchv1.JobComplete || len(j.Spec.Template.Spec.Containers) == 0 {
+		return "", nil
+	}
+	return j.Spec.Template.Spec.Containers[0].Image, nil
 }
 
 // rejectReleaseTransition reports a refused release transition on the

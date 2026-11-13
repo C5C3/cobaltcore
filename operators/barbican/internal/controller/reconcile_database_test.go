@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/job"
@@ -603,6 +604,142 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 				To(ContainElement(ContainSubstring("Warning " + tc.reason)))
 			expectNoSyncJob(t, r)
 			expectNoIndexJob(t, r)
+		})
+	}
+}
+
+// TestReconcileDatabase_ReleaseGateReadsTheCompletedSyncJob pins the gate's
+// second record of the migrating image. While the db-index Job runs or has
+// failed, installedRelease is promoted but installedImage still names the
+// image before, so a digest-pinned release bump that keeps the image would
+// pass the installedImage comparison, short-circuit on the completed db-sync
+// Job, and promote off a run of the previous release's binary. The gate
+// therefore compares spec.image with the completed db-sync Job as well, unless
+// it accepted the bump on an earlier pass.
+func TestReconcileDatabase_ReleaseGateReadsTheCompletedSyncJob(t *testing.T) {
+	const (
+		specDigest      = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+		installedDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+		otherDigest     = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	)
+	digestPinned := func() *barbicanv1alpha1.Barbican {
+		b := testBarbican()
+		b.Spec.Image.Tag = ""
+		b.Spec.Image.Digest = specDigest
+		b.Spec.OpenStackRelease = "2026.2"
+		b.Status.InstalledRelease = "2026.1"
+		b.Status.InstalledImage = "ghcr.io/c5c3/barbican@" + installedDigest
+		return b
+	}
+	runningIndexJob := func(b *barbicanv1alpha1.Barbican) *batchv1.Job {
+		desired := dbIndexJob(barbicanJobSetParams(b, dbConfigSecretName))
+		desired.Annotations = map[string]string{job.PodSpecHashAnnotation: job.PodSpecHash(&desired.Spec.Template)}
+		return desired
+	}
+	unreadableSyncJob := interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if key == syncJobKey {
+				return apierrors.NewServiceUnavailable("etcd leader changed")
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}
+
+	for _, tc := range []struct {
+		name string
+		// seed returns the Jobs the pass finds beside the CR.
+		seed        func(b *barbicanv1alpha1.Barbican) []client.Object
+		target      string
+		funcs       *interceptor.Funcs
+		wantErr     string
+		wantReason  string
+		wantTarget  string
+		wantRelease string
+	}{
+		{
+			name: "index Job running, digest unchanged",
+			seed: func(b *barbicanv1alpha1.Barbican) []client.Object {
+				return []client.Object{terminatedSyncJob(b, batchv1.JobComplete, "sync-uid"), runningIndexJob(b)}
+			},
+			wantErr:     "leaves spec.image unchanged (ghcr.io/c5c3/barbican@" + specDigest + ")",
+			wantReason:  conditionReasonImageReleaseMismatch,
+			wantRelease: "2026.1",
+		},
+		{
+			name: "index Job failed, digest unchanged",
+			seed: func(b *barbicanv1alpha1.Barbican) []client.Object {
+				return []client.Object{
+					terminatedSyncJob(b, batchv1.JobComplete, "sync-uid"),
+					terminatedIndexJob(b, batchv1.JobFailed, "index-uid"),
+				}
+			},
+			wantErr:     "leaves spec.image unchanged",
+			wantReason:  conditionReasonImageReleaseMismatch,
+			wantRelease: "2026.1",
+		},
+		{
+			name: "bump accepted on an earlier pass",
+			seed: func(b *barbicanv1alpha1.Barbican) []client.Object {
+				return []client.Object{terminatedSyncJob(b, batchv1.JobComplete, "sync-uid")}
+			},
+			target:      "2026.2",
+			wantReason:  conditionReasonDBIndexInProgress,
+			wantRelease: "2026.2",
+		},
+		{
+			name: "new digest",
+			seed: func(b *barbicanv1alpha1.Barbican) []client.Object {
+				previous := b.DeepCopy()
+				previous.Spec.Image.Digest = otherDigest
+				return []client.Object{terminatedSyncJob(previous, batchv1.JobComplete, "sync-uid")}
+			},
+			wantReason:  database.ReasonDBSyncInProgress,
+			wantTarget:  "2026.2",
+			wantRelease: "2026.1",
+		},
+		{
+			name: "db-sync Job unreadable",
+			seed: func(b *barbicanv1alpha1.Barbican) []client.Object {
+				return []client.Object{terminatedSyncJob(b, batchv1.JobComplete, "sync-uid")}
+			},
+			funcs:       &unreadableSyncJob,
+			wantErr:     "reading the db-sync Job for the release gate: getting Job " + syncJobKey.String(),
+			wantRelease: "2026.1",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			barbican := digestPinned()
+			barbican.Status.TargetRelease = tc.target
+			builder := barbicanFakeClientBuilder(append([]client.Object{barbican}, tc.seed(barbican)...)...)
+			if tc.funcs != nil {
+				builder = builder.WithInterceptorFuncs(*tc.funcs)
+			}
+			rec := record.NewFakeRecorder(50)
+			r := &BarbicanReconciler{Client: builder.Build(), Scheme: testScheme(), Recorder: rec}
+
+			_, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
+
+			if tc.wantErr != "" {
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(ContainSubstring(tc.wantErr))
+			} else {
+				g.Expect(err).NotTo(HaveOccurred())
+			}
+			g.Expect(barbican.Status.TargetRelease).To(Equal(tc.wantTarget))
+			g.Expect(barbican.Status.InstalledRelease).To(Equal(tc.wantRelease))
+			if tc.wantReason != "" {
+				g.Expect(barbicanCondition(barbican, "DatabaseReady").Reason).To(Equal(tc.wantReason))
+			}
+			if tc.wantReason == conditionReasonImageReleaseMismatch {
+				g.Expect(collectEvents(rec)).To(ContainElement(HavePrefix("Warning " + conditionReasonImageReleaseMismatch)))
+				var syncJob batchv1.Job
+				g.Expect(r.Get(context.Background(), syncJobKey, &syncJob)).To(Succeed())
+				g.Expect(string(syncJob.UID)).To(Equal("sync-uid"), "a refused bump leaves the db-sync Job alone")
+			}
+			if tc.funcs != nil {
+				expectNoIndexJob(t, r)
+			}
 		})
 	}
 }
