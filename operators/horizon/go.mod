@@ -1,6 +1,6 @@
 module github.com/c5c3/cobaltcore/operators/horizon
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/c5c3/cobaltcore/internal/common v0.0.0
