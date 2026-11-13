@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/c5c3/cobaltcore/internal/common v0.0.0
-	github.com/dc-tec/openbao-operator v0.0.0-20260922111451-ef96ef2ddcaa
+	github.com/dc-tec/openbao-operator v0.0.0-20261113124106-7b9bbf8b1a2a
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/mariadb-operator/mariadb-operator/v26 v26.10.2
 	github.com/onsi/gomega v1.44.0
