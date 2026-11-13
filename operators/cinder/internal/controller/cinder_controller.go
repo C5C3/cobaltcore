@@ -296,6 +296,7 @@ var CinderRemoteChildKinds = []schema.GroupVersionKind{
 // Required for the operator to observe the referenced MariaDB cluster's
 // Ready condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=maxscales,verbs=get;list;watch
 // Required to read status.serverList of the Memcached spec.cache.clusterRef
 // names (an uncached Get) and to re-render cinder.conf when the list changes.
 // +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch
@@ -934,6 +935,17 @@ func (r *CinderReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcontro
 	// for the next periodic requeue.
 	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &mariadbv1alpha1.MariaDB{},
 		mariaDBToCinderMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// Watch the MaxScale a MariaDB names in spec.maxScaleRef: its services
+	// decide whether the database connection routes through it
+	// (database.ResolveEndpoint). The decision reads the spec only, and
+	// MaxScale rewrites its status every 30 s, so only a generation change
+	// reconciles.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &mariadbv1alpha1.MaxScale{},
+		maxScaleToCinderMapper(local.GetClient()), mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{}))
 	if err != nil {
 		return err
 	}

@@ -40,13 +40,27 @@ func secretToPlacementMapper(c client.Reader) handler.MapFunc {
 func mariaDBToPlacementMapper(c client.Reader) handler.MapFunc {
 	return watch.ClusterRefMapper(c,
 		func() client.ObjectList { return &placementv1alpha1.PlacementList{} },
-		func(o client.Object) string {
-			p, ok := o.(*placementv1alpha1.Placement)
-			if !ok || p.Spec.Database.ClusterRef == nil {
-				return ""
-			}
-			return p.Spec.Database.ClusterRef.Name
-		})
+		placementDatabaseClusterRef)
+}
+
+// maxScaleToPlacementMapper returns a MapFunc that maps MaxScale events to
+// reconcile requests for Placement CRs whose spec.database.clusterRef names the
+// MariaDB the MaxScale's spec.mariaDbRef names, in the same namespace. The
+// MaxScale's spec decides whether the database connection routes through it.
+func maxScaleToPlacementMapper(c client.Reader) handler.MapFunc {
+	return watch.MaxScaleToClusterRefMapper(c,
+		func() client.ObjectList { return &placementv1alpha1.PlacementList{} },
+		placementDatabaseClusterRef)
+}
+
+// placementDatabaseClusterRef returns the name of the MariaDB a Placement CR's
+// spec.database.clusterRef names, or "" for a brownfield database.
+func placementDatabaseClusterRef(o client.Object) string {
+	p, ok := o.(*placementv1alpha1.Placement)
+	if !ok || p.Spec.Database.ClusterRef == nil {
+		return ""
+	}
+	return p.Spec.Database.ClusterRef.Name
 }
 
 // memcachedToPlacementMapper returns a MapFunc that maps Memcached events to

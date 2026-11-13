@@ -152,6 +152,40 @@ func TestMariaDBToBarbicanMapper_EnqueuesReferencingBarbicans(t *testing.T) {
 	g.Expect(mariaDBToBarbicanMapper(c)(context.Background(), unrelated)).To(BeEmpty())
 }
 
+// --- maxScaleToBarbicanMapper ---
+
+// TestMaxScaleToBarbicanMapper_EnqueuesTheCRsOfItsMariaDB verifies a MaxScale
+// event enqueues the Barbicans whose clusterRef names the MariaDB the
+// MaxScale's spec.mariaDbRef names, and nothing for a MaxScale of another
+// MariaDB or one without mariaDbRef.
+func TestMaxScaleToBarbicanMapper_EnqueuesTheCRsOfItsMariaDB(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	managed := testBarbican()
+	managed.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+	brownfield := testBarbican()
+	brownfield.Name = "other-barbican"
+	elsewhere := testBarbican()
+	elsewhere.Name = "elsewhere-barbican"
+	elsewhere.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "another-db"}
+	mapper := maxScaleToBarbicanMapper(barbicanFakeClientBuilder(managed, brownfield, elsewhere).Build())
+
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, "openstack-db"))).To(ConsistOf(barbicanRequest))
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, "unrelated-db"))).To(BeEmpty())
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, ""))).To(BeEmpty(),
+		"a MaxScale without mariaDbRef concerns no Barbican")
+}
+
+// maxScaleOf returns a MaxScale in namespace whose spec.mariaDbRef names
+// mariaDB; an empty mariaDB leaves the reference unset.
+func maxScaleOf(namespace, mariaDB string) *mariadbv1alpha1.MaxScale {
+	mxs := &mariadbv1alpha1.MaxScale{ObjectMeta: metav1.ObjectMeta{Name: "openstack-db-maxscale", Namespace: namespace}}
+	if mariaDB != "" {
+		mxs.Spec.MariaDBRef = &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: mariaDB}}
+	}
+	return mxs
+}
+
 // --- esoStoreToBarbicanMapper ---
 
 func TestEsoStoreToBarbicanMapper_ClusterStoreWakesDefaultingBarbicans(t *testing.T) {

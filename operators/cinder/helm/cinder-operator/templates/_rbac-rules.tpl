@@ -191,6 +191,7 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - k8s.mariadb.com
   resources:
   - mariadbs
+  - maxscales
   verbs:
   - get
   - list

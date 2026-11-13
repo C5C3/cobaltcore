@@ -173,6 +173,7 @@ rules:
   - k8s.mariadb.com
   resources:
   - mariadbs
+  - maxscales
   verbs:
   - get
   - list

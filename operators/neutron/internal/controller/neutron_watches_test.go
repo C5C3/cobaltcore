@@ -293,6 +293,37 @@ func TestMariaDBToNeutronMapper_EnqueuesReferencingNeutrons(t *testing.T) {
 	g.Expect(mariaDBToNeutronMapper(c)(context.Background(), unrelated)).To(BeEmpty())
 }
 
+// --- maxScaleToNeutronMapper ------------------------------------------------
+
+// TestMaxScaleToNeutronMapper_EnqueuesTheCRsOfItsMariaDB verifies a MaxScale
+// event enqueues the Neutrons whose clusterRef names the MariaDB the
+// MaxScale's spec.mariaDbRef names, and nothing for a MaxScale of another
+// MariaDB or one without mariaDbRef.
+func TestMaxScaleToNeutronMapper_EnqueuesTheCRsOfItsMariaDB(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	managed := validNeutron()
+	managed.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+	brownfield := validNeutron()
+	brownfield.Name = "brownfield-neutron"
+	mapper := maxScaleToNeutronMapper(neutronFakeClientBuilder(managed, brownfield).Build())
+
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, "openstack-db"))).To(ConsistOf(neutronRequest))
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, "unrelated-db"))).To(BeEmpty())
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, ""))).To(BeEmpty(),
+		"a MaxScale without mariaDbRef concerns no Neutron")
+}
+
+// maxScaleOf returns a MaxScale in namespace whose spec.mariaDbRef names
+// mariaDB; an empty mariaDB leaves the reference unset.
+func maxScaleOf(namespace, mariaDB string) *mariadbv1alpha1.MaxScale {
+	mxs := &mariadbv1alpha1.MaxScale{ObjectMeta: metav1.ObjectMeta{Name: "openstack-db-maxscale", Namespace: namespace}}
+	if mariaDB != "" {
+		mxs.Spec.MariaDBRef = &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: mariaDB}}
+	}
+	return mxs
+}
+
 // --- esoStoreToNeutronMapper ------------------------------------------------
 
 // pinnedNeutron returns a Neutron routing its secrets through a namespaced
