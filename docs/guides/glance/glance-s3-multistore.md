@@ -37,10 +37,10 @@ namespace with its `default` S3 store attached (bucket `glance-images`). Every
 resource name in the examples below is one that devstack produces.
 :::
 
-- The devstack's Garage object store and the ESO-synced `garage-s3-credentials`
-  Secret are already running (Step 1 describes them). A second store needs a
-  second bucket the credentials can read and write. The devstack pre-creates
-  `glance-images-2` for this.
+The devstack's Garage object store is already running, and External Secrets
+Operator has synced `garage-s3-credentials`. A second store needs a second
+bucket the credentials can read and write; the devstack pre-creates
+`glance-images-2` for this.
 
 ## Step 1: The Garage devstack pieces
 
@@ -169,22 +169,50 @@ kubectl get glance controlplane-glance -n openstack \
   -o jsonpath='{.status.conditions[?(@.type=="BackendsReady")]}' | jq
 ```
 
-Confirm it from the data path. The projected Glance API is reachable in-cluster
-only (this guide's ControlPlane leaves `services.glance.gateway` unset), so
-issue a token on the host and run a one-shot in-cluster client, the pattern the
+Confirm it from the data path. The Quick Start exposes the projected Glance API
+through a Gateway; this probe uses its in-cluster Service instead. Issue a token
+on the host and run a one-shot in-cluster client, the pattern the
 [Extended Quick Start](../../quick-start-extended.md) uses to reach an API Service,
-against `GET /v2/info/stores`:
+against `GET /v2/info/stores`.
+The probe keeps its pod until it reads the logs, so a fast response is still
+available if `kubectl run -i` misses the attach window.
 
 ```bash
-openstack --insecure token issue -f value -c id \
-  | kubectl run glance-stores-probe -n openstack --rm -i --restart=Never \
+(
+POD=glance-stores-probe
+kubectl delete pod "$POD" -n openstack --ignore-not-found
+set -o pipefail
+if openstack --insecure token issue -f value -c id \
+  | kubectl run "$POD" -n openstack -i --restart=Never \
       --image=ghcr.io/c5c3/glance:2026.1 \
       --command -- python3 -c '
 import json, sys, urllib.request
 req = urllib.request.Request(
     "http://controlplane-glance.openstack.svc.cluster.local:9292/v2/info/stores",
     headers={"X-Auth-Token": sys.stdin.read().strip()})
-print(json.dumps(json.load(urllib.request.urlopen(req)), indent=2))'
+print(json.dumps(json.load(urllib.request.urlopen(req, timeout=30)), indent=2))' >/dev/null; then
+  probe_status=0
+else
+  probe_status=$?
+fi
+if kubectl logs "$POD" -n openstack; then
+  logs_status=0
+else
+  logs_status=$?
+fi
+if kubectl delete pod "$POD" -n openstack --ignore-not-found; then
+  cleanup_status=0
+else
+  cleanup_status=$?
+fi
+if [ "$probe_status" -ne 0 ]; then
+  exit "$probe_status"
+elif [ "$logs_status" -ne 0 ]; then
+  exit "$logs_status"
+else
+  exit "$cleanup_status"
+fi
+)
 ```
 
 Both store ids appear, with the default flagged:
@@ -213,9 +241,10 @@ by the apiserver; it still expires on its own, so nothing here has to revoke it.
 
 ## Step 3: Switch the default store
 
-Exactly one entry in `backends[]` may set `isDefault`. The ControlPlane
-validating webhook rejects a list with zero or two defaults
-(`exactly one backends entry must set isDefault`). Switch the default by moving
+Exactly one entry in `backends[]` may set `isDefault`. ControlPlane CRD
+validation and its validating webhook reject a list with no default or multiple
+defaults. The CRD validation message is
+`exactly one backends entry must set isDefault`. Switch the default by moving
 the flag between the two entries in a **single** edit, so the list is never
 momentarily invalid:
 
@@ -241,13 +270,11 @@ name and an unchanged `controlplane-glance-backends-<hash>` name.
 Re-run the `/v2/info/stores` probe from Step 2:
 `controlplane-glance-secondary` now carries `"default": true`.
 
-::: tip No valid default means last-good is retained
-If a switch ever leaves zero credential-ready defaults (for example a
-credentials Secret for the incoming default is not ready yet), `BackendsReady`
-goes `False`/`NoDefaultBackend`, the config is **not** re-rendered, and the
-running pods keep mounting the last-good ConfigMap. The default does not silently
-disappear mid-switch.
-:::
+If an edit leaves no credential-ready default, for example because the incoming
+default's credentials Secret is not ready, `BackendsReady` becomes
+`False`/`NoDefaultBackend`. The operator does not re-render the config, so
+running pods keep mounting the last-good ConfigMap. Restore one credential-ready
+default to resume projection.
 
 ## Step 4: User-owned backends
 
@@ -258,10 +285,10 @@ children carrying the `controlplane-glance-` prefix that it created, so a
 hand-made backend attached to the same Glance is never reverted or deleted by
 the ControlPlane.
 
-On a ControlPlane devstack such a backend can never be the default, though. Two
-webhooks combine to forbid it:
+On a ControlPlane devstack such a backend cannot be the default. ControlPlane
+validation and the GlanceBackend webhook combine to forbid it:
 
-- the ControlPlane webhook already requires exactly one default **inside**
+- ControlPlane validation requires exactly one default **inside**
   `backends[]`, so a projected default always exists; and
 - the GlanceBackend webhook enforces sibling-default uniqueness across **all**
   backends attached to one Glance, so admission rejects a second
@@ -282,6 +309,10 @@ the [standalone section](#standalone-glance-without-a-controlplane) below.
 | A backend rejected: name uses the reserved `os_glance_` / `os-glance-` prefix, or collides with a reserved store section | A `GlanceBackend`'s name becomes its store id and `glance-api.conf` section, so names Glance and the operator own (`default`, `glance_store`, `os_glance_staging_store`, …) are refused. |
 
 ## Standalone Glance, without a ControlPlane
+
+This is an alternate setup, not an additional Glance beside the ControlPlane
+walkthrough above. Do not apply it while `controlplane-glance` uses the `glance`
+database; the standalone CR below uses the same database name.
 
 Without a ControlPlane there is nothing to project the Glance child, the service
 account, or the catalog entries, so you own them. This is where `isDefault` sits
@@ -311,11 +342,11 @@ printf '%s' "$PW" | kubectl create secret generic glance-service-user -n opensta
 unset PW
 ```
 
-Prompt for the password and pass it through standard input. A password on the
-command line lands in argv, so it is written to the shell's history file and is readable out of
-`/proc/<pid>/cmdline` by any local user running `ps auxww` while the command
-runs. `--from-file=password=/dev/stdin` keeps it on a pipe, like the
-reason the [external-Keystone adoption
+Prompt for the password and pass it through standard input. A literal password
+in a command can be saved in shell history, and process listings can expose
+arguments to other users depending on host permissions. This prompt keeps the
+password out of the command text, and `--from-file=password=/dev/stdin` passes
+it to `kubectl` over a pipe, like the reason the [external-Keystone adoption
 guide](../keystone/adopt-external-keystone.md) writes its Secret that way when rotating
 the admin password.
 
