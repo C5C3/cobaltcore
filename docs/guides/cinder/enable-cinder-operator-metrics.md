@@ -31,16 +31,16 @@ Job-driven paths:
 | `cinder_operator_service_remove_total` | counter | `cinder`, `namespace`, `result` |
 | `cinder_operator_service_remove_duration_seconds` | histogram | `cinder`, `namespace` |
 
-`sub_reconciler` carries sixteen values: `Secrets`, `DBConnectionSecret`,
+`sub_reconciler` carries seventeen values: `Secrets`, `DBConnectionSecret`,
 `TransportURLSecret`, `Config`, `Backends`, `BackupBackend`, `Database`,
 `Scheduler`, `VolumeServices`, `BackupService`, `Deployment`, `DBPurge`,
-`HTTPRoute`, `HealthCheck`, `HPA` and `NetworkPolicy`. All sixteen come from the
-`Cinder` pipeline. The operator also reconciles `CinderBackend` and
-`CinderBackupBackend`, and those two controllers emit no sub-reconciler samples
-of their own; their outcome reaches the `Cinder` through the `Backends` and
-`BackupBackend` steps. The three job pairs carry the CR name and its namespace in
-place of a sub-reconciler: they measure Jobs, which is work that happens outside
-a reconcile.
+`HTTPRoute`, `HealthCheck`, `HPA`, `VPA` and `NetworkPolicy`. All seventeen
+come from the `Cinder` pipeline. The operator also reconciles `CinderBackend`
+and `CinderBackupBackend`; those controllers emit no sub-reconciler samples of
+their own. Their outcomes reach the `Cinder` through the `Backends` and
+`BackupBackend` steps. The three job pairs use the CR name and namespace instead
+of `sub_reconciler`; they record terminal Job outcomes rather than reconcile
+steps.
 
 For the controller-side contract (which sub-reconciler drives which condition),
 see [Cinder Reconciler Architecture](../../reference/cinder/cinder-reconciler.md).
@@ -60,8 +60,10 @@ child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
 
-For a non-kind installation, install the prometheus-operator CRDs and configure
-Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
+Run the commands below from a workstation with `kubectl` access to the cluster,
+`curl` and `jq`; the direct Helm path also requires `helm`. For a non-kind
+installation, install the Prometheus Operator CRDs and configure Prometheus's
+`serviceMonitorSelector` to match the ServiceMonitor labels and
 `serviceMonitorNamespaceSelector` to include `cinder-system`. The db-sync series
 in Step 3 requires a reconciled `Cinder`. On the devstack that is
 `controlplane-cinder`, projected when the ControlPlane declares the
@@ -142,7 +144,8 @@ Keep the port-forward running in a separate terminal:
 kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
 ```
 
-For an existing Prometheus, replace `monitoring` with its namespace.
+For an existing Prometheus, replace the namespace, Service name and remote port
+with those of its HTTP API.
 In another terminal, query the targets:
 
 ```bash
@@ -177,12 +180,19 @@ empty until the next `Cinder` is created.
 
 The db-purge pair fills on the first firing of the `{name}-db-purge` CronJob,
 daily at `1 0 * * *` unless `spec.dbPurge.schedule` says otherwise. Only the Jobs
-that CronJob controls are counted. A run triggered with
-`kubectl create job --from=cronjob/controlplane-cinder-db-purge` is one of them,
-because kubectl copies the template's labels and names the CronJob as the Job's
-controller, so it fills the pair on the spot and moves `DBPurgeReady` like a
-scheduled run. A Job applied from a copy of the template, without that owner
-reference, is not counted. The service-remove pair needs a backend detach:
+that CronJob controls are counted. To start one immediately in the devstack,
+create a Job from that CronJob:
+
+```bash
+kubectl create job controlplane-cinder-db-purge-manual \
+  --from=cronjob/controlplane-cinder-db-purge -n openstack
+```
+
+Kubectl copies the template's labels and sets the CronJob as the Job's
+controller, so the operator counts the run once it reaches a terminal state.
+That run updates `DBPurgeReady` like a scheduled run. Use a new Job name if you
+repeat the command. A Job applied from a copy of the template, without that
+owner reference, is not counted. The service-remove pair needs a backend detach:
 [Attach an NFS Backend to Cinder](./attach-an-nfs-backend.md) walks one, and the
 `{cinder}-{backend}-service-remove` Job it spawns is what fills the pair.
 
