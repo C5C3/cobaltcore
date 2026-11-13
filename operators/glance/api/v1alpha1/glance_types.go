@@ -506,8 +506,9 @@ type ImportPluginsSpec struct {
 	// +optional
 	Decompression *ImportDecompressionSpec `json:"decompression,omitempty"`
 
-	// Conversion enables the image_conversion plugin, which rewrites the staged
-	// image into one target disk format.
+	// Conversion enables the image_conversion plugin, which rewrites staged
+	// images into one target format. Glance preserves images declared and
+	// detected as ISO.
 	// +optional
 	Conversion *ImportConversionSpec `json:"conversion,omitempty"`
 
@@ -555,8 +556,9 @@ type ImportPluginsSpec struct {
 // stored CR carries.
 type ImportDecompressionSpec struct{}
 
-// ImportConversionSpec enables the image_conversion plugin, which converts the
-// staged image to a single disk format before it reaches the backing store.
+// ImportConversionSpec enables the image_conversion plugin, which converts
+// staged images to a single format before they reach the backing store. Glance
+// preserves images declared and detected as ISO.
 // Uniform image formats are what make a Ceph/RBD backend clone an image
 // copy-on-write instead of flattening a full copy per boot, and they close the
 // gap where an image's declared disk_format disagrees with its actual content.
@@ -565,8 +567,9 @@ type ImportDecompressionSpec struct{}
 // source and the result at once, so enabling it raises the scratch space an
 // import consumes — size spec.staging.sizeLimit accordingly.
 type ImportConversionSpec struct {
-	// OutputFormat is the disk format every imported image is converted to
-	// ([image_conversion] output_format). When empty the operator resolves
+	// OutputFormat is the target disk format for imported images
+	// ([image_conversion] output_format). Glance preserves images declared and
+	// detected as ISO even when this is raw. When empty the operator resolves
 	// DefaultImportConversionOutputFormat at render time rather than
 	// materializing it into the CR, so leaving it unset keeps tracking that
 	// default across upgrades. The accepted values are glance's own: raw, which
