@@ -561,6 +561,74 @@ The image stays config-free: the barbican-operator mounts `barbican.conf` and
 
 **Runtime packages:** none beyond the venv.
 
+**Source patch:**
+`patches/barbican/2026.1/0001-add-batched-db-cleanup-to-prevent-innodb-buffer-pool-exhaustion.patch`
+carries upstream commit `a28ddb94c3` (master, 2026-06-03, Closes-Bug
+#2155108) to Barbican 22.0.0. Barbican 23.0.0 contains it, no 22.0.x tag
+exists, and stable/2026.1 does not carry it. Barbican 22.0.0 runs the whole of
+`barbican-manage db clean` in one transaction: `clean_command`
+(`barbican/model/clean.py`) commits once, after the last table. The statements
+filter on `deleted`, `deleted_at` and `expiration`, which no index covers, so
+each one reads its whole table and locks what it reads. The pass that
+soft-deletes expired secrets selects the matching rows first and updates them
+afterwards. A secret the API commits between the two fails the update with
+MariaDB error 1020 ("Record has changed since last read"), and the rollback
+discards the whole run. Against MariaDB 12.3.3 under concurrent API writes the
+published 2026.1 image failed 13 of 13 runs this way, and in the playground
+cluster all seven attempts of the clean-up Job of 2026-11-12 failed. The
+upstream commit selects up to 10,000 ids per batch, changes those rows by
+primary key and commits each batch, so a failed run keeps what it committed.
+The cherry-pick applies without a conflict, and `clean.py`, `db_manage.py` and
+`test_db_cleanup.py` then equal their 23.0.0 versions; the upstream test hunks
+travel inside the patch. The legacy `barbican-db-manage` entry point gains a
+`--batch-size` option. `barbican-manage db clean`, the command the
+barbican-operator runs, takes none and uses 10,000. The retry assertion of
+`verify_barbican.sh` covers the backport as well, because without it no batch
+commits on its own. No 2026.2 twin: 23.0.0 carries the commit. Upstream
+status: merged on master as `a28ddb94c3` (2026-06-03).
+
+**Source patch:**
+`patches/barbican/2026.1/0002-retry-a-clean-up-batch-that-conflicts-with-a-concurrent-write.patch`
+and its 2026.2 twin
+`patches/barbican/2026.2/0001-retry-a-clean-up-batch-that-conflicts-with-a-concurrent-write.patch`
+retry a clean-up batch that loses against a concurrent write. The twins differ
+in their `Applies to` line only. The batched code of 23.0.0 retries no batch.
+Its `_soft_delete_expired_secrets` is still one `UPDATE` that reads all of
+`secrets` and holds its locks until the next batch commits. A loop that finds
+no id leaves its transaction open, so the next table is read from an old
+snapshot, and a row written since then fails the batch with 1020. Under
+concurrent API writes the published 2026.2 image failed 4 of 6 local runs with
+30,000 soft-deleted secrets in the retention window and 1 of 8 with
+`--min-days 0`, with 1020 on `secrets`, `secret_user_metadata` or `orders`.
+oslo.db raises `DBDeadlock` for MySQL errors 1213 and 1205 and its subclass
+`DBConsistencyError` for 1020, and upstream catches neither. The patch moves
+the six loops of `barbican/model/clean.py` onto two helpers and batches
+`_soft_delete_expired_secrets` the same way. `_run_batch`, wrapped in
+`oslo_db.api.wrap_db_retry`, rolls back a batch that raised `DBDeadlock`, logs
+a WARNING that names the table, and runs the batch again, up to ten times. The
+waits add up to 75 seconds at most, against the one-hour
+`activeDeadlineSeconds` of the clean-up Job. Every other exception passes
+through on its first occurrence. When the retries run out,
+`barbican-manage db clean` exits non-zero, the Job retries the pod, and the
+next attempt continues behind the committed batches.
+
+A batch still commits 10,000 rows, but each `DELETE` or `UPDATE` names at most
+500 of its ids. MariaDB 12.3.3 runs a `DELETE` that names 10,000 ids of a
+50,000-row table as a full table scan. Under REPEATABLE READ that scan fails
+with 1020 on any row written after the batch read its ids, and every retry
+meets the same race: in the reproduction of issue #1705, the retry without the
+split failed 4 of 5 runs after ten retries of one batch. With 500 ids the
+statement reads only the rows of its batch through the primary key, and the
+patched images passed five runs in a row. No upstream test moves. The patch
+adds eight tests to `barbican/tests/cmd/test_db_cleanup.py`: retries after
+`DBDeadlock` and `DBConsistencyError`, committed batches kept across a retry,
+the error after the last retry, the expired-secrets pass in batches, no commit
+when nothing expired, one batch split over several statements, and a batch
+rolled back and run again after a conflict on its second statement.
+`verify_barbican.sh` makes the first commit of a clean-up raise `DBDeadlock`
+in the built image and expects the row to be deleted in the second. Upstream
+status: not yet proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -579,8 +647,9 @@ runs its suite under stestr (the default path, as for keystone).
 hard gate — it verifies the CLIs, importability, that the `vault_plugin` and
 `castellan.drivers` `vault` stevedore entry points load, that
 `barbican.wsgi.api` resolves and binds `application` to something other than
-the `None` sentinel, that uwsgi runs and imports `barbican`, non-root
-execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
+the `None` sentinel, that uwsgi runs and imports `barbican`, that a database
+clean-up batch whose commit raises `DBDeadlock` is rolled back, retried and
+committed, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
 rather than imported by module path, because that is how barbican and
 castellan resolve them at runtime — an import would go green off the `.py`
 file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI

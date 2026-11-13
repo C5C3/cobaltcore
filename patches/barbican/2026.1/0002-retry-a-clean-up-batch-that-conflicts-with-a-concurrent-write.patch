@@ -1,0 +1,746 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Retry a clean-up batch that conflicts with a concurrent write
+
+Barbican 23.0.0, and 22.0.0 with the backport of upstream commit
+a28ddb94c3, runs `barbican-manage db clean` in batches: six copies of
+one `while True` loop in barbican/model/clean.py select up to 10,000
+ids with a plain read, change those rows by primary key and commit.
+Three gaps remain:
+
+- No batch is retried. A batch that loses against a concurrent API
+  write fails the run.
+- `_soft_delete_expired_secrets` is still one `UPDATE` that reads all
+  of `secrets` (no index covers `deleted` or `expiration`) and holds
+  its locks until the next batch commits, or until the end of the run
+  when no batch follows.
+- A loop that finds no id leaves its transaction open, so the next
+  table is read from the old snapshot, and a row written since then
+  fails the batch with MariaDB error 1020 ("Record has changed since
+  last read", innodb_snapshot_isolation=ON under REPEATABLE READ).
+
+Measured on 2026-11-13 against MariaDB 12.3.3 (one node) with eight
+connections running the statements the API runs, the published 2026.2
+image failed 4 of 6 runs with 30,000 soft-deleted secrets and their
+metadata in the retention window (1020 on `secret_user_metadata` and on
+`secrets`), and 1 of 8 runs with `--min-days 0` (1020 on `orders`).
+oslo.db (18.0.0 for 2026.1, 18.1.1 for 2026.2) already classifies the
+errors: `exc_filters` raises `DBDeadlock` for MySQL errors 1213 and
+1205, and its subclass `DBConsistencyError` for 1020. The clean-up
+catches neither.
+
+The patch moves every loop onto two helpers. `_run_batch` reads one
+batch of ids, changes the rows in statements of at most 500 ids
+(`_IDS_PER_STATEMENT`) and commits; on `DBDeadlock` it rolls
+the session back, which ends the transaction and its snapshot, logs a
+WARNING naming the table, and re-raises, so that
+`oslo_db.api.wrap_db_retry(retry_on_deadlock=True)` waits and runs the
+batch again, up to `CLEANUP_BATCH_MAX_RETRIES = 10` times. Any other
+exception passes through on its first occurrence. `_run_batches` loops
+until the id query finds nothing and sums the counts.
+`_soft_delete_expired_secrets` becomes a batched loop of its own:
+ids of live secrets that expired, an `UPDATE` by id, one commit per
+batch; each batch shrinks the candidate set, which ends the loop.
+
+A statement names at most 500 ids because the retry alone does not
+reach a batch whose statement scans the table. MariaDB 12.3.3 runs
+`DELETE FROM secrets WHERE id IN (...)` with the 10,000 ids of a full
+batch as a full scan of a 50,000-row table, and with 9,000 ids or fewer
+by primary key. Under REPEATABLE READ the scan reads every row with a
+lock, so it fails with 1020 on any row written after the batch read its
+ids, and each retry meets the same race. Under the four writers of the
+reproduction in issue C5C3/cobaltcore#1705, 20 of 20 attempts failed
+with 10,000 ids per statement and 0 of 20 with 500, and the retry
+without the split failed 4 of 5 runs after ten retries of one batch.
+With 500 ids a statement stays on the primary key on tables of 5,000
+rows and more, and it reads only the rows of its batch. The batch, and
+with it the commit, stays at 10,000 rows.
+
+`_run_batch` sets the intervals of wrap_db_retry to the defaults of
+oslo.db 18, so that an oslo.db bump cannot change them: the first wait
+is 1 s, each later one a random time below a bound that doubles from
+2 s and is capped at 10 s, so ten retries of one batch wait 75 s at
+most, against the 3,600 s activeDeadlineSeconds of the
+barbican-operator's clean-up Job. When the retries of a batch run out,
+the `DBDeadlock` reaches `clean_command`, which logs, rolls back the
+open batch and re-raises; the process exits non-zero, the Job retries
+the pod, and the next attempt continues behind the committed batches.
+
+The helpers retry per batch rather than per public function: a retry
+decorator on `cleanup_softdeletes` and its siblings would restart a
+table from its first batch, count the rows of the last attempt only,
+and spend the ten retries per table instead of per batch.
+`_run_batch` neither rolls back before its first attempt nor commits an
+empty batch: the upstream tests build their fixtures uncommitted in
+the session the clean-up uses, and two of them pin "no commit for the
+empty trailing query". The open snapshot that leaves can fail the
+first attempt of the next batch, and the retry then reads a new one.
+
+Without concurrent writers the patched code takes as long as the
+unpatched 23.0.0 code: 1.6 to 1.7 s for 90,000 soft-deleted secrets
+in both.
+
+Tests: no upstream test moves. The commit counts per table stay the
+same, `test_cleanup_softdeletes_partial_progress_is_durable` raises a
+`RuntimeError`, which is not retried, and
+`test_db_cleanup_raise_integrity_error` expects a `DBReferenceError`,
+which is not a `DBDeadlock`. The patch adds eight tests to
+barbican/tests/cmd/test_db_cleanup.py: a batch retried after
+`DBDeadlock` and after `DBConsistencyError`, committed batches kept
+across a retry, `DBDeadlock` raised after the last retry with the rows
+of that batch in place, the expired-secrets pass committing per batch,
+no commit when nothing expired, one batch split over several
+statements and committed once, and a batch whose second statement
+raises `DBConsistencyError`, rolled back and run again with every row
+counted once. All but the nothing-expired test fail without the
+patch.
+
+Proof: tests/container-images/verify_barbican.sh (Test 9) asserts in
+the built image that a clean-up batch whose commit raises `DBDeadlock`
+is run again and committed.
+
+Applies to barbican 22.0.0 (2026.1), on top of 0001, the backport of
+the batched clean-up.
+
+Upstream status: not yet proposed.
+
+diff --git a/barbican/model/clean.py b/barbican/model/clean.py
+index f3aa8b9e..776c5ff5 100644
+--- a/barbican/model/clean.py
++++ b/barbican/model/clean.py
+@@ -16,6 +16,8 @@
+ from barbican.common import config
+ from barbican.model import models
+ from barbican.model import repositories as repo
++from oslo_db import api as oslo_db_api
++from oslo_db import exception as db_exc
+ from oslo_log import log
+ from oslo_utils import timeutils
+ 
+@@ -34,6 +36,102 @@ DEFAULT_CLEANUP_BATCH_SIZE = 10000
+ # cleanup runs without attaching a debugger or querying the database.
+ _PROGRESS_LOG_EVERY_N_BATCHES = 10
+ 
++# Retries of one batch that conflicts with a concurrent write. wrap_db_retry
++# waits 1 s before the first retry, then a random time below a bound that
++# doubles from 2 s and is capped at 10 s, so ten retries wait 75 s at most.
++CLEANUP_BATCH_MAX_RETRIES = 10
++
++# Most ids one DELETE or UPDATE of a batch names. MariaDB 12.3 runs a
++# statement naming 10,000 ids of a 50,000-row table as a full table scan,
++# and under REPEATABLE READ that locking scan fails with error 1020 on any
++# row written after the batch read its ids, on every retry alike. Naming at
++# most 500 ids keeps the statement on the primary key, so it reads only the
++# rows of the batch, for tables of a few thousand rows and more.
++_IDS_PER_STATEMENT = 500
++
++
++@oslo_db_api.wrap_db_retry(max_retries=CLEANUP_BATCH_MAX_RETRIES,
++                           retry_interval=1,
++                           inc_retry_interval=True,
++                           max_retry_interval=10,
++                           retry_on_deadlock=True)
++def _run_batch(label, id_query_fn, apply_fn, batch_size):
++    """Change one batch of rows and commit it.
++
++    Reads up to ``batch_size`` ids through ``id_query_fn``, changes those
++    rows through ``apply_fn``, at most _IDS_PER_STATEMENT ids per call,
++    and commits, so each batch is a short transaction of its own.
++
++    A batch that conflicts with a concurrent write raises ``DBDeadlock``:
++    oslo.db maps MySQL errors 1213 and 1205 to it, and MariaDB's 1020
++    ("Record has changed since last read") to its subclass
++    ``DBConsistencyError``. The batch is rolled back, which ends its
++    transaction and its snapshot, logged, and run again by wrap_db_retry
++    up to CLEANUP_BATCH_MAX_RETRIES times. Any other exception passes
++    through on its first occurrence.
++
++    No commit is issued when the id query finds nothing, and no rollback
++    precedes the first attempt: callers may hold uncommitted rows in the
++    session.
++
++    :param label: name of the rows in log lines.
++    :param id_query_fn: callable taking the session and returning the
++                        query of the ids to change.
++    :param apply_fn: callable taking the session and a list of ids,
++                     changing those rows and returning how many it
++                     changed.
++    :param batch_size: max rows changed per committed batch.
++    :returns: the rows changed, or None when id_query_fn finds no id.
++    """
++    session = repo.get_session()
++    try:
++        ids = [row[0] for row in
++               id_query_fn(session).limit(batch_size).all()]
++        if not ids:
++            return None
++        count = 0
++        for start in range(0, len(ids), _IDS_PER_STATEMENT):
++            count += apply_fn(session,
++                              ids[start:start + _IDS_PER_STATEMENT])
++        # Detach all ORM objects before commit so that expire_on_commit
++        # does not clear their __dict__. Test code and callers holding
++        # object references can still read pk attributes from the
++        # detached state.
++        session.expunge_all()
++        repo.commit()
++        return count
++    except db_exc.DBDeadlock as exc:
++        repo.rollback()
++        LOG.warning("Clean-up batch for %(label)s conflicted with a "
++                    "concurrent write and is retried: %(error)s",
++                    {'label': label, 'error': exc})
++        raise
++
++
++def _run_batches(label, id_query_fn, apply_fn, batch_size):
++    """Change rows in committed batches until the id query finds none.
++
++    Each batch is run by _run_batch, so a failure keeps the batches
++    committed before it.
++
++    :param label: name of the rows in log lines.
++    :param id_query_fn: see _run_batch.
++    :param apply_fn: see _run_batch.
++    :param batch_size: max rows changed per committed batch.
++    :returns: the rows changed over all batches.
++    """
++    total = 0
++    batch_no = 0
++    while True:
++        count = _run_batch(label, id_query_fn, apply_fn, batch_size)
++        if count is None:
++            return total
++        total += count
++        batch_no += 1
++        if batch_no % _PROGRESS_LOG_EVERY_N_BATCHES == 0:
++            LOG.debug("[%s] progress: %d batches committed, %d rows so far",
++                      label, batch_no, total)
++
+ 
+ def cleanup_unassociated_projects(
+         batch_size=DEFAULT_CLEANUP_BATCH_SIZE):
+@@ -62,8 +160,7 @@ def cleanup_unassociated_projects(
+     LOG.debug("Children tables for Project table being checked: %s",
+               str(children_names))
+ 
+-    def _id_query():
+-        session = repo.get_session()
++    def _id_query(session):
+         sub_query = session.query(models.Project.id)
+         for model in project_children_tables:
+             sub_query = sub_query.outerjoin(
+@@ -71,22 +168,12 @@ def cleanup_unassociated_projects(
+             sub_query = sub_query.filter(model.id == None)  # noqa
+         return sub_query
+ 
+-    total = 0
+-    batch_no = 0
+-    while True:
+-        session = repo.get_session()
+-        ids = [row[0] for row in _id_query().limit(batch_size).all()]
+-        if not ids:
+-            break
+-        count = session.query(models.Project).filter(
++    def _delete(session, ids):
++        return session.query(models.Project).filter(
+             models.Project.id.in_(ids)).delete(synchronize_session=False)
+-        session.expunge_all()
+-        repo.commit()
+-        total += count
+-        batch_no += 1
+-        if batch_no % _PROGRESS_LOG_EVERY_N_BATCHES == 0:
+-            LOG.debug("[%s] progress: %d batches committed, %d rows so far",
+-                      models.Project.__name__, batch_no, total)
++
++    total = _run_batches(models.Project.__name__, _id_query, _delete,
++                         batch_size)
+ 
+     LOG.info("Cleaned up %(delete_count)s entries for "
+              "%(project_name)s",
+@@ -123,8 +210,7 @@ def cleanup_parent_with_no_child(parent_model, child_model,
+               {'parent_name': parent_model.__name__,
+                'child_name': child_model.__name__})
+ 
+-    def _id_query():
+-        session = repo.get_session()
++    def _id_query(session):
+         sub_query = session.query(parent_model.id)
+         sub_query = sub_query.outerjoin(child_model)
+         sub_query = sub_query.filter(child_model.id == None)  # noqa
+@@ -134,27 +220,15 @@ def cleanup_parent_with_no_child(parent_model, child_model,
+                 parent_model.deleted_at <= threshold_date)
+         return sub_query
+ 
+-    # Each iteration of the batched loop re-issues the id query against a
+-    # fresh session state. Because each batch hard-deletes the matched
+-    # rows, the candidate set strictly shrinks across iterations and the
+-    # loop terminates.
+-    total = 0
+-    batch_no = 0
+-    label = "%s/no-%s" % (parent_model.__name__, child_model.__name__)
+-    while True:
+-        session = repo.get_session()
+-        ids = [row[0] for row in _id_query().limit(batch_size).all()]
+-        if not ids:
+-            break
+-        count = session.query(parent_model).filter(
++    def _delete(session, ids):
++        return session.query(parent_model).filter(
+             parent_model.id.in_(ids)).delete(synchronize_session=False)
+-        session.expunge_all()
+-        repo.commit()
+-        total += count
+-        batch_no += 1
+-        if batch_no % _PROGRESS_LOG_EVERY_N_BATCHES == 0:
+-            LOG.debug("[%s] progress: %d batches committed, %d rows so far",
+-                      label, batch_no, total)
++
++    # Each batch re-issues the id query against a fresh session state.
++    # Because each batch hard-deletes the matched rows, the candidate set
++    # strictly shrinks across batches and the loop terminates.
++    label = "%s/no-%s" % (parent_model.__name__, child_model.__name__)
++    total = _run_batches(label, _id_query, _delete, batch_size)
+ 
+     LOG.info("Cleaned up %(delete_count)s entries for %(parent_name)s "
+              "with no children in %(child_name)s",
+@@ -186,30 +260,18 @@ def cleanup_softdeletes(model, threshold_date=None,
+     :returns: total rows removed from the database.
+     """
+     LOG.debug("Cleaning soft deletes: %s", model.__name__)
+-    total = 0
+-    batch_no = 0
+-    label = model.__name__
+-    while True:
+-        session = repo.get_session()
++
++    def _id_query(session):
+         id_query = session.query(model.id).filter_by(deleted=True)
+         if threshold_date:
+             id_query = id_query.filter(model.deleted_at <= threshold_date)
+-        ids = [row[0] for row in id_query.limit(batch_size).all()]
+-        if not ids:
+-            break
+-        count = session.query(model).filter(
++        return id_query
++
++    def _delete(session, ids):
++        return session.query(model).filter(
+             model.id.in_(ids)).delete(synchronize_session=False)
+-        # Detach all ORM objects before commit so that expire_on_commit
+-        # does not clear their __dict__. Test code and callers holding
+-        # object references can still read pk attributes from the
+-        # detached state.
+-        session.expunge_all()
+-        repo.commit()
+-        total += count
+-        batch_no += 1
+-        if batch_no % _PROGRESS_LOG_EVERY_N_BATCHES == 0:
+-            LOG.debug("[%s] progress: %d batches committed, %d rows so far",
+-                      label, batch_no, total)
++
++    total = _run_batches(model.__name__, _id_query, _delete, batch_size)
+     LOG.info("Cleaned up %(delete_count)s entries for %(model_name)s",
+              {'delete_count': total,
+               'model_name': model.__name__})
+@@ -283,27 +345,41 @@ def cleanup_all(threshold_date=None, batch_size=DEFAULT_CLEANUP_BATCH_SIZE):
+     return total
+ 
+ 
+-def _soft_delete_expired_secrets(threshold_date):
+-    """Soft delete expired secrets.
++def _soft_delete_expired_secrets(threshold_date,
++                                 batch_size=DEFAULT_CLEANUP_BATCH_SIZE):
++    """Soft delete expired secrets, in batches.
++
++    Each batch is committed on its own. The id query filters with
++    ``~deleted``, so every batch shrinks the candidate set and the loop
++    terminates.
+ 
+     :param threshold_date: secrets that have expired past this date
+                            will be soft deleted
++    :param batch_size: max rows updated per committed batch.
+     :returns: total number of secrets that were soft deleted
+     """
+     current_time = timeutils.utcnow()
+-    session = repo.get_session()
+-    query = session.query(models.Secret)
+-    query = query.filter(~models.Secret.deleted)
+-    query = query.filter(
+-        models.Secret.expiration <= threshold_date
+-    )
+-    update_count = query.update(
+-        {
+-            models.Secret.deleted: True,
+-            models.Secret.deleted_at: current_time
+-        },
+-        synchronize_session=False)
+-    return update_count
++
++    def _id_query(session):
++        id_query = session.query(models.Secret.id)
++        id_query = id_query.filter(~models.Secret.deleted)
++        id_query = id_query.filter(
++            models.Secret.expiration <= threshold_date
++        )
++        return id_query
++
++    def _update(session, ids):
++        return session.query(models.Secret).filter(
++            models.Secret.id.in_(ids)
++        ).update(
++            {
++                models.Secret.deleted: True,
++                models.Secret.deleted_at: current_time
++            },
++            synchronize_session=False)
++
++    return _run_batches(models.Secret.__name__, _id_query, _update,
++                        batch_size)
+ 
+ 
+ def _hard_delete_acls_for_soft_deleted_secrets(
+@@ -318,51 +394,34 @@ def _hard_delete_acls_for_soft_deleted_secrets(
+     :param batch_size: max rows hard-deleted per committed batch.
+     :returns: total ACL rows deleted.
+     """
+-    acl_total = 0
+-    batch_no = 0
+-
+     # SecretACLUser rows: joined-three-table predicate (user -> ACL -> secret).
+-    while True:
+-        session = repo.get_session()
++    def _acl_user_id_query(session):
+         sub_query = session.query(models.SecretACLUser.id)
+         sub_query = sub_query.join(models.SecretACL)
+         sub_query = sub_query.join(models.Secret)
+-        sub_query = sub_query.filter(models.Secret.deleted)
+-        ids = [row[0] for row in sub_query.limit(batch_size).all()]
+-        if not ids:
+-            break
+-        count = session.query(models.SecretACLUser).filter(
++        return sub_query.filter(models.Secret.deleted)
++
++    def _delete_acl_users(session, ids):
++        return session.query(models.SecretACLUser).filter(
+             models.SecretACLUser.id.in_(ids)
+         ).delete(synchronize_session=False)
+-        session.expunge_all()
+-        repo.commit()
+-        acl_total += count
+-        batch_no += 1
+-        if batch_no % _PROGRESS_LOG_EVERY_N_BATCHES == 0:
+-            LOG.debug("[SecretACLUser] progress: %d batches committed, "
+-                      "%d rows so far", batch_no, acl_total)
+ 
+     # SecretACL rows: joined-two-table predicate (ACL -> secret).
+-    batch_no = 0
+-    while True:
+-        session = repo.get_session()
++    def _acl_id_query(session):
+         sub_query = session.query(models.SecretACL.id)
+         sub_query = sub_query.join(models.Secret)
+-        sub_query = sub_query.filter(models.Secret.deleted)
+-        ids = [row[0] for row in sub_query.limit(batch_size).all()]
+-        if not ids:
+-            break
+-        count = session.query(models.SecretACL).filter(
++        return sub_query.filter(models.Secret.deleted)
++
++    def _delete_acls(session, ids):
++        return session.query(models.SecretACL).filter(
+             models.SecretACL.id.in_(ids)
+         ).delete(synchronize_session=False)
+-        session.expunge_all()
+-        repo.commit()
+-        acl_total += count
+-        batch_no += 1
+-        if batch_no % _PROGRESS_LOG_EVERY_N_BATCHES == 0:
+-            LOG.debug("[SecretACL] progress: %d batches committed, "
+-                      "%d rows so far", batch_no, acl_total)
+ 
++    acl_total = _run_batches(models.SecretACLUser.__name__,
++                             _acl_user_id_query, _delete_acl_users,
++                             batch_size)
++    acl_total += _run_batches(models.SecretACL.__name__,
++                              _acl_id_query, _delete_acls, batch_size)
+     return acl_total
+ 
+ 
+@@ -394,32 +453,26 @@ def _soft_delete_expired_secret_children(
+     update_count = 0
+ 
+     for table in secret_children:
+-        batch_no = 0
+-        label = table.__name__
+-        while True:
+-            session = repo.get_session()
++        # Both callables run within this iteration, so they see the
++        # current table.
++        def _id_query(session):
+             id_query = session.query(table.id)
+             id_query = id_query.join(models.Secret)
+             id_query = id_query.filter(
+                 models.Secret.expiration <= threshold_date
+             )
+-            id_query = id_query.filter(~table.deleted)
+-            ids = [row[0] for row in id_query.limit(batch_size).all()]
+-            if not ids:
+-                break
+-            count = session.query(table).filter(table.id.in_(ids)).update(
++            return id_query.filter(~table.deleted)
++
++        def _update(session, ids):
++            return session.query(table).filter(table.id.in_(ids)).update(
+                 {
+                     table.deleted: True,
+                     table.deleted_at: current_time
+                 },
+                 synchronize_session=False)
+-            session.expunge_all()
+-            repo.commit()
+-            update_count += count
+-            batch_no += 1
+-            if batch_no % _PROGRESS_LOG_EVERY_N_BATCHES == 0:
+-                LOG.debug("[%s] progress: %d batches committed, "
+-                          "%d rows so far", label, batch_no, update_count)
++
++        update_count += _run_batches(table.__name__, _id_query, _update,
++                                     batch_size)
+ 
+     acl_total = _hard_delete_acls_for_soft_deleted_secrets(
+         batch_size=batch_size)
+@@ -442,7 +495,8 @@ def soft_delete_expired_secrets(threshold_date,
+     # several db updates are used instead
+     LOG.debug('Soft deleting expired secrets older than: %s',
+               str(threshold_date))
+-    update_count = _soft_delete_expired_secrets(threshold_date)
++    update_count = _soft_delete_expired_secrets(threshold_date,
++                                                batch_size=batch_size)
+ 
+     children_count, acl_total = _soft_delete_expired_secret_children(
+         threshold_date, batch_size=batch_size)
+diff --git a/barbican/tests/cmd/test_db_cleanup.py b/barbican/tests/cmd/test_db_cleanup.py
+index af9f6595..430b1171 100644
+--- a/barbican/tests/cmd/test_db_cleanup.py
++++ b/barbican/tests/cmd/test_db_cleanup.py
+@@ -68,6 +68,43 @@ def _setup_entry(name, *args, **kwargs):
+     return entry
+ 
+ 
++def _committed_soft_deleted_transport_keys(count):
++    """Create soft-deleted transport keys, commit them, return their ids.
++
++    A retried batch rolls the session back, so the retry tests commit
++    their fixtures before the clean-up runs.
++    """
++    keys = [_setup_entry('transport_key') for _ in range(count)]
++    for k in keys:
++        k.delete()
++    ids = [k.id for k in keys]
++    repos.commit()
++    return ids
++
++
++def _transport_keys_left(ids):
++    session = repos.get_session()
++    return session.query(models.TransportKey).filter(
++        models.TransportKey.id.in_(ids)).count()
++
++
++def _commit_failing_on(error, calls):
++    """Return a commit that raises error on the given call numbers.
++
++    The real commit is bound here, before the test patches repo.commit,
++    so the other calls commit for real.
++    """
++    real_commit = repos.commit
++    state = {'n': 0}
++
++    def commit():
++        state['n'] += 1
++        if state['n'] in calls:
++            raise error
++        real_commit()
++    return commit
++
++
+ class WhenTestingDBCleanUpCommand(utils.RepositoryTestCase):
+ 
+     def tearDown(self):
+@@ -618,3 +655,174 @@ class WhenTestingDBCleanUpCommand(utils.RepositoryTestCase):
+             count = session.query(models.TransportKey).filter(
+                 models.TransportKey.id == kid).count()
+             self.assertEqual(0, count)
++
++    # ------------------------------------------------------------------
++    # Tests for the retry of a batch that conflicts with a concurrent
++    # write. They patch the wait between two attempts.
++    # ------------------------------------------------------------------
++
++    @mock.patch('time.sleep')
++    def test_cleanup_softdeletes_retries_a_deadlocked_batch(self, mock_sleep):
++        """A batch failing with DBDeadlock is rolled back and run again."""
++        ids = _committed_soft_deleted_transport_keys(3)
++
++        with mock.patch('barbican.model.clean.repo.commit',
++                        side_effect=_commit_failing_on(
++                            db_exc.DBDeadlock(), {1})) as mock_commit, \
++                mock.patch.object(clean.LOG, 'warning') as mock_warning:
++            total = clean.cleanup_softdeletes(models.TransportKey)
++
++        self.assertEqual(3, total)
++        self.assertEqual(0, _transport_keys_left(ids))
++        self.assertEqual(2, mock_commit.call_count)
++        mock_warning.assert_called_once()
++        self.assertEqual('TransportKey',
++                         mock_warning.call_args[0][1]['label'])
++
++    @mock.patch('time.sleep')
++    def test_cleanup_softdeletes_retries_a_consistency_error(self,
++                                                             mock_sleep):
++        """MariaDB's 1020 (DBConsistencyError) is retried like a deadlock."""
++        ids = _committed_soft_deleted_transport_keys(3)
++
++        with mock.patch('barbican.model.clean.repo.commit',
++                        side_effect=_commit_failing_on(
++                            db_exc.DBConsistencyError(), {1})) as mock_commit:
++            total = clean.cleanup_softdeletes(models.TransportKey)
++
++        self.assertEqual(3, total)
++        self.assertEqual(0, _transport_keys_left(ids))
++        self.assertEqual(2, mock_commit.call_count)
++
++    @mock.patch('time.sleep')
++    def test_cleanup_softdeletes_retry_keeps_committed_batches(self,
++                                                               mock_sleep):
++        """Batches committed before a retried batch stay and are counted."""
++        ids = _committed_soft_deleted_transport_keys(5)
++
++        with mock.patch('barbican.model.clean.repo.commit',
++                        side_effect=_commit_failing_on(
++                            db_exc.DBDeadlock(), {2})) as mock_commit:
++            total = clean.cleanup_softdeletes(models.TransportKey,
++                                              batch_size=2)
++
++        self.assertEqual(5, total)
++        # Batches of 2, 2 and 1 rows, and the second one twice.
++        self.assertEqual(4, mock_commit.call_count)
++        self.assertEqual(0, _transport_keys_left(ids))
++
++    @mock.patch('time.sleep')
++    def test_cleanup_softdeletes_gives_up_after_max_retries(self, mock_sleep):
++        """A batch that never commits raises DBDeadlock and keeps its rows."""
++        ids = _committed_soft_deleted_transport_keys(3)
++
++        with mock.patch('barbican.model.clean.repo.commit',
++                        side_effect=db_exc.DBDeadlock()) as mock_commit:
++            self.assertRaises(db_exc.DBDeadlock,
++                              clean.cleanup_softdeletes,
++                              models.TransportKey)
++
++        self.assertEqual(clean.CLEANUP_BATCH_MAX_RETRIES + 1,
++                         mock_commit.call_count)
++        repos.rollback()
++        self.assertEqual(3, _transport_keys_left(ids))
++
++    def test_soft_delete_expired_secrets_runs_multiple_batches(self):
++        """Expired secrets are soft-deleted in batches, one commit each."""
++        project = _setup_entry('project', external_id="expired batch project")
++        now = timeutils.utcnow()
++        expired_ids = []
++        for _ in range(5):
++            secret = _setup_entry('secret', project=project)
++            secret.expiration = now - datetime.timedelta(days=1)
++            expired_ids.append(secret.id)
++        unexpired = _setup_entry('secret', project=project)
++        unexpired.expiration = now + datetime.timedelta(days=1)
++        unexpired_id = unexpired.id
++        repos.commit()
++
++        with mock.patch('barbican.model.clean.repo.commit',
++                        wraps=repos.commit) as mock_commit:
++            total = clean._soft_delete_expired_secrets(now, batch_size=2)
++
++        self.assertEqual(5, total)
++        self.assertEqual(3, mock_commit.call_count)
++        session = repos.get_session()
++        self.assertEqual(5, session.query(models.Secret).filter(
++            models.Secret.id.in_(expired_ids),
++            models.Secret.deleted).count())
++        self.assertFalse(session.query(models.Secret).filter(
++            models.Secret.id == unexpired_id).one().deleted)
++
++    def test_soft_delete_expired_secrets_returns_zero_when_nothing_expired(
++            self):
++        """Nothing expired: no secret changes and no commit is issued."""
++        project = _setup_entry('project', external_id="unexpired project")
++        unexpired = _setup_entry('secret', project=project)
++        unexpired.expiration = timeutils.utcnow() + datetime.timedelta(days=1)
++        _setup_entry('secret', project=project)
++        repos.commit()
++
++        with mock.patch('barbican.model.clean.repo.commit',
++                        wraps=repos.commit) as mock_commit:
++            total = clean._soft_delete_expired_secrets(timeutils.utcnow())
++
++        self.assertEqual(0, total)
++        self.assertEqual(0, mock_commit.call_count)
++
++    def test_run_batch_names_a_bounded_number_of_ids_per_statement(self):
++        """A batch is changed in several statements and committed once."""
++        ids = _committed_soft_deleted_transport_keys(5)
++        statements = []
++
++        def _delete(session, chunk):
++            statements.append(list(chunk))
++            return session.query(models.TransportKey).filter(
++                models.TransportKey.id.in_(chunk)).delete(
++                    synchronize_session=False)
++
++        def _id_query(session):
++            return session.query(models.TransportKey.id).filter_by(
++                deleted=True)
++
++        with mock.patch.object(clean, '_IDS_PER_STATEMENT', 2), \
++                mock.patch('barbican.model.clean.repo.commit',
++                           wraps=repos.commit) as mock_commit:
++            count = clean._run_batch('TransportKey', _id_query, _delete, 10)
++
++        self.assertEqual(5, count)
++        self.assertEqual([2, 2, 1], [len(s) for s in statements])
++        self.assertEqual(sorted(ids), sorted(sum(statements, [])))
++        self.assertEqual(1, mock_commit.call_count)
++        self.assertEqual(0, _transport_keys_left(ids))
++
++    @mock.patch('time.sleep')
++    def test_run_batches_retries_a_batch_whose_statement_conflicts(
++            self, mock_sleep):
++        """A conflict on a later statement rolls the whole batch back."""
++        ids = _committed_soft_deleted_transport_keys(5)
++        statements = {'n': 0}
++
++        def _delete(session, chunk):
++            statements['n'] += 1
++            if statements['n'] == 2:
++                raise db_exc.DBConsistencyError()
++            return session.query(models.TransportKey).filter(
++                models.TransportKey.id.in_(chunk)).delete(
++                    synchronize_session=False)
++
++        def _id_query(session):
++            return session.query(models.TransportKey.id).filter_by(
++                deleted=True)
++
++        with mock.patch.object(clean, '_IDS_PER_STATEMENT', 2), \
++                mock.patch('barbican.model.clean.repo.commit',
++                           wraps=repos.commit) as mock_commit:
++            total = clean._run_batches('TransportKey', _id_query, _delete,
++                                       10)
++
++        # Without the rollback the retry finds 3 ids, and with a count kept
++        # across attempts it reports 7.
++        self.assertEqual(5, total)
++        self.assertEqual(1, mock_commit.call_count)
++        self.assertEqual(0, _transport_keys_left(ids))
