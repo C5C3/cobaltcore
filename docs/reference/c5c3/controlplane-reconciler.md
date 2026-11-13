@@ -2101,8 +2101,11 @@ Horizon, Glance, and Placement siblings:
   down); `spec.sizing.barbican` projects onto `spec.deployment` (replicas
   falling back to `commonv1.DefaultReplicas`), `spec.autoscaling`, `spec.jobs`,
   and `spec.apiServer.uwsgi` (only when a count is set); the resolved store
-  selection and `spec.region` are projected through. `spec.dbClean` is not set,
-  so the clean-up schedule keeps tracking the barbican operator's defaults.
+  selection and `spec.region` are projected through.
+- **DB clean-up:** `services.barbican.dbClean` is DeepCopied and converted onto
+  the child's `spec.dbClean` (the two types share one field layout), so the
+  child never aliases `cp.Spec`. A nil block projects nil, which the barbican
+  operator resolves like an empty one.
 
 The DB-credential objects are ensured **before** the child, so the Secret it
 references exists when the barbican operator resolves it. In `Dynamic` mode the
