@@ -14,6 +14,10 @@
 #   - Deployment/barbican-basic keeps its UID: the upgrade changes it in place
 #     and never deletes and re-creates it;
 #   - exactly one barbican-basic-db-sync Job exists, and it completes;
+#   - the barbican-basic-db-index Job, which the released operator never
+#     created, completes and leaves one c5c3_ index on (project_id, deleted,
+#     created_at) on each of containers, orders and secrets, built on the
+#     tables of the existing database;
 #   - Ready holds after the new operator processed a new generation
 #     (spec.deployment.replicas 3 -> 2), and Deployment/barbican-basic runs the 2
 #     replicas that generation asks for.
@@ -239,9 +243,10 @@ spec:
     try:
     - script:
         shell: bash
-        # 150s for observedGeneration, 30s for the Job count and 150s for a
-        # re-run db-sync.
-        timeout: 6m
+        # 150s for observedGeneration, 30s for the Job count, 150s for a
+        # re-run db-sync, 90s for the db-index Job to appear and 150s for it
+        # to complete.
+        timeout: 10m
         content: |
           set -euo pipefail
           # Polled via kubectl rather than a declarative assert because a
@@ -298,6 +303,37 @@ spec:
           done
           kubectl wait --for=condition=complete job/barbican-basic-db-sync -n "${NAMESPACE}" --timeout=150s
           echo "OK: exactly one barbican-basic-db-sync Job, and it completed"
+          # The new operator creates barbican-basic-db-index once db-sync has
+          # completed, so the Job appears only after the wait above.
+          index_deadline=$(( $(date +%s) + 90 ))
+          until kubectl get job barbican-basic-db-index -n "${NAMESPACE}" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "${index_deadline}" ]; then
+              echo "FAIL: the new operator never created the barbican-basic-db-index Job"
+              exit 1
+            fi
+            sleep 2
+          done
+          kubectl wait --for=condition=complete job/barbican-basic-db-index -n "${NAMESPACE}" --timeout=150s
+          kubectl logs -n "${NAMESPACE}" job/barbican-basic-db-index
+          # The SQL user is named after the CR, and its password is the one
+          # spec.database.secretRef points at.
+          PW="$(kubectl get secret barbican-db -n "${NAMESPACE}" -o jsonpath='{.data.password}' | base64 -d)"
+          OUT="$(kubectl exec -n "${NAMESPACE}" openstack-db-0 -c mariadb -- \
+            mariadb -ubarbican-basic -p"${PW}" barbican_basic -N -e \
+            "SELECT table_name, GROUP_CONCAT(column_name ORDER BY seq_in_index)
+             FROM information_schema.statistics
+             WHERE table_schema = DATABASE() AND index_name LIKE 'c5c3\_%'
+             GROUP BY table_name ORDER BY table_name")"
+          echo "${OUT}"
+          WANT="$(printf '%s\t%s\n' \
+            containers project_id,deleted,created_at \
+            orders project_id,deleted,created_at \
+            secrets project_id,deleted,created_at)"
+          if [ "${OUT}" != "${WANT}" ]; then
+            echo "FAIL: expected one c5c3_ index on (project_id, deleted, created_at) on containers, orders and secrets"
+            exit 1
+          fi
+          echo "OK: the upgrade indexed containers, orders and secrets of the existing database"
     # observedGeneration is stamped on every status write, a pass that stopped
     # early included, so only the workload shows that the NEW operator
     # applied the new generation.

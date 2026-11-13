@@ -19,6 +19,9 @@
 #     enforce_new_defaults = true and no enforce_scope
 #   - The rendered paste file has the 2026.1-and-later shape: the oslo
 #     request_id filter is present and the repoze.profile pipeline is gone
+#   - The barbican-basic-2026-2-db-index Job completes, and containers,
+#     orders and secrets each carry a c5c3_ index on (project_id, deleted,
+#     created_at)
 #   - The Barbican API answers /healthcheck with 200 from inside the API pod
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
@@ -255,7 +258,54 @@ spec:
             exit 1
           fi
           echo "OK: $SEC renders the 2026.1-and-later paste shape (request_id filter, no barbican-profile pipeline)"
-  # ── Step 6: Assert the Barbican API answers /healthcheck over HTTP ──────
+  # ── Step 6: Assert the list-query indexes ─────────────────────────────
+  # The operator runs the barbican-basic-2026-2-db-index Job after db-sync.
+  # Its script creates one index on (project_id, deleted, created_at) on each
+  # of the three list-query tables, named under the c5c3_ prefix. The SQL user
+  # is named after the CR (internal/common/database/builders.go builds the
+  # managed User under the instance name), and its password is the one
+  # spec.database.secretRef points at.
+  - try:
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+          kubectl wait --for=condition=complete job/barbican-basic-2026-2-db-index \
+            -n "$NAMESPACE" --timeout=120s
+          kubectl logs -n "$NAMESPACE" job/barbican-basic-2026-2-db-index
+
+          PW="$(kubectl get secret barbican-db -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          OUT="$(kubectl exec -n "$NAMESPACE" openstack-db-0 -c mariadb -- \
+            mariadb -ubarbican-basic-2026-2 -p"$PW" barbican_basic_2026_2 -N -e \
+            "SELECT table_name, GROUP_CONCAT(column_name ORDER BY seq_in_index)
+             FROM information_schema.statistics
+             WHERE table_schema = DATABASE() AND index_name LIKE 'c5c3\_%'
+             GROUP BY table_name ORDER BY table_name")"
+          echo "$OUT"
+          WANT="$(printf '%s\t%s\n' \
+            containers project_id,deleted,created_at \
+            orders project_id,deleted,created_at \
+            secrets project_id,deleted,created_at)"
+          if [ "$OUT" != "$WANT" ]; then
+            echo "ERROR: expected one c5c3_ index on (project_id, deleted, created_at) on containers, orders and secrets"
+            exit 1
+          fi
+          echo "OK: containers, orders and secrets carry the list-query index"
+    catch:
+    - script:
+        content: |
+          echo "=== db-index Job ==="
+          kubectl get job barbican-basic-2026-2-db-index -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== db-index pod logs ==="
+          kubectl logs -n $NAMESPACE job/barbican-basic-2026-2-db-index --all-containers --tail=100 2>&1 || true
+          echo "=== Barbican DatabaseReady ==="
+          kubectl get barbican barbican-basic-2026-2 -n $NAMESPACE \
+            -o jsonpath='{.status.conditions[?(@.type=="DatabaseReady")]}' 2>&1 || true
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
+  # ── Step 7: Assert the Barbican API answers /healthcheck over HTTP ──────
   - try:
     - script:
         timeout: 90s

@@ -7,7 +7,7 @@
 # Deploys a Barbican CR and its default secret store, waits for Ready=True, then:
 #   - asserts the cleanup finalizer and every owned child (Deployment, Service,
 #     PDB, the content-hashed config Secret, the derived db-connection Secret,
-#     the db-sync Job, and the recurring db-clean CronJob);
+#     the db-sync and db-index Jobs, and the recurring db-clean CronJob);
 #   - deletes the STORE first and asserts the projection goes invalid while the
 #     last-good config Secret stays mounted — a detach does not tear the API down;
 #   - deletes the CR and asserts all of them are gone within a bounded deletion
@@ -109,6 +109,13 @@ spec:
           kind: Job
           metadata:
             name: barbican-deletion-db-sync
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: barbican-deletion-db-index
             namespace: openstack
     - assert:
         resource:
@@ -217,6 +224,13 @@ spec:
           kind: Job
           metadata:
             name: barbican-deletion-db-sync
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: barbican-deletion-db-index
             namespace: openstack
     - error:
         resource:
