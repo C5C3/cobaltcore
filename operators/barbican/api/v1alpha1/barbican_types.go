@@ -409,7 +409,9 @@ type BarbicanStatus struct {
 	// spec.openStackRelease bump that leaves spec.image untouched leaves the
 	// db-sync Job's pod template unchanged, runs no migration at all, and would
 	// still promote InstalledRelease. The release gate compares against this field
-	// to refuse that transition.
+	// to refuse that transition. It is recorded once the db-sync and db-index
+	// Jobs have both completed; while it lags a promoted InstalledRelease, the
+	// gate also compares the image of the completed db-sync Job.
 	InstalledImage string `json:"installedImage,omitempty"`
 
 	// ProjectedSecretStores names the attached, credential-ready secret stores the
