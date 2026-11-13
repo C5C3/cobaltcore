@@ -81,6 +81,23 @@ spec:
   mariaDbRef:
     name: openstack-db
   replicas: 2
+  # One writer: readwritesplit sends autocommit reads to the replicas unless
+  # max_slave_connections is 0, and with wsrep_sync_wait at 0 such a read can
+  # miss a commit the primary made milliseconds earlier. The OpenStack
+  # operators route a service through a MaxScale only when it has a
+  # readwritesplit service with max_slave_connections "0" on the database
+  # port (database.ResolveEndpoint); any other MaxScale is bypassed for
+  # openstack-db-primary with a DatabaseMaxScaleBypassed Warning. Name,
+  # router and port equal what MaxScale.SetDefaults writes on an install
+  # without spec.services, so the router, which the webhook keeps immutable,
+  # does not change.
+  services:
+    - name: rw-router
+      router: readwritesplit
+      params:
+        max_slave_connections: "0"
+      listener:
+        port: 3306
   # MaxScale terminates TLS on its client listener (3306) and its admin
   # REST API (8989). Both certificates come from the OpenStack DB trust
   # domain: the two issuer refs name the ClusterIssuer that the MariaDB's
