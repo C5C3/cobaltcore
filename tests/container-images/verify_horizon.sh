@@ -222,6 +222,110 @@ EOF
   assert_eq "the compressed stylesheet is served as text/css" "text/css" "$(awk '$1 == "css" { print $2 }' <<<"$output")"
 }
 
+# --- Test 9: the RBAC Policies panel checks the catalog before it asks Neutron ---
+test_rbac_policies_panel_checks_catalog_first() {
+  echo "Test: the RBAC Policies panel asks Neutron only for a catalog with a network service"
+  # Proves the image build applied
+  # patches/horizon/<release>/0001-check-the-service-catalog-before-the-rbac-policies-panel-asks-neutron.patch
+  # (#1706). Upstream RBACPolicies.allowed() asks Neutron for its
+  # rbac-policies extension even when the token's catalog has no network
+  # service, and logs "RBAC Policies panel will not be displayed." at ERROR
+  # on every page that renders the sidebar. The probe calls allowed() for an
+  # active admin user, first with a catalog without a network service, which
+  # must answer False without an ERROR record, then with a network service
+  # and a mocked extension probe, which must answer True after one probe
+  # call. Django needs a SECRET_KEY in local_settings.py: without one,
+  # openstack_dashboard/settings.py tries to write a key file into the
+  # read-only store and fails with PermissionError. Against an unpatched
+  # image the first case fails and the output quotes the ERROR line. Stderr
+  # is echoed on failure so the reason is named.
+  local probe err="" exit_code=0
+  probe=$(
+    cat <<'EOF'
+import datetime
+import logging
+import sys
+import types
+from unittest import mock
+
+import django
+
+django.setup()
+
+from django.test import RequestFactory
+from openstack_auth import user as auth_user
+from openstack_dashboard.api import neutron
+from openstack_dashboard.dashboards.admin.rbac_policies import panel
+
+
+class Collect(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.ERROR)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+# A silenced logger would let the first case pass on any image.
+collect = Collect()
+panel.LOG.addHandler(collect)
+panel.LOG.error("verify: handler self-check")
+if collect.messages != ["verify: handler self-check"]:
+    sys.exit("the handler on panel.LOG caught %r" % (collect.messages,))
+collect.messages.clear()
+
+
+def service(kind, name, url):
+    return {"type": kind, "name": name, "endpoints": [
+        {"region": "RegionOne", "interface": "internal", "url": url}]}
+
+
+def allowed(catalog):
+    request = RequestFactory().get("/")
+    request.session = {}
+    token = types.SimpleNamespace(
+        id="verify",
+        expires=datetime.datetime.now(datetime.timezone.utc)
+        + datetime.timedelta(hours=1))
+    request.user = auth_user.User(
+        id="1", token=token, user="admin", tenant_id="1",
+        service_catalog=catalog, roles=[{"id": "1", "name": "admin"}],
+        services_region="RegionOne", enabled=True,
+        endpoint="http://keystone.invalid/v3")
+    # An inactive or unauthenticated user holds no service permission, so
+    # the first case would pass for the wrong reason.
+    if not (request.user.is_authenticated and request.user.is_active):
+        sys.exit("the probe's user is not active and authenticated")
+    return panel.RBACPolicies().allowed({"request": request})
+
+
+identity = service("identity", "keystone", "http://keystone.invalid/v3")
+network = service("network", "neutron", "http://neutron.invalid")
+
+result = allowed([identity])
+if result is not False or collect.messages:
+    sys.exit("without a network service allowed() returned %r and logged %r"
+             % (result, collect.messages))
+
+with mock.patch.object(neutron, "is_extension_supported",
+                       return_value=True) as extension_probe:
+    result = allowed([identity, network])
+if result is not True or extension_probe.call_count != 1:
+    sys.exit("with a network service allowed() returned %r after %d probe(s)"
+             % (result, extension_probe.call_count))
+EOF
+  )
+  err=$(docker run --rm --tmpfs /etc/openstack-dashboard:uid=42424,gid=42424 \
+    -e DJANGO_SETTINGS_MODULE=openstack_dashboard.settings -e PANEL_PROBE="$probe" "$IMAGE" sh -c \
+    'printf "SECRET_KEY = \"verify\"\n" > /etc/openstack-dashboard/local_settings.py &&
+     exec /var/lib/openstack/bin/python -c "$PANEL_PROBE"' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "the RBAC Policies panel checks the catalog before it asks Neutron" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== horizon container verification tests ==="
 echo "Image: $IMAGE"
@@ -241,6 +345,8 @@ echo ""
 test_django_pymemcache_bounded
 echo ""
 test_static_assets_typed
+echo ""
+test_rbac_policies_panel_checks_catalog_first
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

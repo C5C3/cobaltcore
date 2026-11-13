@@ -308,6 +308,42 @@ so for it the run calls pytest four times the way that tag's `tox.ini` does,
 once per project with its own Django settings module (`openstack_auth`,
 `horizon`, `openstack_dashboard` and its plugin tests).
 
+**Source patch:**
+`patches/horizon/2026.1/0001-check-the-service-catalog-before-the-rbac-policies-panel-asks-neutron.patch`
+and its 2026.2 twin
+`patches/horizon/2026.2/0001-check-the-service-catalog-before-the-rbac-policies-panel-asks-neutron.patch`
+make the RBAC Policies panel read the token's service catalog before it asks
+Neutron (issue #1706). Upstream `RBACPolicies.allowed()` in
+`openstack_dashboard/dashboards/admin/rbac_policies/panel.py` asks Neutron for
+its `rbac-policies` extension whenever
+`OPENSTACK_NEUTRON_NETWORK['enable_rbac_policy']` is true (the default).
+Horizon's `horizon_nav` template tag calls the panel's `can_access()`, and with
+it `allowed()`, on every page that renders the sidebar. When the catalog has no
+network service, the probe raises `ServiceCatalogException`, and the panel logs
+"Call to list enabled services failed. This is likely due to a problem
+communicating with the Neutron endpoint. RBAC Policies panel will not be
+displayed." at ERROR. The sidebar template then hides the panel anyway, because
+the panel requires the `openstack.services.network` permission. A ControlPlane
+without `spec.services.neutron` hits this, and so does any Horizon CR against a
+Keystone whose catalog has no network service. On such a ControlPlane, 720
+logins an hour produced about 2,160 of these lines an hour. The patches add one
+operand, `request.user.has_perms(self.permissions)`, between the setting and
+the probe. It reads the catalog stored with the session and makes no network
+call. It is also the check the sidebar template applies, so the panel stays
+visible to every user who sees it upstream. A Neutron that is in the catalog
+and does not answer still logs the line. No existing upstream test moves; the patches add four
+tests of `RBACPoliciesPanelTests` in
+`openstack_dashboard/dashboards/admin/rbac_policies/tests.py`:
+`test_allowed_without_network_service_skips_the_probe`,
+`test_allowed_with_network_service_asks_neutron`,
+`test_allowed_logs_when_the_probe_fails` and
+`test_allowed_with_the_setting_off_skips_the_probe`.
+`test_rbac_policies_panel_checks_catalog_first` in
+`tests/container-images/verify_horizon.sh` calls `allowed()` in the built image.
+It asserts that a catalog without a network service answers `False` without an
+ERROR record, and that a catalog with one asks Neutron once. The patches need
+no operator configuration. Upstream status: not yet proposed.
+
 **Build and verify:**
 
 ```bash
