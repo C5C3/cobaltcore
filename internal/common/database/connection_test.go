@@ -11,9 +11,12 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -23,13 +26,14 @@ import (
 
 const (
 	connInstance  = "keystone"
-	connNamespace = "openstack"
+	connNamespace = resolveNS
 	connTLSMount  = "/etc/keystone/db-tls/"
 )
 
 func connScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = corev1.AddToScheme(s)
+	_ = mariadbv1alpha1.AddToScheme(s)
 	return s
 }
 
@@ -440,4 +444,169 @@ func findCond(conds []metav1.Condition, t string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+// --- database route ---
+
+// connectionValue returns the "connection" value of the derived Secret.
+func connectionValue(g Gomega, c client.Client) string {
+	derived := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "keystone-db-connection", Namespace: connNamespace}, derived)).To(Succeed())
+	return string(derived.Data[ConnectionSecretKey])
+}
+
+func TestReconcileConnectionSecret_hostFollowsRoute(t *testing.T) {
+	tests := []struct {
+		name    string
+		objects []client.Object
+		want    string
+	}{
+		{
+			name:    "galera connects to the primary Service",
+			objects: []client.Object{mariaDB(withGalera(true))},
+			want:    "@mariadb-primary.openstack.svc:3306/",
+		},
+		{
+			name:    "a single-writer MaxScale is the host",
+			objects: []client.Object{mariaDB(withGalera(true), withMaxScaleRef("")), maxScale(singleWriter())},
+			want:    "@mxs.openstack.svc:3306/",
+		},
+		{
+			name:    "a single instance connects to its Service",
+			objects: []client.Object{mariaDB()},
+			want:    "@mariadb.openstack.svc:3306/",
+		},
+		{
+			name: "a missing MariaDB connects to the Service name",
+			want: "@mariadb.openstack.svc:3306/",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			s := connScheme()
+			owner := connOwner()
+			var conds []metav1.Condition
+			c := fake.NewClientBuilder().WithScheme(s).
+				WithObjects(append(tc.objects, owner, upstreamSecret(map[string][]byte{"password": []byte("pw")}))...).
+				Build()
+
+			rec := record.NewFakeRecorder(10)
+			p := connParams(c, s, owner, staticDBSpec(), &conds)
+			p.Recorder = rec
+			_, digest, err := ReconcileConnectionSecret(context.Background(), p)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(digest).NotTo(BeEmpty())
+			g.Expect(connectionValue(g, c)).To(ContainSubstring(tc.want))
+			g.Expect(rec.Events).To(BeEmpty(), "a route that bypasses no MaxScale records no event")
+		})
+	}
+}
+
+func TestReconcileConnectionSecret_digestChangesWithRoute(t *testing.T) {
+	g := NewWithT(t)
+	s := connScheme()
+	owner := connOwner()
+	var conds []metav1.Condition
+	ctx := context.Background()
+	mdb := mariaDB()
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, mdb, upstreamSecret(map[string][]byte{"password": []byte("pw")})).
+		Build()
+
+	_, single, err := ReconcileConnectionSecret(ctx, connParams(c, s, owner, staticDBSpec(), &conds))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Only the topology changes; the credentials stay the same.
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(mdb), mdb)).To(Succeed())
+	mdb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: true}
+	g.Expect(c.Update(ctx, mdb)).To(Succeed())
+
+	_, primary, err := ReconcileConnectionSecret(ctx, connParams(c, s, owner, staticDBSpec(), &conds))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(primary).NotTo(Equal(single), "a new route must roll the pods")
+	g.Expect(connectionValue(g, c)).To(ContainSubstring("@mariadb-primary.openstack.svc:3306/"))
+}
+
+func TestReconcileConnectionSecret_maxScaleBypassRecordsWarning(t *testing.T) {
+	g := NewWithT(t)
+	s := connScheme()
+	owner := connOwner()
+	var conds []metav1.Condition
+	ctx := context.Background()
+	readSplit := service(func(svc *mariadbv1alpha1.MaxScaleService) { svc.Params["max_slave_connections"] = "1" })
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, mariaDB(withGalera(true), withMaxScaleRef("")), maxScale(readSplit),
+			upstreamSecret(map[string][]byte{"password": []byte("pw")})).
+		Build()
+
+	rec := record.NewFakeRecorder(10)
+	p := connParams(c, s, owner, staticDBSpec(), &conds)
+	p.Recorder = rec
+	const want = "Warning DatabaseMaxScaleBypassed MariaDB openstack/mariadb names MaxScale mxs, " +
+		"which the operator does not route through (MaxScaleNotSingleWriter); " +
+		"connecting to mariadb-primary.openstack.svc:3306"
+	for pass := 1; pass <= 2; pass++ {
+		_, _, err := ReconcileConnectionSecret(ctx, p)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(rec.Events).To(HaveLen(1), "pass %d records exactly one event", pass)
+		g.Expect(<-rec.Events).To(Equal(want))
+	}
+	g.Expect(connectionValue(g, c)).To(ContainSubstring("@mariadb-primary.openstack.svc:3306/"))
+
+	// Without a recorder the bypass still connects to the primary Service.
+	p.Recorder = nil
+	_, digest, err := ReconcileConnectionSecret(ctx, p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(digest).NotTo(BeEmpty())
+}
+
+func TestReconcileConnectionSecret_resolverErrorLeavesSecret(t *testing.T) {
+	g := NewWithT(t)
+	s := connScheme()
+	owner := connOwner()
+	var conds []metav1.Condition
+	ctx := context.Background()
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "keystone-db-connection", Namespace: connNamespace},
+		Data:       map[string][]byte{ConnectionSecretKey: []byte("mysql+pymysql://keystone:old@mariadb.openstack.svc:3306/keystone")},
+	}
+	counter := &getCounter{fail: map[string]error{"MariaDB": apierrors.NewServiceUnavailable("etcd leader lost")}}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, existing, upstreamSecret(map[string][]byte{"password": []byte("pw")})).
+		WithInterceptorFuncs(counter.funcs()).
+		Build()
+	before := &corev1.Secret{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(existing), before)).To(Succeed())
+
+	res, digest, err := ReconcileConnectionSecret(ctx, connParams(c, s, owner, staticDBSpec(), &conds))
+	g.Expect(err).To(MatchError(ContainSubstring("resolving database endpoint")))
+	g.Expect(err).To(MatchError(ContainSubstring("getting MariaDB openstack/mariadb")))
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(digest).To(BeEmpty())
+
+	after := &corev1.Secret{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(existing), after)).To(Succeed())
+	g.Expect(after.Data).To(Equal(before.Data))
+	g.Expect(after.ResourceVersion).To(Equal(before.ResourceVersion))
+}
+
+func TestReconcileConnectionSecret_brownfieldDSNUnchanged(t *testing.T) {
+	g := NewWithT(t)
+	s := connScheme()
+	owner := connOwner()
+	var conds []metav1.Condition
+	spec := &commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Port:      3307,
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, upstreamSecret(map[string][]byte{"username": []byte("u"), "password": []byte("pw")})).
+		Build()
+
+	_, _, err := ReconcileConnectionSecret(context.Background(), connParams(c, s, owner, spec, &conds))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(connectionValue(g, c)).To(Equal("mysql+pymysql://u:pw@db.example.com:3307/keystone?charset=utf8"))
 }
