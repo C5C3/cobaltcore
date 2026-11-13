@@ -286,6 +286,22 @@ type SyncFlowParams struct {
 	// disables release tracking, so the marker is left untouched then.
 	InstalledRelease *string
 	ImageTag         string
+	// PostSyncJobs run in order once db-sync and the schema check have completed
+	// and InstalledRelease is promoted, before the condition turns
+	// True/DatabaseSynced. RecordTerminal is never called for them. A nil or
+	// empty slice leaves the flow as it is without them.
+	PostSyncJobs []PostSyncJob
+}
+
+// PostSyncJob is a Job the sync flow runs once db-sync and the schema check
+// have completed and the installed release is promoted.
+type PostSyncJob struct {
+	Job              *batchv1.Job
+	InProgressReason string
+	FailedReason     string
+	// RequeueAfter is the requeue interval while Job runs. Zero means
+	// SyncFlowParams.RequeueAfter.
+	RequeueAfter time.Duration
 }
 
 // recordTerminal invokes the caller's terminal-metric callback when set.
@@ -300,9 +316,10 @@ func (p SyncFlowParams) recordTerminal(jobSuffix string, observed *batchv1.Job) 
 // condition. It is the shared steady-state body of every database-backed
 // operator's reconcileDatabase; the operator supplies the built Job set and the
 // condition vocabulary. A permanently-failed db-sync/schema-check Job returns a
-// hard error (exponential backoff); an in-progress Job requeues. The Normal
-// DatabaseSynced event is emitted only when the condition turns
-// True/DatabaseSynced, not on a pass that finds it so already.
+// hard error (exponential backoff); an in-progress Job requeues. The post-sync
+// Jobs follow the release promotion under the same two rules, with the reasons
+// each entry names. The Normal DatabaseSynced event is emitted only when the
+// condition turns True/DatabaseSynced, not on a pass that finds it so already.
 func ReconcileSyncJobs(ctx context.Context, p SyncFlowParams) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -373,6 +390,45 @@ func ReconcileSyncJobs(ctx context.Context, p SyncFlowParams) (ctrl.Result, erro
 	// mode disables release tracking/upgrades (Decision E).
 	if p.InstalledRelease != nil && p.ImageTag != "" {
 		*p.InstalledRelease = p.ImageTag
+	}
+
+	// The post-sync Jobs run inside the flow because the flow owns the move into
+	// DatabaseSynced: a Job the caller ran afterwards would set the condition
+	// False behind it, and every pass would emit DatabaseSynced again.
+	for i, ps := range p.PostSyncJobs {
+		if ps.Job == nil {
+			return ctrl.Result{}, fmt.Errorf("post-sync job %d has no Job", i)
+		}
+		done, _, err := job.RunJob(ctx, p.Client, p.Scheme, p.Owner, ps.Job)
+		if err != nil {
+			msg := fmt.Sprintf("Job %s failed: %v", ps.Job.Name, err)
+			conditions.SetCondition(p.Conditions, metav1.Condition{
+				Type:               p.ConditionType,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: p.Generation,
+				Reason:             ps.FailedReason,
+				Message:            msg,
+			})
+			if p.Recorder != nil {
+				p.Recorder.Event(p.Owner, corev1.EventTypeWarning, ps.FailedReason, msg)
+			}
+			return ctrl.Result{}, fmt.Errorf("running Job %s: %w", ps.Job.Name, err)
+		}
+		if !done {
+			logger.Info("post-sync job in progress, requeuing", "job", ps.Job.Name)
+			conditions.SetCondition(p.Conditions, metav1.Condition{
+				Type:               p.ConditionType,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: p.Generation,
+				Reason:             ps.InProgressReason,
+				Message:            fmt.Sprintf("Job %s is running", ps.Job.Name),
+			})
+			requeue := ps.RequeueAfter
+			if requeue == 0 {
+				requeue = p.RequeueAfter
+			}
+			return ctrl.Result{RequeueAfter: requeue}, nil
+		}
 	}
 
 	// The event marks the transition into DatabaseSynced. A Ready CR passes
