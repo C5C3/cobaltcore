@@ -94,8 +94,11 @@ nfs1   True    NFS    controlplane-cinder   8m
 The entry name reaches the satellite unprefixed. Cinder keys every volume by the
 backend it was created on, so a rename would strand the volumes already there.
 
-`READY` turns `True` only after the volume Deployment of the backend mounts its
-section. The figure shows the steps in between, and
+`READY` turns `True` when the backend's credentials (if required) are ready and
+its rendered section is projected into the volume Deployment. This does not
+confirm that the service is available; check `VolumeServicesReady` on the Cinder
+for the availability of its projected volume services. The figure shows the
+steps in between, and
 [The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
 lists them with what differs per kind.
 
