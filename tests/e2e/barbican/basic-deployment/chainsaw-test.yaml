@@ -21,7 +21,8 @@
 #   - The rendered barbican.conf carries [oslo_policy]
 #     enforce_new_defaults = true and no enforce_scope
 #   - The Barbican API answers /healthcheck with 200 from inside the API pod
-#   - One manual run of the db-clean CronJob completes
+#   - A failed run of the db-clean CronJob is deleted once a manual run
+#     completes, and DBCleanReady returns to True
 #   - The barbican-operator release exports its reconcile families and the
 #     db_sync and db_clean counters and duration counts of barbican-basic
 #   - A Ready, unchanged barbican-basic gains no event on the CR in a 120 s
@@ -353,39 +354,69 @@ spec:
           kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=barbican-basic 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 7: Run the db-clean CronJob by hand ───────────────────────────
+  # ── Step 7: Run the db-clean CronJob by hand, after a failed run ───────
   # The clean-up runs daily at 00:01, so a scheduled firing would never fall
   # inside a test run. `kubectl create job --from=cronjob` copies the jobTemplate
   # the operator rendered and makes the CronJob the Job's controller, so the
-  # operator records the run as one of the CronJob's, and the garbage collector
-  # removes the Job with its CronJob when the cleanup deletes the CR.
+  # operator records both runs below as the CronJob's, and the garbage collector
+  # removes the Jobs with their CronJob when the cleanup deletes the CR.
+  # The first run replaces barbican-manage with `false` and has no retry, so it
+  # fails. Once the second run completed, the operator deletes the failed run
+  # and DBCleanReady returns to True; a pass between the two runs may have set
+  # it False. jq sets the owner reference's controller field explicitly, so the
+  # step does not depend on what the kubectl version writes there.
   - try:
     - script:
-        timeout: 180s
+        shell: bash
+        timeout: 480s
         content: |
-          set -eu
+          set -euo pipefail
+
+          kubectl create job barbican-basic-db-clean-failing \
+            --from=cronjob/barbican-basic-db-clean -n openstack --dry-run=client -o json \
+            | jq '.spec.template.spec.containers[0].command = ["false"]
+                  | .spec.backoffLimit = 0
+                  | .metadata.ownerReferences[0].controller = true' \
+            | kubectl create -f -
+          kubectl wait --for=condition=failed \
+            job/barbican-basic-db-clean-failing -n openstack --timeout=120s
 
           kubectl create job barbican-basic-db-clean-manual \
             --from=cronjob/barbican-basic-db-clean -n openstack
           kubectl wait --for=condition=complete \
             job/barbican-basic-db-clean-manual -n openstack --timeout=120s
 
-          echo "OK: db-clean job completed successfully"
+          kubectl wait --for=delete \
+            job/barbican-basic-db-clean-failing -n openstack --timeout=120s
+          kubectl wait --for=condition=DBCleanReady \
+            barbican/barbican-basic -n openstack --timeout=120s
+
+          echo "OK: db-clean job completed and the failed run it superseded is deleted"
     catch:
     - script:
         content: |
           echo "=== db-clean CronJob ==="
           kubectl get cronjob barbican-basic-db-clean -n $NAMESPACE -o yaml 2>&1 || true
-          echo "=== db-clean manual Job pods ==="
-          kubectl get pods -n $NAMESPACE -l job-name=barbican-basic-db-clean-manual -o wide 2>&1 || true
-          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=barbican-basic-db-clean-manual -o name 2>/dev/null); do
-            echo "--- $pod logs ---"
-            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
-            echo "--- $pod previous logs ---"
-            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
-            echo "--- $pod describe ---"
-            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          echo "=== db-clean Jobs ==="
+          kubectl get jobs -n $NAMESPACE -l app.kubernetes.io/instance=barbican-basic -o wide 2>&1 || true
+          for job in barbican-basic-db-clean-failing barbican-basic-db-clean-manual; do
+            echo "=== $job pods ==="
+            kubectl get pods -n $NAMESPACE -l job-name=$job -o wide 2>&1 || true
+            for pod in $(kubectl get pods -n $NAMESPACE -l job-name=$job -o name 2>/dev/null); do
+              echo "--- $pod logs ---"
+              kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+              echo "--- $pod previous logs ---"
+              kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+              echo "--- $pod describe ---"
+              kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+            done
           done
+          echo "=== Barbican DBCleanReady ==="
+          kubectl get barbican barbican-basic -n $NAMESPACE \
+            -o jsonpath='{.status.conditions[?(@.type=="DBCleanReady")]}' 2>&1 || true
+          echo ""
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true
   # ── Step 8: Assert the operator's metric families ──────────────────────
