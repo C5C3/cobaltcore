@@ -49,11 +49,11 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 23
+          count: 24
         documentIndex: 0
       - lengthEqual:
           path: rules
-          count: 23
+          count: 24
         documentIndex: 1
 
   # The order watches span every namespace of the registration, so a placed
@@ -373,7 +373,7 @@ tests:
         documentIndex: 1
       - lengthEqual:
           path: rules
-          count: 23
+          count: 24
         documentIndex: 1
 
   # A namespace that hosts no node-level workload carries no DaemonSet write.
@@ -497,6 +497,23 @@ tests:
               - update
               - patch
               - delete
+
+  - it: should grant read-only on maxscales
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - maxscales
+            verbs:
+              - get
+              - list
+              - watch
 
   - it: should grant full CRUD on the OpenBao ensemble kinds
     set:

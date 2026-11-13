@@ -173,6 +173,17 @@ rules:
       - update
       - patch
       - delete
+  # k8s.mariadb.com - maxscales (read-only)
+  # A placed OpenStack service resolves its database endpoint through the
+  # MaxScale its MariaDB names, and never writes one.
+  - apiGroups:
+      - k8s.mariadb.com
+    resources:
+      - maxscales
+    verbs:
+      - get
+      - list
+      - watch
   # memcached.c5c3.io - memcacheds
   # Projected by the ControlPlane's infrastructure step.
   - apiGroups:
