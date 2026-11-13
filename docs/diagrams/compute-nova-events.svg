@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1166" height="2100" viewBox="0 0 1166 2100" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Nova operator">
+<svg xmlns="http://www.w3.org/2000/svg" width="1166" height="2212" viewBox="0 0 1166 2212" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Nova operator">
 <title>Event flow of the Nova operator</title>
-<rect width="1166" height="2100" fill="#F6F5F1"/>
+<rect width="1166" height="2212" fill="#F6F5F1"/>
 <rect x="60" y="40" width="386" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="253" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NovaReconciler.Reconcile()</text>
 <rect x="130" y="114" width="511" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
@@ -22,153 +22,162 @@
 <text x="495" y="266.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
 <text x="558" y="267.2" font-size="20" font-weight="700" fill="#2B3440">RemoteChildrenAbandoned</text>
 <polyline points="160,162 160,260" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="290" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="246.5" y="321.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
+<rect x="130" y="290" width="404" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="332" y="321.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBConnectionSecrets()</text>
 <polyline points="90,314 130,314" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,372 188,372" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="379.2" font-size="20" font-weight="400" fill="#2B3440">extraConfig overrides an operator-owned key</text>
-<rect x="661" y="358" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="710" y="378.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="773" y="379.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<text x="200" y="379.2" font-size="20" font-weight="400" fill="#2B3440">MaxScale named, not routed through</text>
+<rect x="579" y="358" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="628" y="378.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="691" y="379.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseMaxScaleBypassed</text>
 <polyline points="160,338 160,372" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="402" width="266" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="263" y="433.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase()</text>
+<rect x="130" y="402" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="246.5" y="433.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
 <polyline points="90,426 130,426" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,484 188,484" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="491.2" font-size="20" font-weight="400" fill="#2B3440">db_sync fails</text>
-<rect x="448" y="470" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="497" y="490.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="560" y="491.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncFailed</text>
-<polyline points="160,516 188,516" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="523.2" font-size="20" font-weight="400" fill="#2B3440">db_sync succeeds</text>
-<rect x="448" y="502" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="491" y="522.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="548" y="523.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
-<polyline points="160,548 188,548" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="555.2" font-size="20" font-weight="400" fill="#2B3440">cell map unreadable</text>
-<rect x="448" y="534" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="491" y="554.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="548" y="555.2" font-size="20" font-weight="700" fill="#2B3440">CellsReportUnavailable</text>
-<polyline points="160,580 188,580" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="587.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
-<rect x="448" y="566" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="497" y="586.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="560" y="587.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred /</text>
-<text x="560" y="619.2" font-size="20" font-weight="700" fill="#2B3440">CellsReportEmissionDeferred</text>
-<polyline points="160,644 188,644" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="651.2" font-size="20" font-weight="400" fill="#2B3440">expand phase terminal</text>
-<rect x="448" y="630" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="491" y="650.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="548" y="651.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeCheckCompleted</text>
-<rect x="448" y="662" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="497" y="682.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="560" y="683.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeCheckWarnings</text>
-<polyline points="160,708 188,708" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="715.2" font-size="20" font-weight="400" fill="#2B3440">release upgrade</text>
-<rect x="448" y="694" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="491" y="714.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="548" y="715.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeInitiated / ExpandComplete /</text>
-<text x="548" y="747.2" font-size="20" font-weight="700" fill="#2B3440">MigrateComplete / UpgradeComplete /</text>
-<text x="548" y="779.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeAborted</text>
-<rect x="448" y="790" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="497" y="810.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="560" y="811.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError / DowngradeNotSupported /</text>
-<text x="560" y="843.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid / UpgradeTargetChanged /</text>
-<text x="560" y="875.2" font-size="20" font-weight="700" fill="#2B3440">ExpandFailed / MigrateFailed / ContractFailed</text>
-<polyline points="160,450 160,708" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="898" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="276.5" y="929.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
-<polyline points="90,922 130,922" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,980 188,980" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="987.2" font-size="20" font-weight="400" fill="#2B3440">every role rolled out mid-upgrade</text>
-<rect x="550" y="966" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="593" y="986.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="650" y="987.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
-<polyline points="160,946 160,980" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1010" width="279" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="269.5" y="1041.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBArchive()</text>
+<text x="200" y="491.2" font-size="20" font-weight="400" fill="#2B3440">extraConfig overrides an operator-owned key</text>
+<rect x="661" y="470" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="710" y="490.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="773" y="491.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<polyline points="160,450 160,484" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="514" width="266" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="263" y="545.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase()</text>
+<polyline points="90,538 130,538" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,596 188,596" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="603.2" font-size="20" font-weight="400" fill="#2B3440">db_sync fails</text>
+<rect x="448" y="582" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="497" y="602.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="560" y="603.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncFailed</text>
+<polyline points="160,628 188,628" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="635.2" font-size="20" font-weight="400" fill="#2B3440">db_sync succeeds</text>
+<rect x="448" y="614" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="491" y="634.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="548" y="635.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
+<polyline points="160,660 188,660" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="667.2" font-size="20" font-weight="400" fill="#2B3440">cell map unreadable</text>
+<rect x="448" y="646" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="491" y="666.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="548" y="667.2" font-size="20" font-weight="700" fill="#2B3440">CellsReportUnavailable</text>
+<polyline points="160,692 188,692" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="699.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
+<rect x="448" y="678" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="497" y="698.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="560" y="699.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred /</text>
+<text x="560" y="731.2" font-size="20" font-weight="700" fill="#2B3440">CellsReportEmissionDeferred</text>
+<polyline points="160,756 188,756" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="763.2" font-size="20" font-weight="400" fill="#2B3440">expand phase terminal</text>
+<rect x="448" y="742" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="491" y="762.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="548" y="763.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeCheckCompleted</text>
+<rect x="448" y="774" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="497" y="794.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="560" y="795.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeCheckWarnings</text>
+<polyline points="160,820 188,820" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="827.2" font-size="20" font-weight="400" fill="#2B3440">release upgrade</text>
+<rect x="448" y="806" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="491" y="826.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="548" y="827.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeInitiated / ExpandComplete /</text>
+<text x="548" y="859.2" font-size="20" font-weight="700" fill="#2B3440">MigrateComplete / UpgradeComplete /</text>
+<text x="548" y="891.2" font-size="20" font-weight="700" fill="#2B3440">UpgradeAborted</text>
+<rect x="448" y="902" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="497" y="922.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="560" y="923.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError / DowngradeNotSupported /</text>
+<text x="560" y="955.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid / UpgradeTargetChanged /</text>
+<text x="560" y="987.2" font-size="20" font-weight="700" fill="#2B3440">ExpandFailed / MigrateFailed / ContractFailed</text>
+<polyline points="160,562 160,820" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1010" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="276.5" y="1041.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
 <polyline points="90,1034 130,1034" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,1092 188,1092" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">newest run failed</text>
-<rect x="422" y="1078" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="471" y="1098.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="534" y="1099.2" font-size="20" font-weight="700" fill="#2B3440">DBArchiveJobFailed</text>
-<polyline points="160,1124 188,1124" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1131.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
-<rect x="422" y="1110" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="471" y="1130.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="534" y="1131.2" font-size="20" font-weight="700" fill="#2B3440">DBArchiveMetricEmissionDeferred</text>
-<polyline points="160,1058 160,1124" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="90,96 90,1034" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="60" y="1204" width="491" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="305.5" y="1240.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NovaComputeReconciler.Reconcile()</text>
-<rect x="130" y="1278" width="511" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="385.5" y="1309.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDelete() (deletionTimestamp set)</text>
-<polyline points="90,1302 130,1302" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,1360 188,1360" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1367.2" font-size="20" font-weight="400" fill="#2B3440">last pool on the cluster</text>
-<rect x="453" y="1346" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="496" y="1366.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="553" y="1367.2" font-size="20" font-weight="700" fill="#2B3440">ComputeConfigMirrorReaped</text>
-<text x="453" y="1399.2" font-size="20" font-weight="400" fill="#55606E">one per mirror</text>
-<polyline points="160,1424 188,1424" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1431.2" font-size="20" font-weight="400" fill="#2B3440">target cluster gone</text>
-<rect x="453" y="1410" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="502" y="1430.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="565" y="1431.2" font-size="20" font-weight="700" fill="#2B3440">RemoteChildrenAbandoned</text>
-<polyline points="160,1326 160,1424" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1454" width="385" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="322.5" y="1485.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNovaComputeNodes()</text>
-<polyline points="90,1478 130,1478" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1099.2" font-size="20" font-weight="400" fill="#2B3440">every role rolled out mid-upgrade</text>
+<rect x="550" y="1078" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="593" y="1098.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="650" y="1099.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
+<polyline points="160,1058 160,1092" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1122" width="279" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="269.5" y="1153.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBArchive()</text>
+<polyline points="90,1146 130,1146" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1204 188,1204" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1211.2" font-size="20" font-weight="400" fill="#2B3440">newest run failed</text>
+<rect x="422" y="1190" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="471" y="1210.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="534" y="1211.2" font-size="20" font-weight="700" fill="#2B3440">DBArchiveJobFailed</text>
+<polyline points="160,1236 188,1236" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1243.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
+<rect x="422" y="1222" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="471" y="1242.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="534" y="1243.2" font-size="20" font-weight="700" fill="#2B3440">DBArchiveMetricEmissionDeferred</text>
+<polyline points="160,1170 160,1236" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,1146" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="60" y="1316" width="491" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="305.5" y="1352.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">NovaComputeReconciler.Reconcile()</text>
+<rect x="130" y="1390" width="511" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="385.5" y="1421.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDelete() (deletionTimestamp set)</text>
+<polyline points="90,1414 130,1414" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1472 188,1472" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1479.2" font-size="20" font-weight="400" fill="#2B3440">last pool on the cluster</text>
+<rect x="453" y="1458" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="496" y="1478.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="553" y="1479.2" font-size="20" font-weight="700" fill="#2B3440">ComputeConfigMirrorReaped</text>
+<text x="453" y="1511.2" font-size="20" font-weight="400" fill="#55606E">one per mirror</text>
 <polyline points="160,1536 188,1536" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1543.2" font-size="20" font-weight="400" fill="#2B3440">new conflict</text>
-<rect x="351" y="1522" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="400" y="1542.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="463" y="1543.2" font-size="20" font-weight="700" fill="#2B3440">NodeConflict</text>
-<polyline points="160,1502 160,1536" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1566" width="386" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="323" y="1597.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNovaComputeConfig()</text>
+<text x="200" y="1543.2" font-size="20" font-weight="400" fill="#2B3440">target cluster gone</text>
+<rect x="453" y="1522" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="502" y="1542.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="565" y="1543.2" font-size="20" font-weight="700" fill="#2B3440">RemoteChildrenAbandoned</text>
+<polyline points="160,1438 160,1536" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1566" width="385" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="322.5" y="1597.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNovaComputeNodes()</text>
 <polyline points="90,1590 130,1590" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,1648 188,1648" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1655.2" font-size="20" font-weight="400" fill="#2B3440">extraConfig overrides a [libvirt] key</text>
-<rect x="568" y="1634" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="617" y="1654.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="680" y="1655.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<text x="200" y="1655.2" font-size="20" font-weight="400" fill="#2B3440">new conflict</text>
+<rect x="351" y="1634" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="400" y="1654.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="463" y="1655.2" font-size="20" font-weight="700" fill="#2B3440">NodeConflict</text>
 <polyline points="160,1614 160,1648" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1678" width="440" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="350" y="1709.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNovaComputeAggregates()</text>
+<rect x="130" y="1678" width="386" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="323" y="1709.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNovaComputeConfig()</text>
 <polyline points="90,1702 130,1702" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,1760 188,1760" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1767.2" font-size="20" font-weight="400" fill="#2B3440">aggregate created</text>
-<rect x="635" y="1746" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="678" y="1766.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="735" y="1767.2" font-size="20" font-weight="700" fill="#2B3440">AggregateCreated</text>
-<polyline points="160,1792 188,1792" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1799.2" font-size="20" font-weight="400" fill="#2B3440">unneeded aggregate deleted</text>
-<rect x="635" y="1778" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="678" y="1798.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="735" y="1799.2" font-size="20" font-weight="700" fill="#2B3440">AggregateDeleted</text>
-<polyline points="160,1824 188,1824" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1831.2" font-size="20" font-weight="400" fill="#2B3440">unneeded aggregate with foreign metadata</text>
-<rect x="635" y="1810" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="684" y="1830.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="747" y="1831.2" font-size="20" font-weight="700" fill="#2B3440">AggregateKept</text>
-<polyline points="160,1726 160,1824" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1854" width="413" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="336.5" y="1885.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNovaComputeServices()</text>
-<polyline points="90,1878 130,1878" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1767.2" font-size="20" font-weight="400" fill="#2B3440">extraConfig overrides a [libvirt] key</text>
+<rect x="568" y="1746" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="617" y="1766.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="680" y="1767.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<polyline points="160,1726 160,1760" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1790" width="440" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="350" y="1821.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNovaComputeAggregates()</text>
+<polyline points="90,1814 130,1814" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,1872 188,1872" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1879.2" font-size="20" font-weight="400" fill="#2B3440">aggregate created</text>
+<rect x="635" y="1858" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="678" y="1878.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="735" y="1879.2" font-size="20" font-weight="700" fill="#2B3440">AggregateCreated</text>
+<polyline points="160,1904 188,1904" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="1911.2" font-size="20" font-weight="400" fill="#2B3440">unneeded aggregate deleted</text>
+<rect x="635" y="1890" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="678" y="1910.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="735" y="1911.2" font-size="20" font-weight="700" fill="#2B3440">AggregateDeleted</text>
 <polyline points="160,1936 188,1936" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1943.2" font-size="20" font-weight="400" fill="#2B3440">leaving node disabled</text>
-<rect x="443" y="1922" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="486" y="1942.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="543" y="1943.2" font-size="20" font-weight="700" fill="#2B3440">ComputeServiceDisabled</text>
-<polyline points="160,1968 188,1968" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1975.2" font-size="20" font-weight="400" fill="#2B3440">released node deleted</text>
-<rect x="443" y="1954" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="486" y="1974.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="543" y="1975.2" font-size="20" font-weight="700" fill="#2B3440">ComputeServiceDeleted</text>
-<polyline points="160,1902 160,1968" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="90,1260 90,1878" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="40" y="2043.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
-<text x="40" y="2069.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
+<text x="200" y="1943.2" font-size="20" font-weight="400" fill="#2B3440">unneeded aggregate with foreign metadata</text>
+<rect x="635" y="1922" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="684" y="1942.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="747" y="1943.2" font-size="20" font-weight="700" fill="#2B3440">AggregateKept</text>
+<polyline points="160,1838 160,1936" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="1966" width="413" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="336.5" y="1997.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileNovaComputeServices()</text>
+<polyline points="90,1990 130,1990" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,2048 188,2048" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="2055.2" font-size="20" font-weight="400" fill="#2B3440">leaving node disabled</text>
+<rect x="443" y="2034" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="486" y="2054.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="543" y="2055.2" font-size="20" font-weight="700" fill="#2B3440">ComputeServiceDisabled</text>
+<polyline points="160,2080 188,2080" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="2087.2" font-size="20" font-weight="400" fill="#2B3440">released node deleted</text>
+<rect x="443" y="2066" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="486" y="2086.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="543" y="2087.2" font-size="20" font-weight="700" fill="#2B3440">ComputeServiceDeleted</text>
+<polyline points="160,2014 160,2080" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,1372 90,1990" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="2155.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
+<text x="40" y="2181.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
 </svg>

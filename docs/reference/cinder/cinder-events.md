@@ -93,6 +93,23 @@ All events follow these conventions:
 > rejects outright never reach it; they are listed under
 > [extraConfig](./cinder-crd.md#extraconfig).
 
+### Database Endpoint
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `DatabaseMaxScaleBypassed` | Warning | The MariaDB names a MaxScale in `spec.maxScaleRef` that the connection does not go through, and the operator connects to `<name>-primary` or `<name>` instead | `MariaDB openstack/openstack-db names MaxScale openstack-db-maxscale, which the operator does not route through (MaxScaleNotSingleWriter); connecting to openstack-db-primary.openstack.svc:3306` |
+
+**Source:** the shared `ReconcileConnectionSecret` in
+`internal/common/database/connection.go`, called from `reconcileDBConnectionSecret` in
+`reconcile_dbconnection_secret.go`
+
+> **Note:** The reason in parentheses is `MaxScaleOtherNamespace`,
+> `MaxScaleNotFound`, `MaxScaleServesOtherMariaDB` or `MaxScaleNotSingleWriter`.
+> The [Keystone CRD reference](../keystone/keystone-crd.md#managed-database-routes)
+> describes each and the routes. The event repeats on every reconcile that
+> bypasses the MaxScale, and the event recorder folds the repeats into one
+> event with a count.
+
 ### Database Sync
 
 | Reason | Type | Trigger Condition | Example Message |
@@ -276,7 +293,7 @@ groups:
 
 ## Event Flow
 
-![The event flow of the Cinder operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. CinderReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; Warning RemoteChildrenAbandoned when target cluster gone; reconcileBackends() emits Warning CinderBackendSkipped when per-backend fault; reconcileBackupBackend() emits Warning CinderBackupBackendSkipped when backup-target fault; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides an operator-owned key; reconcileDatabase() emits Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; Normal UpgradeCheckCompleted and Warning UpgradeCheckWarnings when migrate phase terminal; Normal UpgradeInitiated or ExpandComplete or MigrateComplete or UpgradeComplete or UpgradeAborted and Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or UpgradeTargetChanged or ExpandFailed or MigrateFailed or ContractFailed when release upgrade; reconcileVolumeServices() emits Normal ServiceRemoved when detach completed; Warning ServiceRemoveJobFailed when service-remove Job failed; Warning ServiceRemoveMetricEmissionDeferred when Job-UID patch fails; reconcileBackupService() emits Warning SharedExportMountOptionsIgnored when shared export, divergent mountOptions; Warning CephKeyringConflict when one keyring file, two keys; reconcileDeployment() emits Normal DeploymentRolloutComplete when rollout ready mid-upgrade; reconcileDBPurge() emits Warning DBPurgeJobFailed when newest run failed; Warning DBPurgeMetricEmissionDeferred when Job-UID patch fails; CinderBackendReconciler.Reconcile(): reconcileDeleting() (parent Cinder already gone) emits Normal ServiceRemoveSkipped when finalizer released;](../../diagrams/service-cinder-events.svg)
+![The event flow of the Cinder operator: the two reconcilers, the sub-reconcilers that emit events, and for each the condition and the event it emits. CinderReconciler.Reconcile(): reconcileDelete() (deletionTimestamp set) emits Normal FinalizingDatabase when MariaDB CRs still live; Normal DatabaseFinalized when MariaDB cleanup done; Warning RemoteChildrenAbandoned when target cluster gone; reconcileBackends() emits Warning CinderBackendSkipped when per-backend fault; reconcileBackupBackend() emits Warning CinderBackupBackendSkipped when backup-target fault; reconcileDBConnectionSecret() emits Warning DatabaseMaxScaleBypassed when MaxScale named, not routed through; reconcileConfig() emits Warning ExtraConfigOwnedKeyOverride when extraConfig overrides an operator-owned key; reconcileDatabase() emits Warning DBSyncFailed when db_sync fails; Normal DatabaseSynced when db_sync succeeds; Warning DBSyncMetricEmissionDeferred when Job-UID patch fails; Normal UpgradeCheckCompleted and Warning UpgradeCheckWarnings when migrate phase terminal; Normal UpgradeInitiated or ExpandComplete or MigrateComplete or UpgradeComplete or UpgradeAborted and Warning VersionParseError or DowngradeNotSupported or UpgradePathInvalid or UpgradeTargetChanged or ExpandFailed or MigrateFailed or ContractFailed when release upgrade; reconcileVolumeServices() emits Normal ServiceRemoved when detach completed; Warning ServiceRemoveJobFailed when service-remove Job failed; Warning ServiceRemoveMetricEmissionDeferred when Job-UID patch fails; reconcileBackupService() emits Warning SharedExportMountOptionsIgnored when shared export, divergent mountOptions; Warning CephKeyringConflict when one keyring file, two keys; reconcileDeployment() emits Normal DeploymentRolloutComplete when rollout ready mid-upgrade; reconcileDBPurge() emits Warning DBPurgeJobFailed when newest run failed; Warning DBPurgeMetricEmissionDeferred when Job-UID patch fails; CinderBackendReconciler.Reconcile(): reconcileDeleting() (parent Cinder already gone) emits Normal ServiceRemoveSkipped when finalizer released;](../../diagrams/service-cinder-events.svg)
 
 The figure draws which sub-reconciler emits which event, and on what. The
 [Event Reasons Reference](#event-reasons-reference) describes every reason.

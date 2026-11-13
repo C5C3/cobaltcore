@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="2376" viewBox="0 0 1540 2376" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Keystone operator">
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="2488" viewBox="0 0 1540 2488" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Keystone operator">
 <title>Event flow of the Keystone operator</title>
-<rect width="1540" height="2376" fill="#F6F5F1"/>
+<rect width="1540" height="2488" fill="#F6F5F1"/>
 <rect x="60" y="40" width="438" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="279" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">KeystoneReconciler.Reconcile()</text>
 <rect x="130" y="114" width="426" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
@@ -215,35 +215,44 @@
 <text x="596" y="1882.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
 <text x="659" y="1883.2" font-size="20" font-weight="700" fill="#2B3440">AdminPasswordRotationRejected</text>
 <polyline points="160,1778 160,1876" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="1906" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="246.5" y="1937.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
+<rect x="130" y="1906" width="391" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="325.5" y="1937.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBConnectionSecret()</text>
 <polyline points="90,1930 130,1930" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,1988 188,1988" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="1995.2" font-size="20" font-weight="400" fill="#2B3440">spec.extraConfig overrides operator-owned keys</text>
-<rect x="696" y="1974" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="745" y="1994.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="808" y="1995.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
-<text x="696" y="2027.2" font-size="20" font-weight="400" fill="#55606E">gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden</text>
+<text x="200" y="1995.2" font-size="20" font-weight="400" fill="#2B3440">MaxScale named, not routed through</text>
+<rect x="579" y="1974" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="628" y="1994.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="691" y="1995.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseMaxScaleBypassed</text>
 <polyline points="160,1954 160,1988" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="2050" width="284" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="272" y="2081.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileTrustFlush()</text>
-<polyline points="90,2074 130,2074" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,2132 188,2132" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="2139.2" font-size="20" font-weight="400" fill="#2B3440">Legacy nil spec.trustFlush bypass</text>
-<rect x="565" y="2118" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="614" y="2138.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="677" y="2139.2" font-size="20" font-weight="700" fill="#2B3440">TrustFlushBypass</text>
-<polyline points="160,2098 160,2132" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="2162" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="276.5" y="2193.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
+<rect x="130" y="2018" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="246.5" y="2049.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
+<polyline points="90,2042 130,2042" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,2100 188,2100" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="2107.2" font-size="20" font-weight="400" fill="#2B3440">spec.extraConfig overrides operator-owned keys</text>
+<rect x="696" y="2086" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="745" y="2106.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="808" y="2107.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<text x="696" y="2139.2" font-size="20" font-weight="400" fill="#55606E">gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden</text>
+<polyline points="160,2066 160,2100" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="2162" width="284" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="272" y="2193.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileTrustFlush()</text>
 <polyline points="90,2186 130,2186" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,2244 188,2244" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="2251.2" font-size="20" font-weight="400" fill="#2B3440">Ready during upgrade rollout</text>
-<rect x="505" y="2230" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="548" y="2250.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="605" y="2251.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
+<text x="200" y="2251.2" font-size="20" font-weight="400" fill="#2B3440">Legacy nil spec.trustFlush bypass</text>
+<rect x="565" y="2230" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="614" y="2250.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="677" y="2251.2" font-size="20" font-weight="700" fill="#2B3440">TrustFlushBypass</text>
 <polyline points="160,2210 160,2244" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="90,96 90,2186" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="40" y="2319.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
-<text x="40" y="2345.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
+<rect x="130" y="2274" width="293" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="276.5" y="2305.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDeployment()</text>
+<polyline points="90,2298 130,2298" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,2356 188,2356" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="2363.2" font-size="20" font-weight="400" fill="#2B3440">Ready during upgrade rollout</text>
+<rect x="505" y="2342" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="548" y="2362.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="605" y="2363.2" font-size="20" font-weight="700" fill="#2B3440">DeploymentRolloutComplete</text>
+<polyline points="160,2322 160,2356" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,2298" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="2431.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
+<text x="40" y="2457.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
 </svg>

@@ -11,6 +11,9 @@ CinderReconciler.Reconcile()
   ├── reconcileBackupBackend()
   │     └─ backup-target fault         → Warning CinderBackupBackendSkipped
   │
+  ├── reconcileDBConnectionSecret()
+  │     └─ MaxScale named, not routed through → Warning DatabaseMaxScaleBypassed
+  │
   ├── reconcileConfig()
   │     └─ extraConfig overrides an operator-owned key
   │                                    → Warning ExtraConfigOwnedKeyOverride

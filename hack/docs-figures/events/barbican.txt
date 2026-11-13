@@ -9,6 +9,9 @@ BarbicanReconciler.Reconcile()
   │     ├─ store de-projected      → Warning SecretStoreDetached
   │     └─ no/several defaults     → (condition only, no event)
   │
+  ├── reconcileDBConnectionSecret()
+  │     └─ MaxScale named, not routed through → Warning DatabaseMaxScaleBypassed
+  │
   ├── reconcileConfig()
   │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
   │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)

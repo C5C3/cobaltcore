@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="808" viewBox="0 0 1540 808" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Placement operator">
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="920" viewBox="0 0 1540 920" font-family="'IBM Plex Sans', Arial, Helvetica, sans-serif" role="img" aria-label="Event flow of the Placement operator">
 <title>Event flow of the Placement operator</title>
-<rect width="1540" height="808" fill="#F6F5F1"/>
+<rect width="1540" height="920" fill="#F6F5F1"/>
 <rect x="60" y="40" width="452" height="56" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
 <text x="286" y="76.64" font-size="24" font-weight="700" fill="#2B3440" text-anchor="middle">PlacementReconciler.Reconcile()</text>
 <rect x="130" y="114" width="511" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
@@ -17,46 +17,55 @@
 <text x="489" y="234.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
 <text x="546" y="235.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseFinalized</text>
 <polyline points="160,162 160,228" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="258" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="246.5" y="289.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
+<rect x="130" y="258" width="391" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="325.5" y="289.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDBConnectionSecret()</text>
 <polyline points="90,282 130,282" fill="none" stroke="#7D8794" stroke-width="2"/>
 <polyline points="160,340 188,340" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="347.2" font-size="20" font-weight="400" fill="#2B3440">spec.extraConfig overrides operator-owned keys</text>
-<rect x="696" y="326" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="745" y="346.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="808" y="347.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
-<text x="696" y="379.2" font-size="20" font-weight="400" fill="#55606E">gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden</text>
+<text x="200" y="347.2" font-size="20" font-weight="400" fill="#2B3440">MaxScale named, not routed through</text>
+<rect x="579" y="326" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="628" y="346.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="691" y="347.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseMaxScaleBypassed</text>
 <polyline points="160,306 160,340" fill="none" stroke="#7D8794" stroke-width="2"/>
-<rect x="130" y="402" width="266" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
-<text x="263" y="433.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase()</text>
-<polyline points="90,426 130,426" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="160,484 188,484" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="491.2" font-size="20" font-weight="400" fill="#2B3440">tag/release mismatch</text>
-<text x="442" y="491.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
-<text x="442" y="523.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
-<polyline points="160,548 188,548" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="555.2" font-size="20" font-weight="400" fill="#2B3440">release gate refuses</text>
-<rect x="442" y="534" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="491" y="554.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="554" y="555.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError / DowngradeNotSupported /</text>
-<text x="554" y="587.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid / ImageReleaseMismatch</text>
-<polyline points="160,612 188,612" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="619.2" font-size="20" font-weight="400" fill="#2B3440">db_sync fails</text>
-<rect x="442" y="598" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="491" y="618.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="554" y="619.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncFailed</text>
-<polyline points="160,644 188,644" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="651.2" font-size="20" font-weight="400" fill="#2B3440">db_sync succeeds</text>
-<rect x="442" y="630" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
-<text x="485" y="650.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
-<text x="542" y="651.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
-<polyline points="160,676 188,676" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="200" y="683.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
-<rect x="442" y="662" width="98" height="28" rx="25" fill="#2B3440"/>
-<text x="491" y="682.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
-<text x="554" y="683.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred</text>
-<polyline points="160,450 160,676" fill="none" stroke="#7D8794" stroke-width="2"/>
-<polyline points="90,96 90,426" fill="none" stroke="#7D8794" stroke-width="2"/>
-<text x="40" y="751.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
-<text x="40" y="777.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
+<rect x="130" y="370" width="233" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="246.5" y="401.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileConfig()</text>
+<polyline points="90,394 130,394" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,452 188,452" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="459.2" font-size="20" font-weight="400" fill="#2B3440">spec.extraConfig overrides operator-owned keys</text>
+<rect x="696" y="438" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="745" y="458.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="808" y="459.2" font-size="20" font-weight="700" fill="#2B3440">ExtraConfigOwnedKeyOverride</text>
+<text x="696" y="491.2" font-size="20" font-weight="400" fill="#55606E">gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden</text>
+<polyline points="160,418 160,452" fill="none" stroke="#7D8794" stroke-width="2"/>
+<rect x="130" y="514" width="266" height="48" rx="6" fill="#FDFCF9" stroke="#3A4452" stroke-width="2"/>
+<text x="263" y="545.92" font-size="22" font-weight="700" fill="#2B3440" text-anchor="middle">reconcileDatabase()</text>
+<polyline points="90,538 130,538" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="160,596 188,596" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="603.2" font-size="20" font-weight="400" fill="#2B3440">tag/release mismatch</text>
+<text x="442" y="603.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
+<text x="442" y="635.2" font-size="20" font-weight="400" fill="#55606E">condition only, no event</text>
+<polyline points="160,660 188,660" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="667.2" font-size="20" font-weight="400" fill="#2B3440">release gate refuses</text>
+<rect x="442" y="646" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="491" y="666.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="554" y="667.2" font-size="20" font-weight="700" fill="#2B3440">VersionParseError / DowngradeNotSupported /</text>
+<text x="554" y="699.2" font-size="20" font-weight="700" fill="#2B3440">UpgradePathInvalid / ImageReleaseMismatch</text>
+<polyline points="160,724 188,724" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="731.2" font-size="20" font-weight="400" fill="#2B3440">db_sync fails</text>
+<rect x="442" y="710" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="491" y="730.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="554" y="731.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncFailed</text>
+<polyline points="160,756 188,756" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="763.2" font-size="20" font-weight="400" fill="#2B3440">db_sync succeeds</text>
+<rect x="442" y="742" width="86" height="28" rx="25" fill="#FDFCF9" stroke="#7D8794" stroke-width="2"/>
+<text x="485" y="762.48" font-size="18" font-weight="700" fill="#2B3440" text-anchor="middle">Normal</text>
+<text x="542" y="763.2" font-size="20" font-weight="700" fill="#2B3440">DatabaseSynced</text>
+<polyline points="160,788 188,788" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="200" y="795.2" font-size="20" font-weight="400" fill="#2B3440">Job-UID patch fails</text>
+<rect x="442" y="774" width="98" height="28" rx="25" fill="#2B3440"/>
+<text x="491" y="794.48" font-size="18" font-weight="700" fill="#FBFAF7" text-anchor="middle">Warning</text>
+<text x="554" y="795.2" font-size="20" font-weight="700" fill="#2B3440">DBSyncMetricEmissionDeferred</text>
+<polyline points="160,562 160,788" fill="none" stroke="#7D8794" stroke-width="2"/>
+<polyline points="90,96 90,538" fill="none" stroke="#7D8794" stroke-width="2"/>
+<text x="40" y="863.2" font-size="20" font-weight="400" fill="#55606E">A filled chip is a Warning event, an outline chip a Normal event. A line with two chips emits one or the other.</text>
+<text x="40" y="889.2" font-size="20" font-weight="400" fill="#55606E">Every reason is described in the Event Reasons Reference of the page.</text>
 </svg>

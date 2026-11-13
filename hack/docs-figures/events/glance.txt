@@ -7,6 +7,9 @@ GlanceReconciler.Reconcile()
   ├── reconcileBackends()
   │     └─ per-backend fault (missing Secret / control char) → Warning GlanceBackendSkipped
   │
+  ├── reconcileDBConnectionSecret()
+  │     └─ MaxScale named, not routed through → Warning DatabaseMaxScaleBypassed
+  │
   ├── reconcileConfig()
   │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
   │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)

@@ -4,6 +4,9 @@ PlacementReconciler.Reconcile()
   │     ├─ MariaDB CRs still live  → Normal  FinalizingDatabase
   │     └─ MariaDB cleanup done    → Normal  DatabaseFinalized
   │
+  ├── reconcileDBConnectionSecret()
+  │     └─ MaxScale named, not routed through → Warning DatabaseMaxScaleBypassed
+  │
   ├── reconcileConfig()
   │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
   │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)

@@ -51,6 +51,9 @@ KeystoneReconciler.Reconcile()
   │     ├─ Malformed completion annotation → Warning AdminPasswordRotationAnnotationInvalid
   │     └─ Staged password rejected → Warning AdminPasswordRotationRejected
   │
+  ├── reconcileDBConnectionSecret()
+  │     └─ MaxScale named, not routed through → Warning DatabaseMaxScaleBypassed
+  │
   ├── reconcileConfig()
   │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
   │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
