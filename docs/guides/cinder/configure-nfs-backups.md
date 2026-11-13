@@ -36,18 +36,10 @@ child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
 name in the examples below is one that devstack produces.
 :::
 
-::: warning Set storage on the ControlPlane, never on the projected children
-The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
-`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. A child you
-edit, or delete, by hand is reverted (or recreated) on the next reconcile.
-Change `services.cinder` on the `ControlPlane` CR and let the operator project
-it down; that block is the single source of truth for the projected storage.
-:::
-
-- The `OS_*` environment variables from the tutorial's token-issue step, so the
-  `openstack` client reaches the ControlPlane's Keystone.
-- The volume `demo-vol` that the tutorial's **Create a first volume** check
-  leaves behind in Step 7.
+Keep the `OS_*` environment variables from the tutorial's token-issue step and
+the `demo-vol` volume from the **Create a first volume** check in Step 7. The
+polling commands below use GNU `timeout`; on macOS, install GNU coreutils and
+replace `timeout` with `gtimeout`.
 
 ## Step 1: Read the projected backup service
 
@@ -64,8 +56,10 @@ NAME    READY   TYPE   CINDER                AGE
 nfsbk   True    NFS    controlplane-cinder   9m
 ```
 
-`READY` turns `True` only after the backup Deployment mounts the Secret
-rendered for this backend. The figure shows the steps in between, and
+`READY` turns `True` when the backend's credentials (if required) are ready and
+the Cinder backup Deployment references its rendered Secret. It does not report
+pod availability; `BackupServiceReady` on the Cinder does that. The figure shows
+the two condition gates, and
 [The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
 lists them with what differs per kind.
 
@@ -138,11 +132,12 @@ kubectl exec -n openstack deploy/controlplane-cinder-backup -- \
 
 ## Step 2: Back up and restore a volume
 
-Back up the volume the tutorial created. `openstack volume backup create` returns
-before the chunks are written, so wait for `available` before going on:
+Back up the volume the tutorial created. The create command returns before the
+chunks are written, so wait for the backup to reach `available`:
 
 ```bash
 openstack --insecure volume backup create --name demo-bk demo-vol
+timeout 600 bash -c 'until [ "$(openstack --insecure volume backup show demo-bk -c status -f value)" = available ]; do sleep 5; done'
 openstack --insecure volume backup show demo-bk -c status -f value
 ```
 
@@ -150,8 +145,13 @@ Restore it into the same volume:
 
 ```bash
 openstack --insecure volume backup restore --force demo-bk demo-vol
+timeout 600 bash -c 'until [ "$(openstack --insecure volume show demo-vol -c status -f value)" = available ]; do sleep 5; done'
 openstack --insecure volume show demo-vol -c status -f value
 ```
+
+The restore also returns before the volume is ready. These polls wait up to ten
+minutes; if one times out, inspect the backup or volume status and the
+`controlplane-cinder-backup` pod logs before retrying.
 
 `--force` is what openstackclient requires to restore into a volume that already
 exists. Without it the command refuses before any API call, with
@@ -171,10 +171,18 @@ already exists seeks to each block's offset and writes every byte, and the volum
 comes back byte-identical to the source.
 :::
 
-Deleting the backup is what proves the service owns the chunks it wrote:
+Delete the test backup and wait until Cinder no longer lists it:
 
 ```bash
 openstack --insecure volume backup delete demo-bk
+timeout 600 bash -c '
+  while :; do
+    backups=$(openstack --insecure volume backup list -f value -c Name) || exit 1
+    if ! grep -Fxq demo-bk <<<"$backups"; then
+      exit 0
+    fi
+    sleep 5
+  done'
 openstack --insecure volume backup list
 ```
 
@@ -184,6 +192,10 @@ Two fields on the `backupBackend` entry shape what a backup costs. `fileSize` is
 the size in bytes of one chunk: cinder splits a volume into objects of that size
 and writes them one at a time. `compression` selects the algorithm each chunk is
 compressed with, one of `none`, `zlib`, `bz2` and `zstd`:
+
+Change `services.cinder` on the `ControlPlane`, not on the projected
+`controlplane-cinder`, `nfs1` or `nfsbk` children. The c5c3-operator reconciles
+those children from the parent.
 
 ```bash
 kubectl patch controlplane controlplane -n openstack --type merge \
@@ -195,13 +207,14 @@ hashes each chunk in blocks of 32 KiB and refuses a chunk size that block size
 does not divide. Leaving either field unset lets the satellite CRD's defaults
 apply, `52428800` and `zlib`.
 
-The chunk size is also the memory rule. The backup process holds one object and
+The chunk size also shapes memory use. The backup process holds one object and
 its compressed form in memory at a time, so the footprint follows `fileSize`,
 and the reconciler renders `2Gi` as the backup container's memory request and
-limit to match. The CI Tempest suite reaches that limit while backing up a
-a 1 GiB volume, which is more than the chunk arithmetic alone accounts for.
-Treat `2Gi` as the budget for volumes of roughly that size, and raise it before
-a backup target takes larger ones.
+limit. On the 2025.2 image, repeated backup-and-restore rounds on a 1 GiB volume
+with the default chunk and arena count reached `2Gi` in CI. With
+`MALLOC_ARENA_MAX=2`, the same rounds used 206-252 MiB; the operator sets that
+cap. Treat `2Gi` as the default budget for volumes of roughly that size, and
+measure larger workloads before raising the limit.
 
 On a ControlPlane the raise goes on `spec.sizing.cinder.backup.resources`, and
 the operator pins the replica count. On a `Cinder` CR you own it goes on
@@ -249,10 +262,11 @@ At most one may be attached to a Cinder. The validating webhook lists the
 namespace siblings on every create and update, and rejects a second one on
 `spec.cinderRef` with
 `Cinder "cinder" already has CinderBackupBackend "nfs-backups" attached`. Should
-a second CR ever slip past admission, the cinder-side step refuses to guess: it
-renders nothing, sets `BackupBackendReady=False` under the reason
-`MultipleBackupBackends` naming both candidates, and deletes the backup
-Deployment in the same pass. Backups resume when one of the two is removed.
+more than one attached target be credential-ready despite admission, the
+Cinder reconciler refuses to choose: it renders nothing, sets
+`BackupBackendReady=False` under the reason `MultipleBackupBackends` naming the
+candidates, and deletes the backup Deployment in the same pass. Backups resume
+when one of the targets is removed.
 
 `cinderRef` and `type` are immutable, because a restore reads a backup with the
 driver that wrote it. Deleting the CR is a plain delete with no finalizer: the
