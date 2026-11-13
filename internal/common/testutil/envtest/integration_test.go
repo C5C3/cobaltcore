@@ -52,6 +52,7 @@ func allExpectedCRDs() []expectedCRD {
 		{name: "users.openstack.k-orc.cloud", group: "openstack.k-orc.cloud", version: "v1alpha1", kind: "User", namespaced: true},
 		{name: "grants.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "Grant", namespaced: true},
 		{name: "mariadbs.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "MariaDB", namespaced: true},
+		{name: "maxscales.k8s.mariadb.com", group: "k8s.mariadb.com", version: "v1alpha1", kind: "MaxScale", namespaced: true},
 		{name: "memcacheds.memcached.c5c3.io", group: "memcached.c5c3.io", version: "v1beta1", kind: "Memcached", namespaced: true},
 		{name: "openbaoclusters.openbao.org", group: "openbao.org", version: "v1alpha1", kind: "OpenBaoCluster", namespaced: true},
 		{name: "passwords.generators.external-secrets.io", group: "generators.external-secrets.io", version: "v1alpha1", kind: "Password", namespaced: true},
