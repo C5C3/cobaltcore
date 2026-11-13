@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A three-member Galera MariaDB of the galera-primary-route suite. The shared
+# openstack-db of the kind overlay is a single instance, so it has no
+# <name>-primary Service, and no CI leg runs Galera otherwise. The suite owns
+# this MariaDB alone.
+#
+# No maxScaleRef, so the operator routes through galera-route-db-primary
+# (database.ResolveEndpoint). No TLS, as on openstack-db in the kind overlay.
+#
+# The sizing follows openstack-db in deploy/kind/infrastructure/
+# kustomization.yaml: a memory request takes mariadbd out of BestEffort, the
+# class the OOM killer picks first (CI run 34718789784 restarted a BestEffort
+# openstack-db-0 five times), and the equal limit makes an undersized value
+# surface as OOMKilled. No CPU request, because 500m left pods Pending on the
+# 4-vCPU keystone leg (#970). The probe thresholds are the overlay's too: the
+# defaults restart a member that answers its probe slowly on a busy node.
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: MariaDB
+metadata:
+  name: galera-route-db
+  namespace: openstack
+spec:
+  replicas: 3
+  galera:
+    enabled: true
+  rootPasswordSecretKeyRef:
+    name: galera-route-db-root
+    key: password
+    generate: true
+  storage:
+    size: 512Mi
+    storageClassName: standard
+  livenessProbe:
+    timeoutSeconds: 10
+    failureThreshold: 6
+  readinessProbe:
+    timeoutSeconds: 10
+  resources:
+    requests:
+      memory: 1Gi
+    limits:
+      memory: 1Gi
+  tls:
+    enabled: false
+    required: false
