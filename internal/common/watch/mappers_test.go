@@ -9,6 +9,7 @@ import (
 	"errors"
 	"testing"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -191,6 +192,101 @@ func TestClusterRefMapper_NoMatchReturnsNil(t *testing.T) {
 
 	changed := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "absent", Namespace: "ns1"}}
 	g.Expect(mapper(context.Background(), changed)).To(gomega.BeEmpty())
+}
+
+func TestMaxScaleToClusterRefMapper(t *testing.T) {
+	maxScaleFor := func(namespace string, mariaDB *mariadbv1alpha1.MariaDBRef) *mariadbv1alpha1.MaxScale {
+		return &mariadbv1alpha1.MaxScale{
+			ObjectMeta: metav1.ObjectMeta{Name: "mxs", Namespace: namespace},
+			Spec:       mariadbv1alpha1.MaxScaleSpec{MariaDBRef: mariaDB},
+		}
+	}
+	refTo := func(name string) *mariadbv1alpha1.MariaDBRef {
+		return &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: name}}
+	}
+	refIn := func(namespace, name string) *mariadbv1alpha1.MariaDBRef {
+		ref := refTo(name)
+		ref.Namespace = namespace
+		return ref
+	}
+	objects := []client.Object{
+		cmWithRef("cr-a", "ns1", "mariadb"), // matches
+		cmWithRef("cr-b", "ns1", "other"),   // another MariaDB
+		cmWithRef("cr-c", "ns1", ""),        // brownfield
+		cmWithRef("cr-d", "ns2", "mariadb"), // another namespace
+	}
+
+	tests := []struct {
+		name     string
+		obj      client.Object
+		listErr  error
+		want     []reconcile.Request
+		wantNil  bool
+		wantNone bool
+	}{
+		{
+			name: "enqueues the CRs whose clusterRef the mariaDbRef names",
+			obj:  maxScaleFor("ns1", refTo("mariadb")),
+			want: []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "cr-a"}}},
+		},
+		{
+			name: "a mariaDbRef naming its own namespace enqueues like one without a namespace",
+			obj:  maxScaleFor("ns1", refIn("ns1", "mariadb")),
+			want: []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "cr-a"}}},
+		},
+		{
+			name:     "a mariaDbRef naming another namespace enqueues nothing",
+			obj:      maxScaleFor("ns1", refIn("ns2", "mariadb")),
+			wantNone: true,
+		},
+		{
+			name:     "a MaxScale without mariaDbRef enqueues nothing",
+			obj:      maxScaleFor("ns1", nil),
+			wantNone: true,
+		},
+		{
+			name:     "a namespace without CRs enqueues nothing",
+			obj:      maxScaleFor("ns3", refTo("mariadb")),
+			wantNone: true,
+		},
+		{
+			name:     "an object that is not a MaxScale enqueues nothing",
+			obj:      &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: "ns1"}},
+			wantNone: true,
+		},
+		{
+			name:    "a failing List returns nil",
+			obj:     maxScaleFor("ns1", refTo("mariadb")),
+			listErr: errors.New("list failed"),
+			wantNil: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			b := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).WithObjects(objects...)
+			if tc.listErr != nil {
+				b = b.WithInterceptorFuncs(interceptor.Funcs{
+					List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+						return tc.listErr
+					},
+				})
+			}
+			mapper := MaxScaleToClusterRefMapper(b.Build(),
+				func() client.ObjectList { return &corev1.ConfigMapList{} },
+				func(o client.Object) string { return o.GetAnnotations()["clusterRef"] })
+
+			reqs := mapper(context.Background(), tc.obj)
+			switch {
+			case tc.wantNil:
+				g.Expect(reqs).To(gomega.BeNil())
+			case tc.wantNone:
+				g.Expect(reqs).To(gomega.BeEmpty())
+			default:
+				g.Expect(reqs).To(gomega.ConsistOf(tc.want))
+			}
+		})
+	}
 }
 
 // storeRefEffective extracts a store reference from a ConfigMap standing in for
