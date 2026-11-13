@@ -84,14 +84,17 @@ kubectl wait keystone/keystone -n openstack \
 
 The exact condition names vary by operator. The main pattern is consistent:
 
-- `Ready=False` → inspect the first false condition in the list
+- `Ready=False` → inspect the false subconditions and their reasons/messages
 - `SecretsReady=False` → check the backing Secret or external secret state
 - `DatabaseReady=False` → inspect DB sync, schema, or migration status
 - `DeploymentReady=False` → check rollout, probes, or image-pull issues
 - `BootstrapReady=False` → the setup Job has not completed yet
 
 ::: tip Diagnosing a stuck CR
-The first `status=False` condition from the top is usually the bottleneck. Work from the top of the list toward the bottom until the failure is explained.
+Read a false condition's reason and message with its type; a status alone is not
+a diagnosis. Some operators run several independent tail steps, so multiple
+conditions can be false at once. For a `ControlPlane`, use the blocking-prefix
+and tail-group distinction below.
 :::
 
 ### Conditions of a ControlPlane
@@ -127,7 +130,10 @@ For the service-specific field semantics and phase model, read the controller's 
 
 ## Events
 
-Every lifecycle transition emits a Kubernetes Event with a stable `reason`. Events are deduplicated by object, reason, and message, so repeated reconciles do not spam the event stream.
+Controllers emit Kubernetes Events for selected lifecycle transitions and
+failures, using stable `reason` values. Events provide a diagnostic timeline.
+Kubernetes can aggregate repeated events; where API auditing is enabled, its
+logs provide the request-level record.
 
 ### Show everything for a CR
 
@@ -139,7 +145,7 @@ The Events section sits at the bottom of the output in reverse-chronological ord
 
 ```bash
 kubectl get events -n openstack \
-  --field-selector involvedObject.kind=Keystone \
+  --field-selector involvedObject.kind=Keystone,involvedObject.name=keystone \
   --sort-by='.lastTimestamp'
 ```
 
@@ -174,11 +180,14 @@ kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator \
   --tail=200 -f
 ```
 
-The operator emits structured `logr` output, and each line carries the reconciled object and the sub-reconciler that produced it. Filter a specific CR:
+The operator emits structured `logr` output. Controller-runtime adds the
+controller, object, namespace, name, and reconcile ID. The sub-reconciler name
+is available as a Prometheus metric label. Filter the Keystone CR in logs by
+its structured object fields:
 
 ```bash
 kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=500 \
-  | grep '"Keystone":"openstack/keystone"'
+  | jq -c 'select(.namespace == "openstack" and .name == "keystone")'
 ```
 
 ---
