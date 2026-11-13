@@ -9,7 +9,12 @@ quadrant: operator
 
 This guide walks an operator through opting in to the chart-level
 NetworkPolicy that restricts the glance-operator pod's egress and ingress
-to the minimum required for correct reconciliation.
+to the rules required for reconciliation.
+
+Kubernetes NetworkPolicies combine allowed connections additively. Another
+NetworkPolicy that selects the same operator pod may allow additional traffic,
+so inspect existing policies in `glance-system` when assessing the effective
+allow-list ([Kubernetes NetworkPolicy semantics](https://kubernetes.io/docs/concepts/services-networking/network-policies/#the-two-sorts-of-pod-isolation)).
 
 > **Scope.** This guide covers the NetworkPolicy that protects the
 > **operator pod itself**. For the per-CR NetworkPolicy that protects the
@@ -39,26 +44,38 @@ is running (namespace `glance-system`) alongside the projected
 `controlplane-glance` image service.
 :::
 
-A running `glance-operator` Helm release (namespace `glance-system`) is required.
+A running `glance-operator` Helm release (namespace `glance-system`) and
+`kubectl` and `jq` on the workstation are required.
 
 ## Step 1 — Enable the policy
 
 The chart guards `networkPolicy.enabled=true` with a fail-closed check:
 `networkPolicy.kubeApiServer.cidrs` and `ports` must both be non-empty, or the
 template refuses to render. Gather the API server CIDRs and ports from the
-`kubernetes` **Endpoints**, which hold the real API server addresses. Do not
-use the `10.96.0.1` Service VIP that `kubectl get service kubernetes` reports:
-kindnet (kind v0.32 and later) and enforcing CNIs such as Calico and Cilium
-evaluate policy after the Service DNAT, so a rule naming the VIP never matches:
+`EndpointSlice` objects for the `kubernetes` Service in `default`. The
+NetworkPolicy API leaves the order of Service DNAT and policy evaluation to
+the network plugin. The Glance e2e suite confirms that kindnet on kind v0.33
+evaluates this rule after DNAT, against the EndpointSlice addresses. Use those
+addresses for the tutorial devstack; verify your CNI's behavior before
+applying the same assumption to another cluster
+([Kubernetes NetworkPolicy behavior](https://kubernetes.io/docs/concepts/services-networking/network-policies/#behavior-of-to-and-from-selectors)).
 
 ```bash
-kubectl get endpoints kubernetes -n default -o json \
-  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
+kubectl get endpointslices -n default \
+  -l kubernetes.io/service-name=kubernetes -o json \
+  | jq -r '
+      .items[] as $slice
+      | $slice.endpoints[]?.addresses[]? as $ip
+      | $slice.ports[]?.port as $p
+      | select($p != null)
+      | "\($ip)\(if ($ip | contains(":")) then "/128" else "/32" end) port=\($p)"
+    '
 ```
 
 Record **every** endpoint IP the command prints. A kind devstack reports the
 one control-plane node's address on the kind bridge, for example
-`172.18.0.2/32`, but an HA control plane reports one per API server replica:
+`172.18.0.2/32`. IPv6 addresses use `/128`. An HA control plane reports one
+address per API server replica:
 
 ```
 10.0.0.10/32 port=6443
@@ -69,18 +86,39 @@ one control-plane node's address on the kind bridge, for example
 The rule must cover all of them, or the operator loses its leader-election
 lease whenever it happens to be talking to an excluded replica.
 
-On Cilium, a CIDR selector, and so an `ipBlock` peer, matches no cluster node
-address by default. When the API server runs on a cluster node, as on a
-kubeadm control plane, Cilium drops the operator's API server traffic even
-with every endpoint address in the rule. Before you enable the policy, add a
-CiliumNetworkPolicy in the operator's namespace that selects the operator pod
-and allows egress `toEntities: [kube-apiserver]`. Starting the Cilium agents
-with `--policy-cidr-match-mode=nodes` (Helm value `policyCIDRMatchMode: nodes`)
-also works, but it is cluster-wide: every CIDR selector in every
-NetworkPolicy, CiliumNetworkPolicy, and CiliumClusterwideNetworkPolicy, in
-both directions (`ipBlock`, `fromCIDR`, `fromCIDRSet`, `toCIDR`, `toCIDRSet`,
-and CIDR deny rules), then matches node addresses too. Audit those rules
-before you turn it on.
+On Cilium, CIDR selectors do not match cluster node addresses by default
+([Cilium CIDR matching](https://docs.cilium.io/en/stable/security/policy/layer3/#cidr-select-nodes)).
+If the API server runs on a node, the chart's API-server egress CIDR may not
+match even when it lists every EndpointSlice address. Before enabling the
+policy, add a CiliumNetworkPolicy that selects the operator pod and allows
+egress to `kube-apiserver` on the API server ports you discovered above
+([Cilium's kube-apiserver entity](https://docs.cilium.io/en/stable/security/policy/layer3/#access-to-from-kube-apiserver)).
+The chart's webhook ingress rule also uses an `ipBlock`; if webhook requests
+arrive from a node address, allow ingress from `kube-apiserver` on TCP 9443
+with Cilium policy as well. Cilium notes that this entity may not work for
+ingress on some managed distributions, so verify the caller path there.
+
+Setting `--policy-cidr-match-mode=nodes` (Helm value
+`policyCIDRMatchMode: nodes`) is another option. It lets CIDR selectors match
+node addresses cluster-wide and causes Cilium to allocate node identities.
+Review the affected CIDR policies before enabling it.
+
+For Flux-managed releases, metrics ingress is separate and opt-in. The default
+`networkPolicy.allowMetricsFrom: []` renders no ingress rule for the metrics
+port (8080), so Prometheus cannot scrape the operator after this policy is enabled
+unless you add a peer first. For Prometheus in the `monitoring` namespace,
+patch the HelmRelease before enabling the policy:
+
+```bash
+kubectl patch helmrelease glance-operator -n glance-system --type=merge \
+  -p '{"spec":{"values":{"networkPolicy":{"allowMetricsFrom":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"monitoring"}}}]}}}}'
+```
+
+This namespace selector allows all pods in `monitoring`; add a `podSelector`
+to narrow it if needed. This value only opens the network path. The
+ServiceMonitor is controlled separately by
+`monitoring.serviceMonitor.enabled`; see [Enable the Glance Operator Metrics Endpoint](./enable-glance-operator-metrics.md).
+For a direct Helm install, set the same peer in the chart values.
 
 On the tutorial devstacks the `glance-operator` release is owned by Flux (a
 `HelmRelease`), so set the values by patching its `spec.values`. The Flux
@@ -88,7 +126,8 @@ helm-controller reverts a raw `helm upgrade` on its next
 reconcile. Substitute the CIDRs and ports from above. The single-CIDR list
 below is the kind case, one control-plane node, so replace `172.18.0.2/32`
 with the address the discovery command printed and extend the list to every
-IP an HA control plane prints:
+IP an HA control plane prints. Add every distinct port from discovery to the
+`ports` list as well:
 
 ```bash
 kubectl patch helmrelease glance-operator -n glance-system --type=merge \
@@ -98,9 +137,12 @@ kubectl wait helmrelease/glance-operator -n glance-system \
   --for=condition=Ready --timeout=5m
 ```
 
-The chart-level policy allows what the operator needs: egress to the
-kube-apiserver, to DNS and to the Glance API, ingress to the webhook and metrics
-ports. The Glance API rule admits TCP 9292 to every pod labelled
+The chart-level policy allows egress to the kube-apiserver, DNS, and the
+Glance API. When the webhook is enabled, it allows ingress on TCP 9443 from
+`networkPolicy.webhookClients.cidrs`, falling back to
+`networkPolicy.kubeApiServer.cidrs` when that list is empty. Metrics ingress is
+rendered only when `networkPolicy.allowMetricsFrom` is non-empty. The Glance
+API rule admits TCP 9292 to every pod labelled
 `app.kubernetes.io/name: glance` and
 `app.kubernetes.io/managed-by: glance-operator`, in any namespace, and needs no
 value. The operator's health check GETs the API over the Glance Service, and the
@@ -112,8 +154,10 @@ ingress peer is appended to every rendered policy).
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), set the
-values with a rolling `helm upgrade`. The fail-closed guard requires
-`kubeApiServer.cidrs` and `ports`:
+values with a rolling `helm upgrade`. Use every CIDR and port from the
+discovery command; the address and port below are a single-IPv4 kind example.
+For additional CIDRs or ports, add the corresponding indexed `--set` entries.
+The fail-closed guard requires `kubeApiServer.cidrs` and `ports`:
 
 ```bash
 helm upgrade glance-operator oci://ghcr.io/c5c3/charts/glance-operator \
@@ -122,6 +166,10 @@ helm upgrade glance-operator oci://ghcr.io/c5c3/charts/glance-operator \
   --set 'networkPolicy.kubeApiServer.cidrs[0]=172.18.0.2/32' \
   --set 'networkPolicy.kubeApiServer.ports[0]=6443'
 ```
+
+This command leaves metrics ingress closed. If Prometheus scrapes the operator,
+set `networkPolicy.allowMetricsFrom` to the appropriate peer in the Helm values
+before the upgrade.
 
 Do **not** run this on the tutorial devstacks: there the release is
 Flux-owned, and the helm-controller reverts out-of-band revisions on its next
@@ -186,7 +234,7 @@ container to the operator pod. The container shares the pod's network, so the
 policy judges its connections as it judges the operator's. It runs the image
 of the Keystone API Deployment, which ships `python3` and which the devstack's
 single node already holds, and opens one new TCP connection to every address
-and port of the `kubernetes` Endpoints. The block waits up to three minutes
+and port of the `kubernetes` EndpointSlices. The block waits up to three minutes
 for the check to end, then prints the state of the check container and its
 log:
 
@@ -210,8 +258,15 @@ if POD=$(kubectl -n glance-system get pods \
    KS=$(kubectl -n openstack get keystones -o jsonpath='{.items[0].metadata.name}') &&
    IMG=$(kubectl -n openstack get deploy "${KS}" \
      -o jsonpath='{.spec.template.spec.containers[?(@.name=="keystone")].image}') &&
-   EPS=$(kubectl get endpoints kubernetes -n default -o json \
-     | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip):\($p)"') &&
+   EPS=$(kubectl get endpointslices -n default \
+     -l kubernetes.io/service-name=kubernetes -o json \
+        | jq -r '
+            .items[] as $slice
+            | $slice.endpoints[]?.addresses[]? as $ip
+            | $slice.ports[]?.port as $p
+            | select($p != null)
+            | "\($ip):\($p)"
+          ') &&
    [ -n "${POD}" ] && [ -n "${IMG}" ] && [ -n "${EPS}" ]; then
   NAME="apiserver-check-$(date +%s)"
   kubectl -n glance-system debug "pod/${POD}" --image="${IMG}" --profile=restricted \
@@ -278,21 +333,28 @@ the fresh-connection check of the Verify step.
 
 **Diagnosis:** the egress allow-list does not match the API server the operator
 actually dials. Either `kubeApiServer.cidrs` is missing one or more of the
-current endpoint IPs (an HA control plane may have added a replica, or a
+current EndpointSlice IPs (an HA control plane may have added a replica, or a
 control-plane node may have been replaced with a different IP), or your CNI maps
 the API server behind a port that is not in `kubeApiServer.ports`. A rule naming
-the `10.96.0.1` Service VIP instead of an endpoint address fails the same way,
-because the CNI evaluates the connection after the Service DNAT. On Cilium
-without `--policy-cidr-match-mode=nodes`, no `ipBlock` matches an API server
-that runs on a cluster node; see the Cilium paragraph in Step 1.
+the `10.96.0.1` Service VIP instead of an endpoint address fails on the tested
+kindnet path after Service DNAT. On Cilium without
+`--policy-cidr-match-mode=nodes`, a CIDR selector also does not match an API
+server running on a cluster node; see the Cilium paragraph in Step 1.
 
 **Fix:** re-run the discovery command from Step 1 and update
 `networkPolicy.kubeApiServer.cidrs` to include **every** IP it returns, plus
 every port:
 
 ```bash
-kubectl get endpoints kubernetes -n default -o json \
-  | jq -r '.subsets[] | (.addresses[].ip) as $ip | (.ports[].port) as $p | "\($ip)/32 port=\($p)"'
+kubectl get endpointslices -n default \
+  -l kubernetes.io/service-name=kubernetes -o json \
+  | jq -r '
+      .items[] as $slice
+      | $slice.endpoints[]?.addresses[]? as $ip
+      | $slice.ports[]?.port as $p
+      | select($p != null)
+      | "\($ip)\(if ($ip | contains(":")) then "/128" else "/32" end) port=\($p)"
+    '
 ```
 
 ### Every Glance and GlanceBackend write is rejected
@@ -306,8 +368,8 @@ the same error.
 **Diagnosis:** webhook ingress (9443) is blocked. Both glance webhooks register
 `failurePolicy=Fail` on create and update, so an unreachable operator turns into
 a cluster-wide rejection of every write to either kind. The usual cause is an API
-server that calls webhooks from an IP that is **not** in `endpoints/kubernetes`
-(for example, because it sits behind a front-end proxy).
+server that calls webhooks from an IP that is **not** in the API server's
+EndpointSlice address set (for example, because it sits behind a front-end proxy).
 `networkPolicy.webhookClients.cidrs` falls back to `kubeApiServer.cidrs` when
 empty, which is wrong in that topology.
 
