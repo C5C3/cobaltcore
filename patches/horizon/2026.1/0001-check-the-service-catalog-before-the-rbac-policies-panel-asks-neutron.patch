@@ -1,0 +1,188 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Check the service catalog before the RBAC Policies panel asks Neutron
+
+RBACPolicies.allowed() in
+openstack_dashboard/dashboards/admin/rbac_policies/panel.py returns the
+enable_rbac_policy setting and neutron.is_extension_supported(request,
+extension_alias='rbac-policies'). The probe reaches networkclient, whose
+get_auth_params_from_request calls base.url_for(request, 'network'), and
+url_for raises ServiceCatalogException ("Invalid service catalog:
+network") when the token's catalog has no network service. The panel's
+except Exception then logs "Call to list enabled services failed. This
+is likely due to a problem communicating with the Neutron endpoint.
+RBAC Policies panel will not be displayed." at ERROR. horizon_nav in
+horizon/templatetags/horizon.py calls can_access() of every panel on
+every page that renders the sidebar, so a deployment without Neutron
+logs the line once per page. The sidebar drops the panel anyway:
+horizon/templates/horizon/_sidebar.html filters the panels with
+has_permissions_on_list, and the panel declares permissions =
+('openstack.services.network',). On a CobaltCore OpenStack ControlPlane
+without Neutron (issue #1706), 720 logins an hour produced about 2,160
+of these lines an hour, 13,000 of the 33,000 error lines in the
+cluster's log store over six hours.
+
+allowed() now checks request.user.has_perms(self.permissions) between
+the setting and the probe. has_perms reads the catalog stored with the
+session (KeystoneBackend.get_all_permissions in
+openstack_auth/backend.py) and makes no network call. It is the
+predicate the sidebar applies afterwards, so no user sees a different
+sidebar. The six other panels that log the same message (admin and
+project trunks, network_qos, volume_groups, vg_snapshots,
+server_groups) and the project floating_ip_portforwardings panel check
+has_perms before their probe already. A Neutron that is in the catalog
+and does not answer still logs the line. The patch does not add
+super().allowed(context), which the admin Trunks panel calls, because
+the sidebar would then enforce the panel's policy_rules. The patch
+needs no operator configuration.
+
+No upstream test calls RBACPolicies.allowed():
+openstack_dashboard/test/settings.py mocks RBACPolicies.can_access for
+every view test, and the five tests of RBACPolicyTests pass unchanged.
+The patch adds RBACPoliciesPanelTests to
+openstack_dashboard/dashboards/admin/rbac_policies/tests.py. Its four
+tests call allowed() for an active admin user with a valid token, mock
+is_extension_supported and watch the panel's LOG.error.
+test_allowed_without_network_service_skips_the_probe gives a catalog
+without a network service and an empty one, and its probe mock raises
+ServiceCatalogException the way url_for does: False, no probe, no log
+line. test_allowed_with_network_service_asks_neutron returns the
+probe's answer. test_allowed_logs_when_the_probe_fails raises
+ConnectFailure from the probe: False and one log line.
+test_allowed_with_the_setting_off_skips_the_probe turns
+enable_rbac_policy off and skips the probe, and a missing key falls back
+to the default True. Without the panel.py hunk
+test_allowed_without_network_service_skips_the_probe fails, because
+the probe runs and the panel logs the line.
+
+Proof: test_rbac_policies_panel_checks_catalog_first in
+tests/container-images/verify_horizon.sh calls allowed() in the built
+image with a catalog without a network service and asserts False and no
+ERROR record, then with a network service and a mocked probe and
+asserts True and one probe call.
+
+The 2026.2 twin carries the same hunks: panel.py and tests.py are
+identical in 25.7.0 and 27.0.0.
+
+Applies to horizon 25.7.0 (2026.1).
+
+Upstream status: not yet proposed.
+
+diff --git a/openstack_dashboard/dashboards/admin/rbac_policies/panel.py b/openstack_dashboard/dashboards/admin/rbac_policies/panel.py
+index b3198db..4b24bc6 100644
+--- a/openstack_dashboard/dashboards/admin/rbac_policies/panel.py
++++ b/openstack_dashboard/dashboards/admin/rbac_policies/panel.py
+@@ -38,6 +38,7 @@ class RBACPolicies(horizon.Panel):
+             return (
+                 setting_utils.get_dict_config(
+                     'OPENSTACK_NEUTRON_NETWORK', 'enable_rbac_policy') and
++                request.user.has_perms(self.permissions) and
+                 neutron.is_extension_supported(request,
+                                                extension_alias='rbac-policies')
+             )
+diff --git a/openstack_dashboard/dashboards/admin/rbac_policies/tests.py b/openstack_dashboard/dashboards/admin/rbac_policies/tests.py
+index 226e91b..cef3ffc 100644
+--- a/openstack_dashboard/dashboards/admin/rbac_policies/tests.py
++++ b/openstack_dashboard/dashboards/admin/rbac_policies/tests.py
+@@ -14,9 +14,16 @@
+ 
+ from unittest import mock
+ 
++from django.conf import settings
++from django.test.utils import override_settings
+ from django.urls import reverse
++from keystoneauth1 import exceptions as ks_exceptions
++from openstack_auth import user as auth_user
++
++from horizon import exceptions as horizon_exceptions
+ 
+ from openstack_dashboard import api
++from openstack_dashboard.dashboards.admin.rbac_policies import panel
+ from openstack_dashboard.test import helpers as test
+ 
+ INDEX_TEMPLATE = 'horizon/common/_data_table_view.html'
+@@ -181,3 +188,83 @@ class RBACPolicyTests(test.BaseAdminViewTests):
+         self.assert_mock_multiple_calls_with_same_arguments(
+             self.mock_is_extension_supported, 2,
+             mock.call(test.IsHttpRequest(), extension_alias='qos'))
++
++
++class RBACPoliciesPanelTests(test.BaseAdminViewTests):
++    """RBACPolicies.allowed() asks Neutron only for a network service."""
++
++    def _allowed(self, service_catalog):
++        request = self.factory.get('/')
++        request.user = auth_user.User(
++            id=self.user.id, token=self.token, user=self.user.name,
++            tenant_id=self.tenant.id, service_catalog=service_catalog,
++            roles=[self.roles.admin._info], services_region='RegionOne',
++            enabled=True, endpoint=settings.OPENSTACK_KEYSTONE_URL)
++        # An inactive user, or one without a valid token, holds no
++        # service permission whatever its catalog says, and the tests
++        # below would then pass for the wrong reason.
++        self.assertTrue(request.user.is_authenticated)
++        self.assertTrue(request.user.is_active)
++        return panel.RBACPolicies().allowed({'request': request})
++
++    @test.create_mocks({api.neutron: ('is_extension_supported',)})
++    def test_allowed_without_network_service_skips_the_probe(self):
++        # Without a network service, url_for in the real probe raises.
++        self.mock_is_extension_supported.side_effect = (
++            horizon_exceptions.ServiceCatalogException('network'))
++        catalogs = {
++            'without network': [service for service in self.service_catalog
++                                if service['type'] != 'network'],
++            'empty': [],
++        }
++        for name, catalog in catalogs.items():
++            with self.subTest(catalog=name), \
++                    mock.patch.object(panel.LOG, 'error') as mock_error:
++                self.assertFalse(self._allowed(catalog))
++                mock_error.assert_not_called()
++        self.mock_is_extension_supported.assert_not_called()
++
++    @test.create_mocks({api.neutron: ('is_extension_supported',)})
++    def test_allowed_with_network_service_asks_neutron(self):
++        self.mock_is_extension_supported.return_value = True
++        with mock.patch.object(panel.LOG, 'error') as mock_error:
++            self.assertTrue(self._allowed(self.service_catalog))
++        mock_error.assert_not_called()
++        self.mock_is_extension_supported.assert_called_once_with(
++            test.IsHttpRequest(), extension_alias='rbac-policies')
++
++        self.mock_is_extension_supported.reset_mock()
++        self.mock_is_extension_supported.return_value = False
++        with mock.patch.object(panel.LOG, 'error') as mock_error:
++            self.assertFalse(self._allowed(self.service_catalog))
++        mock_error.assert_not_called()
++        self.mock_is_extension_supported.assert_called_once_with(
++            test.IsHttpRequest(), extension_alias='rbac-policies')
++
++    @test.create_mocks({api.neutron: ('is_extension_supported',)})
++    def test_allowed_logs_when_the_probe_fails(self):
++        self.mock_is_extension_supported.side_effect = (
++            ks_exceptions.ConnectFailure('Unable to establish connection'))
++        with mock.patch.object(panel.LOG, 'error') as mock_error:
++            self.assertFalse(self._allowed(self.service_catalog))
++        mock_error.assert_called_once()
++        self.mock_is_extension_supported.assert_called_once_with(
++            test.IsHttpRequest(), extension_alias='rbac-policies')
++
++    @test.create_mocks({api.neutron: ('is_extension_supported',)})
++    def test_allowed_with_the_setting_off_skips_the_probe(self):
++        self.mock_is_extension_supported.return_value = True
++        with override_settings(
++                OPENSTACK_NEUTRON_NETWORK={'enable_rbac_policy': False}), \
++                mock.patch.object(panel.LOG, 'error') as mock_error:
++            self.assertFalse(self._allowed(self.service_catalog))
++        mock_error.assert_not_called()
++        self.mock_is_extension_supported.assert_not_called()
++
++        # Without the key, get_dict_config falls back to the default True.
++        with override_settings(OPENSTACK_NEUTRON_NETWORK={}), \
++                mock.patch.object(panel.LOG, 'error') as mock_error:
++            self.assertTrue(self._allowed(self.service_catalog))
++        mock_error.assert_not_called()
++        self.mock_is_extension_supported.assert_called_once_with(
++            test.IsHttpRequest(), extension_alias='rbac-policies')

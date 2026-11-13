@@ -3,5 +3,7 @@
   "rev": "b3b26bad6e3cc6727fd1d07f8b1871404d70b708",
   "hash": "sha256-1JNmzCtfy6vdixCA1VPEdbNwA8cYSxYBi3XnkoBc2zI=",
   "project": "horizon",
-  "patches": []
+  "patches": [
+    "patches/horizon/2026.1/0001-check-the-service-catalog-before-the-rbac-policies-panel-asks-neutron.patch"
+  ]
 }
