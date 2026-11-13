@@ -150,11 +150,11 @@ func effectiveDBClean(spec *barbicanv1alpha1.DBCleanSpec) barbicanv1alpha1.DBCle
 // varies its retention, schedule, extra passes, and suspension.
 //
 // Run visibility is derived rather than watched: the CronJob controller spawns
-// one Job per firing and prunes them by history limit, so the step lists the
-// Jobs carrying this Barbican's common labels, keeps the ones the CronJob
-// controls, and reports on the newest that reached a terminal state. A failed
-// run surfaces as DBCleanReady=False plus a Warning event; every terminal run
-// also feeds the db-clean metric pair exactly once per Job UID.
+// one Job per firing, so the step lists the Jobs carrying this Barbican's
+// common labels, keeps the ones the CronJob controls, and reports on the newest
+// terminal one. A failed run surfaces as DBCleanReady=False plus a Warning
+// event; every terminal run feeds the db-clean metric pair once per Job UID.
+// Once the newest run completed, the step deletes the failed runs before it.
 func (r *BarbicanReconciler) reconcileDBClean(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican, configSecretName string) (ctrl.Result, error) {
 	clean := effectiveDBClean(barbican.Spec.DBClean)
 
@@ -279,6 +279,23 @@ func (r *BarbicanReconciler) reconcileDBClean(ctx context.Context, children clie
 			barbicanmetrics.RecordDBClean(barbican.Name, barbican.Namespace, result, duration)
 		})
 
+	// The CronJob sets no history limit, so the default failedJobsHistoryLimit
+	// keeps one failed run until the next failure replaces it, and the
+	// KubeJobFailed alert fires for as long as that Job exists. A completed newer
+	// run supersedes it: the condition above already reports on the newer run,
+	// whichever arm set it, so the failed Jobs before it are deleted, with
+	// their pods.
+	for _, failed := range supersededFailedJobs(cronJob, jobs.Items, observed) {
+		err := children.Delete(ctx, failed, client.PropagationPolicy(metav1.DeletePropagationBackground))
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, fmt.Errorf("deleting superseded db clean Job %s: %w", failed.Name, err)
+		}
+		if err == nil {
+			ctrl.LoggerFrom(ctx).Info("Deleted failed db clean Job superseded by a completed run",
+				"job", failed.Name, "supersededBy", observed.Name)
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 
@@ -302,6 +319,31 @@ func newestTerminalJob(cronJob *batchv1.CronJob, jobs []batchv1.Job) *batchv1.Jo
 		}
 	}
 	return newest
+}
+
+// supersededFailedJobs returns the failed runs of cronJob that were created
+// before newest, when newest completed. It returns nil otherwise. A failed run
+// created in the same second as newest is not returned, because creation
+// timestamps have a resolution of one second; the next completed run supersedes
+// it.
+func supersededFailedJobs(cronJob *batchv1.CronJob, jobs []batchv1.Job, newest *batchv1.Job) []*batchv1.Job {
+	if newest == nil || job.TerminalCondition(newest) != batchv1.JobComplete {
+		return nil
+	}
+	var failed []*batchv1.Job
+	for i := range jobs {
+		candidate := &jobs[i]
+		if !metav1.IsControlledBy(candidate, cronJob) {
+			continue
+		}
+		if job.TerminalCondition(candidate) != batchv1.JobFailed {
+			continue
+		}
+		if candidate.CreationTimestamp.Before(&newest.CreationTimestamp) {
+			failed = append(failed, candidate)
+		}
+	}
+	return failed
 }
 
 // dbCleanMigrationInFlight reports whether the installed schema is not at the
