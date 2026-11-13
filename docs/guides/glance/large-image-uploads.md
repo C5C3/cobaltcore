@@ -32,8 +32,9 @@ Follow that tutorial through to its final **Verify** step, so the projected
 devstack produces.
 :::
 
-- The `OS_*` environment variables from the tutorial's token-issue step, so the
-  `openstack` client reaches the ControlPlane's Keystone.
+Also export the `OS_*` environment variables from the tutorial's token-issue
+step; the `openstack` client needs them to authenticate to the ControlPlane's
+Keystone.
 
 ## How image bytes reach the store
 
@@ -41,8 +42,8 @@ Two paths lead into the backing store, and only one of them touches local disk.
 
 A **client upload** (`PUT /v2/images/{id}/file`, what `openstack image create
 --file` issues) streams the request body through the gateway straight into the
-store. Nothing is staged on the API pod, so its size is bounded by the client's
-patience and by the gateway.
+store. It does not use local staging, so `spec.staging.sizeLimit` does not cap
+it. Glance, client, or gateway settings may impose other limits.
 
 A **`web-download` import** (`POST /v2/images/{id}/import`) hands Glance a URI
 and returns `202` at once. The API pod then fetches the whole image onto its
@@ -51,7 +52,10 @@ backing store only after the last byte has arrived. A second volume,
 `tasks-work`, backs the reserved `os_glance_tasks_store`, to which no import
 writes image bytes. Both are `emptyDir`s on the node filesystem, and
 `spec.staging.sizeLimit` bounds each of them. The operator enables
-`web-download` and `copy-image` only, so a client upload never stages.
+`web-download` and `copy-image`; `glance-direct` is disabled because it stages
+data on the API pod's local disk, which is not shared across replicas. A client
+`PUT /file` upload bypasses the import-method pipeline and writes to the backing
+store.
 
 The figure shows both paths as A and B, and the download through the image
 cache as C. The bound of the next section is the eviction threshold on the
@@ -64,10 +68,26 @@ volume `staging`.
 The bound is a ControlPlane setting projected onto the Glance child:
 
 ```bash
+set -euo pipefail
 kubectl patch controlplane controlplane -n openstack --type merge \
   -p '{"spec":{"services":{"glance":{"staging":{"sizeLimit":"40Gi"}}}}}'
-kubectl rollout status deploy/controlplane-glance -n openstack
+projected=
+for _ in $(seq 1 60); do
+  projected="$(kubectl get deploy controlplane-glance -n openstack \
+    -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="staging")].emptyDir.sizeLimit}')"
+  [ "$projected" = "40Gi" ] && break
+  sleep 5
+done
+if [ "$projected" != "40Gi" ]; then
+  echo "Timed out waiting for the ControlPlane to project staging.sizeLimit=40Gi" >&2
+  exit 1
+fi
+kubectl rollout status deploy/controlplane-glance -n openstack --timeout=5m
 ```
+
+Wait for the projected value before checking the rollout. Otherwise
+`kubectl rollout status` can succeed for the previous, already-stable
+Deployment.
 
 ::: warning Set the bound on the ControlPlane, never on the projected child
 The `controlplane-glance` Glance CR is **projected** by the c5c3-operator, so a
@@ -90,36 +110,34 @@ tasks-work=40Gi
 
 Three properties decide the number:
 
-- **Both volumes carry it.** One glance-api pod is expected to occupy at most
-  twice the configured limit, so `40Gi` budgets 80Gi per replica.
-- **Concurrent imports share it, and breaching it evicts the pod.** An
-  `emptyDir` is per pod, and nothing accounts per import: two imports scheduled
-  onto the same replica draw from one 40Gi volume. When their combined
-  staging usage crosses the bound, the kubelet evicts that pod, killing both
+- **Both volumes carry it.** One glance-api pod has a nominal scratch budget of
+  twice the configured limit, so `40Gi` budgets 80Gi per replica before the
+  periodic-check overshoot described below.
+- **Concurrent imports share the staging volume.** An `emptyDir` is per pod, and
+  nothing accounts per import: two imports scheduled onto the same replica draw
+  from one 40Gi volume. If a periodic local-storage check finds their combined
+  staging usage above the limit, the kubelet can evict that pod, killing both
   imports and all other transfers in flight on the replica. Size for expected
   concurrency as well as the largest single image.
 - **Conversion needs headroom.** An import plugin that converts the downloaded
   image writes the converted copy alongside the original before replacing it, so
   a converting import can occupy roughly twice its image size in staging.
 
-The operator's default of `10Gi` covers the stock distribution cloud images with
-room to convert. Raise it for a deployment that imports disk images built for
-databases or appliances, where a single qcow2 can exceed that on its own.
+The operator default is `10Gi`. Compare it with the largest image your
+deployment imports; a converting import may need about twice the source image
+size on staging. Raise the limit when that workload needs more space.
 
-::: warning The bound applies retroactively on operator upgrade
-A Glance that predates this block ran with unbounded scratch volumes. Upgrading
-the operator sets the resolved `10Gi` on the existing `Deployment` and rolls
-the pods, killing any in-flight import. It then evicts the pod if an import
-exceeds `10Gi`.
+**Before upgrading a Glance that predates this field, quiesce in-flight
+imports.** Its scratch volumes are unbounded. The upgrade sets the resolved
+`10Gi` on the existing `Deployment` and rolls the pods, killing any in-flight
+import. The kubelet can then evict the pod if an import exceeds `10Gi`.
 
-The `staging` field reaches the `ControlPlane` schema in the same chart version
-that introduces the bound. Either patch on this page
-names a field the pre-upgrade CRD does not have: the API server prunes it, the
-request succeeds having stored nothing, and `kubectl patch` carries no
+The `ControlPlane` CRD must include `services.glance.staging` before either
+patch can store it. With an older CRD, the API server prunes the unknown field,
+the request succeeds without storing it, and `kubectl patch` has no
 `--validate` flag to turn that silence into an error. Quiesce the imports you
-care about, upgrade, then patch once the field exists. That patch rolls the
-pods a second time with the value you chose.
-:::
+care about, upgrade the operator and CRDs, then patch once the field exists.
+That patch rolls the pods a second time with the value you chose.
 
 Opting out sets `unbounded`, which renders both scratch volumes without a
 `sizeLimit`, as they were before this field existed:
@@ -160,8 +178,10 @@ it may keep in the backend.
 
 ## When an import breaches the bound
 
-Glance knows nothing about the bound and keeps writing. The kubelet notices on
-its next local-storage housekeeping pass, and the sequence from there is fixed:
+Glance knows nothing about the bound and keeps writing. If a local-storage
+housekeeping pass finds usage above the limit, the kubelet may evict the pod.
+An import that finishes before that check can escape eviction. When eviction
+occurs, the sequence is:
 
 1. local-storage eviction evicts the glance-api pod;
 2. the in-flight import dies with it, so its image never reaches `active`;
@@ -200,20 +220,19 @@ kubectl get httproute controlplane-glance -n openstack \
   -o jsonpath='{.spec.rules[0].timeouts.request}{"\n"}'
 ```
 
-No Glance or ControlPlane field configures this. The 15-second Envoy Gateway
-default truncates legitimate image transfers. The Glance route uses four hours;
-the identity and dashboard routes keep the default.
+No Glance or ControlPlane field configures this. Envoy Proxy's 15-second
+default request timeout, used by Envoy Gateway, truncates transfers that last
+longer. The Glance route uses four hours; the identity and dashboard routes
+keep the default.
 
 The operator sets a four-hour bound and does not disable it. `"0s"` is the
 Gateway API spelling of a disabled timeout. The route
-matches a bare `/` prefix, so it covers every Glance path, and the route timeout
-is then the only request-duration cap in front of the API. An idle timeout is
+matches a bare `/` prefix, so it covers every Glance path. An idle timeout is
 insufficient because it resets on every byte, so a client trickling one byte at
-a time never goes idle. Four hours clears any legitimate transfer while
-still capping how long one stalled request holds its worker.
+a time never goes idle. Four hours allows long transfers while still bounding
+how long one stalled request holds its worker.
 
-::: warning The route timeout bounds duration, not concurrency
-The timeout does not protect a saturated worker pool. A glance-api pod serves
+**The route timeout leaves concurrency unchanged.** A glance-api pod serves
 `processes × threads` concurrent requests. It defaults to two
 (`--processes 2 --threads 1`, with uWSGI `harakiri` off unless
 `spec.apiServer.uwsgi.harakiri` is set), so a three-replica
@@ -224,19 +243,20 @@ multi-gibibyte uploads over slow links can occupy those slots too.
 
 Size the pool for expected concurrency within the deadline. The CRs let you
 widen it with `spec.sizing.glance.api.replicas`, `.processes` and `.threads` on
-the `ControlPlane`. From 2026.1, the counts are in the child's
-`spec.apiServer.uwsgi`; earlier releases use `spec.apiServer.workers` for the
-process count. A standalone `Glance` uses `spec.apiServer.uwsgi` `processes` and
-`threads`. An Envoy Gateway `BackendTrafficPolicy` can shed
-excess requests by capping concurrency per backend. That policy belongs to the
-Gateway infrastructure and is not rendered by this operator.
-:::
+the `ControlPlane`; the c5c3 operator projects the process and thread counts to
+the child's `spec.apiServer.uwsgi`. A standalone `Glance` uses
+`spec.apiServer.uwsgi.processes` and `.threads` directly.
+`spec.apiServer.workers` is deprecated and has no effect on supported releases.
+An Envoy Gateway
+[`BackendTrafficPolicy`](https://gateway.envoyproxy.io/docs/tasks/traffic/circuit-breaker/)
+can cap concurrent requests to a backend. That policy belongs to the Gateway
+infrastructure and is not rendered by this operator.
 
 The stanza works only if the cluster's Gateway API CRDs know the field. It
-entered the HTTPRoute schema after the versions the stack shipped earlier, so
-`hack/deploy-infra.sh` pins `v1.6.2` of the standard channel; an older CRD
-prunes `timeouts` silently, and the transfer is then cut at the implementation
-default with nothing logged.
+entered the HTTPRoute schema after older releases, so an older CRD can prune
+`timeouts` silently and leave Envoy Proxy's default request timeout in effect.
+`hack/deploy-infra.sh` currently defaults `GATEWAY_API_VERSION` to `v1.6.3` of
+the standard channel.
 
 **A listener must match the hostname.** `spec.gateway.hostname` routes only if
 the Gateway terminates TLS for that SNI hostname. The kind stack's Gateway
@@ -251,15 +271,15 @@ kubectl get gateway openstack-gw -n openstack \
   -o jsonpath='{range .status.listeners[*]}{.name}{"\t"}{.conditions[?(@.type=="Programmed")].status}{"\n"}{end}'
 ```
 
-**Body-size limits belong to the gateway stack.** Envoy Gateway caps no request
-body by default, so a multi-gibibyte `PUT` reaches Glance intact. Other stacks
-disagree: an NGINX-based ingress defaults to a 1 MiB body and answers `413`
-within the first megabyte of an image. Fronting Glance with such a stack means
-raising that limit there. Set it to the largest image the deployment accepts
-and keep the gateway ceiling on request size. The operator writes no annotation
-for it, and
-`spec.gateway.annotations` is passed through to the HTTPRoute verbatim, so
-whichever key that stack reads is yours to set.
+**Body-size limits belong to the gateway stack.** The kind stack configures no
+request-body cap, and the large-upload e2e suite proves that a 512 MiB `PUT`
+reaches Glance. Other Gateway implementations may impose a cap and reject
+oversized requests with `413`. Configure a limit through a policy or setting
+that your implementation supports for `HTTPRoute`. The operator passes
+`spec.gateway.annotations` through to HTTPRoute metadata, but annotation
+semantics are implementation-specific; a controller must recognize an
+annotation on that resource for it to have an effect. Set the limit above the
+largest image the deployment accepts while keeping an intentional ceiling.
 
 **Imports need an egress path.** A `web-download` import makes the API pod an
 HTTP client of whatever URI it is handed, which is a second surface next to the
@@ -277,7 +297,7 @@ With the `OS_*` variables exported, push an image large enough to outlive any
 default route timeout. 512 MiB is what the end-to-end suite uses:
 
 ```bash
-dd if=/dev/urandom of=/tmp/large.img bs=1M count=512
+dd if=/dev/urandom of=/tmp/large.img bs=1048576 count=512
 time openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/large.img large-image
 openstack --insecure image show large-image -f value -c status -c size
@@ -295,9 +315,12 @@ openstack --insecure image import --method web-download \
   --uri https://mirror.example.com/cloud-image.raw big-import
 ```
 
+Replace the example URI with a reachable HTTPS URL allowed by
+`spec.importFiltering`.
+
 The call returns immediately and the image reaches `active` once the download
-and the move into the store have finished. Watch `openstack image show
-big-import -f value -c status` for the transition. A synchronous 400 at import
+and move into the store finish. Poll `openstack image show big-import -f value
+-c status` until the status changes to `active`. A synchronous 400 at import
 time comes from the URI filter before bytes are staged. See
 [Filter web-download Image Imports](./filter-web-download-imports.md).
 
@@ -310,8 +333,7 @@ rm -f /tmp/large.img
 
 ## Standalone Glance, without a ControlPlane
 
-Without a ControlPlane nothing projects the Glance child, so the same setting sits
-on the `Glance` CR you own:
+For a standalone deployment, set `spec.staging` directly on the `Glance` CR:
 
 ```yaml
 apiVersion: glance.openstack.c5c3.io/v1alpha1
@@ -342,9 +364,12 @@ same four-hour route timeout on the HTTPRoute it creates from `spec.gateway`.
 
 ## Tested by
 
-The upload path, the staged (`glance-direct`) upload that fills the bounded
-staging volume, and the eviction that contains an oversized one are asserted
-end-to-end on the CI e2e kind cluster by this chainsaw suite:
+The suite overrides `enabled_import_methods` to enable `glance-direct` on its
+single-replica test Glance because the staging volume is pod-local. The normal
+operator configuration enables only `web-download` and `copy-image`; this test
+override is not a production recommendation. The suite asserts the client
+upload, the staged upload that fills the bounded volume, and the eviction that
+contains an oversized one end-to-end on the CI e2e kind cluster:
 
 ```bash
 chainsaw test --test-dir tests/e2e/glance/gateway-large-upload
