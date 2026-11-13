@@ -184,6 +184,43 @@ func TestMariaDBToNovaMapper_EitherClusterRef(t *testing.T) {
 		To(BeEmpty())
 }
 
+// TestMaxScaleToNovaMapper_EitherDatabaseBlock verifies a MaxScale event
+// enqueues a Nova that names the MaxScale's MariaDB in either database block,
+// once when both blocks name it, and nothing for a brownfield Nova or a
+// MaxScale without mariaDbRef.
+func TestMaxScaleToNovaMapper_EitherDatabaseBlock(t *testing.T) {
+	g := NewGomegaWithT(t)
+	maxScaleOf := func(mariaDB string) *mariadbv1alpha1.MaxScale {
+		mxs := &mariadbv1alpha1.MaxScale{ObjectMeta: metav1.ObjectMeta{Name: "mxs", Namespace: testNamespace}}
+		if mariaDB != "" {
+			mxs.Spec.MariaDBRef = &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: mariaDB}}
+		}
+		return mxs
+	}
+
+	apiOnly := validNova()
+	apiOnly.Spec.APIDatabase.ClusterRef = &corev1.LocalObjectReference{Name: "api-db"}
+	apiOnly.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "cell-db"}
+	split := maxScaleToNovaMapper(mapperClient(apiOnly))
+	g.Expect(split(context.Background(), maxScaleOf("api-db"))).To(ConsistOf(novaRequest),
+		"a Nova that names the MariaDB in apiDatabase only is enqueued")
+	g.Expect(split(context.Background(), maxScaleOf("cell-db"))).To(ConsistOf(novaRequest),
+		"a Nova that names the MariaDB in database only is enqueued")
+	g.Expect(split(context.Background(), maxScaleOf("another-db"))).To(BeEmpty())
+	g.Expect(split(context.Background(), maxScaleOf(""))).To(BeEmpty(),
+		"a MaxScale without mariaDbRef concerns no Nova")
+
+	// Both blocks on one cluster enqueue the Nova once.
+	shared := maxScaleToNovaMapper(mapperClient(validNova()))
+	g.Expect(shared(context.Background(), maxScaleOf(testMariaDBName))).To(ConsistOf(novaRequest))
+
+	brownfield := validNova()
+	brownfield.Spec.APIDatabase.ClusterRef = nil
+	brownfield.Spec.Database.ClusterRef = nil
+	g.Expect(maxScaleToNovaMapper(mapperClient(brownfield))(context.Background(), maxScaleOf(testMariaDBName))).
+		To(BeEmpty())
+}
+
 func TestStoreToNovaMapper(t *testing.T) {
 	g := NewGomegaWithT(t)
 	c := mapperClient(validNova())

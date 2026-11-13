@@ -51,13 +51,27 @@ func secretToKeystoneMapper(c client.Reader) handler.MapFunc {
 func mariaDBToKeystoneMapper(c client.Reader) handler.MapFunc {
 	return watch.ClusterRefMapper(c,
 		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} },
-		func(o client.Object) string {
-			ks, ok := o.(*keystonev1alpha1.Keystone)
-			if !ok || ks.Spec.Database.ClusterRef == nil {
-				return ""
-			}
-			return ks.Spec.Database.ClusterRef.Name
-		})
+		keystoneDatabaseClusterRef)
+}
+
+// maxScaleToKeystoneMapper returns a MapFunc that maps MaxScale events to
+// reconcile requests for Keystone CRs whose spec.database.clusterRef names the
+// MariaDB the MaxScale's spec.mariaDbRef names, in the same namespace. The
+// MaxScale's spec decides whether the database connection routes through it.
+func maxScaleToKeystoneMapper(c client.Reader) handler.MapFunc {
+	return watch.MaxScaleToClusterRefMapper(c,
+		func() client.ObjectList { return &keystonev1alpha1.KeystoneList{} },
+		keystoneDatabaseClusterRef)
+}
+
+// keystoneDatabaseClusterRef returns the name of the MariaDB a Keystone CR's
+// spec.database.clusterRef names, or "" for a brownfield database.
+func keystoneDatabaseClusterRef(o client.Object) string {
+	ks, ok := o.(*keystonev1alpha1.Keystone)
+	if !ok || ks.Spec.Database.ClusterRef == nil {
+		return ""
+	}
+	return ks.Spec.Database.ClusterRef.Name
 }
 
 // memcachedToKeystoneMapper returns a MapFunc that maps Memcached events to

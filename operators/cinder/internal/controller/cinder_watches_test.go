@@ -225,6 +225,36 @@ func TestMariaDBToCinderMapper(t *testing.T) {
 	g.Expect(mariaDBToCinderMapper(brownfield)(context.Background(), cluster)).To(BeEmpty())
 }
 
+// TestMaxScaleToCinderMapper verifies a MaxScale event enqueues the Cinders
+// whose clusterRef names the MariaDB the MaxScale's spec.mariaDbRef names, and
+// nothing for a MaxScale of another MariaDB, one without mariaDbRef, or a
+// brownfield Cinder.
+func TestMaxScaleToCinderMapper(t *testing.T) {
+	g := NewGomegaWithT(t)
+	managed := validCinder()
+	managed.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+	mapper := maxScaleToCinderMapper(mapperClient(managed))
+
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, "openstack-db"))).To(ConsistOf(cinderRequest))
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, "another-db"))).To(BeEmpty())
+	g.Expect(mapper(context.Background(), maxScaleOf(testNamespace, ""))).To(BeEmpty(),
+		"a MaxScale without mariaDbRef concerns no Cinder")
+
+	brownfield := mapperClient(validCinder())
+	g.Expect(maxScaleToCinderMapper(brownfield)(context.Background(), maxScaleOf(testNamespace, "openstack-db"))).
+		To(BeEmpty())
+}
+
+// maxScaleOf returns a MaxScale in namespace whose spec.mariaDbRef names
+// mariaDB; an empty mariaDB leaves the reference unset.
+func maxScaleOf(namespace, mariaDB string) *mariadbv1alpha1.MaxScale {
+	mxs := &mariadbv1alpha1.MaxScale{ObjectMeta: metav1.ObjectMeta{Name: "openstack-db-maxscale", Namespace: namespace}}
+	if mariaDB != "" {
+		mxs.Spec.MariaDBRef = &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: mariaDB}}
+	}
+	return mxs
+}
+
 func TestStoreToCinderMapper(t *testing.T) {
 	g := NewGomegaWithT(t)
 	c := mapperClient(validCinder())

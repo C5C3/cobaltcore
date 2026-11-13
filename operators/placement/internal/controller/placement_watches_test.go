@@ -107,6 +107,40 @@ func TestMariaDBToPlacementMapper_IgnoresBrownfieldAndOtherNamespaces(t *testing
 		"a MariaDB event must not enqueue brownfield CRs or CRs in another namespace")
 }
 
+// --- maxScaleToPlacementMapper ---
+
+// TestMaxScaleToPlacementMapper_EnqueuesTheCRsOfItsMariaDB verifies a MaxScale
+// event enqueues the Placements whose clusterRef names the MariaDB the
+// MaxScale's spec.mariaDbRef names, and nothing for a brownfield Placement, a
+// MaxScale of another MariaDB, or one without mariaDbRef.
+func TestMaxScaleToPlacementMapper_EnqueuesTheCRsOfItsMariaDB(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	match := mapperManagedPlacement("pl-a", "openstack", "openstack-db")
+	other := mapperManagedPlacement("pl-c", "openstack", "some-other-db")
+	brownfield := testPlacement()
+	brownfield.Name = "pl-brownfield"
+	brownfield.Namespace = "openstack"
+	mapper := maxScaleToPlacementMapper(newMapperFakeClient(match, other, brownfield))
+
+	g.Expect(mapper(context.Background(), maxScaleOf("openstack", "openstack-db"))).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "pl-a"}},
+	))
+	g.Expect(mapper(context.Background(), maxScaleOf("openstack", "unrelated-db"))).To(BeEmpty())
+	g.Expect(mapper(context.Background(), maxScaleOf("openstack", ""))).To(BeEmpty(),
+		"a MaxScale without mariaDbRef concerns no Placement")
+}
+
+// maxScaleOf returns a MaxScale in namespace whose spec.mariaDbRef names
+// mariaDB; an empty mariaDB leaves the reference unset.
+func maxScaleOf(namespace, mariaDB string) *mariadbv1alpha1.MaxScale {
+	mxs := &mariadbv1alpha1.MaxScale{ObjectMeta: metav1.ObjectMeta{Name: "openstack-db-maxscale", Namespace: namespace}}
+	if mariaDB != "" {
+		mxs.Spec.MariaDBRef = &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: mariaDB}}
+	}
+	return mxs
+}
+
 // --- storeToPlacementMapper ---
 
 func TestStoreToPlacementMapper_ClusterKindEnqueuesDefaultPlacements(t *testing.T) {

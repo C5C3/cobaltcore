@@ -108,41 +108,61 @@ func secretToNovaMapper(c client.Reader) handler.MapFunc {
 // enqueued once, because a duplicated request would reconcile it twice for a
 // single event.
 func mariaDBToNovaMapper(c client.Reader) handler.MapFunc {
-	apiCluster := novaClusterRefMapper(c, func(nova *novav1alpha1.Nova) *commonv1.DatabaseSpec {
-		return &nova.Spec.APIDatabase
-	})
-	cellCluster := novaClusterRefMapper(c, func(nova *novav1alpha1.Nova) *commonv1.DatabaseSpec {
-		return &nova.Spec.Database
-	})
+	return unionNovaRequests(
+		watch.ClusterRefMapper(c, newNovaList, novaBlockClusterRef(novaAPIDatabase)),
+		watch.ClusterRefMapper(c, newNovaList, novaBlockClusterRef(novaCellDatabase)))
+}
+
+// maxScaleToNovaMapper returns a MapFunc that maps MaxScale events to
+// reconcile requests for Nova CRs whose spec.apiDatabase.clusterRef OR
+// spec.database.clusterRef names the MariaDB the MaxScale's spec.mariaDbRef
+// names, in the same namespace. The MaxScale's spec decides whether the
+// connection of either block routes through it; a Nova that keeps both blocks
+// on one cluster is enqueued once.
+func maxScaleToNovaMapper(c client.Reader) handler.MapFunc {
+	return unionNovaRequests(
+		watch.MaxScaleToClusterRefMapper(c, newNovaList, novaBlockClusterRef(novaAPIDatabase)),
+		watch.MaxScaleToClusterRefMapper(c, newNovaList, novaBlockClusterRef(novaCellDatabase)))
+}
+
+// unionNovaRequests returns a MapFunc that concatenates the requests of
+// mappers in order and drops the duplicates, so one event reconciles a Nova
+// once.
+func unionNovaRequests(mappers ...handler.MapFunc) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		requests := apiCluster(ctx, obj)
-		for _, request := range cellCluster(ctx, obj) {
-			if !slices.Contains(requests, request) {
-				requests = append(requests, request)
+		var requests []reconcile.Request
+		for _, mapper := range mappers {
+			for _, request := range mapper(ctx, obj) {
+				if !slices.Contains(requests, request) {
+					requests = append(requests, request)
+				}
 			}
 		}
 		return requests
 	}
 }
 
-// novaClusterRefMapper binds the shared watch.ClusterRefMapper to the Nova list
-// type and the clusterRef of the database block blockOf selects.
-func novaClusterRefMapper(c client.Reader,
-	blockOf func(*novav1alpha1.Nova) *commonv1.DatabaseSpec,
-) handler.MapFunc {
-	return watch.ClusterRefMapper(c,
-		func() client.ObjectList { return &novav1alpha1.NovaList{} },
-		func(o client.Object) string {
-			nova, ok := o.(*novav1alpha1.Nova)
-			if !ok {
-				return ""
-			}
-			block := blockOf(nova)
-			if block.ClusterRef == nil {
-				return ""
-			}
-			return block.ClusterRef.Name
-		})
+func newNovaList() client.ObjectList { return &novav1alpha1.NovaList{} }
+
+func novaAPIDatabase(nova *novav1alpha1.Nova) *commonv1.DatabaseSpec { return &nova.Spec.APIDatabase }
+
+func novaCellDatabase(nova *novav1alpha1.Nova) *commonv1.DatabaseSpec { return &nova.Spec.Database }
+
+// novaBlockClusterRef returns a clusterRef extractor for the Nova database
+// block blockOf selects: the name of the MariaDB the block's clusterRef names,
+// or "" for a brownfield block or an object that is not a Nova.
+func novaBlockClusterRef(blockOf func(*novav1alpha1.Nova) *commonv1.DatabaseSpec) func(client.Object) string {
+	return func(o client.Object) string {
+		nova, ok := o.(*novav1alpha1.Nova)
+		if !ok {
+			return ""
+		}
+		block := blockOf(nova)
+		if block.ClusterRef == nil {
+			return ""
+		}
+		return block.ClusterRef.Name
+	}
 }
 
 // memcachedToNovaMapper returns a MapFunc that maps Memcached events to

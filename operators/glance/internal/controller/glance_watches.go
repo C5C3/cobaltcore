@@ -66,13 +66,27 @@ func glanceBackendToGlanceMapper() handler.MapFunc {
 func mariaDBToGlanceMapper(c client.Reader) handler.MapFunc {
 	return watch.ClusterRefMapper(c,
 		func() client.ObjectList { return &glancev1alpha1.GlanceList{} },
-		func(o client.Object) string {
-			g, ok := o.(*glancev1alpha1.Glance)
-			if !ok || g.Spec.Database.ClusterRef == nil {
-				return ""
-			}
-			return g.Spec.Database.ClusterRef.Name
-		})
+		glanceDatabaseClusterRef)
+}
+
+// maxScaleToGlanceMapper returns a MapFunc that maps MaxScale events to
+// reconcile requests for Glance CRs whose spec.database.clusterRef names the
+// MariaDB the MaxScale's spec.mariaDbRef names, in the same namespace. The
+// MaxScale's spec decides whether the database connection routes through it.
+func maxScaleToGlanceMapper(c client.Reader) handler.MapFunc {
+	return watch.MaxScaleToClusterRefMapper(c,
+		func() client.ObjectList { return &glancev1alpha1.GlanceList{} },
+		glanceDatabaseClusterRef)
+}
+
+// glanceDatabaseClusterRef returns the name of the MariaDB a Glance CR's
+// spec.database.clusterRef names, or "" for a brownfield database.
+func glanceDatabaseClusterRef(o client.Object) string {
+	g, ok := o.(*glancev1alpha1.Glance)
+	if !ok || g.Spec.Database.ClusterRef == nil {
+		return ""
+	}
+	return g.Spec.Database.ClusterRef.Name
 }
 
 // memcachedToGlanceMapper returns a MapFunc that maps Memcached events to

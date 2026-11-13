@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"testing"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -142,6 +143,32 @@ func TestGlanceToGlanceBackendsMapper_ListErrorReturnsNil(t *testing.T) {
 
 	reqs := glanceToGlanceBackendsMapper(c)(context.Background(), testGlance())
 	g.Expect(reqs).To(BeEmpty(), "a List error logs and returns nil")
+}
+
+// TestMaxScaleToGlanceMapper_EnqueuesTheCRsOfItsMariaDB verifies a MaxScale
+// event enqueues the Glances whose clusterRef names the MariaDB the MaxScale's
+// spec.mariaDbRef names, and nothing for a brownfield Glance, a MaxScale of
+// another MariaDB, or one without mariaDbRef.
+func TestMaxScaleToGlanceMapper_EnqueuesTheCRsOfItsMariaDB(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	managed := testGlance()
+	managed.Spec.Database.ClusterRef = &corev1.LocalObjectReference{Name: "openstack-db"}
+	brownfield := testGlance()
+	brownfield.Name = "brownfield-glance"
+	mapper := maxScaleToGlanceMapper(newMapperFakeClient(managed, brownfield))
+
+	maxScaleOf := func(mariaDB string) *mariadbv1alpha1.MaxScale {
+		mxs := &mariadbv1alpha1.MaxScale{ObjectMeta: metav1.ObjectMeta{Name: "openstack-db-maxscale", Namespace: "default"}}
+		if mariaDB != "" {
+			mxs.Spec.MariaDBRef = &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: mariaDB}}
+		}
+		return mxs
+	}
+	g.Expect(mapper(context.Background(), maxScaleOf("openstack-db"))).To(ConsistOf(glanceRequest))
+	g.Expect(mapper(context.Background(), maxScaleOf("unrelated-db"))).To(BeEmpty())
+	g.Expect(mapper(context.Background(), maxScaleOf(""))).To(BeEmpty(),
+		"a MaxScale without mariaDbRef concerns no Glance")
 }
 
 // TestMemcachedToGlanceMapper verifies a Memcached event enqueues exactly the

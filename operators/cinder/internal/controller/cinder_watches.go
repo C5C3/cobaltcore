@@ -183,13 +183,27 @@ func secretToCinderWithSatellitesMapper(c client.Reader) handler.MapFunc {
 func mariaDBToCinderMapper(c client.Reader) handler.MapFunc {
 	return watch.ClusterRefMapper(c,
 		func() client.ObjectList { return &cinderv1alpha1.CinderList{} },
-		func(o client.Object) string {
-			cinder, ok := o.(*cinderv1alpha1.Cinder)
-			if !ok || cinder.Spec.Database.ClusterRef == nil {
-				return ""
-			}
-			return cinder.Spec.Database.ClusterRef.Name
-		})
+		cinderDatabaseClusterRef)
+}
+
+// maxScaleToCinderMapper returns a MapFunc that maps MaxScale events to
+// reconcile requests for Cinder CRs whose spec.database.clusterRef names the
+// MariaDB the MaxScale's spec.mariaDbRef names, in the same namespace. The
+// MaxScale's spec decides whether the database connection routes through it.
+func maxScaleToCinderMapper(c client.Reader) handler.MapFunc {
+	return watch.MaxScaleToClusterRefMapper(c,
+		func() client.ObjectList { return &cinderv1alpha1.CinderList{} },
+		cinderDatabaseClusterRef)
+}
+
+// cinderDatabaseClusterRef returns the name of the MariaDB a Cinder CR's
+// spec.database.clusterRef names, or "" for a brownfield database.
+func cinderDatabaseClusterRef(o client.Object) string {
+	cinder, ok := o.(*cinderv1alpha1.Cinder)
+	if !ok || cinder.Spec.Database.ClusterRef == nil {
+		return ""
+	}
+	return cinder.Spec.Database.ClusterRef.Name
 }
 
 // memcachedToCinderMapper returns a MapFunc that maps Memcached events to

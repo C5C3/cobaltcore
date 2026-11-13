@@ -70,13 +70,27 @@ func barbicanSecretStoreToBarbicanMapper() handler.MapFunc {
 func mariaDBToBarbicanMapper(c client.Reader) handler.MapFunc {
 	return watch.ClusterRefMapper(c,
 		func() client.ObjectList { return &barbicanv1alpha1.BarbicanList{} },
-		func(o client.Object) string {
-			b, ok := o.(*barbicanv1alpha1.Barbican)
-			if !ok || b.Spec.Database.ClusterRef == nil {
-				return ""
-			}
-			return b.Spec.Database.ClusterRef.Name
-		})
+		barbicanDatabaseClusterRef)
+}
+
+// maxScaleToBarbicanMapper returns a MapFunc that maps MaxScale events to
+// reconcile requests for Barbican CRs whose spec.database.clusterRef names the
+// MariaDB the MaxScale's spec.mariaDbRef names, in the same namespace. The
+// MaxScale's spec decides whether the database connection routes through it.
+func maxScaleToBarbicanMapper(c client.Reader) handler.MapFunc {
+	return watch.MaxScaleToClusterRefMapper(c,
+		func() client.ObjectList { return &barbicanv1alpha1.BarbicanList{} },
+		barbicanDatabaseClusterRef)
+}
+
+// barbicanDatabaseClusterRef returns the name of the MariaDB a Barbican CR's
+// spec.database.clusterRef names, or "" for a brownfield database.
+func barbicanDatabaseClusterRef(o client.Object) string {
+	b, ok := o.(*barbicanv1alpha1.Barbican)
+	if !ok || b.Spec.Database.ClusterRef == nil {
+		return ""
+	}
+	return b.Spec.Database.ClusterRef.Name
 }
 
 // memcachedToBarbicanMapper returns a MapFunc that maps Memcached events to

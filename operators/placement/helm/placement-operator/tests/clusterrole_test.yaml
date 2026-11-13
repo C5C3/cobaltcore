@@ -60,7 +60,7 @@ tests:
               - update
               - watch
 
-  - it: should grant read-only on mariadb cluster CRs
+  - it: should grant read-only on mariadb cluster CRs and maxscales
     asserts:
       - contains:
           path: rules
@@ -69,6 +69,7 @@ tests:
               - k8s.mariadb.com
             resources:
               - mariadbs
+              - maxscales
             verbs:
               - get
               - list

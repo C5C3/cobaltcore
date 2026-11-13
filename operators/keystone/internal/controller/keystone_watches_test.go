@@ -131,6 +131,43 @@ func TestMariaDBToKeystoneMapper_ScopedToNamespace(t *testing.T) {
 	g.Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Namespace: "ns-a", Name: "ks-in"}))
 }
 
+// --- maxScaleToKeystoneMapper ---
+
+// TestMaxScaleToKeystoneMapper_EnqueuesTheCRsOfItsMariaDB verifies a MaxScale
+// event enqueues the Keystones whose clusterRef names the MariaDB the
+// MaxScale's spec.mariaDbRef names, and nothing for a brownfield Keystone, a
+// MaxScale of another MariaDB, or one without mariaDbRef.
+func TestMaxScaleToKeystoneMapper_EnqueuesTheCRsOfItsMariaDB(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	match := mapperManagedKeystone("ks-a", "openstack", "openstack-db")
+	other := mapperManagedKeystone("ks-c", "openstack", "some-other-db")
+	brownfield := &keystonev1alpha1.Keystone{
+		ObjectMeta: metav1.ObjectMeta{Name: "ks-brownfield", Namespace: "openstack"},
+		Spec: keystonev1alpha1.KeystoneSpec{
+			Database: commonv1.DatabaseSpec{Host: "db.example.com", Database: "keystone"},
+		},
+	}
+	mapper := maxScaleToKeystoneMapper(newMapperFakeClient(match, other, brownfield))
+
+	maxScaleOf := func(mariaDB *mariadbv1alpha1.MariaDBRef) *mariadbv1alpha1.MaxScale {
+		return &mariadbv1alpha1.MaxScale{
+			ObjectMeta: metav1.ObjectMeta{Name: "openstack-db-maxscale", Namespace: "openstack"},
+			Spec:       mariadbv1alpha1.MaxScaleSpec{MariaDBRef: mariaDB},
+		}
+	}
+	refTo := func(name string) *mariadbv1alpha1.MariaDBRef {
+		return &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: name}}
+	}
+
+	g.Expect(mapper(context.Background(), maxScaleOf(refTo("openstack-db")))).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "ks-a"}},
+	))
+	g.Expect(mapper(context.Background(), maxScaleOf(refTo("unrelated-db")))).To(BeEmpty())
+	g.Expect(mapper(context.Background(), maxScaleOf(nil))).To(BeEmpty(),
+		"a MaxScale without mariaDbRef concerns no Keystone")
+}
+
 // --- memcachedToKeystoneMapper ---
 
 // TestMemcachedToKeystoneMapper verifies a Memcached event enqueues exactly

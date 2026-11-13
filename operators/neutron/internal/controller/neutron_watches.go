@@ -144,13 +144,27 @@ func centralToNeutronsMapper(c client.Reader) handler.MapFunc {
 func mariaDBToNeutronMapper(c client.Reader) handler.MapFunc {
 	return watch.ClusterRefMapper(c,
 		func() client.ObjectList { return &neutronv1alpha1.NeutronList{} },
-		func(o client.Object) string {
-			n, ok := o.(*neutronv1alpha1.Neutron)
-			if !ok || n.Spec.Database.ClusterRef == nil {
-				return ""
-			}
-			return n.Spec.Database.ClusterRef.Name
-		})
+		neutronDatabaseClusterRef)
+}
+
+// maxScaleToNeutronMapper returns a MapFunc that maps MaxScale events to
+// reconcile requests for Neutron CRs whose spec.database.clusterRef names the
+// MariaDB the MaxScale's spec.mariaDbRef names, in the same namespace. The
+// MaxScale's spec decides whether the database connection routes through it.
+func maxScaleToNeutronMapper(c client.Reader) handler.MapFunc {
+	return watch.MaxScaleToClusterRefMapper(c,
+		func() client.ObjectList { return &neutronv1alpha1.NeutronList{} },
+		neutronDatabaseClusterRef)
+}
+
+// neutronDatabaseClusterRef returns the name of the MariaDB a Neutron CR's
+// spec.database.clusterRef names, or "" for a brownfield database.
+func neutronDatabaseClusterRef(o client.Object) string {
+	n, ok := o.(*neutronv1alpha1.Neutron)
+	if !ok || n.Spec.Database.ClusterRef == nil {
+		return ""
+	}
+	return n.Spec.Database.ClusterRef.Name
 }
 
 // memcachedToNeutronMapper returns a MapFunc that maps Memcached events to
