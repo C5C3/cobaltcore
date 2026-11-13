@@ -552,12 +552,6 @@ func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, children 
 	})
 }
 
-// resolveDatabaseHost returns the database host:port based on the database
-// spec, delegating to the shared database resolver.
-func resolveDatabaseHost(keystone *keystonev1alpha1.Keystone) string {
-	return database.ResolveHost(&keystone.Spec.Database, keystone.Namespace)
-}
-
 // dbPort returns the database port, defaulting to 3306 if not set.
 func dbPort(keystone *keystonev1alpha1.Keystone) int32 {
 	return database.Port(&keystone.Spec.Database)
