@@ -6,15 +6,16 @@
 #
 # The partition is enforced on the MariaDB (server) side on purpose. keystone
 # does not connect to a MariaDB pod IP — it connects to the ClusterIP Service
-# openstack-db.openstack.svc:3306 (see resolveDatabaseHost). chaos-mesh installs
-# its drop rule inside the *selector* pods' network namespace and matches the
-# *target* pods by their pod IPs. If the rule were installed on the keystone
-# (client) side, it would match MariaDB pod IPs — but at that point the packet
-# still carries the Service ClusterIP, because kube-proxy only DNATs ClusterIP
-# -> pod IP later, in the node's root namespace, after the packet has left the
-# pod. The rule would therefore never match and the partition would be a no-op
-# for Service-routed traffic (the keystone readiness probe kept connecting for
-# the entire assertion window in the previous revision).
+# openstack-db.openstack.svc:3306 (see database.ResolveEndpoint; the kind
+# MariaDB is a single instance, so the route is the plain Service). chaos-mesh
+# installs its drop rule inside the *selector* pods' network namespace and
+# matches the *target* pods by their pod IPs. If the rule were installed on the
+# keystone (client) side, it would match MariaDB pod IPs — but at that point the
+# packet still carries the Service ClusterIP, because kube-proxy only DNATs
+# ClusterIP -> pod IP later, in the node's root namespace, after the packet has
+# left the pod. The rule would therefore never match and the partition would be
+# a no-op for Service-routed traffic (the keystone readiness probe kept
+# connecting for the entire assertion window in the previous revision).
 #
 # Installing the rule on the MariaDB pods and dropping traffic *from* the
 # keystone pods works because, by the time the packet reaches the MariaDB

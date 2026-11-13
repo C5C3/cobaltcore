@@ -103,15 +103,10 @@ func TestBuildDSN_EncodingEdgeCases(t *testing.T) {
 		"slashes in ssl_* paths must stay literal, not %2F")
 }
 
-func TestResolveHostAndPort(t *testing.T) {
+func TestPort(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	managed := &commonv1.DatabaseSpec{ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"}}
-	g.Expect(ResolveHost(managed, "openstack")).To(gomega.Equal("mariadb.openstack.svc:3306"))
-
-	brownfield := &commonv1.DatabaseSpec{Host: "db.example.com", Port: 3307}
-	g.Expect(ResolveHost(brownfield, "openstack")).To(gomega.Equal("db.example.com:3307"))
-
+	g.Expect(Port(&commonv1.DatabaseSpec{Host: "db.example.com", Port: 3307})).To(gomega.Equal(int32(3307)))
 	g.Expect(Port(&commonv1.DatabaseSpec{})).To(gomega.Equal(int32(3306)), "zero port must default to 3306")
 }
 
