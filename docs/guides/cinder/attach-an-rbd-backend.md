@@ -39,18 +39,9 @@ Follow that tutorial through Part 1, so a `ControlPlane` CR named
 produces.
 :::
 
-The backends of this guide are user-owned `CinderBackend` CRs that you attach to
-the projected `controlplane-cinder` by hand; the projected Cinder child itself
-stays untouched. The c5c3-operator's prune sweep deletes only the backends it
-projected, so it never reverts or deletes these two. The guide uses user-owned
-backends so the lab's `ControlPlane` stays untouched; a `ControlPlane` can
-declare the same backend itself, as
-[Declaring the backend on the ControlPlane](#declaring-the-backend-on-the-controlplane)
-shows. The `openstack` commands use the `OS_*` variables and the `OS_CACERT`
-file of Part 1, Step 7 of the tutorial, with the Keystone port-forward of Step 6
-running. The lab's `ControlPlane` already projects the RBD backend `ceph1` on
-the pool `volumes` as the user `cinder`; the guide's `rbd1` and `rbd2` sit
-beside it on the same pool, and `rbd1` as the same user.
+The workstation must have `timeout` and `sha256sum` on its `PATH`. Keep the
+`OS_*` variables and `OS_CACERT` file from Part 1, Step 7 of the tutorial, and
+the Keystone port-forward from Step 6 running.
 
 ---
 
@@ -87,13 +78,29 @@ kubectl -n kube-system get configmap shoot-info -o jsonpath='{.data.podNetwork} 
 The first command lists one Service per monitor, `rook-ceph-mon-a` on the lab's
 single monitor; its DNS name is
 `rook-ceph-mon-a.rook-ceph.svc.cluster.local`. The second prints the two CIDRs.
-The examples below use `10.244.0.0/16` and `10.96.0.0/12` in their place: write
-the two your shoot prints.
+The examples below use the lab's `10.240.0.0/13` pod network and
+`10.248.0.0/18` service network. Replace them with the two CIDRs your shoot
+prints if they differ.
 
 ## Step 2: Attach rbd1 with the key Rook produces
 
-The backend names the pool, the user without its `client.` prefix, the monitor,
-the two networks and the Secret Rook's key arrives in:
+The lab's `ControlPlane` already projects `ceph1` on pool `volumes` as user
+`cinder`. The main walkthrough leaves that `ControlPlane` untouched and
+attaches user-owned `CinderBackend` CRs `rbd1` and `rbd2` directly to
+`controlplane-cinder`. The c5c3-operator's prune sweep deletes only backends it
+projected, so it leaves these CRs alone. The optional
+[ControlPlane section](#declaring-the-backend-on-the-controlplane) shows how to
+project `rbd1` instead.
+
+The lab's `ceph1` and both guide backends share pool `volumes`; `rbd1` uses the
+existing `cinder` user, and `rbd2` uses the separate `cinder-manual` user.
+`rbd_exclusive_cinder_pool` defaults to `true`, so each backend reports capacity
+from its own Cinder volume records rather than total shared-pool usage. For a
+shared pool, set `rbd_exclusive_cinder_pool: "false"` in each backend's
+`extraOptions` or use separate pools.
+
+The `rbd1` backend names its pool, Ceph user, monitor, network CIDRs and key
+Secret:
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -112,10 +119,11 @@ spec:
     monitors:
     - rook-ceph-mon-a.rook-ceph.svc.cluster.local
     networks:
-    - 10.244.0.0/16
-    - 10.96.0.0/12
+    - 10.240.0.0/13
+    - 10.248.0.0/18
     keySecretRef:
       name: ceph-client-cinder
+    secretUUID: 090e4a3c-6c20-4e74-82dc-1a70382babe8
 EOF
 kubectl -n openstack wait cinderbackend/rbd1 --for=condition=Ready --timeout=300s
 kubectl -n openstack get cinderbackend rbd1 \
@@ -179,9 +187,10 @@ same name twice.
 
 The user `cinder` is the lab's own as well, so the rotation also rolls the
 volume service of `ceph1` and the backup pod, which carries the keyring of
-every RBD volume backend, and the `ceph-secret` container of each libvirt pod
-sets the new key into its node's libvirt secret. A server with an attached RBD
-volume keeps the old key until it is live-migrated or restarted; the
+every RBD volume backend. If Part 2 has deployed hypervisors, each
+`ceph-secret` container also reads the new key into its node's libvirt secret.
+A server with an attached RBD volume keeps the old key until it is live-migrated
+or restarted; the
 [rotation of the quick start](../../quick-start-metal-stack.md#hv-rotate)
 shows the migration that moves it onto the new key. A volume created now
 reaches `available`:
@@ -195,19 +204,18 @@ timeout 120 bash -c 'until [ "$(openstack volume show rbd-vol-2 -c status -f val
 
 A key Secret needs no Rook: any Secret in `openstack` with the user's key under
 `userKey` serves. Create a second Ceph user in the toolbox, limited to the
-`volumes` pool. Its key has to be of the `aes` type, like the lab's own users:
-the `aes256k` type a fresh Ceph 20 prefers fails to authenticate from the
-cinder image. `--key_type` selects it:
+`volumes` pool. Use the lab's `aes` key type (see Step 1); the Ceph CLI's
+`--key-type` option selects it:
 
 ```bash
 kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get-or-create client.cinder-manual \
-  mon 'profile rbd' osd 'profile rbd pool=volumes' mgr 'profile rbd pool=volumes' --key_type=aes >/dev/null
+  mon 'profile rbd' osd 'profile rbd pool=volumes' mgr 'profile rbd pool=volumes' --key-type=aes >/dev/null
 kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get client.cinder-manual -f json | jq 'map(del(.key))'
 ```
 
-The last command prints the user's entry without its key: the capabilities, and
-the key type, which has to be `aes`. Then pipe the key into a Secret, which
-keeps it off the `kubectl` command line, and attach the backend:
+The last command prints the user's capabilities without its key. The
+`--key-type=aes` option above selects the key type. Then pipe the key into a
+Secret, which keeps it off the `kubectl` command line, and attach the backend:
 
 ```bash
 kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get-key client.cinder-manual |
@@ -228,8 +236,8 @@ spec:
     monitors:
     - rook-ceph-mon-a.rook-ceph.svc.cluster.local
     networks:
-    - 10.244.0.0/16
-    - 10.96.0.0/12
+    - 10.240.0.0/13
+    - 10.248.0.0/18
     keySecretRef:
       name: cinder-manual-key
 EOF
@@ -241,11 +249,15 @@ timeout 120 bash -c 'until [ "$(openstack volume show rbd-vol-3 -c status -f val
 ```
 
 Both backends share the pool, so `rbd ls volumes` lists all three volumes.
+The `rbd2` example creates volumes in Cinder but does not install
+`client.cinder-manual` in the hypervisors' libvirt secret store. Its volumes are
+not ready for Nova attachment until that key is configured on every hypervisor
+and a matching `secretUUID` is set on the backend.
 
 ## Step 5: Rotate the hand-made key
 
 `ceph auth rotate` replaces the key, and Ceph stops accepting the old one at
-once. It takes `--key_type` as well, so the new key stays an `aes` one. Patch
+once. It takes `--key-type` as well, so the new key stays an `aes` one. Patch
 the new key into the Secret; never delete and recreate it, which would stop the
 backend's volume service until the Secret is back:
 
@@ -255,7 +267,7 @@ ceph_secret2() {
     -o jsonpath='{.spec.template.spec.volumes[?(@.name=="ceph")].secret.secretName}'
 }
 before=$(ceph_secret2)
-kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth rotate client.cinder-manual --key_type=aes >/dev/null
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth rotate client.cinder-manual --key-type=aes >/dev/null
 kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth get-key client.cinder-manual |
   jq -Rc '{stringData: {userKey: .}}' |
   kubectl -n openstack patch secret cinder-manual-key --patch-file=/dev/stdin
@@ -281,7 +293,7 @@ timeout 120 bash -c 'until ! openstack volume list -c Name -f value | grep -q "^
 openstack volume type delete rbd rbd-manual
 kubectl -n openstack delete cinderbackend rbd1 rbd2 --timeout=300s
 kubectl -n openstack delete secret cinder-manual-key
-kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth del client.cinder-manual
+kubectl -n rook-ceph exec deploy/rook-ceph-tools -- ceph auth rm client.cinder-manual
 openstack volume service list --service cinder-volume
 ```
 
@@ -307,7 +319,8 @@ A `ControlPlane` declares an RBD backend as one more `services.cinder.backends`
 entry, and the c5c3-operator projects it into a `CinderBackend` of the same name.
 Run this after Step 6: the c5c3-operator refuses to adopt a same-named
 `CinderBackend` it did not create, so the hand-made `rbd1` has to be gone. The
-entry carries the Step 2 values and names the key Secret, nothing else of the key
+entry carries the Step 2 values, including the lab's `secretUUID`, and names
+the key Secret without embedding the key
 (see [The RBD key Secret](../../reference/c5c3/controlplane-crd.md#the-rbd-key-secret)):
 
 ```bash
@@ -315,8 +328,9 @@ kubectl -n openstack patch controlplane controlplane --type json -p '[{"op":"add
   "name":"rbd1","type":"RBD","rbd":{
     "pool":"volumes","user":"cinder",
     "monitors":["rook-ceph-mon-a.rook-ceph.svc.cluster.local"],
-    "networks":["10.244.0.0/16","10.96.0.0/12"],
-    "keySecretRef":{"name":"ceph-client-cinder"}}}}]'
+    "networks":["10.240.0.0/13","10.248.0.0/18"],
+    "keySecretRef":{"name":"ceph-client-cinder"},
+    "secretUUID":"090e4a3c-6c20-4e74-82dc-1a70382babe8"}}}}]'
 kubectl -n openstack wait cinderbackend/rbd1 --for=condition=Ready --timeout=300s
 ```
 
@@ -375,7 +389,7 @@ the `controlplane-cinder` / `rbd1` names the devstack produces.
 <<< ../../../tests/e2e/cinder/rbd-backend/02-cinderbackend-cr.yaml#cinder-backend
 :::
 
-## Proven by
+### Proven by
 
 No lab run has proven this page yet. The run records here the date, the shoot,
 the commit the page was run at, and whether every `bash` block exited 0 on its
