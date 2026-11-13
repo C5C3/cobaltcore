@@ -1410,6 +1410,17 @@ spec:
             ($error != null): true
             (contains($error, 'spec.services.horizon.multiDomain.domainChoices[1].name')): true
             (contains($error, 'Duplicate value')): true
+  # An unparseable services.barbican.dbClean.schedule is refused by the webhook
+  # rather than by a CRD pattern: the accepted grammar includes descriptors such
+  # as @daily, which no regex expresses without also rejecting valid expressions.
+  - try:
+    - apply:
+        file: 162-barbican-dbclean-schedule-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dbClean.schedule')): true
+            (contains($error, 'invalid cron expression')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

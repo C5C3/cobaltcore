@@ -11805,3 +11805,96 @@ func TestValidateUpdate_NovaDeclaredInStatusFreezesTheNamespace(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.nova.namespace"))
 	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
 }
+
+// TestValidateCreate_BarbicanDBCleanSchedule pins the cron check of the
+// Barbican clean-up schedule, which the CRD carries no Pattern for. An empty
+// schedule leaves the barbican-operator's own resolution in place.
+func TestValidateCreate_BarbicanDBCleanSchedule(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("prose is not a cron expression", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.DBClean = &ServiceBarbicanDBCleanSpec{Schedule: "every day"}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.dbClean.schedule"))
+		g.Expect(err.Error()).To(ContainSubstring("invalid cron expression"))
+	})
+
+	for _, schedule := range []string{"", "@daily", "1 0 * * *"} {
+		t.Run("accepts "+strconv.Quote(schedule), func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := barbicanControlPlane()
+			cp.Spec.Services.Barbican.DBClean = &ServiceBarbicanDBCleanSpec{Schedule: schedule}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestValidateUpdate_WarnsOnReducedBarbicanDBCleanRetention pins the warning
+// on an update that shortens the clean-up retention: the next run hard-deletes
+// the rows between the two windows. A missing block counts as the
+// barbican-operator's default of 90 days.
+func TestValidateUpdate_WarnsOnReducedBarbicanDBCleanRetention(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	withRetention := func(days *int32) *ControlPlane {
+		cp := barbicanControlPlane()
+		if days != nil {
+			cp.Spec.Services.Barbican.DBClean = &ServiceBarbicanDBCleanSpec{RetentionDays: days}
+		}
+		return cp
+	}
+	retentionWarnings := func(warnings []string) []string {
+		var out []string
+		for _, msg := range warnings {
+			if strings.Contains(msg, "dbClean.retentionDays") {
+				out = append(out, msg)
+			}
+		}
+		return out
+	}
+
+	t.Run("no block to 30 warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		warnings, err := w.ValidateUpdate(context.Background(), withRetention(nil), withRetention(ptr.To(int32(30))))
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(retentionWarnings(warnings)).To(Equal([]string{
+			"spec.services.barbican.dbClean.retentionDays reduced 90 → 30: the next clean-up run hard-deletes " +
+				"the rows soft-deleted between 30 and 90 days ago, which cannot be undone",
+		}))
+	})
+
+	for name, tc := range map[string]struct{ old, new *int32 }{
+		"30 to 90":           {old: ptr.To(int32(30)), new: ptr.To(int32(90))},
+		"30 to 30":           {old: ptr.To(int32(30)), new: ptr.To(int32(30))},
+		"no block on either": {},
+		"30 to no block":     {old: ptr.To(int32(30))},
+	} {
+		t.Run(name+" is silent", func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			warnings, err := w.ValidateUpdate(context.Background(), withRetention(tc.old), withRetention(tc.new))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(retentionWarnings(warnings)).To(BeEmpty())
+		})
+	}
+
+	t.Run("an empty block counts as the default", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		newCP := barbicanControlPlane()
+		newCP.Spec.Services.Barbican.DBClean = &ServiceBarbicanDBCleanSpec{}
+		g.Expect(warnBarbicanDBCleanRetention(withRetention(ptr.To(int32(30))), newCP)).To(BeNil())
+		g.Expect(warnBarbicanDBCleanRetention(withRetention(ptr.To(int32(120))), newCP)).To(HaveLen(1))
+	})
+
+	t.Run("a missing services.barbican on either side is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		without := barbicanControlPlane()
+		without.Spec.Services.Barbican = nil
+		g.Expect(warnBarbicanDBCleanRetention(without, withRetention(ptr.To(int32(1))))).To(BeNil())
+		g.Expect(warnBarbicanDBCleanRetention(withRetention(ptr.To(int32(1))), without)).To(BeNil())
+	})
+}
