@@ -6,7 +6,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	. "github.com/onsi/gomega"
@@ -35,6 +37,10 @@ const dbConfigSecretName = "test-barbican-config-abc"
 // syncJobKey is the object key of the db-sync Job built for the shared test
 // fixture.
 var syncJobKey = client.ObjectKey{Namespace: testNamespace, Name: testBarbicanName + "-db-sync"}
+
+// indexJobKey is the object key of the db-index Job built for the shared test
+// fixture.
+var indexJobKey = client.ObjectKey{Namespace: testNamespace, Name: testBarbicanName + "-db-index"}
 
 // managedBarbican returns a Barbican in managed database mode (ClusterRef set),
 // the mode in which the shared provisioning flow gates on the MariaDB cluster's
@@ -65,7 +71,17 @@ func upgradingBarbican() *barbicanv1alpha1.Barbican {
 // accepts it as the current Job) and a stable UID for the terminal-metric
 // dedupe.
 func terminatedSyncJob(barbican *barbicanv1alpha1.Barbican, condType batchv1.JobConditionType, uid string) *batchv1.Job {
-	desired := database.SyncJob(barbicanJobSetParams(barbican, dbConfigSecretName))
+	return terminatedJob(database.SyncJob(barbicanJobSetParams(barbican, dbConfigSecretName)), condType, uid)
+}
+
+// terminatedIndexJob is terminatedSyncJob for the db-index Job.
+func terminatedIndexJob(barbican *barbicanv1alpha1.Barbican, condType batchv1.JobConditionType, uid string) *batchv1.Job {
+	return terminatedJob(dbIndexJob(barbicanJobSetParams(barbican, dbConfigSecretName)), condType, uid)
+}
+
+// terminatedJob returns desired marked terminal with the given condition type,
+// carrying its pod-spec hash and the given UID.
+func terminatedJob(desired *batchv1.Job, condType batchv1.JobConditionType, uid string) *batchv1.Job {
 	now := metav1.Now()
 	j := desired.DeepCopy()
 	j.UID = types.UID(uid)
@@ -91,6 +107,16 @@ func expectNoSyncJob(t *testing.T, r *BarbicanReconciler) {
 	var syncJob batchv1.Job
 	err := r.Get(context.Background(), syncJobKey, &syncJob)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no migration Job may run on this path")
+}
+
+// expectNoIndexJob asserts that no db-index Job was created for the shared
+// test fixture: it runs only after a completed db-sync.
+func expectNoIndexJob(t *testing.T, r *BarbicanReconciler) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	var indexJob batchv1.Job
+	err := r.Get(context.Background(), indexJobKey, &indexJob)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the db-index Job may not run on this path")
 }
 
 // barbicanMaxUserConnections must track the CR's own worker topology: every
@@ -300,6 +326,7 @@ func TestReconcileDatabase_WaitsWithoutARenderedConfig(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForSecretStores))
 	expectNoSyncJob(t, r)
+	expectNoIndexJob(t, r)
 }
 
 func TestReconcileDatabase_FreshInstallRunsOneJob(t *testing.T) {
@@ -314,7 +341,8 @@ func TestReconcileDatabase_FreshInstallRunsOneJob(t *testing.T) {
 
 	var jobs batchv1.JobList
 	g.Expect(r.List(context.Background(), &jobs, client.InNamespace(testNamespace))).To(Succeed())
-	g.Expect(jobs.Items).To(HaveLen(1), "the migration is one Job, not a phase chain")
+	g.Expect(jobs.Items).To(HaveLen(1),
+		"the migration is one Job, not a phase chain, and db-index waits for it")
 	g.Expect(jobs.Items[0].Name).To(Equal(syncJobKey.Name))
 
 	cond := barbicanCondition(barbican, "DatabaseReady")
@@ -327,7 +355,9 @@ func TestReconcileDatabase_FreshInstallRunsOneJob(t *testing.T) {
 func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {
 	g := NewGomegaWithT(t)
 	barbican := testBarbican() // InstalledRelease empty, OpenStackRelease 2026.1
-	r := newBarbicanTestReconciler(barbican, terminatedSyncJob(barbican, batchv1.JobComplete, "sync-complete-uid"))
+	r := newBarbicanTestReconciler(barbican,
+		terminatedSyncJob(barbican, batchv1.JobComplete, "sync-complete-uid"),
+		terminatedIndexJob(barbican, batchv1.JobComplete, "index-complete-uid"))
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 
@@ -335,6 +365,8 @@ func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.1"),
 		"installedRelease is promoted to spec.openStackRelease on db-sync success")
+	g.Expect(barbican.Status.InstalledImage).To(Equal(barbican.Spec.Image.Reference()),
+		"installedImage is recorded once db-sync and db-index have both completed")
 	g.Expect(barbican.Status.TargetRelease).To(BeEmpty())
 	cond := barbicanCondition(barbican, "DatabaseReady")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
@@ -342,6 +374,72 @@ func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {
 
 	// The terminal metric stamped its dedupe annotation on the CR.
 	g.Expect(barbican.Annotations).To(HaveKey(dbJobUIDAnnotationKey("db-sync")))
+}
+
+// TestReconcileDatabase_IndexJobRunsAfterDBSync walks the passes between a
+// completed db-sync and a completed db-index: the release is promoted at once,
+// so the clean-up and the release gate see the migration as done, while
+// installedImage waits for the index Job and the step requeues on its short
+// interval without an event.
+func TestReconcileDatabase_IndexJobRunsAfterDBSync(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := upgradingBarbican()
+	// The gate accepted the bump on an earlier pass.
+	barbican.Status.TargetRelease = "2026.2"
+	barbican.Status.InstalledImage = "ghcr.io/c5c3/barbican:2026.1"
+	r := newBarbicanTestReconciler(barbican, terminatedSyncJob(barbican, batchv1.JobComplete, "sync-complete-uid"))
+
+	for pass := 1; pass <= 2; pass++ {
+		res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
+
+		g.Expect(err).NotTo(HaveOccurred(), "pass %d", pass)
+		g.Expect(res.RequeueAfter).To(Equal(RequeueDBIndexWait), "pass %d", pass)
+		g.Expect(res.RequeueAfter).To(Equal(5*time.Second), "pass %d", pass)
+		cond := barbicanCondition(barbican, "DatabaseReady")
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse), "pass %d", pass)
+		g.Expect(cond.Reason).To(Equal(conditionReasonDBIndexInProgress), "pass %d", pass)
+		g.Expect(cond.Message).To(Equal("Job " + indexJobKey.Name + " is running"))
+		g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.2"),
+			"installedRelease is promoted when db-sync completes, before the index Job")
+		g.Expect(barbican.Status.InstalledImage).To(Equal("ghcr.io/c5c3/barbican:2026.1"),
+			"installedImage waits for the index Job")
+		g.Expect(barbican.Status.TargetRelease).To(BeEmpty())
+		g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(BeEmpty(), "pass %d", pass)
+	}
+
+	var indexJob batchv1.Job
+	g.Expect(r.Get(context.Background(), indexJobKey, &indexJob)).To(Succeed())
+	g.Expect(indexJob.Spec.Template.Spec.Containers[0].Image).To(Equal(barbican.Spec.Image.Reference()))
+	g.Expect(metav1.IsControlledBy(&indexJob, barbican)).To(BeTrue(),
+		"the Barbican owns the index Job, so it is collected with the CR")
+}
+
+// TestReconcileDatabase_FailedIndexJobIsAHardError covers an index Job that
+// exhausted its backoff limit: the condition, the Warning event, and the
+// returned error that makes the controller back off. The terminal metric stays
+// a db-sync metric, and installedImage is not recorded.
+func TestReconcileDatabase_FailedIndexJobIsAHardError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := testBarbican()
+	r := newBarbicanTestReconciler(barbican,
+		terminatedSyncJob(barbican, batchv1.JobComplete, "sync-complete-uid"),
+		terminatedIndexJob(barbican, batchv1.JobFailed, "index-failed-uid"))
+
+	_, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(errors.Is(err, job.ErrJobFailed)).To(BeTrue())
+	cond := barbicanCondition(barbican, "DatabaseReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBIndexFailed))
+	g.Expect(cond.Message).To(HavePrefix("Job " + indexJobKey.Name + " failed: "))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
+		To(ContainElement(HavePrefix("Warning " + conditionReasonDBIndexFailed)))
+	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.1"))
+	g.Expect(barbican.Status.InstalledImage).To(BeEmpty())
+	g.Expect(barbican.Annotations).NotTo(HaveKey(dbJobUIDAnnotationKey("db-index")),
+		"the index Job is never recorded as a db-sync run")
 }
 
 // TestReconcileDatabase_FailedJobIsAHardError covers the failure path: the
@@ -397,13 +495,32 @@ func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	}
 	g.Expect(r.Status().Update(context.Background(), &syncJob)).To(Succeed())
 
+	// The release is promoted, and the index Job runs.
+	res, err = r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(RequeueDBIndexWait))
+	g.Expect(barbicanCondition(barbican, "DatabaseReady").Reason).To(Equal(conditionReasonDBIndexInProgress))
+	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.2"))
+	g.Expect(barbican.Status.InstalledImage).To(BeEmpty())
+	g.Expect(barbican.Status.TargetRelease).To(BeEmpty(),
+		"a CR that reached its target advertises no target")
+
+	// The index Job completes.
+	var indexJob batchv1.Job
+	g.Expect(r.Get(context.Background(), indexJobKey, &indexJob)).To(Succeed())
+	indexJob.Status.Succeeded = 1
+	indexJob.Status.CompletionTime = &now
+	indexJob.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: now},
+	}
+	g.Expect(r.Status().Update(context.Background(), &indexJob)).To(Succeed())
+
 	res, err = r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.2"))
 	g.Expect(barbican.Status.InstalledImage).To(Equal(barbican.Spec.Image.Reference()))
-	g.Expect(barbican.Status.TargetRelease).To(BeEmpty(),
-		"a CR that reached its target advertises no target")
+	g.Expect(barbican.Status.TargetRelease).To(BeEmpty())
 }
 
 // TestReconcileDatabase_RejectedTransitions walks every arm of the release gate.
@@ -485,6 +602,7 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 			g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
 				To(ContainElement(ContainSubstring("Warning " + tc.reason)))
 			expectNoSyncJob(t, r)
+			expectNoIndexJob(t, r)
 		})
 	}
 }
@@ -516,6 +634,7 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(conditionReasonImageReleaseMismatch))
 	expectNoSyncJob(t, r)
+	expectNoIndexJob(t, r)
 }
 
 // TestReconcileDatabase_DigestPinnedImageSkipsMismatchCheck covers the digest
@@ -541,7 +660,7 @@ func TestReconcileDatabase_DigestPinnedImageSkipsMismatchCheck(t *testing.T) {
 	g.Expect(syncJob.Spec.Template.Spec.Containers[0].Image).To(ContainSubstring("@sha256:"))
 }
 
-// TestBarbicanJobs_PodSettings pins the pod settings of the db-sync Job and the db-clean CronJob: unset, every
+// TestBarbicanJobs_PodSettings pins the pod settings of the db-sync and db-index Jobs and the db-clean CronJob: unset, every
 // container renders the Job resources and no priority class or placement; the
 // API Deployment's priority class and node selector carry over; spec.jobs
 // overrides both.
@@ -549,6 +668,7 @@ func TestBarbicanJobs_PodSettings(t *testing.T) {
 	podSpecs := func(o *barbicanv1alpha1.Barbican) map[string]corev1.PodSpec {
 		return map[string]corev1.PodSpec{
 			"db-sync":  database.SyncJob(barbicanJobSetParams(o, dbConfigSecretName)).Spec.Template.Spec,
+			"db-index": dbIndexJob(barbicanJobSetParams(o, dbConfigSecretName)).Spec.Template.Spec,
 			"db-clean": dbCleanCronJob(o, dbCleanConfigSecretName).Spec.JobTemplate.Spec.Template.Spec,
 		}
 	}
