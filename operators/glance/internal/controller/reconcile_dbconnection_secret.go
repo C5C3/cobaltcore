@@ -49,6 +49,7 @@ func (r *GlanceReconciler) reconcileDBConnectionSecret(ctx context.Context, chil
 	return database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
 		Client:        children,
 		Scheme:        r.Scheme,
+		Recorder:      r.Recorder,
 		Owner:         glance,
 		InstanceName:  glance.Name,
 		Namespace:     glance.Namespace,

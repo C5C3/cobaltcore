@@ -56,6 +56,7 @@ func (r *PlacementReconciler) reconcileDBConnectionSecret(ctx context.Context, c
 	return database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
 		Client:        children,
 		Scheme:        r.Scheme,
+		Recorder:      r.Recorder,
 		Owner:         placement,
 		InstanceName:  placement.Name,
 		Namespace:     placement.Namespace,
