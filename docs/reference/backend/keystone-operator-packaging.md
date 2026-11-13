@@ -451,7 +451,7 @@ resources and their dependencies:
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
 | `cert-manager.io` | `certificates` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
-| `k8s.mariadb.com` | `mariadbs` | get, list, watch |
+| `k8s.mariadb.com` | `mariadbs`, `maxscales` | get, list, watch |
 | `memcached.c5c3.io` | `memcacheds` | get, list, watch |
 | `external-secrets.io` | `externalsecrets` | get, list, watch, create, update, patch |
 | `external-secrets.io` | `pushsecrets` | get, list, watch, create, update, patch, delete |
@@ -471,8 +471,8 @@ resources and their dependencies:
   owner-reference garbage collection. **`pushsecrets`** does include `delete`: the
   OpenBao finalizer deletes the key-backup PushSecrets when a Keystone CR is
   deleted so ESO stops pushing to OpenBao.
-- **`mariadbs`, `clustersecretstores`, `priorityclasses`, `pods`, and
-  `httproutes/status`** are read-only: the operator observes them but never
+- **`mariadbs`, `maxscales`, `clustersecretstores`, `priorityclasses`, `pods`,
+  and `httproutes/status`** are read-only: the operator observes them but never
   mutates them.
 
 The ClusterRoleBinding binds the ClusterRole to the operator's ServiceAccount in the

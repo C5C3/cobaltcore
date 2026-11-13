@@ -226,7 +226,7 @@ RBAC markers on the reconciler generate the required ClusterRole:
 | `core` | `services`, `configmaps`, `secrets` | get, list, watch, create, update, patch, delete |
 | `batch` | `jobs`, `cronjobs` | get, list, watch, create, update, patch, delete |
 | `k8s.mariadb.com` | `databases`, `users`, `grants` | get, list, watch, create, update, patch, delete |
-| `k8s.mariadb.com` | `mariadbs` | get, list, watch |
+| `k8s.mariadb.com` | `mariadbs`, `maxscales` | get, list, watch |
 | `memcached.c5c3.io` | `memcacheds` | get, list, watch |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
@@ -2084,7 +2084,7 @@ missing object or kind, fails the step with `resolving cache servers` and
 
 | Mode | Host Resolution | Format |
 | --- | --- | --- |
-| Managed | `{clusterRef.name}.{namespace}.svc:{port}` | `mysql+pymysql://{username}:{password}@{host}:{port}/keystone` |
+| Managed | The route `database.ResolveEndpoint` picks: `{maxscale}.{namespace}.svc`, `{clusterRef.name}-primary.{namespace}.svc` or `{clusterRef.name}.{namespace}.svc` (see [Managed database routes](keystone-crd.md#managed-database-routes)) | `mysql+pymysql://{username}:{password}@{host}:{port}/keystone` |
 | Brownfield | `{spec.database.host}:{port}` | `mysql+pymysql://{username}:{password}@{host}:{port}/keystone` |
 
 - The password is always read from `spec.database.secretRef` via
@@ -2096,9 +2096,12 @@ missing object or kind, fails the step with `resolving cache servers` and
   `WaitingForDBCredentials`.
 - Default port is 3306 when `spec.database.port` is 0.
 - `reconcileDBConnectionSecret` returns the SHA-256 of the assembled DSN, which
-  the Deployment step stamps as the `keystone.c5c3.io/db-connection-hash`
-  pod-template annotation in Dynamic mode (see the Deployment section) so a
-  rotated engine-issued credential rolls the Deployment.
+  the Deployment step sets as the `keystone.c5c3.io/db-connection-hash`
+  pod-template annotation in every credentials mode (see the Deployment
+  section), so a rotated engine-issued credential or a new database route rolls
+  the Deployment.
+- When the MariaDB names a MaxScale the connection does not go through, the
+  step records a `DatabaseMaxScaleBypassed` Warning event on the Keystone CR.
 
 **Step 4: Merge plugin config** — If `spec.plugins` is non-empty,
 `plugins.RenderPluginConfig()` generates INI sections that are merged with
@@ -2282,13 +2285,15 @@ connections during routine key rotation.
 
 The database connection string is the deliberate exception. It is consumed via
 the `OS_DATABASE__CONNECTION` environment variable (not a mounted volume), so a
-rotated credential only takes effect on a Pod restart. In **Dynamic** credentials
-mode (`spec.database.credentialsMode: Dynamic`) the DSN rotates at the engine
-lease TTL, so `reconcileDeployment` stamps a `keystone.c5c3.io/db-connection-hash`
-pod-template annotation (the SHA-256 of the DSN returned by
-`reconcileDBConnectionSecret`) to roll the Deployment when the engine-issued
-credential changes. Static and brownfield modes leave the annotation absent,
-preserving the no-rollout behavior.
+changed DSN only takes effect on a Pod restart. In **Dynamic** credentials mode
+(`spec.database.credentialsMode: Dynamic`) the DSN rotates at the engine lease
+TTL, and in every mode it changes when the database route changes (see
+[Managed database routes](keystone-crd.md#managed-database-routes)). So
+`reconcileDeployment` sets a `keystone.c5c3.io/db-connection-hash` pod-template
+annotation (the SHA-256 of the DSN returned by `reconcileDBConnectionSecret`)
+in every credentials mode, and the Deployment rolls whenever the DSN changes.
+A Static or brownfield Keystone rolls once after the operator upgrade that
+introduced the annotation for those modes, when the annotation first appears.
 
 **Deployment Spec:**
 
@@ -3682,7 +3687,7 @@ between `reconcileSecrets` and `reconcileConfig`. On every reconcile it:
    and `password` keys are read from the upstream Secret.
 2. Builds the pymysql URL using `url.UserPassword()` for RFC 3986-compliant
    percent-encoding of reserved characters in the userinfo component, the
-   shared `database.ResolveHost()` / `database.Port()` helpers for host
+   shared `database.ResolveEndpoint()` / `database.Port()` helpers for host
    resolution, and `?charset=utf8` as the fixed query string. The URL scheme is
    `mysql+pymysql`.
 3. Writes the URL to a derived `Secret` named `<keystone.Name>-db-connection`

@@ -1545,7 +1545,7 @@ and Jobs; changing the operator default has it on every CR that names no
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `clusterRef` | `*corev1.LocalObjectReference` | No | Reference to a MariaDB CR (managed mode). |
+| `clusterRef` | `*corev1.LocalObjectReference` | No | Reference to a MariaDB CR (managed mode). The connection goes through the route [Managed database routes](#managed-database-routes) describes. |
 | `credentialsMode` | `string` | No | How the `secretRef` credential is provisioned. `Static` (default when empty) — operator-managed MariaDB `User`/`Grant` with a long-lived password. `Dynamic` — short-lived credentials issued by an external secrets engine; `secretRef` carries both a username and password, no `User`/`Grant` CRs are managed, and no long-lived DB password remains at rest. Enum `Static;Dynamic`; `Dynamic` is only valid in managed mode (CEL rule). |
 | `host` | `string` | No | Database hostname (brownfield mode). When set, `MinLength=1` plus a permissive host `Pattern` (`^[a-zA-Z0-9._:-]+$`) that accepts DNS names, IPv4, and IPv6 literals. |
 | `port` | `int32` | No | Database port (brownfield mode, default 3306). When set, range `Minimum=1`/`Maximum=65535`; omitted (managed mode) leaves it unset. |
@@ -1557,6 +1557,55 @@ and Jobs; changing the operator default has it on every CR that names no
 Exactly one of `clusterRef` or `host` must be set (enforced by CEL validation).
 The database name and the `clusterRef` ↔ `host` mode are immutable after create
 (CEL transition rules, evaluated only on UPDATE).
+
+#### Managed database routes
+
+A managed database has one writer. `database.ResolveEndpoint`
+(`internal/common/database/resolve.go`) reads the MariaDB that `clusterRef`
+names and picks the host of the connection string. A brownfield `host` is
+used as given. Every service operator and the MariaDBDatabase orders of a
+ControlPlane share the resolver.
+
+| Route | Condition | Host |
+| --- | --- | --- |
+| `MaxScale` | The MariaDB names a MaxScale in `spec.maxScaleRef`, and that MaxScale sends every statement to the primary | `<maxscale>.<namespace>.svc` |
+| `Primary` | The MariaDB runs Galera or replication, and no MaxScale qualifies | `<clusterRef>-primary.<namespace>.svc` |
+| `Service` | A single instance, or a MariaDB that does not exist yet | `<clusterRef>.<namespace>.svc` |
+| `Explicit` | Brownfield mode | `host` |
+
+The port is always `port`, 3306 when unset. mariadb-operator publishes
+`<clusterRef>-primary` for Galera and replication only. That Service selects
+the current primary, so a primary switch needs no new connection string and
+no rollout. Between the loss of the primary and the switch it has no endpoint,
+and new connections fail.
+
+A MaxScale qualifies when one entry of its `spec.services` has
+`router: readwritesplit`, `params.max_slave_connections: "0"` (blanks around
+the value are ignored), `listener.port` equal to `port`, and neither the
+service nor its listener suspended. `readwritesplit` sends autocommit reads to
+the other members unless `max_slave_connections` is 0. A MaxScale that does not
+qualify is bypassed for the next route, and the operator records a
+`DatabaseMaxScaleBypassed` Warning event on the CR with one of these reasons:
+
+| Reason | Cause |
+| --- | --- |
+| `MaxScaleOtherNamespace` | `maxScaleRef.namespace` names another namespace than the CR's. |
+| `MaxScaleNotFound` | The MaxScale does not exist, or the cluster does not serve the kind. |
+| `MaxScaleServesOtherMariaDB` | The MaxScale's `spec.mariaDbRef` is unset, names another MariaDB, or names another namespace than the CR's. |
+| `MaxScaleNotSingleWriter` | No service of the MaxScale qualifies. |
+
+The resolver reads spec only, never status. A MariaDB or MaxScale that flaps
+between ready and not ready keeps the host, so it rolls no pods. A MariaDB that
+does not exist yet, or a cluster that does not serve the MariaDB kind, renders
+the plain Service without waiting; the `ClusterNotReady` gate of the database
+step holds back every Job and Deployment until the MariaDB is Ready. Any other
+read error fails the reconcile and leaves the connection Secret as it is.
+
+The connection string reaches the pods through `OS_DATABASE__CONNECTION`, and
+its digest is a pod-template annotation, so a new route rolls the workloads
+that read the database once. On the first reconcile after an operator upgrade
+that introduces the routes, every service on a Galera or replication MariaDB,
+or on a qualifying MaxScale, rolls once.
 
 ### DatabaseTLSSpec
 

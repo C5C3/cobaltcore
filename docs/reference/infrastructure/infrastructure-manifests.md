@@ -1189,17 +1189,34 @@ is rejected by the ovn-operator's TLS sub-reconciler.
 | Namespace | `openstack` |
 | Replicas | `3` |
 | Galera | Enabled (`spec.galera.enabled: true`) |
-| MaxScale | `MaxScale` CR `openstack-db-maxscale` with 2 replicas and `spec.mariaDbRef: openstack-db`; the MariaDB names it in `spec.maxScaleRef` |
+| MaxScale | `MaxScale` CR `openstack-db-maxscale` with 2 replicas, `spec.mariaDbRef: openstack-db` and one service, `rw-router` (`readwritesplit`, `max_slave_connections: "0"`, listener port 3306); the MariaDB names it in `spec.maxScaleRef` |
 | Storage | `100Gi`, storage class `ceph-rbd` |
 
 The MariaDB CR provisions a 3-node Galera cluster with synchronous replication managed
 by the mariadb-operator. The MaxScale CR in the same file runs 2 MaxScale replicas in
-front of the Galera nodes for query routing and read/write splitting; the operator infers
-its servers and its `galeramon` monitor from `spec.mariaDbRef`. Through
-`spec.maxScaleRef` the MariaDB takes the primary that MaxScale reports and leaves primary
-failover to MaxScale. mariadb-operator 25.10.3 removed the embedded `spec.maxScale` of
-the MariaDB CR, which made the operator create the same `<mariadb>-maxscale` CR and set
-`spec.maxScaleRef`; the file now declares both explicitly.
+front of the Galera nodes for query routing; the operator infers its servers and its
+`galeramon` monitor from `spec.mariaDbRef`. Through `spec.maxScaleRef` the MariaDB takes
+the primary that MaxScale reports and leaves primary failover to MaxScale.
+mariadb-operator 25.10.3 removed the embedded `spec.maxScale` of the MariaDB CR, which
+made the operator create the same `<mariadb>-maxscale` CR and set `spec.maxScaleRef`; the
+file now declares both explicitly.
+
+The MaxScale sends every statement to the Galera primary. Conflicting commits from
+different members abort at certification, and with `wsrep_sync_wait` at 0 a read on one
+member can miss a commit another member made milliseconds earlier. The `readwritesplit`
+router sends autocommit reads to the other members unless `max_slave_connections` is 0,
+so the file states the `rw-router` service with `max_slave_connections: "0"` on port
+3306. Name, router and port are the values `MaxScale.SetDefaults` writes on a MaxScale
+without `spec.services`, so an existing install keeps its router, which the webhook
+keeps immutable. `tests/unit/deploy/maxscale_single_writer_test.sh` pins the service.
+
+The OpenStack service operators and the MariaDBDatabase orders route through a MaxScale
+only when it has a `readwritesplit` service with `max_slave_connections: "0"` on the
+database port (3306), neither the service nor its listener suspended. A hand-written
+MaxScale has to meet that requirement as well. Any other MaxScale is bypassed: the
+services connect to `openstack-db-primary`, and each service CR gets a
+`DatabaseMaxScaleBypassed` Warning event
+([Managed database routes](../keystone/keystone-crd.md#managed-database-routes)).
 
 The root password is sourced from a Kubernetes Secret (`mariadb-root-password`, key
 `password`). The production stack ships **no** `ExternalSecret` for it — a non-kind Flux
@@ -1220,7 +1237,7 @@ self-contained.
 
 | Service | Type | Purpose |
 | --- | --- | --- |
-| Primary | `ClusterIP` | Read-write endpoint for application connections |
+| Primary | `ClusterIP` | Read-write endpoint for application connections; the OpenStack services connect here when no MaxScale qualifies |
 | Secondary | `ClusterIP` | Read-only endpoint for read replicas |
 
 **Monitoring:** Prometheus metrics are enabled (`spec.metrics.enabled: true`).
