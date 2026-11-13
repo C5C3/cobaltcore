@@ -514,6 +514,7 @@ func TestBarbicanWorkloads_ImagePullPolicy(t *testing.T) {
 		return map[string]corev1.PodSpec{
 			"api":      buildBarbicanDeployment(o, validProjection(), deploymentConfigSecretName, "", "").Spec.Template.Spec,
 			"db-sync":  database.SyncJob(barbicanJobSetParams(o, dbConfigSecretName)).Spec.Template.Spec,
+			"db-index": dbIndexJob(barbicanJobSetParams(o, dbConfigSecretName)).Spec.Template.Spec,
 			"db-clean": dbCleanCronJob(o, dbCleanConfigSecretName).Spec.JobTemplate.Spec.Template.Spec,
 		}
 	}
@@ -537,7 +538,7 @@ func TestBarbicanWorkloads_ImagePullPolicy(t *testing.T) {
 			tc.mutate(&o.Spec.Image)
 
 			specs := podSpecs(o)
-			g.Expect(specs).To(HaveLen(3))
+			g.Expect(specs).To(HaveLen(4))
 			for name, spec := range specs {
 				containers := append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...)
 				g.Expect(containers).NotTo(BeEmpty(), name)

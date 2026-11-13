@@ -30,7 +30,8 @@ import (
 // replica count. On top of the floor: one surge pod, because the rollout
 // strategy (maxSurge=1, maxUnavailable=0) runs a full extra pod's workers
 // alongside the fleet during an update, and two transient job connections
-// (db-sync, db-clean). Left unsized, the mariadb-operator CRD default of 10
+// (a migration Job, db-sync or db-index, which run one after the other, and
+// db-clean). Left unsized, the mariadb-operator CRD default of 10
 // applies, which a raised spec.apiServer.uwsgi.processes exceeds before a
 // single request is served: 3 replicas × 4 processes are 12 pooled
 // connections, the last workers fail their start-up store sync with MySQL
@@ -77,6 +78,12 @@ var barbicanDBSyncCommand = []string{"barbican-manage", "db", "upgrade"}
 // the migration to the shared single-pass sync flow, which promotes
 // status.installedRelease and sets DatabaseReady on the Job's outcome.
 //
+// Once db-sync has completed and the release is promoted, the same flow runs
+// the {name}-db-index Job (dbIndexJob), which builds the list-query indexes
+// outside Alembic. While it runs DatabaseReady is False/DBIndexInProgress and
+// the step requeues after RequeueDBIndexWait; a Job that exhausted its backoff
+// limit sets False/DBIndexFailed with a Warning event and returns an error.
+//
 // Barbican runs no expand-migrate-contract phase machine: its migrations are a
 // single barbican-manage db upgrade pass and the CR carries no upgradePhase
 // field. The release rules the phased flow enforces on its way in — no
@@ -91,8 +98,8 @@ var barbicanDBSyncCommand = []string{"barbican-manage", "db", "upgrade"}
 // window compatible by construction; here it is a property of whichever alembic
 // revisions the target release happens to carry. A release containing a
 // non-additive revision (a dropped or renamed column) therefore requires the API
-// to be drained before the upgrade — DatabaseReady goes True the moment the Job
-// completes and reports nothing about the rollout that follows.
+// to be drained before the upgrade — DatabaseReady goes True the moment both
+// Jobs complete and reports nothing about the rollout that follows.
 //
 // configSecretName names the rendered config Secret the migration Job mounts.
 func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican, configSecretName string) (ctrl.Result, error) {
@@ -147,13 +154,15 @@ func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, children cli
 
 	// Steady-state db-sync. barbican-manage db upgrade applies every pending
 	// revision in one pass, so there is no schema-check step (SchemaCheckCommand
-	// nil). InstalledRelease is promoted to spec.openStackRelease on Job success.
+	// nil). InstalledRelease is promoted to spec.openStackRelease on Job success,
+	// before the db-index Job runs.
+	jobs := barbicanJobSetParams(barbican, configSecretName)
 	res, err = database.ReconcileSyncJobs(ctx, database.SyncFlowParams{
 		Client:   children,
 		Scheme:   r.Scheme,
 		Recorder: r.Recorder,
 		Owner:    barbican,
-		Jobs:     barbicanJobSetParams(barbican, configSecretName),
+		Jobs:     jobs,
 		RecordTerminal: func(jobSuffix string, observed *batchv1.Job) {
 			r.recordDBJobTerminalState(ctx, barbican, jobSuffix, observed)
 		},
@@ -166,6 +175,12 @@ func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, children cli
 		// spec.openStackRelease rather than spec.image.tag so a digest-pinned
 		// image still tracks the release the operator was told to converge to.
 		ImageTag: barbican.Spec.OpenStackRelease,
+		PostSyncJobs: []database.PostSyncJob{{
+			Job:              dbIndexJob(jobs),
+			InProgressReason: conditionReasonDBIndexInProgress,
+			FailedReason:     conditionReasonDBIndexFailed,
+			RequeueAfter:     RequeueDBIndexWait,
+		}},
 	})
 
 	// status.targetRelease only describes a bump in flight. Once the sync flow
@@ -177,7 +192,8 @@ func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, children cli
 		// Record which image the installed schema was migrated by, so the release
 		// gate can tell a real release bump (a new image) from a spec-only edit
 		// that would migrate nothing. Only once the sync flow has settled: a
-		// requeue or an error means the Job has not finished.
+		// requeue or an error means the db-sync or the db-index Job has not
+		// finished.
 		if err == nil && res.IsZero() {
 			barbican.Status.InstalledImage = barbican.Spec.Image.Reference()
 		}
@@ -318,28 +334,28 @@ func checkImageReleaseMismatch(barbican *barbicanv1alpha1.Barbican) (ctrl.Result
 	return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, true
 }
 
-// barbicanJobPod resolves the pod settings of the db-sync Job and the db-clean
-// CronJob: spec.jobs, with spec.deployment as the fallback.
+// barbicanJobPod resolves the pod settings of the db-sync and db-index Jobs and
+// the db-clean CronJob: spec.jobs, with spec.deployment as the fallback.
 func barbicanJobPod(barbican *barbicanv1alpha1.Barbican) job.PodSettings {
 	return job.ResolvePodSettings(barbican.Spec.Jobs, &barbican.Spec.Deployment)
 }
 
 // barbicanJobSetParams derives the shared migration-Job inputs from the Barbican
 // CR: the config mount, the db-tls keypair, the [database] connection override,
-// the Job pod settings, and the db-sync command. reconcileDatabase and the unit tests build the Job
-// from this one source, so a seeded Job carries the same pod spec as the desired
-// one.
+// the Job pod settings, and the db-sync command. reconcileDatabase builds the
+// db-sync Job and dbIndexJob from this one source, and so do the unit tests, so
+// a seeded Job carries the same pod spec as the desired one.
 //
 // The config travels as a Secret rather than a ConfigMap: the rendered
 // barbican.conf carries the vault plugin's approle_role_id, so the whole
 // document is credential-bearing.
 func barbicanJobSetParams(barbican *barbicanv1alpha1.Barbican, configSecretName string) database.JobSetParams {
-	// Project the db-tls client keypair into the db-sync Job when database TLS is
-	// enabled; the gate is centralised in barbicanDBTLSEnabled so the Job and the
-	// deployment builders decide identically. The DSN in the derived
-	// <name>-db-connection Secret carries ssl_ca/ssl_cert/ssl_key paths under
-	// dbTLSMountPath, so without the mount barbican-manage cannot open them and
-	// every migration fails.
+	// Project the db-tls client keypair into the db-sync and db-index Jobs when
+	// database TLS is enabled; the gate is centralised in barbicanDBTLSEnabled so
+	// the Jobs and the deployment builders decide identically. The DSN in the
+	// derived <name>-db-connection Secret carries ssl_ca/ssl_cert/ssl_key paths
+	// under dbTLSMountPath, so without the mount neither barbican-manage nor the
+	// index script can open them and every run fails.
 	var extraVolumes []corev1.Volume
 	var extraMounts []corev1.VolumeMount
 	if barbicanDBTLSEnabled(barbican) {

@@ -393,13 +393,14 @@ func mountedConfigSecretName(deploy *appsv1.Deployment) string {
 // parent chain with both controllers running and a brownfield store validated
 // against a live (in-process) OpenBao server: the store's AppRole credentials are
 // accepted, the parent projects the store into a rendered barbican.conf, the
-// db-sync Job and the API workload materialize, and the aggregate Ready of both
-// CRs turns True. A last phase stops the API answering without writing any
-// object and sees BarbicanAPIReady and Ready turn False, then True again.
+// db-sync and db-index Jobs and the API workload materialize, and the aggregate
+// Ready of both CRs turns True. A last phase stops the API answering without
+// writing any object and sees BarbicanAPIReady and Ready turn False, then True
+// again.
 //
-// envtest runs no Job or Deployment controller, so the db-sync completion and the
-// Deployment rollout are simulated the way the sibling operators' integration
-// tests simulate them; nothing else in the chain is stubbed.
+// envtest runs no Job or Deployment controller, so the completion of both Jobs
+// and the Deployment rollout are simulated the way the sibling operators'
+// integration tests simulate them; nothing else in the chain is stubbed.
 func TestIntegrationBarbican_BrownfieldStoreDrivesParentToReady(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -458,6 +459,14 @@ func TestIntegrationBarbican_BrownfieldStoreDrivesParentToReady(t *testing.T) {
 		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
 	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
 	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
+
+	// The db-index Job follows the completed db-sync, and the Deployment step
+	// waits for it as it waits for db-sync.
+	dbIndexKey := client.ObjectKey{Namespace: ns, Name: integrationBarbicanName + "-db-index"}
+	g.Eventually(func() error {
+		return c.Get(ctx, dbIndexKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-index Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbIndexKey)).To(Succeed(), "simulate db-index Job completion")
 
 	// The Deployment and its Service materialize.
 	deployKey := client.ObjectKey{Namespace: ns, Name: integrationBarbicanName}

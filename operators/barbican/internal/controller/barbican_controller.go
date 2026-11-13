@@ -336,8 +336,8 @@ var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 // NOTE: create on serviceaccounts/token is deliberately NOT part of this rule
 // set. It is granted per namespace by templates/tokenrequest-rbac.yaml — see the
 // comment there for why it must never reach a ClusterRole.
-// jobs covers the db-sync Job; cronjobs covers the recurring database clean-up
-// the DBClean sub-reconciler projects.
+// jobs covers the db-sync and db-index Jobs; cronjobs covers the recurring
+// database clean-up the DBClean sub-reconciler projects.
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // Unexercised by the e2e suites; used by operators/barbican/internal/controller/reconcile_dbclean.go:182 (reconcileDBClean) to delete cronjobs.
 // +kubebuilder:rbac:groups=batch,resources=cronjobs,verbs=get;list;watch;create;patch;delete
@@ -560,12 +560,14 @@ func (r *BarbicanReconciler) pipelineSteps(children client.Client, barbican *bar
 		// runs — so a step placed behind it is never reached to pause the schedule
 		// during the one window that needs pausing. Its only input is the rendered
 		// config the CronJob mounts, which the Config step above already produced.
+		// The pause covers db-sync only: installedRelease is promoted before the
+		// db-index Job runs, so a clean-up can fire beside an index build.
 		{Name: "DBClean", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDBClean(ctx, children, barbican, configSecretName)
 		}},
 		// reconcileDatabase provisions the schema, gates the requested OpenStack
-		// release against the installed one, and runs the db-sync Job against the
-		// rendered config.
+		// release against the installed one, and runs the db-sync Job and then
+		// the db-index Job against the rendered config.
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDatabase(ctx, children, barbican, configSecretName)
 		}},

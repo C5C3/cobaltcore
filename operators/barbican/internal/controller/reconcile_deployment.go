@@ -469,7 +469,8 @@ func barbicanUWSGICommand(apiServer *barbicanv1alpha1.APIServerSpec) []string {
 
 // barbicanDBTLSEnabled reports whether the Barbican CR requests TLS to the
 // database; the helper centralises the nil/disabled gate so the deployment, the
-// db-sync Job, and the db-clean CronJob builders decide identically.
+// db-sync and db-index Jobs, and the db-clean CronJob builders decide
+// identically.
 func barbicanDBTLSEnabled(barbican *barbicanv1alpha1.Barbican) bool {
 	return barbican.Spec.Database.TLS.IsEnabled()
 }

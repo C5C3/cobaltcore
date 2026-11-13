@@ -14,6 +14,13 @@ const (
 	// are moderately slow, so a longer interval avoids unnecessary API churn.
 	RequeueDatabaseWait = 30 * time.Second
 
+	// RequeueDBIndexWait is the interval for waiting on the db-index Job. The
+	// Owns(&batchv1.Job{}) watch usually wakes the CR when the Job finishes;
+	// the interval bounds the wait when that event arrives late. It is shorter
+	// than RequeueDatabaseWait because on a fresh install the Job finishes on
+	// empty tables within seconds, and the Deployment step waits for it.
+	RequeueDBIndexWait = 5 * time.Second
+
 	// RequeueSecretStoreRetry is the interval every waiting and failure state of
 	// the BarbicanSecretStore controller retries at: a missing OpenBaoCluster, an
 	// instance that is not Available yet, an unreachable or denying OpenBao
