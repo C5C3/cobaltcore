@@ -669,16 +669,20 @@ func completedJob(name string, hash string) *batchv1.Job {
 	}
 }
 
-// completedSyncClient returns a fake client holding owner and the completed
-// db-sync and schema-check Jobs of keystoneJobSet, at their current hashes.
-func completedSyncClient(s *runtime.Scheme, owner client.Object) client.Client {
+// completedSyncObjects returns owner and the completed db-sync and
+// schema-check Jobs of keystoneJobSet, at their current hashes.
+func completedSyncObjects(owner client.Object) []client.Object {
 	p := keystoneJobSet()
-	return fake.NewClientBuilder().WithScheme(s).
-		WithObjects(
-			owner,
-			completedJob("keystone-db-sync", job.PodSpecHash(&SyncJob(p).Spec.Template)),
-			completedJob("keystone-schema-check", job.PodSpecHash(&SchemaCheckJob(p).Spec.Template)),
-		).Build()
+	return []client.Object{
+		owner,
+		completedJob("keystone-db-sync", job.PodSpecHash(&SyncJob(p).Spec.Template)),
+		completedJob("keystone-schema-check", job.PodSpecHash(&SchemaCheckJob(p).Spec.Template)),
+	}
+}
+
+// completedSyncClient returns a fake client holding completedSyncObjects.
+func completedSyncClient(s *runtime.Scheme, owner client.Object) client.Client {
+	return fake.NewClientBuilder().WithScheme(s).WithObjects(completedSyncObjects(owner)...).Build()
 }
 
 func failedJob(name string, hash string) *batchv1.Job {
@@ -735,25 +739,39 @@ func TestReconcileSyncJobs_schemaCheckSequenced(t *testing.T) {
 	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "keystone-schema-check", Namespace: flowNamespace}, created)).To(Succeed())
 }
 
+// TestReconcileSyncJobs_success pins the flow without post-sync Jobs: a nil
+// and an empty PostSyncJobs both reach DatabaseSynced off the completed Jobs.
 func TestReconcileSyncJobs_success(t *testing.T) {
-	g := NewWithT(t)
-	s := flowScheme()
-	owner := flowOwner()
-	var conds []metav1.Condition
-	var calls []string
-	rec := record.NewFakeRecorder(10)
-	installed := ""
-	c := completedSyncClient(s, owner)
+	for _, tc := range []struct {
+		name string
+		post []PostSyncJob
+	}{
+		{name: "nil post-sync jobs", post: nil},
+		{name: "empty post-sync jobs", post: []PostSyncJob{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			s := flowScheme()
+			owner := flowOwner()
+			var conds []metav1.Condition
+			var calls []string
+			rec := record.NewFakeRecorder(10)
+			installed := ""
+			c := completedSyncClient(s, owner)
 
-	res, err := ReconcileSyncJobs(context.Background(), syncParams(c, s, owner, &conds, rec, &installed, &calls))
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.IsZero()).To(BeTrue())
-	cond := meta.FindStatusCondition(conds, "DatabaseReady")
-	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(ReasonDatabaseSynced))
-	// InstalledRelease is promoted to the image tag on success.
-	g.Expect(installed).To(Equal("2026.1"))
-	g.Expect(rec.Events).To(Receive(ContainSubstring(ReasonDatabaseSynced)))
+			p := syncParams(c, s, owner, &conds, rec, &installed, &calls)
+			p.PostSyncJobs = tc.post
+			res, err := ReconcileSyncJobs(context.Background(), p)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.IsZero()).To(BeTrue())
+			cond := meta.FindStatusCondition(conds, "DatabaseReady")
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(cond.Reason).To(Equal(ReasonDatabaseSynced))
+			// InstalledRelease is promoted to the image tag on success.
+			g.Expect(installed).To(Equal("2026.1"))
+			g.Expect(rec.Events).To(Receive(ContainSubstring(ReasonDatabaseSynced)))
+		})
+	}
 }
 
 // TestReconcileSyncJobs_steadyPassEmitsNoEvent pins the quiet steady state: a
@@ -895,4 +913,263 @@ func TestReconcileSyncJobs_noSchemaCheck(t *testing.T) {
 	check := &batchv1.Job{}
 	err = c.Get(context.Background(), client.ObjectKey{Name: "keystone-schema-check", Namespace: flowNamespace}, check)
 	g.Expect(err).To(HaveOccurred())
+}
+
+// postJob builds a post-sync Job of keystoneJobSet under suffix.
+func postJob(suffix string) *batchv1.Job {
+	p := keystoneJobSet()
+	return BuildJob(p, p.Image, suffix, []string{"true"}, 1)
+}
+
+// postEntry wraps postJob(suffix) in a PostSyncJob whose reasons carry the
+// suffix, so a test can tell which entry set the condition.
+func postEntry(suffix string, requeue time.Duration) PostSyncJob {
+	return PostSyncJob{
+		Job:              postJob(suffix),
+		InProgressReason: suffix + "InProgress",
+		FailedReason:     suffix + "Failed",
+		RequeueAfter:     requeue,
+	}
+}
+
+// TestReconcileSyncJobs_postSyncJobInProgress pins the first pass after
+// db-sync: the first post-sync Job is created, the installed release is already
+// promoted, the condition names the running Job, and no event is emitted. The
+// second entry waits for the first.
+func TestReconcileSyncJobs_postSyncJobInProgress(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		requeue time.Duration
+		want    time.Duration
+	}{
+		{name: "entry interval", requeue: 5 * time.Second, want: 5 * time.Second},
+		{name: "zero falls back to the flow interval", requeue: 0, want: 30 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			s := flowScheme()
+			owner := flowOwner()
+			var conds []metav1.Condition
+			var calls []string
+			rec := record.NewFakeRecorder(10)
+			installed := ""
+			c := completedSyncClient(s, owner)
+
+			p := syncParams(c, s, owner, &conds, rec, &installed, &calls)
+			p.PostSyncJobs = []PostSyncJob{postEntry("post-a", tc.requeue), postEntry("post-b", tc.requeue)}
+			res, err := ReconcileSyncJobs(context.Background(), p)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.RequeueAfter).To(Equal(tc.want))
+			cond := meta.FindStatusCondition(conds, "DatabaseReady")
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal("post-aInProgress"))
+			g.Expect(cond.Message).To(Equal("Job keystone-post-a is running"))
+			g.Expect(installed).To(Equal("2026.1"), "the release is promoted before the post-sync Jobs")
+			g.Expect(rec.Events).NotTo(Receive())
+
+			g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "keystone-post-a", Namespace: flowNamespace}, &batchv1.Job{})).To(Succeed())
+			err = c.Get(context.Background(), client.ObjectKey{Name: "keystone-post-b", Namespace: flowNamespace}, &batchv1.Job{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the second entry waits for the first")
+		})
+	}
+}
+
+// TestReconcileSyncJobs_postSyncJobAdvancesToNextEntry pins the pass after the
+// first post-sync Job completed: the second entry's Job is created, the
+// condition carries that entry's InProgressReason, the pass requeues at that
+// entry's interval, and no event is emitted.
+func TestReconcileSyncJobs_postSyncJobAdvancesToNextEntry(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var calls []string
+	rec := record.NewFakeRecorder(10)
+	a := postJob("post-a")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append(completedSyncObjects(owner), completedJob(a.Name, job.PodSpecHash(&a.Spec.Template)))...).
+		Build()
+
+	p := syncParams(c, s, owner, &conds, rec, nil, &calls)
+	p.PostSyncJobs = []PostSyncJob{postEntry("post-a", 5*time.Second), postEntry("post-b", 7*time.Second)}
+	res, err := ReconcileSyncJobs(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(7 * time.Second))
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("post-bInProgress"))
+	g.Expect(cond.Message).To(Equal("Job keystone-post-b is running"))
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "keystone-post-b", Namespace: flowNamespace}, &batchv1.Job{})).To(Succeed())
+	g.Expect(rec.Events).NotTo(Receive())
+}
+
+// TestReconcileSyncJobs_postSyncJobFailed pins a post-sync Job that exhausted
+// its backoff limit: the entry's FailedReason, one Warning event, and an error
+// that wraps job.ErrJobFailed.
+func TestReconcileSyncJobs_postSyncJobFailed(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var calls []string
+	rec := record.NewFakeRecorder(10)
+	installed := ""
+	a := postJob("post-a")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append(completedSyncObjects(owner), failedJob(a.Name, job.PodSpecHash(&a.Spec.Template)))...).
+		Build()
+
+	p := syncParams(c, s, owner, &conds, rec, &installed, &calls)
+	p.PostSyncJobs = []PostSyncJob{postEntry("post-a", 5*time.Second)}
+	res, err := ReconcileSyncJobs(context.Background(), p)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(errors.Is(err, job.ErrJobFailed)).To(BeTrue())
+	g.Expect(err.Error()).To(HavePrefix("running Job keystone-post-a: "))
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("post-aFailed"))
+	g.Expect(cond.Message).To(HavePrefix("Job keystone-post-a failed: "))
+	g.Expect(installed).To(Equal("2026.1"))
+	g.Expect(rec.Events).To(Receive(HavePrefix("Warning post-aFailed Job keystone-post-a failed: ")))
+	g.Expect(rec.Events).NotTo(Receive())
+}
+
+// TestReconcileSyncJobs_postSyncJobCreateRejected pins a post-sync Job the API
+// server refuses: the entry's FailedReason and the wrapped client error.
+func TestReconcileSyncJobs_postSyncJobCreateRejected(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var calls []string
+	rec := record.NewFakeRecorder(10)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(completedSyncObjects(owner)...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if obj.GetName() == "keystone-post-a" {
+					return apierrors.NewInvalid(
+						schema.GroupKind{Group: "batch", Kind: "Job"},
+						obj.GetName(),
+						field.ErrorList{field.TooLong(field.NewPath("metadata", "name"), obj.GetName(), 63)},
+					)
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+		}).Build()
+
+	p := syncParams(c, s, owner, &conds, rec, nil, &calls)
+	p.PostSyncJobs = []PostSyncJob{postEntry("post-a", 5*time.Second)}
+	_, err := ReconcileSyncJobs(context.Background(), p)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	g.Expect(err.Error()).To(ContainSubstring("running Job keystone-post-a: creating Job " + flowNamespace + "/keystone-post-a:"))
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("post-aFailed"))
+	g.Expect(rec.Events).To(Receive(ContainSubstring("Warning post-aFailed")))
+}
+
+// TestReconcileSyncJobs_postSyncJobsComplete pins the move into
+// DatabaseSynced once every post-sync Job has completed: one Normal event on
+// the pass that leaves the last entry's InProgressReason, none on the next.
+func TestReconcileSyncJobs_postSyncJobsComplete(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	conds := []metav1.Condition{{
+		Type:   "DatabaseReady",
+		Status: metav1.ConditionFalse,
+		Reason: "post-bInProgress",
+	}}
+	var calls []string
+	rec := record.NewFakeRecorder(10)
+	a, b := postJob("post-a"), postJob("post-b")
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append(completedSyncObjects(owner),
+			completedJob(a.Name, job.PodSpecHash(&a.Spec.Template)),
+			completedJob(b.Name, job.PodSpecHash(&b.Spec.Template)),
+		)...).Build()
+
+	p := syncParams(c, s, owner, &conds, rec, nil, &calls)
+	p.PostSyncJobs = []PostSyncJob{postEntry("post-a", 5*time.Second), postEntry("post-b", 5*time.Second)}
+	res, err := ReconcileSyncJobs(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	cond := meta.FindStatusCondition(conds, "DatabaseReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(ReasonDatabaseSynced))
+	g.Expect(rec.Events).To(Receive(ContainSubstring("Normal " + ReasonDatabaseSynced)))
+	g.Expect(rec.Events).NotTo(Receive())
+
+	res, err = ReconcileSyncJobs(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(rec.Events).NotTo(Receive(), "a steady pass emits no second DatabaseSynced")
+}
+
+// TestReconcileSyncJobs_postSyncJobWithoutJob pins the guard on an entry that
+// carries no Job: an error that names the entry, and nothing created.
+func TestReconcileSyncJobs_postSyncJobWithoutJob(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	var calls []string
+	c := completedSyncClient(s, owner)
+
+	p := syncParams(c, s, owner, &conds, nil, nil, &calls)
+	p.PostSyncJobs = []PostSyncJob{{InProgressReason: "AInProgress", FailedReason: "AFailed"}}
+	_, err := ReconcileSyncJobs(context.Background(), p)
+	g.Expect(err).To(MatchError("post-sync job 0 has no Job"))
+
+	var jobs batchv1.JobList
+	g.Expect(c.List(context.Background(), &jobs)).To(Succeed())
+	names := make([]string, 0, len(jobs.Items))
+	for i := range jobs.Items {
+		names = append(names, jobs.Items[i].Name)
+	}
+	g.Expect(names).To(ConsistOf("keystone-db-sync", "keystone-schema-check"))
+}
+
+// TestReconcileSyncJobs_postSyncJobSkipsRecordTerminal pins that the terminal
+// callback stays a db-sync metric: a completed or failed post-sync Job is never
+// handed to it.
+func TestReconcileSyncJobs_postSyncJobSkipsRecordTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		post    func(name, hash string) *batchv1.Job
+		wantErr bool
+	}{
+		{name: "completed", post: completedJob},
+		{name: "failed", post: failedJob, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			s := flowScheme()
+			owner := flowOwner()
+			var conds []metav1.Condition
+			var calls []string
+			// The barbican shape: db-sync without a schema check.
+			jobs := keystoneJobSet()
+			jobs.SchemaCheckCommand = nil
+			a := postJob("post-a")
+			c := fake.NewClientBuilder().WithScheme(s).
+				WithObjects(owner,
+					completedJob("keystone-db-sync", job.PodSpecHash(&SyncJob(jobs).Spec.Template)),
+					tc.post(a.Name, job.PodSpecHash(&a.Spec.Template)),
+				).Build()
+
+			p := syncParams(c, s, owner, &conds, nil, nil, &calls)
+			p.Jobs = jobs
+			p.PostSyncJobs = []PostSyncJob{postEntry("post-a", 5*time.Second)}
+			_, err := ReconcileSyncJobs(context.Background(), p)
+			if tc.wantErr {
+				g.Expect(err).To(HaveOccurred())
+			} else {
+				g.Expect(err).NotTo(HaveOccurred())
+			}
+			g.Expect(calls).To(Equal([]string{"db-sync"}))
+		})
+	}
 }
