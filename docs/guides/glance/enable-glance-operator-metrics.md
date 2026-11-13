@@ -42,9 +42,13 @@ Follow that tutorial through to its final **Verify** step, so the glance-operato
 (namespace `glance-system`) is running with kube-prometheus-stack scraping it.
 :::
 
-For a non-kind installation, install the prometheus-operator CRDs and configure
-Prometheus's `serviceMonitorSelector` to match the ServiceMonitor labels and
-`serviceMonitorNamespaceSelector` to include `glance-system`.
+Run the commands from a workstation with `kubectl`, `curl`, and `jq`; use
+`helm` for the direct Helm path. For a non-kind installation, install the
+prometheus-operator CRDs and configure Prometheus's `serviceMonitorSelector`
+to match the ServiceMonitor labels and `serviceMonitorNamespaceSelector` to
+include `glance-system`. The chart labels the ServiceMonitor with
+`app.kubernetes.io/name=glance-operator`; a selector restricted to a `release`
+label will not match it.
 
 ## Step 1 — Enable the ServiceMonitor
 
@@ -78,7 +82,8 @@ kubectl -n glance-system get servicemonitor \
 ```
 
 The chart renders a `ServiceMonitor` scraping the operator's metrics Service
-on the `metrics` port over HTTP with the shared operator-library labels.
+on the `metrics` port over HTTP with the shared operator-library labels. The
+scrape interval is 30 seconds by default (`monitoring.serviceMonitor.interval`).
 
 ::: details Helm-managed installations (non-Flux)
 If you installed the operator directly with Helm (not through Flux), set the
@@ -105,9 +110,11 @@ credentials.
 
 The reference dashboard ships in-repo at
 `operators/glance/dashboards/glance-operator.json` (uid
-`glance-operator`): per-sub-reconciler duration quantiles, error rate per
-condition type, and the controller-runtime end-to-end reconcile histogram.
-Import it via the Grafana UI or provision it from a ConfigMap.
+`glance-operator`). Its panels show per-sub-reconciler duration quantiles,
+error rate per condition type, db-sync duration and failure rate, and the
+controller-runtime end-to-end reconcile histogram. The dashboard does not
+chart the per-CR db-purge metrics listed above. Import it via the Grafana UI
+or provision it from a ConfigMap.
 
 ## Step 3: Verify the target {#step-3-—-verify-the-target}
 
@@ -117,15 +124,20 @@ Keep the port-forward running in a separate terminal:
 kubectl -n monitoring port-forward svc/prometheus-operated 9090:9090
 ```
 
-For an existing Prometheus, replace `monitoring` with its namespace.
-In another terminal, query the targets:
+For an existing Prometheus, replace `monitoring` with its namespace and
+`prometheus-operated` and the remote port with the Service and port that expose
+its HTTP API. Keep the local port at `9090` so the URL below still works.
+After the ServiceMonitor has had a scrape interval to be discovered, query the
+targets from another terminal:
 
 ```bash
-curl -s 'http://localhost:9090/api/v1/targets' \
-  | jq '.data.activeTargets[] | select(.labels.namespace == "glance-system") | .health'
+curl -fsS 'http://localhost:9090/api/v1/targets?state=active' \
+  | jq '.data.activeTargets[] | select(.labels.namespace == "glance-system") | {health, lastScrape, lastError}'
 ```
 
-Expect `"up"`. Then confirm the series exist:
+Expect `health` to be `"up"`. If no target appears, check that Prometheus
+selects the ServiceMonitor; if `health` is `"down"`, inspect `lastError`.
+Then confirm the series exist:
 
 ```bash
 curl -s 'http://localhost:9090/api/v1/query?query=glance_operator_reconcile_duration_seconds_count' \
@@ -137,13 +149,11 @@ Glance CR since the scrape began.
 
 ## Tested by
 
-The chart's ServiceMonitor render-and-remove lifecycle is asserted on the CI
-e2e kind cluster by the chainsaw suite below (install with
-`monitoring.serviceMonitor.enabled=true`, assert the `ServiceMonitor` shape,
-uninstall, assert removal). The `WITH_PROMETHEUS=true` kind bring-up in
-Step 1 provides a live Prometheus that discovers the ServiceMonitor and
-marks the target Up. This suite checks the chart lifecycle on a cluster
-with only the prometheus-operator CRDs installed.
+The Chainsaw suite below asserts the chart's ServiceMonitor render-and-remove
+lifecycle on the CI e2e kind cluster. It checks the resource shape, labels,
+selector, endpoint, and removal, but does not run Prometheus. The
+`WITH_PROMETHEUS=true` devstack in Step 1 provides a live Prometheus for the
+scrape-target check in Step 3.
 
 ```bash
 chainsaw test --test-dir tests/e2e/glance-operator/metrics
