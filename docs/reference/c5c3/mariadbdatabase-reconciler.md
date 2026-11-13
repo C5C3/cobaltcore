@@ -174,11 +174,19 @@ deployment re-runs `setup-database-tenant.sh` the role write in step 4 fails.
 
 `deliverCredentials` writes `DeliveryReady` in six steps:
 
-1. The address is resolved for the order's cluster (`mariaDBDatabaseEndpoint`):
-   the in-cluster MariaDB Service on Keystone's cluster, the ControlPlane's
-   `spec.infrastructure.publishedDatabaseEndpoint` elsewhere. Without one the
-   step reports `DatabaseNotPublished` and writes nothing. A value that is not
-   `host:port` with a port from 1 to 65535 reports `DeliveryError`.
+1. The client of Keystone's cluster is resolved first; an unreachable cluster
+   reports `TargetClusterUnavailable` and requeues. The provisioning step
+   resolves the same client earlier in the pass, so this only shows when the
+   step runs on its own. Then the address is resolved for the order's cluster
+   (`mariaDBDatabaseEndpoint`). On Keystone's cluster it is the route
+   `database.ResolveEndpoint` picks through that client, the one the OpenStack
+   services connect to ([Managed database routes](../keystone/keystone-crd.md#managed-database-routes)).
+   A read error there fails the pass with `resolving database endpoint` and
+   reports `DeliveryError`. Elsewhere it is the ControlPlane's
+   `spec.infrastructure.publishedDatabaseEndpoint`, read without a request.
+   Without one the step reports `DatabaseNotPublished` and writes nothing. A
+   value that is not `host:port` with a port from 1 to 65535 reports
+   `DeliveryError`.
 2. When the shared database's `tls` block is enabled, `ca.crt` is read from its
    CA bundle Secret in Keystone's namespace (`WaitingForCABundle`).
 3. The Secret ESO wrote, `<prefix>credentials` in the ControlPlane's
@@ -194,7 +202,12 @@ deployment re-runs `setup-database-tenant.sh` the role write in step 4 fails.
 6. Once the apply response carries the current `username` and `password`,
    `status.host`, `status.port`, `status.credentialsRefreshedAt`,
    `status.secretName` and `status.secretKeys` are set and `DeliveryReady`
-   reads `Delivered`. A rewrite that changes the username logs
+   reads `Delivered`. The order reconciler records no events, so when the
+   MariaDB names a MaxScale the address does not go through, the `Delivered`
+   message ends with `MariaDB <namespace>/<name> names MaxScale <maxscale>,
+   which the operator does not route through (<reason>).`, the reason one of
+   the four the Keystone CRD reference lists. A rewrite that changes the
+   username logs
    `delivered a refreshed database credential` with the order, the username
    and the refresh time, so the 24-hour cadence can be followed in the log.
 
@@ -207,9 +220,10 @@ labels map the event back to the order, and the delivered Secret follows.
 A converged pass costs a GET of the ControlPlane, the MariaDB, the Database
 list, the Database, the client-certificate Secret, the ExternalSecret and two
 Secrets, one OpenBao login, one role read and one `revoke-self`, plus the
-applies the field manager finds unchanged. A converged order on the management
-cluster waits for an event, so that is one login per change; an order on a
-target cluster logs in once every 10 minutes.
+applies the field manager finds unchanged. An order on Keystone's cluster adds
+a second cached GET of the MariaDB, and one of the MaxScale it names. A
+converged order on the management cluster waits for an event, so that is one
+login per change; an order on a target cluster logs in once every 10 minutes.
 
 ## Child Naming and Placement
 

@@ -283,6 +283,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `c5c3.io` | `secretaggregates`, `sizingprofiles` | get, list, watch |
 | `scheduling.k8s.io` | `priorityclasses` | get |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch, create, update, patch, delete |
+| `k8s.mariadb.com` | `maxscales` | get, list, watch |
 | `memcached.c5c3.io` | `memcacheds` | get, list, watch, create, update, patch, delete |
 | `rabbitmq.com` | `rabbitmqclusters` | get, list, watch, create, update, patch, delete |
 | `keystone.openstack.c5c3.io` | `keystones` | get, list, watch, create, update, patch, delete |
