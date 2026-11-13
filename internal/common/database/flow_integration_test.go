@@ -302,3 +302,105 @@ func TestIntegration_ReconcileConnectionSecret(t *testing.T) {
 	g.Expect(derived.Data).To(HaveKey(ConnectionSecretKey))
 	g.Expect(derived.OwnerReferences).To(HaveLen(1))
 }
+
+// TestIntegration_ReconcileConnectionSecret_routeFollowsSpec proves that the
+// next pass of the flow moves the derived Secret's host when the spec of the
+// MariaDB or the MaxScale changes. It reads every object back first, so a fake
+// CRD that prunes galera, maxScaleRef or the MaxScale services fails the test.
+func TestIntegration_ReconcileConnectionSecret_routeFollowsSpec(t *testing.T) {
+	envtestutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := envtestutil.SetupEnvTest(t)
+	scheme := envtestutil.SharedScheme()
+
+	// setup creates the namespace, the owner and the upstream Secret, and
+	// returns a pass of the flow that yields the derived "connection" value.
+	setup := func(g Gomega, namespace string) func() string {
+		g.Expect(c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
+		owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "conn-owner", Namespace: namespace}}
+		g.Expect(c.Create(ctx, owner)).To(Succeed())
+		g.Expect(c.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: namespace},
+			Data:       map[string][]byte{"password": []byte("s3cr3t")},
+		})).To(Succeed())
+		spec := &commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "mariadb"},
+			Database:   "keystone",
+			SecretRef:  commonv1.SecretRefSpec{Name: "keystone-db"},
+		}
+		return func() string {
+			var conds []metav1.Condition
+			_, digest, err := ReconcileConnectionSecret(ctx, ConnectionSecretFlowParams{
+				Client: c, Scheme: scheme, Owner: owner,
+				InstanceName: "keystone", Namespace: namespace,
+				Database: spec, TLSMountPath: "/etc/keystone/db-tls/",
+				Conditions: &conds, Generation: 1, ConditionType: "SecretsReady",
+				RequeueAfter: time.Second,
+			})
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(digest).NotTo(BeEmpty())
+			derived := &corev1.Secret{}
+			g.Expect(c.Get(ctx, client.ObjectKey{Name: "keystone-db-connection", Namespace: namespace}, derived)).To(Succeed())
+			return string(derived.Data[ConnectionSecretKey])
+		}
+	}
+
+	t.Run("a MaxScale that stops being a single writer is bypassed", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := "test-flow-route-maxscale"
+		pass := setup(g, ns)
+
+		mdb := &mariadbv1alpha1.MariaDB{
+			ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns},
+			Spec: mariadbv1alpha1.MariaDBSpec{
+				Galera:      &mariadbv1alpha1.Galera{Enabled: true},
+				MaxScaleRef: &mariadbv1alpha1.ObjectReference{Name: "mxs"},
+			},
+		}
+		g.Expect(c.Create(ctx, mdb)).To(Succeed())
+		mxs := &mariadbv1alpha1.MaxScale{
+			ObjectMeta: metav1.ObjectMeta{Name: "mxs", Namespace: ns},
+			Spec: mariadbv1alpha1.MaxScaleSpec{
+				MariaDBRef: &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: "mariadb"}},
+				Services:   []mariadbv1alpha1.MaxScaleService{singleWriter()},
+			},
+		}
+		g.Expect(c.Create(ctx, mxs)).To(Succeed())
+
+		stored := &mariadbv1alpha1.MariaDB{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(mdb), stored)).To(Succeed())
+		g.Expect(stored.IsGaleraEnabled()).To(BeTrue(), "the fake MariaDB CRD must keep spec.galera")
+		g.Expect(stored.Spec.MaxScaleRef).NotTo(BeNil(), "the fake MariaDB CRD must keep spec.maxScaleRef")
+		storedMxs := &mariadbv1alpha1.MaxScale{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(mxs), storedMxs)).To(Succeed())
+		g.Expect(storedMxs.Spec.Services).To(HaveLen(1), "the fake MaxScale CRD must keep spec.services")
+		g.Expect(storedMxs.Spec.Services[0].Params).To(HaveKeyWithValue("max_slave_connections", "0"))
+		g.Expect(storedMxs.Spec.Services[0].Listener.Port).To(Equal(int32(3306)))
+
+		g.Expect(pass()).To(ContainSubstring("@mxs." + ns + ".svc:3306/"))
+
+		storedMxs.Spec.Services[0].Params["max_slave_connections"] = "1"
+		g.Expect(c.Update(ctx, storedMxs)).To(Succeed())
+
+		g.Expect(pass()).To(ContainSubstring("@mariadb-primary." + ns + ".svc:3306/"))
+	})
+
+	t.Run("a MariaDB that turns on galera moves to the primary Service", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := "test-flow-route-galera"
+		pass := setup(g, ns)
+
+		mdb := &mariadbv1alpha1.MariaDB{ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: ns}}
+		g.Expect(c.Create(ctx, mdb)).To(Succeed())
+
+		g.Expect(pass()).To(ContainSubstring("@mariadb." + ns + ".svc:3306/"))
+
+		mdb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: true}
+		g.Expect(c.Update(ctx, mdb)).To(Succeed())
+		stored := &mariadbv1alpha1.MariaDB{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(mdb), stored)).To(Succeed())
+		g.Expect(stored.IsGaleraEnabled()).To(BeTrue(), "the fake MariaDB CRD must keep spec.galera")
+
+		g.Expect(pass()).To(ContainSubstring("@mariadb-primary." + ns + ".svc:3306/"))
+	})
+}

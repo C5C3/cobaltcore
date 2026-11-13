@@ -14,6 +14,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -33,11 +34,13 @@ import (
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
-// configTestScheme returns a runtime.Scheme with core and Keystone types
-// registered for reconcileConfig tests.
+// configTestScheme returns a runtime.Scheme with core, MariaDB and Keystone
+// types registered for reconcileConfig and connection-Secret tests; the
+// connection flow reads the MariaDB a managed spec names.
 func configTestScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
+	_ = mariadbv1alpha1.AddToScheme(s)
 	_ = keystonev1alpha1.AddToScheme(s)
 	return s
 }

@@ -16,8 +16,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/multicluster"
@@ -42,6 +44,11 @@ const (
 	// missing, so a derived Secret is never materialised with partial
 	// credentials.
 	ReasonWaitingForDBCredentials = "WaitingForDBCredentials"
+
+	// ReasonDatabaseMaxScaleBypassed is the Warning event reason recorded when
+	// the MariaDB names a MaxScale in spec.maxScaleRef that the connection does
+	// not go through (see ResolveEndpoint).
+	ReasonDatabaseMaxScaleBypassed = "DatabaseMaxScaleBypassed"
 
 	// TLSCAFileName / TLSCertFileName / TLSKeyFileName are the file names the
 	// db-tls keypair is projected under in-pod. They are the default keys
@@ -197,6 +204,9 @@ func TLSFilePaths(mountPath string) TLSPaths {
 type ConnectionSecretFlowParams struct {
 	Client client.Client
 	Scheme *runtime.Scheme
+	// Recorder receives the DatabaseMaxScaleBypassed Warning; nil records
+	// nothing.
+	Recorder record.EventRecorder
 	// Owner is the CR that owns the derived Secret.
 	Owner client.Object
 	// InstanceName drives the derived Secret name and the Static-mode username.
@@ -226,10 +236,17 @@ type ConnectionSecretFlowParams struct {
 // readiness condition False with reason WaitingForDBCredentials and requeues; it
 // never writes a derived Secret with empty credentials.
 //
+// The host comes from ResolveEndpoint: a single-writer MaxScale, the
+// <name>-primary Service of a Galera or replication MariaDB, or the MariaDB's
+// own Service. When the MariaDB names a MaxScale the connection does not go
+// through, the flow records a DatabaseMaxScaleBypassed Warning on the owner.
+// A resolver error returns before the derived Secret is read or written.
+//
 // It returns the SHA-256 digest of the assembled DSN so the deployment step can
-// roll the Pods when a Dynamic (engine-issued) credential rotates without
-// reading the Secret content itself; the digest is empty on the requeue/error
-// paths where no derived Secret was materialised.
+// roll the Pods when a Dynamic (engine-issued) credential rotates or the
+// database route changes, without reading the Secret content itself; the
+// digest is empty on the requeue/error paths where no derived Secret was
+// materialised.
 func ReconcileConnectionSecret(ctx context.Context, p ConnectionSecretFlowParams) (ctrl.Result, string, error) {
 	upstreamKey := client.ObjectKey{
 		Namespace: p.Namespace,
@@ -284,6 +301,15 @@ func ReconcileConnectionSecret(ctx context.Context, p ConnectionSecretFlowParams
 	}
 	password := string(pw)
 
+	ep, err := ResolveEndpoint(ctx, p.Client, p.Database, p.Namespace)
+	if err != nil {
+		return ctrl.Result{}, "", fmt.Errorf("resolving database endpoint: %w", err)
+	}
+	if ep.BypassReason != "" && p.Recorder != nil {
+		p.Recorder.Eventf(p.Owner, corev1.EventTypeWarning, ReasonDatabaseMaxScaleBypassed, "%s; connecting to %s",
+			ep.BypassMessage(p.Namespace, p.Database.ClusterRef.Name), ep.HostPort())
+	}
+
 	// Build the query parameters via url.Values so the optional ssl_* keys
 	// compose cleanly with the always-present charset=utf8. url.Values.Encode()
 	// sorts keys lexically, yielding a deterministic, stable DSN across
@@ -297,15 +323,19 @@ func ReconcileConnectionSecret(ctx context.Context, p ConnectionSecretFlowParams
 	// preserved in the ssl_* query values so alembic's ConfigParser never sees
 	// "%" interpolation syntax) and returns its rollout digest.
 	connStr, digest := BuildDSN(username, password,
-		ResolveHost(p.Database, p.Namespace), p.Database.Database, query)
+		ep.HostPort(), p.Database.Database, query)
 
 	derivedKey := client.ObjectKey{
 		Namespace: p.Namespace,
 		Name:      ConnectionSecretName(p.InstanceName),
 	}
+	logResolved := func() {
+		log.FromContext(ctx).Info("database endpoint resolved",
+			"route", string(ep.Route), "host", ep.HostPort(), "secret", derivedKey.String())
+	}
 
 	existing := &corev1.Secret{}
-	err := p.Client.Get(ctx, derivedKey, existing)
+	err = p.Client.Get(ctx, derivedKey, existing)
 	if apierrors.IsNotFound(err) {
 		derived := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -325,6 +355,7 @@ func ReconcileConnectionSecret(ctx context.Context, p ConnectionSecretFlowParams
 			return ctrl.Result{}, "", fmt.Errorf("creating derived Secret %s/%s: %w",
 				derived.Namespace, derived.Name, err)
 		}
+		logResolved()
 		return ctrl.Result{}, digest, nil
 	}
 	if err != nil {
@@ -343,6 +374,7 @@ func ReconcileConnectionSecret(ctx context.Context, p ConnectionSecretFlowParams
 			return ctrl.Result{}, "", fmt.Errorf("updating derived Secret %s/%s: %w",
 				existing.Namespace, existing.Name, err)
 		}
+		logResolved()
 	}
 
 	return ctrl.Result{}, digest, nil

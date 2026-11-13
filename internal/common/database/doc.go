@@ -7,9 +7,10 @@
 //
 // It provides both the low-level primitives — ensuring Database, User, and
 // Grant CRs exist (EnsureDatabase/EnsureDatabaseUser), assembling the pymysql
-// DSN (BuildDSN/Digest, SSLParams/AppendTLSParams), and resolving host/port/
-// username from the shared DatabaseSpec — and the reconcile flows layered on
-// top that a database-backed service operator wires into its reconcile loop:
+// DSN (BuildDSN/Digest, SSLParams/AppendTLSParams), and resolving the
+// endpoint (ResolveEndpoint), port and username from the shared DatabaseSpec —
+// and the reconcile flows layered on top that a database-backed service
+// operator wires into its reconcile loop:
 //
 //   - ReconcileProvision drives the managed/brownfield provisioning branch: the
 //     MariaDB cluster-Ready gate, the Database/User/Grant ensure, and the
@@ -23,8 +24,10 @@
 //     shared by keystone and glance: it detects the upgrade, runs the phased
 //     migration Jobs, and aborts a reverted upgrade.
 //   - ReconcileConnectionSecret reads the ESO-synced credentials Secret,
-//     assembles the DSN, materialises the derived <name>-db-connection Secret,
-//     and returns the digest that rolls the pods on a credential rotation.
+//     resolves the endpoint through ResolveEndpoint (a single-writer MaxScale,
+//     <name>-primary, or <name>), assembles the DSN, materialises the derived
+//     <name>-db-connection Secret, and returns the digest that rolls the pods
+//     on a credential rotation or a route change.
 //   - FinalizeResources and HasLiveResources drive the finalizer cleanup of the
 //     owned MariaDB CRs.
 //

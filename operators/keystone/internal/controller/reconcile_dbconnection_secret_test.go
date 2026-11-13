@@ -13,6 +13,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -159,6 +160,41 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Managed(t *test
 	g.Expect(derived.Data).To(HaveLen(1))
 	g.Expect(string(derived.Data[database.ConnectionSecretKey])).To(Equal(
 		"mysql+pymysql://test-keystone:secret123@mariadb-cluster.default.svc:3306/keystone?charset=utf8",
+	))
+}
+
+// TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_ManagedGalera
+// verifies that a Galera MariaDB puts its <name>-primary Service into the DSN,
+// so every Keystone replica writes on the one member that Service selects.
+func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_ManagedGalera(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := configTestScheme()
+	ctx := context.Background()
+
+	ks := configTestKeystone()
+	ks.Spec.Database = commonv1.DatabaseSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "mariadb-cluster"},
+		Database:   "keystone",
+		SecretRef:  commonv1.SecretRefSpec{Name: "keystone-db-credentials"},
+	}
+	galera := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "mariadb-cluster", Namespace: "default"},
+		Spec:       mariadbv1alpha1.MariaDBSpec{Galera: &mariadbv1alpha1.Galera{Enabled: true}},
+	}
+	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ignored", "secret123")
+	r := newConfigTestReconciler(s, ks, galera, upstream)
+
+	_, digest, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(digest).NotTo(BeEmpty())
+
+	derived := &corev1.Secret{}
+	g.Expect(r.Get(ctx, client.ObjectKey{
+		Namespace: "default",
+		Name:      derivedDBConnectionSecretName(ks.Name),
+	}, derived)).To(Succeed())
+	g.Expect(string(derived.Data[database.ConnectionSecretKey])).To(Equal(
+		"mysql+pymysql://test-keystone:secret123@mariadb-cluster-primary.default.svc:3306/keystone?charset=utf8",
 	))
 }
 
