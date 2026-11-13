@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
@@ -1003,11 +1004,24 @@ func TestServiceBarbicanSpecDeepCopy(t *testing.T) {
 			Database: &commonv1.DatabaseSpec{Database: "barbican"},
 		},
 		Namespace: &ServiceNamespaceSpec{Name: "barbican"},
+		DBClean: &ServiceBarbicanDBCleanSpec{
+			RetentionDays:             ptr.To(int32(30)),
+			Schedule:                  "@weekly",
+			SoftDeleteExpiredSecrets:  ptr.To(false),
+			CleanUnassociatedProjects: ptr.To(true),
+			Suspend:                   true,
+		},
 	}
 
 	clone := spec.DeepCopy()
 	if clone.Image == spec.Image {
 		t.Errorf("DeepCopy did not allocate a new *ImageSpec for Image")
+	}
+	if clone.DBClean == spec.DBClean {
+		t.Errorf("DeepCopy did not allocate a new *ServiceBarbicanDBCleanSpec for DBClean")
+	}
+	if clone.DBClean.RetentionDays == spec.DBClean.RetentionDays {
+		t.Errorf("DeepCopy did not allocate a new *int32 for DBClean.RetentionDays")
 	}
 	if clone.SecretStore.External == spec.SecretStore.External {
 		t.Errorf("DeepCopy did not allocate a new *BarbicanExternalSecretStoreSpec")

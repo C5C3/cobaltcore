@@ -975,6 +975,49 @@ spec:
                         - Static
                         - Dynamic
                         type: string
+                      dbClean:
+                        description: |-
+                          DBClean tunes the recurring clean-up of the soft-deleted rows, projected
+                          onto the Barbican child's spec.dbClean. Omitting it (the default) leaves
+                          every field at the barbican-operator's own resolution, which still runs
+                          the clean-up. See ServiceBarbicanDBCleanSpec.
+                        properties:
+                          cleanUnassociatedProjects:
+                            description: |-
+                              CleanUnassociatedProjects adds the --clean-unassociated-projects pass,
+                              which deletes the project rows that own no secret, container or order,
+                              together with their quota records. When unset the barbican-operator
+                              resolves false.
+                            type: boolean
+                          retentionDays:
+                            description: |-
+                              RetentionDays is how long a soft-deleted row survives before the clean-up
+                              hard-deletes it, the --min-days argument. When unset the barbican-operator
+                              resolves 90 days. Lowering it applies retroactively at the next run, and
+                              an update that lowers it raises an admission warning.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          schedule:
+                            description: |-
+                              Schedule is the standard cron expression the clean-up CronJob runs on.
+                              When empty the barbican-operator resolves "1 0 * * *". The value is
+                              checked by the validating webhook rather than by a CRD pattern: the
+                              accepted grammar includes descriptors such as @daily, which no regex
+                              expresses without also rejecting valid expressions.
+                            type: string
+                          softDeleteExpiredSecrets:
+                            description: |-
+                              SoftDeleteExpiredSecrets adds the --soft-delete-expired-secrets pass,
+                              which soft-deletes the secrets whose expiration has passed so the same
+                              run can purge them under the retention window. When unset the
+                              barbican-operator resolves true.
+                            type: boolean
+                          suspend:
+                            description: Suspend pauses the clean-up CronJob without
+                              deleting it.
+                            type: boolean
+                        type: object
                       dedicatedBackingServices:
                         description: |-
                           DedicatedBackingServices opts the Barbican service out of the

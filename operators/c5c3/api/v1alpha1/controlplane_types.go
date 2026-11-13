@@ -1515,6 +1515,13 @@ type ServiceBarbicanSpec struct {
 	// +kubebuilder:validation:Enum=Static;Dynamic
 	DatabaseCredentialsMode string `json:"databaseCredentialsMode,omitempty"`
 
+	// DBClean tunes the recurring clean-up of the soft-deleted rows, projected
+	// onto the Barbican child's spec.dbClean. Omitting it (the default) leaves
+	// every field at the barbican-operator's own resolution, which still runs
+	// the clean-up. See ServiceBarbicanDBCleanSpec.
+	// +optional
+	DBClean *ServiceBarbicanDBCleanSpec `json:"dbClean,omitempty"`
+
 	// ExtraConfig is a free-form INI block for the Barbican service. It is merged
 	// key by key with spec.globalExtraConfig — sections unioned, this per-service
 	// value winning per key — and the merged result is projected onto the
@@ -1559,6 +1566,53 @@ type ServiceBarbicanSpec struct {
 	// by the validating webhook. See ServiceKeystoneSpec.TargetClusterRef.
 	// +optional
 	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
+}
+
+// ServiceBarbicanDBCleanSpec tunes the recurring barbican-manage db clean run
+// of the Barbican service. Barbican deletes a secret, order or container by
+// flagging its row, so the tables keep every row ever deleted until the
+// clean-up hard-deletes the ones older than the retention window.
+//
+// It is a LOCAL COPY of the Barbican CRD's DBCleanSpec for the reason
+// ServiceNovaDBArchiveSpec is one: the api package carries the shapes it
+// projects rather than importing them into its types. A field left unset
+// resolves at the barbican-operator's defaults at reconcile time, and a nil
+// block resolves like an empty struct, so the clean-up runs on every projected
+// Barbican.
+type ServiceBarbicanDBCleanSpec struct {
+	// RetentionDays is how long a soft-deleted row survives before the clean-up
+	// hard-deletes it, the --min-days argument. When unset the barbican-operator
+	// resolves 90 days. Lowering it applies retroactively at the next run, and
+	// an update that lowers it raises an admission warning.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	RetentionDays *int32 `json:"retentionDays,omitempty"`
+
+	// Schedule is the standard cron expression the clean-up CronJob runs on.
+	// When empty the barbican-operator resolves "1 0 * * *". The value is
+	// checked by the validating webhook rather than by a CRD pattern: the
+	// accepted grammar includes descriptors such as @daily, which no regex
+	// expresses without also rejecting valid expressions.
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+
+	// SoftDeleteExpiredSecrets adds the --soft-delete-expired-secrets pass,
+	// which soft-deletes the secrets whose expiration has passed so the same
+	// run can purge them under the retention window. When unset the
+	// barbican-operator resolves true.
+	// +optional
+	SoftDeleteExpiredSecrets *bool `json:"softDeleteExpiredSecrets,omitempty"`
+
+	// CleanUnassociatedProjects adds the --clean-unassociated-projects pass,
+	// which deletes the project rows that own no secret, container or order,
+	// together with their quota records. When unset the barbican-operator
+	// resolves false.
+	// +optional
+	CleanUnassociatedProjects *bool `json:"cleanUnassociatedProjects,omitempty"`
+
+	// Suspend pauses the clean-up CronJob without deleting it.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // ServiceBarbicanSecretStoreSpec selects the secret-store backend of the

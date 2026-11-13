@@ -992,7 +992,8 @@ func TestReconcileBarbican_OpenBaoInstanceNotAvailableDefersStoreAndChild(t *tes
 // barbican schema, the operator-owned secretRef, and the Dynamic mode of the
 // managed shared database), the top-down Keystone endpoint, the region, the
 // service user the registration child declares, the resolved ESO store ref, the
-// gateway, the default replicas, and the deliberately-unset apiServer/dbClean.
+// gateway, the default replicas, the unprojected apiServer, and the nil dbClean
+// of a ControlPlane that sets no services.barbican.dbClean.
 func TestReconcileBarbican_ProjectedChildFields(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := barbicanControlPlane()
@@ -1065,9 +1066,56 @@ func TestReconcileBarbican_ProjectedChildFields(t *testing.T) {
 
 	g.Expect(b.Spec.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas))
 	g.Expect(b.Spec.APIServer).To(BeNil(), "the child-side uWSGI defaults stay authoritative")
-	g.Expect(b.Spec.DBClean).To(BeNil(), "the clean-up knobs the operator resolves at reconcile time stay its own")
+	g.Expect(b.Spec.DBClean).To(BeNil(), "spec.dbClean stays nil while services.barbican.dbClean is unset")
 	g.Expect(metav1.IsControlledBy(b, cp)).To(BeTrue(),
 		"the projected Barbican must carry the ControlPlane controller owner reference")
+}
+
+// TestReconcileBarbican_DBCleanCopiedFieldByField pins the projection of
+// services.barbican.dbClean: every field arrives on the child's spec.dbClean
+// without aliasing the ControlPlane spec, clearing the block reverts the child
+// to the barbican-operator's own resolution, and an empty block projects an
+// empty block.
+func TestReconcileBarbican_DBCleanCopiedFieldByField(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican.DBClean = &c5c3v1alpha1.ServiceBarbicanDBCleanSpec{
+		RetentionDays:             ptr.To(int32(30)),
+		Schedule:                  "@weekly",
+		SoftDeleteExpiredSecrets:  ptr.To(false),
+		CleanUnassociatedProjects: ptr.To(true),
+		Suspend:                   true,
+	}
+	r := newBarbicanTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	b := getProjectedBarbican(t, r.Client, cp)
+	g.Expect(b.Spec.DBClean).To(Equal(&barbicanv1alpha1.DBCleanSpec{
+		RetentionDays:             ptr.To(int32(30)),
+		Schedule:                  "@weekly",
+		SoftDeleteExpiredSecrets:  ptr.To(false),
+		CleanUnassociatedProjects: ptr.To(true),
+		Suspend:                   true,
+	}))
+	g.Expect(b.Spec.DBClean.RetentionDays).NotTo(BeIdenticalTo(cp.Spec.Services.Barbican.DBClean.RetentionDays),
+		"the projected clean-up must not alias the ControlPlane spec")
+
+	cp.Spec.Services.Barbican.DBClean = nil
+	_, err = r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.DBClean).To(BeNil(),
+		"clearing the block reverts the child to the barbican-operator's own resolution")
+
+	empty := barbicanControlPlane()
+	empty.Spec.Services.Barbican.DBClean = &c5c3v1alpha1.ServiceBarbicanDBCleanSpec{}
+	r = newBarbicanTestReconciler(t, empty)
+	_, err = r.reconcileBarbican(ctx, empty)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedBarbican(t, r.Client, empty).Spec.DBClean).To(Equal(&barbicanv1alpha1.DBCleanSpec{}),
+		"an empty block projects an empty, non-nil block")
 }
 
 func TestReconcileBarbican_ImageOverrideWins(t *testing.T) {
