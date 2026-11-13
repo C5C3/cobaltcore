@@ -111,7 +111,9 @@ retention window. The block is resolved at reconcile time by `effectiveDBClean`
 (`operators/barbican/internal/controller/reconcile_dbclean.go`) and is left
 alone by the defaulting webhook (`barbican_webhook.go`), so a field left unset
 keeps tracking the operator default across upgrades instead of freezing today's
-value into the stored CR. A nil block resolves like an empty one.
+value into the stored CR. A nil block resolves like an empty one. A ControlPlane
+sets this block through
+[`spec.services.barbican.dbClean`](../c5c3/controlplane-crd.md#servicebarbicandbcleanspec).
 
 | Field | Type | Required | Resolved default | Description |
 | --- | --- | --- | --- | --- |

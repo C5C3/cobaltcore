@@ -715,9 +715,8 @@ reconciler (L2) **projects** it into a
 [`Barbican`](../barbican/barbican-crd.md) CR; the database, cache, and Keystone
 endpoint of that child are **derived** from the ControlPlane
 (`infrastructure.*` and the Keystone child's naming convention) rather than set
-here. `spec.apiServer` and `spec.dbClean` on the child are not projected, so the
-barbican operator's own uWSGI parameters and clean-up schedule stay
-authoritative.
+here. `spec.apiServer` on the child is not projected, so the barbican
+operator's own uWSGI parameters stay authoritative.
 
 The curated fields match the Placement ones plus
 [`secretStore`](#servicebarbicansecretstorespec), which no other service has.
@@ -735,6 +734,7 @@ fields carry per-field External-mode forbid-rules.
 | `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Barbican API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Barbican API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty and a usable DNS name, enforced at admission by the validating webhook. |
 | `publicEndpoint` | `string` | No | `""` | Externally routable Barbican endpoint URL (e.g. `https://barbican.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public key-manager catalog Endpoint, the URL every client resolves to store and read its secret material; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the Barbican API is served at the root and clients append the API path to the catalog URL), and be at most 512 characters; a single trailing slash is tolerated. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every call carries the caller's scoped Keystone token and the secret payload to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
 | `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Barbican on one mode while another service stays on the other. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Barbican declares a [dedicated](#barbicandedicatedbackingservicesspec) database (dedicated is `Static`-only; set `dedicatedBackingServices.database.credentialsMode` instead, see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
+| `dbClean` | [`*ServiceBarbicanDBCleanSpec`](#servicebarbicandbcleanspec) | No | `nil` (the barbican operator's own resolution, which still runs the clean-up) | Tunes the recurring clean-up of the soft-deleted rows, projected onto the Barbican child's `spec.dbClean`. An update that lowers the retention raises an admission warning. |
 | `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the Barbican service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Barbican child's `spec.extraConfig`. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block; the always-rejected owned keys are the three credential ones (`[keystone_authtoken] password`, `[vault_plugin] approle_secret_id`, and `[vault_plugin] root_token_id`). Each arrives through an environment override at runtime, so a file value is inert and would only copy credential material into the config Secret every API pod mounts. See [ExtraConfig admission checks](#extraconfig-admission-checks). |
 | `secretStore` | [`ServiceBarbicanSecretStoreSpec`](#servicebarbicansecretstorespec) | Yes | — | The secret-store backend the key manager writes its secret material to. Required: a Barbican with no store attached parks on `SecretStoresReady=False/NoDefaultSecretStore` for as long as it exists, so a store-less service block would only ever project a child that can never reach Ready. |
 | `dedicatedBackingServices` | [`*BarbicanDedicatedBackingServicesSpec`](#barbicandedicatedbackingservicesspec) | No | `nil` (shares the ControlPlane-wide instances) | Opts Barbican **out** of the shared `spec.infrastructure` instances and gives it a `database` and/or `cache` of its own. Barbican consumes both classes, so it can take either or both dedicated; a declared block must name at least one. |
@@ -763,6 +763,37 @@ name (`{name}-db-clean`) still fits the API server's 52-character CronJob bound.
 The ControlPlane name may therefore be at most **34** characters while
 `services.barbican` is set. The rule runs on create and on the update that newly
 enables Barbican.
+
+### ServiceBarbicanDBCleanSpec
+
+Barbican deletes a secret, order or container by flagging its row, so its tables
+keep every deleted row until the barbican operator's clean-up CronJob
+hard-deletes the ones older than the retention window. This block is a local
+copy of the Barbican CRD's [`DBCleanSpec`](../barbican/barbican-crd.md#dbcleanspec),
+projected onto the child's `spec.dbClean`. A field left unset resolves at the
+barbican operator's default at reconcile time. An omitted block projects nil,
+which the barbican operator resolves like an empty one, so the clean-up runs on
+every projected Barbican.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `retentionDays` | `*int32` | No | `nil` (the barbican operator's default, 90 days) | How long a soft-deleted row survives before the clean-up hard-deletes it, the `--min-days` argument. Lowering it applies retroactively at the next run. Minimum 1. |
+| `schedule` | `string` | No | `""` (the barbican operator's default, `1 0 * * *`) | The standard cron expression the clean-up CronJob runs on. Checked by the validating webhook rather than by a CRD pattern: the accepted grammar includes descriptors such as `@daily`, which no regex expresses without also rejecting valid expressions. |
+| `softDeleteExpiredSecrets` | `*bool` | No | `nil` (the barbican operator's default, `true`) | Adds the `--soft-delete-expired-secrets` pass, which soft-deletes the secrets whose expiration has passed so the same run can purge them under the retention window. |
+| `cleanUnassociatedProjects` | `*bool` | No | `nil` (the barbican operator's default, `false`) | Adds the `--clean-unassociated-projects` pass, which deletes the project rows that own no secret, container or order, together with their quota records. |
+| `suspend` | `bool` | No | `false` | Pauses the clean-up CronJob without deleting it. |
+
+An update that lowers the retention is admitted with a warning, because the next
+run hard-deletes the rows soft-deleted between the two windows. A missing block
+or field counts as 90 days, so adding `retentionDays: 30` to a ControlPlane that
+had no block warns:
+
+```text
+spec.services.barbican.dbClean.retentionDays reduced 90 → 30: the next clean-up run hard-deletes the rows soft-deleted between 30 and 90 days ago, which cannot be undone
+```
+
+The Barbican webhook raises the same warning on the child, but there it answers
+the c5c3 operator's client, and no person reads it.
 
 ### ServiceBarbicanSecretStoreSpec
 
@@ -3049,6 +3080,7 @@ Keystone discipline:
 | `spec.services.nova.gateway.hostname`, `.metadataGateway.hostname`, `.consoleProxy.gateway.hostname` | MinLength 1 (shared `GatewaySpec` marker) |
 | `spec.services.nova.consoleProxy` (CEL) | `!has(self.enabled) \|\| self.enabled \|\| !has(self.gateway)` → "gateway must not be set when consoleProxy.enabled is false" |
 | `spec.services.nova.dbArchive.maxRows`, `.retentionDays` | Minimum: 1 |
+| `spec.services.barbican.dbClean.retentionDays` | Minimum: 1 |
 | `spec.services.nova.dbArchive.sleep` | Minimum: 0 |
 | `spec.services.nova.dedicatedBackingServices` (CEL) | `has(self.database) \|\| has(self.cache)` → "dedicatedBackingServices must declare at least one backing-service class (database, cache)" |
 | `spec.korc.serviceRegistrations.allowedNamespaces` | `listType=set` (the API server rejects duplicate entries); MaxItems 32; item MinLength 1; item MaxLength 63; item Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` |
@@ -3189,6 +3221,7 @@ short-circuit on the first error.
 | Nova public endpoint is a bare origin | `spec.services.nova.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is allowed, and `novaCatalogURL` trims it before joining `/v2.1`). The `^https?://` pattern anchors only the prefix, so `https://nova.example.com?utm=1` is schema-legal; the ControlPlane appends `/v2.1` when it registers the row, yielding `https://nova.example.com?utm=1/v2.1` and a 404 on every compute call. **Webhook-only.** |
 | Nova public endpoint agrees with the gateway | `spec.services.nova.publicEndpoint` | `field.Invalid` | With `services.nova.gateway` set: the scheme is not `https` (the listener terminates TLS, and the caller's scoped Keystone token rides every compute call to this endpoint), or its host differs from `gateway.hostname` (the listener is what routes that hostname to the Nova API). The port may differ, since Gateway API hostnames carry none. The metadata and console gateways are not read by this rule: neither publishes a catalog row. **Cross-field, webhook-only.** |
 | Nova archive schedule | `spec.services.nova.dbArchive.schedule` | `field.Invalid` | A non-empty schedule is not a standard cron expression. Checked here rather than by a CRD `Pattern` marker, because the accepted grammar includes descriptors such as `@daily` that no regex expresses without also rejecting valid expressions. An empty schedule leaves the nova operator's own default in place. **Webhook-only.** |
+| Barbican clean-up schedule | `spec.services.barbican.dbClean.schedule` | `field.Invalid` | A non-empty schedule is not a standard cron expression. Checked here rather than by a CRD `Pattern` marker, because the accepted grammar includes descriptors such as `@daily` that no regex expresses without also rejecting valid expressions. An empty schedule leaves the barbican operator's own default in place. **Webhook-only.** |
 | Nova image resolvable | `spec.services.nova.image` | `field.Invalid` | The image override sets neither or both of `tag` and `digest` (mirrors the `commonv1.ImageSpec` tag/digest XOR). |
 | Projected Nova name bound | `metadata.name` | `field.Invalid` | The projected child `{controlplane.Name}-nova` would exceed the 41-character `metadata.name` cap the Nova CRD enforces, which is itself the 52-character CronJob bound minus the `-db-archive` suffix of the archive CronJob. The ControlPlane name may therefore be at most 36 characters while `services.nova` is set. Runs on create and on the update that newly declares `services.nova`, for the reason the Neutron and Cinder bounds above are also gated. **Webhook-only.** |
 | Nova forbidden in External mode | `spec.services.nova` | `field.Forbidden` | `services.nova` set while `mode: External` (Nova needs its own External-mode design). **Cross-field, webhook-only.** |
