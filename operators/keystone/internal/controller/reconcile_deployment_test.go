@@ -2499,26 +2499,40 @@ func TestBuildKeystoneDeployment_DynamicHashAnnotation(t *testing.T) {
 	)
 }
 
-// TestBuildKeystoneDeployment_NoHashAnnotation_Static verifies the hash
-// annotation is absent in Static/brownfield mode even when a hash is supplied,
-// preserving the existing no-rollout behavior. Asserts only the specific key is
-// absent (not that the whole annotations map is nil) so unrelated annotations
-// are not forbidden.
-func TestBuildKeystoneDeployment_NoHashAnnotation_Static(t *testing.T) {
-	g := NewGomegaWithT(t)
-	// Brownfield (default deployTestKeystone) — CredentialsMode empty.
-	brownfield := buildKeystoneDeployment(deployTestKeystone(), "keystone-config-abc123", "deadbeef", "", nil)
-	g.Expect(brownfield.Spec.Template.Annotations).NotTo(
-		HaveKey("keystone.c5c3.io/db-connection-hash"),
-	)
-
-	// Managed Static — CredentialsMode explicitly Static.
+// TestBuildKeystoneDeployment_HashAnnotationInEveryCredentialsMode verifies the
+// hash annotation is stamped for Static, Dynamic and brownfield specs when a
+// hash is supplied, so a new database route rolls the Deployment in every
+// credentials mode, and that an empty hash (no derived Secret materialised
+// yet) leaves the key absent. Asserts only the specific key so unrelated
+// annotations are not forbidden.
+func TestBuildKeystoneDeployment_HashAnnotationInEveryCredentialsMode(t *testing.T) {
 	staticKS := dynamicManagedDeployKeystone()
 	staticKS.Spec.Database.CredentialsMode = commonv1.CredentialsModeStatic
-	staticDeploy := buildKeystoneDeployment(staticKS, "keystone-config-abc123", "deadbeef", "", nil)
-	g.Expect(staticDeploy.Spec.Template.Annotations).NotTo(
-		HaveKey("keystone.c5c3.io/db-connection-hash"),
-	)
+
+	tests := []struct {
+		name     string
+		keystone *keystonev1alpha1.Keystone
+	}{
+		{name: "static", keystone: staticKS},
+		{name: "dynamic", keystone: dynamicManagedDeployKeystone()},
+		// deployTestKeystone is brownfield, with CredentialsMode empty.
+		{name: "brownfield", keystone: deployTestKeystone()},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			stamped := buildKeystoneDeployment(tc.keystone, "keystone-config-abc123", "deadbeef", "", nil)
+			g.Expect(stamped.Spec.Template.Annotations).To(
+				HaveKeyWithValue("keystone.c5c3.io/db-connection-hash", "deadbeef"),
+			)
+
+			empty := buildKeystoneDeployment(tc.keystone, "keystone-config-abc123", "", "", nil)
+			g.Expect(empty.Spec.Template.Annotations).NotTo(
+				HaveKey("keystone.c5c3.io/db-connection-hash"),
+			)
+		})
+	}
 }
 
 // TestBuildKeystoneDeployment_HashAnnotationChangesWithCredential verifies the

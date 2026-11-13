@@ -95,11 +95,12 @@ func dbReadinessProbe() *corev1.Probe {
 // projection, so those Secret data changes do not carry pod-template hash
 // annotations and never trigger Deployment rollouts. The database connection
 // string is the exception: it is consumed via the OS_DATABASE__CONNECTION env
-// var (not a mounted volume), so a rotated credential only takes effect on a
-// Pod restart. In Dynamic credentials mode the DSN changes each time ESO
-// re-issues the engine credential (the dbCredentialRefreshInterval cadence, kept
-// well below the lease TTL), so dbConnectionHash is stamped into a pod-template
-// annotation to roll the Deployment when the engine-issued credential changes.
+// var (not a mounted volume), so a changed DSN only takes effect on a Pod
+// restart. The DSN changes when ESO re-issues a Dynamic engine credential (the
+// dbCredentialRefreshInterval cadence, kept well below the lease TTL) and when
+// the database route changes (database.ResolveEndpoint), so dbConnectionHash is
+// stamped into a pod-template annotation in every credentials mode to roll the
+// Deployment on every DSN change.
 func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash, domainsSecretName string, fed *federationProjection) (ctrl.Result, error) {
 	deploy := buildKeystoneDeployment(keystone, configMapName, dbConnectionHash, domainsSecretName, fed)
 	ready, err := deployment.EnsureDeployment(ctx, children, r.Scheme, keystone, deploy)
@@ -265,9 +266,9 @@ func componentLabels(keystone *keystonev1alpha1.Keystone, component string) map[
 }
 
 // dbConnectionHashAnnotation is the pod-template annotation key stamped with the
-// SHA-256 of the DSN in Dynamic credentials mode so a rotated engine-issued
-// credential rolls the Deployment (the DSN is env-var-consumed, not volume-
-// mounted, so it only takes effect on a Pod restart). It follows the historical
+// SHA-256 of the DSN so a rotated engine-issued credential or a new database
+// route rolls the Deployment (the DSN is env-var-consumed, not volume-mounted,
+// so it only takes effect on a Pod restart). It follows the historical
 // keystone.c5c3.io/<x>-hash annotation-key style.
 const dbConnectionHashAnnotation = "keystone.c5c3.io/db-connection-hash"
 
@@ -275,13 +276,13 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 	federationActive := fed != nil
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
-	// Roll the Deployment when a Dynamic (engine-issued) credential rotates: the
-	// DSN is consumed via OS_DATABASE__CONNECTION, so a changed credential only
-	// takes effect on Pod restart. Static/brownfield modes leave the annotation
-	// absent so their (rare) credential changes keep the existing no-rollout
-	// behavior, consistent with the fernet/credential in-place reload design.
+	// Roll the Deployment on every DSN change: the DSN is consumed via
+	// OS_DATABASE__CONNECTION, so a rotated Dynamic credential or a new database
+	// route (a Galera primary Service, a MaxScale) only takes effect on Pod
+	// restart. The annotation is stamped in every credentials mode, because the
+	// route changes for Static and brownfield specs too.
 	var podAnnotations map[string]string
-	if dbConnectionHash != "" && keystone.Spec.Database.CredentialsMode == commonv1.CredentialsModeDynamic {
+	if dbConnectionHash != "" {
 		podAnnotations = map[string]string{dbConnectionHashAnnotation: dbConnectionHash}
 	}
 	processes, threads := deployment.EffectiveUWSGIConcurrency(keystone.Spec.UWSGI)
