@@ -147,7 +147,7 @@ The address the Secret carries is resolved for the order's cluster:
 
 | Order on | `host` and `port` |
 | --- | --- |
-| the cluster the MariaDB runs on, which is Keystone's | the in-cluster Service, `<clusterRef>.<keystone namespace>.svc` and `3306` |
+| the cluster the MariaDB runs on, which is Keystone's | the writer the OpenStack services connect to ([Managed database routes](../keystone/keystone-crd.md#managed-database-routes)) and `3306`: `<maxscale>.<keystone namespace>.svc` for a MaxScale that sends every statement to the primary, `<clusterRef>-primary.<keystone namespace>.svc` for a Galera or replication MariaDB, `<clusterRef>.<keystone namespace>.svc` for a single instance |
 | any other cluster | [`spec.infrastructure.publishedDatabaseEndpoint`](./controlplane-crd.md#infrastructurespec), split at its last colon |
 
 The operator publishes nothing itself. The platform operator exposes the
