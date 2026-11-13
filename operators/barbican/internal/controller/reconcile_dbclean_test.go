@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -13,12 +14,14 @@ import (
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
@@ -576,6 +579,251 @@ func TestReconcileDBClean_RunningJobLeavesConditionOnTheSchedule(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonDBCleanScheduled))
 	g.Expect(barbican.Annotations).NotTo(HaveKey(job.JobUIDAnnotationKey(dbCleanComponent)),
 		"an unfinished run has no terminal state to count")
+}
+
+// supersededDBCleanRuns returns a failed run of the clean-up CronJob and a
+// completed run created a day later, the pair in which the completed run
+// supersedes the failure.
+func supersededDBCleanRuns(barbican *barbicanv1alpha1.Barbican, cronJob *batchv1.CronJob) (failed, completed *batchv1.Job) {
+	now := metav1.Now()
+	failed = dbCleanRunJob(barbican, cronJob, barbican.Name+"-db-clean-28000000",
+		batchv1.JobFailed, metav1.NewTime(now.Add(-24*time.Hour)))
+	completed = dbCleanRunJob(barbican, cronJob, barbican.Name+"-db-clean-28001440",
+		batchv1.JobComplete, now)
+	return failed, completed
+}
+
+// TestSupersededFailedJobs pins which runs a completed newest run supersedes:
+// only failed runs the CronJob controls that were created in an earlier second.
+func TestSupersededFailedJobs(t *testing.T) {
+	barbican := dbCleanBarbican()
+	cronJob := seededDBCleanCronJob(barbican)
+	newestAt := metav1.NewTime(time.Date(2026, 11, 13, 0, 1, 0, 0, time.UTC))
+	olderAt := metav1.NewTime(newestAt.Add(-24 * time.Hour))
+	run := func(suffix string, condition batchv1.JobConditionType, createdAt metav1.Time) *batchv1.Job {
+		return dbCleanRunJob(barbican, cronJob, barbican.Name+"-db-clean-"+suffix, condition, createdAt)
+	}
+
+	completed := run("completed", batchv1.JobComplete, newestAt)
+	failedNewest := run("failed-newest", batchv1.JobFailed, newestAt)
+	olderFailed := run("older-failed", batchv1.JobFailed, olderAt)
+	olderFailedTwo := run("older-failed-2", batchv1.JobFailed, metav1.NewTime(olderAt.Add(-time.Hour)))
+	foreign := run("foreign", batchv1.JobFailed, olderAt)
+	foreign.OwnerReferences = nil
+	olderCompleted := run("older-completed", batchv1.JobComplete, olderAt)
+	running := run("running", batchv1.JobFailed, olderAt)
+	running.Status.Conditions = nil
+	sameSecond := run("same-second", batchv1.JobFailed, newestAt)
+
+	tests := []struct {
+		name   string
+		jobs   []batchv1.Job
+		newest *batchv1.Job
+		want   []string
+	}{
+		{name: "no newest run", jobs: []batchv1.Job{*olderFailed}, newest: nil},
+		{name: "a failed newest run", jobs: []batchv1.Job{*olderFailed, *failedNewest}, newest: failedNewest},
+		{name: "no Jobs", jobs: nil, newest: completed},
+		{
+			name:   "an older failed run the CronJob controls",
+			jobs:   []batchv1.Job{*olderFailed, *completed},
+			newest: completed,
+			want:   []string{olderFailed.Name},
+		},
+		{
+			name:   "several older failed runs",
+			jobs:   []batchv1.Job{*olderFailed, *olderFailedTwo, *completed},
+			newest: completed,
+			want:   []string{olderFailed.Name, olderFailedTwo.Name},
+		},
+		{name: "a failed Job without controller reference", jobs: []batchv1.Job{*foreign, *completed}, newest: completed},
+		{name: "an older completed run", jobs: []batchv1.Job{*olderCompleted, *completed}, newest: completed},
+		{name: "a running Job", jobs: []batchv1.Job{*running, *completed}, newest: completed},
+		{name: "a failed run in the creation second of the newest", jobs: []batchv1.Job{*sameSecond, *completed}, newest: completed},
+		{
+			name:   "a mixed history",
+			jobs:   []batchv1.Job{*foreign, *olderCompleted, *olderFailed, *running, *sameSecond, *completed},
+			newest: completed,
+			want:   []string{olderFailed.Name},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			var got []string
+			for _, superseded := range supersededFailedJobs(cronJob, tt.jobs, tt.newest) {
+				got = append(got, superseded.Name)
+			}
+			if len(tt.want) == 0 {
+				g.Expect(got).To(BeEmpty())
+				return
+			}
+			g.Expect(got).To(Equal(tt.want))
+		})
+	}
+}
+
+// A failed run keeps the KubeJobFailed alert firing for as long as its Job
+// exists, and the CronJob's history limit keeps it until the next failure. Once
+// a later run completed, the pass deletes every failed run before it, a manual
+// run created from the CronJob included, and raises no event: the deletion is
+// housekeeping, not something an operator acts on.
+func TestReconcileDBClean_DeletesAFailedRunASuccessSuperseded(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := dbCleanBarbican()
+	barbican.Name = "clean-superseded-failure"
+	t.Cleanup(func() { barbicanmetrics.DeleteForBarbican(barbican.Name, barbican.Namespace) })
+
+	cronJob := seededDBCleanCronJob(barbican)
+	failed, completed := supersededDBCleanRuns(barbican, cronJob)
+	manualFailed := dbCleanRunJob(barbican, cronJob, barbican.Name+"-db-clean-manual",
+		batchv1.JobFailed, metav1.NewTime(completed.CreationTimestamp.Add(-time.Hour)))
+	r := newBarbicanTestReconciler(barbican, cronJob, failed, manualFailed, completed)
+	recorder, ok := r.Recorder.(*record.FakeRecorder)
+	g.Expect(ok).To(BeTrue())
+
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, superseded := range []*batchv1.Job{failed, manualFailed} {
+		err = r.Get(context.Background(), client.ObjectKeyFromObject(superseded), &batchv1.Job{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"the superseded failed run %s must be deleted, got %v", superseded.Name, err)
+	}
+	g.Expect(r.Get(context.Background(), client.ObjectKeyFromObject(completed), &batchv1.Job{})).To(Succeed(),
+		"the completed run is the one the condition reports on")
+
+	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBCleanScheduled))
+	g.Expect(recorder.Events).NotTo(Receive(), "deleting a superseded run raises no event")
+}
+
+// A failed run that is the newest terminal run is the outcome the condition
+// reports on, so it stays, and with it DBCleanReady=False and the alert, until a
+// later run completes.
+func TestReconcileDBClean_KeepsAFailedRunThatIsTheNewest(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := dbCleanBarbican()
+	barbican.Name = "clean-newest-failure"
+	t.Cleanup(func() { barbicanmetrics.DeleteForBarbican(barbican.Name, barbican.Namespace) })
+
+	cronJob := seededDBCleanCronJob(barbican)
+	now := metav1.Now()
+	completed := dbCleanRunJob(barbican, cronJob, barbican.Name+"-db-clean-28000000",
+		batchv1.JobComplete, metav1.NewTime(now.Add(-24*time.Hour)))
+	failed := dbCleanRunJob(barbican, cronJob, barbican.Name+"-db-clean-28001440",
+		batchv1.JobFailed, now)
+	r := newBarbicanTestReconciler(barbican, cronJob, completed, failed)
+
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Get(context.Background(), client.ObjectKeyFromObject(failed), &batchv1.Job{})).To(Succeed(),
+		"the newest failed run must stay")
+	g.Expect(r.Get(context.Background(), client.ObjectKeyFromObject(completed), &batchv1.Job{})).To(Succeed(),
+		"a completed run is never deleted")
+
+	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBCleanJobFailed))
+}
+
+// The deletion does not depend on the arm that set the condition: a suspended
+// clean-up reports DBCleanSuspended, and a failed run that a completed run
+// superseded before the pause is still deleted.
+func TestReconcileDBClean_DeletesASupersededFailureWhileSuspended(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := dbCleanBarbican()
+	barbican.Name = "clean-superseded-suspended"
+	barbican.Spec.DBClean = &barbicanv1alpha1.DBCleanSpec{Suspend: true}
+	t.Cleanup(func() { barbicanmetrics.DeleteForBarbican(barbican.Name, barbican.Namespace) })
+
+	cronJob := seededDBCleanCronJob(barbican)
+	failed, completed := supersededDBCleanRuns(barbican, cronJob)
+	r := newBarbicanTestReconciler(barbican, cronJob, failed, completed)
+
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	err = r.Get(context.Background(), client.ObjectKeyFromObject(failed), &batchv1.Job{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the superseded failed run must be deleted, got %v", err)
+
+	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBCleanSuspended))
+}
+
+// supersededDeleteReconciler returns a reconciler whose client answers the
+// delete of a Job with deleteErr and records the options of that delete in opts.
+func supersededDeleteReconciler(deleteErr error, opts *client.DeleteOptions, objs ...client.Object) *BarbicanReconciler {
+	c := barbicanFakeClientBuilder(objs...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, deleteOpts ...client.DeleteOption) error {
+				if _, isJob := obj.(*batchv1.Job); !isJob {
+					return cl.Delete(ctx, obj, deleteOpts...)
+				}
+				opts.ApplyOptions(deleteOpts)
+				return deleteErr
+			},
+		}).
+		Build()
+	return &BarbicanReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
+}
+
+// A delete the API server refuses ends the step with a wrapped error, so the
+// pipeline requeues; the condition of the pass is already set by then. The
+// delete asks for background propagation, so the pods of the run go with it.
+func TestReconcileDBClean_ReturnsTheErrorOfASupersededDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := dbCleanBarbican()
+	barbican.Name = "clean-superseded-delete-error"
+	t.Cleanup(func() { barbicanmetrics.DeleteForBarbican(barbican.Name, barbican.Namespace) })
+
+	cronJob := seededDBCleanCronJob(barbican)
+	failed, completed := supersededDBCleanRuns(barbican, cronJob)
+	boom := errors.New("etcd unavailable")
+	var opts client.DeleteOptions
+	r := supersededDeleteReconciler(boom, &opts, barbican, cronJob, failed, completed)
+
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
+
+	g.Expect(err).To(MatchError(boom), "the client error must stay unwrappable")
+	g.Expect(err).To(MatchError(ContainSubstring("deleting superseded db clean Job " + failed.Name)))
+	g.Expect(opts.PropagationPolicy).NotTo(BeNil())
+	g.Expect(*opts.PropagationPolicy).To(Equal(metav1.DeletePropagationBackground))
+
+	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBCleanScheduled))
+}
+
+// A Job that is gone by the time the delete arrives, deleted by hand or by a
+// concurrent pass, is the outcome the delete wanted.
+func TestReconcileDBClean_IgnoresASupersededJobThatIsAlreadyGone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := dbCleanBarbican()
+	barbican.Name = "clean-superseded-already-gone"
+	t.Cleanup(func() { barbicanmetrics.DeleteForBarbican(barbican.Name, barbican.Namespace) })
+
+	cronJob := seededDBCleanCronJob(barbican)
+	failed, completed := supersededDBCleanRuns(barbican, cronJob)
+	var opts client.DeleteOptions
+	r := supersededDeleteReconciler(apierrors.NewNotFound(batchv1.Resource("jobs"), failed.Name), &opts,
+		barbican, cronJob, failed, completed)
+
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(opts.PropagationPolicy).NotTo(BeNil(), "the pass must have tried the delete")
+
+	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDBCleanScheduled))
 }
 
 // The clean-up pod injects the same DSN the API pods use; when database TLS is on
