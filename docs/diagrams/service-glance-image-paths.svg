@@ -73,8 +73,8 @@
 <text x="262" y="921.2" font-size="20" font-weight="400" fill="#2B3440">C: a miss also fills the cache</text>
 <text x="242" y="995.2" font-size="20" font-weight="400" fill="#2B3440">C: a hit is served from here</text>
 <text x="40" y="1269.2" font-size="20" font-weight="400" fill="#55606E">{glance}: the Glance resource, {cp}-glance under a ControlPlane. {id}: an image. Dashed: only with spec.imageCache.</text>
-<text x="40" y="1295.2" font-size="20" font-weight="400" fill="#55606E">The three volumes are emptyDirs on the disk of the node. A sizeLimit is no quota: once a volume grows past it, the kubelet evicts the pod</text>
-<text x="40" y="1321.2" font-size="20" font-weight="400" fill="#55606E">with every transfer on it. spec.staging.unbounded removes the limit of staging and tasks-work.</text>
+<text x="40" y="1295.2" font-size="20" font-weight="400" fill="#55606E">The volumes are emptyDirs. A sizeLimit is an eviction threshold, not a quota; the kubelet checks periodically</text>
+<text x="40" y="1321.2" font-size="20" font-weight="400" fill="#55606E">so usage can exceed it before eviction. spec.staging.unbounded removes the limits of staging and tasks-work.</text>
 <text x="40" y="1347.2" font-size="20" font-weight="400" fill="#55606E">The operator enables the import methods web-download and copy-image. glance-direct is off, so no client upload is staged.</text>
 <text x="40" y="1373.2" font-size="20" font-weight="400" fill="#55606E">tasks-work takes the working copy of the Tasks API, POST /v2/tasks, which is open to admins only.</text>
 </svg>
