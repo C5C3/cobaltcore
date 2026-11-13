@@ -316,6 +316,12 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_delete.go:1573 (sweepExternalNamespaceResidue) to delete mariadbs.
 // Unexercised by the e2e suites; used by operators/c5c3/internal/controller/reconcile_infrastructure.go:771 (ensureMariaDB) to update mariadbs.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;delete
+// Read by mariaDBDatabaseEndpoint (database.ResolveEndpoint) through the
+// cached client: a MariaDBDatabase order on the database's cluster receives
+// the MaxScale its MariaDB names when that MaxScale sends every statement to
+// the primary.
+// Unexercised by the e2e suites; used by internal/common/database/resolve.go:161 (maxScaleBypass) to list and watch maxscales.
+// +kubebuilder:rbac:groups=k8s.mariadb.com,resources=maxscales,verbs=get;list;watch
 // Projected and Owned by reconcileInfrastructure (resolved via the cluster
 // RESTMapper at runtime; no Go scheme registration required).
 // +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch;create;update;delete

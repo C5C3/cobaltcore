@@ -5,13 +5,20 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/v26/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/cobaltcore/internal/common/database"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
@@ -133,49 +140,116 @@ func TestSameTargetCluster(t *testing.T) {
 }
 
 // TestMariaDBDatabaseEndpoint pins the address a database order receives: the
-// in-cluster Service on the database's own cluster, the published endpoint on
-// any other, and nothing while none is published.
+// route database.ResolveEndpoint picks on the database's own cluster, the
+// published endpoint on any other without a read, and nothing while none is
+// published.
 func TestMariaDBDatabaseEndpoint(t *testing.T) {
-	published := func(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.ControlPlane {
-		cp.Spec.Infrastructure.PublishedDatabaseEndpoint = "db.example.com:3306"
-		return cp
+	published := func(endpoint string) func(*c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.ControlPlane {
+		return func(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.ControlPlane {
+			cp.Spec.Infrastructure.PublishedDatabaseEndpoint = endpoint
+			return cp
+		}
+	}
+	mariaDB := func(namespace string, galera bool, maxScale string) *mariadbv1alpha1.MariaDB {
+		m := &mariadbv1alpha1.MariaDB{ObjectMeta: metav1.ObjectMeta{Name: "openstack-db", Namespace: namespace}}
+		if galera {
+			m.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: true}
+		}
+		if maxScale != "" {
+			m.Spec.MaxScaleRef = &mariadbv1alpha1.ObjectReference{Name: maxScale}
+		}
+		return m
+	}
+	singleWriter := &mariadbv1alpha1.MaxScale{
+		ObjectMeta: metav1.ObjectMeta{Name: "openstack-db-maxscale", Namespace: "openstack"},
+		Spec: mariadbv1alpha1.MaxScaleSpec{
+			MariaDBRef: &mariadbv1alpha1.MariaDBRef{ObjectReference: mariadbv1alpha1.ObjectReference{Name: "openstack-db"}},
+			Services: []mariadbv1alpha1.MaxScaleService{{
+				Name:     "rw-router",
+				Router:   mariadbv1alpha1.ServiceRouterReadWriteSplit,
+				Params:   map[string]string{"max_slave_connections": "0"},
+				Listener: mariadbv1alpha1.MaxScaleListener{Port: 3306},
+			}},
+		},
 	}
 	tests := []struct {
-		name    string
-		cp      *c5c3v1alpha1.ControlPlane
-		cluster string
-		want    string
+		name      string
+		cp        *c5c3v1alpha1.ControlPlane
+		cluster   string
+		objects   []client.Object
+		want      database.Endpoint
+		wantReads int
 	}{
 		{
-			name: "an order on the management cluster of an unplaced plane",
-			cp:   published(dbCredManagedControlPlane()), cluster: c5c3v1alpha1.ManagementCluster,
-			want: "openstack-db.openstack.svc:3306",
+			name: "a single instance on the management cluster of an unplaced plane",
+			cp:   published("db.example.com:3306")(dbCredManagedControlPlane()), cluster: c5c3v1alpha1.ManagementCluster,
+			objects:   []client.Object{mariaDB("openstack", false, "")},
+			want:      database.Endpoint{Host: "openstack-db.openstack.svc", Port: 3306, Route: database.RouteService},
+			wantReads: 1,
+		},
+		{
+			name: "a Galera MariaDB on the management cluster of an unplaced plane",
+			cp:   dbCredManagedControlPlane(), cluster: c5c3v1alpha1.ManagementCluster,
+			objects:   []client.Object{mariaDB("openstack", true, "")},
+			want:      database.Endpoint{Host: "openstack-db-primary.openstack.svc", Port: 3306, Route: database.RoutePrimary},
+			wantReads: 1,
+		},
+		{
+			name: "a single-writer MaxScale on the management cluster of an unplaced plane",
+			cp:   dbCredManagedControlPlane(), cluster: c5c3v1alpha1.ManagementCluster,
+			objects: []client.Object{mariaDB("openstack", true, "openstack-db-maxscale"), singleWriter},
+			want: database.Endpoint{
+				Host: "openstack-db-maxscale.openstack.svc", Port: 3306, Route: database.RouteMaxScale,
+				MaxScale: "openstack-db-maxscale",
+			},
+			wantReads: 2,
 		},
 		{
 			name: "an order on the target cluster Keystone is placed on",
-			cp:   published(placedKeystoneControlPlane("edge-1")), cluster: "edge-1",
-			want: "openstack-db.identity.svc:3306",
+			cp:   published("db.example.com:3306")(placedKeystoneControlPlane("edge-1")), cluster: "edge-1",
+			objects:   []client.Object{mariaDB("identity", true, "")},
+			want:      database.Endpoint{Host: "openstack-db-primary.identity.svc", Port: 3306, Route: database.RoutePrimary},
+			wantReads: 1,
 		},
 		{
 			name: "an order on a target cluster of an unplaced plane",
-			cp:   published(dbCredManagedControlPlane()), cluster: "edge-1",
-			want: "db.example.com:3306",
+			cp:   published("db.example.com:3306")(dbCredManagedControlPlane()), cluster: "edge-1",
+			want: database.Endpoint{Host: "db.example.com", Port: 3306, Route: database.RouteExplicit},
 		},
 		{
 			name: "an order on the management cluster of a placed plane",
-			cp:   published(placedKeystoneControlPlane("edge-1")), cluster: c5c3v1alpha1.ManagementCluster,
-			want: "db.example.com:3306",
+			cp:   published("db.example.com:3306")(placedKeystoneControlPlane("edge-1")), cluster: c5c3v1alpha1.ManagementCluster,
+			want: database.Endpoint{Host: "db.example.com", Port: 3306, Route: database.RouteExplicit},
+		},
+		{
+			name: "a bracketed IPv6 literal is published",
+			cp:   published("[fd00::1]:3306")(dbCredManagedControlPlane()), cluster: "edge-1",
+			want: database.Endpoint{Host: "fd00::1", Port: 3306, Route: database.RouteExplicit},
 		},
 		{
 			name: "an order off the database's cluster while nothing is published",
 			cp:   dbCredManagedControlPlane(), cluster: "edge-1",
-			want: "",
+			want: database.Endpoint{Route: database.RouteExplicit},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := mariaDBDatabaseEndpoint(tc.cp, effectiveKeystoneDatabase(tc.cp), tc.cluster); got != tc.want {
-				t.Errorf("mariaDBDatabaseEndpoint() = %q, want %q", got, tc.want)
+			reads := 0
+			c := orderFakeClient(t, &interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					reads++
+					return c.Get(ctx, key, obj, opts...)
+				},
+			}, tc.objects...)
+			got, err := mariaDBDatabaseEndpoint(context.Background(), c, tc.cp, effectiveKeystoneDatabase(tc.cp), tc.cluster)
+			if err != nil {
+				t.Fatalf("mariaDBDatabaseEndpoint() error = %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("mariaDBDatabaseEndpoint() = %+v, want %+v", got, tc.want)
+			}
+			if reads != tc.wantReads {
+				t.Errorf("mariaDBDatabaseEndpoint() issued %d reads, want %d", reads, tc.wantReads)
 			}
 		})
 	}
@@ -184,8 +258,35 @@ func TestMariaDBDatabaseEndpoint(t *testing.T) {
 		cp := dbCredManagedControlPlane()
 		db := cp.Spec.Infrastructure.Database
 		cp.Spec.Infrastructure = nil
-		if got := mariaDBDatabaseEndpoint(cp, &db, "edge-1"); got != "" {
-			t.Errorf("mariaDBDatabaseEndpoint() = %q, want the empty string", got)
+		got, err := mariaDBDatabaseEndpoint(context.Background(), orderFakeClient(t, nil), cp, &db, "edge-1")
+		if err != nil || got.Host != "" {
+			t.Errorf("mariaDBDatabaseEndpoint() = %+v, %v, want an empty host and no error", got, err)
+		}
+	})
+
+	t.Run("a published endpoint that is not host:port", func(t *testing.T) {
+		cp := published("db.example.com:99999")(dbCredManagedControlPlane())
+		_, err := mariaDBDatabaseEndpoint(context.Background(), orderFakeClient(t, nil), cp, effectiveKeystoneDatabase(cp), "edge-1")
+		var invalid *invalidPublishedEndpointError
+		if !errors.As(err, &invalid) {
+			t.Fatalf("mariaDBDatabaseEndpoint() error = %v, want an *invalidPublishedEndpointError", err)
+		}
+		if want := `spec.infrastructure.publishedDatabaseEndpoint "db.example.com:99999" is not host:port`; !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	})
+
+	t.Run("a MariaDB read error is wrapped", func(t *testing.T) {
+		cp := dbCredManagedControlPlane()
+		cause := apierrors.NewServiceUnavailable("etcd leader lost")
+		c := orderFakeClient(t, &interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return cause
+			},
+		})
+		_, err := mariaDBDatabaseEndpoint(context.Background(), c, cp, effectiveKeystoneDatabase(cp), c5c3v1alpha1.ManagementCluster)
+		if !errors.Is(err, cause) || !strings.Contains(err.Error(), "resolving database endpoint") {
+			t.Errorf("mariaDBDatabaseEndpoint() error = %v, want the cause wrapped in resolving database endpoint", err)
 		}
 	})
 }

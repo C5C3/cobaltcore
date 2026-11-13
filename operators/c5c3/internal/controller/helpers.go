@@ -366,21 +366,52 @@ func keystoneEndpointFor(cp *c5c3v1alpha1.ControlPlane, ref *commonv1.TargetClus
 	return keystonePublicEndpoint(cp.Spec.Services.Keystone)
 }
 
-// mariaDBDatabaseEndpoint returns the host:port a MariaDBDatabase order on
+// mariaDBDatabaseEndpoint returns the address a MariaDBDatabase order on
 // cluster reaches the shared database db at. On the cluster the database runs
-// on, which is Keystone's, that is the in-cluster MariaDB Service in Keystone's
-// namespace. On any other cluster it is
-// spec.infrastructure.publishedDatabaseEndpoint, the one address the platform
-// operator publishes off that cluster, and the empty string while it is unset.
-func mariaDBDatabaseEndpoint(cp *c5c3v1alpha1.ControlPlane, db *commonv1.DatabaseSpec, cluster string) string {
+// on, which is Keystone's, it is the route database.ResolveEndpoint picks in
+// Keystone's namespace, read through dbClient: a MaxScale that sends every
+// statement to the primary, the <name>-primary Service of a Galera or
+// replication MariaDB, or the MariaDB's own Service. A resolver error comes
+// back wrapped in "resolving database endpoint". On any other cluster it is
+// spec.infrastructure.publishedDatabaseEndpoint with RouteExplicit, the one
+// address the platform operator publishes off that cluster, without a read;
+// the Host is empty while none is published, and an endpoint that is not
+// host:port returns an *invalidPublishedEndpointError.
+func mariaDBDatabaseEndpoint(ctx context.Context, dbClient client.Reader, cp *c5c3v1alpha1.ControlPlane,
+	db *commonv1.DatabaseSpec, cluster string,
+) (database.Endpoint, error) {
 	if sameTargetCluster(orderRef{Cluster: cluster}.clusterRef(), cp.KeystoneTargetClusterRef()) {
-		return database.ResolveHost(db, cp.KeystoneNamespace())
+		ep, err := database.ResolveEndpoint(ctx, dbClient, db, cp.KeystoneNamespace())
+		if err != nil {
+			return database.Endpoint{}, fmt.Errorf("resolving database endpoint: %w", err)
+		}
+		return ep, nil
 	}
-	if cp.Spec.Infrastructure == nil {
-		return ""
+	if cp.Spec.Infrastructure == nil || cp.Spec.Infrastructure.PublishedDatabaseEndpoint == "" {
+		return database.Endpoint{Route: database.RouteExplicit}, nil
 	}
-	return cp.Spec.Infrastructure.PublishedDatabaseEndpoint
+	published := cp.Spec.Infrastructure.PublishedDatabaseEndpoint
+	host, port, err := splitDatabaseEndpoint(published)
+	if err != nil {
+		return database.Endpoint{}, &invalidPublishedEndpointError{endpoint: published, err: err}
+	}
+	return database.Endpoint{Host: host, Port: port, Route: database.RouteExplicit}, nil
 }
+
+// invalidPublishedEndpointError reports a
+// spec.infrastructure.publishedDatabaseEndpoint that is not host:port. Only an
+// edit of the ControlPlane repairs it, so the delivery leg reports it without
+// a retry.
+type invalidPublishedEndpointError struct {
+	endpoint string
+	err      error
+}
+
+func (e *invalidPublishedEndpointError) Error() string {
+	return fmt.Sprintf("spec.infrastructure.publishedDatabaseEndpoint %q is not host:port: %v", e.endpoint, e.err)
+}
+
+func (e *invalidPublishedEndpointError) Unwrap() error { return e.err }
 
 // rabbitMQVhostEndpoint returns the AMQP address, host:port, a RabbitMQVhost
 // order on cluster is delivered. The managed broker always runs on the

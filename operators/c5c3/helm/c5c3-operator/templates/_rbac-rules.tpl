@@ -261,6 +261,14 @@ Run 'make verify-helm-rbac' to check for drift, or 'make sync-helm-rbac' to upda
   - update
   - watch
 - apiGroups:
+  - k8s.mariadb.com
+  resources:
+  - maxscales
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - keystone.openstack.c5c3.io
   resources:
   - keystoneidentitybackends
