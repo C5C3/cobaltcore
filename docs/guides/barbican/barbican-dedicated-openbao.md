@@ -24,11 +24,13 @@ The instance the ControlPlane provisions is proving-grade. It runs the
 openbao-operator's Development profile at a single replica with no
 PodDisruptionBudget, so any disruption of that one pod stops every secret read
 and write. It is sealed by a static key held in a plain Secret
-(`controlplane-barbican-bao-unseal-key`) in the same namespace as the raft volume
-that key seals, so read access to that namespace's Secrets, or a single etcd or
-namespace backup, yields the ciphertext and the key together. Admission repeats
-that as a warning on every apply. For a production key manager, point the service
-at a hardened server instead: see
+`controlplane-barbican-bao-unseal-key` in the same namespace as the instance;
+the raft data lives separately in a PVC.
+Anyone who can read the Secret has the seal key, and a backup that includes both
+the Secret and the PVC data can restore and unseal the instance. Admission warns
+about this Development-mode posture when the ControlPlane is created or updated.
+For a production key
+manager, point the service at a hardened server instead: see
 [Attach an External OpenBao to Barbican](./attach-external-openbao.md).
 
 ## Prerequisites
@@ -50,13 +52,11 @@ the block added in step 1. Every resource name in the examples that follow is
 one this devstack produces.
 :::
 
-1. **The `python-barbicanclient` plugin on `PATH`.** The `openstack secret`
-   subcommands of step 5 come from it; without it the CLI rejects
-   `secret store` as an unknown command.
-2. **`jq` on `PATH`** for the condition readouts in step 3.
-3. **The OpenBao root token**, for the one-time database-engine onboarding in
-   step 2. On kind it is read from the `openbao-init-keys` Secret, as in the
-   tutorial's Step 5.
+Have the `openstack` client with `python-barbicanclient` installed for step 5,
+and `curl` and `jq` on `PATH` for step 2's credentials helper. The database
+onboarding command also needs the OpenBao root token; on kind, extract it from
+the `openbao-init-keys` Secret as in the tutorial's Step 5. Step 3's condition
+readouts use `jq` too.
 
 ## Step 1: Declare the Barbican service
 
@@ -111,10 +111,9 @@ service the CR does not declare, so a tenant setup that ran before
 case:
 
 ```bash
-export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
-  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
-deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
-unset BAO_TOKEN
+BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+  -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')" \
+  deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 ```
 
 The script is idempotent: every config and role write is an upsert, so a repeat
@@ -128,8 +127,8 @@ reason `WaitingForBarbicanDBCredential`, and the message names the
 ## Step 3: Watch BarbicanReady
 
 Watch the service's own condition, `BarbicanReady`. The ControlPlane-wide
-`Ready` also covers Keystone, Horizon, Glance,
-and Placement, so it answers a broader question than the one this guide asks:
+`Ready` aggregates every managed service and infrastructure component, so it
+answers a broader question than the one this guide asks:
 
 ```bash
 kubectl wait controlplane/controlplane -n openstack \
@@ -172,8 +171,9 @@ kubectl get barbicansecretstore controlplane-barbican-store -n openstack \
   -o jsonpath='{range .status.conditions[*]}{.type}{"\t"}{.status}{"\t"}{.reason}{"\n"}{end}'
 ```
 
-The figure shows the order `CredentialsReady` and `ConfigProjected` turn `True`
-in; `ProvisioningReady` comes before its step 1.
+In dedicated mode, `ProvisioningReady` confirms that the instance, mount, policy
+and AppRole are available before credential validation starts. The figure shows
+the remaining `CredentialsReady` and `ConfigProjected` steps.
 [The handshake](../../reference/backend/kubernetes-packages.md#satellite-handshake)
 lists the five steps and what differs per kind.
 
@@ -189,7 +189,7 @@ The left panel of the figure shows these resources and who talks to the
 instance. The right panel is the mode of
 [Attach an External OpenBao to Barbican](./attach-external-openbao.md).
 
-![The two modes of a Barbican secret store, side by side. Dedicated: the c5c3-operator creates an OpenBaoCluster {cp}-barbican-bao and declares its self-init, which provisions the KV mount barbican/, a policy, the AppRole role barbican and a Kubernetes auth role. The barbican-operator logs in to that instance through Kubernetes auth, checks the mount, reads the role ID and mints a secret ID into the Secret {cp}-barbican-store-approle. The API pods of {cp}-barbican read the secret ID from that Secret and the CA from {cp}-barbican-bao-tls-ca, and store their secrets in the instance. External: an OpenBao or Vault server runs outside the control plane, and its KV mount, policy and AppRole are provisioned by hand, as are the Secret with the role ID and the secret ID and the optional Secret with a CA bundle. The barbican-operator only reads the two Secrets, logs in with the AppRole and checks its capabilities; it writes nothing to the server. The API pods use the same two Secrets. On the kind devstack the OpenBaoCluster openbao-instance stands in for the outside server. In both modes the management OpenBao in shared-services is a separate server that delivers the database credentials of Barbican and no store credential.](../../diagrams/service-barbican-secret-stores.svg)
+![The two modes of a Barbican secret store, side by side. Dedicated: the c5c3-operator creates an OpenBaoCluster {cp}-barbican-bao and declares its self-init, which provisions the KV mount barbican/, a policy, the AppRole role barbican and a Kubernetes auth role. The barbican-operator logs in to that instance through Kubernetes auth, checks the mount, reads the role ID and mints a secret ID into the Secret {cp}-barbican-store-approle. The API pods of {cp}-barbican read the secret ID from that Secret and the CA from {cp}-barbican-bao-tls-ca, and store their secrets in the instance. External: an OpenBao or Vault server runs outside the control plane, and its KV mount, policy and AppRole are provisioned by hand. A required Secret carries the role ID and secret ID; an optional Secret carries the CA bundle. The barbican-operator reads the credentials and optional CA, logs in with the AppRole and checks its capabilities; it writes nothing to the server. The API pods use the same Secret references. On the kind devstack the OpenBaoCluster openbao-instance stands in for the outside server. In both modes the management OpenBao in shared-services is a separate server that delivers the database credentials of Barbican and no store credential.](../../diagrams/service-barbican-secret-stores.svg)
 
 Around the instance sits the ensemble the openbao-operator's contracts require.
 Every object is named after the instance:
@@ -200,7 +200,7 @@ Every object is named after the instance:
 | Secret | `controlplane-barbican-bao-tls-server` | The API listener's cert-manager keypair (External TLS mode) |
 | Secret | `controlplane-barbican-bao-tls-ca` | The trust bundle the operator and the API pods verify against |
 | ServiceAccount | `controlplane-barbican-bao-provisioner` | The identity the barbican-operator's Kubernetes-auth login binds to |
-| Role + RoleBinding | `controlplane-barbican-bao-provisioner-token` | Lets the barbican-operator mint a bound token for that one account |
+| Role + RoleBinding | `controlplane-barbican-bao-provisioner-token` | Lets the barbican-operator request a bound token for that account |
 | ClusterRoleBinding | `controlplane-barbican-bao-<hash>-auth-delegator` | Grants the instance pods the TokenReview every Kubernetes-auth login needs |
 | OpenBaoTenant | `controlplane-barbican-bao-<hash>-tenant` in `openbao-operator-system` | Admits the namespace to the multi-tenant openbao-operator |
 
@@ -253,22 +253,25 @@ openstack --insecure secret delete "$HREF"
 A payload that comes back unchanged covers the whole chain in one call: the
 catalog row resolves the endpoint, Barbican validates the token against Keystone,
 and the payload travels through castellan's vault plugin into the dedicated
-OpenBao instance and out again. A catalogue-only check misses every step after
+OpenBao instance and out again. A catalog-only check misses every step after
 the first.
 
-`cobaltcore-barbican-payload` is a throwaway. Real key material does not belong behind
-`--payload`, which leaves it readable in the process argument vector and in your
-shell history; feed it in from a file or from standard input instead. `--insecure`
-is here because the kind gateway presents a self-signed certificate. It disables
+`cobaltcore-barbican-payload` is a throwaway. Real key material does not belong
+behind `--payload`, which leaves it readable in the process argument vector and
+in your shell history. Use a client workflow that supplies it without exposing
+it in command arguments. `--insecure` is here because the kind gateway presents
+a self-signed certificate. It disables
 verification for the whole invocation, including the Keystone call above that
 sends `OS_PASSWORD`, so drop it wherever the gateway presents a certificate you
 trust.
 
 ## Step 6: Remove the service
 
-Dropping the `services.barbican` block is not by itself enough to remove
-anything. Deletion takes an annotation, and destroying the stored secret material
-takes a second one.
+When keeping the ControlPlane, dropping the `services.barbican` block is not by
+itself enough to remove anything. Deletion takes an annotation, and destroying
+the stored secret material takes a second one. Deleting the entire ControlPlane
+is a separate destructive path that also removes its dedicated OpenBao instance
+and stored secrets; back them up or migrate them first.
 
 ::: warning Two opt-ins, and never edit the projected children
 The three CRs of step 4 are **projected** by the c5c3-operator. A setting you apply to
