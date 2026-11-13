@@ -1275,7 +1275,8 @@ func warnInsecurePlacementPublicEndpoint(cp *ControlPlane) admission.Warnings {
 // secret-store dedicated/external union and the external store's URL and
 // credentials reference) and adds the rules the CRD schema cannot express: the
 // public endpoint's origin shape and its agreement with the gateway
-// (validateBarbicanPublicEndpoint).
+// (validateBarbicanPublicEndpoint), and the cron grammar of the clean-up
+// schedule.
 //
 // The projected-child-name bound lives in validateBarbicanChildName, which runs
 // only on create and on the update that newly enables Barbican.
@@ -1314,6 +1315,14 @@ func validateBarbican(cp *ControlPlane) field.ErrorList {
 
 	allErrs = append(allErrs, validateBarbicanSecretStore(bnPath.Child("secretStore"), &bn.SecretStore)...)
 	allErrs = append(allErrs, validateBarbicanPublicEndpoint(bnPath, bn)...)
+
+	// The clean-up schedule is checked here rather than by a CRD Pattern
+	// marker: the accepted grammar includes descriptors such as @daily, which
+	// no regex expresses without also rejecting valid expressions. An empty
+	// schedule leaves the barbican-operator's own default in place.
+	if c := bn.DBClean; c != nil && c.Schedule != "" {
+		allErrs = append(allErrs, validation.CronSchedule(bnPath.Child("dbClean", "schedule"), c.Schedule)...)
+	}
 
 	return allErrs
 }
@@ -2518,6 +2527,39 @@ func warnRemovedCinderBackends(oldObj, newObj *ControlPlane) admission.Warnings 
 	return warnings
 }
 
+// warnBarbicanDBCleanRetention surfaces an update that shortens the retention
+// of the Barbican clean-up. The Barbican webhook raises the same warning on the
+// child, but on a projected child it answers the c5c3-operator's client, and
+// no person reads it there. The next clean-up run hard-deletes the rows
+// soft-deleted between the two windows, so the warning reaches whoever edits
+// the ControlPlane. A missing block or field counts as the barbican-operator's
+// default, the value the child resolves it to.
+func warnBarbicanDBCleanRetention(oldObj, newObj *ControlPlane) admission.Warnings {
+	oldBarbican, newBarbican := oldObj.Spec.Services.Barbican, newObj.Spec.Services.Barbican
+	if oldBarbican == nil || newBarbican == nil {
+		return nil
+	}
+	oldDays := barbicanDBCleanRetentionDays(oldBarbican.DBClean)
+	newDays := barbicanDBCleanRetentionDays(newBarbican.DBClean)
+	if newDays >= oldDays {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.services.barbican.dbClean.retentionDays reduced %d → %d: the next clean-up run hard-deletes the rows soft-deleted between %d and %d days ago, which cannot be undone",
+		oldDays, newDays, newDays, oldDays,
+	)}
+}
+
+// barbicanDBCleanRetentionDays resolves the retention a services.barbican.dbClean
+// block projects: a nil block or a nil field resolves at the barbican-operator's
+// default.
+func barbicanDBCleanRetentionDays(c *ServiceBarbicanDBCleanSpec) int32 {
+	if c == nil || c.RetentionDays == nil {
+		return barbicanv1alpha1.DefaultDBCleanRetentionDays
+	}
+	return *c.RetentionDays
+}
+
 // warnCinderBackupDriverSwitch surfaces a services.cinder.backupBackend rename
 // that also changes the type. The rename is admitted, and the next pass prunes
 // the old CinderBackupBackend and projects the new one. Both drivers run under the
@@ -3228,6 +3270,7 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	warnings = append(warnings, glanceImportFilteringWarnings(newObj)...)
 	warnings = append(warnings, warnDevelopmentBarbicanSecretStore(newObj)...)
 	warnings = append(warnings, warnRemovedCinderBackends(oldObj, newObj)...)
+	warnings = append(warnings, warnBarbicanDBCleanRetention(oldObj, newObj)...)
 	warnings = append(warnings, warnCinderBackupDriverSwitch(oldObj, newObj)...)
 	warnings = append(warnings, sizingInertWarnings(newObj)...)
 

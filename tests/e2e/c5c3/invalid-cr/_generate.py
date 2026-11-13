@@ -3238,6 +3238,21 @@ FIXTURES: tuple[Fixture, ...] = (
             "          label: Default again\n"
         ),
     ),
+    Fixture(
+        filename="162-barbican-dbclean-schedule-invalid.yaml",
+        comment=(
+            "services.barbican.dbClean.schedule is not a cron expression. The field is checked\n"
+            "by the webhook rather than by a CRD pattern: the accepted grammar includes\n"
+            "descriptors such as @daily, which no regex expresses without also rejecting\n"
+            "valid expressions. An unparseable schedule reaches the projected clean-up\n"
+            "CronJob, which the apiserver then refuses on every pass, so the webhook answers\n"
+            "at admission and the step anchors on `invalid cron expression`."
+        ),
+        name="cp-barbican-bad-schedule",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=VALID_BARBICAN + "      dbClean:\n        schedule: every day\n",
+    ),
     # --- transition wave H: Cinder entry type freeze
     #     (Test: c5c3-invalid-cr-cinder-type-freeze) ---
     Fixture(
