@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the galera-primary-route E2E test: the
+# basic-deployment CR on the suite's own Galera MariaDB, in Static
+# credentials mode. The MySQL user is the CR name (database.ResolveUsername),
+# so the suite counts the connections of user keystone-galera-route.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-galera-route
+  namespace: openstack
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: galera-route-db
+    database: keystone_galera_route
+    secretRef:
+      name: keystone-galera-route-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+  # Disable dogpile.cache, as admin-password-rotation does. Every Keystone of
+  # the leg caches admin@default lookups under the same keys in the shared
+  # openstack-memcached, so an entry another suite's Keystone left would answer
+  # this suite's password auth with that Keystone's user and fail it with 401.
+  extraConfig:
+    cache:
+      enabled: "false"

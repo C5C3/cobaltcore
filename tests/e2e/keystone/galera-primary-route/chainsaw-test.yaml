@@ -1,0 +1,388 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Primary database route. On a Galera MariaDB
+# without MaxScale the operator connects Keystone to the <name>-primary
+# Service mariadb-operator publishes (database.ResolveEndpoint), so every
+# Keystone replica writes on the one member that Service selects. The suite
+# proves that and that the route follows a primary switch without a rollout:
+#   - MariaDB galera-route-db (three members) reaches Ready=True and has the
+#     Service galera-route-db-primary.
+#   - Keystone keystone-galera-route reaches Ready=True and its derived
+#     connection Secret names galera-route-db-primary.openstack.svc:3306.
+#   - A password auth as admin returns 201, and information_schema.processlist
+#     shows the connections of user keystone-galera-route on the member
+#     status.currentPrimary names and on no other member.
+#   - After a planned switch the auth returns 201 again within 120 s, the
+#     connections sit on the new primary only, the connection value is
+#     byte-identical and the Keystone Deployment's generation is unchanged.
+#
+# The switch is a patch of spec.galera.primary.podIndex, then a delete of the
+# former primary's pod. The delete closes the pooled connections the former
+# primary still holds, which would otherwise linger for up to
+# connection_recycle_time (600 s), and the switch does not depend on the
+# timing of an automatic failover.
+#
+# In Static credentials mode the MySQL user is the CR name
+# (database.ResolveUsername), so the processlist checks filter on user
+# keystone-galera-route.
+#
+# ── concurrent: false ────────────────────────────────────────────────
+# Three mariadbd members with a 1Gi memory request each, beside three Keystone
+# pods, do not fit next to the parallel suites on the 4-vCPU runner of the
+# keystone leg. The suite runs alone, before the concurrent suites start, as
+# namespace-scoped-rbac does.
+#
+# Every script sets its own timeout, because the configuration's exec timeout
+# of 30s would cut the polls short.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-galera-primary-route
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    assert: 10m
+    delete: 5m
+    cleanup: 5m
+  steps:
+  # ── Step 1: Database credentials Secret ────────────────────────────────
+  # The password is generated at run time, so none sits in Git. The Secret
+  # carries username and password, the two keys keystone's SecretsReady gate
+  # expects; in Static mode the DSN takes the username from the CR name.
+  - name: db-secret
+    cleanup:
+    - script:
+        timeout: 60s
+        content: |
+          kubectl delete secret keystone-galera-route-db -n openstack --ignore-not-found
+    try:
+    - script:
+        timeout: 30s
+        shell: bash
+        content: |
+          set -euo pipefail
+          PW=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')
+          kubectl create secret generic keystone-galera-route-db -n openstack \
+            --from-literal=username=keystone-galera-route --from-literal=password="$PW" \
+            --dry-run=client -o yaml | kubectl apply -f -
+  # ── Step 2: Galera MariaDB and its primary Service ─────────────────────
+  - name: galera
+    try:
+    - apply:
+        file: 00-mariadb.yaml
+    - assert:
+        timeout: 10m
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: MariaDB
+          metadata:
+            name: galera-route-db
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: galera-route-db-primary
+            namespace: openstack
+    catch:
+    - script:
+        content: |
+          kubectl get mariadb galera-route-db -n openstack -o yaml 2>&1 || true
+          kubectl get pods,pvc -n openstack -o wide 2>&1 | grep -E 'NAME|galera-route-db' || true
+          for pod in galera-route-db-0 galera-route-db-1 galera-route-db-2; do
+            echo "--- $pod ---"
+            kubectl describe pod "$pod" -n openstack 2>&1 | tail -30 || true
+            kubectl logs "$pod" -n openstack -c mariadb --tail=60 2>&1 || true
+          done
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | grep galera-route-db | tail -40 || true
+  # ── Step 3: Keystone on the Galera MariaDB ─────────────────────────────
+  - name: keystone
+    try:
+    - apply:
+        file: 02-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-galera-route
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          kubectl get keystone keystone-galera-route -n openstack -o yaml 2>&1 || true
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=keystone-galera-route -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | grep keystone-galera-route | tail -40 || true
+  # ── Step 4: The DSN names the primary Service ──────────────────────────
+  - name: connection-names-primary
+    try:
+    - script:
+        timeout: 60s
+        shell: bash
+        content: |
+          set -euo pipefail
+          CONN=$(kubectl get secret keystone-galera-route-db-connection -n openstack \
+            -o jsonpath='{.data.connection}' | base64 -d)
+          case "$CONN" in
+            *"@galera-route-db-primary.openstack.svc:3306/"*)
+              echo "OK: the connection names galera-route-db-primary.openstack.svc:3306" ;;
+            *)
+              echo "FAIL: the connection does not name galera-route-db-primary.openstack.svc:3306:"
+              printf '%s\n' "$CONN" | sed 's#://\([^:]*\):[^@]*@#://\1:***@#'
+              exit 1 ;;
+          esac
+  # ── Step 5: One writer, and the route follows a planned switch ─────────
+  - name: one-writer-and-switch
+    try:
+    - script:
+        timeout: 14m
+        shell: bash
+        content: |
+          set -uo pipefail
+          NS=openstack
+          DB=galera-route-db
+          USER_NAME=keystone-galera-route
+          SELECTOR=app.kubernetes.io/name=keystone,app.kubernetes.io/instance=keystone-galera-route,pod-template-hash
+          ADMIN_PASS=$(kubectl get secret keystone-admin -n "$NS" -o jsonpath='{.data.password}' | base64 -d)
+          LAST_CODE=none
+
+          # auth_code prints the HTTP status of a password auth as admin against
+          # the local Keystone API of a running API pod, picked anew per call.
+          # The keystone image ships python3 but no curl.
+          auth_code() {
+            local pod
+            pod=$(kubectl get pods -n "$NS" -l "$SELECTOR" \
+              --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+            [ -n "$pod" ] || { echo "no-pod"; return; }
+            kubectl exec -n "$NS" "$pod" -- python3 -c '
+          import json, sys, urllib.request, urllib.error
+          pw = sys.argv[1]
+          body = json.dumps({"auth": {"identity": {"methods": ["password"], "password": {"user": {"name": "admin", "domain": {"id": "default"}, "password": pw}}}}}).encode()
+          req = urllib.request.Request("http://localhost:5000/v3/auth/tokens", data=body, headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  sys.stdout.write(str(r.status))
+          except urllib.error.HTTPError as e:
+              sys.stdout.write(str(e.code))
+          ' "$ADMIN_PASS" 2>/dev/null || echo "exec-failed"
+          }
+
+          # count_on <index> prints how many connections of the Keystone user
+          # member <index> holds, or fails when the member does not answer. The
+          # query runs as root in the container mariadb; the password reaches
+          # the client as MYSQL_PWD and stays out of every argv.
+          count_on() {
+            # shellcheck disable=SC2016 # $MARIADB_ROOT_PASSWORD and $1 expand in the container
+            kubectl exec "$DB-$1" -n "$NS" -c mariadb -- sh -c \
+              'MYSQL_PWD="$MARIADB_ROOT_PASSWORD" exec mariadb -uroot -N -B -e "$1"' _ \
+              "SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE USER='$USER_NAME'" 2>/dev/null
+          }
+
+          primary_index() {
+            local p
+            p=$(kubectl get mariadb "$DB" -n "$NS" -o jsonpath='{.status.currentPrimary}')
+            echo "${p##*-}"
+          }
+
+          diagnostics() {
+            echo "last auth code: $LAST_CODE"
+            echo "status.currentPrimary: $(kubectl get mariadb "$DB" -n "$NS" -o jsonpath='{.status.currentPrimary}')"
+            for i in 0 1 2; do echo "member $i: $(count_on "$i" || echo unreachable) connections of $USER_NAME"; done
+            kubectl get endpointslices -n "$NS" -l kubernetes.io/service-name="$DB-primary" -o wide 2>&1 || true
+            kubectl get pods -n "$NS" -o wide 2>&1 | grep -E "NAME|$DB|keystone-galera-route" || true
+          }
+
+          # wait_auth <seconds>: poll until a password auth returns 201.
+          wait_auth() {
+            local deadline=$((SECONDS + $1))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              LAST_CODE=$(auth_code)
+              [ "$LAST_CODE" = "201" ] && return 0
+              sleep 3
+            done
+            return 1
+          }
+
+          # one_writer <primary> <seconds> [<member that may be down>]: poll
+          # until the primary holds connections of the Keystone user and every
+          # other member answers 0. A member that does not answer is not yet
+          # proof, except the one named third, whose new container holds no
+          # connection and is not behind the primary Service.
+          one_writer() {
+            local primary=$1 deadline=$((SECONDS + $2)) may_be_down=${3:-} i n ok
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              ok=true
+              for i in 0 1 2; do
+                if ! n=$(count_on "$i"); then
+                  [ "$i" = "$may_be_down" ] || ok=false
+                  continue
+                fi
+                if [ "$i" = "$primary" ]; then
+                  [ "$n" -gt 0 ] || ok=false
+                else
+                  [ "$n" -eq 0 ] || ok=false
+                fi
+              done
+              if $ok; then
+                for i in 0 1 2; do echo "member $i: $(count_on "$i" || echo unreachable)"; done
+                return 0
+              fi
+              # A fresh auth keeps a connection open on the primary.
+              LAST_CODE=$(auth_code)
+              sleep 3
+            done
+            return 1
+          }
+
+          echo "=== phase A: a password auth returns 201 ==="
+          if ! wait_auth 60; then
+            echo "FAIL: password auth as admin did not return 201 within 60s"
+            diagnostics
+            exit 1
+          fi
+          echo "OK: password auth -> 201"
+
+          echo "=== phase B: connections on the current primary only ==="
+          OLD=$(primary_index)
+          case "$OLD" in
+            0|1|2) ;;
+            *) echo "FAIL: MariaDB $DB names no current primary ('$OLD')"; exit 1 ;;
+          esac
+          if ! one_writer "$OLD" 60; then
+            echo "FAIL: the connections of $USER_NAME are not on member $OLD only"
+            diagnostics
+            exit 1
+          fi
+          echo "OK: $USER_NAME connects to member $OLD, the current primary, only"
+
+          echo "=== phase C: switch the primary ==="
+          CONN_BEFORE=$(kubectl get secret keystone-galera-route-db-connection -n "$NS" -o jsonpath='{.data.connection}')
+          GEN_BEFORE=$(kubectl get deployment keystone-galera-route -n "$NS" -o jsonpath='{.metadata.generation}')
+          NEW=$(((OLD + 1) % 3))
+          kubectl patch mariadb "$DB" -n "$NS" --type merge \
+            -p "{\"spec\":{\"galera\":{\"primary\":{\"podIndex\":$NEW}}}}"
+
+          echo "=== phase D: status.currentPrimary names $DB-$NEW ==="
+          MOVE_BUDGET=180
+          deadline=$((SECONDS + MOVE_BUDGET))
+          while [ "$(primary_index)" != "$NEW" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: status.currentPrimary did not move to $DB-$NEW within ${MOVE_BUDGET}s"
+              kubectl get mariadb "$DB" -n "$NS" -o yaml || true
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "OK: status.currentPrimary is $DB-$NEW; deleting the former primary's pod $DB-$OLD"
+          OLD_UID=$(kubectl get pod "$DB-$OLD" -n "$NS" -o jsonpath='{.metadata.uid}')
+          kubectl delete pod "$DB-$OLD" -n "$NS" --wait=false
+
+          SWITCH_BUDGET=120
+          echo "=== phase E: auth and one writer within ${SWITCH_BUDGET}s ==="
+          START=$SECONDS
+          if ! wait_auth "$SWITCH_BUDGET"; then
+            echo "FAIL: password auth did not return 201 within ${SWITCH_BUDGET}s of the switch"
+            diagnostics
+            exit 1
+          fi
+          if ! one_writer "$NEW" $((SWITCH_BUDGET - (SECONDS - START))) "$OLD"; then
+            echo "FAIL: the connections of $USER_NAME are not on member $NEW only within ${SWITCH_BUDGET}s of the switch"
+            diagnostics
+            exit 1
+          fi
+          echo "OK: auth -> 201 and $USER_NAME connects to member $NEW only, $((SECONDS - START))s after the switch"
+
+          echo "=== phase F: the former primary rejoins ==="
+          # The MariaDB can still read Ready right after the delete, before the
+          # StatefulSet notices, so the recreated pod is awaited first.
+          REJOIN_BUDGET=300
+          deadline=$((SECONDS + REJOIN_BUDGET))
+          until [ "$(kubectl get pod "$DB-$OLD" -n "$NS" -o jsonpath='{.metadata.uid}' 2>/dev/null)" != "$OLD_UID" ] &&
+            kubectl wait pod "$DB-$OLD" -n "$NS" --for=condition=Ready --timeout=5s >/dev/null 2>&1; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: the recreated pod $DB-$OLD did not become Ready within ${REJOIN_BUDGET}s"
+              diagnostics
+              exit 1
+            fi
+            sleep 3
+          done
+          if ! kubectl wait mariadb "$DB" -n "$NS" --for=condition=Ready --timeout="${REJOIN_BUDGET}s"; then
+            echo "FAIL: MariaDB $DB did not return to Ready within ${REJOIN_BUDGET}s"
+            diagnostics
+            exit 1
+          fi
+          if ! one_writer "$NEW" 60; then
+            echo "FAIL: after the rejoin the connections of $USER_NAME are not on member $NEW only"
+            diagnostics
+            exit 1
+          fi
+          echo "OK: all three members answer; $USER_NAME connects to member $NEW only"
+
+          echo "=== phase G: no new DSN, no rollout ==="
+          CONN_AFTER=$(kubectl get secret keystone-galera-route-db-connection -n "$NS" -o jsonpath='{.data.connection}')
+          GEN_AFTER=$(kubectl get deployment keystone-galera-route -n "$NS" -o jsonpath='{.metadata.generation}')
+          if [ "$CONN_AFTER" != "$CONN_BEFORE" ]; then
+            echo "FAIL: the connection value changed across the switch"
+            exit 1
+          fi
+          if [ "$GEN_AFTER" != "$GEN_BEFORE" ]; then
+            echo "FAIL: Deployment keystone-galera-route generation moved from $GEN_BEFORE to $GEN_AFTER"
+            exit 1
+          fi
+          echo "OK: the connection value is byte-identical and the Deployment stays at generation $GEN_AFTER"
+  # ── Step 6: Teardown ───────────────────────────────────────────────────
+  # Keystone goes first: its finalizer needs the MariaDB to drop the Database,
+  # User and Grant CRs. The PVCs and the generated root password Secret are
+  # not owned by the MariaDB, so a rerun on the same cluster would start from
+  # the old data directory without the script.
+  - name: teardown
+    try:
+    - delete:
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          name: keystone-galera-route
+          namespace: openstack
+    - error:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-galera-route
+            namespace: openstack
+    - delete:
+        ref:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: MariaDB
+          name: galera-route-db
+          namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: MariaDB
+          metadata:
+            name: galera-route-db
+            namespace: openstack
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          set -uo pipefail
+          for pvc in $(kubectl get pvc -n openstack -o name | grep -E -- '-galera-route-db-[0-9]+$'); do
+            kubectl delete -n openstack "$pvc" --ignore-not-found
+          done
+          kubectl delete secret galera-route-db-root -n openstack --ignore-not-found
