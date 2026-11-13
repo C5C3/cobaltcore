@@ -502,11 +502,11 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 	barbican.Spec.Autoscaling = autoscaling
 	barbican.Spec.Jobs = projectJobs(bnSizing.Jobs)
 
-	// spec.dbClean stays unprojected with the rest of the child's own settings
-	// (network policy, logging, the graceful-termination timings, the rollout
-	// strategy, affinity): the clean-up retention and schedule the
-	// barbican-operator resolves at reconcile time keep tracking the operator
-	// defaults instead of being frozen into the projection.
+	// The local copy converts in one step. Nil projects nil, which the
+	// barbican-operator resolves like an empty block, and an unset field keeps
+	// tracking its defaults. Network policy, logging, the termination timings,
+	// the rollout strategy and affinity stay unprojected.
+	barbican.Spec.DBClean = (*barbicanv1alpha1.DBCleanSpec)(cp.Spec.Services.Barbican.DBClean.DeepCopy())
 
 	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
 		commonreconcile.ChildProjectionParams[*barbicanv1alpha1.Barbican]{

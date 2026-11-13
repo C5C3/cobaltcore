@@ -4872,6 +4872,34 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			mutate:  withRemoteComputeNova(""),
 		},
 		{
+			// Minimum=1 on services.barbican.dbClean.retentionDays, the bound the
+			// Barbican CRD carries on the field it is projected onto.
+			name:    "barbican dbClean retentionDays zero",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				bn := integrationBarbicanService()
+				bn.DBClean = &c5c3v1alpha1.ServiceBarbicanDBCleanSpec{RetentionDays: ptr.To(int32(0))}
+				cp.Spec.Services.Barbican = bn
+			},
+		},
+		{
+			// The accepted twin: the same block with every field set, so the
+			// rejection above answers the bound and not the block.
+			name:    "barbican dbClean all fields",
+			wantErr: false,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				bn := integrationBarbicanService()
+				bn.DBClean = &c5c3v1alpha1.ServiceBarbicanDBCleanSpec{
+					RetentionDays:             ptr.To(int32(1)),
+					Schedule:                  "@daily",
+					SoftDeleteExpiredSecrets:  ptr.To(false),
+					CleanUnassociatedProjects: ptr.To(true),
+					Suspend:                   true,
+				}
+				cp.Spec.Services.Barbican = bn
+			},
+		},
+		{
 			name:    "valid access rules, bootstrap resources, and public endpoint",
 			wantErr: false,
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
