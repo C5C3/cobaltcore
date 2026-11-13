@@ -449,6 +449,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
@@ -555,10 +556,6 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Reject fork PRs
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Prepare platform pair
@@ -568,6 +565,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
@@ -650,10 +648,6 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Reject fork PRs
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Prepare platform pair
@@ -663,6 +657,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
@@ -749,10 +744,6 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Reject fork PRs
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Prepare platform pair
@@ -762,6 +753,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
@@ -878,10 +870,6 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Reject fork PRs
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Prepare platform pair
@@ -891,6 +879,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
@@ -1027,10 +1016,6 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Reject fork PRs
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Prepare platform pair
@@ -1040,6 +1025,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
@@ -1178,10 +1164,6 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Reject fork PRs
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
-        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Prepare platform pair
@@ -1191,6 +1173,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
@@ -1342,6 +1325,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
@@ -1581,6 +1565,7 @@ jobs:
           platform: ${{ matrix.platform }}
 
       - name: Setup Docker registry
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/setup-docker-registry
         with:
           username: ${{ github.actor }}
