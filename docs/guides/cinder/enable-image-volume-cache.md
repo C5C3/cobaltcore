@@ -32,23 +32,15 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true WITH_NFS=true make deploy-infra
 
 Follow that tutorial through the block-storage block of Step 4 and the
 **Create a first volume** check in Step 7, so the projected `controlplane-cinder`
-child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. Every resource
-name in the examples below is one that devstack produces.
+child is `Ready` in `openstack` with `nfs1` and `nfsbk` attached. The devstack
+provides the `controlplane` and `nfs1` resources; the verification creates its
+own `demo-cache-img` image and `demo-img-*` volumes.
 :::
 
-::: warning Set storage on the ControlPlane, never on the projected children
-The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
-`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. A child you
-edit, or delete, by hand is reverted (or recreated) on the next reconcile.
-Change `services.cinder` on the `ControlPlane` CR and let the operator project
-it down; that block is the single source of truth for the projected storage.
-:::
-
-- The `OS_*` environment variables from the tutorial's token-issue step, so the
-  `openstack` client reaches the ControlPlane's Keystone.
-- A Glance the block-storage service can read images through. The devstack's
-  `services.glance` block provides it, and it is what gives the Cinder child its
-  `glanceEndpoint`.
+Keep the admin `OS_*` variables from the tutorial's token-issue step exported;
+the `--all-projects` volume listing requires those credentials. Cinder must also
+have a readable Glance endpoint. In this devstack, `services.glance` provides it
+and projects `glanceEndpoint` into the Cinder child.
 
 ## What the cache changes
 
@@ -66,8 +58,11 @@ Read them back:
 
 ```bash
 kubectl get cinder controlplane-cinder -n openstack \
-  -o jsonpath='{.spec.internalTenant}' | jq
+  -o jsonpath='{.spec.internalTenant.projectID}{"\n"}{.spec.internalTenant.userID}{"\n"}'
 ```
+
+Both outputs should be non-empty. If either is blank, wait for the Keystone
+service-account registration to publish its IDs before proceeding.
 
 Two consequences follow from that ownership. A cached volume is invisible in a
 tenant's own volume list, and nothing a tenant deletes removes it.
@@ -76,6 +71,14 @@ tenant's own volume list, and nothing a tenant deletes removes it.
 
 `imageVolumeCache` sits on a backend entry, so the switch is per backend. Add it
 to the `nfs1` entry:
+
+::: warning Set storage on the ControlPlane, never on the projected children
+The `controlplane-cinder` Cinder CR, the `CinderBackend` `nfs1` and the
+`CinderBackupBackend` `nfsbk` are **projected** by the c5c3-operator. A child you
+edit, or delete, by hand is reverted (or recreated) on the next reconcile.
+Change `services.cinder` on the `ControlPlane` CR and let the operator project
+it down; that block is the single source of truth for the projected storage.
+:::
 
 ```bash
 kubectl edit controlplane controlplane -n openstack
@@ -103,10 +106,11 @@ Both bounds are optional and independent, with a minimum of 1 each; whichever is
 reached first evicts the least recently used entry. Leaving both unset caches
 without a bound.
 
-The operator re-renders the backend's section and rolls its volume pod:
+The operator re-renders the backend configuration and rolls out its volume
+Deployment:
 
 ```bash
-kubectl rollout status deploy/controlplane-cinder-volume-nfs1 -n openstack
+kubectl rollout status deploy/controlplane-cinder-volume-nfs1 -n openstack --timeout=5m
 ```
 
 The rendered section lives in the content-hashed Secret
@@ -133,85 +137,226 @@ unbounded.
 
 ## Verification
 
-Upload a small raw image, create two volumes from it, and count the cache entries
-after each. A cache that never engaged leaves none, and one that engaged twice
-leaves two:
+Use example names that are unused in this OpenStack environment; the cleanup
+below deletes them. Create calls return before backend work completes, so wait
+for each image or volume to reach its target status before counting cache
+entries:
 
 ```bash
-dd if=/dev/urandom of=/tmp/cache.img bs=1024 count=1024
-openstack --insecure image create --disk-format raw --container-format bare \
-  --file /tmp/cache.img demo-cache-img
-IMG=$(openstack --insecure image show demo-cache-img -f value -c id)
+(
+  set -e
+
+  wait_status() {
+    local kind=$1 name=$2 wanted=$3 timeout=$4 deadline status
+    deadline=$(( $(date +%s) + timeout ))
+    while true; do
+      status=$(openstack --insecure "$kind" show "$name" -f value -c status 2>/dev/null || true)
+      if [ "$status" = "$wanted" ]; then
+        return 0
+      fi
+      case "$status" in
+        error*|killed)
+          echo "ERROR: $kind $name reached $status" >&2
+          openstack --insecure "$kind" show "$name" >&2 || true
+          return 1
+          ;;
+      esac
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "ERROR: $kind $name status '${status:-<none>}' != $wanted within ${timeout}s" >&2
+        openstack --insecure "$kind" show "$name" >&2 || true
+        return 1
+      fi
+      sleep 5
+    done
+  }
+
+  image_file=$(mktemp /tmp/cinder-cache.XXXXXX)
+  trap 'rm -f "$image_file"' EXIT
+  dd if=/dev/urandom of="$image_file" bs=1024 count=1024
+  openstack --insecure image create --disk-format raw --container-format bare \
+    --file "$image_file" demo-cache-img
+  rm -f "$image_file"
+  trap - EXIT
+  wait_status image demo-cache-img active 120
+  IMG=$(openstack --insecure image show demo-cache-img -f value -c id)
+
+  # The first create downloads the image and seeds the cache.
+  openstack --insecure volume create --size 1 --image "$IMG" demo-img-1
+  wait_status volume demo-img-1 available 180
+  VOLUME_NAMES=$(openstack --insecure volume list --all-projects -f value -c Name)
+  COUNT=$(printf '%s\n' "$VOLUME_NAMES" | grep -cx "image-$IMG" || true)
+  printf 'Cache entries after first create: %s\n' "$COUNT"
+  test "$COUNT" -eq 1 || {
+    echo "ERROR: expected one cache entry, found $COUNT" >&2
+    exit 1
+  }
+
+  # The second create clones the cached volume.
+  openstack --insecure volume create --size 1 --image "$IMG" demo-img-2
+  wait_status volume demo-img-2 available 180
+  VOLUME_NAMES=$(openstack --insecure volume list --all-projects -f value -c Name)
+  COUNT=$(printf '%s\n' "$VOLUME_NAMES" | grep -cx "image-$IMG" || true)
+  printf 'Cache entries after second create: %s\n' "$COUNT"
+  test "$COUNT" -eq 1 || {
+    echo "ERROR: expected the second create to reuse one cache entry, found $COUNT" >&2
+    exit 1
+  }
+)
 ```
 
-The first create is the one that downloads:
+Both checks should print `1`. The list uses `--all-projects` because Cinder
+stores the cache entry under the internal tenant; a tenant's own volume list
+omits it.
+
+The cleanup block looks up only these example names and skips resources that
+were not created, so you can also run it after a failed status wait. If Cinder
+rejects a volume delete while it is still creating, wait for its state to settle
+and rerun cleanup. The cache belongs to the deployment, so deleting the test
+volumes does not remove it:
 
 ```bash
-openstack --insecure volume create --size 1 --image "$IMG" demo-img-1
-openstack --insecure volume show demo-img-1 -c status -f value
-openstack --insecure volume list --all-projects -f value -c Name | grep -cx "image-$IMG"
+(
+  set -e
+
+  wait_gone() {
+    local volume_id=$1 timeout=$2 deadline ids
+    deadline=$(( $(date +%s) + timeout ))
+    while true; do
+      ids=$(openstack --insecure volume list --all-projects -f value -c ID) || {
+        echo "ERROR: could not list volumes while waiting for $volume_id" >&2
+        return 1
+      }
+      if ! printf '%s\n' "$ids" | grep -Fxq "$volume_id"; then
+        return 0
+      fi
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "ERROR: volume $volume_id is still listed after ${timeout}s" >&2
+        openstack --insecure volume show "$volume_id" >&2 || true
+        return 1
+      fi
+      sleep 5
+    done
+  }
+
+  wait_image_gone() {
+    local image_id=$1 timeout=$2 deadline ids
+    deadline=$(( $(date +%s) + timeout ))
+    while true; do
+      ids=$(openstack --insecure image list -f value -c ID) || {
+        echo "ERROR: could not list images while waiting for $image_id" >&2
+        return 1
+      }
+      if ! printf '%s\n' "$ids" | grep -Fxq "$image_id"; then
+        return 0
+      fi
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "ERROR: image $image_id is still listed after ${timeout}s" >&2
+        openstack --insecure image show "$image_id" >&2 || true
+        return 1
+      fi
+      sleep 5
+    done
+  }
+
+  resource_id() {
+    local rows=$1 name=$2 ids count
+    ids=$(printf '%s\n' "$rows" | awk -v n="$name" '$2 == n {print $1}')
+    count=$(printf '%s\n' "$ids" | grep -c . || true)
+    if [ "$count" -gt 1 ]; then
+      echo "ERROR: multiple resources are named $name" >&2
+      return 1
+    fi
+    printf '%s' "$ids"
+  }
+
+  VOLUME_ROWS=$(openstack --insecure volume list --all-projects -f value -c ID -c Name)
+  for name in demo-img-2 demo-img-1; do
+    volume_id=$(resource_id "$VOLUME_ROWS" "$name")
+    if [ -n "$volume_id" ]; then
+      openstack --insecure volume delete "$volume_id"
+    fi
+  done
+  for name in demo-img-2 demo-img-1; do
+    volume_id=$(resource_id "$VOLUME_ROWS" "$name")
+    if [ -n "$volume_id" ]; then
+      wait_gone "$volume_id" 120
+    fi
+  done
+
+  IMAGE_ROWS=$(openstack --insecure image list -f value -c ID -c Name)
+  IMG=$(resource_id "$IMAGE_ROWS" demo-cache-img)
+  if [ -n "$IMG" ]; then
+    VOLUME_ROWS=$(openstack --insecure volume list --all-projects -f value -c ID -c Name)
+    CACHE_ID=$(resource_id "$VOLUME_ROWS" "image-$IMG")
+    if [ -n "$CACHE_ID" ]; then
+      openstack --insecure volume delete "$CACHE_ID"
+      wait_gone "$CACHE_ID" 120
+    fi
+    openstack --insecure image delete "$IMG"
+    wait_image_gone "$IMG" 120
+  fi
+)
 ```
 
-The count is `1`. Use `--all-projects` to see the cache volume. It belongs to
-the internal tenant, so the requesting project's `volume list` omits it.
-
-The second create clones it:
-
-```bash
-openstack --insecure volume create --size 1 --image "$IMG" demo-img-2
-openstack --insecure volume show demo-img-2 -c status -f value
-openstack --insecure volume list --all-projects -f value -c Name | grep -cx "image-$IMG"
-```
-
-The count is still `1`. A `2` would mean the second request downloaded the image
-again and wrote its own entry.
-
-Clean up. The two tenant volumes go the usual way, and the cache volume has to be
-deleted by id, since nothing above owns it:
-
-```bash
-openstack --insecure volume delete demo-img-2 demo-img-1
-CACHE_ID=$(openstack --insecure volume list --all-projects -f value -c ID -c Name \
-  | awk -v n="image-$IMG" '$2 == n {print $1}')
-openstack --insecure volume delete "$CACHE_ID"
-openstack --insecure image delete demo-cache-img
-rm -f /tmp/cache.img
-```
-
-Clearing `imageVolumeCache` on the entry turns the cache off again on the next
-rollout. It leaves the entries already written behind, which is the same delete
-by id.
+On the ControlPlane's `nfs1` entry, set `enabled: false` or remove
+`imageVolumeCache` to turn the cache off. Cinder keeps cache volumes already
+written, so delete them by ID as above.
 
 ## Standalone Cinder, without a ControlPlane
 
-Without a ControlPlane nothing derives the internal tenant from a registration,
-so you supply it on the `Cinder` CR alongside the cache block on the backend:
+Use this path when Cinder is managed directly and no ControlPlane projects the
+service account. Set `spec.internalTenant` on the existing Cinder first, then
+enable the cache on its existing `CinderBackend`. Merge these fragments into
+the current specs; do not apply them as complete manifests.
 
-```yaml
-apiVersion: cinder.openstack.c5c3.io/v1alpha1
-kind: Cinder
-metadata:
-  name: cinder
-  namespace: openstack
-spec:
-  internalTenant:
-    projectID: 8a1c4c0e7f5b4d2a9c6e3f8b1d7a4c52
-    userID: 3f9d2b7c1a8e4f60b5d3c7a9e2b6f841
-```
-
-Provide both IDs. Cinder passes them to the volume API without resolving names
-through Keystone, so a name reaches the backend as a project that does not
-exist. Read the values from Keystone:
+Read the Keystone project and user IDs. Replace `service` or `cinder` if your
+Keystone account uses different names:
 
 ```bash
 openstack --insecure project show service -f value -c id
 openstack --insecure user show cinder -f value -c id
 ```
 
-A backend that enables the cache on a Cinder carrying no `spec.internalTenant` is
-admitted, with an admission warning. The two CRs are applied independently, so
-GitOps ordering may present the backend first. Until the block
-is there the cache stays inactive.
+Edit the Cinder object named `cinder` in this example:
+
+```bash
+kubectl edit cinder cinder -n openstack
+```
+
+Add these fields to its existing `spec`:
+
+```yaml
+spec:
+  internalTenant:
+    projectID: "<project-id>"
+    userID: "<user-id>"
+```
+
+Both values must be IDs, not names. Cinder passes them to the volume API without
+resolving names through Keystone, so a name reaches the backend as a project
+that does not exist.
+
+Edit the existing backend, replacing `BACKEND_NAME` with its resource name:
+
+```bash
+kubectl edit cinderbackend BACKEND_NAME -n openstack
+```
+
+Add this field to its existing `spec`, keeping its current driver settings:
+
+```yaml
+spec:
+  imageVolumeCache:
+    enabled: true
+    maxSizeGB: 10
+    maxCount: 5
+```
+
+If the referenced Cinder exists without `spec.internalTenant` when you create or
+update the backend, the webhook warns but still admits it. If the backend arrives
+before its Cinder, the webhook cannot inspect the parent and emits no warning at
+that point. In either order, the cache stays inactive until the Cinder has both
+IDs.
 
 ## See also
 
