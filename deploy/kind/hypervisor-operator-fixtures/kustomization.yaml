@@ -20,9 +20,9 @@
 # fixtures.yaml declares the domain, the project, the imports of the
 # hypervisor operator's user and the admin role, the role assignment, the
 # flavor, the volume type, the network and the subnet. image.yaml declares
-# the cirros image, which K-ORC downloads from download.cirros-cloud.net; the
-# full-ControlPlane e2e suite applies fixtures.yaml alone. The image URL and
-# its sha256 are bumped together by hand.
+# the cirros image, which K-ORC downloads from the cirros-dev/cirros GitHub
+# release; the full-ControlPlane e2e suite applies fixtures.yaml alone. The
+# image URL and its sha256 are bumped together by hand.
 #
 # Every object lives in `openstack`, the quick start ControlPlane's
 # namespace, and authenticates through that ControlPlane's admin clouds.yaml
