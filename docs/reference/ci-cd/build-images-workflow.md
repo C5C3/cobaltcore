@@ -90,9 +90,10 @@ filters name. They name `tests/lib/uwsgi.sh`, and so does the `base` filter: the
 uWSGI import and graceful-shutdown checks that the verify scripts of keystone,
 glance, placement, barbican, neutron, cinder, nova and horizon source.
 
-> **Fork PRs are not supported.** Fork PRs receive a read-only `GITHUB_TOKEN`
-> that cannot write packages. The workflow detects fork PRs and fails fast with a
-> clear error message.
+Pull requests, including forks, build images locally, scan them and run their
+verification scripts. These builds skip registry login and never push images or
+export publication digests. Registry publishing, manifest merging, signing and
+attestation run only on non-PR events. Forks use the binary cache read-only.
 
 ## Permissions
 
