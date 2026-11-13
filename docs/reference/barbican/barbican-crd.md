@@ -127,6 +127,16 @@ The CronJob is also suspended for the length of a schema convergence, whatever
 and a `Forbid` concurrency policy, so a wedged run fails instead of accumulating
 one active Job per firing.
 
+The clean-up of the Barbican image changes rows in batches of 10,000 and
+commits each batch ([source patches](../ci-cd/container-images.md#barbican)).
+A batch that conflicts with a concurrent API write (MariaDB error 1020, 1213 or
+1205) is rolled back, logged at WARNING and retried, up to ten times. A run that
+still fails keeps the batches it committed, and the next attempt of the Job
+continues behind them. Once a later run has completed, the operator deletes the
+failed Jobs the CronJob created before it, so a `KubeJobFailed` alert ends with
+the next successful run. The deletion also runs while the clean-up is
+suspended. A failed run that is the newest finished run is never deleted.
+
 ### Defaulting and validation
 
 The mutating webhook applies the shared `DeploymentSpec` default (replicas 3),

@@ -139,7 +139,9 @@ the shared `RecordJobTerminalState` (`DBCleanMetricEmissionDeferred`)
 > `DBCleanReady` keeps reporting a healthy schedule. A suspended clean-up raises
 > no event at all: it reports `DBCleanReady=True` under its own reason, and the
 > only signal that the backlog is growing is that the `db_clean` metric stops
-> incrementing.
+> incrementing. The failed Job and its pod logs exist until a later run
+> completes. The operator then deletes the Job, and the event and
+> `barbican_operator_db_clean_total{result="failed"}` remain.
 
 ### Suspension
 
