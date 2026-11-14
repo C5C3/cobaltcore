@@ -10,12 +10,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # How-to: Enable Glance Image Caching
 
-Every image download Glance serves is a read out of the object store. Booting
-fifty instances from the same image means fifty of those reads, all for bytes
-that have not changed since the first one. `spec.imageCache` lets the API pods
-keep what they have served on their own disk, so the repeat reads are answered
-from the node. This guide covers what that buys, how to size the bound it needs,
-and how to tell a warm cache from a cold one.
+Without an image cache, every image download Glance serves reads from the object
+store. Booting fifty instances from the same image means fifty reads for bytes
+that have not changed. `spec.imageCache` lets each API pod keep copies of images
+it has served on node-local disk, so a repeat download can avoid the store when
+it reaches a pod that already has the image. This guide covers what that saves,
+how to size the bound it needs, and how to tell a warm cache from a cold one.
 
 ## Prerequisites
 
@@ -38,19 +38,20 @@ devstack produces.
 
 ## What the cache changes
 
-`GlanceBackend` supports one store type, `S3`, so every image download travels
-the object-store path: the API pod opens a connection to the store, streams the
-object back, and pays that latency and that egress once per download. A boot
-storm of N instances from one image is N such reads.
+`GlanceBackend` supports one store type, `S3`. Without the image cache, the API
+pod opens a connection to the store for each download, streams the object back,
+and pays that latency and egress every time. A boot storm of N instances from
+one image is N such reads.
 
-With the cache on, the first download of an image also writes it to the pod's
-cache directory. Later downloads of the same image are served from there, and
-the store sees nothing.
+With the cache on, a download to a replica without the image reads it from the
+store and writes it to that replica's cache directory. Later downloads routed to
+that replica can be served from the local copy while it remains cached. Other
+replicas still read from the store until their own caches contain the image.
 
 The figure shows a download as path C. The dashed parts exist only while the
 cache is enabled.
 
-![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. Each size limit is an eviction threshold: once a volume grows past it, the kubelet evicts the pod. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
+![Three paths of image bytes through one glance-api pod, and the three volumes on the disk of its node. Path A, a client upload with PUT /v2/images/{id}/file: the request body streams through the pod straight into the S3 store and touches no volume. Path B, a web-download import with POST /v2/images/{id}/import: the request returns at once, the pod fetches the whole image from a web server that the import filter admits onto the volume staging, an import plugin may convert it there into a second file, and after the last byte the image moves to the store. Path C, a download with GET /v2/images/{id}/file: the pod reads the image from the store, and with the image cache enabled it also writes it to the volume image-cache and serves later downloads of that image from there. The cache belongs to one replica, and a sidecar prunes it down to 80 percent of its size limit. The volumes staging, tasks-work and image-cache are emptyDirs. A sizeLimit is an eviction threshold, not a quota; periodic kubelet checks mean usage can exceed it before a pod is evicted. No import writes image bytes to tasks-work.](../../diagrams/service-glance-image-paths.svg)
 
 Two properties shape what that is worth:
 
@@ -63,9 +64,11 @@ availability therefore costs cache efficiency.
 
 **Every rollout starts it cold.** The cache is an `emptyDir`, so a config
 change, a release upgrade, a node drain, or an eviction discards it. Nothing
-warms it in advance, and no CR field changes that. The cache does not keep
-Glance available during an object-store outage. It shortens repeat reads while
-the pods are running.
+warms it in advance, and no CR field changes that. Glance can serve the bytes
+for a warm cache hit without reading the image from the object store, but the
+request still needs the API and image metadata. A cache miss needs the store, so
+a local cache does not guarantee that Glance as a whole remains available
+during an outage.
 
 ## Enable it
 
@@ -89,7 +92,7 @@ guide.
 :::
 
 Enabling, resizing, and retuning each cost one rollout. The pod template gains
-the volume and the sidecar in the same reconcile that rewrites the config
+the volume and the sidecar in the same reconcile that updates the configuration
 ConfigMap, so the two changes do not restart the pods twice.
 
 Read back what the pods actually got:
@@ -118,10 +121,10 @@ kubectl get controlplane controlplane -n openstack \
 and the API does not check it when it writes. The operator renders
 `image_cache_max_size` as `sizeLimit / 10 * 8`, so a `20Gi` bound gives the
 pruner `17179869184` bytes to prune down to and leaves the remaining 20% as
-headroom. Glance's pruner only prunes down to that
-threshold, and only when the maintenance loop runs it, so the cache sits above
-the mark between two passes; the headroom is what keeps those writes from
-crossing the `emptyDir` bound and getting the pod evicted.
+headroom. Glance's pruner only prunes down to that threshold, and only when the
+maintenance loop runs it, so the cache can sit above the mark between passes.
+The headroom gives writes room before the `emptyDir` eviction threshold. Large
+or concurrent downloads can still exceed it before the kubelet's next check.
 
 Three numbers decide the value:
 
@@ -132,19 +135,27 @@ Three numbers decide the value:
   `spec.sizing.glance.api.replicas` scales the node-disk cost linearly, and the
   scheduler is not told about it: the operator derives no
   `resources.requests.ephemeral-storage` from this field, just as it derives
-  none from `spec.staging`. Size nodes against
-  `replicas × (2 × staging.sizeLimit + imageCache.sizeLimit)`.
-- **A large single image still fits.** An image bigger than
-  `image_cache_max_size` is cached in full, because the size check runs after
-  the download, and the next pruner pass removes it. It only becomes dangerous
-  as it approaches `sizeLimit` itself, since that is the bound the kubelet
-  enforces and glance knows nothing about.
+  none from `spec.staging`. When staging is bounded, both scratch volumes use
+  its resolved limit (`10Gi` by default); `spec.staging.unbounded` removes that
+  bound. Across the deployment, the configured emptyDir limits total
+  `replicas × (2 × resolved staging limit + resolved image-cache limit)`.
+  The kubelet checks emptyDir usage periodically, so actual use can exceed a
+  limit between checks. Size each node for the replicas it may host, plus that
+  overshoot and other node-local writes.
+- **Large downloads can outrun pruning.** Glance writes a download under
+  `incomplete/` before it becomes a prunable cache entry, and the size poll
+  excludes that directory. A single image larger than `image_cache_max_size` is
+  cached in full before a later pass can prune it. Keep enough space for the
+  largest image and concurrent downloads; the kubelet can evict the pod if a
+  download exceeds `emptyDir.sizeLimit` before its next check.
 
 `maintenanceInterval` sets the cadence for passes while the cache is below the
 threshold. It bounds how long a stalled entry remains. The sidecar's 30-second
-size poll protects the headroom by pruning as soon as the cache crosses
-`image_cache_max_size` regardless of the interval. The interval's floor is `1m`
-because every scheduled tick walks the cache directory and its sqlite index.
+size poll starts a pass when it observes reclaimable cache entries above
+`image_cache_max_size`, regardless of the interval. It can take up to 30
+seconds to observe that threshold, and it cannot prune in-progress downloads.
+The interval's floor is `1m` because every scheduled tick walks the cache
+directory and its sqlite index.
 
 ## Verification
 
@@ -153,23 +164,41 @@ cache is written on the download path, so the upload alone leaves the directory
 empty:
 
 ```bash
-dd if=/dev/urandom of=/tmp/cache-demo.img bs=1M count=64
+dd if=/dev/urandom of=/tmp/cache-demo.img bs=1048576 count=64
 openstack --insecure image create --disk-format raw --container-format bare \
   --file /tmp/cache-demo.img cache-demo
 openstack --insecure image save --file /tmp/cache-demo.out cache-demo
-openstack --insecure image show cache-demo -f value -c id
+IMAGE_ID=$(openstack --insecure image show cache-demo -f value -c id)
+echo "Image ID: ${IMAGE_ID}"
 ```
 
 The download landed on one replica, and only that pod cached it, so look at all
-of them:
+of them. Glance completes the cache entry after it streams the final byte to the
+client, so allow up to a minute for the file to appear:
 
 ```bash
-for pod in $(kubectl get pods -n openstack \
-    -l app.kubernetes.io/instance=controlplane-glance -o name); do
-  echo "--- $pod"
-  kubectl exec -n openstack "${pod#pod/}" -c glance-api -- \
-    ls -1 /var/lib/glance/image-cache
+PODS=$(kubectl get pods -n openstack \
+  -l app.kubernetes.io/instance=controlplane-glance -o name)
+CACHED_ON=""
+for _ in $(seq 1 12); do
+  for pod in $PODS; do
+    listing=$(kubectl exec -n openstack "${pod#pod/}" -c glance-api -- \
+      ls -1 /var/lib/glance/image-cache 2>/dev/null || true)
+    if printf '%s\n' "$listing" | grep -qx "$IMAGE_ID" \
+      && printf '%s\n' "$listing" | grep -qx 'cache.db'; then
+      CACHED_ON="${pod#pod/}"
+      break 2
+    fi
+  done
+  sleep 5
 done
+if [ -z "$CACHED_ON" ]; then
+  echo "ERROR: image ${IMAGE_ID} did not appear in any replica's cache." >&2
+  exit 1
+fi
+echo "Cached on pod ${CACHED_ON}:"
+kubectl exec -n openstack "$CACHED_ON" -c glance-api -- \
+  ls -1 /var/lib/glance/image-cache
 ```
 
 One pod lists a file named after the image ID the command above printed, next to
@@ -185,7 +214,13 @@ replica, and returns the same bytes either way:
 
 ```bash
 openstack --insecure image save --file /tmp/cache-demo.again cache-demo
-sha256sum /tmp/cache-demo.img /tmp/cache-demo.out /tmp/cache-demo.again
+if cmp -s /tmp/cache-demo.img /tmp/cache-demo.out \
+  && cmp -s /tmp/cache-demo.img /tmp/cache-demo.again; then
+  echo "Both downloads match the uploaded image."
+else
+  echo "ERROR: a downloaded image differs from the uploaded image." >&2
+  exit 1
+fi
 ```
 
 Clean up:
@@ -199,10 +234,10 @@ rm -f /tmp/cache-demo.img /tmp/cache-demo.out /tmp/cache-demo.again
 
 The `cache-maintenance` sidecar runs `glance-cache-pruner` and
 `glance-cache-cleaner` on schedule and whenever its 30-second size poll finds
-the cache above `image_cache_max_size`. This size trigger keeps concurrent
-downloads from crossing the `emptyDir` bound between scheduled passes because
-Glance does not check the size on the write path. The sidecar logs
-are the only place either command's output appears:
+reclaimable cache entries above `image_cache_max_size`. The poll does not see
+in-progress downloads, so it cannot guarantee that concurrent writes stay
+within the `emptyDir` bound. The sidecar logs are the only place either
+command's output appears:
 
 ```bash
 kubectl logs -n openstack deploy/controlplane-glance -c cache-maintenance --tail=30
@@ -213,21 +248,22 @@ No failure of a maintenance pass takes the pod down. The loop prints
 stderr and tries again on the next pass, and it keeps doing that however long
 the failure lasts. The sidecar shares the pod with `glance-api`. If it exits,
 the container restarts, the pod becomes `NotReady`, and the Service drops that
-API replica. A broken pruner comes from the image or shared config, so it can
-fail on every replica at once. A degraded cache must not become an immediate
-Glance outage.
+API replica. A binary or shared-configuration failure can affect every replica
+at once; a corrupted sqlite index can affect only its owning replica. A
+degraded cache must not become an immediate Glance outage.
 
 Watch the consecutive count, because absorbing the failure only delays the
 outage. `1 consecutive` on an otherwise quiet log is a transient, and the
 matching `glance-cache-maintenance recovered: after <n> consecutive failures`
-line says it cleared. A count that keeps climbing is a pruner that can never
-run: nothing else enforces `image_cache_max_size`, so every replica's cache
-grows to the `emptyDir` bound and the kubelet evicts the pod on ephemeral-storage
-pressure. That eviction does not pass through the eviction API, so the
-`PodDisruptionBudget` does not stagger these evictions. Replicas under even
-traffic can cross their identical bound together, then refill and go
-again. Meanwhile the `Glance` CR shows only `DeploymentReady=False` with reason
-`WaitingForDeployment`; nothing in its status names the cache. **Alert on
+line says it cleared. A count that keeps climbing means the pruner cannot run in
+that pod. Nothing else enforces `image_cache_max_size`, so that replica's cache
+can grow to its `emptyDir` bound and the kubelet can evict the pod under
+ephemeral-storage pressure. That eviction does not pass through the eviction
+API, so the `PodDisruptionBudget` does not stagger it. If a shared failure
+affects all replicas, they can cross their identical bounds together, then
+refill and go again. Meanwhile the `Glance` CR shows only
+`DeploymentReady=False` with reason `WaitingForDeployment`; nothing in its
+status names the cache. **Alert on
 `glance-cache-maintenance failed`.** It is the only place this failure is
 visible before the evictions start.
 
