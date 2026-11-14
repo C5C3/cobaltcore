@@ -199,13 +199,27 @@ func mapGophercloudError(err error, op string) error {
 	return fmt.Errorf("%s: %w", op, err)
 }
 
+// withRequestTimeout runs fn under a context bounded by the request timeout
+// and names the timeout in fn's error when that deadline, not the caller's,
+// ended it. The bounded context is cancelled when fn returns, so fn must
+// finish reading the response body first, as a gophercloud call does.
+func (c *httpClient) withRequestTimeout(ctx context.Context, fn func(context.Context) error) error {
+	reqCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+	return c.requestError(ctx, fn(reqCtx))
+}
+
 // GetMapping fetches one federation mapping by ID via gophercloud.
 func (c *httpClient) GetMapping(ctx context.Context, id string) (*federation.Mapping, error) {
 	sc, err := c.mappingServiceClient(ctx)
 	if err != nil {
 		return nil, err
 	}
-	m, err := federation.GetMapping(ctx, sc, id).Extract()
+	var m *federation.Mapping
+	err = c.withRequestTimeout(ctx, func(ctx context.Context) (err error) {
+		m, err = federation.GetMapping(ctx, sc, id).Extract()
+		return err
+	})
 	if err != nil {
 		return nil, mapGophercloudError(err, "GET mapping "+id)
 	}
@@ -218,7 +232,10 @@ func (c *httpClient) CreateMapping(ctx context.Context, id string, rules []feder
 	if err != nil {
 		return err
 	}
-	_, err = federation.CreateMapping(ctx, sc, id, federation.CreateMappingOpts{Rules: rules}).Extract()
+	err = c.withRequestTimeout(ctx, func(ctx context.Context) error {
+		_, err := federation.CreateMapping(ctx, sc, id, federation.CreateMappingOpts{Rules: rules}).Extract()
+		return err
+	})
 	return mapGophercloudError(err, "PUT mapping "+id)
 }
 
@@ -228,7 +245,10 @@ func (c *httpClient) UpdateMapping(ctx context.Context, id string, rules []feder
 	if err != nil {
 		return err
 	}
-	_, err = federation.UpdateMapping(ctx, sc, id, federation.UpdateMappingOpts{Rules: rules}).Extract()
+	err = c.withRequestTimeout(ctx, func(ctx context.Context) error {
+		_, err := federation.UpdateMapping(ctx, sc, id, federation.UpdateMappingOpts{Rules: rules}).Extract()
+		return err
+	})
 	return mapGophercloudError(err, "PATCH mapping "+id)
 }
 
@@ -238,7 +258,9 @@ func (c *httpClient) DeleteMapping(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	err = federation.DeleteMapping(ctx, sc, id).ExtractErr()
+	err = c.withRequestTimeout(ctx, func(ctx context.Context) error {
+		return federation.DeleteMapping(ctx, sc, id).ExtractErr()
+	})
 	return mapGophercloudError(err, "DELETE mapping "+id)
 }
 

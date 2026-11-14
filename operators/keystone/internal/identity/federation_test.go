@@ -7,13 +7,16 @@ package identity_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/federation"
 	. "github.com/onsi/gomega"
 	"k8s.io/utils/ptr"
 
 	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity/fake"
 )
 
 func TestIdentityProvider_CreateGetUpdateDelete(t *testing.T) {
@@ -221,4 +224,83 @@ func TestRolesProjectsAndAssignments(t *testing.T) {
 		"domain/domain-0001/group/"+groupID+"/role/"+roleID,
 		"project/"+projectID+"/group/"+groupID+"/role/"+roleID,
 	))
+}
+
+// An API request that gets no answer ends at the request timeout behind its
+// method and path, after a token request that succeeded, and leaves the
+// identity provider in place.
+func TestDeleteIdentityProvider_UnansweredRequestTimesOut(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClientWithTimeout(t, 100*time.Millisecond)
+	ctx := context.Background()
+	g.Expect(c.CreateIdentityProvider(ctx, identity.IdentityProvider{ID: "keycloak"})).To(Succeed())
+	srv.InjectFault(fake.Fault{Method: http.MethodDelete, Path: "/v3/OS-FEDERATION/identity_providers/keycloak", Hang: true})
+
+	err := c.DeleteIdentityProvider(ctx, "keycloak")
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+	g.Expect(err.Error()).To(HavePrefix("DELETE /OS-FEDERATION/identity_providers/keycloak: request did not complete within 100ms"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("authenticating against"))
+	g.Expect(srv.IdentityProvider("keycloak")).NotTo(BeNil())
+}
+
+// A mapping request gophercloud sends ends at the request timeout too, behind
+// the mapping operation, and matches no sentinel.
+func TestDeleteMapping_UnansweredRequestTimesOut(t *testing.T) {
+	g := NewGomegaWithT(t)
+	c, srv := newClientWithTimeout(t, 100*time.Millisecond)
+	srv.InjectFault(fake.Fault{Method: http.MethodDelete, Path: "/v3/OS-FEDERATION/mappings/m1", Hang: true})
+
+	err := c.DeleteMapping(context.Background(), "m1")
+	g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+	g.Expect(err.Error()).To(HavePrefix("DELETE mapping m1: request did not complete within 100ms"))
+	g.Expect(matchesSentinel(err)).To(BeFalse())
+}
+
+// The other three mapping operations end at the request timeout as
+// DeleteMapping does, each behind its own operation, and match no sentinel.
+func TestGetCreateUpdateMapping_UnansweredRequestTimesOut(t *testing.T) {
+	rules := []federation.MappingRule{{
+		Local:  []federation.RuleLocal{{User: &federation.RuleUser{Name: "{0}"}}},
+		Remote: []federation.RuleRemote{{Type: "HTTP_OIDC_PREFERRED_USERNAME"}},
+	}}
+	cases := []struct {
+		name   string
+		method string
+		prefix string
+		call   func(identity.Client) error
+	}{
+		{
+			name:   "GetMapping",
+			method: http.MethodGet,
+			prefix: "GET mapping m1: ",
+			call: func(c identity.Client) error {
+				_, err := c.GetMapping(context.Background(), "m1")
+				return err
+			},
+		},
+		{
+			name:   "CreateMapping",
+			method: http.MethodPut,
+			prefix: "PUT mapping m1: ",
+			call:   func(c identity.Client) error { return c.CreateMapping(context.Background(), "m1", rules) },
+		},
+		{
+			name:   "UpdateMapping",
+			method: http.MethodPatch,
+			prefix: "PATCH mapping m1: ",
+			call:   func(c identity.Client) error { return c.UpdateMapping(context.Background(), "m1", rules) },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			c, srv := newClientWithTimeout(t, 100*time.Millisecond)
+			srv.InjectFault(fake.Fault{Method: tc.method, Path: "/v3/OS-FEDERATION/mappings/m1", Hang: true})
+
+			err := tc.call(c)
+			g.Expect(errors.Is(err, context.DeadlineExceeded)).To(BeTrue(), "got %v", err)
+			g.Expect(err.Error()).To(HavePrefix(tc.prefix + "request did not complete within 100ms"))
+			g.Expect(matchesSentinel(err)).To(BeFalse())
+		})
+	}
 }

@@ -11,7 +11,9 @@
 // one federation resource its SDK covers (the Phase-0 client decision);
 // identity providers, protocols, groups, roles, and role assignments stay on
 // the local REST implementation in federation.go until the parallel upstream
-// gophercloud contributions land (they gate nothing here).
+// gophercloud contributions land (they gate nothing here). Every HTTP request
+// of the client, the token request included, runs under its own
+// RequestTimeout deadline, so one call waits at most twice that.
 package identity
 
 import (
@@ -23,6 +25,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/federation"
 
@@ -41,6 +44,10 @@ var (
 	// ErrForbidden maps HTTP 403 (e.g. deleting an enabled domain).
 	ErrForbidden = errors.New("forbidden")
 )
+
+// RequestTimeout bounds one HTTP request of the identity client, the token
+// request included, from the moment it is sent until its response body is read.
+const RequestTimeout = 10 * time.Second
 
 // HTTPDoer re-exports the shared client seam so tests can inject a stub
 // transport, mirroring the health-check reconciler's injection point.
@@ -160,18 +167,33 @@ type Client interface {
 // call via POST /v3/auth/tokens (password method, project-scoped) — no token
 // caching, because domain operations are rare (provisioning and deletion
 // only) and a cached token would add expiry/invalidation state for no
-// measurable gain.
+// measurable gain. The token request and the API request of a call each get
+// their own requestTimeout deadline, so a slow token request does not shorten
+// the API request's time.
 type httpClient struct {
 	// endpoint is the cluster-local Keystone API URL including the /v3
 	// suffix, e.g. http://keystone.openstack.svc.cluster.local:5000/v3.
 	endpoint string
 	creds    Credentials
 	doer     HTTPDoer
+	// requestTimeout bounds each HTTP request through a context deadline,
+	// which works with any doer, unlike http.Client.Timeout.
+	requestTimeout time.Duration
 }
 
 // NewHTTPClient builds a Client against the given /v3 endpoint. A nil doer
-// falls back to http.DefaultClient.
+// falls back to http.DefaultClient. Every HTTP request of the client runs
+// under a RequestTimeout deadline derived from the caller's context.
 func NewHTTPClient(endpoint string, creds Credentials, doer HTTPDoer) Client {
+	return newHTTPClient(endpoint, creds, doer, RequestTimeout)
+}
+
+// newHTTPClient is NewHTTPClient with the per-request timeout as a parameter;
+// a requestTimeout of zero or less becomes RequestTimeout.
+func newHTTPClient(endpoint string, creds Credentials, doer HTTPDoer, requestTimeout time.Duration) Client {
+	if requestTimeout <= 0 {
+		requestTimeout = RequestTimeout
+	}
 	if doer == nil {
 		doer = http.DefaultClient
 	}
@@ -181,7 +203,18 @@ func NewHTTPClient(endpoint string, creds Credentials, doer HTTPDoer) Client {
 	if creds.UserDomainName == "" {
 		creds.UserDomainName = "Default"
 	}
-	return &httpClient{endpoint: endpoint, creds: creds, doer: doer}
+	return &httpClient{endpoint: endpoint, creds: creds, doer: doer, requestTimeout: requestTimeout}
+}
+
+// requestError names the request timeout in err when the client's own
+// deadline ended the request: err wraps context.DeadlineExceeded while the
+// caller's context parent is still live. A cancelled caller, or a caller
+// whose own deadline fired first, gets err unchanged.
+func (c *httpClient) requestError(parent context.Context, err error) error {
+	if errors.Is(err, context.DeadlineExceeded) && parent.Err() == nil {
+		return fmt.Errorf("request did not complete within %s: %w", c.requestTimeout, err)
+	}
+	return err
 }
 
 // authenticate obtains a project-scoped token via the password method and
@@ -212,7 +245,11 @@ func (c *httpClient) authenticate(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("marshaling auth request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint+"/auth/tokens", bytes.NewReader(payload))
+	// cancel is deferred before the body drain, so the drain runs first,
+	// under the live deadline.
+	reqCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, c.endpoint+"/auth/tokens", bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("building auth request: %w", err)
 	}
@@ -220,7 +257,7 @@ func (c *httpClient) authenticate(ctx context.Context) (string, error) {
 
 	resp, err := c.doer.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("authenticating against %s: %w", c.endpoint, err)
+		return "", fmt.Errorf("authenticating against %s: %w", c.endpoint, c.requestError(ctx, err))
 	}
 	defer func() {
 		// Drain before closing so the transport can reuse the connection.
@@ -246,7 +283,8 @@ func (c *httpClient) authenticate(ctx context.Context) (string, error) {
 // do issues an authenticated request, maps the error-class status codes to
 // the sentinel errors, and returns the fully-read response body. Reading (and
 // closing) the body here keeps the connection reusable and centralizes the
-// lifecycle so no caller can leak it.
+// lifecycle so no caller can leak it. The API request gets its own deadline,
+// which covers sending it and reading its body.
 func (c *httpClient) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	token, err := c.authenticate(ctx)
 	if err != nil {
@@ -262,7 +300,9 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any) ([]b
 		reader = bytes.NewReader(payload)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, reader)
+	reqCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, method, c.endpoint+path, reader)
 	if err != nil {
 		return nil, fmt.Errorf("building %s %s request: %w", method, path, err)
 	}
@@ -273,7 +313,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any) ([]b
 
 	resp, err := c.doer.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %w", method, path, err)
+		return nil, fmt.Errorf("%s %s: %w", method, path, c.requestError(ctx, err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	payload, readErr := io.ReadAll(resp.Body)
@@ -292,7 +332,7 @@ func (c *httpClient) do(ctx context.Context, method, path string, body any) ([]b
 		return nil, fmt.Errorf("%s %s: unexpected HTTP %d%s", method, path, resp.StatusCode, bodySnippet(payload))
 	}
 	if readErr != nil {
-		return nil, fmt.Errorf("reading %s %s response: %w", method, path, readErr)
+		return nil, fmt.Errorf("reading %s %s response: %w", method, path, c.requestError(ctx, readErr))
 	}
 	return payload, nil
 }
