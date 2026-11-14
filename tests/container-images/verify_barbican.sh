@@ -230,6 +230,63 @@ if removed != 1 or commits.call_count != 2 or left != 0:
   assert_eq "a deadlocked clean-up batch is retried and committed" "0" "$exit_code"
 }
 
+# --- Test 10: the OpenBao storage index of a write is sent with the read ---
+test_vault_index_patch_applied() {
+  echo "Test: the storage index of a Vault write is sent with the next read"
+  # Proves both build paths applied
+  # patches/barbican/<release>/000N-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch.
+  # The adapter the patch mounts on castellan's requests session sends a
+  # POST whose response carries X-Vault-Index, records that index, and
+  # sends the GET that requires it with X-Vault-Index and
+  # X-Vault-Inconsistent: forward-active-node. The transport below the
+  # adapter is mocked, so no server is needed. An unpatched image fails on
+  # the import of _StorageIndexAdapter, and stderr is echoed on failure so
+  # the reason is named.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import sys
+from unittest import mock
+
+import requests
+
+from barbican.plugin.vault_secret_store import _StorageIndexAdapter
+from barbican.plugin.vault_secret_store import _StorageIndexState
+
+sent = []
+
+
+def send(adapter, request, **kwargs):
+    sent.append(request)
+    response = requests.Response()
+    response.status_code = 200
+    response.request = request
+    if request.method == "POST":
+        response.headers["X-Vault-Index"] = "idx-1"
+    return response
+
+
+state = _StorageIndexState()
+adapter = _StorageIndexAdapter(state)
+url = "https://bao.example:8200/v1/barbican/data/key"
+with mock.patch.object(requests.adapters.HTTPAdapter, "send",
+                       autospec=True, side_effect=send):
+    adapter.send(requests.Request("POST", url, json={}).prepare())
+    state.required = state.written
+    adapter.send(requests.Request("GET", url).prepare())
+read = sent[-1].headers
+got = (state.written, read.get("X-Vault-Index"),
+       read.get("X-Vault-Inconsistent"))
+want = ("idx-1", "idx-1", "forward-active-node")
+if got != want:
+    sys.exit("recorded index, sent index and consistency header are %r, "
+             "want %r" % (got, want))' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "the storage index of a write is sent with the read" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== barbican container verification tests ==="
 echo "Image: $IMAGE"
@@ -251,6 +308,8 @@ echo ""
 test_uwsgi_runnable
 echo ""
 test_db_clean_retry_patch_applied
+echo ""
+test_vault_index_patch_applied
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

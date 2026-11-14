@@ -629,6 +629,43 @@ rolled back and run again after a conflict on its second statement.
 in the built image and expects the row to be deleted in the second. Upstream
 status: not yet proposed.
 
+**Source patch:**
+`patches/barbican/2026.1/0003-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch`
+and its 2026.2 twin
+`patches/barbican/2026.2/0002-carry-the-openbao-storage-index-from-a-write-to-its-reads.patch`
+let a secret read back right after its write on a multi-replica OpenBao. The
+twins carry the same code and tests and differ in their `Applies to` line and
+in the context of the `vault_secret_store.py` hunks. Upstream, castellan's
+`VaultKeyManager` sends every request with the token header only, and OpenBao
+answers reads on its standby nodes. A standby that has not applied the write
+yet answers 404, castellan raises `ManagedObjectNotFoundError`, and Barbican
+answers HTTP 500. On a ControlPlane with three Barbican API replicas and a
+three-replica OpenBao 2.6.3, 3.3 % of the payload downloads of one day failed
+this way, each for a secret stored milliseconds earlier (issue #1703). OpenBao
+2.7 answers a write with an `X-Vault-Index` storage index, and a standby that
+receives the index with `X-Vault-Inconsistent: forward-active-node` forwards
+the request to the active node until it has applied the index itself.
+
+The patch mounts a requests adapter on castellan's session. The adapter
+records the index of each write, `VaultSecretStore` stores it in the
+`vault_index` row of `secret_store_metadata` next to `key_id`, and every read
+of that secret sends it with both headers. The first request after an AppRole
+login carries the login's index instead, because OpenBao takes one index and
+the login's is the later one. The plugin stores no index longer than the
+255-character column, and none that is not printable ASCII without
+whitespace; it logs a WARNING for each. A key manager without a requests
+session turns the tracking off, with one WARNING. Against a server that
+returns no index (OpenBao before 2.7, HashiCorp Vault Community) the plugin
+writes no row and sends no header, and a secret stored before the patch is
+read from whichever node answers. An image without the patch ignores the row.
+No upstream test moves. The patch adds
+`barbican/tests/plugin/test_vault_secret_store.py`, twenty-one tests that mock
+the transport below the adapter. `verify_barbican.sh` drives the adapter
+through a write and a read in the built image and fails on the import without
+the patch, and `tests/e2e/c5c3/full-controlplane-keystone` finds the
+`vault_index` row in the database of a ControlPlane. Upstream status: not yet
+proposed.
+
 **Final image properties:**
 
 - Runs as `openstack` user (UID 42424, GID 42424)
@@ -649,7 +686,8 @@ hard gate — it verifies the CLIs, importability, that the `vault_plugin` and
 `barbican.wsgi.api` resolves and binds `application` to something other than
 the `None` sentinel, that uwsgi runs and imports `barbican`, that a database
 clean-up batch whose commit raises `DBDeadlock` is rolled back, retried and
-committed, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
+committed, that the storage index of an OpenBao write is recorded and sent
+back with the next read, non-root execution, and the absence of build tools. Both plugin halves are loaded through their entry-point metadata
 rather than imported by module path, because that is how barbican and
 castellan resolve them at runtime — an import would go green off the `.py`
 file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI

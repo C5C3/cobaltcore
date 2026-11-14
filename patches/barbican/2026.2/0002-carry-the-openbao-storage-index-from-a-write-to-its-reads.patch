@@ -1,0 +1,636 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Carry the OpenBao storage index from a write to its reads
+
+Barbican's vault plugin (barbican/plugin/vault_secret_store.py) stores
+and reads secret payloads through castellan's VaultKeyManager, which
+sends every request with the token header only. OpenBao answers reads
+on standby nodes (`disable_standby_reads` is off by default), and a
+standby that has not applied the latest Raft entries answers the read
+of a secret written milliseconds earlier with 404. castellan raises
+`ManagedObjectNotFoundError`, `CastellanSecretStore.get_secret` turns
+it into `SecretGeneralException`, and the API answers HTTP 500 ("Secret
+payload retrieval failure seen"). On a ControlPlane of release 2026.1
+with three Barbican API replicas and a three-replica OpenBao 2.6.3,
+1,464 of 44,913 payload downloads in 24 hours failed (3.3 %). For one
+secret `PUT /metadata` returned 201, `GET /payload` returned 500 25 ms
+later, and the same GET returned 200 278 ms after that (issue
+C5C3/cobaltcore#1703).
+
+OpenBao 2.7 answers a request that changed storage with an
+`X-Vault-Index` header that encodes the cluster ID and the storage
+index of the change. A standby that receives the index together with
+`X-Vault-Inconsistent: forward-active-node` handles the request itself
+once it has applied the index, and forwards it to the active node
+before. A request carries one index at most; a request without one is
+handled by whichever node receives it, and an index of another cluster
+is ignored. The write and the read of a secret run in different API
+processes, so the index travels in the database: the patch records it
+in the `vault_index` row of `secret_store_metadata`, next to the
+`key_id` the plugin already stores there.
+
+- `_StorageIndexAdapter`, a requests `HTTPAdapter` that
+  `VaultSecretStore.__init__` mounts for `https://` and `http://` on
+  the key manager's session, records the `X-Vault-Index` of the
+  response to every `POST` in a `threading.local` state, and sends an
+  index with `X-Vault-Inconsistent: forward-active-node` when the state
+  holds one.
+- `VaultSecretStore._meta_dict` adds the index of the last write to
+  the metadata that `store_secret`, `generate_symmetric_key` and
+  `generate_asymmetric_key` build after their last write; both dicts of
+  a key pair carry the index of the second write, which covers the
+  first. An index longer than the 255 characters of the `value` column,
+  or one that is not printable ASCII without whitespace, is not
+  recorded, and one WARNING names the key ID and the reason: the first
+  would fail the database write, the second every later read, because
+  requests refuses to send such a header value.
+- `VaultSecretStore.get_secret` sets the secret's index for the
+  requests of the read and clears it in a `finally` block, so a failed
+  read leaves no index for the next request on the thread.
+- castellan runs an AppRole login on the same session right before a
+  request whenever its cached token is missing or expired. A successful
+  login (`POST`, status 200, a path under `/v1/auth/` that ends in
+  `/login`) answers with an index too, and the request right after the
+  login carries that index in place of the secret's: OpenBao takes a
+  single index, and the login's is the later one, because every index a
+  caller holds was issued before the login ran.
+- A key manager without a requests session leaves the tracking off,
+  with one WARNING ("Vault storage index tracking is disabled").
+
+Against a server that returns no index (OpenBao before 2.7, HashiCorp
+Vault Community) no `vault_index` row is written and requests go out as
+before. Secrets stored before the patch have no row and are read as
+before. An image without the patch ignores the row, so a rollback of
+the image needs no data change.
+
+The patch imports requests without a requirements.txt entry: castellan
+requires it, and hack/nix-lock.sh refuses a patch that edits
+requirements.txt.
+
+Tests: no upstream test moves. `WhenTestingVaultSecretStore` in
+barbican/tests/plugin/test_castellan_secret_store.py builds a real
+`VaultSecretStore` and swaps its key manager for a mock; a fresh store
+holds no index, so the metadata those tests compare stays the same. The
+patch adds barbican/tests/plugin/test_vault_secret_store.py, twenty-one
+tests that replace requests' `HTTPAdapter.send` with a mock and need no
+server: the index each write path records, no index for a missing or
+empty header or for a write after one that returned an index, the
+length and character checks with their WARNING, the headers of a read
+with and without an index, the login index on the first request after a
+login and the secret's on the next, a write right after a login that
+carries the login's index and records its own, no login index after a
+refused login, no index left behind after a read that failed with a 404
+or a connection error, no index that a read on one thread lends to a
+write on another, and a key manager without a session. All twenty-one
+fail without the patch.
+
+Proof: tests/container-images/verify_barbican.sh (Test 10) drives
+`_StorageIndexAdapter.send` in the built image through a write and a
+read, and fails on the import without this patch.
+
+The 2026.1 twin carries the same code and tests; the context of the
+vault_secret_store.py hunks differs, because 22.0.0 lacks the `kv_path`
+and `kv_version` options.
+
+Applies to barbican 23.0.0 (2026.2), on top of 0001.
+
+Upstream status: not yet proposed.
+
+diff --git a/barbican/plugin/vault_secret_store.py b/barbican/plugin/vault_secret_store.py
+index 9daa8fbb..470a0956 100644
+--- a/barbican/plugin/vault_secret_store.py
++++ b/barbican/plugin/vault_secret_store.py
+@@ -13,12 +13,17 @@
+ # See the License for the specific language governing permissions and
+ # limitations under the License.
+ 
++import re
++import threading
++import urllib.parse
++
+ from barbican.common import config
+ import barbican.plugin.castellan_secret_store as css
+ from castellan.i18n import _
+ from castellan import options
+ from oslo_config import cfg
+ from oslo_log import log
++import requests
+ 
+ LOG = log.getLogger(__name__)
+ 
+@@ -70,16 +75,139 @@ CONF.register_opts(vault_opts, group=vault_opt_group)
+ config.parse_args(CONF)
+ 
+ 
++# OpenBao 2.7 and newer answer a request that changed storage with the
++# storage index of that change. A standby node that receives the index
++# together with X-Vault-Inconsistent: forward-active-node handles the request
++# itself once it has applied the index, and forwards it to the active node
++# before. A request without an index is handled by whichever node receives it.
++INDEX_HEADER = 'X-Vault-Index'
++INCONSISTENT_HEADER = 'X-Vault-Inconsistent'
++FORWARD_ACTIVE_NODE = 'forward-active-node'
++# The value column of secret_store_metadata is String(255).
++MAX_INDEX_LENGTH = 255
++# Printable ASCII without whitespace: requests refuses to send a header value
++# with a control character, so such an index would fail every later read.
++_INDEX_CHARS = re.compile(r'[\x21-\x7e]+')
++
++
+ def list_opts():
+     yield vault_opt_group, vault_opts    # pragma: no cover
+ 
+ 
++class _StorageIndexState(threading.local):
++    """The storage indexes of the calling thread.
++
++    written is the index of the last write, required is the index the
++    requests of a secret read must reach, and login is the index of an
++    AppRole login that the next request carries instead of required.
++    """
++
++    written = None
++    required = None
++    login = None
++
++
++def _is_login(url):
++    """Tell whether url is the login endpoint of a Vault auth method."""
++    path = urllib.parse.urlsplit(url).path
++    return '/v1/auth/' in path and path.endswith('/login')
++
++
++class _StorageIndexAdapter(requests.adapters.HTTPAdapter):
++    """Carry the Vault storage index from a write to the reads after it.
++
++    The adapter is mounted on the session of the castellan key manager, so
++    it sees every request castellan sends: the write of a secret, the read
++    of a secret, and the AppRole login that castellan runs right before
++    either when its cached token is missing or expired.
++    """
++
++    def __init__(self, state):
++        super().__init__()
++        self._state = state
++
++    def send(self, request, **kwargs):
++        """Send the request with the index it must reach, record the reply's.
++
++        The request carries the index of a login that ran right before it,
++        or else the index of the secret it reads. OpenBao accepts a single
++        index, and the login's is the later one: every index a caller holds
++        was issued before the login ran.
++        """
++        state = self._state
++        index = state.login or state.required
++        state.login = None
++        if index:
++            request.headers[INDEX_HEADER] = index
++            request.headers[INCONSISTENT_HEADER] = FORWARD_ACTIVE_NODE
++
++        response = super().send(request, **kwargs)
++
++        if request.method == 'POST':
++            returned = response.headers.get(INDEX_HEADER) or None
++            if not _is_login(request.url):
++                state.written = returned
++            elif response.status_code == 200:
++                state.login = returned
++        return response
++
++
+ class VaultSecretStore(css.CastellanSecretStore):
+ 
++    VAULT_INDEX = 'vault_index'
++
+     def __init__(self, conf=CONF):
+         """Constructor - create the vault secret store."""
+         vault_conf = self.get_conf(conf)
+         self._set_params(vault_conf)
++        self._index_state = _StorageIndexState()
++        session = getattr(self.key_manager, '_session', None)
++        if isinstance(session, requests.Session):
++            adapter = _StorageIndexAdapter(self._index_state)
++            session.mount('https://', adapter)
++            session.mount('http://', adapter)
++        else:
++            LOG.warning("Vault storage index tracking is disabled: the "
++                        "castellan key manager exposes no requests session")
++
++    def _meta_dict(self, key_id, bit_length=None, algorithm=None):
++        """Return the metadata dict, with the storage index of the write.
++
++        store_secret, generate_symmetric_key and generate_asymmetric_key
++        build their result after their last write, so the index of the
++        last write on this thread is the one that stored key_id. For a key
++        pair it is the index of the second write, which covers the first.
++        An index the metadata column cannot hold, or one requests cannot
++        send back, is not recorded.
++        """
++        meta = super()._meta_dict(key_id, bit_length, algorithm)
++        index = self._index_state.written
++        if index is None:
++            return meta
++        if len(index) > MAX_INDEX_LENGTH:
++            LOG.warning("Not recording the Vault storage index of secret "
++                        "%s: it is longer than %d characters",
++                        key_id, MAX_INDEX_LENGTH)
++        elif not _INDEX_CHARS.fullmatch(index):
++            LOG.warning("Not recording the Vault storage index of secret "
++                        "%s: it is not printable ASCII without whitespace",
++                        key_id)
++        else:
++            meta[self.VAULT_INDEX] = index
++        return meta
++
++    def get_secret(self, secret_type, secret_metadata):
++        """Read the secret from a node that has applied its write.
++
++        A secret stored with a storage index is read with that index, so
++        that a standby which has not applied the write yet forwards the
++        read to the active node. A secret without one is read as before.
++        """
++        self._index_state.required = secret_metadata.get(self.VAULT_INDEX)
++        try:
++            return super().get_secret(secret_type, secret_metadata)
++        finally:
++            self._index_state.required = None
+ 
+     def get_plugin_name(self):
+         return "VaultSecretStore"
+diff --git a/barbican/tests/plugin/test_vault_secret_store.py b/barbican/tests/plugin/test_vault_secret_store.py
+new file mode 100644
+index 00000000..be4122fe
+--- /dev/null
++++ b/barbican/tests/plugin/test_vault_secret_store.py
+@@ -0,0 +1,369 @@
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#    http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++# implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++import base64
++import binascii
++import json
++import threading
++from unittest import mock
++
++from castellan.common import exception
++from castellan.common.objects import opaque_data
++import requests
++
++import barbican.plugin.castellan_secret_store as css
++import barbican.plugin.interface.secret_store as ss
++import barbican.plugin.vault_secret_store as vss
++from barbican.tests import utils
++
++# The shape OpenBao 2.7 sends: base64 of {"cluster": ..., "value": ...}.
++SECRET_INDEX = base64.b64encode(json.dumps(
++    {'cluster': 'c0ffee', 'value': '41'}).encode()).decode()
++LOGIN_INDEX = base64.b64encode(json.dumps(
++    {'cluster': 'c0ffee', 'value': '42'}).encode()).decode()
++
++PAYLOAD = b'stored right before it is read'
++
++
++class WhenTrackingTheVaultStorageIndex(utils.BaseTestCase):
++    """The storage index of a write travels to the reads of that secret.
++
++    The tests replace the transport below the castellan key manager, so
++    every request castellan sends reaches _send, which records it and
++    answers with the next reply the test scripted. A scripted reply that
++    is a function is called first, and its result is the reply.
++    """
++
++    def setUp(self):
++        super().setUp()
++        self.sent = []
++        self.replies = []
++        patcher = mock.patch.object(
++            requests.adapters.HTTPAdapter, 'send', autospec=True,
++            side_effect=self._send)
++        self.transport = patcher.start()
++        self.addCleanup(patcher.stop)
++
++    def _send(self, adapter, request, **kwargs):
++        self.sent.append(request)
++        reply = self.replies.pop(0)
++        if callable(reply):
++            reply = reply()
++        if isinstance(reply, Exception):
++            raise reply
++        status, index, body = reply
++        response = requests.Response()
++        response.status_code = status
++        response.request = request
++        response.url = request.url
++        if index is not None:
++            response.headers[vss.INDEX_HEADER] = index
++        response._content = json.dumps(body).encode('utf-8')
++        return response
++
++    def _store(self, **auth):
++        conf = mock.MagicMock(name='config mock')
++        conf.vault_plugin = mock.MagicMock(
++            vault_url='http://127.0.0.1:8200',
++            use_ssl=False,
++            kv_mountpoint='secret',
++            kv_path=None,
++            kv_version=2,
++            namespace=None,
++            ssl_ca_crt_file=None,
++            root_token_id='root',
++            approle_role_id=None,
++            approle_secret_id=None)
++        conf.vault_plugin.configure_mock(**auth)
++        return vss.VaultSecretStore(conf)
++
++    def _approle_store(self):
++        return self._store(root_token_id=None, approle_role_id='role',
++                           approle_secret_id='secret')
++
++    @staticmethod
++    def _write(index=None):
++        return (200, index, {'data': {'version': 1}})
++
++    @staticmethod
++    def _login(status=200, index=None):
++        return (status, index,
++                {'auth': {'client_token': 'token', 'lease_duration': 3600}})
++
++    @staticmethod
++    def _read(store):
++        record = {
++            'type': store.key_manager._secret_type_dict[
++                opaque_data.OpaqueData],
++            'value': binascii.hexlify(PAYLOAD).decode('utf-8'),
++            'algorithm': None,
++            'bit_length': None,
++            'name': None,
++            'created': None,
++        }
++        return (200, None, {'data': {'data': record}})
++
++    @staticmethod
++    def _secret_dto():
++        return ss.SecretDTO(ss.SecretType.OPAQUE,
++                            base64.b64encode(PAYLOAD),
++                            ss.KeySpec(), None)
++
++    def _metadata(self, index=None):
++        meta = {css.CastellanSecretStore.KEY_ID: 'key-1',
++                css.CastellanSecretStore.METADATA_VERSION: 1}
++        if index is not None:
++            meta[vss.VaultSecretStore.VAULT_INDEX] = index
++        return meta
++
++    def assertCarriesIndex(self, index, request):
++        self.assertEqual(index, request.headers.get(vss.INDEX_HEADER))
++        self.assertEqual(vss.FORWARD_ACTIVE_NODE,
++                         request.headers.get(vss.INCONSISTENT_HEADER))
++
++    def assertCarriesNoIndex(self, request):
++        self.assertNotIn(vss.INDEX_HEADER, request.headers)
++        self.assertNotIn(vss.INCONSISTENT_HEADER, request.headers)
++
++    def test_adapter_is_mounted_for_both_schemes(self):
++        store = self._store()
++        session = store.key_manager._session
++        adapter = session.get_adapter('https://bao.example:8200/')
++        self.assertIsInstance(adapter, vss._StorageIndexAdapter)
++        self.assertIs(adapter, session.get_adapter('http://127.0.0.1:8200/'))
++
++    def test_store_secret_records_the_index_of_the_write(self):
++        store = self._store()
++        self.replies = [self._write(SECRET_INDEX)]
++
++        meta = store.store_secret(self._secret_dto())
++
++        self.assertEqual(SECRET_INDEX, meta[store.VAULT_INDEX])
++        self.assertIn(store.KEY_ID, meta)
++        self.assertEqual('POST', self.sent[0].method)
++
++    def test_generate_symmetric_key_records_the_index_of_the_write(self):
++        store = self._store()
++        self.replies = [self._write(SECRET_INDEX)]
++
++        meta = store.generate_symmetric_key(
++            ss.KeySpec(ss.KeyAlgorithm.AES, 256))
++
++        self.assertEqual(SECRET_INDEX, meta[store.VAULT_INDEX])
++
++    def test_generate_asymmetric_key_records_the_second_index_twice(self):
++        store = self._store()
++        self.replies = [self._write('first-write'),
++                        self._write('second-write')]
++
++        dto = store.generate_asymmetric_key(
++            ss.KeySpec(ss.KeyAlgorithm.RSA, 2048))
++
++        self.assertEqual(2, len(self.sent))
++        self.assertEqual('second-write',
++                         dto.private_key_meta[store.VAULT_INDEX])
++        self.assertEqual('second-write',
++                         dto.public_key_meta[store.VAULT_INDEX])
++
++    def test_write_without_index_records_none(self):
++        store = self._store()
++        self.replies = [self._write()]
++
++        meta = store.store_secret(self._secret_dto())
++
++        self.assertNotIn(store.VAULT_INDEX, meta)
++        self.assertIn(store.KEY_ID, meta)
++
++    def test_write_with_empty_index_records_none(self):
++        store = self._store()
++        self.replies = [self._write('')]
++
++        meta = store.store_secret(self._secret_dto())
++
++        self.assertNotIn(store.VAULT_INDEX, meta)
++
++    def test_write_without_index_after_one_with_records_none(self):
++        store = self._store()
++        self.replies = [self._write(SECRET_INDEX), self._write()]
++
++        store.store_secret(self._secret_dto())
++        meta = store.store_secret(self._secret_dto())
++
++        self.assertNotIn(store.VAULT_INDEX, meta)
++
++    def test_index_of_the_column_width_is_recorded(self):
++        store = self._store()
++        index = 'x' * vss.MAX_INDEX_LENGTH
++        self.replies = [self._write(index)]
++
++        meta = store.store_secret(self._secret_dto())
++
++        self.assertEqual(index, meta[store.VAULT_INDEX])
++
++    def _assert_index_is_not_recorded(self, index):
++        store = self._store()
++        self.replies = [self._write(index)]
++
++        with mock.patch.object(vss.LOG, 'warning') as warning:
++            meta = store.store_secret(self._secret_dto())
++
++        self.assertNotIn(store.VAULT_INDEX, meta)
++        self.assertIn(store.KEY_ID, meta)
++        self.assertEqual(1, warning.call_count)
++        self.assertIn(meta[store.KEY_ID], warning.call_args[0])
++
++    def test_index_longer_than_the_column_is_not_recorded(self):
++        self._assert_index_is_not_recorded('x' * (vss.MAX_INDEX_LENGTH + 1))
++
++    def test_index_with_a_space_is_not_recorded(self):
++        self._assert_index_is_not_recorded('abc def')
++
++    def test_index_with_a_newline_is_not_recorded(self):
++        self._assert_index_is_not_recorded('abc\ndef')
++
++    def test_index_with_a_trailing_newline_is_not_recorded(self):
++        self._assert_index_is_not_recorded('abcdef\n')
++
++    def test_get_secret_sends_the_index_of_the_secret(self):
++        store = self._store()
++        self.replies = [self._read(store)]
++
++        dto = store.get_secret(ss.SecretType.OPAQUE,
++                               self._metadata(SECRET_INDEX))
++
++        self.assertEqual(PAYLOAD, base64.b64decode(dto.secret))
++        self.assertEqual('GET', self.sent[0].method)
++        self.assertCarriesIndex(SECRET_INDEX, self.sent[0])
++
++    def test_get_secret_without_index_sends_none(self):
++        store = self._store()
++        self.replies = [self._read(store)]
++
++        store.get_secret(ss.SecretType.OPAQUE, self._metadata())
++
++        self.assertCarriesNoIndex(self.sent[0])
++
++    def test_request_after_a_login_carries_the_login_index(self):
++        store = self._approle_store()
++        self.replies = [self._login(index=LOGIN_INDEX), self._read(store),
++                        self._read(store)]
++
++        store.get_secret(ss.SecretType.OPAQUE, self._metadata(SECRET_INDEX))
++        store.get_secret(ss.SecretType.OPAQUE, self._metadata(SECRET_INDEX))
++
++        login, first_read, second_read = self.sent
++        self.assertEqual('POST', login.method)
++        self.assertTrue(login.url.endswith('/v1/auth/approle/login'))
++        self.assertCarriesIndex(LOGIN_INDEX, first_read)
++        self.assertCarriesIndex(SECRET_INDEX, second_read)
++
++    def test_write_after_a_login_records_the_index_of_the_write(self):
++        store = self._approle_store()
++        self.replies = [self._login(index=LOGIN_INDEX),
++                        self._write(SECRET_INDEX)]
++
++        meta = store.store_secret(self._secret_dto())
++
++        login, write = self.sent
++        self.assertTrue(login.url.endswith('/v1/auth/approle/login'))
++        self.assertCarriesIndex(LOGIN_INDEX, write)
++        self.assertEqual(SECRET_INDEX, meta[store.VAULT_INDEX])
++
++    def test_refused_login_leaves_the_secret_index(self):
++        store = self._approle_store()
++        self.replies = [self._login(status=403, index=LOGIN_INDEX),
++                        self._login(), self._read(store)]
++
++        self.assertRaises(ss.SecretGeneralException, store.get_secret,
++                          ss.SecretType.OPAQUE, self._metadata(SECRET_INDEX))
++        store.get_secret(ss.SecretType.OPAQUE, self._metadata(SECRET_INDEX))
++
++        refused_login, login, read = self.sent
++        self.assertTrue(refused_login.url.endswith('/login'))
++        self.assertTrue(login.url.endswith('/login'))
++        self.assertCarriesIndex(SECRET_INDEX, read)
++
++    def test_read_of_a_missing_secret_leaves_no_index_behind(self):
++        store = self._store()
++        self.replies = [(404, None, {'errors': []}), self._write()]
++
++        error = self.assertRaises(
++            ss.SecretGeneralException, store.get_secret,
++            ss.SecretType.OPAQUE, self._metadata(SECRET_INDEX))
++        store.store_secret(self._secret_dto())
++
++        self.assertIsInstance(error.reason,
++                              exception.ManagedObjectNotFoundError)
++        self.assertCarriesIndex(SECRET_INDEX, self.sent[0])
++        self.assertCarriesNoIndex(self.sent[1])
++
++    def test_read_that_cannot_connect_leaves_no_index_behind(self):
++        store = self._store()
++        self.replies = [requests.exceptions.ConnectionError('refused'),
++                        self._write()]
++
++        error = self.assertRaises(
++            ss.SecretGeneralException, store.get_secret,
++            ss.SecretType.OPAQUE, self._metadata(SECRET_INDEX))
++        store.store_secret(self._secret_dto())
++
++        self.assertIsInstance(error.reason, exception.KeyManagerError)
++        self.assertCarriesIndex(SECRET_INDEX, self.sent[0])
++        self.assertCarriesNoIndex(self.sent[1])
++
++    def test_read_on_another_thread_lends_no_index_to_a_write(self):
++        # Barbican builds one store per API process, so the request threads
++        # of a worker share it. The write runs while the read on the other
++        # thread is still waiting for its reply.
++        store = self._store()
++        reading = threading.Event()
++        written = threading.Event()
++
++        def read_after_the_write():
++            reading.set()
++            written.wait(10)
++            return self._read(store)
++
++        self.replies = [read_after_the_write, self._write()]
++        reader = threading.Thread(
++            target=store.get_secret,
++            args=(ss.SecretType.OPAQUE, self._metadata(SECRET_INDEX)))
++        reader.start()
++        self.assertTrue(reading.wait(10))
++        store.store_secret(self._secret_dto())
++        written.set()
++        reader.join(10)
++
++        read, write = self.sent
++        self.assertCarriesIndex(SECRET_INDEX, read)
++        self.assertCarriesNoIndex(write)
++
++    def test_key_manager_without_session_disables_the_tracking(self):
++        key_manager = mock.Mock(
++            spec=['store', 'get', 'create_key', 'create_key_pair', 'delete'])
++        key_manager.store.return_value = 'key-1'
++        key_manager.get.return_value = opaque_data.OpaqueData(PAYLOAD)
++
++        with mock.patch.object(css.key_manager, 'API',
++                               return_value=key_manager), \
++                mock.patch.object(vss.LOG, 'warning') as warning:
++            store = self._store()
++        meta = store.store_secret(self._secret_dto())
++        dto = store.get_secret(ss.SecretType.OPAQUE,
++                               self._metadata(SECRET_INDEX))
++
++        self.assertEqual(1, warning.call_count)
++        self.assertEqual('key-1', meta[store.KEY_ID])
++        self.assertNotIn(store.VAULT_INDEX, meta)
++        self.assertEqual(PAYLOAD, base64.b64decode(dto.secret))
++        self.transport.assert_not_called()
