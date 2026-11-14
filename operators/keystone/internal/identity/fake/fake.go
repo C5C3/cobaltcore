@@ -10,8 +10,9 @@
 // contracts — "adopt never mutates", "disable before delete", "drift-only
 // writes", and "teardown order" — from the request log rather than from
 // implementation internals. InjectFault arms a Fault that answers matching
-// requests with an error status or a closed connection, so tests also reach
-// the error paths a correct answer never takes. This is the "identity-API
+// requests with an error status or a closed connection, or holds them without
+// an answer, so tests also reach the error paths a correct answer never
+// takes. This is the "identity-API
 // test double via httptest; no ORC fixtures needed" seam shared by the
 // identity client's unit tests, the controller unit tests, and envtest
 // integration.
@@ -115,11 +116,15 @@ type Server struct {
 
 	mux        *http.ServeMux
 	httpServer *httptest.Server
+	// closing is closed by Close before the httptest server shuts down, so a
+	// request a Hang fault holds is released instead of blocking Close.
+	closing   chan struct{}
+	closeOnce sync.Once
 }
 
 // Fault is one injected failure. The fake answers a matching request with
-// Status and Body, or hijacks and closes the connection when CloseConnection
-// is set, instead of running the handler.
+// Status and Body, hijacks and closes the connection when CloseConnection is
+// set, or holds the request when Hang is set, instead of running the handler.
 //
 // net/http replays a GET or HEAD once on a new connection when a reused
 // keep-alive connection dies before any response byte arrives. A
@@ -150,6 +155,15 @@ type Fault struct {
 	// CloseConnection hijacks the TCP connection and closes it without
 	// writing a response. The client sees io.EOF.
 	CloseConnection bool
+	// Hang reads the request body to its end and then holds the request
+	// until the request's context is done or Close runs. With Status 0 the
+	// fake writes no response byte. With a valid Status it first writes and
+	// flushes the status line, the headers and Body, so the client receives
+	// a response whose body never ends. A held request ends with the
+	// connection closed, never with a finished response. Hang together with
+	// CloseConnection answers 500 with a "fake:" error body, as an invalid
+	// Status does.
+	Hang bool
 	// Times is how many matching requests the fault fires for; 0 fires
 	// until ClearFaults. Each handler invocation counts once.
 	Times int
@@ -182,6 +196,7 @@ func NewServer(password string) *Server {
 		roles:           make(map[string]*Role),
 		projects:        make(map[string]*Project),
 		roleAssignments: make(map[string]struct{}),
+		closing:         make(chan struct{}),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v3/auth/tokens", s.handleAuth)
@@ -198,8 +213,12 @@ func NewServer(password string) *Server {
 	return s
 }
 
-// Close shuts the underlying httptest server down.
-func (s *Server) Close() { s.httpServer.Close() }
+// Close releases every request a Hang fault holds and shuts the underlying
+// httptest server down. It may be called more than once.
+func (s *Server) Close() {
+	s.closeOnce.Do(func() { close(s.closing) })
+	s.httpServer.Close()
+}
 
 // Endpoint returns the /v3 base URL clients authenticate against.
 func (s *Server) Endpoint() string { return s.httpServer.URL + "/v3" }
@@ -294,7 +313,7 @@ func (s *Server) record(r *http.Request) {
 func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.record(r)
 	if f, ok := s.takeFault(r); ok {
-		serveFault(w, r, f)
+		serveFault(w, r, f, s.closing)
 		return
 	}
 	s.mux.ServeHTTP(w, r)
@@ -320,18 +339,17 @@ func (s *Server) takeFault(r *http.Request) (Fault, bool) {
 	return Fault{}, false
 }
 
-// serveFault answers r with f: the fault's status and body, or a connection
-// closed without a response.
-func serveFault(w http.ResponseWriter, r *http.Request, f Fault) {
+// serveFault answers r with f: the fault's status and body, a connection
+// closed without a response, or a request held until the client leaves or
+// closing is closed.
+func serveFault(w http.ResponseWriter, r *http.Request, f Fault, closing <-chan struct{}) {
+	if f.Hang {
+		holdRequest(w, r, f, closing)
+		return
+	}
 	if !f.CloseConnection {
-		if f.Status < 200 || f.Status > 999 {
-			// WriteHeader panics below 100 or above 999, and the server drops
-			// the connection, which reads like a CloseConnection fault. A 1xx
-			// status is informational: the response would still finish as
-			// 200. Answer instead so the test that armed the fault fails on
-			// an unexpected status that names the mistake.
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = fmt.Fprintf(w, "fake: fault for %s %s has no valid Status (%d)", f.Method, f.Path, f.Status)
+		if !validStatus(f.Status) {
+			writeInvalidStatus(w, f)
 			return
 		}
 		if f.Body != "" {
@@ -345,6 +363,59 @@ func serveFault(w http.ResponseWriter, r *http.Request, f Fault) {
 	// data resets the connection, and the client would see ECONNRESET
 	// instead of io.EOF.
 	_, _ = io.Copy(io.Discard, r.Body)
+	dropConnection(w)
+}
+
+// holdRequest serves a Hang fault: it optionally sends the status line, the
+// headers and Body, then blocks until the client leaves or closing is
+// closed, and drops the connection so no response finishes.
+func holdRequest(w http.ResponseWriter, r *http.Request, f Fault, closing <-chan struct{}) {
+	if f.CloseConnection {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintf(w, "fake: fault for %s %s sets both Hang and CloseConnection", f.Method, f.Path)
+		return
+	}
+	if f.Status != 0 && !validStatus(f.Status) {
+		writeInvalidStatus(w, f)
+		return
+	}
+	_, _ = io.Copy(io.Discard, r.Body)
+	if f.Status != 0 {
+		if f.Body != "" {
+			w.Header().Set("Content-Type", "application/json")
+		}
+		w.WriteHeader(f.Status)
+		_, _ = io.WriteString(w, f.Body)
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+	}
+	select {
+	case <-r.Context().Done():
+	case <-closing:
+	}
+	// Returning normally would finish the response: net/http writes an
+	// implicit 200, or ends the body that never ends.
+	dropConnection(w)
+}
+
+// validStatus reports whether WriteHeader can send status as the final
+// status of a response. WriteHeader panics below 100 or above 999, and the
+// server drops the connection, which reads like a CloseConnection fault. A
+// 1xx status is informational: the response would still finish as 200.
+func validStatus(status int) bool { return status >= 200 && status <= 999 }
+
+// writeInvalidStatus answers a fault whose Status fails validStatus, so the
+// test that armed the fault fails on an unexpected status that names the
+// mistake.
+func writeInvalidStatus(w http.ResponseWriter, f Fault) {
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = fmt.Fprintf(w, "fake: fault for %s %s has no valid Status (%d)", f.Method, f.Path, f.Status)
+}
+
+// dropConnection hijacks the connection and closes it without writing a
+// response.
+func dropConnection(w http.ResponseWriter) {
 	var conn net.Conn
 	err := errors.New("the response writer does not implement http.Hijacker")
 	if hj, ok := w.(http.Hijacker); ok {
