@@ -2411,13 +2411,15 @@ spec:
                 properties:
                   conversion:
                     description: |-
-                      Conversion enables the image_conversion plugin, which rewrites the staged
-                      image into one target disk format.
+                      Conversion enables the image_conversion plugin, which rewrites staged
+                      images into one target format. Glance preserves images declared and
+                      detected as ISO.
                     properties:
                       outputFormat:
                         description: |-
-                          OutputFormat is the disk format every imported image is converted to
-                          ([image_conversion] output_format). When empty the operator resolves
+                          OutputFormat is the target disk format for imported images
+                          ([image_conversion] output_format). Glance preserves images declared and
+                          detected as ISO even when this is raw. When empty the operator resolves
                           DefaultImportConversionOutputFormat at render time rather than
                           materializing it into the CR, so leaving it unset keeps tracking that
                           default across upgrades. The accepted values are glance's own: raw, which
