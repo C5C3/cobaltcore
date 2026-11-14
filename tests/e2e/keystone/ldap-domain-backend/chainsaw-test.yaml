@@ -64,16 +64,13 @@ spec:
               reason: IdentityBackendsNotRequired
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Keystone CR ==="
           kubectl get keystone keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== openldap pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=openldap --tail=60 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-ldap || true
   # ── Step 2: Late-attach the backend; every condition converges ──────────
   - try:
     - apply:
@@ -110,6 +107,7 @@ spec:
             - status: "True"
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CR ==="
           kubectl get keystoneidentitybackend planetexpress-ldap -n $NAMESPACE -o yaml 2>&1 || true
@@ -121,11 +119,7 @@ spec:
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-ldap --tail=80 2>&1 || true
           echo "=== openldap pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=openldap --tail=60 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-ldap || true
   # ── Step 3: The Deployment mounts the domains Secret and rolled out ─────
   - try:
     - assert:
@@ -148,16 +142,13 @@ spec:
             (availableReplicas == replicas): true
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Keystone Deployment ==="
           kubectl get deployment keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Keystone CR ==="
           kubectl get keystone keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-ldap || true
   # ── Step 4: LDAP users are visible and an LDAP user gets a token ────────
   - try:
     - script:
@@ -242,6 +233,7 @@ spec:
           ' "$ADMIN_PASSWORD"
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CR ==="
           kubectl get keystoneidentitybackend planetexpress-ldap -n $NAMESPACE -o yaml 2>&1 || true
@@ -251,8 +243,7 @@ spec:
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-ldap --tail=80 2>&1 || true
           echo "=== openldap pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=openldap --tail=60 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-ldap || true
   # ── Step 5: Detach — clean state restored, domain deleted (D policy) ────
   - try:
     - delete:
@@ -347,6 +338,7 @@ spec:
           ' "$ADMIN_PASSWORD"
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CR (if still present) ==="
           kubectl get keystoneidentitybackend planetexpress-ldap -n $NAMESPACE -o yaml 2>&1 || true
@@ -354,8 +346,4 @@ spec:
           kubectl get keystone keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Keystone Deployment ==="
           kubectl get deployment keystone-ldap -n $NAMESPACE -o yaml 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-ldap || true

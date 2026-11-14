@@ -21,6 +21,10 @@
 #   - a wrong argument count or an empty argument exits 2 with the usage line
 #     and calls no kubectl
 #   - an edit to the script runs the keystone e2e-operator job
+#   - every catch block of oidc-federation, saml-federation and
+#     ldap-domain-backend ends with the call for its Keystone under a 90s
+#     timeout, no operator log or event line of the old dump is left, and no
+#     other suite calls the script
 # Usage: bash tests/unit/ci/dump_identity_backend_diagnostics_test.sh
 
 set -uo pipefail
@@ -50,6 +54,15 @@ TITLES="$(cat <<'TITLES'
 === operator log (last 60 lines) ===
 === operator workqueue and reconcile metrics ===
 TITLES
+)"
+
+# The suites that call the script: the directory under tests/e2e/keystone/,
+# the Keystone the call names, and the number of catch blocks.
+DUMP_CALLERS="$(cat <<'CALLS'
+oidc-federation|keystone-oidc|7
+saml-federation|keystone-saml|6
+ldap-domain-backend|keystone-ldap|5
+CALLS
 )"
 
 STUBS="$(mktemp -d)"
@@ -233,6 +246,27 @@ log_count() {
     return
   fi
   grep -cF -- "$1" "$STUBS/kubectl.log" || true
+}
+
+# catch_calls <file>
+# One "<timeout>|<calls>|<last line>" line per catch block of <file>: the
+# timeout: value of the block's script, the lines whose first text is the
+# script's relative path, joined by ";", and the block's last non-empty line,
+# each without its leading blanks. A block ends at the next line indented by
+# two blanks, or by four that is no list item.
+catch_calls() {
+  awk '
+    /^    catch:$/ { inblk = 1; n++; next }
+    inblk && /^(  [^ ]|    [^ -])/ { inblk = 0 }
+    !inblk { next }
+    /^        timeout:[[:space:]]/ { timeout[n] = $2 }
+    { line = $0; sub(/^[[:space:]]+/, "", line) }
+    line == "" { next }
+    { last[n] = line }
+    index(line, "../../lib/dump-identity-backend-diagnostics.sh ") == 1 {
+      calls[n] = (n in calls) ? calls[n] ";" line : line
+    }
+    END { for (i = 1; i <= n; i++) print timeout[i] "|" calls[i] "|" last[i] }' "$1"
 }
 
 make_kubectl_stub "$STUBS"
@@ -479,6 +513,40 @@ test_the_keystone_filter_lists_the_directory() {
     "$(filter_block tests_e2e_keystone)" "'tests/e2e/lib/**'"
 }
 
+# --- Test 9: the callers ---
+test_the_three_suites_end_their_catch_blocks_with_the_call() {
+  echo "Test: every catch block of the three suites ends with the call under a 90s timeout"
+
+  local suite keystone count file call expected i old
+  while IFS='|' read -r suite keystone count; do
+    file="$PROJECT_ROOT/tests/e2e/keystone/$suite/chainsaw-test.yaml"
+    call="../../lib/dump-identity-backend-diagnostics.sh \$NAMESPACE $keystone || true"
+    assert_eq "$suite has $count catch blocks" "$count" "$(grep -c '^    catch:$' "$file" || true)"
+    expected=""
+    for ((i = 0; i < count; i++)); do
+      expected+="90s|$call|$call"$'\n'
+    done
+    assert_eq "each catch block of $suite ends with the call for $keystone, under a 90s timeout" \
+      "${expected%$'\n'}" "$(catch_calls "$file")"
+    for old in 'keystone-operator --all-containers --tail=' "--sort-by='.lastTimestamp' 2>&1 | tail -30" \
+      'echo "=== operator logs ==="' 'echo "=== Events ==="'; do
+      assert_eq "$suite no longer holds: $old" "0" "$(grep -cF -- "$old" "$file" || true)"
+    done
+  done <<<"$DUMP_CALLERS"
+}
+
+test_no_other_suite_calls_the_script() {
+  echo "Test: no suite outside the three calls the script"
+
+  local expected found
+  expected="$(cut -d'|' -f1 <<<"$DUMP_CALLERS" | sed 's|^|keystone/|' | LC_ALL=C sort)"
+  # Any line that is not a comment and names the script counts as a call.
+  found="$(grep -rlE --include=chainsaw-test.yaml \
+    '^[[:space:]]*[^#[:space:]].*dump-identity-backend-diagnostics\.sh' "$PROJECT_ROOT/tests" |
+    sed -e "s|^$PROJECT_ROOT/tests/e2e/||" -e 's|/chainsaw-test.yaml$||' | LC_ALL=C sort)"
+  assert_eq "the suites that call the script are the three" "$expected" "$found"
+}
+
 # --- Run ---
 test_the_six_titles_in_order
 test_the_event_sections
@@ -495,6 +563,8 @@ test_wrong_arguments_exit_2
 test_the_script_parses
 
 test_the_keystone_filter_lists_the_directory
+test_the_three_suites_end_their_catch_blocks_with_the_call
+test_no_other_suite_calls_the_script
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

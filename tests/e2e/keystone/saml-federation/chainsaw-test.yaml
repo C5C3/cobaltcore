@@ -51,7 +51,10 @@ spec:
     # domain THROUGH that same Keystone, so its first attempt races the rollout
     # and fails (EOF), then a requeue retries and succeeds ~30s later — past the
     # 30s global delete bound. 2m covers one failed attempt plus the retry with
-    # margin for a slow rollout (mirrors the oidc-federation suite).
+    # margin for a slow rollout (mirrors the oidc-federation suite). A request
+    # the old pod never answers ends at the identity client's 10-second
+    # request timeout, so a failed first attempt takes at most 20 seconds
+    # before the 30-second requeue.
     delete: 2m
     exec: 3m
   steps:
@@ -86,16 +89,13 @@ spec:
               reason: IdentityBackendsNotRequired
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Keystone CR ==="
           kubectl get keystone keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== keycloak-saml pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak-saml --tail=80 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-saml || true
   # ── Step 2: Create the IdP-metadata Secret, attach the SAML backend ─────
   - try:
     - script:
@@ -160,6 +160,7 @@ spec:
             - status: "True"
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CR ==="
           kubectl get keystoneidentitybackend keycloak-saml -n $NAMESPACE -o yaml 2>&1 || true
@@ -169,11 +170,7 @@ spec:
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml --all-containers --tail=80 2>&1 || true
           echo "=== keycloak-saml pod logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=keycloak-saml --tail=60 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-saml || true
   # ── Step 3: The pod carries the sidecar with the mellon volume; the ──────
   #    Service targets the proxy; the SP-metadata export Secret exists.
   - try:
@@ -216,6 +213,7 @@ spec:
           (contains(keys(data), 'sp-metadata.xml')): true
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Keystone Deployment ==="
           kubectl get deployment keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
@@ -225,8 +223,7 @@ spec:
           kubectl get secret keystone-saml-saml-sp-metadata -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== sidecar logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -c federation-proxy --tail=60 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-saml || true
   # ── Step 4: mod_auth_mellon is loaded and serving the SP metadata ───────
   - try:
     - script:
@@ -259,11 +256,13 @@ spec:
           '
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== sidecar logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -c federation-proxy --tail=100 2>&1 || true
           echo "=== rendered proxy.conf ==="
           kubectl get secret -n $NAMESPACE -l cobaltcore.c5c3.io/config-base=keystone-saml-federation -o jsonpath='{.items[0].data.proxy\.conf}' 2>&1 | base64 -d 2>&1 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-saml || true
   # ── Step 5: Coexistence — attach an OIDC backend alongside the SAML one ──
   - try:
     - apply:
@@ -296,6 +295,7 @@ spec:
                 (length(volumes[?name == 'federation-metadata']) == `1`): true
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== OIDC backend CR ==="
           kubectl get keystoneidentitybackend keycloak-saml-oidc -n $NAMESPACE -o yaml 2>&1 || true
@@ -303,8 +303,7 @@ spec:
           kubectl get deployment keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== sidecar logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -c federation-proxy --tail=80 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 2>&1 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-saml || true
   # ── Step 6: Detach both backends; the sidecar and SP Secret disappear ───
   - try:
     - delete:
@@ -398,6 +397,7 @@ spec:
           '
     catch:
     - script:
+        timeout: 90s
         content: |
           echo "=== Backend CRs ==="
           kubectl get keystoneidentitybackend -n $NAMESPACE 2>&1 || true
@@ -405,8 +405,4 @@ spec:
           kubectl get deployment keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Keystone Service ==="
           kubectl get service keystone-saml -n $NAMESPACE -o yaml 2>&1 || true
-          echo "=== operator logs ==="
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=80 2>&1 || true
-          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=80 --previous 2>&1 || true
-          echo "=== Events ==="
-          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          ../../lib/dump-identity-backend-diagnostics.sh $NAMESPACE keystone-saml || true

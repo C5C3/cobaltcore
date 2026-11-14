@@ -51,8 +51,8 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/<suite>
   `tests/e2e/ovn/chassis-single-node/` is the model, and
   `tests/e2e/nova/compute-node-pool/` also labels the node with the zone
   and the pool label its `NovaCompute` selects.
-- **Shared scripts.** `tests/e2e/lib/` holds scripts that the suites of
-  several operators run:
+- **Shared scripts.** `tests/e2e/lib/` holds scripts that several suites
+  share:
   - `assert-namespace-scoped-operator.sh`, the proof every
     `namespace-scoped-rbac` suite runs against the operator release it
     installed;
@@ -66,7 +66,12 @@ chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/keystone/<suite>
   - `assert-steady-state-events.sh`, which ends each of the nine
     `basic-deployment` suites: the Ready CR may gain no event in a
     120-second window. `horizon/events` runs it in a step before its last
-    one, with its extraConfig overrides in place.
+    one, with its extraConfig overrides in place;
+  - `dump-identity-backend-diagnostics.sh`, the failure dump that every
+    catch block of the keystone `oidc-federation`, `saml-federation` and
+    `ldap-domain-backend` suites runs: the events of the backends and of
+    the Keystone, the operator log lines of the backend controller, and
+    the operator's workqueue metrics.
 
   Chainsaw runs script steps in the suite directory, so a suite calls them
   by relative path (`../../lib/<script>.sh`). Each script is unit-tested
